@@ -1,0 +1,2 @@
+stage,nb_objects,Total_size_MB,total_time_ms,Throughput_MBps
+BytesIO,1,3390.075,7007.967,483.746
