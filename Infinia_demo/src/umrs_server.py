@@ -172,6 +172,8 @@ print("Configuration loaded successfully.")
 for user in content["users"]:
     db_model_store = configure_user(user)
 
+print(f"\n######################\nServer configuration done!\n######################\n")
+
 bucket_name = "ejeannot-text-and-images-ej-bucket-1"
 db_pool, table_name, model, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
 bucket_name = "tarballs"
@@ -182,11 +184,7 @@ perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage
 perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=3, n=10)
 perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=4, n=10)
 
-print(f"\n######################\nServer configuration done!\n######################\n")
-
-
 try:
-
     # loop for new new object to be created
     while True:
         print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
