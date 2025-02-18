@@ -8,9 +8,7 @@ from umrs.embeddings import *
 import time
 from collections import defaultdict
 import signal
-import time
-
-# Path to the configuration file
+import torch
 
 
 
@@ -53,15 +51,48 @@ def configure_user(user_cfg):
 
     return db_model_store
 
-def compute_and_store_embedding(bucket_name, s3_key, db_pool, table_name, model, modality_name, s3_connection):
-    data = load_data_from_s3(s3_connection, bucket_name, s3_key, modality_name)
-    if "text" in modality_name:
-        text = data
-    else:
-        text = None
-    embedding = model.encode(data, convert_to_tensor=False).tolist()
-    store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text)
+def compute_image_embeddings(images, model, device="cpu"):
+    """
+    Compute image embeddings in batch.
+    """
+    # Convert images to tensors if needed
+    images = [img.convert("RGB") for img in images]  # Ensure RGB format
+    with torch.no_grad():
+        embeddings = model.encode(images, convert_to_tensor=(device == "cuda"))
 
+    return embeddings.cpu().tolist() if device == "cuda" else embeddings
+
+
+
+def compute_and_store_embedding(bucket_name, s3_keys, db_pool, table_name, model, device, modality_name, s3_connection):
+    """
+    Loads data from S3, computes embeddings **in batch**, and stores them in the database.
+
+    Args:
+        bucket_name (str): The name of the S3 bucket.
+        s3_keys (list): List of S3 object keys.
+        db_pool: Database connection pool.
+        table_name (str): Target table for storing embeddings.
+        model (SentenceTransformer): Model used for embedding computation.
+        device (str): "cpu" or "cuda".
+        modality_name (str): "text" or "image".
+        s3_connection: Boto3 S3 client.
+    """
+    objects = load_data_from_s3(s3_connection, bucket_name, s3_keys, modality_name)
+    
+    if modality_name == "text":
+        texts = objects  # List of text documents
+        embeddings = model.encode(texts, convert_to_tensor=False).tolist()  # Batch text embeddings
+    
+    elif modality_name == "image":
+        texts = None  # No text for images
+        embeddings = compute_image_embeddings(objects, model, device)  # Batch image embeddings
+    
+    else:
+        raise ValueError(f"Unsupported modality: {modality_name}")
+
+    # Store **all** embeddings in batch
+    store_embeddings_in_db(db_pool, embeddings, table_name, bucket_name, s3_keys, texts)
 
 
 def perf_test(s3, bucket_name, modality_name, model, db_pool, table_name, stage_max = 1, n=1):
@@ -146,7 +177,19 @@ def perf_test(s3, bucket_name, modality_name, model, db_pool, table_name, stage_
     throughput_MB_p_s = (n * total_size /(1024*1024))/(total_time/1000)
     print(f"stage: BytesIO+PIL+Embedding+SQL_Store ; nb_objects: {nb_objects*n} ; Total_size: {total_size*n/(1024*1024):.3f}MB ; total_time: {total_time:.3f} ms ; Throughput: {throughput_MB_p_s:.3f} MB/s")
     
-    
+def run_perf_test():
+    bucket_name = "ejeannot-text-and-images-ej-bucket-1"
+    db_pool, table_name, model, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
+    bucket_name = "tarballs"
+    perf_test(s3_connection, bucket_name, "image", model,db_pool, table_name, stage_max = 1)
+    bucket_name = "ejeannot-text-and-images-ej-bucket-1"
+    perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=1, n=100)
+    perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=2, n=100)
+    perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=3, n=10)
+    perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=4, n=10)
+
+
+
     
 if len(sys.argv) != 2:
     sys.exit(f"Usage: {sys.argv[0]} <JSON config file>")
@@ -172,34 +215,45 @@ print("Configuration loaded successfully.")
 for user in content["users"]:
     db_model_store = configure_user(user)
 
+
+
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print(f"-->  Models will be run on device: {device}")
+
+
 print(f"\n######################\nServer configuration done!\n######################\n")
 
-bucket_name = "ejeannot-text-and-images-ej-bucket-1"
-db_pool, table_name, model, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
-bucket_name = "tarballs"
-perf_test(s3_connection, bucket_name, "image", model,db_pool, table_name, stage_max = 1)
-bucket_name = "ejeannot-text-and-images-ej-bucket-1"
-perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=1, n=100)
-perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=2, n=100)
-perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=3, n=10)
-perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=4, n=10)
+# run_perf_test()
 
 try:
     # loop for new new object to be created
     while True:
         print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
-        s3_object = wait_for_s3_event()
-        print(f"\t-->Detected new file: {s3_object}")
+        s3_objects = wait_for_s3_events()
 
-        bucket_name, s3_key = s3_object.replace("s3://", "").split("/", 1)
+        keys_per_bucket = defaultdict(list)  # Create a dictionary with lists
+        print(f"\t-->Detected {len(s3_objects)} new file(s):")
         
-        db_pool, table_name, model, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
-        if model:
-            print(f"\t--> Storing to data base in {table_name}")
-            compute_and_store_embedding(bucket_name, s3_key, db_pool, table_name, model, modality_name, s3_connection) 
-        else:
-            print(f"No model associated with this bucket")
+
+        for s3_object in s3_objects:
+            print(f"\t\t-->{s3_object}")
+            bucket_name, s3_key = s3_object.replace("s3://", "").split("/", 1)
+    
+            # Append s3_key to the list associated with the bucket
+            if s3_key not in keys_per_bucket[bucket_name]:  # Ensure no duplicates
+                keys_per_bucket[bucket_name].append(s3_key)
+
+
+        for bucket_name in keys_per_bucket.keys():
+            db_pool, table_name, model, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
+            s3_keys = keys_per_bucket[bucket_name]
+            if model:
+                print(f"\t--> Storing to data base in {table_name}")
+                compute_and_store_embedding(bucket_name, s3_keys, db_pool, table_name, model, device, modality_name, s3_connection) 
+            else:
+                print(f"No model associated with this bucket")
         
 except KeyboardInterrupt:
     print("\nInterrupted by user. Exiting gracefully...")
