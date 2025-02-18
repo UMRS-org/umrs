@@ -1,3 +1,6 @@
+# Use the demo branch
+git checkout -b demo_test
+
 # Create three windows
 ## Window 1: SQL
 1/ connect to the sql server to earse the XP database
@@ -44,4 +47,5 @@ select s3_object,date,time  from image order by time;
 ../test_embeddings/cluster_img.py
 
 
-
+# Return to the main branch
+git checkout main
