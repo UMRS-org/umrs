@@ -52,7 +52,7 @@ def create_db_and_get_pool(sql_username, xp_name):
 
 
 
-def store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text = None, silent = False):
+def store_one_embedding_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text = None, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -103,6 +103,12 @@ def store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, 
     finally:
         cur.close()
         db_pool.putconn(conn)
+
+def store_embeddings_in_db(db_pool, embeddings, table_name, bucket_name, s3_keys, texts=None):
+    for embedding, s3_key, text in zip(embeddings, s3_keys, texts or [None] * len(embeddings)): #"or" retuns the first Truthy value (None being not a Truthy value)
+        store_one_embedding_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text)
+        
+
 
         
 def ensure_pgvector_enabled(conn):

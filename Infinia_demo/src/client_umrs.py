@@ -10,8 +10,6 @@ import argparse
 import posix_ipc
 
 
-
-
 parser = argparse.ArgumentParser(description="Parse mandatory arguments.")
 
 parser.add_argument("-u", "--user", required=True, help="User")
@@ -24,7 +22,7 @@ parser.add_argument("-d", "--data", required=True, help="Data")
 args = parser.parse_args()
 
 # Path to the configuration file
-configure_file = "./umrs_conf.json"
+configure_file = "./conf_umrs.json"
 
 # Check if the file exists
 if not os.path.exists(configure_file):
@@ -86,7 +84,7 @@ if(modality["modality_name"] == "text"):
                 s3_key = s3_store_txt(s3, bucket_name, line)
                 print(f"'{line}' saved as {s3_key} on: {bucket_name}")
     else:
-        s3_key = s3_store_txt(user_s3_configuration_file, xp_name, args.data, modality["s3"], user_md5)
+        s3_key = s3_store_txt(s3, bucket_name, args.data)
         print(f"'{args.data}' saved as {s3_key} on: {bucket_name}")
 
 
