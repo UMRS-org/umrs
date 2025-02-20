@@ -8,25 +8,67 @@ import json
 import warnings
 import urllib3
 import posix_ipc
-
+from time import sleep
 from PIL import Image
 from io import BytesIO
+import posix_ipc
 
-mq = posix_ipc.MessageQueue("/my_queue", posix_ipc.O_CREAT)
+
+## Global configuration of the message queue
+target_nb_messages = 100
+target_message_size = 8192
+
+mq = posix_ipc.MessageQueue(
+    "/BIG_Queue",
+    posix_ipc.O_CREAT,    # Create the queue if it doesn't exist
+    max_messages=target_nb_messages,      # Limit to 100 messages in the queue
+    max_message_size=target_message_size  # Each message can be up to 8192 bytes
+)
+
+if (mq.max_messages < target_nb_messages or mq.max_message_size < target_message_size):
+    print("############# Warning #############")
+    print("Configuration of the IPC Message Queue did not match the requested values")
+    print(f"\tQueue size (nb of msg) = {mq.max_messages} (requested_value = {target_nb_messages})")
+    print(f"\tMessage size = {mq.max_message_size} (requested_value = {target_message_size})")
+    print("\tConsider changing the values of /proc/sys/fs/mqueue/msg_max and /proc/sys/fs/mqueue/msgsize_max...\n")
 
 
-# ✅ Suppress only SSL warnings from urllib3
+# Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
 
 
-def wait_for_s3_event(debug = False):
-    """Blocks execution until a new object is added to the S3 bucket."""
+def notify_s3(s3_object):
+    print(f"Notyfying {s3_object}");
+    mq.send(s3_object)
 
-    mq = posix_ipc.MessageQueue("/my_queue")
+
+def wait_for_s3_events(debug=False):
+    """Blocks execution until a new message arrives, then reads all available messages."""
+    
+    # BLOCKING: Wait for the first message
+    print(f"Listening the queue ({mq.current_messages} pending msg)...")
     message, _ = mq.receive()
-    print("Received:", message.decode())
+    print("Received (blocking):", message.decode())
 
-    return message.decode();
+    messages = [message.decode()]  # Store messages
+
+    if 0 == mq.current_messages:
+        return messages
+    
+    print("More to come...")
+    # NON-BLOCKING: Read remaining messages without blocking
+    while True:
+        try:
+            message, _ = mq.receive(timeout=0)  # Non-blocking read
+            messages.append(message.decode())
+            print("Received (Non blocking):", message.decode())
+
+        except posix_ipc.BusyError:
+            if debug:
+                print("No more messages in queue.")
+            break  # Exit loop if queue is empty
+
+    return messages
 
 
 def connect_to_s3(config_file):
@@ -116,29 +158,27 @@ def configure_s3(s3_cfg, user_s3_conf_file, xp_name, username):
     print("\t\t\t--> S3 Configuration Successful")
     return bucket_name, s3
 
+def load_data_from_s3(s3, bucket_name, s3_keys, modality_name):
+    objects = []  
+    
+    for s3_key in s3_keys: 
+        obj = s3.get_object(Bucket=bucket_name, Key=s3_key)
 
-def load_data_from_s3(s3, bucket_name, s3_key, modality_name):
-    obj = s3.get_object(Bucket=bucket_name, Key=s3_key)
+        if modality_name == "text":  # Handle Text Files
+            text = obj["Body"].read().decode("utf-8")
+            objects.append(text)
 
-    if modality_name == "text":  # ✅ Handle Text Files
-        text = obj["Body"].read().decode("utf-8")
-        return text
+        elif modality_name == "image":  # Handle Image Files
+            image = Image.open(BytesIO(obj["Body"].read()))
+            objects.append(image)
 
-    elif modality_name == "image":  # ✅ Handle Image Files
-        image = Image.open(BytesIO(obj["Body"].read()))
-        return image
+        else:
+            raise ValueError(f"Unsupported modality while loading data {bucket_name}/{s3_key} from S3: {modality_name}")
 
-    else:
-        raise ValueError(f"Unsupported modality while loading data {bucket_name/s3_key} from s3: {modality_name}")
-
-
+    return objects
 
 def compute_md5(input_string):
     return hashlib.md5(input_string.encode()).hexdigest()
-
-def notify_s3(s3_object):
-    print(f"Notyfying {s3_object}");
-    mq.send(s3_object)
 
 
 
