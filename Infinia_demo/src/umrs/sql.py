@@ -4,6 +4,8 @@ import sys
 import psycopg2
 from psycopg2 import sql, pool
 from datetime import datetime
+import psycopg2
+from datetime import datetime
 
 
 def create_db_and_get_pool(sql_username, xp_name):
@@ -49,8 +51,6 @@ def create_db_and_get_pool(sql_username, xp_name):
     return db_pool
 
 
-import psycopg2
-from datetime import datetime
 
 def store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text = None, silent = False):
     """
