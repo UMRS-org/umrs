@@ -4,7 +4,6 @@ import os
 import sys
 from umrs.sql import *
 from umrs.s3 import *
-from umrs.embeddings import *
 import time
 from collections import defaultdict
 import signal
@@ -194,11 +193,19 @@ def run_perf_test():
 if len(sys.argv) != 2:
     sys.exit(f"Usage: {sys.argv[0]} <JSON config file>")
 
+
+
+
+
 configure_file = sys.argv[1]
-    
+
+
+
+
 # Check if the file exists
 if not os.path.exists(configure_file):
     sys.exit(f"Configuration file \"{configure_file}\" not found.")
+
 
 # Load JSON content from the file
 with open(configure_file, "r", encoding="utf-8") as file:
@@ -210,7 +217,8 @@ print("Configuration loaded successfully.")
 # Pretty-print the JSON content
 # print(json.dumps(content, indent=4, sort_keys=True, ensure_ascii=False))
 
-
+print("loading embedings models...")
+from umrs.embeddings import *
 
 for user in content["users"]:
     db_model_store = configure_user(user)
@@ -220,6 +228,9 @@ for user in content["users"]:
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"-->  Models will be run on device: {device}")
+
+
+
 
 
 print(f"\n######################\nServer configuration done!\n######################\n")
