@@ -16,7 +16,7 @@ import posix_ipc
 
 ## Global configuration of the message queue
 target_nb_messages = 10
-target_message_size = 8192
+target_message_size = 4096
 
 mq = posix_ipc.MessageQueue(
     "/BIG_Queue",
@@ -35,6 +35,11 @@ if (mq.max_messages < target_nb_messages or mq.max_message_size < target_message
 
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+
+def close_message_queue():
+    mq.close()
+    mq.unlink()
+
 
 
 def notify_s3(s3_object):

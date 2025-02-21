@@ -6,7 +6,87 @@
             "fullname": "Emmanuel Jeannot",
 	    "s3_configuration_file": "~/.s3cfg",
             "experiences": [
-                {
+		{
+                    "xp_name": "Images and Texts",
+		    "sql_username": "ejeannot",
+                    "modalities": [
+                        {
+			    "modality_name": "image",
+			    "s3": {
+				"bucket_name": "ej-bucket-3",
+				"data":{ 
+				    "type": "file",
+				    "mime_type": "image/jpeg"
+				}
+			    },
+			    "model":{
+				"model_name": "",
+				"vector_size": "1000",
+				"model_type": "Resnet-50",
+				"checkpoint_path": "../../data/models/nvidia_resnet50_200821.pth.tar"
+			    },
+			    "sql": {
+				"store_embeddings" : "yes",
+				"table_name": "image",
+				"meta_data":[
+				    {
+					"name": "keywords",
+					"type": "TEXT"
+				    },
+				    
+				    {
+					"name": "date",
+					"type": "DATE"
+				    },				    
+				    {
+					"name": "time",
+					"type": "TIME"
+				    }
+				    
+				]
+			    }
+			},
+			{
+			    "modality_name": "text",
+			    "s3": {
+				"bucket_name": "ej-bucket-4",
+				"data": {
+				    "type": "inline",
+				    "mime_type": "text/plain"
+				}
+			    },
+			    "model":{
+				"model_name": "intfloat/e5-base-v2",
+				"vector_size": "768",
+				"model_type": "TransformerEncoder"
+			    },
+			    "sql": {
+				"store_embeddings" : "yes",
+				"table_name": "text",
+				"meta_data":[
+				    {
+					"name": "text",
+					"type": "TEXT"
+				    },
+				    {
+					"name": "keywords",
+					"type": "TEXT"
+				    },
+				    {
+					"name": "date",
+					"type": "DATE"
+				    },				    
+				    {
+					"name": "time",
+					"type": "TIME"
+				    }
+				    
+				]
+			    }
+			}
+                    ]
+                },
+		{
                     "xp_name": "Text and Images",
 		    "sql_username": "ejeannot",
                     "modalities": [
@@ -19,13 +99,14 @@
 				    "mime_type": "image/jpeg"
 				}
 			    },
+			    "model":{
+				"model_name": "clip-ViT-B-32",
+				"vector_size": "512",
+				"model_type": "SentenceTransformer"
+			    },
 			    "sql": {
+				"store_embeddings" : "yes",
 				"table_name": "image",
-				"embeddings":{
-				    "store_embeddings" : "yes",
-				    "model_name": "clip-ViT-B-32",
-				    "vector_size": "512"
-				},
 				"meta_data":[
 				    {
 					"name": "keywords",
@@ -53,14 +134,14 @@
 				    "mime_type": "text/plain"
 				}
 			    },
+			    "model":{
+				"model_name": "all-mpnet-base-v2",
+				"vector_size": "768",
+				"model_type": "SentenceTransformer"
+			    },
 			    "sql": {
-				"username": "ejeannot",
+				"store_embeddings" : "yes",
 				"table_name": "text",
-				"embeddings":{
-				    "store_embeddings" : "yes",
-				    "model_name": "all-mpnet-base-v2",
-				    "vector_size": "768"
-				},
 				"meta_data":[
 				    {
 					"name": "text",
@@ -82,9 +163,8 @@
 				]
 			    }
 			}
-                        
-                    ]
-                }
+		    ]
+		}
             ]
         }
     ]
