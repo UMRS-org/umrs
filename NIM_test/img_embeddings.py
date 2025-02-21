@@ -1,19 +1,28 @@
-#!/usr/bin/pythin 3
-
+#!/usr/bin/python3
 import torch
 import torchvision.models as models
 import torchvision.transforms as transforms
 from PIL import Image
 
 def load_resnet50(model_path=None):
-    """Load ResNet-50 model, either pretrained or from a checkpoint."""
+    """Load ResNet-50 model, handling DataParallel checkpoints if needed."""
     model = models.resnet50(pretrained=(model_path is None))
-    
+
     if model_path:
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'))
-        model.load_state_dict(checkpoint)
-        
-    model.eval()  # Set to evaluation mode
+
+        # Handle 'module.' prefix in state_dict keys
+        if 'state_dict' in checkpoint:
+            checkpoint = checkpoint['state_dict']
+
+        new_state_dict = {}
+        for k, v in checkpoint.items():
+            new_key = k.replace('module.', '')  # Remove 'module.' prefix
+            new_state_dict[new_key] = v
+
+        model.load_state_dict(new_state_dict, strict=False)
+
+    model.eval()
     return model
 
 def preprocess_image(image_path):
@@ -35,19 +44,21 @@ def compute_embedding(model, image_tensor, device='cpu'):
 
     with torch.no_grad():
         embedding = model(image_tensor)
-    
+
     return embedding.squeeze().cpu().numpy()
+
 
 if __name__ == "__main__":
     # Load the model (set model_path to your downloaded checkpoint if needed)
-    model = load_resnet50(model_path=nvidia_resnet50_200821.pth.tar)  # Or provide path: model_path="resnet50.pth"
+    model = load_resnet50(model_path="models/nvidia_resnet50_200821.pth.tar")  # Or provide path: model_path="resnet50.pth"
 
     # Load and preprocess image
-    image_path = "your_image.jpg"  # Replace with your image path
+    image_path = "../data/img/Cat_1.jpeg"  # Replace with your image path
     image_tensor = preprocess_image(image_path)
 
     # Compute embeddings
     embedding = compute_embedding(model, image_tensor)
     
+    print("Embedding len:", len(embedding))
     print("Embedding shape:", embedding.shape)
     print("Embedding vector:", embedding)
