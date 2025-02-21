@@ -48,10 +48,14 @@ def compute_embedding(model, image_tensor, device='cpu'):
     return embedding.squeeze().cpu().numpy()
 
 
-if __name__ == "__main__":
+If __name__ == "__main__":
     # Load the model (set model_path to your downloaded checkpoint if needed)
     model = load_resnet50(model_path="models/nvidia_resnet50_200821.pth.tar")  # Or provide path: model_path="resnet50.pth"
 
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.to(device)
+    print(f"Device: {device}")
+    
     # Load and preprocess image
     image_path = "../data/img/Cat_1.jpeg"  # Replace with your image path
     image_tensor = preprocess_image(image_path)
@@ -61,4 +65,4 @@ if __name__ == "__main__":
     
     print("Embedding len:", len(embedding))
     print("Embedding shape:", embedding.shape)
-    print("Embedding vector:", embedding)
+    # print("Embedding vector:", embedding)
