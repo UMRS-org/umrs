@@ -6,6 +6,8 @@ from psycopg2 import sql, pool
 from datetime import datetime
 
 
+        
+
 def create_db_and_get_pool(sql_username, xp_name):
     db_name = xp_name+"_"+sql_username
     db_name = db_name.replace(" ","_").lower()
@@ -48,9 +50,6 @@ def create_db_and_get_pool(sql_username, xp_name):
     )
     return db_pool
 
-
-import psycopg2
-from datetime import datetime
 
 def store_one_embedding_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text = None, silent = False):
     """

@@ -88,7 +88,7 @@ def query_db_with_embeddings_txt(model, conn, cur, query_text, top_k=5):
     # Extract IDs and texts
     texts = [row[0] for row in results]
 
-    print(f"For {query_text}:")
+    print(f"For \"{query_text}\":")
     for text in texts:
         print(f"\t{os.path.basename(text)}")
     
@@ -119,6 +119,6 @@ print("Loading model...")
 model = SentenceTransformer("all-mpnet-base-v2")
     
 query_db_with_embeddings_txt(model, conn, cur, "I love eating apple", top_k=3)
-query_db_with_embeddings_txt(model, conn, cur, "My computer is an apple", top_k=3)
-query_db_with_embeddings_txt(model, conn, cur, "In this picture apple means temptation", top_k=3)
+query_db_with_embeddings_txt(model, conn, cur, "My computer is a Mac", top_k=3)
+query_db_with_embeddings_txt(model, conn, cur, "In the Bible Eve eats the forbiden fruit", top_k=3)
 

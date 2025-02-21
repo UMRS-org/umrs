@@ -68,8 +68,6 @@ user_md5 = user["md5"]
 
 s3 = connect_to_s3(user_s3_configuration_file)
 
-
-
 bucket_name, success = check_bucket_name(s3, xp_name, modality["s3"]["bucket_name"], args.user)
 
 if not success:

@@ -15,7 +15,7 @@ import posix_ipc
 
 
 ## Global configuration of the message queue
-target_nb_messages = 100
+target_nb_messages = 10
 target_message_size = 8192
 
 mq = posix_ipc.MessageQueue(
@@ -83,8 +83,10 @@ def connect_to_s3(config_file):
     """
     config = {}
 
+    config_path = os.path.expanduser(config_file)
+    
     # Read and parse the file line by line
-    with open(config_file, "r") as file:
+    with open(config_path, "r") as file:
         for line in file:
             line = line.strip()
             if line and not line.startswith("["):  # Ignore empty lines and section headers

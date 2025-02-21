@@ -1,7 +1,9 @@
 #!/usr/bin/python3 
-import psycopg2
+#import psycopg2
 import numpy as np
 import json
+import os
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
 from sentence_transformers import SentenceTransformer
 import os
 from sklearn.cluster import KMeans
