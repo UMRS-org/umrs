@@ -53,7 +53,7 @@ class DataBase:
 def create_db(sql_username, xp_name):
     db_name = xp_name+"_"+sql_username
     db_name = db_name.replace(" ","_").lower()
-    print(f"\t-->  Configuring database '{db_name}'...")
+    print(f"\t\t-->  Configuring database '{db_name}'...")
     # Database credentials
     DB_HOST = "localhost"
     DB_PORT = "5432"
@@ -71,13 +71,13 @@ def create_db(sql_username, xp_name):
     exists = cur.fetchone()
 
     if exists:
-        print(f"\t-->  Database '{db_name}' already exists.")
+        print(f"\t\t-->  Database '{db_name}' already exists.")
     else:
         # Create the database if it does not exist
         cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
             sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
         ))
-        print(f"\t-->  Database '{db_name}' created successfully.")
+        print(f"\t\t-->  Database '{db_name}' created successfully.")
 
         # Clean up
     cur.close()

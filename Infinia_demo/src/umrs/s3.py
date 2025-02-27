@@ -6,74 +6,17 @@ from botocore.exceptions import ClientError
 import hashlib
 import json
 import warnings
-import urllib3
-import posix_ipc
-from time import sleep
 from PIL import Image
 from io import BytesIO
-import posix_ipc
+import configparser
 
-
-## Global configuration of the message queue
-target_nb_messages = 10
-target_message_size = 4096
-
-mq = posix_ipc.MessageQueue(
-    "/BIG_Queue",
-    posix_ipc.O_CREAT,    # Create the queue if it doesn't exist
-    max_messages=target_nb_messages,      # Limit to 100 messages in the queue
-    max_message_size=target_message_size  # Each message can be up to 8192 bytes
-)
-
-if (mq.max_messages < target_nb_messages or mq.max_message_size < target_message_size):
-    print("############# Warning #############")
-    print("Configuration of the IPC Message Queue did not match the requested values")
-    print(f"\tQueue size (nb of msg) = {mq.max_messages} (requested_value = {target_nb_messages})")
-    print(f"\tMessage size = {mq.max_message_size} (requested_value = {target_message_size})")
-    print("\tConsider changing the values of /proc/sys/fs/mqueue/msg_max and /proc/sys/fs/mqueue/msgsize_max...\n")
-
-
+import urllib3
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
 
-def close_message_queue():
-    mq.close()
-    mq.unlink()
 
 
 
-def notify_s3(s3_object):
-    print(f"Notyfying {s3_object}");
-    mq.send(s3_object)
-
-
-def wait_for_s3_events(debug=False):
-    """Blocks execution until a new message arrives, then reads all available messages."""
-    
-    # BLOCKING: Wait for the first message
-    print(f"Listening the queue ({mq.current_messages} pending msg)...")
-    message, _ = mq.receive()
-    print("Received (blocking):", message.decode())
-
-    messages = [message.decode()]  # Store messages
-
-    if 0 == mq.current_messages:
-        return messages
-    
-    print("More to come...")
-    # NON-BLOCKING: Read remaining messages without blocking
-    while True:
-        try:
-            message, _ = mq.receive(timeout=0)  # Non-blocking read
-            messages.append(message.decode())
-            print("Received (Non blocking):", message.decode())
-
-        except posix_ipc.BusyError:
-            if debug:
-                print("No more messages in queue.")
-            break  # Exit loop if queue is empty
-
-    return messages
 
 
 def connect_to_s3(config_file):
@@ -89,26 +32,24 @@ def connect_to_s3(config_file):
     config = {}
 
     config_path = os.path.expanduser(config_file)
-    
-    # Read and parse the file line by line
-    with open(config_path, "r") as file:
-        for line in file:
-            line = line.strip()
-            if line and not line.startswith("["):  # Ignore empty lines and section headers
-                key, value = line.split("=", 1)
-                config[key.strip()] = value.strip()
+
+    # Initialize parser
+    config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+    config.read(config_path)
 
     # Extract values with defaults
-    s3_host = config.get("host_base")
-    use_https = config.get("use_https", "True").lower() == "true"
-    verify_ssl = config.get("check_ssl_certificate", "True").lower() == "true"
-    access_key = config.get("access_key")
-    secret_key = config.get("secret_key")
+    s3_host = config.get("default", "host_base")
+    use_https = config.getboolean("default", "use_https", fallback=False)
+    verify_ssl = config.getboolean("default", "check_ssl_certificate", fallback=True)
+    access_key = config.get("default", "access_key")
+    secret_key = config.get("default", "secret_key")
 
     # Ensure correct protocol (http or https)
     protocol = "https" if use_https else "http"
     endpoint_url = f"{protocol}://{s3_host}"
 
+    print(f"--> Connecting to S3 service on: {endpoint_url}...")
+    
     # Create the S3 client
     s3 = boto3.client(
         "s3",
@@ -117,6 +58,14 @@ def connect_to_s3(config_file):
         aws_secret_access_key=secret_key,
         verify=verify_ssl  # Disables SSL verification if False
     )
+
+
+    # Test connection
+    try:
+        response = s3.list_buckets()
+        print("--> Succesfully connected to S3 service.")
+    except Exception as e:
+        sys.exit(f"S3 Connection Failed: {e}")
 
     return s3
 
@@ -143,10 +92,9 @@ def check_bucket_name(s3, xp_name, modality_bucket_name, username):
 
     
 
-def configure_s3(s3_cfg, user_s3_conf_file, xp_name, username):
-    s3 = connect_to_s3(user_s3_conf_file)
+def configure_bucket(s3, bucket_name, xp_name, username):
 
-    bucket_name, success = check_bucket_name(s3, xp_name, s3_cfg["bucket_name"], username)
+    bucket_name, success = check_bucket_name(s3, xp_name, bucket_name, username)
     if success:    
         print(f"\t\t\t--> Bucket '{bucket_name}' already exists!")
         # add_bucket_sqs_queue(s3, bucket_name)
@@ -162,8 +110,8 @@ def configure_s3(s3_cfg, user_s3_conf_file, xp_name, username):
 
 
         
-    print("\t\t\t--> S3 Configuration Successful")
-    return bucket_name, s3
+    print("\t\t\t--> S3 Bucket Configuration Successful")
+    return bucket_name
 
 def load_data_from_s3(s3, bucket_name, s3_keys, modality_name):
     objects = []  
@@ -189,19 +137,19 @@ def compute_md5(input_string):
 
 
 
-def s3_store_txt(s3, bucket_name, text_data):
+def s3_store_txt(s3, bucket_name, text_data, mq):
 
     s3_key = compute_md5(text_data)+".txt"
     
     s3.put_object(Bucket=bucket_name, Key=s3_key, Body=text_data, ContentType="text/plain")
 
     s3_object = f"s3://{bucket_name}/{s3_key}"
-    notify_s3(s3_object)
+    mq.notify_s3(s3_object)
     
     return s3_key;
 
 
-def s3_store_image(s3, bucket_name, in_path):
+def s3_store_image(s3, bucket_name, in_path, mq):
     s3_key = os.path.basename(in_path)
 
     if os.path.exists(in_path):
@@ -210,7 +158,7 @@ def s3_store_image(s3, bucket_name, in_path):
         sys.exit(f"Error: {path} not found")
     
     s3_object = f"s3://{bucket_name}/{s3_key}"
-    notify_s3(s3_object)
+    mq.notify_s3(s3_object)
 
     return s3_key;
 

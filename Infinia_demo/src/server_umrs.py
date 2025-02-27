@@ -1,4 +1,5 @@
 #!/usr/bin/python3
+import argparse
 import json
 import os
 import sys
@@ -6,6 +7,7 @@ from umrs.sql import *
 from umrs.s3 import *
 from umrs.models import load_model
 from umrs.perf_test import run_perf_test
+from  umrs.MessageQueue import MessageQueue
 from collections import defaultdict
 import signal
 import torch
@@ -34,15 +36,16 @@ def configure_user(user_cfg):
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
     db_model_store = defaultdict(dict)
+    s3_connection = connect_to_s3(user_s3_configuration_file)
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
-        print(f"\tExperience: {xp_name}")
+        print(f"\t==> Experience: {xp_name}")
         sql_username  = xp["sql_username"]
         data_base = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
             print(f"\t\tModality: {modality_name}")
-            bucket_name, s3_connection = configure_s3(modality["s3"], user_s3_configuration_file, xp_name, username)
+            bucket_name = configure_bucket(s3_connection, modality["s3"]["bucket_name"], xp_name, username)
             model = load_model(modality['model'], modality_name)
             table_name, store_embeddings_flag = configure_table(data_base, modality["sql"], modality_name, model)
             store_db_model(db_model_store, bucket_name, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection)
@@ -72,16 +75,18 @@ def compute_and_store_embedding(bucket_name, s3_keys, data_base, table_name, mod
     store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, objects)
 
 
+parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
+parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 
-    
-if len(sys.argv) != 2:
-    sys.exit(f"Usage: {sys.argv[0]} <JSON config file>")
 
-configure_file = sys.argv[1]
+args = parser.parse_args()
+
+configure_file = args.conf
 
 # Check if the file exists
 if not os.path.exists(configure_file):
-    sys.exit(f"Configuration file \"{configure_file}\" not found.")
+    sys.exit(f"Configuration file '{configure_file}' not found.")
 
 
 # Load JSON content from the file
@@ -90,6 +95,10 @@ with open(configure_file, "r", encoding="utf-8") as file:
 
 # Print loaded content (optional)
 print("Configuration loaded successfully.")
+
+# create the message queue:
+mq = MessageQueue(queue_type = args.queue_type);
+print (f"Subscribed to message queue '{args.queue_type}'")
 
 # Pretty-print the JSON content
 # print(json.dumps(content, indent=4, sort_keys=True, ensure_ascii=False))
@@ -116,7 +125,7 @@ try:
     while True:
         print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
-        s3_objects = wait_for_s3_events()
+        s3_objects = mq.wait_for_s3_events()
 
         keys_per_bucket = defaultdict(list)  # Create a dictionary with lists
         print(f"\t-->Detected {len(s3_objects)} new file(s):")
@@ -141,5 +150,5 @@ try:
         
 except KeyboardInterrupt:
     print("\nInterrupted by user. Exiting gracefully...")
-    close_message_queue()
+    mq.close()
     sys.exit(0)  # ✅ Ensures a clean exit
