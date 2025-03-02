@@ -7,14 +7,13 @@ import hashlib
 import json
 import warnings
 from PIL import Image
+import mimetypes
 from io import BytesIO
 import configparser
 
 import urllib3
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
-
-
 
 
 
@@ -69,55 +68,51 @@ def connect_to_s3(config_file):
 
     return s3
 
+def create_path_to_bucket(xp_name, bucket_alias, username):
+    path = username+"."+xp_name+"."+bucket_alias
+    return path.lower().replace(" ","-")
 
-def check_bucket_name(s3, xp_name, modality_bucket_name, username):
-    cfg_bucket_name = username+"-"+xp_name+"-"+modality_bucket_name
-    # cfg_bucket_name = modality_bucket_name
-    bucket_name = cfg_bucket_name #+ "-" + user_md5
-    bucket_name = bucket_name.lower().replace(" ","-")
-    print(f"\t\t\t--> Checking Bucket '{bucket_name}'...")
+def check_bucket_name(s3, xp_name, bucket_alias, username):
+    path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
+    print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'...")
     try:
-        s3.head_bucket(Bucket = bucket_name)
+        s3.head_bucket(Bucket = path_to_bucket)
             
     except ClientError as e:
         if e.response["Error"]["Code"] == "404":
-            return bucket_name, False #Not found 
+            return path_to_bucket, False #Not found 
         else:
             sys.exit(f"S3 Error: {e}") #Un-managed head_bucket exception
             
     except Exception as e:        
         sys.exit(f"S3 Connection Failed: {e}") #Un-managed S3 error
 
-    return bucket_name, True
+    return path_to_bucket, True
 
-    
+def configure_bucket(s3, bucket_alias, xp_name, username):
 
-def configure_bucket(s3, bucket_name, xp_name, username):
-
-    bucket_name, success = check_bucket_name(s3, xp_name, bucket_name, username)
+    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username)
     if success:    
-        print(f"\t\t\t--> Bucket '{bucket_name}' already exists!")
-        # add_bucket_sqs_queue(s3, bucket_name)
+        print(f"\t\t\t--> Bucket '{path_to_bucket}' already exists!")
+        # add_bucket_sqs_queue(s3, path_to_bucket)
     else:
-        print(f"\t\t\t--> Bucket '{bucket_name}' does not exists...")
+        print(f"\t\t\t--> Bucket '{path_to_bucket}' does not exists...")
         s3.create_bucket(
-            Bucket=bucket_name,
+            Bucket=path_to_bucket,
             CreateBucketConfiguration={
                 'LocationConstraint': 'ap-northeast-1'  # Match your desired region
             }
         )
-        print(f"\t\t\t--> Bucket {bucket_name} created");
-
-
+        print(f"\t\t\t--> Bucket {path_to_bucket} created");
         
     print("\t\t\t--> S3 Bucket Configuration Successful")
-    return bucket_name
+    return path_to_bucket
 
-def load_data_from_s3(s3, bucket_name, s3_keys, modality_name):
+def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     objects = []  
     
     for s3_key in s3_keys: 
-        obj = s3.get_object(Bucket=bucket_name, Key=s3_key)
+        obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
 
         if modality_name == "text":  # Handle Text Files
             text = obj["Body"].read().decode("utf-8")
@@ -128,7 +123,7 @@ def load_data_from_s3(s3, bucket_name, s3_keys, modality_name):
             objects.append(image)
 
         else:
-            raise ValueError(f"Unsupported modality while loading data {bucket_name}/{s3_key} from S3: {modality_name}")
+            raise ValueError(f"Unsupported modality '{modality_name}'while loading data '{path_to_bucket}/{s3_key}' from S3")
 
     return objects
 
@@ -137,27 +132,51 @@ def compute_md5(input_string):
 
 
 
-def s3_store_txt(s3, bucket_name, text_data, mq):
+def s3_store_txt(s3, path_to_bucket, text_data, mq):
 
     s3_key = compute_md5(text_data)+".txt"
     
-    s3.put_object(Bucket=bucket_name, Key=s3_key, Body=text_data, ContentType="text/plain")
+    s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, ContentType="text/plain")
 
-    s3_object = f"s3://{bucket_name}/{s3_key}"
+    s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
     
     return s3_key;
 
+def is_image_by_extension(filename):
+    mime_type, _ = mimetypes.guess_type(filename)
+    return mime_type is not None and mime_type.startswith("image")
 
-def s3_store_image(s3, bucket_name, in_path, mq):
+def is_image_by_opening(filename):
+    try:
+        with Image.open(filename) as img:
+            img.verify()  # Verify if it's a valid image
+        return True
+    except (IOError, SyntaxError):
+        return False
+    
+def is_an_image(filename):
+    # Check by extension first
+    if not is_image_by_extension(filename):
+        return False
+
+    # If extension is valid, confirm by opening
+    return is_image_by_opening(filename)
+
+def s3_store_image(s3, path_to_bucket, in_path, mq):
+
+    if not is_an_image(in_path):
+        print(f"Error: '{in_path}' is not an image. Skipping...")
+        return None
+    
     s3_key = os.path.basename(in_path)
-
+    
     if os.path.exists(in_path):
-        s3.upload_file(in_path, bucket_name, s3_key) 
+        s3.upload_file(in_path, path_to_bucket, s3_key) 
     else:
         sys.exit(f"Error: {path} not found")
     
-    s3_object = f"s3://{bucket_name}/{s3_key}"
+    s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
 
     return s3_key;

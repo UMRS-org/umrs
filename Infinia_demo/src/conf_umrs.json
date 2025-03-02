@@ -13,7 +13,7 @@
                         {
 			    "modality_name": "image",
 			    "s3": {
-				"bucket_name": "ej-bucket-3",
+				"bucket_alias": "ej-bucket-3",
 				"data":{ 
 				    "type": "file",
 				    "mime_type": "image/jpeg"
@@ -49,7 +49,7 @@
 			{
 			    "modality_name": "text",
 			    "s3": {
-				"bucket_name": "ej-bucket-4",
+				"bucket_alias": "ej-bucket-4",
 				"data": {
 				    "type": "inline",
 				    "mime_type": "text/plain"
@@ -93,7 +93,7 @@
                         {
 			    "modality_name": "image",
 			    "s3": {
-				"bucket_name": "ej-bucket-1",
+				"bucket_alias": "ej-bucket-1",
 				"data":{ 
 				    "type": "file",
 				    "mime_type": "image/jpeg"
@@ -128,7 +128,7 @@
 			{
 			    "modality_name": "text",
 			    "s3": {
-				"bucket_name": "ej-bucket-2",
+				"bucket_alias": "ej-bucket-2",
 				"data": {
 				    "type": "inline",
 				    "mime_type": "text/plain"

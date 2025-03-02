@@ -12,30 +12,36 @@ from collections import defaultdict
 import signal
 import torch
 
-def store_db_model(db_model_store, bucket_name, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection):
-    """Stores data base and model for a given (user, bucket_name)."""
+def store_db_model(db_model_store, bucket_alias, username, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection):
+    """Stores data base and model for a given (user, bucket_alias)."""
     # if user not in db_model_store:
     #     storage[user] = {}  # Initialize user entry
     
-    db_model_store[bucket_name] = {"data_base": db_pool, "table_name": table_name,  "model": model, "store_embeddings_flag": store_embeddings_flag, "modality_name": modality_name, "s3_connection": s3_connection}
+    db_model_store[bucket_alias] = {"username": username,
+                                   "data_base": db_pool,
+                                   "table_name": table_name,
+                                   "model": model,
+                                   "store_embeddings_flag": store_embeddings_flag,
+                                   "modality_name": modality_name,
+                                   "s3_connection": s3_connection}
 
 
-def query_db_model(db_model_store, bucket_name):
-    """Retrieves database and model for a given (user, bucket_name)."""
-    entry = db_model_store.get(bucket_name, None)
+def query_db_model(db_model_store, bucket_alias):
+    """Retrieves database and model for a given (user, bucket_alias)."""
+    entry = db_model_store.get(bucket_alias, None)
     if not entry:
         return None, None, None, None, None, None
     else:
-        return entry["data_base"], entry["table_name"], entry["model"], entry["store_embeddings_flag"], entry["modality_name"], entry["s3_connection"]
+        return entry["username"], entry["data_base"], entry["table_name"], entry["model"], entry["store_embeddings_flag"], entry["modality_name"], entry["s3_connection"]
 
     
-def configure_user(user_cfg):
+def configure_user(user_cfg, db_model_store):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
-    db_model_store = defaultdict(dict)
+
     s3_connection = connect_to_s3(user_s3_configuration_file)
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
@@ -45,20 +51,21 @@ def configure_user(user_cfg):
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
             print(f"\t\tModality: {modality_name}")
-            bucket_name = configure_bucket(s3_connection, modality["s3"]["bucket_name"], xp_name, username)
+            bucket_alias = modality["s3"]["bucket_alias"]
+            path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username)
+            print(f"\t\t\tBucket alias: {bucket_alias}")            
             model = load_model(modality['model'], modality_name)
             table_name, store_embeddings_flag = configure_table(data_base, modality["sql"], modality_name, model)
-            store_db_model(db_model_store, bucket_name, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection)
+            store_db_model(db_model_store, path_to_bucket, username, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection)
+            print(f"\t\t\t==>Bucket alias: {bucket_alias}")
 
-    return db_model_store
 
-
-def compute_and_store_embedding(bucket_name, s3_keys, data_base, table_name, model, device, modality_name, s3_connection):
+def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection):
     """
     Loads data from S3, computes embeddings **in batch**, and stores them in the database.
 
     Args:
-        bucket_name (str): The name of the S3 bucket.
+        bucket_alias (str): The name of the S3 bucket.
         s3_keys (list): List of S3 object keys.
         db_pool: Database connection pool.
         table_name (str): Target table for storing embeddings.
@@ -67,12 +74,12 @@ def compute_and_store_embedding(bucket_name, s3_keys, data_base, table_name, mod
         modality_name (str): "text" or "image".
         s3_connection: Boto3 S3 client.
     """
-    objects = load_data_from_s3(s3_connection, bucket_name, s3_keys, modality_name)
+    objects = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
 
     embeddings = model.compute_embeddings(objects)
 
     # Store **all** embeddings in batch
-    store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, objects)
+    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, objects)
 
 
 parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -102,19 +109,12 @@ print (f"Subscribed to message queue '{args.queue_type}'")
 
 # Pretty-print the JSON content
 # print(json.dumps(content, indent=4, sort_keys=True, ensure_ascii=False))
-
+db_model_store = defaultdict(dict)
 for user in content["users"]:
-    db_model_store = configure_user(user)
-
-
-
+    configure_user(user, db_model_store)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"-->  Models will be run on device: {device}")
-
-
-
-
 
 print(f"\n######################\nServer configuration done!\n######################\n")
 
@@ -132,23 +132,23 @@ try:
         
         for s3_object in s3_objects:
             print(f"\t\t-->{s3_object}")
-            bucket_name, s3_key = s3_object.replace("s3://", "").split("/", 1)
+            path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
     
             # Append s3_key to the list associated with the bucket
-            if s3_key not in keys_per_bucket[bucket_name]:  # Ensure no duplicates
-                keys_per_bucket[bucket_name].append(s3_key)
+            if s3_key not in keys_per_bucket[path_to_bucket]:  # Ensure no duplicates
+                keys_per_bucket[path_to_bucket].append(s3_key)
 
 
-        for bucket_name in keys_per_bucket.keys():
-            data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
-            s3_keys = keys_per_bucket[bucket_name]
+        for path_to_bucket in keys_per_bucket.keys():
+            username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+            s3_keys = keys_per_bucket[path_to_bucket]
             if strore_embeddings_flag:
                 print(f"\t--> Storing to data base in {table_name}")
-                compute_and_store_embedding(bucket_name, s3_keys, data_base, table_name, model, device, modality_name, s3_connection) 
+                compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection) 
             else:
-                print(f"We do not compute embeddings for this bucket \"{bucket_name}\" (modality = \"{modality_name}\")")
+                print(f"We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")")
         
 except KeyboardInterrupt:
     print("\nInterrupted by user. Exiting gracefully...")
     mq.close()
-    sys.exit(0)  # ✅ Ensures a clean exit
+    sys.exit(0)  # Ensures a clean exit
