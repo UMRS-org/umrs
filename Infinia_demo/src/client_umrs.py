@@ -10,7 +10,6 @@ from glob import glob
 import argparse
 import posix_ipc
 
-
 parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue bewteen 'zeromq', 'posix_ipc', or 'sysv_ipc'")
@@ -27,7 +26,6 @@ args = parser.parse_args()
 # Connect to message queue
 mq = MessageQueue(queue_type= args.queue_type, role = "client")
 print (f"Connected to message queue of type '{args.queue_type}'")
-
 
 # Path to the configuration file
 configure_file = args.conf

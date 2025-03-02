@@ -49,10 +49,13 @@ class DataBase:
             print(f"Column '{column_name}' not found in table '{table_name}'.")
             return None
 
-        
-def create_db(sql_username, xp_name):
+def create_db_name(sql_username, xp_name):
     db_name = xp_name+"_"+sql_username
     db_name = db_name.replace(" ","_").lower()
+    return db_name
+    
+def create_db(sql_username, xp_name):
+    db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")
     # Database credentials
     DB_HOST = "localhost"
