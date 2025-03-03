@@ -1,5 +1,5 @@
 # Use the demo branch
-git checkout old_demo_test
+git checkout demo_test
 
 # Create three windows
 ## Window 1: SQL
