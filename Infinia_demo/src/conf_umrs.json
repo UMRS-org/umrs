@@ -20,7 +20,7 @@
 				}
 			    },
 			    "model":{
-				"model_name": "",
+				"model_name": "Resnet 50",
 				"vector_size": "1000",
 				"model_type": "Resnet-50",
 				"checkpoint_path": "../../data/models/nvidia_resnet50_200821.pth.tar"
@@ -33,16 +33,18 @@
 					"name": "keywords",
 					"type": "TEXT"
 				    },
-				    
 				    {
-					"name": "date",
-					"type": "DATE"
-				    },				    
+					"name": "author",
+					"type": "TEXT"
+				    },
 				    {
-					"name": "time",
-					"type": "TIME"
+					"name": "x_resolution",
+					"type": "INT"
+				    },
+				    {
+					"name": "y_resolution",
+					"type": "INT"
 				    }
-				    
 				]
 			    }
 			},
@@ -65,20 +67,8 @@
 				"table_name": "text",
 				"meta_data":[
 				    {
-					"name": "text",
-					"type": "TEXT"
-				    },
-				    {
 					"name": "keywords",
 					"type": "TEXT"
-				    },
-				    {
-					"name": "date",
-					"type": "DATE"
-				    },				    
-				    {
-					"name": "time",
-					"type": "TIME"
 				    }
 				    
 				]
@@ -111,15 +101,6 @@
 				    {
 					"name": "keywords",
 					"type": "TEXT"
-				    },
-				    
-				    {
-					"name": "date",
-					"type": "DATE"
-				    },				    
-				    {
-					"name": "time",
-					"type": "TIME"
 				    }
 				    
 				]
@@ -143,21 +124,10 @@
 				"store_embeddings" : "yes",
 				"table_name": "text",
 				"meta_data":[
-				    {
-					"name": "text",
-					"type": "TEXT"
-				    },
+				    
 				    {
 					"name": "keywords",
 					"type": "TEXT"
-				    },
-				    {
-					"name": "date",
-					"type": "DATE"
-				    },				    
-				    {
-					"name": "time",
-					"type": "TIME"
 				    }
 				    
 				]
