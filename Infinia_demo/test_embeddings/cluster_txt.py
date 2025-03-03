@@ -26,7 +26,7 @@ def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
     
     # Fetch all embeddings and their corresponding texts from the database
     #select s3_object, embedding from image;
-    cur.execute(f"SELECT text, embedding FROM {table};")
+    cur.execute(f"SELECT _content, embedding FROM {table};")
     results = cur.fetchall()
 
     if not results:
@@ -76,7 +76,7 @@ def query_db_with_embeddings_txt(model, conn, cur, query_text, top_k=5):
 
     # Perform similarity search using L2 distance
     cur.execute("""
-        SELECT text
+        SELECT _content
         FROM text
         ORDER BY embedding <=> %s::vector
         LIMIT %s;
