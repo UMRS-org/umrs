@@ -8,27 +8,31 @@ from umrs.s3 import *
 from umrs.models import load_model
 from umrs.perf_test import run_perf_test
 from  umrs.MessageQueue import MessageQueue
+from umrs.pretty_print import pretty_print_cfg
 from collections import defaultdict
 import signal
 import torch
 
-def store_db_model(db_model_store, bucket_alias, username, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection):
+def store_db_model(db_model_store, path_to_bucket, bucket_alias, username, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name):
     """Stores data base and model for a given (user, bucket_alias)."""
     # if user not in db_model_store:
     #     storage[user] = {}  # Initialize user entry
     
-    db_model_store[bucket_alias] = {"username": username,
-                                   "data_base": db_pool,
-                                   "table_name": table_name,
-                                   "model": model,
-                                   "store_embeddings_flag": store_embeddings_flag,
-                                   "modality_name": modality_name,
-                                   "s3_connection": s3_connection}
+    db_model_store[path_to_bucket] = {"bucket_alias": bucket_alias,
+                                      "username": username,
+                                      "data_base": db_pool,
+                                      "table_name": table_name,
+                                      "model": model,
+                                      "store_embeddings_flag": store_embeddings_flag,
+                                      "modality_name": modality_name,
+                                      "s3_connection": s3_connection,
+                                      "metadata": metadata,
+                                      "xp_name": xp_name}
 
 
-def query_db_model(db_model_store, bucket_alias):
+def query_db_model(db_model_store, path_to_bucket):
     """Retrieves database and model for a given (user, bucket_alias)."""
-    entry = db_model_store.get(bucket_alias, None)
+    entry = db_model_store.get(path_to_bucket, None)
     if not entry:
         return None, None, None, None, None, None
     else:
@@ -53,10 +57,9 @@ def configure_user(user_cfg, db_model_store):
             print(f"\t\tModality: {modality_name}")
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username)
-            print(f"\t\t\tBucket alias: {bucket_alias}")            
             model = load_model(modality['model'], modality_name)
-            table_name, store_embeddings_flag = configure_table(data_base, modality["sql"], modality_name, model)
-            store_db_model(db_model_store, path_to_bucket, username, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection)
+            table_name, store_embeddings_flag, metadata = configure_table(data_base, modality["sql"], modality_name, model)
+            store_db_model(db_model_store, path_to_bucket, bucket_alias, username, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
             print(f"\t\t\t==>Bucket alias: {bucket_alias}")
 
 
@@ -74,12 +77,12 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
         modality_name (str): "text" or "image".
         s3_connection: Boto3 S3 client.
     """
-    objects = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
+    objects, metadata = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
 
     embeddings = model.compute_embeddings(objects)
 
     # Store **all** embeddings in batch
-    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, objects)
+    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys,  texts=objects, metadata_list=metadata)
 
 
 parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -117,6 +120,9 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"-->  Models will be run on device: {device}")
 
 print(f"\n######################\nServer configuration done!\n######################\n")
+
+
+pretty_print_cfg(db_model_store)
 
 # run_perf_test()
 

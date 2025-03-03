@@ -155,8 +155,16 @@ def get_vector_size(cursor, table_name):
     result = cursor.fetchone()
 
     return result[0] if result else None  # Return vector size or None
-        
+
+def metadata_dict(sql_cfg):
+    metadata = {}
+    for i,column in enumerate(sql_cfg["meta_data"]):
+        metadata[f"key{i}"] = column
+
+    return metadata
+    
 def configure_table(data_base, sql_cfg,  modality_name, model):
+
     db_pool = data_base.db_pool;
     table_name = modality_name.replace(" ","_").lower()
     print(f"\t\t\t--> Configuring table '{table_name}'...")
@@ -164,10 +172,12 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     column = {"name": "id", "type": "SERIAL PRIMARY KEY"}
     table_columns.append(column)
     column = {"name": "s3_object", "type": "TEXT UNIQUE"}
-    model_name = None
-    vector_size = None
     table_columns.append(column)
     store_embeddings_flag = False
+    column = {"name": "date", "type": "DATE"}
+    table_columns.append(column)
+    column = {"name": "time", "type": "TIME"}
+    table_columns.append(column)
     if sql_cfg["store_embeddings"] == "yes":
         store_embeddings_flag = True
         vector_size = model.embedding_vector_size
@@ -178,8 +188,14 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
 
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
-
         
+    if modality_name == "text":
+        column = {"name": "_content", "type": "TEXT"}
+        table_columns.append(column)
+        
+
+    metadata = metadata_dict(sql_cfg)
+    
     conn = db_pool.getconn()
     ensure_pgvector_enabled(conn)
     cur = conn.cursor()
@@ -221,11 +237,14 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     # Cleanup
     cur.close()
     db_pool.putconn(conn)
-    return table_name, store_embeddings_flag
+    return table_name, store_embeddings_flag, metadata
 
+def is_string_type(sql_type):
+    """Check if the given SQL column type is a string or equivalent."""
+    string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
+    return sql_type.upper() in string_types
 
-
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, text = None, silent = False):
+def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  content = None, metadata = {}, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -247,29 +266,66 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         # Ensure embedding is a list before inserting
         embedding = embedding.tolist() if hasattr(embedding, "tolist") else embedding
 
-        s3_object = f"{bucket_name}/{s3_key}"  # ✅ Full S3 path
+        s3_object = f"{bucket_name}/{s3_key}"  # Full S3 path
 
         # INSERT and UPDATE if s3_object already exists
-        if data_base.has_column(table_name, "text"):
+        if data_base.has_column(table_name, "_content"):
             query = f"""
-            INSERT INTO {table_name} (s3_object, text, embedding, date, time)
+            INSERT INTO {table_name} (s3_object, _content, embedding, date, time)
             VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (s3_object) DO UPDATE
-            SET text = EXCLUDED.text, embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time;
+            SET _content = EXCLUDED._content, embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time
+            RETURNING id;
             """
-            cur.execute(query, (s3_object, text, embedding, date, time))
+            cur.execute(query, (s3_object, content, embedding, date, time))
         else:
             query = f"""
             INSERT INTO {table_name} (s3_object, embedding, date, time)
             VALUES (%s, %s, %s, %s)
             ON CONFLICT (s3_object) DO UPDATE
-            SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time;
+            SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time
+            RETURNING id;
             """
             cur.execute(query, (s3_object, embedding, date, time))
+        
+         # Fetch the inserted/updated ID
+        inserted_id = cur.fetchone()[0]  # Fetch the first column of the result
+
+        # now manage metadata if any
+         # Now manage metadata if any
+        if metadata:
+            for key, value in metadata.items():
+                sql_type = data_base.get_column_type(table_name, key)
+                if sql_type is None:
+                    print(f"Error: Field '{key}' unknown in table {table_name}. Skipping...")
+                    continue
+
+                if sql_type.upper() in ["INT", "INTEGER"]:
+                    if not value.isdigit():
+                        print(f"Key '{key}' must be of type INT but value '{value}' is not. Skipping...")
+                        continue
+                elif not is_string_type(sql_type):
+                    print(f"Checking field of type '{sql_type}' is not implemented. This might raise an error...")
+
+                # Execute the UPDATE query to store metadata in the row with the matching ID
+                try:
+                    query = f"""
+                    UPDATE {table_name}
+                    SET {key} = %s
+                    WHERE id = %s;
+                    """
+                    cur.execute(query, (value, inserted_id))
+                except Exception as e:
+                    print(f"Error updating metadata '{key}' in {table_name}: {e}")
+                    
+        
         conn.commit()
 
-        if not silent : 
+        if not silent :
             print(f"\t--> Stored/Updated embedding in '{table_name}' for '{s3_object}'")
+            if metadata:
+                print(f"\t--> metadata have been added/updated'")
+                
 
     except Exception as e:
         print(f"\t--> Error storing embedding: {e}")
@@ -278,9 +334,9 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         cur.close()
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, texts=None):
-    for embedding, s3_key, text in zip(embeddings, s3_keys, texts or [None] * len(embeddings)): #"or" retuns the first Truthy value (None being not a Truthy value)
-        store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, text)
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, texts = None, metadata_list = []):
+    for embedding, s3_key, text, metadata in zip(embeddings, s3_keys, texts or [None] * len(embeddings), metadata_list): #"or" retuns the first Truthy value (None being not a Truthy value)
+        store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, content=text, metadata = metadata)
         
 
 

@@ -110,10 +110,12 @@ def configure_bucket(s3, bucket_alias, xp_name, username):
 
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     objects = []  
+    metadata = []
     
     for s3_key in s3_keys: 
         obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
-
+        metadata.append(obj.get("Metadata", {}))
+        
         if modality_name == "text":  # Handle Text Files
             text = obj["Body"].read().decode("utf-8")
             objects.append(text)
@@ -125,18 +127,18 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
         else:
             raise ValueError(f"Unsupported modality '{modality_name}'while loading data '{path_to_bucket}/{s3_key}' from S3")
 
-    return objects
+    return objects, metadata
 
 def compute_md5(input_string):
     return hashlib.md5(input_string.encode()).hexdigest()
 
 
 
-def s3_store_txt(s3, path_to_bucket, text_data, mq):
+def s3_store_txt(s3, path_to_bucket, text_data, mq, metadata_args):
 
     s3_key = compute_md5(text_data)+".txt"
     
-    s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, ContentType="text/plain")
+    s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, Metadata=metadata_args["Metadata"], ContentType="text/plain")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
@@ -163,8 +165,7 @@ def is_an_image(filename):
     # If extension is valid, confirm by opening
     return is_image_by_opening(filename)
 
-def s3_store_image(s3, path_to_bucket, in_path, mq):
-
+def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args):
     if not is_an_image(in_path):
         print(f"Error: '{in_path}' is not an image. Skipping...")
         return None
@@ -172,7 +173,7 @@ def s3_store_image(s3, path_to_bucket, in_path, mq):
     s3_key = os.path.basename(in_path)
     
     if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key) 
+        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
     else:
         sys.exit(f"Error: {path} not found")
     
