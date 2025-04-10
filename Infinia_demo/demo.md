@@ -9,6 +9,7 @@ drop database  images_and_texts_ejeannot;
 drop database  text_and_images_ejeannot;
 
 ## server window
+0/ optionally launch S3 service (e.g minio)
 1/ ./server_umrs.py
 2/ wait for the server to configure and blocks in messages from the client
 
