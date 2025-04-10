@@ -34,7 +34,7 @@
 
 4. **Use the `demo` branch**
 
-   It provides a reproducible setup and usage guide. If it runs successfully, your environment is properly configured.
+   It provides a reproducible setup and usage guide. see `demo.md` file. If it runs successfully, your environment is properly configured.
 
 5. **Modular components**
 
