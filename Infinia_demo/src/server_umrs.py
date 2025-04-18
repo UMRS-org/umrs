@@ -86,7 +86,7 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys,  texts=objects, metadata_list=metadata)
 
 
-parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 
