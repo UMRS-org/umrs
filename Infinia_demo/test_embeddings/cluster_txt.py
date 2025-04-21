@@ -95,6 +95,15 @@ def query_db_with_embeddings_txt(model, conn, cur, query_text, top_k=5):
     return texts
 
 
+def load_sentence_transformers_model(model_name):
+    from sentence_transformers import SentenceTransformer
+    try :
+        model = SentenceTransformer(model_name, local_files_only=True)
+    except Exception:
+        model = SentenceTransformer(model_name)
+    return model;
+
+
 
 sql_username = "ejeannot"
 db_name =  "text_and_images_ejeannot"
@@ -116,7 +125,7 @@ for text in centroid_texts:
         print(f"\t{os.path.basename(text)}")
 
 print("Loading model...")
-model = SentenceTransformer("all-mpnet-base-v2")
+model = load_sentence_transformers_model("all-mpnet-base-v2")
     
 query_db_with_embeddings_txt(model, conn, cur, "I love eating apple", top_k=3)
 query_db_with_embeddings_txt(model, conn, cur, "My computer is a Mac", top_k=3)

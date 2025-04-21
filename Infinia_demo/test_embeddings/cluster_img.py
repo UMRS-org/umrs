@@ -95,6 +95,14 @@ def query_db_with_embeddings_image(model, conn, cur, image_file, top_k=5):
     
     return texts
 
+#  Sentence Transformer Loader
+def load_sentence_transformers_model(model_name):
+    from sentence_transformers import SentenceTransformer
+    try :
+        model = SentenceTransformer(model_name, local_files_only=True)
+    except Exception:
+        model = SentenceTransformer(model_name)
+    return model;
 
 
 sql_username = "ejeannot"
@@ -117,7 +125,7 @@ for text in centroid_texts:
         print(f"\t{os.path.basename(text)}")
 
 print("Loading model...")
-model = SentenceTransformer("clip-ViT-B-32")
+model = load_sentence_transformers_model("clip-ViT-B-32")
     
 query_db_with_embeddings_image(model, conn, cur, "../../data/img_test/cat.jpeg", top_k=12)
 query_db_with_embeddings_image(model, conn, cur, "../../data/img_test/dog.jpeg", top_k=11)
