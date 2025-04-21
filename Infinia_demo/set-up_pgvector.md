@@ -29,10 +29,16 @@ host    all             all             127.0.0.1/32            trust
 host    all             all             ::1/128                 trust
 ```
 
+
 ## 4  Restart PostgreSQL to Apply Changes
 ```sh
 sudo systemctl restart postgresql
 ```
+You then should be able to connect to the psql without a password:
+```sh
+psql -U ejeannot -d postgres
+```
+
 
 ## 5️ Install PGVector for PostgreSQL
 ```sh
