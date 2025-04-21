@@ -9,7 +9,6 @@ from umrs.metadata import check_and_build_metadata
 import time
 from glob import glob
 import argparse
-import posix_ipc
 from collections import defaultdict
 
 def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata):
