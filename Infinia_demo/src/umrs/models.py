@@ -19,7 +19,13 @@ class EmbeddingModel:
 def load_sentence_transformers_model(model_name):
     from sentence_transformers import SentenceTransformer
     print(f"\t\t\t--> Loading model '{model_name}'...")
-    return SentenceTransformer(model_name)
+    try :
+        model = SentenceTransformer(model_name, local_files_only=True)
+    except Exception:
+        print("\t\t\t--> Local cache not available or incomplete. Downloading from Hugging Face...")
+        model = SentenceTransformer(model_name)
+        print("\t\t\t--> Downloaded and cached model.")
+    return model;
 
 
 #  Compute Embeddings for Text
@@ -122,9 +128,24 @@ def compute_embeddings_resnet_50(self, images):
 ################################ TransformerEncoder  ###########################
 def load_transformer_encoder(model_name):
     from transformers import AutoTokenizer, AutoModel
-    # Load E5 model from Hugging Face
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    return  AutoModel.from_pretrained(model_name), tokenizer
+    from transformers.utils import logging
+    import os
+
+    logging.set_verbosity_error()  # avoid verbose warning
+    print(f"\t\t\t--> Loading model '{model_name}'...")
+
+    try:
+        # 1. Try to load locally
+        model = AutoModel.from_pretrained(model_name, local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
+    except Exception:
+        print("\t\t\t--> Local cache not available or incomplete. Downloading from Hugging Face...")
+        model = AutoModel.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        print("\t\t\t--> Downloaded and cached model.")
+
+    return model, tokenizer
+
     
 def compute_embeddings_transformer_enncoder(self, texts):
     # Tokenize the list of texts with appropriate padding
