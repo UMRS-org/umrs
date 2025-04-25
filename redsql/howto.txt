@@ -1,0 +1,20 @@
+1. SSH into the VM
+ssh ejeannot@172.16.47.164
+# SSH Password: Pass//^^010
+
+2. Become root:
+sudo -i
+
+3. Setup your red client:
+redcli user login realm_admin -p "Pass//^^010"
+redcli client setup -t ten9 -s subten_ejeannot
+source /root/.config/red/redrc
+
+4. Go into the RedSQL console:
+redsql --dataset dsredsql1
+
+5.list tables
+.tables
+
+6 test SQL files
+here : /opt/ddn/red/test/sql/sql_golden_test_files
