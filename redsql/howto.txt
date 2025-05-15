@@ -18,3 +18,40 @@ redsql --dataset dsredsql1
 
 6 test SQL files
 here : /opt/ddn/red/test/sql/sql_golden_test_files
+# To get started:
+
+1. Create a dataset if none exist: redcli dataset create abc
+2. Connect to the dataset through RedSQL: redsql --dataset=abc
+3. Run SQL commands, e.g.: `create table ttt (id integer primary key, num integer);`
+
+However, there are a few limitations in RedSQL. It would be best to describe our use case and send it to the RedSQL developer to confirm whether it's feasible with RedSQL. For example, there is no support for "join" or "group by" operations.
+
+
+# cmd
+
+Infinia User = Pass//^^010
+Infinia Password = Same as VM
+Infinia Tenant = ten9
+Infinia Subtenant = subten_ejeannot
+
+> redcli user login ejeannot -t ten9
+> redcli dataset create umrs
+
+12:37AM INF Auto Selecting cluster: ddnj
+12:37AM INF Auto Selecting tenant: ten9
+12:37AM INF Auto Selecting subtenant: subten_ejeannot
+12:37AM INF Successfully created dataset: umrs with profile SYSTEM_DATA_1
+
+=====> cluster == ddnj
+
+
+export CLUSTER=ddnj
+export TENANT=ten1
+export SUBTENANT=sub1
+export DATASET=fs1
+export CLUSTER=ddnj
+export REALM_ENTRY=red_realm_001
+export RED_SERVER=https://${REALM_ENTRY}/redapi/v1	
+
+
+redsql  --tenant ten9 --subtenant subten_ejeannot --dataset umrs
