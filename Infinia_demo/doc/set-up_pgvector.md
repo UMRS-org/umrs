@@ -63,5 +63,10 @@ sudo apt install -y python3-boto3
 sudo apt install -y python3-psycopg2
 sudo apt install -y python3-pil
 sudo apt install -y python3-numpy
+sudo apt install python3-pip
+pip install --break-system-packages torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
 pip3 install sentence-transformers --break-system-packages
+sudo apt install python3-zmq
+sudo apt install python3-pandas
+sudo apt install python3-tabulate
 ```
