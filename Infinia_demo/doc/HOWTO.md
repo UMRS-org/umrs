@@ -22,6 +22,7 @@
    - Create a PostgreSQL user. If named `ejeannot`, it will match the existing config; otherwise, you’ll need to adjust it manually.
    - Disable password prompts (no authentication currently used in the scripts).
    - Test that you can create databases and insert data without a password.
+   - More information is available in `./set-up_pgvector.md`
 
 3. **Project structure and core scripts**
 
@@ -34,7 +35,7 @@
 
 4. **Use the `demo` branch**
 
-   It provides a reproducible setup and usage guide. see `demo.md` file. If it runs successfully, your environment is properly configured.
+   It provides a reproducible setup and usage guide. see `../demo.md` file. If it runs successfully, your environment is properly configured.
 
 5. **Modular components**
 
