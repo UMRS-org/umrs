@@ -13,7 +13,7 @@ class EmbeddingModel:
         self.model.to(self.device)
         self.compute_embeddings = compute_embeddings.__get__(self)  # Bind the method to the instance
 
-    
+
 ################################ Setence Transformer ###########################
 #  Sentence Transformer Loader
 def load_sentence_transformers_model(model_name):
@@ -35,7 +35,7 @@ def compute_embeddings_text(self, texts):
 #  Compute Embeddings for Images
 def compute_embeddings_img(self, images):
     # Ensure images are in RGB format
-    images = [img.convert("RGB") for img in images]  
+    images = [img.convert("RGB") for img in images]
 
     # Compute embeddings
     with torch.no_grad():
@@ -49,7 +49,7 @@ def sentence_transformers(modality):
         compute_embeddings_func = compute_embeddings_text
         input_type = "text"
     elif modality == "image":
-        compute_embeddings_func = compute_embeddings_img            
+        compute_embeddings_func = compute_embeddings_img
         input_type = "image"
     else:
         raise ValueError(f"Unsupported modality \"{model_type}\" for model type: {model_type}")
@@ -73,6 +73,7 @@ def load_resnet50(model_path=None):
 
     if model_path:
         # Use weights_only=True for safer deserialization
+        print(f"\t\t\t--> Loading ResNet-50 model from {model_path}...")
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=True)
 
         # Handle 'module.' prefix in state_dict keys from DataParallel
@@ -98,11 +99,11 @@ def preprocess_images_batch(images):
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
     ])
-    
+
     # Apply transform to each image and stack them
     image_tensors = [transform(image) for image in images]
     batch_tensor = torch.stack(image_tensors)  # Shape: (batch_size, 3, 224, 224)
-    
+
     return batch_tensor
 
 def compute_embeddings_batch(model, image_batch_tensor, device='cpu'):
@@ -146,7 +147,7 @@ def load_transformer_encoder(model_name):
 
     return model, tokenizer
 
-    
+
 def compute_embeddings_transformer_enncoder(self, texts):
     # Tokenize the list of texts with appropriate padding
     inputs = self.tokenizer(texts, return_tensors="pt", truncation=True, padding=True)
@@ -173,7 +174,13 @@ def load_model(model_cfg, modality):
     vector_size = model_cfg["vector_size"]
     model_type = model_cfg["model_type"]
     tokenizer = None
-    
+
+    # dehbug
+    print(f"\t\t\t--> Loading model '{model_name}' of type '{model_type}' with vector size {vector_size}...")
+    # path to the model
+    if "checkpoint_path" in model_cfg:
+        print(f"\t\t\t--> Using checkpoint path: {model_cfg['checkpoint_path']}")
+
     if model_type == "SentenceTransformer":
         model = load_sentence_transformers_model(model_name)
         compute_embeddings_func, input_type = sentence_transformers(modality);
