@@ -16,6 +16,7 @@ services:
       - DB_USER_PASSWORD=ejeannot
     volumes:
       - ./s3cfg:/root/.s3cfg:ro
+      - $GLOBUS_DIR:/GLOBUS
     restart: unless-stopped
 
   minio:
