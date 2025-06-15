@@ -73,7 +73,6 @@ def load_resnet50(model_path=None):
 
     if model_path:
         # Use weights_only=True for safer deserialization
-        print(f"\t\t\t--> Loading ResNet-50 model from {model_path}...")
         checkpoint = torch.load(model_path, map_location=torch.device('cpu'), weights_only=True)
 
         # Handle 'module.' prefix in state_dict keys from DataParallel
@@ -174,12 +173,6 @@ def load_model(model_cfg, modality):
     vector_size = model_cfg["vector_size"]
     model_type = model_cfg["model_type"]
     tokenizer = None
-
-    # dehbug
-    print(f"\t\t\t--> Loading model '{model_name}' of type '{model_type}' with vector size {vector_size}...")
-    # path to the model
-    if "checkpoint_path" in model_cfg:
-        print(f"\t\t\t--> Using checkpoint path: {model_cfg['checkpoint_path']}")
 
     if model_type == "SentenceTransformer":
         model = load_sentence_transformers_model(model_name)
