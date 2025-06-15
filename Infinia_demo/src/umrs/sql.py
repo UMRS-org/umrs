@@ -159,10 +159,9 @@ def get_table_columns_and_types(conn, table_name, schema='public'):
 
 def ensure_pgvector_enabled(conn):
     """Ensure pgvector extension is installed."""
-    #with conn.cursor() as cur:
-    #    cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-    #    conn.commit()
-    pass
+    with conn.cursor() as cur:
+        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        conn.commit()
 
 def get_vector_size(cursor, table_name):
     """
