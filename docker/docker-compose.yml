@@ -6,6 +6,7 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+    image: umrs-server:latest
     container_name: umrs-server
     ports:
       - "8000:8000"
