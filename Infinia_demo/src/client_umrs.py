@@ -103,7 +103,7 @@ metadata_args = check_and_build_metadata(metadata, args.k)
 
 print(f"Storing data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'") 
 
-if(modality == "text"):
+if modality == "text" :
     if os.path.isfile(args.data): #if its a file store each line individually
         try:
             with open(args.data,"r") as file:
@@ -117,8 +117,7 @@ if(modality == "text"):
     else:
         s3_key = s3_store_txt(s3, full_bucket_name, args.data, mq, metadata_args)
         print(f"'{args.data}' saved as {s3_key} on: {full_bucket_name}")
-    
-if(modality == "image"):
+elif modality == "image" :
     if os.path.isfile(args.data): #if it is a file, store it
         s3_key = s3_store_image(s3, full_bucket_name, args.data, mq, metadata_args)
         if s3_key:
@@ -133,4 +132,20 @@ if(modality == "image"):
         print(f"Error: do not know what to do with '{args.data}'...")
         print("Provide a path to an image or to a directory of images")
             
-
+elif modality == "text_file" :
+    if os.path.isfile(args.data): #if it is a file, store it
+        s3_key = s3_store_text_file(s3, full_bucket_name, args.data, mq, metadata_args)
+        if s3_key:
+            print(f"'{s3_key}' saved on: {full_bucket_name}")
+    elif os.path.isdir(args.data): #if it is a path, store each file in the corresponding directory
+        for file in glob(os.path.join(args.data, "*")):
+            if os.path.isfile(file):
+                s3_key = s3_store_text_file(s3, full_bucket_name, file, mq, metadata_args)
+                if s3_key:
+                    print(f"'{s3_key}' saved on: {full_bucket_name}")
+    else :
+        print(f"Error: do not know what to do with '{args.data}'...")
+        print("Provide a path to a text file or to a directory of text_files")
+            
+else:
+    print(f"Error: Unknown modality '{modality}'. Nothing has been sent to the server")
