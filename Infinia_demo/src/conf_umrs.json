@@ -60,11 +60,39 @@
 			    "model":{
 				"model_name": "intfloat/e5-base-v2",
 				"vector_size": "768",
-				"model_type": "TransformerEncoder"
+				"model_type": "TransformerEncoder",
+				"spacy_model": "en_core_web_sm"
 			    },
 			    "sql": {
 				"store_embeddings" : "yes",
 				"table_name": "text",
+				"meta_data":[
+				    {
+					"name": "keywords",
+					"type": "TEXT"
+				    }
+				    
+				]
+			    }
+			},
+			{
+			    "modality_name": "text_file",
+			    "s3": {
+				"bucket_alias": "ej-bucket-5",
+				"data": {
+				    "type": "inline",
+				    "mime_type": "text/plain"
+				}
+			    },
+			    "model":{
+				"model_name": "intfloat/e5-base-v2",
+				"vector_size": "768",
+				"model_type": "TransformerEncoder",
+				"spacy_model": "en_core_web_sm"
+			    },
+			    "sql": {
+				"store_embeddings" : "yes",
+				"table_name": "text_file",
 				"meta_data":[
 				    {
 					"name": "keywords",
@@ -118,7 +146,8 @@
 			    "model":{
 				"model_name": "all-mpnet-base-v2",
 				"vector_size": "768",
-				"model_type": "SentenceTransformer"
+				"model_type": "SentenceTransformer",
+				"spacy_model": "en_core_web_sm"
 			    },
 			    "sql": {
 				"store_embeddings" : "yes",

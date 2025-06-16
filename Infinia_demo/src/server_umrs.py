@@ -82,7 +82,7 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     embeddings = model.compute_embeddings(objects)
 
     # Store **all** embeddings in batch
-    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys,  texts=objects, metadata_list=metadata)
+    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, metadata_list=metadata)
 
 
 parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
