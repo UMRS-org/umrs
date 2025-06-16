@@ -3,13 +3,15 @@ import os
 import sys
 import boto3
 from botocore.exceptions import ClientError
-import hashlib
 import json
 import warnings
 from PIL import Image
 import mimetypes
 from io import BytesIO
 import configparser
+from charset_normalizer import from_path, from_bytes
+from typing import List, Dict
+from umrs.utils import compute_md5
 
 import urllib3
 # Suppress only SSL warnings from urllib3
@@ -108,6 +110,9 @@ def configure_bucket(s3, bucket_alias, xp_name, username):
     print("\t\t\t--> S3 Bucket Configuration Successful")
     return path_to_bucket
 
+
+    
+
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     objects = []  
     metadata = []
@@ -116,7 +121,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
         obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
         metadata.append(obj.get("Metadata", {}))
         
-        if modality_name == "text":  # Handle Text Files
+        if modality_name == "text":  # Handle text stored in file
             text = obj["Body"].read().decode("utf-8")
             objects.append(text)
 
@@ -124,13 +129,14 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
             image = Image.open(BytesIO(obj["Body"].read()))
             objects.append(image)
 
+        elif modality_name == "text_file":  # Handle Text Files
+            text = str(from_bytes(obj["Body"].read()).best())
+            objects.append(text)
+
         else:
             raise ValueError(f"Unsupported modality '{modality_name}'while loading data '{path_to_bucket}/{s3_key}' from S3")
 
     return objects, metadata
-
-def compute_md5(input_string):
-    return hashlib.md5(input_string.encode()).hexdigest()
 
 
 
@@ -168,6 +174,36 @@ def is_an_image(filename):
 def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args):
     if not is_an_image(in_path):
         print(f"Error: '{in_path}' is not an image. Skipping...")
+        return None
+    
+    s3_key = os.path.basename(in_path)
+    
+    if os.path.exists(in_path):
+        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
+    else:
+        sys.exit(f"Error: {path} not found")
+    
+    s3_object = f"s3://{path_to_bucket}/{s3_key}"
+    mq.notify_s3(s3_object)
+
+    return s3_key;
+
+def is_a_text_file(in_path):
+    try:
+        match = from_path(in_path).best()
+        if match is None:
+            return False  # Unable to detect encoding
+        _ = match.output()  # Try decoding
+        return True
+    except Exception as e:
+        print(f"[DEBUG] Failed to decode '{in_path}': {e}")
+        return False
+    
+    
+
+def s3_store_text_file(s3, path_to_bucket, in_path, mq, metadata_args):
+    if not is_a_text_file(in_path):
+        print(f"Error: '{in_path}' is not a txt file. Skipping...")
         return None
     
     s3_key = os.path.basename(in_path)

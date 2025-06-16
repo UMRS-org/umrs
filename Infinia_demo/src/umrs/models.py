@@ -1,20 +1,29 @@
 import torch
 import torchvision
-
+from typing import List, Dict
+import spacy
+from umrs.utils import compute_md5, flatten_text_chunks, add_embeddings_to_chunks_dict
 
 class EmbeddingModel:
-    def __init__(self, model_name: str, embedding_vector_size: int, model, input_type: str, compute_embeddings, tokenizer = None):
+    def __init__(self, model_name: str, embedding_vector_size: int, max_tokens: int, model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
         self.model_name = model_name
         self.embedding_vector_size = int(embedding_vector_size)
+        self.max_tokens = int(max_tokens) if max_tokens is not None else None
         self.input_type = input_type
         self.model = model
+        self.modality = modality
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.tokenizer = tokenizer
         self.model.to(self.device)
         self.compute_embeddings = compute_embeddings.__get__(self)  # Bind the method to the instance
+        if spacy_model:
+            self.nlp = spacy.load(spacy_model)
+        else:
+            self.nlp = None
+        
 
-    
-################################ Setence Transformer ###########################
+
+################################ Sentence Transformer ###########################
 #  Sentence Transformer Loader
 def load_sentence_transformers_model(model_name):
     from sentence_transformers import SentenceTransformer
@@ -30,8 +39,11 @@ def load_sentence_transformers_model(model_name):
 
 #  Compute Embeddings for Text
 def compute_embeddings_text(self, texts):
-    return self.model.encode(texts, convert_to_tensor=False).tolist()
-
+    flat_texts, chunks_dict = flatten_text_chunks(texts, self.nlp, tokenizer=self.tokenizer, max_tokens=self.max_tokens)
+    embeddings = self.model.encode(flat_texts, convert_to_tensor=(self.device == "cuda"))
+    embeddings = embeddings.cpu().tolist() if self.device == "cuda" else embeddings
+    return add_embeddings_to_chunks_dict(embeddings, chunks_dict)
+    
 #  Compute Embeddings for Images
 def compute_embeddings_img(self, images):
     # Ensure images are in RGB format
@@ -148,21 +160,30 @@ def load_transformer_encoder(model_name):
 
     
 def compute_embeddings_transformer_enncoder(self, texts):
-    # Tokenize the list of texts with appropriate padding
-    inputs = self.tokenizer(texts, return_tensors="pt", truncation=True, padding=True)
+     # Step 1: Chunk the texts respecting token limits
+    flat_texts, chunks_dict = flatten_text_chunks(
+        texts,
+        self.nlp,
+        tokenizer=self.tokenizer,
+        max_tokens=self.max_tokens
+    )
 
-    # Move inputs to the same device as the model
+    # Step 2: Tokenize the chunks
+    inputs = self.tokenizer(flat_texts, return_tensors="pt", truncation=True, padding=True)
+
+    # Step 3: Send inputs to correct device
     inputs = {key: value.to(self.device) for key, value in inputs.items()}
 
-    # Compute embedding
+    # Step 4: Forward pass
     with torch.no_grad():
         outputs = self.model(**inputs)
+        embeddings = outputs.last_hidden_state.mean(dim=1)  # Mean pooling
 
-    # Mean pooling over token embeddings for each text
-    embeddings = outputs.last_hidden_state.mean(dim=1)
+    # Step 5: Bring embeddings back to CPU if needed
+    embeddings = embeddings.cpu().tolist() if self.device == "cuda" else embeddings
 
-    # Move embeddings back to CPU if needed
-    return embeddings.cpu() if self.device == "cuda" else embeddings
+    # Step 6: Reinsert embeddings into chunk metadata
+    return add_embeddings_to_chunks_dict(embeddings, chunks_dict)
 
 
 
@@ -173,9 +194,13 @@ def load_model(model_cfg, modality):
     vector_size = model_cfg["vector_size"]
     model_type = model_cfg["model_type"]
     tokenizer = None
-    
+    max_tokens = None
+    spacy_model = model_cfg.get("spacy_model", None)
+     
     if model_type == "SentenceTransformer":
         model = load_sentence_transformers_model(model_name)
+        tokenizer = model._first_module().tokenizer
+        max_tokens = getattr(tokenizer, "model_max_length", None)
         compute_embeddings_func, input_type = sentence_transformers(modality);
     elif model_type == "Resnet-50":
         checkpoint_path = model_cfg["checkpoint_path"] if model_cfg["checkpoint_path"] else None
@@ -184,6 +209,7 @@ def load_model(model_cfg, modality):
         input_type = "image"
     elif model_type == "TransformerEncoder":
         model, tokenizer = load_transformer_encoder(model_name)
+        max_tokens = tokenizer.model_max_length
         compute_embeddings_func = compute_embeddings_transformer_enncoder
         input_type = "text"
     else:
@@ -191,5 +217,5 @@ def load_model(model_cfg, modality):
 
 
     # Create and return the EmbeddingModel object
-    return EmbeddingModel(model_name, vector_size, model, input_type, compute_embeddings_func, tokenizer = tokenizer)
+    return EmbeddingModel(model_name, vector_size, max_tokens, model, input_type, compute_embeddings_func, modality, spacy_model, tokenizer)
 
