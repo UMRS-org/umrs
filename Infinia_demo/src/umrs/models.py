@@ -21,7 +21,7 @@ class EmbeddingModel:
             self.nlp.add_pipe("sentencizer")  # simple sentence seperator
         else:
             self.nlp = None
-        
+
 
 
 ################################ Sentence Transformer ###########################
@@ -44,11 +44,11 @@ def compute_embeddings_text(self, texts):
     embeddings = self.model.encode(flat_texts, convert_to_tensor=(self.device == "cuda"))
     embeddings = embeddings.cpu().tolist() if self.device == "cuda" else embeddings
     return add_embeddings_to_chunks_dict(embeddings, chunks_dict)
-    
+
 #  Compute Embeddings for Images
 def compute_embeddings_img(self, images):
     # Ensure images are in RGB format
-    images = [img.convert("RGB") for img in images]  
+    images = [img.convert("RGB") for img in images]
 
     # Compute embeddings
     with torch.no_grad():
@@ -62,7 +62,7 @@ def sentence_transformers(modality):
         compute_embeddings_func = compute_embeddings_text
         input_type = "text"
     elif modality == "image":
-        compute_embeddings_func = compute_embeddings_img            
+        compute_embeddings_func = compute_embeddings_img
         input_type = "image"
     else:
         raise ValueError(f"Unsupported modality \"{model_type}\" for model type: {model_type}")
@@ -111,11 +111,11 @@ def preprocess_images_batch(images):
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
                              std=[0.229, 0.224, 0.225])
     ])
-    
+
     # Apply transform to each image and stack them
     image_tensors = [transform(image) for image in images]
     batch_tensor = torch.stack(image_tensors)  # Shape: (batch_size, 3, 224, 224)
-    
+
     return batch_tensor
 
 def compute_embeddings_batch(model, image_batch_tensor, device='cpu'):
@@ -159,7 +159,7 @@ def load_transformer_encoder(model_name):
 
     return model, tokenizer
 
-    
+
 def compute_embeddings_transformer_enncoder(self, texts):
      # Step 1: Chunk the texts respecting token limits
     flat_texts, chunks_dict = flatten_text_chunks(
@@ -197,7 +197,7 @@ def load_model(model_cfg, modality):
     tokenizer = None
     max_tokens = None
     spacy_model = model_cfg.get("spacy_model", None)
-     
+
     if model_type == "SentenceTransformer":
         model = load_sentence_transformers_model(model_name)
         tokenizer = model._first_module().tokenizer
