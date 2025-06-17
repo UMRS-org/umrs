@@ -13,3 +13,4 @@ pyzmq
 configparser
 pandas
 tabulate
+spacy
