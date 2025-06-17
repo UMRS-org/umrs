@@ -17,7 +17,8 @@ class EmbeddingModel:
         self.model.to(self.device)
         self.compute_embeddings = compute_embeddings.__get__(self)  # Bind the method to the instance
         if spacy_model:
-            self.nlp = spacy.load(spacy_model)
+            self.nlp = spacy.load(spacy_model, disable=["ner", "tagger", "parser"])
+            self.nlp.add_pipe("sentencizer")  # simple sentence seperator
         else:
             self.nlp = None
         
