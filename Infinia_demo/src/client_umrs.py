@@ -6,7 +6,6 @@ from umrs.sql import *
 from umrs.s3 import *
 from  umrs.MessageQueue import MessageQueue
 from umrs.metadata import check_and_build_metadata
-import time
 from glob import glob
 import argparse
 from collections import defaultdict
