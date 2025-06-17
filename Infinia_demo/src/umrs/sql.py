@@ -200,7 +200,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     table_columns = [];
     column = {"name": "id", "type": "SERIAL PRIMARY KEY"}
     table_columns.append(column)
-    column = {"name": "s3_object", "type": "TEXT UNIQUE"}
+    column = {"name": "s3_object", "type": "TEXT"}
     table_columns.append(column)
     store_embeddings_flag = False
     column = {"name": "date", "type": "DATE"}
@@ -218,9 +218,18 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
 
-    if modality_name == "text":
-        column = {"name": "_content", "type": "TEXT"}
-        table_columns.append(column)
+    if modality_name == "text" or modality_name == "text_file":
+        columns_to_add = [
+            {"name": "_content", "type": "TEXT"},
+            {"name": "chunk_start", "type": "BIGINT"},
+            {"name": "chunk_end", "type": "BIGINT"},
+            {"name": "chunk_md5", "type": "TEXT"}
+        ]
+        table_columns.extend(columns_to_add)
+        table_columns.append({"name": "UNIQUE(s3_object, chunk_start)", "type": ""})
+    else:
+        table_columns.append({"name": "UNIQUE(s3_object)", "type": ""})
+
 
 
     metadata = metadata_dict(sql_cfg)
@@ -248,10 +257,16 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s;", (table_name,))
         existing_columns = {row[0]: row[1] for row in cur.fetchall()}
 
-        for column in table_columns:
-            if column["name"] not in existing_columns:
-                sys.exit(f" Missing column: {column['name']} ({column['type']}) in '{table_name}'.")
+        # Remove UNIQUE constraint rows
+        real_columns = [
+            col for col in table_columns
+            if not col["name"].upper().startswith("UNIQUE(")
+        ]
 
+        # Vérification des colonnes dans la table existante
+        for column in real_columns:
+            if column["name"] not in existing_columns:
+                sys.exit(f"Missing column: {column['name']} ({column['type']}) in '{table_name}'.\nExisting columns: {list(existing_columns.keys())}")
 
         table_vector_size = get_vector_size(cur, table_name)
         if table_vector_size != vector_size:
@@ -273,7 +288,7 @@ def is_string_type(sql_type):
     string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
     return sql_type.upper() in string_types
 
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  content = None, metadata = {}, silent = False):
+def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  content = None, start = None, end = None, md5 = None, metadata = {}, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -300,13 +315,22 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         # INSERT and UPDATE if s3_object already exists
         if data_base.has_column(table_name, "_content"):
             query = f"""
-            INSERT INTO {table_name} (s3_object, _content, embedding, date, time)
-            VALUES (%s, %s, %s, %s, %s)
-            ON CONFLICT (s3_object) DO UPDATE
-            SET _content = EXCLUDED._content, embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time
+            INSERT INTO {table_name} (
+            s3_object, _content, embedding, date, time,
+            chunk_start, chunk_end, chunk_md5
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
+            embedding = EXCLUDED.embedding,
+            date = EXCLUDED.date,
+            time = EXCLUDED.time,
+            _content = EXCLUDED._content,
+            chunk_start = EXCLUDED.chunk_start,
+            chunk_end = EXCLUDED.chunk_end,
+            chunk_md5 = EXCLUDED.chunk_md5
             RETURNING id;
             """
-            cur.execute(query, (s3_object, content, embedding, date, time))
+            cur.execute(query, (s3_object, content, embedding, date, time, start, end, md5))
         else:
             query = f"""
             INSERT INTO {table_name} (s3_object, embedding, date, time)
@@ -320,7 +344,6 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
          # Fetch the inserted/updated ID
         inserted_id = cur.fetchone()[0]  # Fetch the first column of the result
 
-        # now manage metadata if any
          # Now manage metadata if any
         if metadata:
             for key, value in metadata.items():
@@ -363,9 +386,17 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         cur.close()
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, texts = None, metadata_list = []):
-    for embedding, s3_key, text, metadata in zip(embeddings, s3_keys, texts or [None] * len(embeddings), metadata_list): #"or" retuns the first Truthy value (None being not a Truthy value)
-        store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, content=text, metadata = metadata)
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, metadata_list = []):
+    if modality_name == "image":
+        for embedding, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
+            store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, content=None, metadata = metadata)
+    elif modality_name == "text" or modality_name == "text_file":
+        for dict_emdeddings, s3_key,  metadata in zip(embeddings, s3_keys, metadata_list):
+            for entry in dict_emdeddings:
+                # print(entry)
+                store_one_embedding_in_db(data_base, entry["embedding"], table_name, bucket_name, s3_key, content=entry["text"], start = entry["start"], end = entry["end"], md5=entry["md5"], metadata = metadata)
+    else:
+        raise(f"Error: do not know how to store embeddings for modality {modality_name}")
 
 
 
