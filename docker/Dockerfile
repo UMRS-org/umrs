@@ -9,7 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY ./Infinia_demo/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt
+RUN pip install --no-cache-dir -r /app/requirements.txt && \
+    python -m spacy download en_core_web_sm
+
 COPY ./Infinia_demo/src /app/src
 COPY ./Infinia_demo/doc /app/doc
 COPY ./Infinia_demo/demo.md /app/demo.md
