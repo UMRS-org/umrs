@@ -357,17 +357,52 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         cur.close()
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, metadata_list = []):
-    if modality_name == "image":
-        for embedding, s3_key, metadata in zip(embeddings, s3_keys, metadata_list): 
-            store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, content=None, metadata = metadata)
-    elif modality_name == "text" or modality_name == "text_file":
-        for dict_emdeddings, s3_key,  metadata in zip(embeddings, s3_keys, metadata_list):
-            for entry in dict_emdeddings:
-                # print(entry)
-                store_one_embedding_in_db(data_base, entry["embedding"], table_name, bucket_name, s3_key, content=entry["text"], start = entry["start"], end = entry["end"], md5=entry["md5"], metadata = metadata)
-    else:
-        raise(f"Error: do not know how to store embeddings for modality {modality_name}")
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, metadata_list=[]):
+    """
+    Store embeddings in the database depending on the data modality.
 
+    Parameters:
+    - data_base: Database manager object
+    - embeddings: List of embeddings (or list of list of chunk embeddings for text)
+    - table_name: Name of the SQL table
+    - bucket_name: Name of the S3 bucket
+    - s3_keys: List of S3 object keys corresponding to the data
+    - modality_name: Either 'image', 'text', or 'text_file'
+    - metadata_list: Optional list of metadata dictionaries, one per S3 object
+    """
+
+    if modality_name == "image":
+        # One embedding per image file
+        for embedding, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
+            store_one_embedding_in_db(
+                data_base,
+                embedding=embedding,
+                table_name=table_name,
+                bucket_name=bucket_name,
+                s3_key=s3_key,
+                content=None,
+                metadata=metadata
+            )
+
+    elif modality_name in ("text", "text_file"):
+        # Multiple embeddings per file (one per text chunk)
+        for chunked_embeddings, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
+            for chunk in chunked_embeddings:
+                store_one_embedding_in_db(
+                    data_base,
+                    embedding=chunk["embedding"],
+                    table_name=table_name,
+                    bucket_name=bucket_name,
+                    s3_key=s3_key,
+                    content=chunk["text"],
+                    start=chunk["start"],
+                    end=chunk["end"],
+                    md5=chunk["md5"],
+                    metadata=metadata
+                )
+
+    else:
+        raise ValueError(f"Unsupported modality '{modality_name}' for embedding storage.")
+    
 
         
