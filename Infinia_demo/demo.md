@@ -98,8 +98,15 @@ SELECT id, s3_object, date, time, keywords, author, x_resolution, y_resolution F
 
 ```
 psql -d images_and_texts_ejeannot
-SELECT s3_object, _content, date, time, chunk_start, chunk_end, chunk_md5 FROM text_file;
 ```
+
+```
+SELECT _content, chunk_start, chunk_end, chunk_md5
+FROM text_file
+WHERE s3_object ~* 'beast'
+ORDER BY chunk_start;
+```
+
 
 ## 7. Wrap Up
 
