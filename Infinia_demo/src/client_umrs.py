@@ -19,8 +19,8 @@ def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, 
                                 "modality_name": modality_name,
                                  "s3_configuration_file": s3_configuration_file,
                                  "metadata": metadata}
-    
-    
+
+
 def configure_bucket(user_cfg, bucket_store):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
@@ -38,7 +38,7 @@ def configure_bucket(user_cfg, bucket_store):
             store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata)
 
 
-                     
+
 parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
@@ -70,7 +70,7 @@ for user in content["users"]:
     configure_bucket(user, bucket_store)
 if args.verbose:
     for bucket_alias, entry in bucket_store.items():
-        print(f"{bucket_alias}: {entry['path_to_bucket']}, {entry['username']}, {entry['xp_name']}, {entry['modality_name']}") 
+        print(f"{bucket_alias}: {entry['path_to_bucket']}, {entry['username']}, {entry['xp_name']}, {entry['modality_name']}")
 
 print("Configuration loaded successfully.")
 
@@ -99,7 +99,7 @@ print(f"Bucket '{bucket_alias}' for  modality '{modality}' and for user '{userna
 
 metadata_args = check_and_build_metadata(metadata, args.k)
 
-print(f"Storing data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'") 
+print(f"Storing data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
 
 if modality == "text" :
     if os.path.isfile(args.data): #if its a file store each line individually
@@ -129,7 +129,7 @@ elif modality == "image" :
     else :
         print(f"Error: do not know what to do with '{args.data}'...")
         print("Provide a path to an image or to a directory of images")
-            
+
 elif modality == "text_file" :
     if os.path.isfile(args.data): #if it is a file, store it
         s3_key = s3_store_text_file(s3, full_bucket_name, args.data, mq, metadata_args)
@@ -144,6 +144,6 @@ elif modality == "text_file" :
     else :
         print(f"Error: do not know what to do with '{args.data}'...")
         print("Provide a path to a text file or to a directory of text_files")
-            
+
 else:
     print(f"Error: Unknown modality '{modality}'. Nothing has been sent to the server")

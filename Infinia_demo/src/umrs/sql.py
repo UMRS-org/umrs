@@ -17,12 +17,12 @@ class DataBase:
     def add_table(self, table_name, columns):
         """
         Adds a table with its columns and types.
-        
+
         Args:
             table_name (str): The name of the table.
             columns (dict): A dictionary {column_name: data_type}.
         """
-        self.tables[table_name] = columns 
+        self.tables[table_name] = columns
 
     def has_column(self, table_name, column_name):
         """
@@ -53,19 +53,20 @@ def create_db_name(sql_username, xp_name):
     db_name = xp_name+"_"+sql_username
     db_name = db_name.replace(" ","_").lower()
     return db_name
-    
+
 def create_db(sql_username, xp_name):
     db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")
     # Database credentials
-    DB_HOST = "localhost"
+    DB_HOST = os.environ.get("DB_HOST", "localhost")
     DB_PORT = "5432"
     DB_SUPERUSER = "postgres"  # Use a superuser or admin account
+    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", "postgres")
     DB_NAME = db_name  # Replace with the target database
     DB_USER = sql_username  # Replace with the target user
 
     # Connect to PostgreSQL default database (`postgres`)
-    conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, host=DB_HOST, port=DB_PORT)
+    conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
     conn.autocommit = True  # Enable auto-commit mode
     cur = conn.cursor()
 
@@ -77,19 +78,47 @@ def create_db(sql_username, xp_name):
         print(f"\t\t-->  Database '{db_name}' already exists.")
     else:
         # Create the database if it does not exist
-        cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
+        cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};" ).format(
             sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
         ))
         print(f"\t\t-->  Database '{db_name}' created successfully.")
 
-        # Clean up
+        # Connect to the new database as superuser and create the extension
+        cur.close()
+        conn.close()
+        conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+        conn_new.autocommit = True
+        cur_new = conn_new.cursor()
+        try:
+            cur_new.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+            print(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
+        except Exception as e:
+            print(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
+        finally:
+            cur_new.close()
+            conn_new.close()
+        # Return a new connection to the created database
+        DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
+        db_pool = psycopg2.pool.SimpleConnectionPool(
+            minconn=1, maxconn=5,  # Adjust based on your needs
+            dbname=db_name,
+            user=sql_username,
+            password=DB_USER_PASSWORD,
+            host=DB_HOST,
+            port=DB_PORT
+        )
+        return DataBase(db_pool, db_name, sql_username)
+
+    # Clean up
     cur.close()
     conn.close()
     # Return a new connection to the created database
+    DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
     db_pool = psycopg2.pool.SimpleConnectionPool(
         minconn=1, maxconn=5,  # Adjust based on your needs
         dbname=db_name,
         user=sql_username,
+        password=DB_USER_PASSWORD,
         host=DB_HOST,
         port=DB_PORT
     )
@@ -118,7 +147,7 @@ def get_table_columns_and_types(conn, table_name, schema='public'):
             """
             cur.execute(query, (schema, table_name))
             rows = cur.fetchall()
-            
+
             # Populate dictionary with column names and types
             column_info = {column: data_type for column, data_type in rows}
 
@@ -127,7 +156,7 @@ def get_table_columns_and_types(conn, table_name, schema='public'):
 
     return column_info
 
-        
+
 def ensure_pgvector_enabled(conn):
     """Ensure pgvector extension is installed."""
     with conn.cursor() as cur:
@@ -137,7 +166,7 @@ def ensure_pgvector_enabled(conn):
 def get_vector_size(cursor, table_name):
     """
     Get the size (dimension) of the 'embedding' vector column in a PostgreSQL table.
-    
+
     Args:
         cursor: psycopg2 cursor object
         table_name: Name of the table to check
@@ -162,7 +191,7 @@ def metadata_dict(sql_cfg):
         metadata[f"key{i}"] = column
 
     return metadata
-    
+
 def configure_table(data_base, sql_cfg,  modality_name, model):
 
     db_pool = data_base.db_pool;
@@ -188,7 +217,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
 
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
-        
+
     if modality_name == "text" or modality_name == "text_file":
         columns_to_add = [
             {"name": "_content", "type": "TEXT"},
@@ -201,10 +230,10 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     else:
         table_columns.append({"name": "UNIQUE(s3_object)", "type": ""})
 
-       
+
 
     metadata = metadata_dict(sql_cfg)
-    
+
     conn = db_pool.getconn()
     ensure_pgvector_enabled(conn)
     cur = conn.cursor()
@@ -238,17 +267,17 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         for column in real_columns:
             if column["name"] not in existing_columns:
                 sys.exit(f"Missing column: {column['name']} ({column['type']}) in '{table_name}'.\nExisting columns: {list(existing_columns.keys())}")
-        
+
         table_vector_size = get_vector_size(cur, table_name)
         if table_vector_size != vector_size:
             sys.exit(f"Error: SQL configuration mispatch!\nThe vector size to store embeddings is {vector_size} in the json config file and {table_vector_size} in the sql database.")
         print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embedding vector size: {vector_size}")
 
-    
+
 
     columns = get_table_columns_and_types(conn, table_name)
     data_base.add_table(table_name, columns)
-    
+
     # Cleanup
     cur.close()
     db_pool.putconn(conn)
@@ -311,7 +340,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             RETURNING id;
             """
             cur.execute(query, (s3_object, embedding, date, time))
-        
+
          # Fetch the inserted/updated ID
         inserted_id = cur.fetchone()[0]  # Fetch the first column of the result
 
@@ -340,15 +369,15 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
                     cur.execute(query, (value, inserted_id))
                 except Exception as e:
                     print(f"Error updating metadata '{key}' in {table_name}: {e}")
-                    
-        
+
+
         conn.commit()
 
         if not silent :
             print(f"\t--> Stored/Updated embedding in '{table_name}' for '{s3_object}'")
             if metadata:
                 print(f"\t--> metadata have been added/updated'")
-                
+
 
     except Exception as e:
         print(f"\t--> Error storing embedding: {e}")
@@ -359,7 +388,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
 def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, metadata_list = []):
     if modality_name == "image":
-        for embedding, s3_key, metadata in zip(embeddings, s3_keys, metadata_list): 
+        for embedding, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
             store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, content=None, metadata = metadata)
     elif modality_name == "text" or modality_name == "text_file":
         for dict_emdeddings, s3_key,  metadata in zip(embeddings, s3_keys, metadata_list):
@@ -370,4 +399,5 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
         raise(f"Error: do not know how to store embeddings for modality {modality_name}")
 
 
-        
+
+

@@ -1,0 +1,53 @@
+# Docker Compose for UMRS project
+version: '3.8'
+
+services:
+  umrs-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: umrs-server
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DB_HOST=postgres
+      - DB_SUPERUSER_PASSWORD=postgres
+      - DB_USER_PASSWORD=ejeannot
+    volumes:
+      - ./s3cfg:/root/.s3cfg:ro
+      - $GLOBUS_DIR:/GLOBUS
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+      - ./s3cfg:/config/.s3cfg:ro
+    restart: unless-stopped
+
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=images_and_texts_ejeannot
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
+    restart: unless-stopped
+
+volumes:
+  minio_data:
+  pg_data:
