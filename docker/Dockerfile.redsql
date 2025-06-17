@@ -1,0 +1,11 @@
+# Dockerfile for RedSQL (example, update as needed)
+FROM python:3.10-slim
+
+WORKDIR /app/redsql
+
+COPY ../redsql /app/redsql
+
+# Install dependencies if any (add as needed)
+# RUN pip install -r requirements.txt
+
+CMD ["bash"]
