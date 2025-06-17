@@ -1,5 +1,4 @@
 import hashlib
-import time
 
 ################################## md5 ##################################
 
@@ -96,7 +95,6 @@ def merge_chunks_by_tokens(chunks, max_tokens, tokenizer, original_text):
     current_token_count = 0
 
     for chunk in chunks:
-        print(f"{chunk['start']} - {chunk['end']} : {chunk['md5']}")
         if current_chunk is None:
             current_chunk = chunk.copy()
             current_token_count = chunk["num_tokens"]
@@ -143,9 +141,7 @@ def flatten_text_chunks(texts, nlp, tokenizer, max_tokens):
     for text in texts:
         doc = nlp(text)
         chunks = chunk_text_by_max_tokens(doc, tokenizer, max_tokens)
-        start = time.time()
         chunks = merge_chunks_by_tokens(chunks, max_tokens, tokenizer, text)
-        print(f"[Timing] Merging chunks: {time.time() - start:.2f}s")
         flat_chunks.extend([chunk["text"] for chunk in chunks])
         chunks_by_text.append(chunks)
     return flat_chunks, chunks_by_text
