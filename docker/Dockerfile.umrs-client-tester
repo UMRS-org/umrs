@@ -1,0 +1,38 @@
+FROM ubuntu:latest
+
+# Install build tools for Python packages with C extensions
+RUN apt-get update && apt-get install -y gcc python3 python3-pip python3-venv vim && rm -rf /var/lib/apt/lists/*
+
+# Create two users
+RUN useradd -m user1 && useradd -m user2
+
+# Set up working directory
+WORKDIR /client
+
+# Copy client code and requirements (relative to workspace root as build context)
+COPY Infinia_demo /client/Infinia_demo
+COPY Infinia_demo/src /client/src
+COPY docker/test_multiuser.sh /client/test_multiuser.sh
+# Copy per-user config files to their home directories
+COPY docker/conf_umrs_user1.json /home/user1/conf_umrs.json
+COPY docker/conf_umrs_user2.json /home/user2/conf_umrs.json
+# copy .s3cfg to user1's home directory
+COPY docker/s3cfg /home/user1/.s3cfg
+COPY docker/s3cfg /home/user2/.s3cfg
+
+# install dependencies for all users
+# change user to user1 to install dependencies
+USER user1
+RUN python3 -m venv /home/user1/venv && \
+    . /home/user1/venv/bin/activate && \
+    pip install --upgrade pip && \
+    pip install -r /client/Infinia_demo/requirements-client.txt
+ENV PATH="/home/user1/venv/bin:$PATH"
+
+# Change user to user2 to install dependencies
+USER user2
+RUN python3 -m venv /home/user2/venv && \
+    . /home/user2/venv/bin/activate && \
+    pip install --upgrade pip && \
+    pip install -r /client/Infinia_demo/requirements-client.txt
+ENV PATH="/home/user2/venv/bin:$PATH"

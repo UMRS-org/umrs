@@ -14,7 +14,7 @@
 			    "modality_name": "image",
 			    "s3": {
 				"bucket_alias": "ej-bucket-3",
-				"data":{
+				"data":{ 
 				    "type": "file",
 				    "mime_type": "image/jpeg"
 				}
@@ -23,7 +23,7 @@
 				"model_name": "Resnet 50",
 				"vector_size": "1000",
 				"model_type": "Resnet-50",
-				"checkpoint_path": "/app/models/nvidia_resnet50_200821.pth.tar"
+				"checkpoint_path": "../../data/models/nvidia_resnet50_200821.pth.tar"
 			    },
 			    "sql": {
 				"store_embeddings" : "yes",
@@ -71,7 +71,7 @@
 					"name": "keywords",
 					"type": "TEXT"
 				    }
-
+				    
 				]
 			    }
 			},
@@ -98,7 +98,7 @@
 					"name": "keywords",
 					"type": "TEXT"
 				    }
-
+				    
 				]
 			    }
 			}
@@ -112,7 +112,7 @@
 			    "modality_name": "image",
 			    "s3": {
 				"bucket_alias": "ej-bucket-1",
-				"data":{
+				"data":{ 
 				    "type": "file",
 				    "mime_type": "image/jpeg"
 				}
@@ -130,7 +130,7 @@
 					"name": "keywords",
 					"type": "TEXT"
 				    }
-
+				    
 				]
 			    }
 			},
@@ -153,12 +153,12 @@
 				"store_embeddings" : "yes",
 				"table_name": "text",
 				"meta_data":[
-
+				    
 				    {
 					"name": "keywords",
 					"type": "TEXT"
 				    }
-
+				    
 				]
 			    }
 			}

@@ -1,0 +1,10 @@
+numpy
+psycopg2-binary
+boto3
+posix_ipc
+pyzmq
+configparser
+pandas
+tabulate
+spacy
+pillow

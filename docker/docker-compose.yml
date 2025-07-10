@@ -14,9 +14,9 @@ services:
       - DB_HOST=postgres
       - DB_SUPERUSER_PASSWORD=postgres
       - DB_USER_PASSWORD=ejeannot
-    volumes:
-      - ./s3cfg:/root/.s3cfg:ro
-      - $GLOBUS_DIR:/GLOBUS
+    #volumes:
+      #- ./s3cfg:/root/.s3cfg:ro
+      #- $GLOBUS_DIR:/GLOBUS # mount globus directory
     restart: unless-stopped
 
   minio:
@@ -47,6 +47,16 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
     restart: unless-stopped
+
+  #umrs-client-tester:
+  #  build:
+  #    context: ..
+  #    dockerfile: docker/Dockerfile.umrs-client-tester
+  #  container_name: umrs-client-tester
+  #  depends_on:
+  #    - umrs-server
+  #  working_dir: /client
+  #  restart: "no"
 
 volumes:
   minio_data:

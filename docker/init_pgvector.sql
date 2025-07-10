@@ -10,9 +10,10 @@ END$$;
 -- Grant privileges to ejeannot on public schema and set as database owner
 GRANT ALL ON SCHEMA public TO ejeannot;
 ALTER DATABASE images_and_texts_ejeannot OWNER TO ejeannot;
+-- ALTER DATABASE text_and_images_ejeannot OWNER TO ejeannot;
 
 \connect images_and_texts_ejeannot
 CREATE EXTENSION IF NOT EXISTS vector;
 
-\connect text_and_images_ejeannot
-CREATE EXTENSION IF NOT EXISTS vector;
+-- \connect text_and_images_ejeannot
+-- CREATE EXTENSION IF NOT EXISTS vector;

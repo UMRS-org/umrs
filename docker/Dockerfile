@@ -8,17 +8,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ./Infinia_demo/requirements.txt /app/requirements.txt
+COPY ./requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt && \
     python -m spacy download en_core_web_sm
 
-COPY ./Infinia_demo/src /app/src
-COPY ./Infinia_demo/doc /app/doc
-COPY ./Infinia_demo/demo.md /app/demo.md
+COPY ./src /app/src
+#COPY ./Infinia_demo/doc /app/doc
+#COPY ./Infinia_demo/demo.md /app/demo.md
 COPY ./data /app/data
-#COPY ./data/models /app/models # this models is a symlink from NIM_test/models
-COPY ./NIM_test/models /app/models
-COPY ./docker/conf_umrs.json /app/conf_umrs.json
+
+# copy the model directory
+COPY ./models /app/models
+# copy the initial configuration file
+COPY ./docker/conf_umrs_init.json /app/conf_umrs_init.json
+COPY ./docker/s3cfg /root/.s3cfg
+# copy env file contains environment variables
+COPY ./docker/env.default /app/src/.env
 
 EXPOSE 8000
-CMD ["python", "src/server_umrs.py"]
+CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_init.json"]
