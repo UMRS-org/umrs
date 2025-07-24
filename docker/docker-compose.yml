@@ -9,6 +9,8 @@ services:
     container_name: umrs-server
     ports:
       - "8000:8000"
+    expose:
+      - 8000
     environment:
       - PYTHONUNBUFFERED=1
       - DB_HOST=postgres
@@ -17,6 +19,8 @@ services:
     #volumes:
       #- ./s3cfg:/root/.s3cfg:ro
       #- $GLOBUS_DIR:/GLOBUS # mount globus directory
+    networks:
+      - umrs-net
     restart: unless-stopped
 
   minio:
@@ -32,6 +36,8 @@ services:
     volumes:
       - minio_data:/data
       - ./s3cfg:/config/.s3cfg:ro
+    networks:
+      - umrs-net
     restart: unless-stopped
 
   postgres:
@@ -46,18 +52,31 @@ services:
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
+    networks:
+      - umrs-net
     restart: unless-stopped
 
-  #umrs-client-tester:
-  #  build:
-  #    context: ..
-  #    dockerfile: docker/Dockerfile.umrs-client-tester
-  #  container_name: umrs-client-tester
-  #  depends_on:
-  #    - umrs-server
-  #  working_dir: /client
-  #  restart: "no"
+  umrs-client-tester:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.umrs-client-tester
+    container_name: umrs-client-tester
+    depends_on:
+      - umrs-server
+      - minio
+      - postgres
+    working_dir: /client
+    networks:
+      - umrs-net
+    restart: "no"
+    # Override default command for interactive testing
+    # command: ["tail", "-f", "/dev/null"]
 
 volumes:
   minio_data:
   pg_data:
+
+networks:
+  umrs-net:
+    driver: bridge
+

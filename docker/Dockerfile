@@ -26,4 +26,4 @@ COPY ./docker/s3cfg /root/.s3cfg
 COPY ./docker/env.default /app/src/.env
 
 EXPOSE 8000
-CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_init.json"]
+CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_init.json", "--web"]

@@ -1,7 +1,16 @@
 FROM ubuntu:latest
 
 # Install build tools for Python packages with C extensions
-RUN apt-get update && apt-get install -y gcc python3 python3-pip python3-venv vim && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y \
+    gcc \
+    python3 \
+    python3-pip \
+    python3-venv \
+    vim \
+    s3cmd \
+    netcat-openbsd \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create two users
 RUN useradd -m user1 && useradd -m user2
@@ -10,29 +19,43 @@ RUN useradd -m user1 && useradd -m user2
 WORKDIR /client
 
 # Copy client code and requirements (relative to workspace root as build context)
-COPY Infinia_demo /client/Infinia_demo
-COPY Infinia_demo/src /client/src
+#COPY devs/Infinia_demo /client/Infinia_demo
+COPY src /client/src
 COPY docker/test_multiuser.sh /client/test_multiuser.sh
+
+COPY requirements-client.txt /client/requirements-client.txt
+
 # Copy per-user config files to their home directories
 COPY docker/conf_umrs_user1.json /home/user1/conf_umrs.json
 COPY docker/conf_umrs_user2.json /home/user2/conf_umrs.json
-# copy .s3cfg to user1's home directory
-COPY docker/s3cfg /home/user1/.s3cfg
-COPY docker/s3cfg /home/user2/.s3cfg
 
-# install dependencies for all users
-# change user to user1 to install dependencies
+# Copy per-user s3cfg files to user home directories
+COPY docker/s3cfg_user1 /home/user1/.s3cfg
+COPY docker/s3cfg_user2 /home/user2/.s3cfg
+
+# Set proper ownership for user files
+RUN chown user1:user1 /home/user1/.s3cfg /home/user1/conf_umrs.json
+RUN chown user2:user2 /home/user2/.s3cfg /home/user2/conf_umrs.json
+
+# Make test script executable
+RUN chmod +x /client/test_multiuser.sh
+
+# Install dependencies for user1
 USER user1
 RUN python3 -m venv /home/user1/venv && \
     . /home/user1/venv/bin/activate && \
     pip install --upgrade pip && \
-    pip install -r /client/Infinia_demo/requirements-client.txt
-ENV PATH="/home/user1/venv/bin:$PATH"
+    pip install -r /client/requirements-client.txt
 
 # Change user to user2 to install dependencies
 USER user2
 RUN python3 -m venv /home/user2/venv && \
     . /home/user2/venv/bin/activate && \
     pip install --upgrade pip && \
-    pip install -r /client/Infinia_demo/requirements-client.txt
-ENV PATH="/home/user2/venv/bin:$PATH"
+    pip install -r /client/requirements-client.txt
+
+# Switch back to root for running tests
+USER root
+
+# Default command to run the multi-user test
+CMD ["/client/test_multiuser.sh"]

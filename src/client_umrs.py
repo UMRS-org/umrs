@@ -120,6 +120,20 @@ def is_likely_path(data_str):
     # If it's a single word without spaces, could be either - default to text
     return False
 
+"""
+Modalities explanation:
+
+- "text":
+    Accepts either a text file (each line stored individually) or direct text content. If a file path is provided, each non-empty line is stored as a separate entry. If a string is provided and not a path, it is stored as a single entry.
+
+- "image":
+    Accepts either a single image file or a directory containing image files. If a file path is provided, the image is stored. If a directory is provided, all files in the directory are stored as images.
+
+- "text_file":
+    Accepts either a single text file or a directory containing text files. If a file path is provided, the file is stored as a whole. If a directory is provided, all files in the directory are stored as text files.
+
+The code below handles each modality by checking the input type (file, directory, or text) and processes accordingly. Errors are reported for invalid inputs or unknown modalities.
+"""
 if modality == "text":
     if os.path.exists(args.data):
         if os.path.isfile(args.data):

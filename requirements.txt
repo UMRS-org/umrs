@@ -15,3 +15,5 @@ pandas
 tabulate
 spacy
 dotenv
+fastapi
+uvicorn

@@ -13,6 +13,20 @@ from umrs.pretty_print import pretty_print_cfg
 from collections import defaultdict
 import signal
 import torch
+# --- FastAPI web server ---
+from fastapi import FastAPI
+import uvicorn
+
+app = FastAPI()
+server_status = {"running": False, "last_event": None}
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+@app.get("/status")
+def status():
+    return server_status
 
 def store_db_model(db_model_store, path_to_bucket, bucket_alias, username, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name):
     """Stores data base and model for a given (user, bucket_alias)."""
@@ -174,6 +188,7 @@ parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argp
 parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 parser.add_argument('--init-only', action='store_true', help='Initialize system only (users, databases, buckets) without starting the server loop')
+parser.add_argument('--web', action='store_true', help='Run FastAPI web server instead of message queue loop')
 
 
 args = parser.parse_args()
@@ -189,5 +204,44 @@ if args.init_only:
     print("Initialization completed. Exiting (--init-only mode).")
     sys.exit(0)
 
-# Otherwise, run the full server loop
-run_server_loop(db_model_store, device, args.queue_type)
+
+# If --web is specified, run FastAPI server
+if args.web:
+    print("Starting FastAPI web server on port 8000 with background message queue loop...")
+    from threading import Thread
+    import time
+    def fastapi_server_loop():
+        server_status["running"] = True
+        mq = MessageQueue(queue_type=args.queue_type)
+        print(f"Subscribed to message queue '{args.queue_type}' (FastAPI background task)")
+        try:
+            while True:
+                print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+                s3_objects = mq.wait_for_s3_events()
+                server_status["last_event"] = time.time()
+                keys_per_bucket = defaultdict(list)
+                print(f"\t-->Detected {len(s3_objects)} new file(s):")
+                for s3_object in s3_objects:
+                    print(f"\t\t-->{s3_object}")
+                    path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
+                    if s3_key not in keys_per_bucket[path_to_bucket]:
+                        keys_per_bucket[path_to_bucket].append(s3_key)
+                for path_to_bucket in keys_per_bucket.keys():
+                    username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+                    s3_keys = keys_per_bucket[path_to_bucket]
+                    if strore_embeddings_flag:
+                        print(f"\t--> Storing to data base in {table_name}")
+                        compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection)
+                    else:
+                        print(f"We do not compute embeddings for this bucket '{path_to_bucket}' (modality = '{modality_name}')")
+        except KeyboardInterrupt:
+            print("\nInterrupted by user. Exiting gracefully...")
+            mq.close()
+            server_status["running"] = False
+            sys.exit(0)
+    thread = Thread(target=fastapi_server_loop, daemon=True)
+    thread.start()
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+else:
+    # Otherwise, run the full server loop
+    run_server_loop(db_model_store, device, args.queue_type)

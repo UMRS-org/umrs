@@ -4,7 +4,7 @@
       "username": "user2",
       "md5": "0f9e8d7c6b5a4938271605f4e3d2c1b0",
       "fullname": "User Two",
-      "s3_configuration_file": "/root/.s3cfg",
+      "s3_configuration_file": "/home/user2/.s3cfg",
       "experiences": [
         {
           "xp_name": "Images and Texts",
