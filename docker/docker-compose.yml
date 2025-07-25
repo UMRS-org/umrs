@@ -22,6 +22,12 @@ services:
     networks:
       - umrs-net
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
   minio:
     image: minio/minio:latest
@@ -39,6 +45,7 @@ services:
     networks:
       - umrs-net
     restart: unless-stopped
+
 
   postgres:
     image: ankane/pgvector:latest
@@ -62,13 +69,18 @@ services:
       dockerfile: docker/Dockerfile.umrs-client-tester
     container_name: umrs-client-tester
     depends_on:
-      - umrs-server
-      - minio
-      - postgres
+      umrs-server:
+        condition: service_healthy
+      minio:
+        condition: service_started
+      postgres:
+        condition: service_started
     working_dir: /client
     networks:
       - umrs-net
     restart: "no"
+    volumes:
+      - ./data:/client/data
     # Override default command for interactive testing
     # command: ["tail", "-f", "/dev/null"]
 

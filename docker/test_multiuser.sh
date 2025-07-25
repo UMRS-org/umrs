@@ -80,24 +80,20 @@ run_umrs_test() {
     local username=$1
     local config_file=$2
 
-    echo -e "${YELLOW}Running UMRS client test for $username${NC}"
+    su - $username <<EOF
+    whoami
+    echo "Running UMRS client for user: $username"
+    python3 -m venv /tmp/venv
+    . /tmp/venv/bin/activate
+    pip install --break-system-packages -r /client/requirements-client.txt
 
-    # Switch to user and run test
-    su - $username -c "
-        cd /client
-        source /home/$username/venv/bin/activate
+    which python3
+    # Create/check text bucket and upload sample text
+    python3 /home/$username/src/client_umrs.py -c $config_file /data/texts/beast_in_the_jungle.txt ${username}-bucket-2
 
-        # Test configuration
-        echo 'Testing configuration file: $config_file'
-        python3 -c 'import json; print(json.load(open(\"$config_file\")))' || echo 'Config file error'
-
-        # Run retrieval to verify data upload and embedding
-        echo 'Retrieving text embeddings from bucket:'
-        python3 src/client_umrs.py -c $config_file --queue_type zeromq --bucket ${username}-bucket-2 --retrieve --limit 2
-
-        echo 'Retrieving image embeddings from bucket:'
-        python3 src/client_umrs.py -c $config_file --queue_type zeromq --bucket ${username}-bucket-1 --retrieve --limit 2
-    "
+    # Create/check image bucket and upload sample image
+    python3 /home/$username/src/client_umrs.py -c $config_file /data/img_test/cat.jpeg ${username}-bucket-1
+EOF
 }
 
 # Main execution
@@ -114,6 +110,10 @@ main() {
         echo -e "${YELLOW}Installing netcat...${NC}"
         apt-get update && apt-get install -y netcat-openbsd
     fi
+
+    # reinitialize MinIO users
+    echo -e "${YELLOW}Reinitializing MinIO users...${NC}"
+    /client/init_minio_users.sh
 
     # Test User 1
     echo -e "${GREEN}=== Testing User 1 ===${NC}"
