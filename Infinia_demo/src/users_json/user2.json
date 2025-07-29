@@ -1,0 +1,77 @@
+{
+  "username": "user2",
+  "fullname": "Test User_2",
+  "s3_configuration_file": "~/.s3cfg_user2",
+  "experiences": [
+    {
+      "xp_name": "Images and Texts",
+      "sql_username": "usr2_1",
+      "modalities": [
+        {
+          "modality_name": "image",
+          "s3": {
+            "bucket_alias": "bucket-1",
+            "data": {
+              "type": "file",
+              "mime_type": "image/jpeg"
+            }
+          },
+          "model": {
+            "model_name": "Resnet 50",
+            "vector_size": "1000",
+            "model_type": "Resnet-50",
+            "checkpoint_path": "../../data/models/nvidia_resnet50_200821.pth.tar"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "image",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              },
+              {
+                "name": "author",
+                "type": "TEXT"
+              },
+              {
+                "name": "x_resolution",
+                "type": "INT"
+              },
+              {
+                "name": "y_resolution",
+                "type": "INT"
+              }
+            ]
+          }
+        },
+        {
+          "modality_name": "text",
+          "s3": {
+            "bucket_alias": "bucket-2",
+            "data": {
+              "type": "inline",
+              "mime_type": "text/plain"
+            }
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "TransformerEncoder",
+            "spacy_model": "en_core_web_sm"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

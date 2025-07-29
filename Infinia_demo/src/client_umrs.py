@@ -27,13 +27,11 @@ def configure_bucket(user_cfg, bucket_store):
     s3_configuration_file = user_cfg["s3_configuration_file"]
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
-        # sql_username  = xp["sql_username"]
-        # db_name = create_db_name(sql_username, xp_name)
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
             bucket_alias =  modality["s3"]["bucket_alias"]
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
-            # print(cfg_bucket_alias, bucket_alias, username, xp_name, modality_name)
+            # print(bucket_alias, username, xp_name, modality_name)
             metadata = metadata_dict(modality["sql"])
             store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata)
 
@@ -62,12 +60,11 @@ if not os.path.exists(configure_file):
 
 # Load JSON content from the file
 with open(configure_file, "r", encoding="utf-8") as file:
-    content = json.load(file)
+    user = json.load(file)
 
 
 bucket_store = defaultdict(dict)
-for user in content["users"]:
-    configure_bucket(user, bucket_store)
+configure_bucket(user, bucket_store)
 if args.verbose:
     for bucket_alias, entry in bucket_store.items():
         print(f"{bucket_alias}: {entry['path_to_bucket']}, {entry['username']}, {entry['xp_name']}, {entry['modality_name']}")
@@ -81,6 +78,8 @@ if not bucket_store[bucket_alias]:
 
 entry = bucket_store[bucket_alias];
 
+# print(entry)
+
 path_to_bucket        = entry['path_to_bucket']
 username              = entry['username']
 xp_name               = entry['xp_name']
@@ -88,7 +87,7 @@ modality              = entry['modality_name']
 s3_configuration_file = entry['s3_configuration_file']
 metadata              = entry['metadata']
 
-s3 = connect_to_s3(s3_configuration_file)
+s3, bucket_location = connect_to_s3(s3_configuration_file)
 
 full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username)
 
