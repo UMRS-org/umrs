@@ -54,6 +54,42 @@ def create_db_name(sql_username, xp_name):
     db_name = db_name.replace(" ","_").lower()
     return db_name
 
+def db_user_exists(conn, username):
+    with conn.cursor() as cur:
+        # Check if the username exists
+        cur.execute("SELECT 1 FROM pg_roles where rolname = %s;", (username,))
+        exists = cur.fetchone()
+        return exists
+        
+
+def create_db_user(username):
+    # Database credentials
+    DB_HOST = os.environ.get("DB_HOST", "localhost")
+    DB_PORT = "5432"
+    DB_SUPERUSER = "postgres"  # Use a superuser or admin account
+    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", "postgres")
+
+    conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+    conn.autocommit = True  # Enable auto-commit mode
+
+    if db_user_exists(conn, username):
+        print(f"==> User '{username}' exist in DB")
+        conn.close()
+        return
+
+    password = username
+    
+    cur = conn.cursor()
+    cur.execute(
+        sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
+        (password,)
+    )
+    print(f"==> User '{username}' created in DB")
+    cur.close()
+    conn.close()
+
+    
+        
 def create_db(sql_username, xp_name):
     db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")
@@ -122,7 +158,7 @@ def create_db(sql_username, xp_name):
         host=DB_HOST,
         port=DB_PORT
     )
-    return DataBase(db_pool, db_name, sql_username)
+    return DataBase(db_pool, db_name, sql_username), db_name
 
 
 def get_table_columns_and_types(conn, table_name, schema='public'):

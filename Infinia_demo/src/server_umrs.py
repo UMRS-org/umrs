@@ -14,14 +14,16 @@ from collections import defaultdict
 import signal
 import torch
 
-def store_db_model(db_model_store, path_to_bucket, bucket_alias, username, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name):
+def store_db_model(db_model_store, path_to_bucket, bucket_alias, s3_username, db_pool, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name):
     """Stores data base and model for a given (user, bucket_alias)."""
     # if user not in db_model_store:
     #     storage[user] = {}  # Initialize user entry
     
     db_model_store[path_to_bucket] = {"bucket_alias": bucket_alias,
-                                      "username": username,
+                                      "s3_username": s3_username,
+                                      "sql_username": sql_username,
                                       "data_base": db_pool,
+                                      "db_name": db_name,
                                       "table_name": table_name,
                                       "model": model,
                                       "store_embeddings_flag": store_embeddings_flag,
@@ -37,9 +39,31 @@ def query_db_model(db_model_store, path_to_bucket):
     if not entry:
         return None, None, None, None, None, None
     else:
-        return entry["username"], entry["data_base"], entry["table_name"], entry["model"], entry["store_embeddings_flag"], entry["modality_name"], entry["s3_connection"]
+        return entry["s3_username"], entry["data_base"], entry["table_name"], entry["model"], entry["store_embeddings_flag"], entry["modality_name"], entry["s3_connection"]
 
     
+def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
+    fullname = user_cfg["fullname"]
+    username = user_cfg["username"]
+    print(f"######################\nCreating {fullname} ({username})\n######################")
+
+    bucket_list = []
+    for xp in user_cfg["experiences"]:
+        xp_name = xp["xp_name"]
+        sql_username  = xp["sql_username"]
+        create_db_user(sql_username)
+        for modality in xp["modalities"]:
+            modality_name = modality["modality_name"]
+            bucket_alias = modality["s3"]["bucket_alias"]
+            path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
+            # print(f"{bucket_alias} -> {path_to_bucket}")
+            bucket_list.append(path_to_bucket)
+
+    user_s3_configuration_file = user_cfg["s3_configuration_file"]
+    s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
+    s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list)
+    s3_connection.close()
+
 def configure_user(user_cfg, db_model_store):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
@@ -47,22 +71,34 @@ def configure_user(user_cfg, db_model_store):
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
 
-    s3_connection = connect_to_s3(user_s3_configuration_file)
+    s3_connection, bucket_location = connect_to_s3(user_s3_configuration_file)
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
         print(f"\t==> Experience: {xp_name}")
         sql_username  = xp["sql_username"]
-        data_base = create_db(sql_username, xp_name)
+        data_base, db_name = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
             print(f"\t\tModality: {modality_name}")
             bucket_alias = modality["s3"]["bucket_alias"]
-            path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username)
+            path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
             model = load_model(modality['model'], modality_name)
             table_name, store_embeddings_flag, metadata = configure_table(data_base, modality["sql"], modality_name, model)
-            store_db_model(db_model_store, path_to_bucket, bucket_alias, username, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
+            store_db_model(db_model_store, path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
             print(f"\t\t\t==>Bucket alias: {bucket_alias}")
 
+def load_json_conf_file(configure_file):
+# Load JSON content from the file
+    users = []
+    with open(configure_file, "r", encoding="utf-8") as file:
+        content = json.load(file)
+        admin_s3_configuration_file = content["admin_s3_configuration_file"]
+        for user_conf_file in content["users"]:
+            with open(user_conf_file, "r", encoding="utf-8") as file:
+                user_content = json.load(file)
+                users.append(user_content)
+
+    return admin_s3_configuration_file, users
 
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection):
     """
@@ -100,10 +136,7 @@ if not os.path.exists(configure_file):
     sys.exit(f"Configuration file '{configure_file}' not found.")
 
 
-# Load JSON content from the file
-with open(configure_file, "r", encoding="utf-8") as file:
-    content = json.load(file)
-
+admin_s3_configuration_file, users = load_json_conf_file(configure_file)
 # Print loaded content (optional)
 print("Configuration loaded successfully.")
 
@@ -111,10 +144,15 @@ print("Configuration loaded successfully.")
 mq = MessageQueue(queue_type = args.queue_type);
 print (f"Subscribed to message queue '{args.queue_type}'")
 
-# Pretty-print the JSON content
-# print(json.dumps(content, indent=4, sort_keys=True, ensure_ascii=False))
+
+# create S3/SQL  users if necessary 
+for user in users:
+    create_s3_sql_users(user, admin_s3_configuration_file)
+
+
+#configure server for each users
 db_model_store = defaultdict(dict)
-for user in content["users"]:
+for user in users:
     configure_user(user, db_model_store)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
