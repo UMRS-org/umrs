@@ -143,7 +143,7 @@ def create_db(sql_username, xp_name):
             host=DB_HOST,
             port=DB_PORT
         )
-        return DataBase(db_pool, db_name, sql_username)
+        return DataBase(db_pool, db_name, sql_username), db_name
 
     # Clean up
     cur.close()
@@ -254,7 +254,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
 
-    if modality_name == "text" or modality_name == "text_file":
+    if modality_name == "text" or modality_name == "text file":
         columns_to_add = [
             {"name": "_content", "type": "TEXT"},
             {"name": "chunk_start", "type": "BIGINT"},
@@ -449,7 +449,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 metadata=metadata
             )
 
-    elif modality_name in ("text", "text_file"):
+    elif modality_name in ("text", "text file"):
         # Multiple embeddings per file (one per text chunk)
         for chunked_embeddings, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
             for chunk in chunked_embeddings:
