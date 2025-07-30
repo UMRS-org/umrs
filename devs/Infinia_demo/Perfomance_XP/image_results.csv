@@ -1,5 +1,0 @@
-stage,nb_objects,Total_size_MB,total_time_ms,Throughput_MBps
-BytesIO,310,1.913,450.991,4.241
-BytesIO+PIL,310,1.913,470.295,4.067
-BytesIO+PIL+Embedding,310,1.913,16478.953,0.116
-BytesIO+PIL+Embedding+SQL_Store,310,1.913,18495.201,0.103

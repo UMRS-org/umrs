@@ -1,3 +1,209 @@
+
+# =============================
+# FastAPI Imports, App, Models
+# =============================
+from fastapi import FastAPI, Request, HTTPException, status, Depends
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import List, Optional
+
+app = FastAPI()
+
+# -----------------------------
+# Pydantic Models
+# -----------------------------
+class CreateBucketRequest(BaseModel):
+    username: str
+    bucket_alias: str
+    xp_name: str
+    modality: str
+    model: str
+    store_embeddings: bool
+    metadata: Optional[List[str]] = []
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    s3_secret: str
+
+# -----------------------------
+# Utility/Auth Functions
+# -----------------------------
+def get_user_from_token(token: str):
+    # In production, validate token and return user info
+    return token  # For now, just return the token
+
+# =============================
+# FastAPI Endpoints
+# =============================
+
+# List buckets endpoint
+@app.get("/api/user/list_buckets")
+async def list_buckets(request: Request, username: str):
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid Authorization header")
+    token = auth_header.split(" ", 1)[1]
+    user = get_user_from_token(token)
+    if user != username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token does not match username")
+    # Use mc (MinIO client) to list buckets for the user
+    import subprocess
+    import os
+    import json
+    minio_alias = os.environ.get("MINIO_ALIAS", "localminio")
+    try:
+        result = subprocess.run([
+            "mc", "ls", f"{minio_alias}", "--json"
+        ], capture_output=True, text=True, check=True)
+        buckets = []
+        for line in result.stdout.splitlines():
+            try:
+                entry = json.loads(line)
+                if entry.get("type") == "folder" and entry.get("key", "").startswith(f"{username}."):
+                    buckets.append(entry["key"])
+            except Exception:
+                continue
+        return {"username": username, "buckets": buckets}
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": f"Failed to list buckets: {str(e)}"}, status_code=500)
+
+# Show user info endpoint
+@app.get("/api/user/info")
+async def user_info(request: Request, username: str):
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid Authorization header")
+    token = auth_header.split(" ", 1)[1]
+    user = get_user_from_token(token)
+    # For now, just echo username and token; in production, fetch from DB
+    return {"username": username, "token": token, "info": f"User info for {username} (stub)"}
+
+# Create bucket endpoint
+@app.post("/api/user/create_bucket")
+async def create_bucket_api(request: Request, payload: CreateBucketRequest):
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid Authorization header")
+    token = auth_header.split(" ", 1)[1]
+    user = get_user_from_token(token)
+    # Only allow user to create buckets for themselves (or admin logic)
+    if user != payload.username:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token does not match username")
+    try:
+        # MinIO: create bucket if not exists
+        s3_connection = connect_to_s3(f"/root/.s3cfg")  # Use default config or user config as needed
+        # Sanitize xp_name for S3 bucket naming: replace spaces with hyphens and lowercase
+        safe_xp_name = payload.xp_name.replace(' ', '-').lower()
+        bucket_name = f"{payload.username}.{safe_xp_name}.{payload.bucket_alias}"
+        try:
+            s3_connection.create_bucket(Bucket=bucket_name)
+        except Exception as e:
+            if "BucketAlreadyOwnedByYou" not in str(e):
+                return JSONResponse({"status": "error", "message": f"MinIO bucket creation failed: {str(e)}"}, status_code=500)
+        # DB: create entry for bucket (simulate, real logic may differ)
+        # Here you would update db_model_store or DB as needed
+        # For now, just return success
+        return JSONResponse({"status": "ok", "message": f"Bucket '{bucket_name}' created for user '{payload.username}'."})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": f"Bucket creation failed: {str(e)}"}, status_code=500)
+
+#!/usr/bin/env python3
+"""
+UMRS Server: FastAPI app and CLI for multi-user, multi-bucket, multi-modality data management.
+"""
+import os
+import sys
+import json
+import subprocess
+import tempfile
+import psycopg2
+from fastapi import FastAPI, Request, HTTPException, status
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+
+
+server_status = {"running": False, "last_event": None}
+ADMIN_API_TOKEN = os.environ.get("UMRS_ADMIN_TOKEN", "test_admin_token")
+
+class CreateUserRequest(BaseModel):
+    username: str
+    password: str
+    s3_secret: str
+
+def create_minio_user_mc(username, secret):
+    """Create a MinIO user and attach a policy."""
+    minio_alias = os.environ.get("MINIO_ALIAS", "localminio")
+    minio_url = os.environ.get("MINIO_URL", "http://minio:9000")
+    minio_root_user = os.environ.get("MINIO_ROOT_USER", "minioadmin")
+    minio_root_password = os.environ.get("MINIO_ROOT_PASSWORD", "minioadmin")
+    subprocess.run(["mc", "alias", "set", minio_alias, minio_url, minio_root_user, minio_root_password], check=False)
+    subprocess.run(["mc", "admin", "user", "add", minio_alias, username, secret], check=True)
+    policy = {
+        "Version": "2012-10-17",
+        "Statement": [
+            {"Effect": "Allow", "Action": ["s3:ListAllMyBuckets"], "Resource": ["arn:aws:s3:::*"]},
+            {"Effect": "Allow", "Action": ["s3:*"], "Resource": [f"arn:aws:s3:::{username}*", f"arn:aws:s3:::{username}*/*"]}
+        ]
+    }
+    with tempfile.NamedTemporaryFile("w", delete=False) as f:
+        json.dump(policy, f)
+        policy_path = f.name
+    subprocess.run(["mc", "admin", "policy", "create", minio_alias, f"{username}-policy", policy_path], check=True)
+    subprocess.run(["mc", "admin", "policy", "attach", minio_alias, f"{username}-policy", "--user", username], check=True)
+
+def create_postgres_user(username, password):
+    """Create a PostgreSQL user if not exists."""
+    pg_host = os.environ.get("PGHOST", "postgres")
+    pg_port = int(os.environ.get("PGPORT", "5432"))
+    pg_admin = os.environ.get("PGADMINUSER", "postgres")
+    pg_admin_pass = os.environ.get("PGADMINPASS", "postgres")
+    conn = psycopg2.connect(host=pg_host, port=pg_port, user=pg_admin, password=pg_admin_pass, dbname="postgres")
+    conn.autocommit = True
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (username,))
+    if not cur.fetchone():
+        cur.execute(f"CREATE USER {username} WITH PASSWORD %s", (password,))
+    cur.close()
+    conn.close()
+
+@app.post("/api/admin/create_user")
+async def create_user_api(request: Request, payload: CreateUserRequest):
+    """Admin endpoint to create a new user in MinIO and PostgreSQL."""
+    auth_header = request.headers.get("authorization")
+    if not auth_header or not auth_header.lower().startswith("bearer "):
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing or invalid Authorization header")
+    token = auth_header.split(" ", 1)[1]
+    if token != ADMIN_API_TOKEN:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token")
+    try:
+        create_minio_user_mc(payload.username, payload.s3_secret)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": f"MinIO user creation failed: {str(e)}"}, status_code=500)
+    try:
+        create_postgres_user(payload.username, payload.password)
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": f"PostgreSQL user creation failed: {str(e)}"}, status_code=500)
+    return JSONResponse({"status": "ok", "message": f"User '{payload.username}' created in MinIO and PostgreSQL."})
+
+@app.get("/health")
+def health():
+    """Health check endpoint."""
+    return {"status": "ok"}
+
+@app.get("/status")
+def server_status_info():
+    """Server status endpoint."""
+    return server_status
+
+# ...existing code...
+
+
+
+
+
+
+
 #!/usr/bin/python3
 
 import argparse
@@ -14,19 +220,15 @@ from collections import defaultdict
 import signal
 import torch
 # --- FastAPI web server ---
-from fastapi import FastAPI
+
+# Remove duplicate app = FastAPI() and use the one defined at the top of the file
+# import uvicorn (keep this import)
 import uvicorn
 
-app = FastAPI()
-server_status = {"running": False, "last_event": None}
+# server_status is already defined at the top, do not redefine
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
 
-@app.get("/status")
-def status():
-    return server_status
+# The /health and /status routes are already defined at the top, do not redefine
 
 def store_db_model(db_model_store, path_to_bucket, bucket_alias, username, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name):
     """Stores data base and model for a given (user, bucket_alias)."""

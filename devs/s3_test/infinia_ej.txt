@@ -1,7 +1,0 @@
-- VM User = ejeannot
-- VM Password = Pass//^^010
-- VM IP address = 172.16.44.40
-- Infinia User = Same as VM
-- Infinia Password = Same as VM
-- Infinia Tenant = ten9
-- Infinia Subtenant = subten_ejeannot
