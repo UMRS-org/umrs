@@ -4,8 +4,10 @@ import os
 import sys
 from umrs.sql import *
 from umrs.s3 import *
-from  umrs.MessageQueue import MessageQueue
+from umrs.MessageQueue import MessageQueue
 from umrs.metadata import check_and_build_metadata
+from umrs.modality import *
+from umrs.json_utils import load_client_cfg_file 
 from glob import glob
 import argparse
 from collections import defaultdict
@@ -29,6 +31,7 @@ def configure_bucket(user_cfg, bucket_store):
         xp_name = xp["xp_name"]
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
+            check_or_quit(modality_name)
             bucket_alias =  modality["s3"]["bucket_alias"]
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
             # print(bucket_alias, username, xp_name, modality_name)
@@ -59,9 +62,7 @@ if not os.path.exists(configure_file):
     sys.exit(f"Configuration file \"{configure_file}\" not found.")
 
 # Load JSON content from the file
-with open(configure_file, "r", encoding="utf-8") as file:
-    user = json.load(file)
-
+user = load_client_cfg_file(configure_file)
 
 bucket_store = defaultdict(dict)
 configure_bucket(user, bucket_store)

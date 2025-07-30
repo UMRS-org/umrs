@@ -8,8 +8,10 @@ from umrs.sql import *
 from umrs.s3 import *
 from umrs.models import load_model
 from umrs.perf_test import run_perf_test
-from  umrs.MessageQueue import MessageQueue
+from umrs.MessageQueue import MessageQueue
 from umrs.pretty_print import pretty_print_cfg
+from umrs.modality import *
+from umrs.json_utils import load_server_cfg_file
 from collections import defaultdict
 import signal
 import torch
@@ -54,6 +56,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
         create_db_user(sql_username)
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
+            check_or_quit(modality_name)
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
             # print(f"{bucket_alias} -> {path_to_bucket}")
@@ -79,6 +82,7 @@ def configure_user(user_cfg, db_model_store):
         data_base, db_name = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
+            check_or_quit(modality_name)
             print(f"\t\tModality: {modality_name}")
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
@@ -136,7 +140,7 @@ if not os.path.exists(configure_file):
     sys.exit(f"Configuration file '{configure_file}' not found.")
 
 
-admin_s3_configuration_file, users = load_json_conf_file(configure_file)
+admin_s3_configuration_file, users = load_server_cfg_file(configure_file)
 # Print loaded content (optional)
 print("Configuration loaded successfully.")
 
