@@ -129,7 +129,7 @@ elif modality == "image" :
         print(f"Error: do not know what to do with '{args.data}'...")
         print("Provide a path to an image or to a directory of images")
 
-elif modality == "text_file" :
+elif modality == "text file" :
     if os.path.isfile(args.data): #if it is a file, store it
         s3_key = s3_store_text_file(s3, full_bucket_name, args.data, mq, metadata_args)
         if s3_key:

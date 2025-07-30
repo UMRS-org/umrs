@@ -197,7 +197,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
             image = Image.open(BytesIO(obj["Body"].read()))
             objects.append(image)
 
-        elif modality_name == "text_file":  # Handle Text Files
+        elif modality_name == "text file":  # Handle Text Files
             text = str(from_bytes(obj["Body"].read()).best())
             objects.append(text)
 
