@@ -52,7 +52,20 @@
 7. **Installation help**
 
    For tools like MinIO, PostgreSQL, and pgVector, I use ChatGPT for installation steps—feel free to do the same.
+   
+8. **Switch MiniIO to https (instaed of http)**
+	1.  create SSL certificate fo rminio :
+`openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+  -keyout ~/.minio/certs/private.key \
+  -out ~/.minio/certs/public.crt?   -keyout ~/.minio/certs/private.key \
+?   -out ~/.minio/certs/public.crt` and move them to `~/<your minio dir>/certs`
+	2. launch minio as before
+	3. change tour .s3cfg to enable https:
 
-8. **Live support**
+```
+use_https = True
+check_ssl_certificate = False 
+```
+9. **Live support**
 
    I'm available to help you live if needed—just let me know.
