@@ -72,6 +72,19 @@ def minio_create_user_with_policy(user, password, target, policy_name):
         )
         if user in result.stdout:
             print(f"User '{user}' already exists.")
+        
+            # Check if the listonly  policy already exists for this user
+            try:
+                result = subprocess.run(
+                    ["mc", "admin", "policy", "list", target, "--insecure"],
+                    capture_output=True, text=True, check=True
+                )
+                policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
+                if policy_name in policies:
+                    print(f"Policy '{policy_name}' already exists on '{target}' for '{user}'.")
+                    return # user and policy exist
+            except subprocess.CalledProcessError as e:
+                sys.exit(f"Error listing policies: {e.stderr}")
         else:
             # Create the user
             subprocess.run(
@@ -209,7 +222,7 @@ def minio_grant_user_access(user, bucket, target):
 
     # Attach policy to user
     try:
-        print("attaching allow policy to {bucket}...")
+        print(f"Attaching allow policy to bucket '{bucket}'...")
         subprocess.run(
             ["mc", "admin", "policy", "attach", target, policy_name, "--user", user, "--insecure"],
             check=True
@@ -245,9 +258,6 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         endpoint_url = f"{protocol}://{s3_host}"
     
         user_passwd = s3_strong_password()
-        minio_check_create_alias(alias, endpoint_url, access_key, secret_key, insecure=True)
-        list_only_policy = minio_check_create_list_only_policy(alias)
-        minio_create_user_with_policy(username, user_passwd, alias, list_only_policy)
         user_cfg = f"""[default]
         host_base = {s3_host}
         host_bucket = {s3_host}
@@ -265,5 +275,34 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
     else:
         print(f"==> S3 configuration file '{user_s3_configuration_file}' allready exists for user '{username}' and alias '{alias}'.")
         print(f"==> Delete this file manually if you want to reconfigure the user.")
+        
+        config = {}
+        
+        config_path = os.path.expanduser(user_s3_configuration_file)
+        
+        # Initialize parser
+        config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+        config.read(config_path)
+        s3_host = config.get("default", "host_base")
+        use_https = config.getboolean("default", "use_https", fallback=False)
+        verify_ssl = config.getboolean("default", "check_ssl_certificate", fallback=True)
+        access_key = config.get("default", "access_key")
+        secret_key = config.get("default", "secret_key")
+        bucket_location = config.get("default", "bucket_location", fallback="ap-northeast-1")
+        alias = config.getboolean("default", "alias", fallback="myminio")
+        # Ensure correct protocol (http or https)
+        protocol = "https" if use_https else "http"
+        endpoint_url = f"{protocol}://{s3_host}"
+
+        if access_key != username:
+            sys.exit(
+                f"Critical error. The access key in '{user_s3_configuration_file}' should be '{username}', but is '{access_key}'.\n"
+                "Cannot continue. Either update the JSON user config file or change/remove the S3 user config file."
+            )
+            
+        minio_check_create_alias(alias, endpoint_url, access_key, secret_key, insecure=True)
+        list_only_policy = minio_check_create_list_only_policy(alias)
+        minio_create_user_with_policy(access_key, secret_key, alias, list_only_policy)
+
         
     return alias
