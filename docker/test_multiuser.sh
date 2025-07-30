@@ -112,11 +112,11 @@ run_umrs_test() {
 
         # Upload sample text to text bucket
         echo "==> python3 /home/$username/src/client_umrs.py upload (text) ..."
-        python3 /home/$username/src/client_umrs.py upload --token "$username" -c $config_file /data/texts/beast_in_the_jungle.txt ${username}-bucket-2
+        python3 /home/$username/src/client_umrs.py upload -c $config_file /data/texts/beast_in_the_jungle.txt ${username}-bucket-2
 
         # Upload sample image to image bucket
         echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..."
-        python3 /home/$username/src/client_umrs.py upload --token "$username" -c $config_file /data/img_test/cat.jpeg ${username}-bucket-1
+        python3 /home/$username/src/client_umrs.py upload -c $config_file /data/img_test/cat.jpeg ${username}-bucket-1
     else
         # Manual bucket creation for user1 (default/override example)
         echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text) ..."
@@ -130,7 +130,7 @@ run_umrs_test() {
           --model "all-mpnet-base-v2"
 
         echo "==> python3 /home/$username/src/client_umrs.py upload (text) ..."
-        python3 /home/$username/src/client_umrs.py upload --token "$username" -c $config_file /data/texts/beast_in_the_jungle.txt ${username}-bucket-2
+        python3 /home/$username/src/client_umrs.py upload -c $config_file /data/texts/beast_in_the_jungle.txt ${username}-bucket-2
 
         echo "==> python3 /home/$username/src/client_umrs.py create-bucket (image) ..."
         python3 /home/$username/src/client_umrs.py create-bucket \
@@ -143,7 +143,7 @@ run_umrs_test() {
           --model "clip-ViT-B-32"
 
         echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..."
-        python3 /home/$username/src/client_umrs.py upload --token "$username" -c $config_file /data/img_test/cat.jpeg ${username}-bucket-1
+        python3 /home/$username/src/client_umrs.py upload -c $config_file /data/img_test/cat.jpeg ${username}-bucket-1
     fi
 
     # Test list-buckets API for this user

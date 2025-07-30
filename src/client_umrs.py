@@ -74,15 +74,15 @@ def parse_args():
     # Subcommand: upload
     upload_parser = subparsers.add_parser("upload", help="Upload a data file to a bucket")
     upload_parser.add_argument("-c", "--conf", required=True, help="Config file path")
+    upload_parser.add_argument("-k", action="append", help="Metadata key:value", required=False)
     upload_parser.add_argument("data", help="Path to data file to upload")
     upload_parser.add_argument("bucket", help="Bucket alias (short name)")
-    upload_parser.add_argument("-k", action="append", help="Metadata key:value", required=False)
 
     # Common options
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
     parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue: 'zeromq', 'posix_ipc', or 'sysv_ipc'")
-    parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
-    parser.add_argument("-k", action="append", help="Metadata key:value", required=False)
+    #parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
+    #parser.add_argument("-k", action="append", help="Metadata key:value", required=False)
     args = parser.parse_args()
     return args
 
