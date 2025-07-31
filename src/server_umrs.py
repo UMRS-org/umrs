@@ -2,10 +2,36 @@
 # =============================
 # FastAPI Imports, App, Models
 # =============================
-from fastapi import FastAPI, Request, HTTPException, status, Depends
+from fastapi import FastAPI, Request, HTTPException, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional
+
+import os
+import sys
+import json
+import subprocess
+import tempfile
+import psycopg2
+import argparse
+
+from umrs.sql import *
+from umrs.s3 import *
+from umrs.models import load_model
+from umrs.perf_test import run_perf_test
+from  umrs.MessageQueue import MessageQueue
+from umrs.pretty_print import pretty_print_cfg
+from collections import defaultdict
+import torch
+
+import uvicorn
+
+
+server_status = {"running": False, "last_event": None}
+ADMIN_API_TOKEN = os.environ.get("UMRS_ADMIN_TOKEN", "test_admin_token")
+
+
+
 
 app = FastAPI()
 
@@ -108,29 +134,9 @@ async def create_bucket_api(request: Request, payload: CreateBucketRequest):
     except Exception as e:
         return JSONResponse({"status": "error", "message": f"Bucket creation failed: {str(e)}"}, status_code=500)
 
-#!/usr/bin/env python3
 """
 UMRS Server: FastAPI app and CLI for multi-user, multi-bucket, multi-modality data management.
 """
-import os
-import sys
-import json
-import subprocess
-import tempfile
-import psycopg2
-from fastapi import FastAPI, Request, HTTPException, status
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-
-
-server_status = {"running": False, "last_event": None}
-ADMIN_API_TOKEN = os.environ.get("UMRS_ADMIN_TOKEN", "test_admin_token")
-
-class CreateUserRequest(BaseModel):
-    username: str
-    password: str
-    s3_secret: str
-
 def create_minio_user_mc(username, secret):
     """Create a MinIO user and attach a policy."""
     minio_alias = os.environ.get("MINIO_ALIAS", "localminio")
@@ -196,34 +202,9 @@ def server_status_info():
     """Server status endpoint."""
     return server_status
 
-# ...existing code...
 
 
-
-
-
-
-
-#!/usr/bin/python3
-
-import argparse
-import json
-import os
-import sys
-from umrs.sql import *
-from umrs.s3 import *
-from umrs.models import load_model
-from umrs.perf_test import run_perf_test
-from  umrs.MessageQueue import MessageQueue
-from umrs.pretty_print import pretty_print_cfg
-from collections import defaultdict
-import signal
-import torch
 # --- FastAPI web server ---
-
-# Remove duplicate app = FastAPI() and use the one defined at the top of the file
-# import uvicorn (keep this import)
-import uvicorn
 
 # server_status is already defined at the top, do not redefine
 
