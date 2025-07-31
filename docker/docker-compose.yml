@@ -80,7 +80,7 @@ services:
       - umrs-net
     restart: "no"
     volumes:
-      - ./docker/data:/client/data
+      - ./data:/client/data
     # Override default command for interactive testing
     # command: ["tail", "-f", "/dev/null"]
 

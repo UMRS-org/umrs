@@ -112,13 +112,30 @@ run_umrs_test() {
 
         # Upload sample text to text bucket
         echo "==> python3 /home/$username/src/client_umrs.py upload (text) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file /data/texts/beast_in_the_jungle.txt ${username}-bucket-2
+        python3 /home/$username/src/client_umrs.py upload -c $config_file /home/$username/data/texts/beast_in_the_jungle.txt ${username}-bucket-5
+
+        # Store a single line of text to text bucket (text modality)
+        echo "==> python3 /home/$username/src/client_umrs.py upload (text, single line) ..."
+        python3 /home/$username/src/client_umrs.py upload -c $config_file "This is a test line for $username" ${username}-bucket-2
 
         # Upload sample image to image bucket
         echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file /data/img_test/cat.jpeg ${username}-bucket-1
+        python3 /home/$username/src/client_umrs.py upload -c $config_file /home/$username/data/img_test/cat.jpeg ${username}-bucket-1
     else
         # Manual bucket creation for user1 (default/override example)
+        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text_file) ..."
+        python3 /home/$username/src/client_umrs.py create-bucket \
+          --server-url http://umrs-server:8000 \
+          --token "$username" \
+          --username $username \
+          --bucket-alias ${username}-bucket-5 \
+          --xp-name "Images and Texts" \
+          --modality text_file \
+          --model "intfloat/e5-base-v2"
+
+        echo "==> python3 /home/$username/src/client_umrs.py upload (text_file) ..."
+        python3 /home/$username/src/client_umrs.py upload -c $config_file /home/$username/data/texts/beast_in_the_jungle.txt ${username}-bucket-5
+
         echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text) ..."
         python3 /home/$username/src/client_umrs.py create-bucket \
           --server-url http://umrs-server:8000 \
@@ -129,8 +146,9 @@ run_umrs_test() {
           --modality text \
           --model "all-mpnet-base-v2"
 
-        echo "==> python3 /home/$username/src/client_umrs.py upload (text) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file /data/texts/beast_in_the_jungle.txt ${username}-bucket-2
+        # Store a single line of text to text bucket (text modality)
+        echo "==> python3 /home/$username/src/client_umrs.py upload (text, single line) ..."
+        python3 /home/$username/src/client_umrs.py upload -c $config_file "This is a test line for $username" ${username}-bucket-2
 
         echo "==> python3 /home/$username/src/client_umrs.py create-bucket (image) ..."
         python3 /home/$username/src/client_umrs.py create-bucket \
@@ -143,7 +161,7 @@ run_umrs_test() {
           --model "clip-ViT-B-32"
 
         echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file /data/img_test/cat.jpeg ${username}-bucket-1
+        python3 /home/$username/src/client_umrs.py upload -c $config_file /home/$username/data/img_test/cat.jpeg ${username}-bucket-1
     fi
 
     # Test list-buckets API for this user

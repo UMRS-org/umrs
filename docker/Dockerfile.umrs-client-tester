@@ -44,11 +44,14 @@ COPY docker/s3cfg_user2 /home/user2/.s3cfg
 RUN chown user1:user1 /home/user1/.s3cfg /home/user1/conf_umrs.json
 RUN chown user2:user2 /home/user2/.s3cfg /home/user2/conf_umrs.json
 
-
 # Make test script executable
 RUN chmod +x /client/test_multiuser.sh
 RUN chmod +x /client/init_minio_users.sh
 RUN chmod +x /client/init_postgres_users.sh
+
+# copy the sample data files
+COPY data/ /home/user1/data
+COPY data/ /home/user2/data
 
 # Install MinIO Client (mc) for correct architecture
 RUN ARCH=$(uname -m) && \

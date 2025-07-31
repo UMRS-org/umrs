@@ -20,7 +20,7 @@ import requests
 try:
     from umrs.MessageQueue import MessageQueue
     from umrs.metadata import check_and_build_metadata
-    from umrs.s3 import create_path_to_bucket, connect_to_s3, check_bucket_name, s3_store_image, s3_store_text_file
+    from umrs.s3 import create_path_to_bucket, connect_to_s3, check_bucket_name, s3_store_image, s3_store_text_file, s3_store_txt
     from umrs.sql import metadata_dict
 except ImportError:
     pass  # Not needed for simple CLI utilities like list-buckets
@@ -390,8 +390,16 @@ def main():
                     try:
                         with open(args.data, "r", encoding="utf-8") as file:
                             for line in file.readlines():
-                                # Example: upload each line as a text object (replace with actual upload logic)
-                                print(f"Uploading line: {line.strip()}")
+                                text_line = line.strip()
+                                if text_line:
+                                    try:
+                                        s3_key = s3_store_txt(s3, full_bucket_name, text_line, mq, metadata_args)
+                                        if s3_key:
+                                            print(f"'{s3_key}' saved on: {full_bucket_name}")
+                                        else:
+                                            print(f"Error: Failed to store text line '{text_line}'")
+                                    except Exception as e:
+                                        print(f"Error storing text line '{text_line}': {e}")
                     except UnicodeDecodeError as e:
                         print(f"Unicode decoding error: {e}")
                     except IOError as e:
@@ -400,80 +408,100 @@ def main():
                     if os.path.isdir(args.data):
                         print(f"Error: '{args.data}' is a directory. For text modality, provide a file path or text content.")
                     else:
-                        print(f"Error: {args.data} is not a file.")
+                        # Not a file or directory: treat as direct text input
+                        text_line = args.data.strip()
+                        if text_line:
+                            try:
+                                s3_key = s3_store_txt(s3, full_bucket_name, text_line, mq, metadata_args)
+                                if s3_key:
+                                    print(f"'{s3_key}' saved on: {full_bucket_name}")
+                                else:
+                                    print(f"Error: Failed to store text line '{text_line}'")
+                            except Exception as e:
+                                print(f"Error storing text line '{text_line}': {e}")
+                        else:
+                            print("Error: Provided text is empty.")
             else:
-                print(f"Error: File {args.data} does not exist.")
-        else:
-            print(f"Upload for modality '{modality}' is not implemented yet.")
-        print("Upload complete.")
-        sys.exit(0)
-
-    elif modality == "image":
-        if os.path.exists(args.data):
-            if os.path.isfile(args.data):
-                try:
-                    s3_key = s3_store_image(s3, full_bucket_name, args.data, mq, metadata_args)
-                    if s3_key:
-                        print(f"'{s3_key}' saved on: {full_bucket_name}")
-                    else:
-                        print(f"Error: Failed to store image '{args.data}'")
-                        sys.exit(1)
-                except Exception as e:
-                    print(f"Error storing image {args.data}: {e}")
-                    sys.exit(1)
-            elif os.path.isdir(args.data):
-                image_files = [file for file in glob(os.path.join(args.data, "*")) if os.path.isfile(file)]
-                if not image_files:
-                    print(f"Error: No files found in directory '{args.data}'")
-                    sys.exit(1)
-                for file in image_files:
+                # File does not exist: treat as direct text input
+                text_line = args.data.strip()
+                if text_line:
                     try:
-                        s3_key = s3_store_image(s3, full_bucket_name, file, mq, metadata_args)
+                        s3_key = s3_store_txt(s3, full_bucket_name, text_line, mq, metadata_args)
                         if s3_key:
                             print(f"'{s3_key}' saved on: {full_bucket_name}")
                         else:
-                            print(f"Warning: Failed to store image '{file}' - skipping")
+                            print(f"Error: Failed to store text line '{text_line}'")
                     except Exception as e:
-                        print(f"Error storing image {file}: {e} - skipping")
-        else:
-            print(f"Error: Image file or directory '{args.data}' does not exist.")
-            print("Provide a path to an existing image file or directory containing images.")
-            sys.exit(1)
+                        print(f"Error storing text line '{text_line}': {e}")
+                else:
+                    print("Error: Provided text is empty.")
 
-    elif modality == "text_file":
-        if os.path.exists(args.data):
-            if os.path.isfile(args.data):
-                try:
-                    s3_key = s3_store_text_file(s3, full_bucket_name, args.data, mq, metadata_args)
-                    if s3_key:
-                        print(f"'{s3_key}' saved on: {full_bucket_name}")
-                    else:
-                        print(f"Error: Failed to store text file '{args.data}'")
-                        sys.exit(1)
-                except Exception as e:
-                    print(f"Error storing text file {args.data}: {e}")
-                    sys.exit(1)
-            elif os.path.isdir(args.data):
-                text_files = [file for file in glob(os.path.join(args.data, "*")) if os.path.isfile(file)]
-                if not text_files:
-                    print(f"Error: No files found in directory '{args.data}'")
-                    sys.exit(1)
-                for file in text_files:
+        elif modality == "image":
+            if os.path.exists(args.data):
+                if os.path.isfile(args.data):
                     try:
-                        s3_key = s3_store_text_file(s3, full_bucket_name, file, mq, metadata_args)
+                        s3_key = s3_store_image(s3, full_bucket_name, args.data, mq, metadata_args)
                         if s3_key:
                             print(f"'{s3_key}' saved on: {full_bucket_name}")
                         else:
-                            print(f"Warning: Failed to store text file '{file}' - skipping")
+                            print(f"Error: Failed to store image '{args.data}'")
+                            sys.exit(1)
                     except Exception as e:
-                        print(f"Error storing text file {file}: {e} - skipping")
-        else:
-            print(f"Error: Text file or directory '{args.data}' does not exist.")
-            print("Provide a path to an existing text file or directory containing text files.")
-            sys.exit(1)
+                        print(f"Error storing image {args.data}: {e}")
+                        sys.exit(1)
+                elif os.path.isdir(args.data):
+                    image_files = [file for file in glob(os.path.join(args.data, "*")) if os.path.isfile(file)]
+                    if not image_files:
+                        print(f"Error: No files found in directory '{args.data}'")
+                        sys.exit(1)
+                    for file in image_files:
+                        try:
+                            s3_key = s3_store_image(s3, full_bucket_name, file, mq, metadata_args)
+                            if s3_key:
+                                print(f"'{s3_key}' saved on: {full_bucket_name}")
+                            else:
+                                print(f"Warning: Failed to store image '{file}' - skipping")
+                        except Exception as e:
+                            print(f"Error storing image {file}: {e} - skipping")
+            else:
+                print(f"Error: Image file or directory '{args.data}' does not exist.")
+                print("Provide a path to an existing image file or directory containing images.")
+                sys.exit(1)
 
-    else:
-        print(f"Error: Unknown modality '{modality}'. Nothing has been sent to the server")
+        elif modality == "text_file":
+            if os.path.exists(args.data):
+                if os.path.isfile(args.data):
+                    try:
+                        s3_key = s3_store_text_file(s3, full_bucket_name, args.data, mq, metadata_args)
+                        if s3_key:
+                            print(f"'{s3_key}' saved on: {full_bucket_name}")
+                        else:
+                            print(f"Error: Failed to store text file '{args.data}'")
+                            sys.exit(1)
+                    except Exception as e:
+                        print(f"Error storing text file {args.data}: {e}")
+                        sys.exit(1)
+                elif os.path.isdir(args.data):
+                    text_files = [file for file in glob(os.path.join(args.data, "*")) if os.path.isfile(file)]
+                    if not text_files:
+                        print(f"Error: No files found in directory '{args.data}'")
+                        sys.exit(1)
+                    for file in text_files:
+                        try:
+                            s3_key = s3_store_text_file(s3, full_bucket_name, file, mq, metadata_args)
+                            if s3_key:
+                                print(f"'{s3_key}' saved on: {full_bucket_name}")
+                            else:
+                                print(f"Warning: Failed to store text file '{file}' - skipping")
+                        except Exception as e:
+                            print(f"Error storing text file {file}: {e} - skipping")
+            else:
+                print(f"Error: Text file or directory '{args.data}' does not exist.")
+                print("Provide a path to an existing text file or directory containing text files.")
+                sys.exit(1)
+
+        else:
+            print(f"Error: Unknown modality '{modality}'. Nothing has been sent to the server")
 
 
 if __name__ == "__main__":
