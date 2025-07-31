@@ -9,7 +9,20 @@
     - `user1.json`
     - `user2.json`
 
-- **Master Configuration**  
+Each user must run their own client using their **personal configuration file** (such as `user1.json` for user1). 
+
+When launching the client program, the user must provide their specific configuration file. For example:
+
+✅ **Do NOT use the master configuration file** for client operations.  
+The master config is used exclusively by the server and contains sensitive admin credentials.
+
+🔒 This setup ensures:
+- Each user is isolated to their permitted resources (S3 buckets, SQL databases, etc.)
+- The client has access only to the correct experiment and modality definitions
+- The system behaves securely in a multiuser environment
+
+
+- **Server Configuration**  
 
 There is a master configuration file that lists all individual user files:
 
@@ -22,6 +35,7 @@ There is a master configuration file that lists all individual user files:
       ]
     }
 ```
+
 - **File Structure**  
   Each user JSON user file describes the user’s experiments and modalities.
 
@@ -29,6 +43,29 @@ There is a master configuration file that lists all individual user files:
     - One S3 bucket per modality.
     - One database per experiment.
     - One table per modality in each database.
+
+
+- **S3 Configuration Files**  
+  You only need to set up the S3 configuration file for the *admin* user, as specified by `admin_s3_configuration_file`.  
+  The individual S3 configuration files for each user do not need to be created manually — they will be automatically generated at the first launch of the server.
+  Once the s3 configuration files of each users are created they should be put in the path `s3_configuration_file`on the client machine.  
+   
+- **File Creation Workflow**
+	1. **Create the admin S3 configuration file**  
+   This file (e.g. `~/.s3cfg`) will be used by the server to manage S3 service acces (e.g. miniIO or Infinia) access and create user resources.
+   2. **Create the per-user JSON configuration files**  
+   Each user should have their own config file (e.g. `user1.json`, `user2.json`) describing experiments, modalities, etc.
+   3. **Create the main server configuration file**  
+   This file (e.g. `conf_umrs.json`) should list all the user configuration files and specify the admin S3 config path (as explained above) 
+   4. **Launch the server**  
+   The server will automatically generate S3 user configuration files for each user listed in the server configuration files
+   5. **Distribute user configuration files to client machines**  
+   For each user:
+   		- Copy the user's JSON config file and the auto-generated S3 config file to the corresponding client machine.
+   		- Optionally rename the user's config to `conf_umrs.json` on the client.  
+    	- If not renamed, the client must be launched using the `-c` or `--conf` option to specify the file path.
+    6. **Launch the client on each user's machine**  
+   This will allow the user to push data into their assigned S3 bucket (by alias), triggering embedding and storage on the server.
 
 - **User Credentials**  
   There is single a single S3 user but there may be different SQL users (one per database).  
