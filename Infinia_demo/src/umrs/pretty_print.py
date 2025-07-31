@@ -1,4 +1,5 @@
 import pandas as pd
+import sys
 from tabulate import tabulate
 def pretty_print_cfg(cfg_dict):
     # Create an empty DataFrame with predefined columns
@@ -25,4 +26,31 @@ def pretty_print_cfg(cfg_dict):
         df.loc[len(df)] = [bucket_alias, s3_username, key, xp, modality, db_name, table_name, sql_username, model_name, store_embeddings_flag,  metadata_str]
 
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
+
+
+def pretty_print_user_cfg(cfg_dict):
+    
+    df = pd.DataFrame(columns=["Modality", "Bucket alias", "Experience", "Bucket path", "DB name", "SQL user"])
+    username = None
+    for key, entry in cfg_dict.items():
+        bucket_alias = key
+        bucket_path = entry['path_to_bucket']
+        xp_name = entry['xp_name']
+        modality = entry['modality_name']
+        sql_username = entry['sql_username']
+        db_name = entry['db_name']
+
+        user = entry['username']
+        if not username:
+            username = user
+        elif user != username:
+            sys.exit(f"user mismatch between {username} and {user}")
+        
+        df.loc[len(df)] = [modality, bucket_alias, xp_name, bucket_path, db_name, sql_username]
+    df.sort_values(by=["Bucket alias"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+        
+    print(f"Configuration for S3 user '{username}':")
     print(tabulate(df, headers='keys', tablefmt='fancy_grid'))

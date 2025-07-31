@@ -8,11 +8,28 @@ from umrs.MessageQueue import MessageQueue
 from umrs.metadata import check_and_build_metadata
 from umrs.modality import *
 from umrs.json_utils import load_client_cfg_file 
+from umrs.pretty_print import pretty_print_user_cfg
 from glob import glob
 import argparse
 from collections import defaultdict
 
-def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata):
+
+def is_server_ready(mq, response_mq, timeout_ms=5000):
+    print("Checking for server availability...")
+    if timeout_ms < 1500:
+        timeout_ms = 1500
+
+    while timeout_ms > 100:
+        mq.handshake("READY?")
+        answer = response_mq.busy_wait(100) 
+        if answer == "READY!":
+            return True
+    
+    mq.handshake("READY?")
+    answer = response_mq.busy_wait(timeout_ms - 1000) 
+    return answer == "READY!"
+    
+def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name):
     if(bucket_store[bucket_alias]):
         sys.exit(f"Error: duplicate bucket_alias {bucket_alias}")
     bucket_store[bucket_alias]= {"path_to_bucket": path_to_bucket,
@@ -20,7 +37,9 @@ def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, 
                                 "xp_name": xp_name,
                                 "modality_name": modality_name,
                                  "s3_configuration_file": s3_configuration_file,
-                                 "metadata": metadata}
+                                 "metadata": metadata,
+                                 "sql_username": sql_username,
+                                 "db_name": db_name}
 
 
 def configure_bucket(user_cfg, bucket_store):
@@ -28,7 +47,9 @@ def configure_bucket(user_cfg, bucket_store):
     username = user_cfg["username"]
     s3_configuration_file = user_cfg["s3_configuration_file"]
     for xp in user_cfg["experiences"]:
+        sql_username  = xp["sql_username"]
         xp_name = xp["xp_name"]
+        db_name = create_db_name(sql_username, xp_name)
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
             check_or_quit(modality_name)
@@ -36,7 +57,7 @@ def configure_bucket(user_cfg, bucket_store):
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
             # print(bucket_alias, username, xp_name, modality_name)
             metadata = metadata_dict(modality["sql"])
-            store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata)
+            store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name)
 
 
 
@@ -46,13 +67,20 @@ parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose
 parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue bewteen 'zeromq', 'posix_ipc', or 'sysv_ipc'")
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
-parser.add_argument("data", type=str, help="input data")
-parser.add_argument("bucket", type=str, help="target bucket")
+parser.add_argument("data", type=str, nargs="?", help="input data", default = None)
+parser.add_argument("bucket", type=str, nargs="?", help="target bucket", default = None)
 args = parser.parse_args()
 
 # Connect to message queue
 mq = MessageQueue(queue_type= args.queue_type, role = "client")
-print (f"Connected to message queue of type '{args.queue_type}'")
+response_mq = MessageQueue(queue_type= args.queue_type, role = "server", queue_name="/tmp/response")
+
+if not is_server_ready(mq, response_mq, timeout_ms=5000):
+    sys.exit("Server connection timeout...\n"
+             "Cannot continue!"
+             )
+
+print (f"Server ready.\nConnected to message queue of type '{args.queue_type}'")
 
 # Path to the configuration file
 configure_file = args.conf
@@ -66,12 +94,22 @@ user = load_client_cfg_file(configure_file)
 
 bucket_store = defaultdict(dict)
 configure_bucket(user, bucket_store)
-if args.verbose:
-    for bucket_alias, entry in bucket_store.items():
-        print(f"{bucket_alias}: {entry['path_to_bucket']}, {entry['username']}, {entry['xp_name']}, {entry['modality_name']}")
 
 print("Configuration loaded successfully.")
 
+
+if args.data == None or args.bucket == None :
+    print("Misssing data and/or bucket.")
+    pretty_print_user_cfg(bucket_store)
+    sys.exit(
+        "Error: You must provide both the data and the bucket alias.\n"
+        "These are required to upload data to the S3 server according to the configuration above."
+    )
+
+if args.verbose:
+    pretty_print_user_cfg(bucket_store)
+
+    
 bucket_alias  = args.bucket
 
 if not bucket_store[bucket_alias]:
