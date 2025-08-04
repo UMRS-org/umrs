@@ -5,11 +5,13 @@ The UMRS system has been updated to eliminate the need for separate shell script
 
 ## Replaced Scripts
 
-### 1. `init_minio_users.sh` → **REPLACED**
+### 1. `init_minio_users.sh` → **REMOVED** ✅
 **Previous functionality:**
 - Created MinIO users using `mc admin user add`
 - Created MinIO policies using `mc admin policy create` 
 - Attached policies using `mc admin policy attach`
+
+**Status:** **DELETED** - No longer needed as functionality moved to UMRS API
 
 **New UMRS API approach:**
 ```bash
@@ -27,10 +29,12 @@ python3 /client/src/client_umrs.py init-user \
 - No need for separate MinIO client (mc) configuration
 - Automatic policy creation and attachment
 
-### 2. `init_postgres_users.sh` → **REPLACED** 
+### 2. `init_postgres_users.sh` → **REMOVED** ✅
 **Previous functionality:**
 - Created PostgreSQL users using direct `psql` commands
 - Required PostgreSQL admin credentials
+
+**Status:** **DELETED** - No longer needed as functionality moved to UMRS API
 
 **New UMRS API approach:**
 Same command as above - the UMRS `init-user` API endpoint handles both MinIO and PostgreSQL user creation.
