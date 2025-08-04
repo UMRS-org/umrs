@@ -27,8 +27,6 @@ WORKDIR /client
 COPY src /home/user1/src
 COPY src /home/user2/src
 COPY docker/test_multiuser.sh /client/test_multiuser.sh
-COPY docker/init_minio_users.sh /client/init_minio_users.sh
-COPY docker/init_postgres_users.sh /client/init_postgres_users.sh
 
 COPY requirements-client.txt /client/requirements-client.txt
 
@@ -46,8 +44,6 @@ RUN chown user2:user2 /home/user2/.s3cfg /home/user2/conf_umrs.json
 
 # Make test script executable
 RUN chmod +x /client/test_multiuser.sh
-RUN chmod +x /client/init_minio_users.sh
-RUN chmod +x /client/init_postgres_users.sh
 
 # copy the sample data files
 COPY data/ /home/user1/data

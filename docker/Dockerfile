@@ -25,6 +25,7 @@ COPY ./data /app/data
 COPY ./models /app/models
 # copy the initial configuration file
 COPY ./docker/conf_umrs_init.json /app/conf_umrs_init.json
+COPY ./docker/conf_umrs_ejeannot.json /app/docker/conf_umrs_ejeannot.json
 COPY ./docker/s3cfg /root/.s3cfg
 # copy env file contains environment variables
 COPY ./docker/env.default /app/src/.env

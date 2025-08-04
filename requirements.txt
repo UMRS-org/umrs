@@ -17,3 +17,4 @@ spacy
 dotenv
 fastapi
 uvicorn
+jsonschema
