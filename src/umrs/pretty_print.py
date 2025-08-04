@@ -1,15 +1,19 @@
 import pandas as pd
+import sys
 from tabulate import tabulate
 def pretty_print_cfg(cfg_dict):
     # Create an empty DataFrame with predefined columns
-    df = pd.DataFrame(columns=["Bucket alias", "Username", "Experience", "Modality", "Model", "Store Embeddings", "Metadata"])
+    df = pd.DataFrame(columns=["Bucket alias", "S3 user", "S3 path", "Experience", "Modality", "Database", "SQL table", "SQL user", "Model", "Embeds?", "Metadata"])
     for key, entry in cfg_dict.items():
         bucket_alias = entry["bucket_alias"]
-        username = entry["username"]
+        s3_username = entry["s3_username"]
+        sql_username = entry["sql_username"]
         model_name = entry["model"].model_name
         store_embeddings_flag = entry["store_embeddings_flag"]
         modality = entry["modality_name"]
+        table_name = entry["table_name"]
         xp = entry["xp_name"]
+        db_name = entry["db_name"]
         metadata = entry["metadata"]
         metadata_str= ""
         for mkey, mentry in metadata.items():
@@ -19,6 +23,34 @@ def pretty_print_cfg(cfg_dict):
                 metadata_str += " ; "
             metadata_str += f"{name} ({type})"
 
-        df.loc[len(df)] = [bucket_alias, username, xp, modality, model_name, store_embeddings_flag,  metadata_str]
+        df.loc[len(df)] = [bucket_alias, s3_username, key, xp, modality, db_name, table_name, sql_username, model_name, store_embeddings_flag,  metadata_str]
 
-    print(tabulate(df, headers='keys', tablefmt='psql'))
+    df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
+
+
+def pretty_print_user_cfg(cfg_dict):
+    
+    df = pd.DataFrame(columns=["Modality", "Bucket alias", "Experience", "Bucket path", "DB name", "SQL user"])
+    username = None
+    for key, entry in cfg_dict.items():
+        bucket_alias = key
+        bucket_path = entry['path_to_bucket']
+        xp_name = entry['xp_name']
+        modality = entry['modality_name']
+        sql_username = entry['sql_username']
+        db_name = entry['db_name']
+
+        user = entry['username']
+        if not username:
+            username = user
+        elif user != username:
+            sys.exit(f"user mismatch between {username} and {user}")
+        
+        df.loc[len(df)] = [modality, bucket_alias, xp_name, bucket_path, db_name, sql_username]
+    df.sort_values(by=["Bucket alias"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+        
+    print(f"Configuration for S3 user '{username}':")
+    print(tabulate(df, headers='keys', tablefmt='fancy_grid'))

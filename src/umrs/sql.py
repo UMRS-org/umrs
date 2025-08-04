@@ -4,10 +4,8 @@ import sys
 import psycopg2
 from psycopg2 import sql, pool
 from datetime import datetime
+import psycopg2
 
-# Load environment variables from .env file
-from dotenv import load_dotenv
-load_dotenv()
 
 class DataBase:
     def __init__(self, db_pool, db_name, username):
@@ -56,58 +54,43 @@ def create_db_name(sql_username, xp_name):
     db_name = db_name.replace(" ","_").lower()
     return db_name
 
-def create_user_if_not_exists(sql_username):
-    """
-    Creates a PostgreSQL user if it doesn't exist.
+def db_user_exists(conn, username):
+    with conn.cursor() as cur:
+        # Check if the username exists
+        cur.execute("SELECT 1 FROM pg_roles where rolname = %s;", (username,))
+        exists = cur.fetchone()
+        return exists
+        
 
-    Args:
-        sql_username (str): The username to create.
-
-    Returns:
-        bool: True if user was created or already exists, False on error.
-    """
-    print(f"\t\t-->  Checking if user '{sql_username}' exists...")
-
+def create_db_user(username):
     # Database credentials
     DB_HOST = os.environ.get("DB_HOST", "localhost")
     DB_PORT = "5432"
     DB_SUPERUSER = "postgres"  # Use a superuser or admin account
     DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", "postgres")
-    DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
 
-    try:
-        # Connect to PostgreSQL default database (`postgres`)
-        conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
-        conn.autocommit = True  # Enable auto-commit mode
-        cur = conn.cursor()
+    conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+    conn.autocommit = True  # Enable auto-commit mode
 
-        # Check if the user exists
-        cur.execute("SELECT 1 FROM pg_user WHERE usename = %s;", (sql_username,))
-        exists = cur.fetchone()
-
-        if exists:
-            print(f"\t\t-->  User '{sql_username}' already exists.")
-        else:
-            # Create the user if it does not exist
-            cur.execute(sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(
-                sql.Identifier(sql_username)
-            ), (DB_USER_PASSWORD,))
-            print(f"\t\t-->  User '{sql_username}' created successfully.")
-
-        cur.close()
+    if db_user_exists(conn, username):
+        print(f"==> User '{username}' exist in DB")
         conn.close()
-        return True
+        return
 
-    except Exception as e:
-        print(f"\t\t-->  Error creating user '{sql_username}': {e}")
-        return False
+    password = username
+    
+    cur = conn.cursor()
+    cur.execute(
+        sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
+        (password,)
+    )
+    print(f"==> User '{username}' created in DB")
+    cur.close()
+    conn.close()
 
+    
+        
 def create_db(sql_username, xp_name):
-    # First, ensure the user exists
-    if not create_user_if_not_exists(sql_username):
-        print(f"\t\t-->  Failed to create/verify user '{sql_username}'. Cannot proceed with database creation.")
-        return None
-
     db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")
     # Database credentials
@@ -160,7 +143,7 @@ def create_db(sql_username, xp_name):
             host=DB_HOST,
             port=DB_PORT
         )
-        return DataBase(db_pool, db_name, sql_username)
+        return DataBase(db_pool, db_name, sql_username), db_name
 
     # Clean up
     cur.close()
@@ -175,7 +158,7 @@ def create_db(sql_username, xp_name):
         host=DB_HOST,
         port=DB_PORT
     )
-    return DataBase(db_pool, db_name, sql_username)
+    return DataBase(db_pool, db_name, sql_username), db_name
 
 
 def get_table_columns_and_types(conn, table_name, schema='public'):
@@ -271,7 +254,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
 
-    if modality_name == "text" or modality_name == "text_file":
+    if modality_name == "text" or modality_name == "text file":
         columns_to_add = [
             {"name": "_content", "type": "TEXT"},
             {"name": "chunk_start", "type": "BIGINT"},
@@ -466,7 +449,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 metadata=metadata
             )
 
-    elif modality_name in ("text", "text_file"):
+    elif modality_name in ("text", "text file"):
         # Multiple embeddings per file (one per text chunk)
         for chunked_embeddings, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
             for chunk in chunked_embeddings:
@@ -485,6 +468,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     else:
         raise ValueError(f"Unsupported modality '{modality_name}' for embedding storage.")
+    
 
 
 

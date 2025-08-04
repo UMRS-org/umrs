@@ -2,9 +2,15 @@
 
 # Multi-user test script for UMRS system
 # This script tests the multi-user functionality by:
-# 1. Creating users and buckets on S3
+# 1. Creating users and buckets via UMRS API (replaces init_minio_users.sh and init_postgres_users.sh)
 # 2. Processing texts and images for each user
 # 3. Running retrieval tests
+#
+# NOTE: This script now uses UMRS API calls exclusively and no longer requires:
+# - init_minio_users.sh (replaced by UMRS /api/admin/create_user)
+# - init_postgres_users.sh (replaced by UMRS /api/admin/create_user)
+# - Direct MinIO 'mc' commands
+# - Direct PostgreSQL 'psql' commands
 
 set -e
 
@@ -39,41 +45,12 @@ wait_for_service() {
     echo -e "${GREEN}$service_name is ready!${NC}"
 }
 
-# Function to create MinIO user and policy
-#create_minio_user() {
-#    local username=$1
-#    local password=$2
-#    local access_key=$3
-#    local secret_key=$4
+# Note: The following functions have been replaced by UMRS API calls:
+# - create_minio_user() → replaced by UMRS /api/admin/create_user
+# - Manual MinIO policy creation → handled automatically by UMRS
+# - PostgreSQL user creation → handled by UMRS /api/admin/create_user
 #
-#    echo -e "${YELLOW}Creating MinIO user: $username${NC}"
-#
-#    # Create user policy (allow full access to user's buckets)
-#    cat > /tmp/${username}_policy.json << EOF
-#{
-#    "Version": "2012-10-17",
-#    "Statement": [
-#        {
-#            "Effect": "Allow",
-#            "Action": [
-#                "s3:*"
-#            ],
-#            "Resource": [
-#                "arn:aws:s3:::${username}-bucket-*",
-#                "arn:aws:s3:::${username}-bucket-*/*"
-#            ]
-#        }
-#    ]
-#}
-#EOF
-#
-#    # Note: In a real deployment, you would use MinIO client (mc) to create users
-#    # For now, we'll use the admin credentials and create buckets directly
-#    echo "User $username would be created in production MinIO setup"
-#}
-
-# Buckets are created and managed by UMRS client automatically based on config files.
-# No direct S3 commands are needed.
+# All user initialization is now handled by create_users_via_umrs() function
 
 # Function to run UMRS client test
 run_umrs_test() {
@@ -93,11 +70,10 @@ run_umrs_test() {
     echo "==> pip install requirements-client.txt"
     pip install --break-system-packages -r /client/requirements-client.txt
 
-    # Create user via UMRS admin API
-    export UMRS_ADMIN_TOKEN="test_admin_token"
-    echo "==> UMRS_ADMIN_TOKEN: $UMRS_ADMIN_TOKEN"
-    echo "==> python3 /home/$username/src/client_umrs.py init-user ..."
-    python3 /home/$username/src/client_umrs.py init-user --server-url http://umrs-server:8000 --admin-token "\$UMRS_ADMIN_TOKEN" --username $username --password $password --s3-secret $s3_secret
+    # Note: User creation is now handled centrally by create_users_via_umrs()
+    echo "==> User $username already created via UMRS API"
+    export UMRS_USER_TOKEN="$username"
+    echo "==> UMRS_USER_TOKEN: $UMRS_USER_TOKEN"
 
     echo "==> which python3"
     which python3
@@ -171,6 +147,47 @@ run_umrs_test() {
 EOF
 }
 
+# Function to create users via UMRS API (replaces init_minio_users.sh and init_postgres_users.sh)
+create_users_via_umrs() {
+    echo -e "${YELLOW}Creating users via UMRS admin API (replacing shell scripts)...${NC}"
+    export UMRS_ADMIN_TOKEN="test_admin_token"
+
+    # Install requirements for admin operations
+    echo "==> Installing client requirements for admin operations..."
+    pip install --break-system-packages -r /client/requirements-client.txt
+
+    # User definitions (matching the original shell scripts)
+    declare -a USERS=("user1" "user2")
+    declare -a PASSWORDS=("user1pass" "user2pass")
+    declare -a S3_SECRETS=("user1secret" "user2secret")
+
+    # Create each user via UMRS API instead of direct shell commands
+    for i in "${!USERS[@]}"; do
+        USERNAME="${USERS[$i]}"
+        PASSWORD="${PASSWORDS[$i]}"
+        S3_SECRET="${S3_SECRETS[$i]}"
+
+        echo -e "${YELLOW}Creating user ${USERNAME} via UMRS API...${NC}"
+        echo "==> python3 /client/src/client_umrs.py init-user --username $USERNAME ..."
+
+        python3 /client/src/client_umrs.py init-user \
+          --server-url http://umrs-server:8000 \
+          --admin-token "$UMRS_ADMIN_TOKEN" \
+          --username "$USERNAME" \
+          --password "$PASSWORD" \
+          --s3-secret "$S3_SECRET"
+
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}User $USERNAME created successfully${NC}"
+        else
+            echo -e "${RED}Failed to create user $USERNAME${NC}"
+            exit 1
+        fi
+    done
+
+    echo -e "${GREEN}All users created via UMRS API (no separate shell scripts needed)${NC}"
+}
+
 # Main execution
 main() {
     echo -e "${GREEN}Starting multi-user test...${NC}"
@@ -186,14 +203,15 @@ main() {
         apt-get update && apt-get install -y netcat-openbsd
     fi
 
-
-    # Create users via UMRS admin API
-    echo -e "${YELLOW}Creating users via UMRS admin API...${NC}"
-    export UMRS_ADMIN_TOKEN="test_admin_token"
     # Wait for UMRS server API to be ready
+    echo -e "${YELLOW}Waiting for UMRS server API to be ready...${NC}"
     until curl -sf http://umrs-server:8000/health; do
         echo "Waiting for UMRS server API..."; sleep 2;
     done
+    echo -e "${GREEN}UMRS server API is ready!${NC}"
+
+    # Create users via UMRS API (replaces init_minio_users.sh and init_postgres_users.sh)
+    create_users_via_umrs
 
     # Test User 1
     echo -e "${GREEN}=== Testing User 1 ===${NC}"
