@@ -10,3 +10,4 @@ spacy
 pillow
 dotenv
 requests
+jsonschema

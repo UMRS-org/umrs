@@ -26,6 +26,7 @@ WORKDIR /client
 #COPY devs/Infinia_demo /client/Infinia_demo
 COPY src /home/user1/src
 COPY src /home/user2/src
+COPY src /client/src
 COPY docker/test_multiuser.sh /client/test_multiuser.sh
 
 COPY requirements-client.txt /client/requirements-client.txt
