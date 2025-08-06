@@ -35,13 +35,9 @@ COPY requirements-client.txt /client/requirements-client.txt
 COPY docker/conf_umrs_user1.json /home/user1/conf_umrs.json
 COPY docker/conf_umrs_user2.json /home/user2/conf_umrs.json
 
-# Copy per-user s3cfg files to user home directories
-COPY docker/s3cfg_user1 /home/user1/.s3cfg
-COPY docker/s3cfg_user2 /home/user2/.s3cfg
-
 # Set proper ownership for user files
-RUN chown user1:user1 /home/user1/.s3cfg /home/user1/conf_umrs.json
-RUN chown user2:user2 /home/user2/.s3cfg /home/user2/conf_umrs.json
+RUN chown user1:user1 /home/user1/conf_umrs.json
+RUN chown user2:user2 /home/user2/conf_umrs.json
 
 # Make test script executable
 RUN chmod +x /client/test_multiuser.sh
