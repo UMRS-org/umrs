@@ -133,6 +133,7 @@ def create_path_to_bucket(xp_name, bucket_alias, username):
     path = username+"."+xp_name+"."+bucket_alias
     return path.lower().replace(" ","-").replace("_","-")
 
+
     
 def check_bucket_path(s3, path_to_bucket, indent = True):
     if indent:
@@ -179,8 +180,25 @@ def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location):
     return path_to_bucket
 
 
-    
 
+
+def list_s3_bucket(s3, path_to_bucket):
+    print(f"Listing objects in bucket: {path_to_bucket}")
+    objects_list = []
+
+    try:
+        response = s3.list_objects_v2(Bucket=path_to_bucket)
+        for obj in response.get('Contents', []):
+            objects_list.append(f"s3://{path_to_bucket}/{obj['Key']}")
+    except s3.exceptions.NoSuchBucket:
+        print(f"Bucket not found: {path_to_bucket}")
+    except Exception as e:
+        print(f"Error listing bucket '{path_to_bucket}': {e}")
+
+    return objects_list
+
+      
+        
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     objects = []  
     metadata = []

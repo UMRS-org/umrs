@@ -1,8 +1,7 @@
 {
    "admin_s3_configuration_file": "~/.s3cfg",
     "users": [
-	"users_json/user1.json",
-	"users_json/user2.json"
+	"users_json/user1.json"
     ]
 }
 

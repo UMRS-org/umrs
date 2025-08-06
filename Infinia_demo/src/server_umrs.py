@@ -125,10 +125,41 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     # Store **all** embeddings in batch
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, metadata_list=metadata)
 
+def process_s3_objects(s3_objects, db_model_store):
+    
+    keys_per_bucket = defaultdict(list)  # Create a dictionary with lists
+    print(f"\t-->Detected {len(s3_objects)} new file(s):")
+        
+    for s3_object in s3_objects:
+        print(f"\t\t-->{s3_object}")
+        path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
+    
+        # Append s3_key to the list associated with the bucket
+        if s3_key not in keys_per_bucket[path_to_bucket]:  # Ensure no duplicates
+            keys_per_bucket[path_to_bucket].append(s3_key)
 
+
+    for path_to_bucket in keys_per_bucket.keys():
+        username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+        s3_keys = keys_per_bucket[path_to_bucket]
+        if strore_embeddings_flag:
+            print(f"\t--> Storing to data base in {table_name}")
+            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection) 
+        else:
+            print(f"We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")")
+
+
+def process_all_files(db_model_store):
+     for path_to_bucket, entry in db_model_store.items():
+         s3_objects = list_s3_bucket(entry["s3_connection"], path_to_bucket)
+         if len(s3_objects)>0 :
+            process_s3_objects(s3_objects, db_model_store)
+
+         
 parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
+parser.add_argument('--force-recompute', action='store_true', help='Force all embeddings recomputation by scanning all S3 directories')
 
 
 args = parser.parse_args()
@@ -170,6 +201,10 @@ pretty_print_cfg(db_model_store)
 
 # run_perf_test()
 
+if args.force_recompute:
+    process_all_files(db_model_store)
+
+
 try:
     # loop for new new object to be created
     is_handshake = False
@@ -182,27 +217,7 @@ try:
             print("Received handshake request. Answering 'READY!'")
             response_mq.handshake("READY!")
             continue;
-
-        keys_per_bucket = defaultdict(list)  # Create a dictionary with lists
-        print(f"\t-->Detected {len(s3_objects)} new file(s):")
-        
-        for s3_object in s3_objects:
-            print(f"\t\t-->{s3_object}")
-            path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
-    
-            # Append s3_key to the list associated with the bucket
-            if s3_key not in keys_per_bucket[path_to_bucket]:  # Ensure no duplicates
-                keys_per_bucket[path_to_bucket].append(s3_key)
-
-
-        for path_to_bucket in keys_per_bucket.keys():
-            username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
-            s3_keys = keys_per_bucket[path_to_bucket]
-            if strore_embeddings_flag:
-                print(f"\t--> Storing to data base in {table_name}")
-                compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection) 
-            else:
-                print(f"We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")")
+        process_s3_objects(s3_objects, db_model_store)
         
 except KeyboardInterrupt:
     print("\nInterrupted by user. Exiting gracefully...")
