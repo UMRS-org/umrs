@@ -71,9 +71,9 @@ class MessageQueue:
             DEFAULT_QUEUE_NAME: 5555,
             "/tmp/response": 5556,
         }
-        port = ZMQ_PORT_MAP.get(self.queue_name, 5557)
+        port = ZMQ_PORT_MAP.get(self.queue_name, 5600)
         if port == 5557:
-            print(f"[ZeroMQ] Warning: Unknown queue name '{self.queue_name}'. Using port {port}")
+            print(f"[ZeroMQ] Warning: Unknown queue name '{self.queue_name}'. Using special port {port}")
 
 
         self.context = zmq.Context()

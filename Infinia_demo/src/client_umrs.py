@@ -68,7 +68,7 @@ parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
 parser.add_argument("data", type=str, nargs="?", help="input data", default = None)
-parser.add_argument("bucket", type=str, nargs="?", help="target bucket", default = None)
+parser.add_argument("bucket", type=str, nargs="?", help="target bucket alias", default = None)
 args = parser.parse_args()
 
 # Connect to message queue
