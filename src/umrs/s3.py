@@ -22,7 +22,7 @@ import urllib3
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
 
-    
+
 def get_s3_server_name(s3):
 
     response = s3.list_buckets()
@@ -35,12 +35,12 @@ def get_s3_server_name(s3):
         return "MinIO"
     else:
         sys.exit(f"Do not know how to handle S3 server {server}")
-        
+
 
 def s3_strong_password(length=24):
     chars = string.ascii_letters + string.digits + "-_@"
     return ''.join(secrets.choice(chars) for _ in range(length))
-        
+
 def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list):
 
 
@@ -67,16 +67,16 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
 
     if server == "MinIO":
         from umrs.minio import minio_s3_create_user, minio_grant_user_access
-        alias = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)            
+        alias = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)
         if alias:
             for bucket in bucket_list:
                 minio_grant_user_access(username, bucket, alias)
 
     else:
-        sys.exit("Do not know how to create user and buckets for server '{server}'") 
+        sys.exit("Do not know how to create user and buckets for server '{server}'")
 
 
-        
+
 def connect_to_s3(config_file):
     """
     Parses an S3 configuration file and returns a boto3 S3 client.
@@ -108,7 +108,7 @@ def connect_to_s3(config_file):
     endpoint_url = f"{protocol}://{s3_host}"
 
     print(f"--> Connecting to S3 service on: {endpoint_url}...")
-    
+
     # Create the S3 client
     s3 = boto3.client(
         "s3",
@@ -124,32 +124,32 @@ def connect_to_s3(config_file):
         response = s3.list_buckets()
         print("--> Succesfully connected to S3 service.")
     except Exception as e:
-        sys.exit(f"S3 Connection Failed: {e}")
+        raise Exception(f"S3 Connection Failed: {e}")
 
-    
+
     return s3, bucket_location
 
 def create_path_to_bucket(xp_name, bucket_alias, username):
     path = username+"."+xp_name+"."+bucket_alias
     return path.lower().replace(" ","-").replace("_","-")
 
-    
+
 def check_bucket_path(s3, path_to_bucket, indent = True):
     if indent:
         print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'...")
     else:
         print(f"--> Checking Bucket '{path_to_bucket}'...")
-        
+
     try:
         s3.head_bucket(Bucket = path_to_bucket)
-            
+
     except ClientError as e:
         if e.response["Error"]["Code"] == "404":
-            return False #Not found 
+            return False #Not found
         else:
             sys.exit(f"S3 Error: {e}") #Un-managed head_bucket exception
-            
-    except Exception as e:        
+
+    except Exception as e:
         sys.exit(f"S3 Connection Failed: {e}") #Un-managed S3 error
 
     return True
@@ -162,7 +162,7 @@ def check_bucket_name(s3, xp_name, bucket_alias, username):
 def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location):
 
     path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username)
-    if success:    
+    if success:
         print(f"\t\t\t--> Bucket '{path_to_bucket}' already exists!")
         # add_bucket_sqs_queue(s3, path_to_bucket)
     else:
@@ -174,21 +174,21 @@ def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location):
             }
         )
         print(f"\t\t\t--> Bucket {path_to_bucket} created");
-        
+
     print("\t\t\t--> S3 Bucket Configuration Successful")
     return path_to_bucket
 
 
-    
+
 
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
-    objects = []  
+    objects = []
     metadata = []
-    
-    for s3_key in s3_keys: 
+
+    for s3_key in s3_keys:
         obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
         metadata.append(obj.get("Metadata", {}))
-        
+
         if modality_name == "text":  # Handle text stored in file
             text = obj["Body"].read().decode("utf-8")
             objects.append(text)
@@ -211,12 +211,12 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
 def s3_store_txt(s3, path_to_bucket, text_data, mq, metadata_args):
 
     s3_key = compute_md5(text_data)+".txt"
-    
+
     s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, Metadata=metadata_args["Metadata"], ContentType="text/plain")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
-    
+
     return s3_key;
 
 def is_image_by_extension(filename):
@@ -230,7 +230,7 @@ def is_image_by_opening(filename):
         return True
     except (IOError, SyntaxError):
         return False
-    
+
 def is_an_image(filename):
     # Check by extension first
     if not is_image_by_extension(filename):
@@ -243,14 +243,14 @@ def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args):
     if not is_an_image(in_path):
         print(f"Error: '{in_path}' is not an image. Skipping...")
         return None
-    
+
     s3_key = os.path.basename(in_path)
-    
+
     if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
+        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
     else:
         sys.exit(f"Error: {in_path} not found")
-    
+
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
 
@@ -266,21 +266,21 @@ def is_a_text_file(in_path):
     except Exception as e:
         print(f"[DEBUG] Failed to decode '{in_path}': {e}")
         return False
-    
-    
+
+
 
 def s3_store_text_file(s3, path_to_bucket, in_path, mq, metadata_args):
     if not is_a_text_file(in_path):
         print(f"Error: '{in_path}' is not a txt file. Skipping...")
         return None
-    
+
     s3_key = os.path.basename(in_path)
-    
+
     if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
+        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
     else:
         sys.exit(f"Error: {in_path} not found")
-    
+
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
 

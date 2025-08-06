@@ -60,7 +60,7 @@ def db_user_exists(conn, username):
         cur.execute("SELECT 1 FROM pg_roles where rolname = %s;", (username,))
         exists = cur.fetchone()
         return exists
-        
+
 
 def create_db_user(username):
     # Database credentials
@@ -78,7 +78,7 @@ def create_db_user(username):
         return
 
     password = username
-    
+
     cur = conn.cursor()
     cur.execute(
         sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
@@ -88,8 +88,8 @@ def create_db_user(username):
     cur.close()
     conn.close()
 
-    
-        
+
+
 def create_db(sql_username, xp_name):
     db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")
@@ -468,7 +468,27 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     else:
         raise ValueError(f"Unsupported modality '{modality_name}' for embedding storage.")
-    
+
+
+def get_table_name_from_bucket_name(bucket_name):
+    """
+    Generate a PostgreSQL table name from a bucket name.
+
+    Args:
+        bucket_name (str): The S3 bucket name (e.g., 'user1.images-and-texts.bucket-1')
+
+    Returns:
+        str: A valid PostgreSQL table name
+    """
+    # Replace dots and hyphens with underscores and make lowercase
+    table_name = bucket_name.replace('.', '_').replace('-', '_').lower()
+
+    # Ensure it starts with a letter or underscore (PostgreSQL requirement)
+    if table_name[0].isdigit():
+        table_name = 'table_' + table_name
+
+    return table_name
+
 
 
 

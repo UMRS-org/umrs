@@ -18,3 +18,4 @@ dotenv
 fastapi
 uvicorn
 jsonschema
+python-multipart

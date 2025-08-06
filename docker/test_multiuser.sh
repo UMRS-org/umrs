@@ -1,17 +1,5 @@
 #!/bin/bash
 
-# Multi-user test script for UMRS system
-# This script tests the multi-user functionality by:
-# 1. Creating users and buckets via UMRS API (replaces init_minio_users.sh and init_postgres_users.sh)
-# 2. Processing texts and images for each user
-# 3. Running retrieval tests
-#
-# NOTE: This script now uses UMRS API calls exclusively and no longer requires:
-# - init_minio_users.sh (replaced by UMRS /api/admin/create_user)
-# - init_postgres_users.sh (replaced by UMRS /api/admin/create_user)
-# - Direct MinIO 'mc' commands
-# - Direct PostgreSQL 'psql' commands
-
 set -e
 
 # Colors for output
@@ -45,13 +33,6 @@ wait_for_service() {
     echo -e "${GREEN}$service_name is ready!${NC}"
 }
 
-# Note: The following functions have been replaced by UMRS API calls:
-# - create_minio_user() → replaced by UMRS /api/admin/create_user
-# - Manual MinIO policy creation → handled automatically by UMRS
-# - PostgreSQL user creation → handled by UMRS /api/admin/create_user
-#
-# All user initialization is now handled by create_users_via_umrs() function
-
 # Function to run UMRS client test
 run_umrs_test() {
     local username=$1
@@ -70,47 +51,62 @@ run_umrs_test() {
     echo "==> pip install requirements-client.txt"
     pip install --break-system-packages -r /client/requirements-client.txt
 
-    # Note: User creation is now handled centrally by create_users_via_umrs()
-    echo "==> User $username already created via UMRS API"
     export UMRS_USER_TOKEN="$username"
     echo "==> UMRS_USER_TOKEN: $UMRS_USER_TOKEN"
 
-    echo "==> which python3"
-    which python3
     if [ "$username" = "user2" ]; then
         # Use create-buckets-from-config for user2
         echo "==> python3 /home/$username/src/client_umrs.py create-buckets-from-config ..."
         python3 /home/$username/src/client_umrs.py create-buckets-from-config \
           --server-url http://umrs-server:8000 \
           --token "$username" \
-          --username $username \
-          -c $config_file
+          --config $config_file
 
-        # Upload sample text to text bucket
+        # Upload sample text to text bucket using hybrid API
         echo "==> python3 /home/$username/src/client_umrs.py upload (text) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file /home/$username/data/texts/beast_in_the_jungle.txt ${username}-bucket-5
+        python3 /home/$username/src/client_umrs.py upload \
+          --server-url http://umrs-server:8000 \
+          --token "$username" \
+          --username $username \
+          --bucket-alias ${username}-bucket-5 \
+          --xp-name "Images and Texts" \
+          --modality "text file" \
+          /home/$username/data/texts/beast_in_the_jungle.txt
 
-        # Store a single line of text to text bucket (text modality)
-        echo "==> python3 /home/$username/src/client_umrs.py upload (text, single line) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file "This is a test line for $username" ${username}-bucket-2
+        # Store a single line of text to text bucket (text modality) - skip for now as it requires file
+        echo "==> Skipping single line text upload (requires file input in hybrid mode)"
 
-        # Upload sample image to image bucket
+        # Upload sample image to image bucket using hybrid API
         echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file /home/$username/data/img_test/cat.jpeg ${username}-bucket-1
+        python3 /home/$username/src/client_umrs.py upload \
+          --server-url http://umrs-server:8000 \
+          --token "$username" \
+          --username $username \
+          --bucket-alias ${username}-bucket-3 \
+          --xp-name "Images and Texts" \
+          --modality "image" \
+          /home/$username/data/img_test/cat.jpeg
     else
         # Manual bucket creation for user1 (default/override example)
-        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text_file) ..."
+        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text file) ..."
         python3 /home/$username/src/client_umrs.py create-bucket \
           --server-url http://umrs-server:8000 \
           --token "$username" \
           --username $username \
           --bucket-alias ${username}-bucket-5 \
           --xp-name "Images and Texts" \
-          --modality text_file \
+          --modality "text file" \
           --model "intfloat/e5-base-v2"
 
-        echo "==> python3 /home/$username/src/client_umrs.py upload (text_file) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file /home/$username/data/texts/beast_in_the_jungle.txt ${username}-bucket-5
+        echo "==> python3 /home/$username/src/client_umrs.py upload (text file) ..."
+        python3 /home/$username/src/client_umrs.py upload \
+          --server-url http://umrs-server:8000 \
+          --token "$username" \
+          --username $username \
+          --bucket-alias ${username}-bucket-5 \
+          --xp-name "Images and Texts" \
+          --modality "text file" \
+          /home/$username/data/texts/beast_in_the_jungle.txt
 
         echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text) ..."
         python3 /home/$username/src/client_umrs.py create-bucket \
@@ -122,9 +118,8 @@ run_umrs_test() {
           --modality text \
           --model "all-mpnet-base-v2"
 
-        # Store a single line of text to text bucket (text modality)
-        echo "==> python3 /home/$username/src/client_umrs.py upload (text, single line) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file "This is a test line for $username" ${username}-bucket-2
+        # Store a single line of text to text bucket (text modality) - skip for now as it requires file
+        echo "==> Skipping single line text upload (requires file input in hybrid mode)"
 
         echo "==> python3 /home/$username/src/client_umrs.py create-bucket (image) ..."
         python3 /home/$username/src/client_umrs.py create-bucket \
@@ -137,7 +132,14 @@ run_umrs_test() {
           --model "clip-ViT-B-32"
 
         echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..."
-        python3 /home/$username/src/client_umrs.py upload -c $config_file /home/$username/data/img_test/cat.jpeg ${username}-bucket-1
+        python3 /home/$username/src/client_umrs.py upload \
+          --server-url http://umrs-server:8000 \
+          --token "$username" \
+          --username $username \
+          --bucket-alias ${username}-bucket-1 \
+          --xp-name "Text and Images" \
+          --modality "image" \
+          /home/$username/data/img_test/cat.jpeg
     fi
 
     # Test list-buckets API for this user
@@ -147,9 +149,99 @@ run_umrs_test() {
 EOF
 }
 
-# Function to create users via UMRS API (replaces init_minio_users.sh and init_postgres_users.sh)
+# Function to check bucket contents and test deletion
+check_bucket_contents_and_deletion() {
+    local username=$1
+    local token=$1  # Using username as token for simplicity
+
+    echo -e "${GREEN}=== Checking Bucket Contents for User: $username ===${NC}"
+
+    # Get bucket list
+    echo -e "${YELLOW}Getting bucket list for $username...${NC}"
+    bucket_response=$(curl -s -H "Authorization: Bearer $token" \
+                     "http://umrs-server:8000/api/user/list_buckets?username=$username")
+
+    echo "Raw bucket response:"
+    echo "$bucket_response" | python3 -m json.tool
+
+    # Extract bucket names using python
+    buckets=$(echo "$bucket_response" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    buckets = data.get('buckets', [])
+    for bucket in buckets:
+        print(bucket)
+except:
+    pass
+")
+
+    echo -e "${YELLOW}Found buckets for $username:${NC}"
+    echo "$buckets"
+
+    # Check contents of each bucket using MinIO client (direct access from container)
+    if [ -n "$buckets" ]; then
+        echo -e "${YELLOW}Checking bucket contents using MinIO client...${NC}"
+
+        # Setup mc alias directly (since mc is available in this container)
+        echo "Setting up MinIO alias..."
+        mc alias set myminio http://minio:9000 minioadmin minioadmin 2>/dev/null || true
+
+        echo "Listing all buckets:"
+        mc ls myminio 2>/dev/null || echo "Failed to list buckets"
+
+        echo ""
+        echo "Checking bucket contents for $username:"
+
+        # Convert buckets string to array and check each bucket
+        IFS=$'\n' read -rd '' -a bucket_array <<< "$buckets" || true
+
+        for bucket in "${bucket_array[@]}"; do
+            if [ -n "$bucket" ]; then
+                echo "--- Contents of $bucket ---"
+                mc ls myminio/$bucket 2>/dev/null || echo "Empty or inaccessible"
+            fi
+        done
+    fi
+
+    # Test bucket deletion if we have buckets
+    if [ -n "$buckets" ]; then
+        # Get the first bucket for deletion test
+        first_bucket=$(echo "$buckets" | head -n 1)
+
+        if [ -n "$first_bucket" ]; then
+            echo -e "${YELLOW}Testing bucket deletion...${NC}"
+            echo "Will attempt to delete bucket: $first_bucket"
+
+            # Check if delete-bucket functionality exists in client
+            echo "==> Attempting to delete bucket '$first_bucket'..."
+
+            # Using --confirm flag to skip interactive confirmation
+            su - $username <<EOF
+            . /tmp/venv/bin/activate
+            echo "==> python3 /home/$username/src/client_umrs.py delete-bucket --confirm ..."
+            python3 /home/$username/src/client_umrs.py delete-bucket \
+              --server-url http://umrs-server:8000 \
+              --token "$username" \
+              --username $username \
+              --bucket-name "$first_bucket" \
+              --confirm
+EOF
+
+            # Show buckets after deletion attempt
+            echo -e "${YELLOW}Bucket list after deletion attempt:${NC}"
+            curl -s -H "Authorization: Bearer $token" \
+                 "http://umrs-server:8000/api/user/list_buckets?username=$username" | \
+                 python3 -m json.tool
+        fi
+    fi
+
+    echo ""
+}
+
+# Function to create users via UMRS client command (replaces init_minio_users.sh and init_postgres_users.sh)
 create_users_via_umrs() {
-    echo -e "${YELLOW}Creating users via UMRS admin API (replacing shell scripts)...${NC}"
+    echo -e "${YELLOW}Creating users via UMRS client command (replacing shell scripts)...${NC}"
     export UMRS_ADMIN_TOKEN="test_admin_token"
 
     # Install requirements for admin operations
@@ -161,14 +253,14 @@ create_users_via_umrs() {
     declare -a PASSWORDS=("user1pass" "user2pass")
     declare -a S3_SECRETS=("user1secret" "user2secret")
 
-    # Create each user via UMRS API instead of direct shell commands
+    # Create each user via UMRS client command instead of direct shell commands
     for i in "${!USERS[@]}"; do
         USERNAME="${USERS[$i]}"
         PASSWORD="${PASSWORDS[$i]}"
         S3_SECRET="${S3_SECRETS[$i]}"
 
-        echo -e "${YELLOW}Creating user ${USERNAME} via UMRS API...${NC}"
-        echo "==> python3 /client/src/client_umrs.py init-user --username $USERNAME ..."
+        echo -e "${YELLOW}Creating user ${USERNAME} via UMRS client command...${NC}"
+        echo "==> python3 /client/src/client_umrs.py init-user --server-url http://umrs-server:8000 --admin-token \$UMRS_ADMIN_TOKEN --username $USERNAME --password $PASSWORD --s3-secret $S3_SECRET"
 
         python3 /client/src/client_umrs.py init-user \
           --server-url http://umrs-server:8000 \
@@ -185,7 +277,7 @@ create_users_via_umrs() {
         fi
     done
 
-    echo -e "${GREEN}All users created via UMRS API (no separate shell scripts needed)${NC}"
+    echo -e "${GREEN}All users created via UMRS client command (no separate shell scripts needed)${NC}"
 }
 
 # Main execution
@@ -210,7 +302,7 @@ main() {
     done
     echo -e "${GREEN}UMRS server API is ready!${NC}"
 
-    # Create users via UMRS API (replaces init_minio_users.sh and init_postgres_users.sh)
+    # Create users via UMRS client command (replaces init_minio_users.sh and init_postgres_users.sh)
     create_users_via_umrs
 
     # Test User 1
@@ -220,6 +312,11 @@ main() {
     # Test User 2
     echo -e "${GREEN}=== Testing User 2 ===${NC}"
     run_umrs_test "user2" "/home/user2/conf_umrs.json" "user2pass" "user2secret"
+
+    # Check bucket contents and test deletion for both users
+    echo -e "${GREEN}=== Checking Bucket Contents and Testing Deletion ===${NC}"
+    check_bucket_contents_and_deletion "user1"
+    check_bucket_contents_and_deletion "user2"
 
     echo -e "${GREEN}=== Multi-user test completed! ===${NC}"
 }
