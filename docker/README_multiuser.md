@@ -1,14 +1,15 @@
-# UMRS Multi-User Setup
+# UMRS Multi-User Setup with HTTPS
 
-This document describes the multi-user setup for the UMRS (Unified Multi-modal Retrieval System) project.
+This document describes the secure multi-user setup for the UMRS (Unified Multi-modal Retrieval System) project with HTTPS encryption.
 
 ## Overview
 
 The multi-user setup allows multiple users to:
 - Have separate S3 buckets with application-level access control
-- Process texts and images independently
+- Process texts and images independently through HTTPS APIs
 - Store embeddings in separate database tables
 - Use different AI models for different experiences
+- Communicate securely through SSL/TLS encryption
 
 ## Architecture
 
@@ -18,9 +19,15 @@ The multi-user setup allows multiple users to:
 │   Container     │    │   Container     │    │   Container     │
 ├─────────────────┤    ├─────────────────┤    ├─────────────────┤
 │ - user1 env     │    │ - user2 env     │    │ - UMRS Server   │
-│ - config_user1  │    │ - config_user2  │    │ - PostgreSQL    │
+│ - config_user1  │    │ - config_user2  │    │   (HTTPS:8443)  │
+│                 │    │                 │    │ - PostgreSQL    │
 │                 │    │                 │    │ - MinIO         │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
+          │                       │                       │
+          └───────────────────────┼───────────────────────┘
+                                  │
+                            HTTPS/TLS Encrypted
+                         (Self-signed certificates)
 ```
 
 ## File Structure
@@ -30,12 +37,33 @@ docker/
 ├── conf_umrs_user1.json          # User 1 configuration
 ├── conf_umrs_user2.json          # User 2 configuration
 ├── s3cfg                         # Admin S3 credentials (minioadmin/minioadmin)
-├── test_multiuser.sh             # Multi-user test script (automated)
-├── test_multiuser_fixed.sh       # Fixed version of test script
+├── test_multiuser.sh             # Multi-user HTTPS test script (automated)
 ├── Dockerfile.umrs-client-tester # Client tester container
-├── docker-compose.yml            # Complete multi-user setup
+├── docker-compose.yml            # Complete multi-user HTTPS setup
+├── ssl/                          # SSL certificates for HTTPS
+│   ├── server.crt               # SSL certificate
+│   ├── server.key               # SSL private key
+│   └── server.pem               # SSL certificate in PEM format
 └── data/                         # Test data for images and texts
 ```
+
+## HTTPS Configuration
+
+### SSL Certificates
+
+The system uses self-signed SSL certificates for development:
+- **Location**: `docker/ssl/` directory
+- **Files**: `server.crt`, `server.key`, `server.pem`
+- **Usage**: UMRS server runs with HTTPS on port 8443
+- **Client Flag**: Use `--insecure` flag to accept self-signed certificates
+
+### Production Considerations
+
+For production deployment:
+1. Replace self-signed certificates with CA-signed certificates
+2. Remove the `--insecure` flag from all client commands
+3. Update firewall rules for port 8443 (HTTPS)
+4. Configure proper SSL certificate management
 
 ## Configuration Files
 
@@ -58,13 +86,13 @@ Each user has their own configuration file with:
 
 ## Quick Start
 
-1. **Build and Start All Services**
+1. **Build and Start All Services with HTTPS**
    ```bash
    cd docker
    docker compose up --build -d
    ```
 
-2. **Run Multi-User Test (Automated)**
+2. **Run Multi-User HTTPS Test (Automated)**
    ```bash
    # The test runs automatically when containers start
    # Check test results:
@@ -74,7 +102,16 @@ Each user has their own configuration file with:
    docker compose up --build
    ```
 
-3. **Interactive Testing**
+3. **Access HTTPS Services**
+   ```bash
+   # Health check
+   curl -k https://localhost:8443/health
+   
+   # Server status
+   curl -k https://localhost:8443/status
+   ```
+
+4. **Interactive Testing**
    ```bash
    # Open shell in client tester
    docker exec -it umrs-client-tester bash
@@ -105,13 +142,17 @@ docker logs umrs-client-tester | grep -E "(===|✅|✗|Contents of)"
 # Enter client tester container
 docker exec -it umrs-client-tester bash
 
-# Test as user1
+# Test as user1 with HTTPS
 su - user1
-python3 /home/user1/src/client_umrs.py list-buckets --server-url http://umrs-server:8000 --token user1 --username user1
+python3 /home/user1/src/client_umrs.py list-buckets \
+  --server-url https://umrs-server:8443 \
+  --token user1 --username user1 --insecure
 
-# Test as user2
+# Test as user2 with HTTPS
 su - user2
-python3 /home/user2/src/client_umrs.py list-buckets --server-url http://umrs-server:8000 --token user2 --username user2
+python3 /home/user2/src/client_umrs.py list-buckets \
+  --server-url https://umrs-server:8443 \
+  --token user2 --username user2 --insecure
 ```
 
 ### Test Bucket Contents and Deletion
@@ -136,43 +177,46 @@ docker exec -it umrs-client-tester mc --help
 docker exec -it umrs-client-tester mc alias set myminio http://minio:9000 minioadmin minioadmin
 docker exec -it umrs-client-tester mc ls myminio
 
-# Test via UMRS API (preferred method for users)
-docker exec -it umrs-client-tester curl -H "Authorization: Bearer user1" "http://umrs-server:8000/api/user/list_buckets?username=user1"
-docker exec -it umrs-client-tester curl -H "Authorization: Bearer user2" "http://umrs-server:8000/api/user/list_buckets?username=user2"
+# Test via UMRS HTTPS API (preferred method for users)
+docker exec -it umrs-client-tester curl -k -H "Authorization: Bearer user1" \
+  "https://umrs-server:8443/api/user/list_buckets?username=user1"
+docker exec -it umrs-client-tester curl -k -H "Authorization: Bearer user2" \
+  "https://umrs-server:8443/api/user/list_buckets?username=user2"
 ```
 
 ### Create Additional Buckets
 
 ```bash
-# Using UMRS client (recommended)
+# Using UMRS client with HTTPS (recommended)
 docker exec -it umrs-client-tester su - user1 -c "
 python3 /home/user1/src/client_umrs.py create-bucket \
-  --server-url http://umrs-server:8000 \
+  --server-url https://umrs-server:8443 \
   --token user1 \
   --username user1 \
   --bucket-alias user1-custom-bucket \
   --xp-name 'Custom Experience' \
   --modality text \
-  --model 'all-mpnet-base-v2'
+  --model 'all-mpnet-base-v2' \
+  --insecure
 "
 
 # Using MinIO client directly
 docker exec -it umrs-client-tester mc mb myminio/user1-direct-bucket
 ```
 
-## FastAPI Web Server for UMRS
+## FastAPI Web Server for UMRS with HTTPS
 
-UMRS provides a comprehensive FastAPI web interface that supports multi-user operations, including user management, bucket operations, and file uploads.
+UMRS provides a comprehensive FastAPI web interface that supports multi-user operations with HTTPS encryption, including user management, bucket operations, and file uploads.
 
-### How to Run the UMRS Server with FastAPI
+### How to Run the UMRS Server with FastAPI and HTTPS
 
-The UMRS server runs automatically with the multi-user setup:
+The UMRS server runs automatically with HTTPS on the multi-user setup:
 
 ```bash
 docker compose up --build -d
 ```
 
-The FastAPI server will be available on port 8000 with health monitoring.
+The FastAPI server will be available on port 8443 (HTTPS) with health monitoring.
 
 ### Available Endpoints
 
@@ -193,25 +237,26 @@ The FastAPI server will be available on port 8000 with health monitoring.
 **Authentication:**
 - Admin operations require `UMRS_ADMIN_TOKEN`
 - User operations require user-specific tokens
+- All communication encrypted with HTTPS/TLS
 
-### Example API Usage
+### Example HTTPS API Usage
 
 ```bash
-# Health check
-curl http://localhost:8000/health
+# Health check with HTTPS
+curl -k https://localhost:8443/health
 
-# Create user (admin operation)
-curl -X POST http://localhost:8000/api/admin/create_user \
+# Create user (admin operation) with HTTPS
+curl -k -X POST https://localhost:8443/api/admin/create_user \
   -H "Authorization: Bearer test_admin_token" \
   -H "Content-Type: application/json" \
   -d '{"username": "newuser", "password": "password", "s3_secret": "secret"}'
 
-# List user buckets
-curl -H "Authorization: Bearer user1" \
-  "http://localhost:8000/api/user/list_buckets?username=user1"
+# List user buckets with HTTPS
+curl -k -H "Authorization: Bearer user1" \
+  "https://localhost:8443/api/user/list_buckets?username=user1"
 
-# Upload file
-curl -X POST http://localhost:8000/api/user/upload_file \
+# Upload file with HTTPS
+curl -k -X POST https://localhost:8443/api/user/upload_file \
   -H "Authorization: Bearer user1" \
   -F "file=@/path/to/file.txt" \
   -F "username=user1" \
@@ -223,16 +268,17 @@ curl -X POST http://localhost:8000/api/user/upload_file \
 ### Create Additional Buckets
 
 ```bash
-# Using UMRS client (recommended)
+# Using UMRS client with HTTPS (recommended)
 docker exec -it umrs-client-tester su - user1 -c "
 python3 /home/user1/src/client_umrs.py create-bucket \
-  --server-url http://umrs-server:8000 \
+  --server-url https://umrs-server:8443 \
   --token user1 \
   --username user1 \
   --bucket-alias user1-custom-bucket \
   --xp-name 'Custom Experience' \
   --modality text \
-  --model 'all-mpnet-base-v2'
+  --model 'all-mpnet-base-v2' \
+  --insecure
 "
 
 # Using MinIO client directly
@@ -241,16 +287,17 @@ docker exec -it umrs-client-tester mc mb myminio/user1-direct-bucket
 
 ## Automated Testing Features
 
-The enhanced test script (`test_multiuser.sh`) provides comprehensive testing:
+The enhanced test script (`test_multiuser.sh`) provides comprehensive HTTPS testing:
 
 ### Test Capabilities
 
-1. **User Creation**: Uses UMRS API to create users with proper S3 and PostgreSQL setup
-2. **Bucket Management**: Creates buckets using both manual and config-based approaches
-3. **File Upload**: Tests file upload for different modalities (text, images)
+1. **User Creation**: Uses UMRS HTTPS API to create users with proper S3 and PostgreSQL setup
+2. **Bucket Management**: Creates buckets using both manual and config-based approaches via HTTPS
+3. **File Upload**: Tests file upload for different modalities (text, images) through HTTPS
 4. **Bucket Contents Inspection**: Uses MinIO client to show actual bucket contents
-5. **Bucket Deletion**: Tests bucket deletion with confirmation
-6. **API Validation**: Verifies all operations through UMRS FastAPI endpoints
+5. **Bucket Deletion**: Tests bucket deletion with confirmation via HTTPS API
+6. **API Validation**: Verifies all operations through UMRS FastAPI HTTPS endpoints
+7. **SSL Certificate Validation**: Tests HTTPS connectivity with self-signed certificates
 
 ### Test Flow
 
@@ -265,9 +312,9 @@ docker exec umrs-client-tester /client/test_multiuser.sh
 ### Test Output Example
 
 ```
-=== UMRS Multi-User Test Script ===
+=== UMRS Multi-User Test Script (HTTPS) ===
 ✅ MinIO is ready!
-✅ PostgreSQL is ready!
+✅ PostgreSQL is ready!  
 ✅ UMRS Server is ready!
 
 Creating users via UMRS client command...
@@ -276,12 +323,13 @@ Creating users via UMRS client command...
 
 === Testing User 1 ===
 ✅ Bucket 'user1-bucket-5' created successfully
-✅ Bucket 'user1-bucket-2' created successfully
+✅ File 'beast_in_the_jungle.txt' uploaded successfully
 ✅ Bucket 'user1-bucket-1' created successfully
+✅ File 'cat.jpeg' uploaded successfully
 
 === Checking Bucket Contents and Testing Deletion ===
 --- Contents of user1.images-and-texts.user1-bucket-5 ---
-(empty or inaccessible)
+[2025-08-07 15:30:24 UTC] 101KiB STANDARD tmp3dn7rzuo.txt
 
 ✅ Bucket 'user1.images-and-texts.user1-bucket-5' deleted successfully
 === Multi-user test completed! ===
@@ -356,9 +404,12 @@ docker exec umrs-client-tester ping postgres
 docker exec umrs-client-tester mc alias set myminio http://minio:9000 minioadmin minioadmin
 docker exec umrs-client-tester mc ls myminio
 
-# Test UMRS API
-docker exec umrs-client-tester curl -s http://umrs-server:8000/health
-docker exec umrs-client-tester curl -s http://umrs-server:8000/status
+# Test UMRS HTTPS API
+docker exec umrs-client-tester curl -k -s https://umrs-server:8443/health
+docker exec umrs-client-tester curl -k -s https://umrs-server:8443/status
+
+# Test SSL certificate
+docker exec umrs-client-tester openssl s_client -connect umrs-server:8443 -servername umrs-server
 
 # Check test script execution
 docker exec umrs-client-tester cat /client/test_multiuser.sh
@@ -370,29 +421,36 @@ docker exec umrs-client-tester mc ls myminio --recursive
 
 ## Security Notes
 
-- **Production Deployment**: Use proper secret management (Docker secrets, environment variables)
+- **HTTPS Encryption**: All client-server communication encrypted with TLS
+- **Self-signed Certificates**: Development uses self-signed certificates with `--insecure` flag
+- **Production Deployment**: Use proper SSL certificates and remove `--insecure` flag for production
 - **MinIO Security**: Implement proper access controls and policies
-- **Authentication**: Current implementation uses simple token-based auth for testing
-- **Network Security**: Containers communicate via internal Docker network
+- **Authentication**: Current implementation uses token-based auth with HTTPS encryption
+- **Network Security**: Containers communicate via internal Docker network with HTTPS overlay
 - **Credential Management**: Single admin credential set for all S3 operations with user authentication handled at application level
-- **API Security**: FastAPI endpoints include basic authentication validation
+- **API Security**: FastAPI endpoints include basic authentication validation over HTTPS
+- **Certificate Management**: Store production certificates securely and implement proper rotation policies
 
 ## Implementation Notes
 
 ### Recent Improvements
 
-1. **Fixed S3 SignatureDoesNotMatch**: Modified `list_buckets` API to use admin credentials
-2. **Enhanced Testing**: Added comprehensive bucket content inspection and deletion testing
-3. **Docker Network Integration**: Test script works within container network using service names
-4. **Automated User Creation**: Users are created via UMRS API instead of manual scripts
-5. **MinIO Client Integration**: Direct MinIO client usage for bucket management and inspection
+1. **HTTPS Implementation**: Added complete SSL/TLS encryption with self-signed certificates
+2. **Fixed S3 SignatureDoesNotMatch**: Modified `list_buckets` API to use admin credentials
+3. **Enhanced HTTPS Testing**: Added comprehensive bucket content inspection and deletion testing via HTTPS
+4. **Docker Network Integration**: Test script works within container network using HTTPS service names
+5. **Automated User Creation**: Users are created via UMRS HTTPS API instead of manual scripts
+6. **MinIO Client Integration**: Direct MinIO client usage for bucket management and inspection
+7. **SSL Certificate Management**: Self-signed certificates for development, production-ready certificate support
 
 ### Architecture Decisions
 
+- **HTTPS-First Design**: All API communication encrypted by default
 - **Admin Credentials Only**: Admin credentials exclusively for all S3 operations ensuring reliability and consistency
-- **FastAPI Integration**: Comprehensive REST API for all UMRS operations
-- **Container Orchestration**: Single `docker compose up` command for complete setup
-- **Automated Testing**: Self-contained test execution with detailed reporting
+- **FastAPI HTTPS Integration**: Comprehensive REST API with SSL/TLS encryption for all UMRS operations
+- **Container Orchestration**: Single `docker compose up` command for complete HTTPS setup
+- **Automated HTTPS Testing**: Self-contained test execution with detailed HTTPS connectivity reporting
+- **Development SSL**: Self-signed certificates with `--insecure` flag for development simplicity
 
 ## Next Steps
 
@@ -402,11 +460,13 @@ docker exec umrs-client-tester mc ls myminio --recursive
 3. ✅ **Improved Docker integration** - Internal network communication
 
 ### Future Enhancements
-1. **Advanced Authentication** - JWT tokens, OAuth integration
-2. **Production MinIO Setup** - Proper user policies and access controls  
-3. **Enhanced Error Handling** - Better error messages and recovery
-4. **Monitoring and Logging** - Prometheus metrics, structured logging
-5. **Kubernetes Deployment** - Production-ready orchestration
-6. **Multi-tenancy** - Proper resource isolation and quotas
-7. **API Rate Limiting** - Prevent abuse and ensure fair usage
-8. **Backup and Recovery** - Automated backup strategies for data protection
+1. **Production SSL Certificates** - Integration with Let's Encrypt or CA-signed certificates
+2. **Advanced Authentication** - JWT tokens, OAuth integration with HTTPS
+3. **Production MinIO Setup** - Proper user policies and access controls with HTTPS endpoints
+4. **Enhanced Error Handling** - Better HTTPS error messages and SSL troubleshooting
+5. **Monitoring and Logging** - Prometheus metrics with HTTPS endpoints, structured SSL logging
+6. **Kubernetes Deployment** - Production-ready orchestration with SSL certificate management
+7. **Multi-tenancy** - Proper resource isolation and quotas with HTTPS APIs
+8. **API Rate Limiting** - Prevent abuse and ensure fair usage on HTTPS endpoints
+9. **Backup and Recovery** - Automated backup strategies for data protection with encrypted transfers
+10. **SSL Certificate Automation** - Automatic certificate renewal and management
