@@ -185,26 +185,31 @@ def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location):
 def list_s3_bucket(s3, path_to_bucket):
     print(f"Listing objects in bucket: {path_to_bucket}")
     objects_list = []
-
+    checksums = []
+    total_size = 0
+    
     try:
         response = s3.list_objects_v2(Bucket=path_to_bucket)
         for obj in response.get('Contents', []):
             objects_list.append(f"s3://{path_to_bucket}/{obj['Key']}")
+            checksums.append(obj['ETag'].strip('"'))
+            total_size += obj['Size']
     except s3.exceptions.NoSuchBucket:
         print(f"Bucket not found: {path_to_bucket}")
     except Exception as e:
         print(f"Error listing bucket '{path_to_bucket}': {e}")
 
-    return objects_list
+    return objects_list, total_size, checksums
 
       
         
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     objects = []  
     metadata = []
-    
+    checksums = []
     for s3_key in s3_keys: 
         obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
+        checksums.append(obj['ETag'].strip('"'))
         metadata.append(obj.get("Metadata", {}))
         
         if modality_name == "text":  # Handle text stored in file
@@ -222,7 +227,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
         else:
             raise ValueError(f"Unsupported modality '{modality_name}'while loading data '{path_to_bucket}/{s3_key}' from S3")
 
-    return objects, metadata
+    return objects, metadata, checksums
 
 
 

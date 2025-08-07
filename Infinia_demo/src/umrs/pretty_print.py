@@ -27,6 +27,7 @@ def pretty_print_cfg(cfg_dict):
 
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
+    print("\nServer confuguration:")
     print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
 
 
@@ -54,3 +55,23 @@ def pretty_print_user_cfg(cfg_dict):
         
     print(f"Configuration for S3 user '{username}':")
     print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
+
+def pretty_print_recompute(recompute_dict):
+    df = pd.DataFrame(columns=["Bucket alias", "S3 user",  "Bucket path", "Modality", "Model", "Objects", "Size (MB)", "Duration (s)"])
+
+    for path_to_bucket, entry in recompute_dict.items():
+        bucket_alias = entry["bucket_alias"]
+        modality = entry["modality_name"]
+        duration = entry["duration"]
+        num_objects = entry["nb_objects"]
+        s3_user = entry["s3_username"]
+        model=  entry["model"].model_name
+        size = entry["total_size_MB"]
+
+        df.loc[len(df)] = [bucket_alias, s3_user,  path_to_bucket, modality, model, num_objects, size, duration]
+
+    df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+
+    print("\nRecompute Summary:")
+    print(tabulate(df, headers="keys", tablefmt="fancy_grid"))

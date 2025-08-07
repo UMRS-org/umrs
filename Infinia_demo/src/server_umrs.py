@@ -9,12 +9,13 @@ from umrs.s3 import *
 from umrs.models import load_model
 from umrs.perf_test import run_perf_test
 from umrs.MessageQueue import MessageQueue
-from umrs.pretty_print import pretty_print_cfg
+from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute
 from umrs.modality import *
 from umrs.json_utils import load_server_cfg_file
 from collections import defaultdict
 import signal
 import torch
+import time
 
 def store_db_model(db_model_store, path_to_bucket, bucket_alias, s3_username, db_pool, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name):
     """Stores data base and model for a given (user, bucket_alias)."""
@@ -118,12 +119,12 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
         modality_name (str): "text" or "image".
         s3_connection: Boto3 S3 client.
     """
-    objects, metadata = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
+    objects, metadata, checksums = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
 
     embeddings = model.compute_embeddings(objects)
 
     # Store **all** embeddings in batch
-    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, metadata_list=metadata)
+    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, metadata_list=metadata)
 
 def process_s3_objects(s3_objects, db_model_store):
     
@@ -149,17 +150,40 @@ def process_s3_objects(s3_objects, db_model_store):
             print(f"We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")")
 
 
-def process_all_files(db_model_store):
-     for path_to_bucket, entry in db_model_store.items():
-         s3_objects = list_s3_bucket(entry["s3_connection"], path_to_bucket)
-         if len(s3_objects)>0 :
+
+def recompute_all_objects(db_model_store):
+    print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
+
+    recompute_dict = {}
+
+    for path_to_bucket, entry in db_model_store.items():
+        s3_objects, total_size = list_s3_bucket(entry["s3_connection"], path_to_bucket)
+
+        if len(s3_objects) > 0:
+            start_time = time.perf_counter()  # More precise than time.time()
             process_s3_objects(s3_objects, db_model_store)
+            duration = round((time.perf_counter() - start_time),3)            
+        else:
+            duration = 0
+
+        recompute_dict[path_to_bucket] = {
+            "bucket_alias": entry["bucket_alias"],
+            "duration": duration,
+            "nb_objects": len(s3_objects),
+            "modality_name": entry["modality_name"],
+            "s3_username": entry["s3_username"],
+            "total_size_MB": round(total_size / (1024**2), 3),
+            "model": entry["model"]
+        }
+
+    pretty_print_recompute(recompute_dict)
 
          
 parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 parser.add_argument('--force-recompute', action='store_true', help='Force all embeddings recomputation by scanning all S3 directories')
+parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
 
 
 args = parser.parse_args()
@@ -197,13 +221,16 @@ print(f"-->  Models will be run on device: {device}")
 print(f"\n######################\nServer configuration done!\n######################\n")
 
 
-pretty_print_cfg(db_model_store)
 
 # run_perf_test()
 
 if args.force_recompute:
-    process_all_files(db_model_store)
+    recompute_all_objects(db_model_store)
 
+if args.check_missing:
+    check_missing_objects(db_model_store)
+
+pretty_print_cfg(db_model_store)
 
 try:
     # loop for new new object to be created
@@ -216,8 +243,8 @@ try:
         if is_handshake: # The client ask me if I am ready.
             print("Received handshake request. Answering 'READY!'")
             response_mq.handshake("READY!")
-            continue;
-        process_s3_objects(s3_objects, db_model_store)
+        else:
+            process_s3_objects(s3_objects, db_model_store)
         
 except KeyboardInterrupt:
     print("\nInterrupted by user. Exiting gracefully...")
