@@ -5,7 +5,7 @@ import psycopg2
 from psycopg2 import sql, pool
 from datetime import datetime
 import psycopg2
-
+from server_umrs import query_db_model
 
 class DataBase:
     def __init__(self, db_pool, db_name, username):
@@ -473,7 +473,55 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     else:
         raise ValueError(f"Unsupported modality '{modality_name}' for embedding storage.")
-    
 
+def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
+    db_pool = data_base.db_pool
+    conn = db_pool.getconn()
+    try:
+        cur = conn.cursor()
+        s3_object = f"{bucket_name}/{s3_key}"  # Full S3 path
 
+        # Query to get the existing checksum for this S3 object
+        query = f"""
+            SELECT checksum FROM {table_name}
+            WHERE s3_object = %s
+            ORDER BY id DESC LIMIT 1;
+        """
+        cur.execute(query, (s3_object,))
+        result = cur.fetchone()
 
+        if result is None:
+            return {
+                "status": "not_found",
+                "message": f"No entry found in table '{table_name}' for key: {s3_object}"
+            }
+
+        db_checksum = result[0]
+
+        if db_checksum == checksum:
+            return {
+                "status": "match",
+                "message": f"Checksum match for '{s3_object}'."
+            }
+        else:
+            return {
+                "status": "mismatch",
+                "message": f"Checksum mismatch for '{s3_object}': DB has '{db_checksum}', expected '{checksum}'"
+            }
+
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Exception occurred during DB check: {e}"
+        }
+    finally:
+        cur.close()
+        db_pool.putconn(conn)
+
+def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
+    username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+    status = []
+    for i, s3_object in enumerate(s3_objects):
+        _, s3_key = s3_object.replace("s3://", "").split("/", 1)
+        status.append(check_status_db(path_to_bucket, s3_key, checksums[i], data_base, table_name))
+    return status

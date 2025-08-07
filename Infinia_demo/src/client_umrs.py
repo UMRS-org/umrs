@@ -67,6 +67,7 @@ parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose
 parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue bewteen 'zeromq', 'posix_ipc', or 'sysv_ipc'")
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
+parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
 parser.add_argument("data", type=str, nargs="?", help="input data", default = None)
 parser.add_argument("bucket", type=str, nargs="?", help="target bucket alias", default = None)
 args = parser.parse_args()
@@ -75,10 +76,11 @@ args = parser.parse_args()
 mq = MessageQueue(queue_type= args.queue_type, role = "client")
 response_mq = MessageQueue(queue_type= args.queue_type, role = "server", queue_name="/tmp/response")
 
-if not is_server_ready(mq, response_mq, timeout_ms=5000):
-    sys.exit("Server connection timeout...\n"
-             "Cannot continue!"
-             )
+if not args.no_check_server:
+    if not is_server_ready(mq, response_mq, timeout_ms=5000):
+        sys.exit("Server connection timeout...\n"
+                 "Cannot continue!"
+                 )
 
 print (f"Server ready.\nConnected to message queue of type '{args.queue_type}'")
 
