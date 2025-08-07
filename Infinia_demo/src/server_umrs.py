@@ -9,7 +9,7 @@ from umrs.s3 import *
 from umrs.models import load_model
 from umrs.perf_test import run_perf_test
 from umrs.MessageQueue import MessageQueue
-from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute
+from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check
 from umrs.modality import *
 from umrs.json_utils import load_server_cfg_file
 from collections import defaultdict
@@ -157,7 +157,7 @@ def recompute_all_objects(db_model_store):
     recompute_dict = {}
 
     for path_to_bucket, entry in db_model_store.items():
-        s3_objects, total_size = list_s3_bucket(entry["s3_connection"], path_to_bucket)
+        s3_objects, total_size, _ = list_s3_bucket(entry["s3_connection"], path_to_bucket)
 
         if len(s3_objects) > 0:
             start_time = time.perf_counter()  # More precise than time.time()
@@ -178,75 +178,120 @@ def recompute_all_objects(db_model_store):
 
     pretty_print_recompute(recompute_dict)
 
-         
-parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
-parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
-parser.add_argument('--force-recompute', action='store_true', help='Force all embeddings recomputation by scanning all S3 directories')
-parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
+def check_objects(db_model_store, verbose= False):
+    print(f"\n######################\nChecking all objects in all buckets\n######################\n")
+
+    perform_update = False
+    check_dict = {}
+    for path_to_bucket, entry in db_model_store.items():
+        nb_not_found, nb_match, nb_mismatch, nb_error = 0, 0, 0, 0
+        s3_objects, total_size, checksums = list_s3_bucket(entry["s3_connection"], path_to_bucket)
+        status = check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store)
+        for i, s3_object in enumerate(s3_objects):
+            s = status[i]['status']
+            if verbose: 
+                print(f"{s3_object}: {s}")
+            if s == "match":
+                nb_match += 1
+            elif s == "mismatch":
+                nb_mismatch += 1
+            elif s == "not_found":
+                nb_not_found += 1
+            else:
+                nb_error += 1
+
+            if len(s3_objects) != nb_match:
+                perform_update = True
+        check_dict[path_to_bucket] = {
+            "bucket_alias": entry["bucket_alias"],
+            "nb_objects": len(s3_objects),
+            "modality_name": entry["modality_name"],
+            "s3_username": entry["s3_username"],
+            "total_size_MB": round(total_size / (1024**2), 3),
+            "model": entry["model"],
+            "matches":  nb_match,
+            "Mismatches": nb_mismatch,
+            "Not_found": nb_not_found,
+            "Errors": nb_error
+        }
+    pretty_print_check(check_dict)
+    if perform_update:
+        print("\n⚠️ Warning: The database is not fully consistent with the objects stored in S3.")
+        print("→ To recompute and update the missing or mismatched entries, restart the server with the `--force-update` option.\n")
+    
+def main():
+    parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
+    parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
+    parser.add_argument('--force-recompute', action='store_true', help='Force all embeddings recomputation by scanning all S3 directories')
+    parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
 
 
-args = parser.parse_args()
+    args = parser.parse_args()
 
-configure_file = args.conf
+    configure_file = args.conf
 
-# Check if the file exists
-if not os.path.exists(configure_file):
-    sys.exit(f"Configuration file '{configure_file}' not found.")
-
-
-admin_s3_configuration_file, users = load_server_cfg_file(configure_file)
-# Print loaded content (optional)
-print("Configuration loaded successfully.")
-
-# create the message queue:
-mq = MessageQueue(queue_type = args.queue_type);
-response_mq = MessageQueue(queue_type = args.queue_type, role='client', queue_name="/tmp/response")
-print (f"Subscribed to message queue '{args.queue_type}'")
+    # Check if the file exists
+    if not os.path.exists(configure_file):
+        sys.exit(f"Configuration file '{configure_file}' not found.")
 
 
-# create S3/SQL  users if necessary 
-for user in users:
-    create_s3_sql_users(user, admin_s3_configuration_file)
+    admin_s3_configuration_file, users = load_server_cfg_file(configure_file)
+    # Print loaded content (optional)
+    print("Configuration loaded successfully.")
+
+    # create the message queue:
+    mq = MessageQueue(queue_type = args.queue_type);
+    response_mq = MessageQueue(queue_type = args.queue_type, role='client', queue_name="/tmp/response")
+    print (f"Subscribed to message queue '{args.queue_type}'")
 
 
-#configure server for each users
-db_model_store = defaultdict(dict)
-for user in users:
-    configure_user(user, db_model_store)
-
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"-->  Models will be run on device: {device}")
-
-print(f"\n######################\nServer configuration done!\n######################\n")
+    # create S3/SQL  users if necessary 
+    for user in users:
+        create_s3_sql_users(user, admin_s3_configuration_file)
 
 
+    #configure server for each users
+    db_model_store = defaultdict(dict)
+    for user in users:
+        configure_user(user, db_model_store)
 
-# run_perf_test()
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"-->  Models will be run on device: {device}")
 
-if args.force_recompute:
-    recompute_all_objects(db_model_store)
+    print(f"\n######################\nServer configuration done!\n######################\n")
 
-if args.check_missing:
-    check_missing_objects(db_model_store)
 
-pretty_print_cfg(db_model_store)
 
-try:
-    # loop for new new object to be created
-    is_handshake = False
-    while True:
-        if not is_handshake: #Only print if we did not have handshake in the last round
-            print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+    # run_perf_test()
 
-        s3_objects, is_handshake = mq.wait_for_s3_events()
-        if is_handshake: # The client ask me if I am ready.
-            print("Received handshake request. Answering 'READY!'")
-            response_mq.handshake("READY!")
-        else:
-            process_s3_objects(s3_objects, db_model_store)
+    if args.force_recompute:
+        recompute_all_objects(db_model_store)
+
+    if args.check_objects:
+        check_objects(db_model_store)
+
+    pretty_print_cfg(db_model_store)
+
+    try:
+        # loop for new new object to be created
+        is_handshake = False
+        while True:
+            if not is_handshake: #Only print if we did not have handshake in the last round
+                print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+
+            s3_objects, is_handshake = mq.wait_for_s3_events()
+            if is_handshake: # The client ask me if I am ready.
+                print("Received handshake request. Answering 'READY!'")
+                response_mq.handshake("READY!")
+            else:
+                process_s3_objects(s3_objects, db_model_store)
         
-except KeyboardInterrupt:
-    print("\nInterrupted by user. Exiting gracefully...")
-    mq.close()
-    sys.exit(0)  # Ensures a clean exit
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Exiting gracefully...")
+        mq.close()
+        sys.exit(0)  # Ensures a clean exit
+
+
+if __name__ == "__main__":
+    main()
