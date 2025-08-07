@@ -238,6 +238,8 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     table_columns.append(column)
     column = {"name": "s3_object", "type": "TEXT"}
     table_columns.append(column)
+    column = {"name": "checksum", "type": "TEXT"}
+    table_columns.append(column)
     store_embeddings_flag = False
     column = {"name": "date", "type": "DATE"}
     table_columns.append(column)
@@ -324,7 +326,7 @@ def is_string_type(sql_type):
     string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
     return sql_type.upper() in string_types
 
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  content = None, start = None, end = None, md5 = None, metadata = {}, silent = False):
+def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  checksum=None, content = None, start = None, end = None, md5 = None, metadata = {}, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -353,9 +355,9 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             query = f"""
             INSERT INTO {table_name} (
             s3_object, _content, embedding, date, time,
-            chunk_start, chunk_end, chunk_md5
+            chunk_start, chunk_end, chunk_md5, checksum
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
             embedding = EXCLUDED.embedding,
             date = EXCLUDED.date,
@@ -363,19 +365,20 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             _content = EXCLUDED._content,
             chunk_start = EXCLUDED.chunk_start,
             chunk_end = EXCLUDED.chunk_end,
-            chunk_md5 = EXCLUDED.chunk_md5
+            chunk_md5 = EXCLUDED.chunk_md5,
+            checksum = EXCLUDED.checksum
             RETURNING id;
             """
-            cur.execute(query, (s3_object, content, embedding, date, time, start, end, md5))
+            cur.execute(query, (s3_object, content, embedding, date, time, start, end, md5, checksum))
         else:
             query = f"""
-            INSERT INTO {table_name} (s3_object, embedding, date, time)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO {table_name} (s3_object, embedding, date, time, checksum)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (s3_object) DO UPDATE
-            SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time
+            SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time, checksum = EXCLUDED.checksum
             RETURNING id;
             """
-            cur.execute(query, (s3_object, embedding, date, time))
+            cur.execute(query, (s3_object, embedding, date, time, checksum))
 
          # Fetch the inserted/updated ID
         inserted_id = cur.fetchone()[0]  # Fetch the first column of the result
@@ -422,7 +425,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         cur.close()
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, metadata_list=[]):
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, checksums, metadata_list=[]):
     """
     Store embeddings in the database depending on the data modality.
 
@@ -438,7 +441,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     if modality_name == "image":
         # One embedding per image file
-        for embedding, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
+        for embedding, s3_key, metadata, checksum in zip(embeddings, s3_keys, metadata_list, checksums):
             store_one_embedding_in_db(
                 data_base,
                 embedding=embedding,
@@ -446,12 +449,13 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 bucket_name=bucket_name,
                 s3_key=s3_key,
                 content=None,
-                metadata=metadata
+                metadata=metadata,
+                checksum=checksum
             )
 
     elif modality_name in ("text", "text file"):
         # Multiple embeddings per file (one per text chunk)
-        for chunked_embeddings, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
+        for chunked_embeddings, s3_key, metadata, checksum in zip(embeddings, s3_keys, metadata_list, checksums):
             for chunk in chunked_embeddings:
                 store_one_embedding_in_db(
                     data_base,
@@ -463,7 +467,8 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                     start=chunk["start"],
                     end=chunk["end"],
                     md5=chunk["md5"],
-                    metadata=metadata
+                    metadata=metadata,
+                    checksum=checksum
                 )
 
     else:
