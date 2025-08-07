@@ -8,7 +8,11 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== UMRS Multi-User Test Script ===${NC}"
+echo -e "${GREEN}=== UMRS Multi-User Test Script (HTTPS) ===${NC}"
+
+# Configuration
+UMRS_SERVER_URL="https://umrs-server:8443"
+INSECURE_FLAG="--insecure"  # For self-signed certificates
 
 # Function to wait for services to be ready
 wait_for_service() {
@@ -21,6 +25,28 @@ wait_for_service() {
     echo -e "${YELLOW}Waiting for $service_name to be ready...${NC}"
 
     while ! nc -z $host $port; do
+        if [ $attempt -eq $max_attempts ]; then
+            echo -e "${RED}Failed to connect to $service_name after $max_attempts attempts${NC}"
+            exit 1
+        fi
+        echo "Attempt $attempt/$max_attempts: $service_name not ready yet..."
+        sleep 2
+        ((attempt++))
+    done
+
+    echo -e "${GREEN}$service_name is ready!${NC}"
+}
+
+# Function to wait for HTTPS service to be ready
+wait_for_https_service() {
+    local service_name=$1
+    local url=$2
+    local max_attempts=30
+    local attempt=1
+
+    echo -e "${YELLOW}Waiting for $service_name to be ready...${NC}"
+
+    while ! curl -k -f -s "$url" > /dev/null 2>&1; do
         if [ $attempt -eq $max_attempts ]; then
             echo -e "${RED}Failed to connect to $service_name after $max_attempts attempts${NC}"
             exit 1
@@ -56,96 +82,104 @@ run_umrs_test() {
 
     if [ "$username" = "user2" ]; then
         # Use create-buckets-from-config for user2
-        echo "==> python3 /home/$username/src/client_umrs.py create-buckets-from-config ..."
+        echo "==> python3 /home/$username/src/client_umrs.py create-buckets-from-config ..." $INSECURE_FLAG
         python3 /home/$username/src/client_umrs.py create-buckets-from-config \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --token "$username" \
-          --config $config_file
+          --config $config_file \
+          $INSECURE_FLAG
 
         # Upload sample text to text bucket using hybrid API
-        echo "==> python3 /home/$username/src/client_umrs.py upload (text) ..."
+        echo "==> python3 /home/$username/src/client_umrs.py upload (text) ..." $INSECURE_FLAG
         python3 /home/$username/src/client_umrs.py upload \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --token "$username" \
           --username $username \
           --bucket-alias ${username}-bucket-5 \
           --xp-name "Images and Texts" \
           --modality "text file" \
-          /home/$username/data/texts/beast_in_the_jungle.txt
+          /home/$username/data/texts/beast_in_the_jungle.txt \
+          $INSECURE_FLAG
 
         # Store a single line of text to text bucket (text modality) - skip for now as it requires file
         echo "==> Skipping single line text upload (requires file input in hybrid mode)"
 
         # Upload sample image to image bucket using hybrid API
-        echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..."
+        echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..." $INSECURE_FLAG
         python3 /home/$username/src/client_umrs.py upload \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --token "$username" \
           --username $username \
           --bucket-alias ${username}-bucket-3 \
           --xp-name "Images and Texts" \
           --modality "image" \
-          /home/$username/data/img_test/cat.jpeg
+          /home/$username/data/img_test/cat.jpeg \
+          $INSECURE_FLAG
     else
         # Manual bucket creation for user1 (default/override example)
-        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text file) ..."
+        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text file) ..." $INSECURE_FLAG
         python3 /home/$username/src/client_umrs.py create-bucket \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --token "$username" \
           --username $username \
           --bucket-alias ${username}-bucket-5 \
           --xp-name "Images and Texts" \
           --modality "text file" \
-          --model "intfloat/e5-base-v2"
+          --model "intfloat/e5-base-v2" \
+          $INSECURE_FLAG
 
-        echo "==> python3 /home/$username/src/client_umrs.py upload (text file) ..."
+        echo "==> python3 /home/$username/src/client_umrs.py upload (text file) ..." $INSECURE_FLAG
         python3 /home/$username/src/client_umrs.py upload \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --token "$username" \
           --username $username \
           --bucket-alias ${username}-bucket-5 \
           --xp-name "Images and Texts" \
           --modality "text file" \
-          /home/$username/data/texts/beast_in_the_jungle.txt
+          /home/$username/data/texts/beast_in_the_jungle.txt \
+          $INSECURE_FLAG
 
-        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text) ..."
+        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (text) ..." $INSECURE_FLAG
         python3 /home/$username/src/client_umrs.py create-bucket \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --token "$username" \
           --username $username \
           --bucket-alias ${username}-bucket-2 \
           --xp-name "Text and Images" \
           --modality text \
-          --model "all-mpnet-base-v2"
+          --model "all-mpnet-base-v2" \
+          $INSECURE_FLAG
 
         # Store a single line of text to text bucket (text modality) - skip for now as it requires file
         echo "==> Skipping single line text upload (requires file input in hybrid mode)"
 
-        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (image) ..."
+        echo "==> python3 /home/$username/src/client_umrs.py create-bucket (image) ..." $INSECURE_FLAG
         python3 /home/$username/src/client_umrs.py create-bucket \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --token "$username" \
           --username $username \
           --bucket-alias ${username}-bucket-1 \
           --xp-name "Text and Images" \
           --modality image \
-          --model "clip-ViT-B-32"
+          --model "clip-ViT-B-32" \
+          $INSECURE_FLAG
 
-        echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..."
+        echo "==> python3 /home/$username/src/client_umrs.py upload (image) ..." $INSECURE_FLAG
         python3 /home/$username/src/client_umrs.py upload \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --token "$username" \
           --username $username \
           --bucket-alias ${username}-bucket-1 \
           --xp-name "Text and Images" \
           --modality "image" \
-          /home/$username/data/img_test/cat.jpeg
+          /home/$username/data/img_test/cat.jpeg \
+          $INSECURE_FLAG
     fi
 
     # Test list-buckets API for this user
     echo "==> Testing list-buckets for $username..."
-    echo "==> python3 /home/$username/src/client_umrs.py list-buckets ..."
-    python3 /home/$username/src/client_umrs.py list-buckets --server-url http://umrs-server:8000 --token "$username" --username $username
+    echo "==> python3 /home/$username/src/client_umrs.py list-buckets ..." $INSECURE_FLAG
+    python3 /home/$username/src/client_umrs.py list-buckets --server-url $UMRS_SERVER_URL --token "$username" --username $username $INSECURE_FLAG
 EOF
 }
 
@@ -158,8 +192,8 @@ check_bucket_contents_and_deletion() {
 
     # Get bucket list
     echo -e "${YELLOW}Getting bucket list for $username...${NC}"
-    bucket_response=$(curl -s -H "Authorization: Bearer $token" \
-                     "http://umrs-server:8000/api/user/list_buckets?username=$username")
+    bucket_response=$(curl -s -k -H "Authorization: Bearer $token" \
+                     "https://umrs-server:8443/api/user/list_buckets?username=$username")
 
     echo "Raw bucket response:"
     echo "$bucket_response" | python3 -m json.tool
@@ -219,19 +253,20 @@ except:
             # Using --confirm flag to skip interactive confirmation
             su - $username <<EOF
             . /tmp/venv/bin/activate
-            echo "==> python3 /home/$username/src/client_umrs.py delete-bucket --confirm ..."
+            echo "==> python3 /home/$username/src/client_umrs.py delete-bucket --confirm ..." $INSECURE_FLAG
             python3 /home/$username/src/client_umrs.py delete-bucket \
-              --server-url http://umrs-server:8000 \
+              --server-url $UMRS_SERVER_URL \
               --token "$username" \
               --username $username \
               --bucket-name "$first_bucket" \
-              --confirm
+              --confirm \
+          $INSECURE_FLAG
 EOF
 
             # Show buckets after deletion attempt
             echo -e "${YELLOW}Bucket list after deletion attempt:${NC}"
-            curl -s -H "Authorization: Bearer $token" \
-                 "http://umrs-server:8000/api/user/list_buckets?username=$username" | \
+            curl -s -k -H "Authorization: Bearer $token" \
+                 "https://umrs-server:8443/api/user/list_buckets?username=$username" | \
                  python3 -m json.tool
         fi
     fi
@@ -260,14 +295,15 @@ create_users_via_umrs() {
         S3_SECRET="${S3_SECRETS[$i]}"
 
         echo -e "${YELLOW}Creating user ${USERNAME} via UMRS client command...${NC}"
-        echo "==> python3 /client/src/client_umrs.py init-user --server-url http://umrs-server:8000 --admin-token \$UMRS_ADMIN_TOKEN --username $USERNAME --password $PASSWORD --s3-secret $S3_SECRET"
+        echo "==> python3 /client/src/client_umrs.py init-user --server-url $UMRS_SERVER_URL --admin-token \$UMRS_ADMIN_TOKEN --username $USERNAME --password $PASSWORD --s3-secret $S3_SECRET" $INSECURE_FLAG
 
         python3 /client/src/client_umrs.py init-user \
-          --server-url http://umrs-server:8000 \
+          --server-url $UMRS_SERVER_URL \
           --admin-token "$UMRS_ADMIN_TOKEN" \
           --username "$USERNAME" \
           --password "$PASSWORD" \
-          --s3-secret "$S3_SECRET"
+          --s3-secret "$S3_SECRET" \
+          $INSECURE_FLAG
 
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}User $USERNAME created successfully${NC}"
@@ -287,20 +323,13 @@ main() {
     # Wait for services to be ready
     wait_for_service "MinIO" "minio" 9000
     wait_for_service "PostgreSQL" "postgres" 5432
-    wait_for_service "UMRS Server" "umrs-server" 8000
+    wait_for_https_service "UMRS Server" "https://umrs-server:8443/health"
 
     # Install netcat for service checking
     if ! command -v nc &> /dev/null; then
         echo -e "${YELLOW}Installing netcat...${NC}"
         apt-get update && apt-get install -y netcat-openbsd
     fi
-
-    # Wait for UMRS server API to be ready
-    echo -e "${YELLOW}Waiting for UMRS server API to be ready...${NC}"
-    until curl -sf http://umrs-server:8000/health; do
-        echo "Waiting for UMRS server API..."; sleep 2;
-    done
-    echo -e "${GREEN}UMRS server API is ready!${NC}"
 
     # Create users via UMRS client command (replaces init_minio_users.sh and init_postgres_users.sh)
     create_users_via_umrs

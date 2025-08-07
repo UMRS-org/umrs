@@ -29,6 +29,9 @@ COPY ./docker/conf_umrs_ejeannot.json /app/docker/conf_umrs_ejeannot.json
 COPY ./docker/s3cfg /root/.s3cfg
 # copy env file contains environment variables
 COPY ./docker/env.default /app/src/.env
+# copy SSL certificates for HTTPS support
+COPY ./docker/ssl /app/ssl
 
 EXPOSE 8000
-CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_init.json"]
+EXPOSE 8443
+CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_init.json", "--use-https", "--ssl-cert", "/app/ssl/server.crt", "--ssl-key", "/app/ssl/server.key", "--port", "8443"]

@@ -636,8 +636,23 @@ parser = argparse.ArgumentParser(description="UMRS server - Hybrid API + Message
 parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 parser.add_argument('--port', type=int, default=8000, help='Port for web server (default: 8000)')
+parser.add_argument('--ssl-cert', type=str, help='Path to SSL certificate file for HTTPS')
+parser.add_argument('--ssl-key', type=str, help='Path to SSL private key file for HTTPS')
+parser.add_argument('--use-https', action='store_true', help='Enable HTTPS (requires --ssl-cert and --ssl-key)')
 
 args = parser.parse_args()
+
+# Validate HTTPS arguments
+if args.use_https:
+    if not args.ssl_cert or not args.ssl_key:
+        print("Error: --ssl-cert and --ssl-key are required when using --use-https")
+        sys.exit(1)
+    if not os.path.exists(args.ssl_cert):
+        print(f"Error: SSL certificate file not found: {args.ssl_cert}")
+        sys.exit(1)
+    if not os.path.exists(args.ssl_key):
+        print(f"Error: SSL private key file not found: {args.ssl_key}")
+        sys.exit(1)
 
 configure_file = args.conf
 
@@ -761,4 +776,17 @@ print("[Hybrid] Background message queue processor started.")
 server_status["running"] = True
 
 # Run the FastAPI server
-uvicorn.run(app, host="0.0.0.0", port=args.port)
+if args.use_https:
+    print(f"Starting UMRS server with HTTPS on port {args.port}")
+    print(f"SSL Certificate: {args.ssl_cert}")
+    print(f"SSL Private Key: {args.ssl_key}")
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=args.port,
+        ssl_keyfile=args.ssl_key,
+        ssl_certfile=args.ssl_cert
+    )
+else:
+    print(f"Starting UMRS server with HTTP on port {args.port}")
+    uvicorn.run(app, host="0.0.0.0", port=args.port)

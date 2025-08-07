@@ -1,6 +1,31 @@
 #!/usr/bin/python3
 """
-UMRS Client: Multi-user, multi-bucket, multi-modality data uploader and admin tool.
+UMRS Client: Multi-user, multi-bucket, multi-modality     headers = {"Authorization": f"Bea    headers = {"Authorization    headers = {"Authorization": f"Bearer {args.token}"}
+    url = args.server_url.rstrip("/") + f"/api/user/info?username={args.username}"
+    try:
+        verify_ssl = not args.insecure
+        resp = requests.get(url, headers=headers, timeout=10, verify=verify_ssl)
+        print(f"[UMRS user] GET {url} -> {resp.status_code}")
+        print(resp.json())
+    except Exception as e:arer {args.token}"}
+    url = args.server_url.rstrip("/") + f"/api/user/list_buckets?username={args.username}"
+    try:
+        verify_ssl = not args.insecure
+        resp = requests.get(url, headers=headers, timeout=10, verify=verify_ssl)
+        print(f"[UMRS user] GET {url} -> {resp.status_code}")
+        print(resp.json())
+    except Exception as e:gs.token}"}
+    url = args.server_url.rstrip("/") + "/api/user/create_bucket"
+    try:
+        verify_ssl = not args.insecure
+        resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
+        print(f"[UMRS user] POST {url} -> {resp.status_code}")
+        print(resp.json())
+        if resp.status_code == 200:
+            print(f"Bucket '{args.bucket_alias}' created successfully for user '{args.username}'.")
+        else:
+            print(f"Error: {resp.json().get('message')}")
+    except Exception as e:er and admin tool.
 API-only mode - connects to hybrid UMRS server.
 """
 
@@ -40,7 +65,9 @@ def handle_init_user(args):
     headers = {"Authorization": f"Bearer {admin_token}"}
     url = args.server_url.rstrip("/") + "/api/admin/create_user"
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        # Disable SSL verification for self-signed certificates in development
+        verify_ssl = not args.insecure
+        resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
         print(f"[UMRS admin] POST {url} -> {resp.status_code}")
         print(resp.json())
         if resp.status_code == 200:
@@ -76,7 +103,8 @@ def handle_create_bucket(args):
     headers = {"Authorization": f"Bearer {token}"}
     url = args.server_url.rstrip("/") + "/api/user/create_bucket"
     try:
-        resp = requests.post(url, json=payload, headers=headers, timeout=10)
+        verify_ssl = not args.insecure
+        resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
         print(f"[UMRS user] POST {url} -> {resp.status_code}")
         print(resp.json())
         if resp.status_code == 200:
@@ -102,7 +130,8 @@ def handle_list_buckets(args):
     headers = {"Authorization": f"Bearer {token}"}
     url = args.server_url.rstrip("/") + f"/api/user/list_buckets?username={args.username}"
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        verify_ssl = not args.insecure
+        resp = requests.get(url, headers=headers, timeout=10, verify=verify_ssl)
         print(f"[UMRS user] GET {url} -> {resp.status_code}")
         print(resp.json())
     except Exception as e:
@@ -124,7 +153,8 @@ def handle_show_user(args):
     headers = {"Authorization": f"Bearer {token}"}
     url = args.server_url.rstrip("/") + f"/api/user/info?username={args.username}"
     try:
-        resp = requests.get(url, headers=headers, timeout=10)
+        verify_ssl = not args.insecure
+        resp = requests.get(url, headers=headers, timeout=10, verify=verify_ssl)
         print(f"[UMRS user] GET {url} -> {resp.status_code}")
         print(resp.json())
     except Exception as e:
@@ -175,7 +205,8 @@ def handle_create_buckets_from_config(args):
 
             url = base_url + "/api/user/create_bucket"
             try:
-                resp = requests.post(url, json=payload, headers=headers, timeout=10)
+                verify_ssl = not args.insecure
+                resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
                 print(f"[UMRS user] POST {url} -> {resp.status_code}")
                 result = resp.json()
                 print(result)
@@ -232,7 +263,8 @@ def handle_delete_bucket(args):
 
     try:
         print(f"🗑️  Deleting bucket '{args.bucket_name}'...")
-        resp = requests.delete(url, json=payload, headers=headers, timeout=30)
+        verify_ssl = not args.insecure
+        resp = requests.delete(url, json=payload, headers=headers, timeout=30, verify=verify_ssl)
         print(f"[UMRS delete] DELETE {url} -> {resp.status_code}")
 
         result = resp.json()
@@ -286,17 +318,17 @@ def handle_upload(args):
 
     if os.path.isfile(data_path):
         # Single file upload
-        upload_single_file_api(base_url, headers, username, bucket_alias, xp_name, modality, data_path)
+        upload_single_file_api(base_url, headers, username, bucket_alias, xp_name, modality, data_path, args.insecure)
     elif os.path.isdir(data_path):
         # Batch upload for directory
         files = glob(os.path.join(data_path, "*"))
         files = [f for f in files if os.path.isfile(f)]
-        upload_batch_files_api(base_url, headers, username, bucket_alias, xp_name, modality, files)
+        upload_batch_files_api(base_url, headers, username, bucket_alias, xp_name, modality, files, args.insecure)
     else:
         print(f"Error: '{data_path}' is not a valid file or directory.")
         sys.exit(1)
 
-def upload_single_file_api(base_url, headers, username, bucket_alias, xp_name, modality, file_path):
+def upload_single_file_api(base_url, headers, username, bucket_alias, xp_name, modality, file_path, insecure=False):
     """Upload a single file via API."""
     url = base_url + "/api/user/upload_file"
 
@@ -310,7 +342,7 @@ def upload_single_file_api(base_url, headers, username, bucket_alias, xp_name, m
                 'modality': modality
             }
 
-            resp = requests.post(url, files=files, data=data, headers=headers, timeout=30)
+            resp = requests.post(url, files=files, data=data, headers=headers, timeout=30, verify=not insecure)
             print(f"[UMRS upload] POST {url} -> {resp.status_code}")
             result = resp.json()
             print(result)
@@ -323,7 +355,7 @@ def upload_single_file_api(base_url, headers, username, bucket_alias, xp_name, m
     except Exception as e:
         print(f"✗ Upload failed for '{file_path}': {e}")
 
-def upload_batch_files_api(base_url, headers, username, bucket_alias, xp_name, modality, file_paths):
+def upload_batch_files_api(base_url, headers, username, bucket_alias, xp_name, modality, file_paths, insecure=False):
     """Upload multiple files via API batch endpoint."""
     url = base_url + "/api/user/upload_batch"
 
@@ -339,7 +371,7 @@ def upload_batch_files_api(base_url, headers, username, bucket_alias, xp_name, m
             'modality': modality
         }
 
-        resp = requests.post(url, files=files, data=data, headers=headers, timeout=60)
+        resp = requests.post(url, files=files, data=data, headers=headers, timeout=60, verify=not insecure)
 
         # Close file handles
         for _, (_, file_handle) in files:
@@ -379,32 +411,35 @@ def parse_args():
     upload_parser.add_argument("bucket", type=str, nargs="?", help="target bucket alias", default=None)
 
     # API mode parameters (required)
-    upload_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. http://localhost:8000)")
+    upload_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
     upload_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
     upload_parser.add_argument("--username", required=True, help="Username")
     upload_parser.add_argument("--xp-name", required=True, help="Experiment name")
     upload_parser.add_argument("--modality", required=True, help="Modality (e.g., 'image', 'text file')")
     upload_parser.add_argument("--bucket-alias", required=False, help="Bucket alias (alternative to positional bucket argument)")
     upload_parser.add_argument("--file", required=False, help="File path (alternative to positional data argument)")
+    upload_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
 
     # API-based commands (remote server mode)
     # Subcommand: list-buckets
     list_buckets_parser = subparsers.add_parser("list-buckets", help="List all buckets for a user")
-    list_buckets_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. http://localhost:8000)")
+    list_buckets_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
     list_buckets_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
     list_buckets_parser.add_argument("--username", required=True, help="Username")
+    list_buckets_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
 
     # Subcommand: init-user
     init_user_parser = subparsers.add_parser("init-user", help="Initialize a new user (admin only)")
-    init_user_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. http://localhost:8000)")
+    init_user_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
     init_user_parser.add_argument("--admin-token", required=False, help="Admin API token (or set UMRS_ADMIN_TOKEN env var)")
     init_user_parser.add_argument("--username", required=True, help="Username to create")
     init_user_parser.add_argument("--password", required=True, help="Password for PostgreSQL user")
     init_user_parser.add_argument("--s3-secret", required=True, help="Secret for S3 user")
+    init_user_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
 
     # Subcommand: create-bucket
     create_bucket_parser = subparsers.add_parser("create-bucket", help="Create a new bucket for a user")
-    create_bucket_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. http://localhost:8000)")
+    create_bucket_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
     create_bucket_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
     create_bucket_parser.add_argument("--username", required=True, help="Username")
     create_bucket_parser.add_argument("--bucket-alias", required=True, help="Bucket alias")
@@ -413,26 +448,30 @@ def parse_args():
     create_bucket_parser.add_argument("--model", required=False, help="Model name", default="")
     create_bucket_parser.add_argument("--store-embeddings", action="store_true", help="Store embeddings")
     create_bucket_parser.add_argument("--metadata", action="append", help="Metadata fields", default=[])
+    create_bucket_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
 
     # Subcommand: create-buckets-from-config
     create_buckets_from_config_parser = subparsers.add_parser("create-buckets-from-config", help="Create all buckets for the user from the config file")
-    create_buckets_from_config_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. http://localhost:8000)")
+    create_buckets_from_config_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
     create_buckets_from_config_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
     create_buckets_from_config_parser.add_argument("--config", required=True, help="User configuration file")
+    create_buckets_from_config_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
 
     # Subcommand: show-user
     show_user_parser = subparsers.add_parser("show-user", help="Show user information")
-    show_user_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. http://localhost:8000)")
+    show_user_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
     show_user_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
     show_user_parser.add_argument("--username", required=True, help="Username")
+    show_user_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
 
     # Subcommand: delete-bucket
     delete_bucket_parser = subparsers.add_parser("delete-bucket", help="Delete a bucket and all its contents (DANGEROUS)")
-    delete_bucket_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. http://localhost:8000)")
+    delete_bucket_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
     delete_bucket_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
     delete_bucket_parser.add_argument("--username", required=True, help="Username")
     delete_bucket_parser.add_argument("--bucket-name", required=True, help="Full bucket name to delete")
     delete_bucket_parser.add_argument("--confirm", action="store_true", help="Skip interactive confirmation (DANGEROUS)")
+    delete_bucket_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
 
     return parser.parse_args()
 
