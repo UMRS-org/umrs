@@ -207,13 +207,21 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     objects = []  
     metadata = []
     checksums = []
+    sizes = []
+    has_at_least_a_zero = False;
     for s3_key in s3_keys: 
         obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
         checksums.append(obj['ETag'].strip('"'))
         metadata.append(obj.get("Metadata", {}))
+        obj_size = obj['ContentLength']
+        sizes.append(obj_size)
         
         if modality_name == "text":  # Handle text stored in file
-            text = obj["Body"].read().decode("utf-8")
+            if obj_size:
+                text = obj["Body"].read().decode("utf-8")
+            else :
+                has_at_least_a_zero = True
+                text = "A"
             objects.append(text)
 
         elif modality_name == "image":  # Handle Image Files
@@ -221,17 +229,24 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
             objects.append(image)
 
         elif modality_name == "text file":  # Handle Text Files
-            text = str(from_bytes(obj["Body"].read()).best())
+            if obj_size:
+                text = str(from_bytes(obj["Body"].read()).best())
+            else :
+                has_at_least_a_zero = True
+                text = "A"
             objects.append(text)
 
         else:
             raise ValueError(f"Unsupported modality '{modality_name}'while loading data '{path_to_bucket}/{s3_key}' from S3")
 
-    return objects, metadata, checksums
+    return objects, metadata, checksums, sizes, has_at_least_a_zero
+
 
 
 
 def s3_store_txt(s3, path_to_bucket, text_data, mq, metadata_args):
+
+    print(f"text_data={text_data}|")
 
     s3_key = compute_md5(text_data)+".txt"
     

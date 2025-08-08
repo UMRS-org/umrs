@@ -12,6 +12,7 @@ from umrs.MessageQueue import MessageQueue
 from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check
 from umrs.modality import *
 from umrs.db_store import *
+from umrs.utils import zero_out_embeddings_for_empty_objects
 from umrs.json_utils import load_server_cfg_file
 from collections import defaultdict
 import signal
@@ -93,12 +94,18 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
         modality_name (str): "text" or "image".
         s3_connection: Boto3 S3 client.
     """
-    objects, metadata, checksums = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
+    objects, metadata, checksums, sizes, has_at_least_a_zero = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
 
+    # text objects of size zeo are replaced by string " ". Because some models cannot compute embedding on empty strings
     embeddings = model.compute_embeddings(objects)
 
+    # once all the embeddings are computed we zero the embeddings for which the the size is zero
+    if has_at_least_a_zero:
+        zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name)
+
+    
     # Store **all** embeddings in batch
-    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, metadata_list=metadata)
+    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
 def process_s3_objects(s3_objects, db_model_store, device):
     
@@ -286,7 +293,7 @@ def main():
         update_objects(db_model_store, device)
 
     if args.check_objects:
-        check_objects(db_model_store)
+        check_objects(db_model_store, verbose=False)
 
 
     pretty_print_cfg(db_model_store)
