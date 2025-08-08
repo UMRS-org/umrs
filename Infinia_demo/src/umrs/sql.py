@@ -352,6 +352,10 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
         # INSERT and UPDATE if s3_object already exists
         if data_base.has_column(table_name, "_content"):
+            if start == 0:
+                # Delete all previous chunks for this S3 object before inserting new ones
+                query=f"DELETE FROM {table_name} WHERE s3_object = %s;"
+                cur.execute(query, (s3_object,))
             query = f"""
             INSERT INTO {table_name} (
             s3_object, _content, embedding, date, time,
@@ -459,7 +463,8 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
     elif modality_name in ("text", "text file"):
         # Multiple embeddings per file (one per text chunk)
         for chunked_embeddings, s3_key, metadata, checksum in zip(embeddings, s3_keys, metadata_list, checksums):
-            for chunk in chunked_embeddings:
+            sorted_chunks = sorted(chunked_embeddings, key=lambda chunk: chunk["start"])
+            for chunk in sorted_chunks:
                 store_one_embedding_in_db(
                     data_base,
                     embedding=chunk["embedding"],
