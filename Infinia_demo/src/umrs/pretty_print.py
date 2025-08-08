@@ -1,6 +1,7 @@
 import pandas as pd
 import sys
 from tabulate import tabulate
+
 def pretty_print_cfg(cfg_dict):
     # Create an empty DataFrame with predefined columns
     df = pd.DataFrame(columns=["Bucket alias", "S3 user", "S3 path", "Experience", "Modality", "Database", "SQL table", "SQL user", "Model", "Embeds?", "Metadata"])
@@ -56,7 +57,7 @@ def pretty_print_user_cfg(cfg_dict):
     print(f"Configuration for S3 user '{username}':")
     print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
 
-def pretty_print_recompute(recompute_dict):
+def pretty_print_recompute(recompute_dict, update=False):
     df = pd.DataFrame(columns=["Bucket alias", "S3 user",  "Bucket path", "Modality", "Model", "Objects", "Size (MB)", "Duration (s)"])
 
     for path_to_bucket, entry in recompute_dict.items():
@@ -73,11 +74,13 @@ def pretty_print_recompute(recompute_dict):
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    print("\nRecompute Summary:")
-    print(tabulate(df, headers="keys", tablefmt="fancy_grid"))
+    if update:
+        print("\nUpdate Summary:")
+    else:
+        print("\nRecompute Summary:")
 
-    import pandas as pd
-from tabulate import tabulate
+    colalign = ("right", "left", "left", "left", "left", "right", "right", "right")
+    print(tabulate(df, headers="keys", tablefmt="fancy_grid", colalign=colalign))
 
 def pretty_print_check(check_dict):
     df = pd.DataFrame(columns=["Bucket alias", "S3 user", "Bucket path", "Modality", "Model",

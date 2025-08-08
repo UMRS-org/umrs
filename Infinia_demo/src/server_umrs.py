@@ -11,38 +11,12 @@ from umrs.perf_test import run_perf_test
 from umrs.MessageQueue import MessageQueue
 from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check
 from umrs.modality import *
+from umrs.db_store import *
 from umrs.json_utils import load_server_cfg_file
 from collections import defaultdict
 import signal
 import torch
 import time
-
-def store_db_model(db_model_store, path_to_bucket, bucket_alias, s3_username, db_pool, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name):
-    """Stores data base and model for a given (user, bucket_alias)."""
-    # if user not in db_model_store:
-    #     storage[user] = {}  # Initialize user entry
-    
-    db_model_store[path_to_bucket] = {"bucket_alias": bucket_alias,
-                                      "s3_username": s3_username,
-                                      "sql_username": sql_username,
-                                      "data_base": db_pool,
-                                      "db_name": db_name,
-                                      "table_name": table_name,
-                                      "model": model,
-                                      "store_embeddings_flag": store_embeddings_flag,
-                                      "modality_name": modality_name,
-                                      "s3_connection": s3_connection,
-                                      "metadata": metadata,
-                                      "xp_name": xp_name}
-
-
-def query_db_model(db_model_store, path_to_bucket):
-    """Retrieves database and model for a given (user, bucket_alias)."""
-    entry = db_model_store.get(path_to_bucket, None)
-    if not entry:
-        return None, None, None, None, None, None
-    else:
-        return entry["s3_username"], entry["data_base"], entry["table_name"], entry["model"], entry["store_embeddings_flag"], entry["modality_name"], entry["s3_connection"]
 
     
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
@@ -126,7 +100,7 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     # Store **all** embeddings in batch
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, metadata_list=metadata)
 
-def process_s3_objects(s3_objects, db_model_store):
+def process_s3_objects(s3_objects, db_model_store, device):
     
     keys_per_bucket = defaultdict(list)  # Create a dictionary with lists
     print(f"\t-->Detected {len(s3_objects)} new file(s):")
@@ -151,7 +125,7 @@ def process_s3_objects(s3_objects, db_model_store):
 
 
 
-def recompute_all_objects(db_model_store):
+def recompute_all_objects(db_model_store, device):
     print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
 
     recompute_dict = {}
@@ -161,7 +135,7 @@ def recompute_all_objects(db_model_store):
 
         if len(s3_objects) > 0:
             start_time = time.perf_counter()  # More precise than time.time()
-            process_s3_objects(s3_objects, db_model_store)
+            process_s3_objects(s3_objects, db_model_store, device)
             duration = round((time.perf_counter() - start_time),3)            
         else:
             duration = 0
@@ -177,6 +151,42 @@ def recompute_all_objects(db_model_store):
         }
 
     pretty_print_recompute(recompute_dict)
+
+def update_objects(db_model_store, device, verbose=False):
+    print(f"\n######################\nUpdating missing/mismatched objects in all buckets\n######################\n")
+
+    update_dict = {}  
+
+    for path_to_bucket, entry in db_model_store.items():
+        s3_objects, total_size, checksums = list_s3_bucket(entry["s3_connection"], path_to_bucket)
+        status = check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store)
+
+        to_update_objects = []
+        for i, s3_object in enumerate(s3_objects):
+            s = status[i]['status']
+            if verbose:
+                print(f"{s3_object}: {s}")
+            if s != "match":
+                to_update_objects.append(s3_object)
+
+        if len(to_update_objects) > 0:
+            start_time = time.perf_counter()
+            process_s3_objects(to_update_objects, db_model_store, device)
+            duration = round(time.perf_counter() - start_time, 3)
+        else:
+            duration = 0.0
+
+        update_dict[path_to_bucket] = {
+            "bucket_alias": entry["bucket_alias"],
+            "duration": duration,
+            "nb_objects": f"{len(to_update_objects)}/{len(s3_objects)}",
+            "modality_name": entry["modality_name"],
+            "s3_username": entry["s3_username"],
+            "total_size_MB": round(total_size / (1024**2), 3),
+            "model": entry["model"]
+        }
+
+    pretty_print_recompute(update_dict, update=True) 
 
 def check_objects(db_model_store, verbose= False):
     print(f"\n######################\nChecking all objects in all buckets\n######################\n")
@@ -200,8 +210,9 @@ def check_objects(db_model_store, verbose= False):
             else:
                 nb_error += 1
 
-            if len(s3_objects) != nb_match:
-                perform_update = True
+        if len(s3_objects) != nb_match:
+            perform_update = True
+                
         check_dict[path_to_bucket] = {
             "bucket_alias": entry["bucket_alias"],
             "nb_objects": len(s3_objects),
@@ -218,12 +229,15 @@ def check_objects(db_model_store, verbose= False):
     if perform_update:
         print("\n⚠️ Warning: The database is not fully consistent with the objects stored in S3.")
         print("→ To recompute and update the missing or mismatched entries, restart the server with the `--force-update` option.\n")
-    
+    else:
+        print("\n ✅ No problem: The database is fully consistent with the objects stored in S3.")
+
 def main():
     parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
     parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
-    parser.add_argument('--force-recompute', action='store_true', help='Force all embeddings recomputation by scanning all S3 directories')
+    parser.add_argument('--force-recompute', action='store_true', help='Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.')
+    parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
 
 
@@ -266,10 +280,14 @@ def main():
     # run_perf_test()
 
     if args.force_recompute:
-        recompute_all_objects(db_model_store)
+        recompute_all_objects(db_model_store, device)
+
+    if args.force_update:
+        update_objects(db_model_store, device)
 
     if args.check_objects:
         check_objects(db_model_store)
+
 
     pretty_print_cfg(db_model_store)
 
@@ -285,7 +303,7 @@ def main():
                 print("Received handshake request. Answering 'READY!'")
                 response_mq.handshake("READY!")
             else:
-                process_s3_objects(s3_objects, db_model_store)
+                process_s3_objects(s3_objects, db_model_store, device)
         
     except KeyboardInterrupt:
         print("\nInterrupted by user. Exiting gracefully...")
