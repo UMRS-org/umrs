@@ -515,10 +515,9 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
             }
 
     except Exception as e:
-        sys.exit(f"{query}: {e}")
         return {
             "status": "error",
-            "message": f"Exception occurred during DB check: {e}"
+            "message": f"Exception occurred during DB check for query {query}: {e}"
         }
     finally:
         cur.close()
