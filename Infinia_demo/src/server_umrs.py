@@ -215,6 +215,7 @@ def check_objects(db_model_store, verbose= False):
             elif s == "not_found":
                 nb_not_found += 1
             else:
+                print(f"Error: {status[i]['message']}")
                 nb_error += 1
 
         if len(s3_objects) != nb_match:
