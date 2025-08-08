@@ -488,21 +488,22 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         # Query to get the existing checksum for this S3 object
         query = f"""
             SELECT checksum FROM {table_name}
-            WHERE s3_object = %s
-            ORDER BY id DESC LIMIT 1;
+            WHERE s3_object = %s;
         """
         cur.execute(query, (s3_object,))
-        result = cur.fetchone()
+        results = cur.fetchall()
 
-        if result is None:
+        if results is None:
             return {
                 "status": "not_found",
                 "message": f"No entry found in table '{table_name}' for key: {s3_object}"
             }
 
-        db_checksum = result[0]
-
-        if db_checksum == checksum:
+        
+        # Extract checksums into a list (flatten from rows)
+        db_checksums = [row[0] for row in results]
+        
+        if checksum in db_checksums:
             return {
                 "status": "match",
                 "message": f"Checksum match for '{s3_object}'."
@@ -514,6 +515,7 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
             }
 
     except Exception as e:
+        sys.exit(f"{query}: {e}")
         return {
             "status": "error",
             "message": f"Exception occurred during DB check: {e}"
