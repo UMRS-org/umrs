@@ -1,505 +1,189 @@
 #!/usr/bin/python3
-"""
-UMRS Client: Multi-user, multi-bucket, multi-modality     headers = {"Authorization": f"Bea    headers = {"Authorization    headers = {"Authorization": f"Bearer {args.token}"}
-    url = args.server_url.rstrip("/") + f"/api/user/info?username={args.username}"
-    try:
-        verify_ssl = not args.insecure
-        resp = requests.get(url, headers=headers, timeout=10, verify=verify_ssl)
-        print(f"[UMRS user] GET {url} -> {resp.status_code}")
-        print(resp.json())
-    except Exception as e:arer {args.token}"}
-    url = args.server_url.rstrip("/") + f"/api/user/list_buckets?username={args.username}"
-    try:
-        verify_ssl = not args.insecure
-        resp = requests.get(url, headers=headers, timeout=10, verify=verify_ssl)
-        print(f"[UMRS user] GET {url} -> {resp.status_code}")
-        print(resp.json())
-    except Exception as e:gs.token}"}
-    url = args.server_url.rstrip("/") + "/api/user/create_bucket"
-    try:
-        verify_ssl = not args.insecure
-        resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
-        print(f"[UMRS user] POST {url} -> {resp.status_code}")
-        print(resp.json())
-        if resp.status_code == 200:
-            print(f"Bucket '{args.bucket_alias}' created successfully for user '{args.username}'.")
-        else:
-            print(f"Error: {resp.json().get('message')}")
-    except Exception as e:er and admin tool.
-API-only mode - connects to hybrid UMRS server.
-"""
-
 import json
 import os
 import sys
-import argparse
+from umrs.sql import *
+from umrs.s3 import *
+from umrs.MessageQueue import MessageQueue
+from umrs.metadata import check_and_build_metadata
+from umrs.modality import *
+from umrs.json_utils import load_client_cfg_file 
+from umrs.pretty_print import pretty_print_user_cfg
 from glob import glob
-from umrs.json_utils import load_client_cfg_file
-
-# API client imports
-try:
-    import requests
-except ImportError:
-    requests = None
+import argparse
+from collections import defaultdict
 
 
-# =============================
-# API Client Functions
-# =============================
+def is_server_ready(mq, response_mq, timeout_ms=5000):
+    print("Checking for server availability...")
+    if timeout_ms < 1500:
+        timeout_ms = 1500
 
-def handle_init_user(args):
-    """Handle the init-user subcommand."""
-    if not requests:
-        print("Error: 'requests' module is required for API commands. Install with: pip install requests")
-        sys.exit(1)
-
-    admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
-    if not admin_token:
-        print("Error: Admin token must be provided via --admin-token or UMRS_ADMIN_TOKEN env var.")
-        sys.exit(1)
-    payload = {
-        "username": args.username,
-        "password": args.password,
-        "s3_secret": args.s3_secret
-    }
-    headers = {"Authorization": f"Bearer {admin_token}"}
-    url = args.server_url.rstrip("/") + "/api/admin/create_user"
-    try:
-        # Disable SSL verification for self-signed certificates in development
-        verify_ssl = not args.insecure
-        resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
-        print(f"[UMRS admin] POST {url} -> {resp.status_code}")
-        print(resp.json())
-        if resp.status_code == 200:
-            print(f"User '{args.username}' created successfully.")
-        else:
-            print(f"Error: {resp.json().get('message')}")
-    except Exception as e:
-        print(f"Request failed: {e}")
-    sys.exit(0)
+    while timeout_ms > 100:
+        mq.handshake("READY?")
+        answer = response_mq.busy_wait(100) 
+        if answer == "READY!":
+            return True
+    
+    mq.handshake("READY?")
+    answer = response_mq.busy_wait(timeout_ms - 1000) 
+    return answer == "READY!"
+    
+def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name):
+    if(bucket_store[bucket_alias]):
+        sys.exit(f"Error: duplicate bucket_alias {bucket_alias}")
+    bucket_store[bucket_alias]= {"path_to_bucket": path_to_bucket,
+                                "username": username,
+                                "xp_name": xp_name,
+                                "modality_name": modality_name,
+                                 "s3_configuration_file": s3_configuration_file,
+                                 "metadata": metadata,
+                                 "sql_username": sql_username,
+                                 "db_name": db_name}
 
 
-def handle_create_bucket(args):
-    """Handle the create-bucket subcommand."""
-    if not requests:
-        print("Error: 'requests' module is required for API commands. Install with: pip install requests")
-        sys.exit(1)
-
-    token = args.token or os.environ.get("UMRS_USER_TOKEN")
-    if not token:
-        print("Error: User token must be provided via --token or UMRS_USER_TOKEN env var.")
-        sys.exit(1)
-    # Sanitize xp_name for S3 bucket naming: replace spaces with hyphens and lowercase
-    safe_xp_name = args.xp_name.replace(' ', '-').lower()
-    payload = {
-        "username": args.username,
-        "bucket_alias": args.bucket_alias,
-        "xp_name": safe_xp_name,
-        "modality": args.modality,
-        "model": args.model,
-        "store_embeddings": args.store_embeddings,
-        "metadata": args.metadata or []
-    }
-    headers = {"Authorization": f"Bearer {token}"}
-    url = args.server_url.rstrip("/") + "/api/user/create_bucket"
-    try:
-        verify_ssl = not args.insecure
-        resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
-        print(f"[UMRS user] POST {url} -> {resp.status_code}")
-        print(resp.json())
-        if resp.status_code == 200:
-            print(f"Bucket '{args.bucket_alias}' created successfully.")
-        else:
-            print(f"Error: {resp.json().get('message')}")
-    except Exception as e:
-        print(f"Request failed: {e}")
-    sys.exit(0)
-
-
-def handle_list_buckets(args):
-    """Handle the list-buckets subcommand."""
-    if not requests:
-        print("Error: 'requests' module is required for API commands. Install with: pip install requests")
-        sys.exit(1)
-
-    token = args.token or os.environ.get("UMRS_USER_TOKEN")
-    if not token:
-        print("Error: User token must be provided via --token or UMRS_USER_TOKEN env var.")
-        sys.exit(1)
-
-    headers = {"Authorization": f"Bearer {token}"}
-    url = args.server_url.rstrip("/") + f"/api/user/list_buckets?username={args.username}"
-    try:
-        verify_ssl = not args.insecure
-        resp = requests.get(url, headers=headers, timeout=10, verify=verify_ssl)
-        print(f"[UMRS user] GET {url} -> {resp.status_code}")
-        print(resp.json())
-    except Exception as e:
-        print(f"Request failed: {e}")
-    sys.exit(0)
-
-
-def handle_show_user(args):
-    """Handle the show-user subcommand."""
-    if not requests:
-        print("Error: 'requests' module is required for API commands. Install with: pip install requests")
-        sys.exit(1)
-
-    token = args.token or os.environ.get("UMRS_USER_TOKEN")
-    if not token:
-        print("Error: User token must be provided via --token or UMRS_USER_TOKEN env var.")
-        sys.exit(1)
-
-    headers = {"Authorization": f"Bearer {token}"}
-    url = args.server_url.rstrip("/") + f"/api/user/info?username={args.username}"
-    try:
-        verify_ssl = not args.insecure
-        resp = requests.get(url, headers=headers, timeout=10, verify=verify_ssl)
-        print(f"[UMRS user] GET {url} -> {resp.status_code}")
-        print(resp.json())
-    except Exception as e:
-        print(f"Request failed: {e}")
-    sys.exit(0)
-
-
-def handle_create_buckets_from_config(args):
-    """Handle the create-buckets-from-config subcommand."""
-    if not requests:
-        print("Error: 'requests' module is required for API commands. Install with: pip install requests")
-        sys.exit(1)
-
-    token = args.token or os.environ.get("UMRS_USER_TOKEN")
-    if not token:
-        print("Error: User token must be provided via --token or UMRS_USER_TOKEN env var.")
-        sys.exit(1)
-
-    # Load config file
-    try:
-        user_cfg = load_client_cfg_file(args.config)
-    except Exception as e:
-        print(f"Error loading config file: {e}")
-        sys.exit(1)
-
-    headers = {"Authorization": f"Bearer {token}"}
-    base_url = args.server_url.rstrip("/")
-
-    # Create buckets for each experience
-    for xp in user_cfg.get("experiences", []):
-        for modality in xp.get("modalities", []):
-            # Sanitize xp_name for S3 bucket naming
-            safe_xp_name = xp["xp_name"].replace(' ', '-').lower()
-
-            # Extract bucket info from modality config
-            bucket_alias = modality["s3"]["bucket_alias"]
+def configure_bucket(user_cfg, bucket_store):
+    fullname = user_cfg["fullname"]
+    username = user_cfg["username"]
+    s3_configuration_file = user_cfg["s3_configuration_file"]
+    for xp in user_cfg["experiences"]:
+        sql_username  = xp["sql_username"]
+        xp_name = xp["xp_name"]
+        db_name = create_db_name(sql_username, xp_name)
+        for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
-
-            payload = {
-                "username": user_cfg["username"],
-                "bucket_alias": bucket_alias,
-                "xp_name": safe_xp_name,
-                "modality": modality_name,
-                "model": modality.get("model", {}).get("model_name", "") if isinstance(modality.get("model"), dict) else modality.get("model", ""),
-                "store_embeddings": modality.get("store_embeddings", False),
-                "metadata": list(modality.get("sql", {}).keys()) if modality.get("sql") else []
-            }
-
-            url = base_url + "/api/user/create_bucket"
-            try:
-                verify_ssl = not args.insecure
-                resp = requests.post(url, json=payload, headers=headers, timeout=10, verify=verify_ssl)
-                print(f"[UMRS user] POST {url} -> {resp.status_code}")
-                result = resp.json()
-                print(result)
-                if resp.status_code == 200:
-                    print(f"Bucket '{bucket_alias}' created successfully.")
-                else:
-                    print(f"Error creating bucket '{bucket_alias}': {result.get('message')}")
-            except Exception as e:
-                print(f"Request failed for bucket '{bucket_alias}': {e}")
-
-    sys.exit(0)
+            check_or_quit(modality_name)
+            bucket_alias =  modality["s3"]["bucket_alias"]
+            path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
+            # print(bucket_alias, username, xp_name, modality_name)
+            metadata = metadata_dict(modality["sql"])
+            store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name)
 
 
-def handle_delete_bucket(args):
-    """Handle the delete-bucket subcommand with confirmation."""
-    if not requests:
-        print("Error: 'requests' module is required for API commands. Install with: pip install requests")
-        sys.exit(1)
 
-    token = args.token or os.environ.get("UMRS_USER_TOKEN")
-    if not token:
-        print("Error: User token must be provided via --token or UMRS_USER_TOKEN env var.")
-        sys.exit(1)
+parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
-    # Display warning and require confirmation
-    print(f"⚠️  WARNING: You are about to DELETE bucket '{args.bucket_name}' and ALL its contents!")
-    print(f"   - This will delete all files in the bucket")
-    print(f"   - This will delete all PostgreSQL records")
-    print(f"   - This action CANNOT be undone")
-    print()
+parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
+parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue bewteen 'zeromq', 'posix_ipc', or 'sysv_ipc'")
+parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
+parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
+parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
+parser.add_argument("data", type=str, nargs="?", help="input data", default = None)
+parser.add_argument("bucket", type=str, nargs="?", help="target bucket alias", default = None)
+args = parser.parse_args()
 
-    if not args.confirm:
-        # Interactive confirmation
-        confirmation = input(f"Type 'DELETE {args.bucket_name}' to confirm: ")
-        expected_confirmation = f"DELETE {args.bucket_name}"
+# Connect to message queue
+mq = MessageQueue(queue_type= args.queue_type, role = "client")
+response_mq = MessageQueue(queue_type= args.queue_type, role = "server", queue_name="/tmp/response")
 
-        if confirmation != expected_confirmation:
-            print("❌ Deletion cancelled - confirmation did not match.")
-            sys.exit(0)
+if not args.no_check_server:
+    if not is_server_ready(mq, response_mq, timeout_ms=5000):
+        sys.exit("Server connection timeout...\n"
+                 "Cannot continue!"
+                 )
 
-        # Double confirmation
-        final_confirm = input("Are you absolutely sure? Type 'YES' to proceed: ")
-        if final_confirm != "YES":
-            print("❌ Deletion cancelled.")
-            sys.exit(0)
+print (f"Server ready.\nConnected to message queue of type '{args.queue_type}'")
 
-    payload = {
-        "username": args.username,
-        "bucket_name": args.bucket_name,
-        "confirmation": "delete"
-    }
-    headers = {"Authorization": f"Bearer {token}"}
-    url = args.server_url.rstrip("/") + "/api/user/delete_bucket"
+# Path to the configuration file
+configure_file = args.conf
 
-    try:
-        print(f"🗑️  Deleting bucket '{args.bucket_name}'...")
-        verify_ssl = not args.insecure
-        resp = requests.delete(url, json=payload, headers=headers, timeout=30, verify=verify_ssl)
-        print(f"[UMRS delete] DELETE {url} -> {resp.status_code}")
+# Check if the file exists
+if not os.path.exists(configure_file):
+    sys.exit(f"Configuration file \"{configure_file}\" not found.")
 
-        result = resp.json()
-        print(result)
+# Load JSON content from the file
+user = load_client_cfg_file(configure_file)
 
-        if resp.status_code == 200:
-            print(f"✅ Bucket '{args.bucket_name}' deleted successfully.")
-        else:
-            print(f"❌ Error deleting bucket: {result.get('message')}")
-            sys.exit(1)
-    except Exception as e:
-        print(f"❌ Delete request failed: {e}")
-        sys.exit(1)
+bucket_store = defaultdict(dict)
+configure_bucket(user, bucket_store)
+
+print("Configuration loaded successfully.")
 
 
-def handle_upload(args):
-    """Handle upload command via API (server is always hybrid)."""
-    if not requests:
-        print("Error: 'requests' module is required for API upload. Install with: pip install requests")
-        sys.exit(1)
+if args.data == None or args.bucket == None :
+    print("Misssing data and/or bucket.")
+    pretty_print_user_cfg(bucket_store)
+    sys.exit(
+        "Error: You must provide both the data and the bucket alias.\n"
+        "These are required to upload data to the S3 server according to the configuration above."
+    )
 
-    token = args.token or os.environ.get("UMRS_USER_TOKEN")
-    if not token:
-        print("Error: User token must be provided via --token or UMRS_USER_TOKEN env var.")
-        sys.exit(1)
+if args.verbose:
+    pretty_print_user_cfg(bucket_store)
 
-    # Get data path from --file parameter or positional argument
-    if hasattr(args, 'file') and args.file:
-        data_path = args.file
-    elif args.data:
-        data_path = args.data
+    
+bucket_alias  = args.bucket
+
+if not bucket_store[bucket_alias]:
+    sys.exit(f"Error: unknown bucket name '{bucket_alias}' in configuration")
+
+entry = bucket_store[bucket_alias];
+
+# print(entry)
+
+path_to_bucket        = entry['path_to_bucket']
+username              = entry['username']
+xp_name               = entry['xp_name']
+modality              = entry['modality_name']
+s3_configuration_file = entry['s3_configuration_file']
+metadata              = entry['metadata']
+
+s3, bucket_location = connect_to_s3(s3_configuration_file)
+
+full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username)
+
+if not success or full_bucket_name != path_to_bucket:
+    sys.exit(f"No bucket {bucket_alias} for  modality {modality} and for user {username}")
+
+print(f"Bucket '{bucket_alias}' for  modality '{modality}' and for user '{username}': OK!")
+
+metadata_args = check_and_build_metadata(metadata, args.k)
+
+print(f"Storing data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
+
+if modality == "text" :
+    if os.path.isfile(args.data): #if its a file store each line individually
+        try:
+            with open(args.data,"r") as file:
+                for line in file.readlines():
+                    line = line.strip()
+                    s3_key = s3_store_txt(s3, full_bucket_name, line, mq, metadata_args)
+                    print(f"'{line}' saved as {s3_key} on: {full_bucket_name}")
+        except UnicodeDecodeError as e:
+            print(f"Unicode decoding error: {e}")
+            print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file. Try an other bucket.")
     else:
-        data_path = input("Please specify a data path: ")
+        s3_key = s3_store_txt(s3, full_bucket_name, args.data, mq, metadata_args)
+        print(f"'{args.data}' saved as {s3_key} on: {full_bucket_name}")
+elif modality == "image" :
+    if os.path.isfile(args.data): #if it is a file, store it
+        s3_key = s3_store_image(s3, full_bucket_name, args.data, mq, metadata_args)
+        if s3_key:
+            print(f"'{s3_key}' saved on: {full_bucket_name}")
+    elif os.path.isdir(args.data): #if it is a path, store each file in the corresponding directory
+        for file in glob(os.path.join(args.data, "*")):
+            if os.path.isfile(file):
+                s3_key = s3_store_image(s3, full_bucket_name, file, mq, metadata_args)
+                if s3_key:
+                    print(f"'{s3_key}' saved on: {full_bucket_name}")
+    else :
+        print(f"Error: do not know what to do with '{args.data}'...")
+        print("Provide a path to an image or to a directory of images")
 
-    # Get bucket alias from --bucket-alias parameter or positional argument
-    if hasattr(args, 'bucket_alias') and args.bucket_alias:
-        bucket_alias = args.bucket_alias
-    elif args.bucket:
-        bucket_alias = args.bucket
-    else:
-        print("Error: Bucket alias must be specified for upload.")
-        sys.exit(1)
+elif modality == "text file" :
+    if os.path.isfile(args.data): #if it is a file, store it
+        s3_key = s3_store_text_file(s3, full_bucket_name, args.data, mq, metadata_args)
+        if s3_key:
+            print(f"'{s3_key}' saved on: {full_bucket_name}")
+    elif os.path.isdir(args.data): #if it is a path, store each file in the corresponding directory
+        for file in glob(os.path.join(args.data, "*")):
+            if os.path.isfile(file):
+                s3_key = s3_store_text_file(s3, full_bucket_name, file, mq, metadata_args)
+                if s3_key:
+                    print(f"'{s3_key}' saved on: {full_bucket_name}")
+    else :
+        print(f"Error: do not know what to do with '{args.data}'...")
+        print("Provide a path to a text file or to a directory of text_files")
 
-    # For API mode, we need additional parameters
-    username = getattr(args, 'username', None) or input("Please specify username: ")
-    xp_name = getattr(args, 'xp_name', None) or input("Please specify experiment name: ")
-    modality = getattr(args, 'modality', None) or input("Please specify modality (image/text file): ")
-
-    headers = {"Authorization": f"Bearer {token}"}
-    base_url = args.server_url.rstrip("/")
-
-    if os.path.isfile(data_path):
-        # Single file upload
-        upload_single_file_api(base_url, headers, username, bucket_alias, xp_name, modality, data_path, args.insecure)
-    elif os.path.isdir(data_path):
-        # Batch upload for directory
-        files = glob(os.path.join(data_path, "*"))
-        files = [f for f in files if os.path.isfile(f)]
-        upload_batch_files_api(base_url, headers, username, bucket_alias, xp_name, modality, files, args.insecure)
-    else:
-        print(f"Error: '{data_path}' is not a valid file or directory.")
-        sys.exit(1)
-
-def upload_single_file_api(base_url, headers, username, bucket_alias, xp_name, modality, file_path, insecure=False):
-    """Upload a single file via API."""
-    url = base_url + "/api/user/upload_file"
-
-    try:
-        with open(file_path, 'rb') as f:
-            files = {'file': (os.path.basename(file_path), f)}
-            data = {
-                'username': username,
-                'bucket_alias': bucket_alias,
-                'xp_name': xp_name,
-                'modality': modality
-            }
-
-            resp = requests.post(url, files=files, data=data, headers=headers, timeout=30, verify=not insecure)
-            print(f"[UMRS upload] POST {url} -> {resp.status_code}")
-            result = resp.json()
-            print(result)
-
-            if resp.status_code == 200:
-                print(f"✓ File '{os.path.basename(file_path)}' uploaded successfully to bucket '{result.get('bucket')}'")
-            else:
-                print(f"✗ Upload failed: {result.get('message')}")
-
-    except Exception as e:
-        print(f"✗ Upload failed for '{file_path}': {e}")
-
-def upload_batch_files_api(base_url, headers, username, bucket_alias, xp_name, modality, file_paths, insecure=False):
-    """Upload multiple files via API batch endpoint."""
-    url = base_url + "/api/user/upload_batch"
-
-    try:
-        files = []
-        for i, file_path in enumerate(file_paths):
-            files.append((f'file{i}', (os.path.basename(file_path), open(file_path, 'rb'))))
-
-        data = {
-            'username': username,
-            'bucket_alias': bucket_alias,
-            'xp_name': xp_name,
-            'modality': modality
-        }
-
-        resp = requests.post(url, files=files, data=data, headers=headers, timeout=60, verify=not insecure)
-
-        # Close file handles
-        for _, (_, file_handle) in files:
-            file_handle.close()
-
-        print(f"[UMRS batch upload] POST {url} -> {resp.status_code}")
-        result = resp.json()
-        print(result)
-
-        if resp.status_code == 200:
-            successful_uploads = [f for f in result.get('files', []) if f.get('status') == 'success']
-            print(f"✓ Batch upload completed: {len(successful_uploads)}/{len(file_paths)} files uploaded successfully")
-
-            # Show individual file results
-            for file_result in result.get('files', []):
-                status_icon = "✓" if file_result.get('status') == 'success' else "✗"
-                print(f"  {status_icon} {file_result.get('filename')}: {file_result.get('status')}")
-        else:
-            print(f"✗ Batch upload failed: {result.get('message')}")
-
-    except Exception as e:
-        print(f"✗ Batch upload failed: {e}")
-
-# =============================
-# Argument Parsing
-# =============================
-
-def parse_args():
-    """Parse command line arguments."""
-    parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    # Upload command (API mode only - server is always hybrid)
-    upload_parser = subparsers.add_parser("upload", help="Upload data file to a bucket via API")
-    upload_parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
-    upload_parser.add_argument("data", type=str, nargs="?", help="input data path", default=None)
-    upload_parser.add_argument("bucket", type=str, nargs="?", help="target bucket alias", default=None)
-
-    # API mode parameters (required)
-    upload_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
-    upload_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
-    upload_parser.add_argument("--username", required=True, help="Username")
-    upload_parser.add_argument("--xp-name", required=True, help="Experiment name")
-    upload_parser.add_argument("--modality", required=True, help="Modality (e.g., 'image', 'text file')")
-    upload_parser.add_argument("--bucket-alias", required=False, help="Bucket alias (alternative to positional bucket argument)")
-    upload_parser.add_argument("--file", required=False, help="File path (alternative to positional data argument)")
-    upload_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
-
-    # API-based commands (remote server mode)
-    # Subcommand: list-buckets
-    list_buckets_parser = subparsers.add_parser("list-buckets", help="List all buckets for a user")
-    list_buckets_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
-    list_buckets_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
-    list_buckets_parser.add_argument("--username", required=True, help="Username")
-    list_buckets_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
-
-    # Subcommand: init-user
-    init_user_parser = subparsers.add_parser("init-user", help="Initialize a new user (admin only)")
-    init_user_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
-    init_user_parser.add_argument("--admin-token", required=False, help="Admin API token (or set UMRS_ADMIN_TOKEN env var)")
-    init_user_parser.add_argument("--username", required=True, help="Username to create")
-    init_user_parser.add_argument("--password", required=True, help="Password for PostgreSQL user")
-    init_user_parser.add_argument("--s3-secret", required=True, help="Secret for S3 user")
-    init_user_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
-
-    # Subcommand: create-bucket
-    create_bucket_parser = subparsers.add_parser("create-bucket", help="Create a new bucket for a user")
-    create_bucket_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
-    create_bucket_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
-    create_bucket_parser.add_argument("--username", required=True, help="Username")
-    create_bucket_parser.add_argument("--bucket-alias", required=True, help="Bucket alias")
-    create_bucket_parser.add_argument("--xp-name", required=True, help="Experiment name")
-    create_bucket_parser.add_argument("--modality", required=True, help="Modality (e.g., 'image', 'text file')")
-    create_bucket_parser.add_argument("--model", required=False, help="Model name", default="")
-    create_bucket_parser.add_argument("--store-embeddings", action="store_true", help="Store embeddings")
-    create_bucket_parser.add_argument("--metadata", action="append", help="Metadata fields", default=[])
-    create_bucket_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
-
-    # Subcommand: create-buckets-from-config
-    create_buckets_from_config_parser = subparsers.add_parser("create-buckets-from-config", help="Create all buckets for the user from the config file")
-    create_buckets_from_config_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
-    create_buckets_from_config_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
-    create_buckets_from_config_parser.add_argument("--config", required=True, help="User configuration file")
-    create_buckets_from_config_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
-
-    # Subcommand: show-user
-    show_user_parser = subparsers.add_parser("show-user", help="Show user information")
-    show_user_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
-    show_user_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
-    show_user_parser.add_argument("--username", required=True, help="Username")
-    show_user_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
-
-    # Subcommand: delete-bucket
-    delete_bucket_parser = subparsers.add_parser("delete-bucket", help="Delete a bucket and all its contents (DANGEROUS)")
-    delete_bucket_parser.add_argument("--server-url", required=True, help="UMRS server base URL (e.g. https://localhost:8443)")
-    delete_bucket_parser.add_argument("--token", required=False, help="User API token (or set UMRS_USER_TOKEN env var)")
-    delete_bucket_parser.add_argument("--username", required=True, help="Username")
-    delete_bucket_parser.add_argument("--bucket-name", required=True, help="Full bucket name to delete")
-    delete_bucket_parser.add_argument("--confirm", action="store_true", help="Skip interactive confirmation (DANGEROUS)")
-    delete_bucket_parser.add_argument("--insecure", action="store_true", help="Disable SSL certificate verification (for self-signed certificates)")
-
-    return parser.parse_args()
-
-
-def main():
-    """Main function."""
-    args = parse_args()
-
-    # Handle API-based commands
-    if args.command == "list-buckets":
-        handle_list_buckets(args)
-    elif args.command == "init-user":
-        handle_init_user(args)
-    elif args.command == "create-bucket":
-        handle_create_bucket(args)
-    elif args.command == "create-buckets-from-config":
-        handle_create_buckets_from_config(args)
-    elif args.command == "show-user":
-        handle_show_user(args)
-    elif args.command == "delete-bucket":
-        handle_delete_bucket(args)
-    elif args.command == "upload":
-        # Handle traditional upload command (existing code logic)
-        handle_upload(args)
-    else:
-        print(f"Unknown command: {args.command}")
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
+else:
+    print(f"Error: Unknown modality '{modality}'. Nothing has been sent to the server")

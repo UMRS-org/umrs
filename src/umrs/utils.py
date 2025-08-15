@@ -1,4 +1,5 @@
 import hashlib
+import torch
 
 ################################## md5 ##################################
 
@@ -163,4 +164,40 @@ def add_embeddings_to_chunks_dict(embeddings, list_dict):
             chunk["embedding"] = embeddings[index]
             index += 1
     return list_dict
+
+
+import numpy as np
+
+def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
+    """
+    Replaces embeddings with zero vectors where the corresponding object size is 0.
+
+    Args:
+        embeddings (list of list of dict): Each dict should contain an 'embedding' and 'text' field.
+        sizes (list): A flat list of object sizes, one per chunk (same length as total number of chunks).
+        modality_name (str): Use only for 'text' or 'text file' modalities.
+
+    Returns:
+        None. Operates in-place on `embeddings`.
+    """
+    if modality_name not in ("text", "text file"):
+        return  # Currently handles only textual modalities
+
+    # Get shape info from the first embedding
+    sample = embeddings[0][0]["embedding"]
+    embedding_dim = sample.shape[0]
+    zero_vec = torch.zeros(embedding_dim, dtype=sample.dtype, device=sample.device)
+    
+    index = 0
+    print (f"--------->{embeddings}")
+    for chunk_list in embeddings:
+        for chunk in chunk_list:
+            if sizes[index] == 0:
+                chunk["embedding"] = zero_vec  # note: can use .copy() if you want unique vectors
+                chunk["text"] = ''
+                chunk["md5"] = 'd41d8cd98f00b204e9800998ecf8427e' #md5 of empty string
+                chunk["start"] = 0
+                chunk["end"] = 0
+                chunk["num_tokens"] = 0
+            index += 1
 

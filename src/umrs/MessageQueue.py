@@ -2,6 +2,7 @@ import platform
 import sys
 import os
 import hashlib
+import time
 
 # Conditional imports based on queue type and OS
 try:
@@ -23,9 +24,12 @@ if not (zmq or sysv_ipc or posix_ipc):
     raise ImportError("No usefull message queue module found (Posix IPC or SYSV or zeroMQ.)")
 
 
+DEFAULT_QUEUE_NAME = '/tmp/MQ_Queue'
+
+
 
 class MessageQueue:
-    def __init__(self, queue_type='zeromq', role='server', queue_name='/tmp/MQ_Queue', target_nb_messages=100, target_message_size=4096):
+    def __init__(self, queue_type='zeromq', role='server', queue_name=DEFAULT_QUEUE_NAME, target_nb_messages=100, target_message_size=4096):
         """
         Initializes the MessageQueue.
 
@@ -63,20 +67,30 @@ class MessageQueue:
             raise ImportError("zeroMQ module not found.")
 
         """Initialize ZeroMQ context and sockets."""
+
+        ## intitialize port based on queue_name
+        ZMQ_PORT_MAP = {
+            DEFAULT_QUEUE_NAME: 5555,
+            "/tmp/response": 5556,
+        }
+        port = ZMQ_PORT_MAP.get(self.queue_name, 5600)
+        if port == 5557:
+            print(f"[ZeroMQ] Warning: Unknown queue name '{self.queue_name}'. Using special port {port}")
+
         self.context = zmq.Context()
         if self.role == 'server':
             self.socket = self.context.socket(zmq.SUB)
-            self.socket.bind("tcp://127.0.0.1:5555")
+            self.socket.bind(f"tcp://127.0.0.1:{port}")
             self.socket.setsockopt_string(zmq.SUBSCRIBE, "")
         else:  # Client
             self.socket = self.context.socket(zmq.PUB)
-            self.socket.connect("tcp://127.0.0.1:5555")
+            self.socket.connect(f"tcp://127.0.0.1:{port}")
 
     def _init_posix_ipc(self):
         """Initialize POSIX IPC message queue."""
         if posix_ipc is None:
             raise ImportError("posix_ipc module not found.")
-
+        
         flags = posix_ipc.O_CREAT if self.role == 'server' else 0
         try :
             self.mq = posix_ipc.MessageQueue(

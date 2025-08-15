@@ -5,6 +5,7 @@ import psycopg2
 from psycopg2 import sql, pool
 from datetime import datetime
 import psycopg2
+from umrs.db_store import query_db_model
 
 
 class DataBase:
@@ -242,6 +243,8 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     column = {"name": "date", "type": "DATE"}
     table_columns.append(column)
     column = {"name": "time", "type": "TIME"}
+    table_columns.append(column)
+    column = {"name": "checksum", "type": "TEXT"}
     table_columns.append(column)
     if sql_cfg["store_embeddings"] == "yes":
         store_embeddings_flag = True

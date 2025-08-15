@@ -2,6 +2,7 @@ import torch
 import torchvision
 from typing import List, Dict
 import spacy
+import numpy as np
 from umrs.utils import compute_md5, flatten_text_chunks, add_embeddings_to_chunks_dict
 
 class EmbeddingModel:
@@ -22,7 +23,7 @@ class EmbeddingModel:
         else:
             self.nlp = None
 
-
+            
 
 ################################ Sentence Transformer ###########################
 #  Sentence Transformer Loader
