@@ -19,7 +19,7 @@ import signal
 import torch
 import time
 
-    
+
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
@@ -38,19 +38,18 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
             # print(f"{bucket_alias} -> {path_to_bucket}")
             bucket_list.append(path_to_bucket)
 
-    user_s3_configuration_file = user_cfg["s3_configuration_file"]
+    # Use admin credentials for all S3 operations - no individual user creation needed
     s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
-    s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list)
+    s3_create_buckets_only(s3_connection, bucket_list)
     s3_connection.close()
 
-def configure_user(user_cfg, db_model_store):
+def configure_user(user_cfg, db_model_store, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
-    user_s3_configuration_file = user_cfg["s3_configuration_file"]
-
-    s3_connection, bucket_location = connect_to_s3(user_s3_configuration_file)
+    # Use admin credentials for all S3 operations
+    s3_connection, bucket_location = connect_to_s3(admin_s3_configuration_file)
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
         print(f"\t==> Experience: {xp_name}")
@@ -103,19 +102,19 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     if has_at_least_a_zero:
         zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name)
 
-    
+
     # Store **all** embeddings in batch
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
 def process_s3_objects(s3_objects, db_model_store, device):
-    
+
     keys_per_bucket = defaultdict(list)  # Create a dictionary with lists
     print(f"\t-->Detected {len(s3_objects)} new file(s):")
-        
+
     for s3_object in s3_objects:
         print(f"\t\t-->{s3_object}")
         path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
-    
+
         # Append s3_key to the list associated with the bucket
         if s3_key not in keys_per_bucket[path_to_bucket]:  # Ensure no duplicates
             keys_per_bucket[path_to_bucket].append(s3_key)
@@ -126,7 +125,7 @@ def process_s3_objects(s3_objects, db_model_store, device):
         s3_keys = keys_per_bucket[path_to_bucket]
         if strore_embeddings_flag:
             print(f"\t--> Storing to data base in {table_name}")
-            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection) 
+            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection)
         else:
             print(f"We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")")
 
@@ -143,7 +142,7 @@ def recompute_all_objects(db_model_store, device):
         if len(s3_objects) > 0:
             start_time = time.perf_counter()  # More precise than time.time()
             process_s3_objects(s3_objects, db_model_store, device)
-            duration = round((time.perf_counter() - start_time),3)            
+            duration = round((time.perf_counter() - start_time),3)
         else:
             duration = 0
 
@@ -162,7 +161,7 @@ def recompute_all_objects(db_model_store, device):
 def update_objects(db_model_store, device, verbose=False):
     print(f"\n######################\nUpdating missing/mismatched objects in all buckets\n######################\n")
 
-    update_dict = {}  
+    update_dict = {}
 
     for path_to_bucket, entry in db_model_store.items():
         s3_objects, total_size, checksums = list_s3_bucket(entry["s3_connection"], path_to_bucket)
@@ -193,7 +192,7 @@ def update_objects(db_model_store, device, verbose=False):
             "model": entry["model"]
         }
 
-    pretty_print_recompute(update_dict, update=True) 
+    pretty_print_recompute(update_dict, update=True)
 
 def check_objects(db_model_store, verbose= False):
     print(f"\n######################\nChecking all objects in all buckets\n######################\n")
@@ -206,7 +205,7 @@ def check_objects(db_model_store, verbose= False):
         status = check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store)
         for i, s3_object in enumerate(s3_objects):
             s = status[i]['status']
-            if verbose: 
+            if verbose:
                 print(f"{s3_object}: {s}")
             if s == "match":
                 nb_match += 1
@@ -220,7 +219,7 @@ def check_objects(db_model_store, verbose= False):
 
         if len(s3_objects) != nb_match:
             perform_update = True
-                
+
         check_dict[path_to_bucket] = {
             "bucket_alias": entry["bucket_alias"],
             "nb_objects": len(s3_objects),
@@ -247,6 +246,12 @@ def main():
     parser.add_argument('--force-recompute', action='store_true', help='Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.')
     parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
+    parser.add_argument('--api-mode', action='store_true', help='Run as FastAPI HTTP server instead of message queue server')
+    parser.add_argument('--use-https', action='store_true', help='Enable HTTPS support (requires --ssl-cert and --ssl-key)')
+    parser.add_argument('--ssl-cert', help='Path to SSL certificate file for HTTPS')
+    parser.add_argument('--ssl-key', help='Path to SSL private key file for HTTPS')
+    parser.add_argument('--port', type=int, default=8000, help='Port to run the API server on')
+    parser.add_argument('--host', default='0.0.0.0', help='Host to bind the API server to')
 
 
     args = parser.parse_args()
@@ -257,7 +262,38 @@ def main():
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
+    # Check for API mode and run FastAPI server
+    if args.api_mode or args.use_https or args.ssl_cert or args.ssl_key:
+        print("Starting UMRS API Server...")
+        try:
+            from umrs.api import create_api_server
+            api_server = create_api_server()
+            api_server.initialize_server(configure_file)
 
+            # Handle HTTPS configuration
+            ssl_keyfile = None
+            ssl_certfile = None
+            if args.use_https:
+                if not args.ssl_cert or not args.ssl_key:
+                    sys.exit("Error: --use-https requires both --ssl-cert and --ssl-key")
+                if not os.path.exists(args.ssl_cert):
+                    sys.exit(f"SSL certificate file not found: {args.ssl_cert}")
+                if not os.path.exists(args.ssl_key):
+                    sys.exit(f"SSL key file not found: {args.ssl_key}")
+                ssl_certfile = args.ssl_cert
+                ssl_keyfile = args.ssl_key
+                print(f"HTTPS enabled - cert: {ssl_certfile}, key: {ssl_keyfile}")
+
+            print(f"Starting API server on {args.host}:{args.port}")
+            api_server.run(host=args.host, port=args.port, ssl_keyfile=ssl_keyfile, ssl_certfile=ssl_certfile)
+            return
+
+        except ImportError:
+            sys.exit("Error: FastAPI dependencies not available. Please install fastapi and uvicorn.")
+        except Exception as e:
+            sys.exit(f"Error starting API server: {e}")
+
+    # Original message queue mode below
     admin_s3_configuration_file, users = load_server_cfg_file(configure_file)
     # Print loaded content (optional)
     print("Configuration loaded successfully.")
@@ -268,7 +304,7 @@ def main():
     print (f"Subscribed to message queue '{args.queue_type}'")
 
 
-    # create S3/SQL  users if necessary 
+    # create S3/SQL  users if necessary
     for user in users:
         create_s3_sql_users(user, admin_s3_configuration_file)
 
@@ -276,7 +312,7 @@ def main():
     #configure server for each users
     db_model_store = defaultdict(dict)
     for user in users:
-        configure_user(user, db_model_store)
+        configure_user(user, db_model_store, admin_s3_configuration_file)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"-->  Models will be run on device: {device}")
@@ -312,7 +348,7 @@ def main():
                 response_mq.handshake("READY!")
             else:
                 process_s3_objects(s3_objects, db_model_store, device)
-        
+
     except KeyboardInterrupt:
         print("\nInterrupted by user. Exiting gracefully...")
         mq.close()

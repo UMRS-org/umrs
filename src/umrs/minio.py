@@ -11,20 +11,20 @@ import subprocess
 def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     """
     Ensure the mc alias exists. If not, create it.
-    
+
     Args:
         alias (str): Alias name (e.g., 'myminio')
         url (str): Endpoint URL (e.g., 'https://127.0.0.1:9000')
         access_key (str): MinIO access key
         secret_key (str): MinIO secret key
         insecure (bool): Set True to skip TLS verification
-        
+
     Returns:
         bool: True if alias exists or was created, False on error
     """
 
     print(f"Checking alias: {alias}")
-    
+
     # Check if alias exists
     try:
         result = subprocess.run(
@@ -56,7 +56,7 @@ def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
 def minio_create_user_with_policy(user, password, target, policy_name):
     """
     Creates a MinIO user (if not present) and attaches a policy.
-    
+
     Args:
         user (str): Username (access key)
         password (str): User's password (secret key)
@@ -72,7 +72,7 @@ def minio_create_user_with_policy(user, password, target, policy_name):
         )
         if user in result.stdout:
             print(f"User '{user}' already exists.")
-        
+
             # Check if the listonly  policy already exists for this user
             try:
                 result = subprocess.run(
@@ -122,7 +122,7 @@ def minio_check_create_list_only_policy(target):
             }
         ]
     }
-    
+
     policy_json = json.dumps(policy, indent=2)
     policy_name = f"listonly"
     policy_file = "/tmp/policy.json"
@@ -156,7 +156,7 @@ def minio_check_create_list_only_policy(target):
         sys.exit(f"Error creating policy: {e}")
 
     return policy_name
-    
+
 
 def minio_grant_user_access(user, bucket, target):
     """
@@ -181,8 +181,8 @@ def minio_grant_user_access(user, bucket, target):
     except subprocess.CalledProcessError as e:
         print(f"Error checking policy: {e.stderr or e}")
         return
-    
-    
+
+
     policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -231,7 +231,7 @@ def minio_grant_user_access(user, bucket, target):
     except subprocess.CalledProcessError as e:
         print(f"Error attaching policy to user: {e}")
 
-        
+
 def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file):
     from umrs.s3 import s3_strong_password
 
@@ -242,9 +242,9 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
     # Initialize parser
     config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
     config.read(config_path)
-    alias = config.getboolean("default", "alias", fallback="myminio")
+    alias = config.get("default", "alias", fallback="myminio")
 
-    
+
     if not os.path.exists(os.path.expanduser(user_s3_configuration_file)):
         # Extract values with defaults
         s3_host = config.get("default", "host_base")
@@ -256,7 +256,7 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         # Ensure correct protocol (http or https)
         protocol = "https" if use_https else "http"
         endpoint_url = f"{protocol}://{s3_host}"
-    
+
         user_passwd = s3_strong_password()
         user_cfg = f"""[default]
         host_base = {s3_host}
@@ -275,11 +275,11 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
     else:
         print(f"==> S3 configuration file '{user_s3_configuration_file}' allready exists for user '{username}' and alias '{alias}'.")
         print(f"==> Delete this file manually if you want to reconfigure the user.")
-        
+
         config = {}
-        
+
         config_path = os.path.expanduser(user_s3_configuration_file)
-        
+
         # Initialize parser
         config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
         config.read(config_path)
@@ -289,7 +289,7 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         access_key = config.get("default", "access_key")
         secret_key = config.get("default", "secret_key")
         bucket_location = config.get("default", "bucket_location", fallback="ap-northeast-1")
-        alias = config.getboolean("default", "alias", fallback="myminio")
+        alias = config.get("default", "alias", fallback="myminio")
         # Ensure correct protocol (http or https)
         protocol = "https" if use_https else "http"
         endpoint_url = f"{protocol}://{s3_host}"
@@ -299,10 +299,10 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
                 f"Critical error. The access key in '{user_s3_configuration_file}' should be '{username}', but is '{access_key}'.\n"
                 "Cannot continue. Either update the JSON user config file or change/remove the S3 user config file."
             )
-            
+
         minio_check_create_alias(alias, endpoint_url, access_key, secret_key, insecure=True)
         list_only_policy = minio_check_create_list_only_policy(alias)
         minio_create_user_with_policy(access_key, secret_key, alias, list_only_policy)
 
-        
+
     return alias
