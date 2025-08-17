@@ -1,6 +1,5 @@
 import hashlib
 import torch
-
 ################################## md5 ##################################
 
 def compute_md5(input_string):
@@ -201,3 +200,4 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
                 chunk["num_tokens"] = 0
             index += 1
 
+            

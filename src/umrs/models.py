@@ -2,8 +2,8 @@ import torch
 import torchvision
 from typing import List, Dict
 import spacy
-import numpy as np
 from umrs.utils import compute_md5, flatten_text_chunks, add_embeddings_to_chunks_dict
+import numpy as np
 
 class EmbeddingModel:
     def __init__(self, model_name: str, embedding_vector_size: int, max_tokens: int, model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
@@ -23,8 +23,8 @@ class EmbeddingModel:
         else:
             self.nlp = None
 
-            
 
+            
 ################################ Sentence Transformer ###########################
 #  Sentence Transformer Loader
 def load_sentence_transformers_model(model_name):

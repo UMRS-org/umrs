@@ -7,7 +7,6 @@ from datetime import datetime
 import psycopg2
 from umrs.db_store import query_db_model
 
-
 class DataBase:
     def __init__(self, db_pool, db_name, username):
         self.db_pool = db_pool
@@ -61,7 +60,7 @@ def db_user_exists(conn, username):
         cur.execute("SELECT 1 FROM pg_roles where rolname = %s;", (username,))
         exists = cur.fetchone()
         return exists
-
+        
 
 def create_db_user(username):
     # Database credentials
@@ -79,7 +78,7 @@ def create_db_user(username):
         return
 
     password = username
-
+    
     cur = conn.cursor()
     cur.execute(
         sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
@@ -89,8 +88,8 @@ def create_db_user(username):
     cur.close()
     conn.close()
 
-
-
+    
+        
 def create_db(sql_username, xp_name):
     db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")
@@ -239,19 +238,19 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     table_columns.append(column)
     column = {"name": "s3_object", "type": "TEXT"}
     table_columns.append(column)
+    column = {"name": "checksum", "type": "TEXT"}
+    table_columns.append(column)
     store_embeddings_flag = False
     column = {"name": "date", "type": "DATE"}
     table_columns.append(column)
     column = {"name": "time", "type": "TIME"}
-    table_columns.append(column)
-    column = {"name": "checksum", "type": "TEXT"}
     table_columns.append(column)
     if sql_cfg["store_embeddings"] == "yes":
         store_embeddings_flag = True
         vector_size = model.embedding_vector_size
         column = {"name": "embedding", "type": f"VECTOR({vector_size})"}
         table_columns.append(column)
-        column = {"name": "model", "type": f"CHAR(1024)"}
+        column = {"name": "model", "type": "TEXT"}
         table_columns.append(column)
 
     for column in sql_cfg["meta_data"]:
@@ -327,7 +326,7 @@ def is_string_type(sql_type):
     string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
     return sql_type.upper() in string_types
 
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  content = None, start = None, end = None, md5 = None, metadata = {}, silent = False):
+def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = {}, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -353,12 +352,16 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
         # INSERT and UPDATE if s3_object already exists
         if data_base.has_column(table_name, "_content"):
+            if start == 0:
+                # Delete all previous chunks for this S3 object before inserting new ones
+                query=f"DELETE FROM {table_name} WHERE s3_object = %s;"
+                cur.execute(query, (s3_object,))
             query = f"""
             INSERT INTO {table_name} (
             s3_object, _content, embedding, date, time,
-            chunk_start, chunk_end, chunk_md5
+            chunk_start, chunk_end, chunk_md5, checksum, model
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
             embedding = EXCLUDED.embedding,
             date = EXCLUDED.date,
@@ -366,19 +369,22 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             _content = EXCLUDED._content,
             chunk_start = EXCLUDED.chunk_start,
             chunk_end = EXCLUDED.chunk_end,
-            chunk_md5 = EXCLUDED.chunk_md5
+            chunk_md5 = EXCLUDED.chunk_md5,
+            checksum = EXCLUDED.checksum,
+            model = EXCLUDED.model
             RETURNING id;
             """
-            cur.execute(query, (s3_object, content, embedding, date, time, start, end, md5))
+            cur.execute(query, (s3_object, content, embedding, date, time, start, end, md5, checksum, model_name))
         else:
             query = f"""
-            INSERT INTO {table_name} (s3_object, embedding, date, time)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO {table_name} (s3_object, embedding, date, time, checksum, model)
+            VALUES (%s, %s, %s, %s, %s, %s)
             ON CONFLICT (s3_object) DO UPDATE
-            SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time
+            SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time, checksum = EXCLUDED.checksum, model = EXCLUDED.model
+
             RETURNING id;
             """
-            cur.execute(query, (s3_object, embedding, date, time))
+            cur.execute(query, (s3_object, embedding, date, time, checksum, model_name))
 
          # Fetch the inserted/updated ID
         inserted_id = cur.fetchone()[0]  # Fetch the first column of the result
@@ -419,13 +425,13 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
 
     except Exception as e:
-        print(f"\t--> Error storing embedding: {e}")
+        print(f"\t--> Error storing embedding for query {query}: {e}")
 
     finally:
         cur.close()
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, metadata_list=[]):
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, checksums, model_name, metadata_list=[]):
     """
     Store embeddings in the database depending on the data modality.
 
@@ -441,7 +447,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     if modality_name == "image":
         # One embedding per image file
-        for embedding, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
+        for embedding, s3_key, metadata, checksum in zip(embeddings, s3_keys, metadata_list, checksums):
             store_one_embedding_in_db(
                 data_base,
                 embedding=embedding,
@@ -449,13 +455,16 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 bucket_name=bucket_name,
                 s3_key=s3_key,
                 content=None,
-                metadata=metadata
+                metadata=metadata,
+                model_name = model_name,
+                checksum=checksum
             )
 
     elif modality_name in ("text", "text file"):
         # Multiple embeddings per file (one per text chunk)
-        for chunked_embeddings, s3_key, metadata in zip(embeddings, s3_keys, metadata_list):
-            for chunk in chunked_embeddings:
+        for chunked_embeddings, s3_key, metadata, checksum in zip(embeddings, s3_keys, metadata_list, checksums):
+            sorted_chunks = sorted(chunked_embeddings, key=lambda chunk: chunk["start"])
+            for chunk in sorted_chunks:
                 store_one_embedding_in_db(
                     data_base,
                     embedding=chunk["embedding"],
@@ -466,33 +475,63 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                     start=chunk["start"],
                     end=chunk["end"],
                     md5=chunk["md5"],
-                    metadata=metadata
+                    metadata=metadata,
+                    model_name = model_name,
+                    checksum=checksum
                 )
 
     else:
         raise ValueError(f"Unsupported modality '{modality_name}' for embedding storage.")
 
+def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
+    db_pool = data_base.db_pool
+    conn = db_pool.getconn()
+    try:
+        cur = conn.cursor()
+        s3_object = f"{bucket_name}/{s3_key}"  # Full S3 path
 
-def get_table_name_from_bucket_name(bucket_name):
-    """
-    Generate a PostgreSQL table name from a bucket name.
+        # Query to get the existing checksum for this S3 object
+        query = f"""
+            SELECT checksum FROM {table_name}
+            WHERE s3_object = %s;
+        """
+        cur.execute(query, (s3_object,))
+        results = cur.fetchall()
 
-    Args:
-        bucket_name (str): The S3 bucket name (e.g., 'user1.images-and-texts.bucket-1')
+        if results is None:
+            return {
+                "status": "not_found",
+                "message": f"No entry found in table '{table_name}' for key: {s3_object}"
+            }
 
-    Returns:
-        str: A valid PostgreSQL table name
-    """
-    # Replace dots and hyphens with underscores and make lowercase
-    table_name = bucket_name.replace('.', '_').replace('-', '_').lower()
+        
+        # Extract checksums into a list (flatten from rows)
+        db_checksums = [row[0] for row in results]
+        
+        if checksum in db_checksums:
+            return {
+                "status": "match",
+                "message": f"Checksum match for '{s3_object}'."
+            }
+        else:
+            return {
+                "status": "mismatch",
+                "message": f"Checksum mismatch for '{s3_object}': DB has '{db_checksum}', expected '{checksum}'"
+            }
 
-    # Ensure it starts with a letter or underscore (PostgreSQL requirement)
-    if table_name[0].isdigit():
-        table_name = 'table_' + table_name
+    except Exception as e:
+        return {
+            "status": "error",
+            "message": f"Exception occurred during DB check for query {query}: {e}"
+        }
+    finally:
+        cur.close()
+        db_pool.putconn(conn)
 
-    return table_name
-
-
-
-
-
+def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
+    username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+    status = []
+    for i, s3_object in enumerate(s3_objects):
+        _, s3_key = s3_object.replace("s3://", "").split("/", 1)
+        status.append(check_status_db(path_to_bucket, s3_key, checksums[i], data_base, table_name))
+    return status

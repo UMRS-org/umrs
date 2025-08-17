@@ -28,7 +28,6 @@ def pretty_print_cfg(cfg_dict):
 
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
-    
     print("\nServer confuguration:")
     print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
 
@@ -57,7 +56,6 @@ def pretty_print_user_cfg(cfg_dict):
         
     print(f"Configuration for S3 user '{username}':")
     print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
-
 
 def pretty_print_recompute(recompute_dict, update=False):
     df = pd.DataFrame(columns=["Bucket alias", "S3 user",  "Bucket path", "Modality", "Model", "Objects", "Size (MB)", "Duration (s)"])
