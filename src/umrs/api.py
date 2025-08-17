@@ -18,6 +18,7 @@ import uvicorn
 from collections import defaultdict
 
 # Import UMRS modules - these should be available from the current implementation
+
 from .sql import *
 from .s3 import *
 from .models import load_model
@@ -26,6 +27,7 @@ from .db_store import *
 from .utils import zero_out_embeddings_for_empty_objects
 from .json_utils import load_server_cfg_file
 from .pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check
+from .MessageQueue import MessageQueue
 
 
 # We need to import the functions from server_umrs.py at runtime to avoid circular imports
@@ -48,7 +50,7 @@ def get_server_functions():
 class UMRSAPIServer:
     """Main UMRS API Server class that wraps the existing functionality."""
 
-    def __init__(self):
+    def __init__(self, queue_type='zeromq'):
         self.app = FastAPI(
             title="UMRS API Server",
             description="Universal Multi-modal Retrieval System API",
@@ -59,15 +61,9 @@ class UMRSAPIServer:
         self.users = []
         self.device = "cpu"
         self.initialized = False
-
-        # Setup CORS
-        self.app.add_middleware(
-            CORSMiddleware,
-            allow_origins=["*"],
-            allow_credentials=True,
-            allow_methods=["*"],
-            allow_headers=["*"],
-        )
+        # Initialize MessageQueue in client mode for API
+        self.queue_type = queue_type
+        self.mq = MessageQueue(queue_type=self.queue_type, role='client')
 
         self._setup_routes()
 
@@ -151,9 +147,14 @@ class UMRSAPIServer:
                 # Store the text
                 s3_key = s3_store_txt(entry["s3_connection"], path_to_bucket, text, None, metadata_args)
 
-                # Process the object for embeddings if needed
+
+                # Enqueue for embedding computation if needed
                 if entry.get("store_embeddings_flag", False):
-                    self._process_single_object(f"s3://{path_to_bucket}/{s3_key}")
+                    try:
+                        s3_object = f"s3://{path_to_bucket}/{s3_key}"
+                        self.mq.notify_s3(s3_object)
+                    except Exception as mq_exc:
+                        raise HTTPException(status_code=500, detail=f"Failed to enqueue embedding computation: {mq_exc}")
 
                 return {
                     "success": True,
@@ -209,9 +210,14 @@ class UMRSAPIServer:
                     if not s3_key:
                         raise HTTPException(status_code=400, detail="Failed to store image")
 
-                    # Process the object for embeddings if needed
+
+                    # Enqueue for embedding computation if needed
                     if entry.get("store_embeddings_flag", False):
-                        self._process_single_object(f"s3://{path_to_bucket}/{s3_key}")
+                        try:
+                            s3_object = f"s3://{path_to_bucket}/{s3_key}"
+                            self.mq.notify_s3(s3_object)
+                        except Exception as mq_exc:
+                            raise HTTPException(status_code=500, detail=f"Failed to enqueue embedding computation: {mq_exc}")
 
                     return {
                         "success": True,
@@ -273,9 +279,14 @@ class UMRSAPIServer:
                     if not s3_key:
                         raise HTTPException(status_code=400, detail="Failed to store text file")
 
-                    # Process the object for embeddings if needed
+
+                    # Enqueue for embedding computation if needed
                     if entry.get("store_embeddings_flag", False):
-                        self._process_single_object(f"s3://{path_to_bucket}/{s3_key}")
+                        try:
+                            s3_object = f"s3://{path_to_bucket}/{s3_key}"
+                            self.mq.notify_s3(s3_object)
+                        except Exception as mq_exc:
+                            raise HTTPException(status_code=500, detail=f"Failed to enqueue embedding computation: {mq_exc}")
 
                     return {
                         "success": True,
