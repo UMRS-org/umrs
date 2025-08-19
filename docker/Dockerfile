@@ -28,8 +28,21 @@ COPY ./docker/conf_umrs_init.json /app/conf_umrs_init.json
 COPY ./docker/conf_umrs_ejeannot.json /app/docker/conf_umrs_ejeannot.json
 COPY ./docker/s3cfg /root/.s3cfg
 # copy SSL certificates for HTTPS support
+
+
+# Copy SSL certificates for HTTPS support
 COPY ./docker/ssl /app/ssl
+
+
+# Trust MinIO self-signed certificate as CA and force CA bundle update
+COPY ./docker/ssl/public.crt /usr/local/share/ca-certificates/minio_ca.crt
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates \
+    && update-ca-certificates --fresh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Force Python to use the correct CA bundle globally
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 8000
 EXPOSE 8443
-CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_init.json", "--use-https", "--ssl-cert", "/app/ssl/server.crt", "--ssl-key", "/app/ssl/server.key", "--port", "8443"]
+CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_init.json", "--use-https", "--ssl-cert", "/app/ssl/public.crt", "--ssl-key", "/app/ssl/private.key", "--port", "8443"]

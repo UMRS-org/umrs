@@ -42,6 +42,13 @@ applyTo: '**'
 	- Implemented Dockerfile, test script, and runner for automated API endpoint testing
 	- Test script runs all endpoints (admin and user) for both users using their config and data directory, exclusively through the Python client
 - SSL troubleshooting: Determined that mounting a server certificate as REQUESTS_CA_BUNDLE does not work; must use a CA cert (CA:TRUE) as the bundle. Created docker/ssl/SSL_FIX_INSTRUCTIONS.md with step-by-step fix for Dockerized requests SSL verification.
+	- July 2024: Resolved MinIO S3 SSL trust for UMRS server in Docker Compose by:
+		- Adding MinIO public.crt to system CA store in Dockerfile
+		- Setting ENV SSL_CERT_FILE to /etc/ssl/certs/ca-certificates.crt
+		- Refactoring s3.py to use system CA bundle for boto3 verify param
+		- Fixing indentation and scope errors in check_bucket_path (now only uses passed-in s3 client)
+		- Validated: UMRS server starts, connects to MinIO S3 over HTTPS, all buckets created, no SSL or NameError issues
+		- All changes tested via docker compose up --build and confirmed in logs
 - Recurring questions or topics: N/A
 - Solutions that worked well: Modular class-based API client, Docker-based automated testing
 - Things to avoid or that didn't work: N/A
@@ -60,3 +67,5 @@ applyTo: '**'
 - Data: docker/data/
 - Input: command + config.json + data
 - On container start, all tests run automatically for both users
+
+- MinIO SSL requirements: MinIO expects public.crt (certificate) and private.key (private key) in its SSL directory. Optionally, a CAs/ directory can be used for custom CA chains. The generate_ssl_certs.sh script was updated to robustly create or symlink public.crt and private.key from server.crt and server.key, and to create a CAs/ directory if not present. This ensures MinIO can use the same self-signed certs as the UMRS API for development/testing.

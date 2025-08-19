@@ -2,8 +2,8 @@
 host_base = minio:9000
 host_bucket = minio:9000
 bucket_location = us-east-1
-use_https = False
-check_ssl_certificate = False
+use_https = True
+check_ssl_certificate = True
 access_key = minioadmin
 secret_key = minioadmin
 alias = myminio

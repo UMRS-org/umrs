@@ -156,13 +156,24 @@ def connect_to_s3(config_file):
     print(f"--> Connecting to S3 service on: {endpoint_url}...")
 
     # Create the S3 client
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=endpoint_url,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        verify=verify_ssl  # Disables SSL verification if False
-    )
+    # If SSL verification is enabled, use the system CA bundle (MinIO cert is included)
+    if verify_ssl:
+        ca_bundle = "/etc/ssl/certs/ca-certificates.crt"
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            verify=ca_bundle
+        )
+    else:
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            verify=False
+        )
 
 
     # Test connection
@@ -184,21 +195,16 @@ def create_path_to_bucket(xp_name, bucket_alias, username):
 def check_bucket_path(s3, path_to_bucket, indent = True):
     if indent:
         print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'...")
-    else:
-        print(f"--> Checking Bucket '{path_to_bucket}'...")
-
     try:
-        s3.head_bucket(Bucket = path_to_bucket)
-
+        s3.head_bucket(Bucket=path_to_bucket)
     except ClientError as e:
-        if e.response["Error"]["Code"] == "404":
-            return False #Not found
+        error_code = int(e.response['Error']['Code']) if 'Error' in e.response and 'Code' in e.response['Error'] else None
+        if error_code == 404:
+            return False # Not found
         else:
-            sys.exit(f"S3 Error: {e}") #Un-managed head_bucket exception
-
+            sys.exit(f"S3 Error: {e}") # Un-managed head_bucket exception
     except Exception as e:
-        sys.exit(f"S3 Connection Failed: {e}") #Un-managed S3 error
-
+        sys.exit(f"S3 Connection Failed: {e}") # Un-managed S3 error
     return True
 
 

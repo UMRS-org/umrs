@@ -24,7 +24,7 @@ RUN pip install requests && \
 # TODO: Install umrs-cli here if available (e.g., via pip, copy, or other means)
 
 # Copy CA certificate and install as trusted
-COPY ./docker/ssl/ca.crt /usr/local/share/ca-certificates/umrs_ca.crt
+COPY ./docker/ssl/public.crt /usr/local/share/ca-certificates/umrs_ca.crt
 RUN update-ca-certificates
 
 # Set REQUESTS_CA_BUNDLE so requests uses the CA

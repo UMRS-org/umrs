@@ -40,20 +40,21 @@ services:
     image: minio/minio:latest
     container_name: minio
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "9000:9000"   # HTTPS port for MinIO (with SSL certs)
+      - "9001:9001"   # MinIO Console
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
-    command: server /data --console-address ":9001"
+    command: server /data --console-address ":9001" --certs-dir /root/.minio/certs
     volumes:
       - minio_data:/data
       - ./s3cfg:/config/.s3cfg:ro
+      - ./ssl:/root/.minio/certs:ro   # Mount SSL certs (server.crt, server.key, optionally CAs)
     networks:
       - umrs-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      test: ["CMD", "curl", "-k", "-f", "https://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
       retries: 5
