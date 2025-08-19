@@ -70,6 +70,111 @@ class UMRSAPIServer:
     def _setup_routes(self):
         """Setup all API routes."""
 
+        from pydantic import BaseModel, ValidationError as PydanticValidationError
+        from fastapi import Body
+        import jsonschema
+        import traceback
+        import shutil
+        from fastapi import status
+        USERS_DIR = "/app/users"
+        os.makedirs(USERS_DIR, exist_ok=True)
+
+        class UserConfigModel(BaseModel):
+            username: str
+            fullname: str
+            s3_configuration_file: str
+            experiences: list
+
+        @self.app.post("/admin/add_user_hot_reload", status_code=status.HTTP_201_CREATED)
+        async def add_user_hot_reload(user_config: dict = Body(...)):
+            """Add a user, store JSON, update config, and hot-reload user (no restart)."""
+            from .json_utils import client_schema
+            try:
+                jsonschema.validate(instance=user_config, schema=client_schema)
+            except jsonschema.ValidationError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid user config: {e.message}")
+            username = user_config.get("username")
+            if not username:
+                raise HTTPException(status_code=400, detail="Missing username in user config")
+            user_json_path = os.path.join(USERS_DIR, f"{username}.json")
+            # Store user JSON atomically
+            try:
+                tmp_path = user_json_path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(user_config, f, indent=2)
+                os.replace(tmp_path, user_json_path)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to store user JSON: {e}")
+            # Atomically update conf_umrs_init.json
+            conf_path = "/app/conf_umrs_init.json"
+            try:
+                with open(conf_path, "r", encoding="utf-8") as f:
+                    conf = json.load(f)
+                users_list = conf.get("users", [])
+                if user_json_path not in users_list:
+                    users_list.append(user_json_path)
+                    conf["users"] = users_list
+                    tmp_conf_path = conf_path + ".tmp"
+                    with open(tmp_conf_path, "w", encoding="utf-8") as f:
+                        json.dump(conf, f, indent=2)
+                    os.replace(tmp_conf_path, conf_path)
+            except Exception as e:
+                raise HTTPException(status_code=500, detail=f"Failed to update conf_umrs_init.json: {e}")
+            # Hot-reload: initialize user in-memory
+            try:
+                server_umrs = get_server_functions()
+                if not server_umrs:
+                    raise Exception("Could not import server functions")
+                # Create S3/SQL users and buckets
+                server_umrs.create_s3_sql_users(user_config, self.admin_s3_configuration_file)
+                server_umrs.configure_user(user_config, self.db_model_store, self.admin_s3_configuration_file)
+                self.users.append(user_config)
+            except Exception as e:
+                traceback_str = traceback.format_exc()
+                raise HTTPException(status_code=500, detail=f"Failed to hot-reload user: {e}\n{traceback_str}")
+            return {"success": True, "message": f"User '{username}' added, config updated, and hot-reloaded."}
+
+        @self.app.post("/admin/create_user")
+        async def create_user(user_config: dict = Body(...)):
+            """Create and initialize a user (admin/server side)."""
+            # Validate using client_schema
+            from .json_utils import client_schema
+            try:
+                jsonschema.validate(instance=user_config, schema=client_schema)
+            except jsonschema.ValidationError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid user config: {e.message}")
+            try:
+                server_umrs = get_server_functions()
+                if not server_umrs:
+                    raise Exception("Could not import server functions")
+                # Create S3/SQL users and buckets
+                server_umrs.create_s3_sql_users(user_config, self.admin_s3_configuration_file)
+                # Optionally configure user (models/tables)
+                server_umrs.configure_user(user_config, self.db_model_store, self.admin_s3_configuration_file)
+                return {"success": True, "message": f"User '{user_config['username']}' created and initialized."}
+            except Exception as e:
+                traceback_str = traceback.format_exc()
+                raise HTTPException(status_code=500, detail=f"Failed to create user: {e}\n{traceback_str}")
+
+        @self.app.post("/admin/create_buckets")
+        async def create_buckets(user_config: dict = Body(...)):
+            """Create all buckets for a user from a client JSON file (admin/server side)."""
+            from .json_utils import client_schema
+            try:
+                jsonschema.validate(instance=user_config, schema=client_schema)
+            except jsonschema.ValidationError as e:
+                raise HTTPException(status_code=400, detail=f"Invalid user config: {e.message}")
+            try:
+                server_umrs = get_server_functions()
+                if not server_umrs:
+                    raise Exception("Could not import server functions")
+                # Only create S3/SQL users and buckets (no model/table config)
+                server_umrs.create_s3_sql_users(user_config, self.admin_s3_configuration_file)
+                return {"success": True, "message": f"Buckets for user '{user_config['username']}' created."}
+            except Exception as e:
+                traceback_str = traceback.format_exc()
+                raise HTTPException(status_code=500, detail=f"Failed to create buckets: {e}\n{traceback_str}")
+
         @self.app.get("/health")
         async def health_check():
             """Health check endpoint for Docker healthcheck."""
@@ -145,7 +250,13 @@ class UMRSAPIServer:
                     raise HTTPException(status_code=400, detail=f"Bucket '{bucket_alias}' is not configured for text modality")
 
                 # Store the text
-                s3_key = s3_store_txt(entry["s3_connection"], path_to_bucket, text, None, metadata_args)
+                # Validate that text is a string
+                if not isinstance(text, str):
+                    raise HTTPException(status_code=400, detail="The 'text' field must be a string.")
+                try:
+                    s3_key = s3_store_txt(entry["s3_connection"], path_to_bucket, text, None, metadata_args)
+                except Exception as s3_exc:
+                    raise HTTPException(status_code=500, detail=f"Failed to store text in S3: {s3_exc}")
 
 
                 # Enqueue for embedding computation if needed

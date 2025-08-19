@@ -292,11 +292,45 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
 
 def s3_store_txt(s3, path_to_bucket, text_data, mq, metadata_args):
 
-    print(f"text_data={text_data}|")
+    import traceback
+    print(f"[DEBUG] text_data before md5: type={type(text_data)}, value={repr(text_data)}")
+    try:
+        s3_key = compute_md5(text_data)+".txt"
+    except Exception as md5_exc:
+        print(f"[ERROR] compute_md5 failed: {md5_exc}\nType: {type(text_data)}, Value: {repr(text_data)}")
+        traceback.print_exc()
+        raise
 
-    s3_key = compute_md5(text_data)+".txt"
-
-    s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, Metadata=metadata_args["Metadata"], ContentType="text/plain")
+    try:
+        # Ensure metadata is a dict
+        metadata = metadata_args["Metadata"] if "Metadata" in metadata_args else {}
+        if not isinstance(metadata, dict):
+            raise ValueError(f"Metadata must be a dictionary, got {type(metadata)}: {metadata}")
+        # Convert all metadata values to ASCII strings
+        safe_metadata = {}
+        for k, v in metadata.items():
+            if not isinstance(v, str):
+                v = str(v)
+            try:
+                v.encode('ascii')
+            except Exception:
+                raise ValueError(f"Metadata value for key '{k}' must be ASCII string, got {repr(v)}")
+            safe_metadata[k] = v
+        print(f"[DEBUG] text_data before put_object: type={type(text_data)}, value={repr(text_data)}")
+        # Ensure text_data is a string
+        if not isinstance(text_data, str):
+            raise TypeError(f"Text data must be a string, got {type(text_data)}: {repr(text_data)}")
+        if text_data.strip() == "":
+            raise ValueError("Text data is an empty string.")
+        s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, Metadata=safe_metadata, ContentType="text/plain")
+    except ClientError as ce:
+        print(f"[ERROR] S3 ClientError: {ce}")
+        traceback.print_exc()
+        raise RuntimeError(f"S3 ClientError: {ce}")
+    except Exception as e:
+        print(f"[ERROR] Failed to store text in S3: {e} (type={type(text_data)}, value={repr(text_data)})")
+        traceback.print_exc()
+        raise RuntimeError(f"Failed to store text in S3: {e} (type={type(text_data)}, value={repr(text_data)})")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     if mq:  # Only notify if message queue is provided
@@ -325,19 +359,47 @@ def is_an_image(filename):
     return is_image_by_opening(filename)
 
 def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args):
+    import traceback
     if not is_an_image(in_path):
         print(f"Error: '{in_path}' is not an image. Skipping...")
         return None
 
     s3_key = os.path.basename(in_path)
 
-    if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
-    else:
-        sys.exit(f"Error: {path} not found")
+    try:
+        # Ensure metadata is a dict
+        metadata = metadata_args["Metadata"] if "Metadata" in metadata_args else {}
+        if not isinstance(metadata, dict):
+            raise ValueError(f"Metadata must be a dictionary, got {type(metadata)}: {metadata}")
+        # Convert all metadata values to ASCII strings
+        safe_metadata = {}
+        for k, v in metadata.items():
+            if not isinstance(v, str):
+                v = str(v)
+            try:
+                v.encode('ascii')
+            except Exception:
+                raise ValueError(f"Metadata value for key '{k}' must be ASCII string, got {repr(v)}")
+            safe_metadata[k] = v
+        extra_args = dict(metadata_args)
+        extra_args["Metadata"] = safe_metadata
+
+        if os.path.exists(in_path):
+            s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=extra_args)
+        else:
+            sys.exit(f"Error: {in_path} not found")
+    except ClientError as ce:
+        print(f"[ERROR] S3 ClientError: {ce}")
+        traceback.print_exc()
+        raise RuntimeError(f"S3 ClientError: {ce}")
+    except Exception as e:
+        print(f"[ERROR] Failed to store image in S3: {e}")
+        traceback.print_exc()
+        raise RuntimeError(f"Failed to store image in S3: {e}")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
-    mq.notify_s3(s3_object)
+    if mq:
+        mq.notify_s3(s3_object)
 
     return s3_key;
 
@@ -355,19 +417,47 @@ def is_a_text_file(in_path):
 
 
 def s3_store_text_file(s3, path_to_bucket, in_path, mq, metadata_args):
+    import traceback
     if not is_a_text_file(in_path):
         print(f"Error: '{in_path}' is not a txt file. Skipping...")
         return None
 
     s3_key = os.path.basename(in_path)
 
-    if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
-    else:
-        sys.exit(f"Error: {path} not found")
+    try:
+        # Ensure metadata is a dict
+        metadata = metadata_args["Metadata"] if "Metadata" in metadata_args else {}
+        if not isinstance(metadata, dict):
+            raise ValueError(f"Metadata must be a dictionary, got {type(metadata)}: {metadata}")
+        # Convert all metadata values to ASCII strings
+        safe_metadata = {}
+        for k, v in metadata.items():
+            if not isinstance(v, str):
+                v = str(v)
+            try:
+                v.encode('ascii')
+            except Exception:
+                raise ValueError(f"Metadata value for key '{k}' must be ASCII string, got {repr(v)}")
+            safe_metadata[k] = v
+        extra_args = dict(metadata_args)
+        extra_args["Metadata"] = safe_metadata
+
+        if os.path.exists(in_path):
+            s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=extra_args)
+        else:
+            sys.exit(f"Error: {in_path} not found")
+    except ClientError as ce:
+        print(f"[ERROR] S3 ClientError: {ce}")
+        traceback.print_exc()
+        raise RuntimeError(f"S3 ClientError: {ce}")
+    except Exception as e:
+        print(f"[ERROR] Failed to store text file in S3: {e}")
+        traceback.print_exc()
+        raise RuntimeError(f"Failed to store text file in S3: {e}")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
-    mq.notify_s3(s3_object)
+    if mq:
+        mq.notify_s3(s3_object)
 
     return s3_key;
 

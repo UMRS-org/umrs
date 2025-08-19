@@ -60,7 +60,7 @@ def db_user_exists(conn, username):
         cur.execute("SELECT 1 FROM pg_roles where rolname = %s;", (username,))
         exists = cur.fetchone()
         return exists
-        
+
 
 def create_db_user(username):
     # Database credentials
@@ -78,7 +78,7 @@ def create_db_user(username):
         return
 
     password = username
-    
+
     cur = conn.cursor()
     cur.execute(
         sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
@@ -88,8 +88,8 @@ def create_db_user(username):
     cur.close()
     conn.close()
 
-    
-        
+
+
 def create_db(sql_username, xp_name):
     db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")
@@ -98,12 +98,12 @@ def create_db(sql_username, xp_name):
     DB_PORT = "5432"
     DB_SUPERUSER = "postgres"  # Use a superuser or admin account
     DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", "postgres")
-    DB_NAME = db_name  # Replace with the target database
-    DB_USER = sql_username  # Replace with the target user
+    DB_NAME = db_name  # Target database name
 
-    # Connect to PostgreSQL default database (`postgres`)
+    # Always use admin credentials for all DB connections
+    # Connect to PostgreSQL default database (`postgres`) as admin
     conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
-    conn.autocommit = True  # Enable auto-commit mode
+    conn.autocommit = True
     cur = conn.cursor()
 
     # Check if the database exists
@@ -113,13 +113,13 @@ def create_db(sql_username, xp_name):
     if exists:
         print(f"\t\t-->  Database '{db_name}' already exists.")
     else:
-        # Create the database if it does not exist
+        # Create the database if it does not exist, owned by the logical user
         cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};" ).format(
-            sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
+            sql.Identifier(DB_NAME), sql.Identifier(sql_username)
         ))
         print(f"\t\t-->  Database '{db_name}' created successfully.")
 
-        # Connect to the new database as superuser and create the extension
+        # Connect to the new database as admin and create the extension
         cur.close()
         conn.close()
         conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
@@ -133,28 +133,17 @@ def create_db(sql_username, xp_name):
         finally:
             cur_new.close()
             conn_new.close()
-        # Return a new connection to the created database
-        DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
-        db_pool = psycopg2.pool.SimpleConnectionPool(
-            minconn=1, maxconn=5,  # Adjust based on your needs
-            dbname=db_name,
-            user=sql_username,
-            password=DB_USER_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT
-        )
-        return DataBase(db_pool, db_name, sql_username), db_name
 
     # Clean up
     cur.close()
     conn.close()
-    # Return a new connection to the created database
-    DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
+
+    # Always use admin credentials for all DB connections, never user-specific credentials
     db_pool = psycopg2.pool.SimpleConnectionPool(
         minconn=1, maxconn=5,  # Adjust based on your needs
         dbname=db_name,
-        user=sql_username,
-        password=DB_USER_PASSWORD,
+        user=DB_SUPERUSER,
+        password=DB_SUPERUSER_PASSWORD,
         host=DB_HOST,
         port=DB_PORT
     )
@@ -504,10 +493,10 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
                 "message": f"No entry found in table '{table_name}' for key: {s3_object}"
             }
 
-        
+
         # Extract checksums into a list (flatten from rows)
         db_checksums = [row[0] for row in results]
-        
+
         if checksum in db_checksums:
             return {
                 "status": "match",

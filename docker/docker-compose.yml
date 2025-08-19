@@ -82,6 +82,25 @@ services:
       retries: 5
       start_period: 10s
 
+  umrs-api-test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.umrs-api-test
+    container_name: umrs-api-test
+    depends_on:
+      umrs-server:
+        condition: service_healthy
+    environment:
+      - UMRS_API_URL=https://umrs-server:8443
+    volumes:
+      - ../data:/app/data:ro
+      - ./conf_umrs_user1.json:/app/conf_umrs_user1.json:ro
+      - ./conf_umrs_user2.json:/app/conf_umrs_user2.json:ro
+    networks:
+      - umrs-net
+    restart: no
+
+
 volumes:
   minio_data:
   pg_data:
