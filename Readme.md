@@ -46,18 +46,19 @@ UMRS is a comprehensive multi-modal retrieval system that supports secure HTTPS 
   - Health check: `curl -k https://localhost:8443/health`
 
 4. **Manual API/Client Testing (optional):**
-  After running the stack, you can test endpoints or client scripts manually:
+  After running the stack, you can interact with the API using the `client_umrs_api.py` script:
   ```bash
-  # Test as user1
-  python3 src/client_umrs.py list-buckets \
+  # List buckets as user1
+  python3 src/client_umrs_api.py list-buckets \
     --server-url https://localhost:8443 \
     --token user1 --username user1 --insecure
 
-  # Test as user2
-  python3 src/client_umrs.py list-buckets \
+  # List buckets as user2
+  python3 src/client_umrs_api.py list-buckets \
     --server-url https://localhost:8443 \
     --token user2 --username user2 --insecure
   ```
+  See `src/client_umrs_api.py --help` for all available commands and options.
 
 ## Security
 
