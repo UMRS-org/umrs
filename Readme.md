@@ -23,35 +23,41 @@ UMRS is a comprehensive multi-modal retrieval system that supports secure HTTPS 
 
 ## Quick Start
 
-### Multi-User HTTPS Setup (Recommended)
+### Multi-User HTTPS Setup & Automated Testing
 
-1. **Navigate to the Docker directory:**
-   ```bash
-   cd docker
-   ```
+1. **Navigate to the project root (recommended):**
+  ```bash
+  cd /path/to/umrs
+  ```
 
-2. **Start all services with HTTPS:**
-   ```bash
-   docker compose up --build
-   ```
+2. **Run the full build, deployment, and test suite:**
+  ```bash
+  ./docker/rebuild_and_start.sh
+  ```
+  This script will:
+  - Stop and clean up any previous containers, networks, and volumes
+  - Build all Docker images from scratch
+  - Start all services (UMRS server, MinIO, PostgreSQL, test containers)
+  - Run the automated multi-user test suite (see `docker/test_multiuser.sh` and `docker/test_umrs_api.sh`)
+  - Output test results and shut down containers when complete
 
-3. **Access the system:**
-   - UMRS Server: `https://localhost:8443`
-   - Health check: `curl -k https://localhost:8443/health`
-   - Multi-user test runs automatically on startup
+3. **Access the system (if running interactively):**
+  - UMRS Server: `https://localhost:8443`
+  - Health check: `curl -k https://localhost:8443/health`
 
-4. **Test with users:**
-   ```bash
-   # Test as user1
-   python3 src/client_umrs.py list-buckets \
-     --server-url https://localhost:8443 \
-     --token user1 --username user1 --insecure
+4. **Manual API/Client Testing (optional):**
+  After running the stack, you can test endpoints or client scripts manually:
+  ```bash
+  # Test as user1
+  python3 src/client_umrs.py list-buckets \
+    --server-url https://localhost:8443 \
+    --token user1 --username user1 --insecure
 
-   # Test as user2  
-   python3 src/client_umrs.py list-buckets \
-     --server-url https://localhost:8443 \
-     --token user2 --username user2 --insecure
-   ```
+  # Test as user2
+  python3 src/client_umrs.py list-buckets \
+    --server-url https://localhost:8443 \
+    --token user2 --username user2 --insecure
+  ```
 
 ## Security
 
@@ -118,11 +124,18 @@ curl -k -H "Authorization: Bearer user1" \
                             HTTPS/TLS Encrypted
 ```
 
+
+## Testing & Automation
+
+- **Automated Multi-User Tests**: The main test workflow is triggered by `./docker/rebuild_and_start.sh`, which runs all integration and multi-user tests in a clean environment. See `docker/test_multiuser.sh` and `docker/test_umrs_api.sh` for details.
+- **Test Output**: Results are printed to the console. The test containers will exit with code 0 on success.
+- **Manual Testing**: You can use the client scripts in `src/` to interact with the running server for further manual or exploratory testing.
+
 ## Documentation
 
-- **Multi-User Setup**: See `docker/README_multiuser.md`
+- **Multi-User Setup**: See `docker/README_multiuser.md` (if present)
 - **HTTPS Configuration**: Self-signed certificates in `docker/ssl/`
-- **Testing**: Automated multi-user tests in `docker/test_multiuser.sh`
+- **Testing**: Automated multi-user tests in `docker/test_multiuser.sh` and `docker/test_umrs_api.sh`
 - **Development**: Legacy documentation in `Infinia_demo/doc/`
 
 ## Supported Models
