@@ -41,19 +41,19 @@ function test_all_endpoints() {
   # Upload text
   BUCKET_ALIAS=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="text") | .s3.bucket_alias' "$config_path")
   echo "[upload_text]"
-  $PY_CLIENT --base_url "$BASE_URL" upload_text "Hello from test script!" "$BUCKET_ALIAS" "$username" '{"test":true}'
+  $PY_CLIENT --base_url "$BASE_URL" upload_text "Hello from test script!" "$BUCKET_ALIAS" "$username" '{}'
 
   # Upload image
   IMG_PATH="$data_dir/img/Cat_1.jpeg"
   BUCKET_ALIAS_IMG=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="image") | .s3.bucket_alias' "$config_path")
   echo "[upload_image]"
-  $PY_CLIENT --base_url "$BASE_URL" upload_image "$IMG_PATH" "$BUCKET_ALIAS_IMG" "$username" '{"test":true}'
+  $PY_CLIENT --base_url "$BASE_URL" upload_image "$IMG_PATH" "$BUCKET_ALIAS_IMG" "$username" '{}'
 
   # Upload textfile
   TXTFILE_PATH="$data_dir/texts/beast_in_the_jungle.txt"
   BUCKET_ALIAS_TXT=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="text file") | .s3.bucket_alias' "$config_path")
   echo "[upload_textfile]"
-  $PY_CLIENT --base_url "$BASE_URL" upload_textfile "$TXTFILE_PATH" "$BUCKET_ALIAS_TXT" "$username" '{"test":true}'
+  $PY_CLIENT --base_url "$BASE_URL" upload_textfile "$TXTFILE_PATH" "$BUCKET_ALIAS_TXT" "$username" '{}'
 
   echo "[recompute_embeddings]"
   $PY_CLIENT --base_url "$BASE_URL" recompute_embeddings
