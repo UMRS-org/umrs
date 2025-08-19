@@ -105,8 +105,8 @@ class UMRSAPIServer:
                 os.replace(tmp_path, user_json_path)
             except Exception as e:
                 raise HTTPException(status_code=500, detail=f"Failed to store user JSON: {e}")
-            # Atomically update conf_umrs_init.json
-            conf_path = "/app/conf_umrs_init.json"
+            # Atomically update conf_umrs_users.json
+            conf_path = "/app/conf_umrs_users.json"
             try:
                 with open(conf_path, "r", encoding="utf-8") as f:
                     conf = json.load(f)
@@ -119,7 +119,7 @@ class UMRSAPIServer:
                         json.dump(conf, f, indent=2)
                     os.replace(tmp_conf_path, conf_path)
             except Exception as e:
-                raise HTTPException(status_code=500, detail=f"Failed to update conf_umrs_init.json: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to update conf_umrs_users.json: {e}")
             # Hot-reload: initialize user in-memory
             try:
                 server_umrs = get_server_functions()

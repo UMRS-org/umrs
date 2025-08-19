@@ -24,7 +24,7 @@ COPY ./data /app/data
 # copy the model directory
 COPY ./models /app/models
 # copy the initial configuration file
-COPY ./docker/conf_umrs_init.json /app/conf_umrs_init.json
+COPY ./docker/conf_umrs_users.json /app/conf_umrs_users.json
 COPY ./docker/conf_umrs_ejeannot.json /app/docker/conf_umrs_ejeannot.json
 COPY ./docker/s3cfg /root/.s3cfg
 # copy SSL certificates for HTTPS support
@@ -45,4 +45,4 @@ ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
 
 EXPOSE 8000
 EXPOSE 8443
-CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_init.json", "--use-https", "--ssl-cert", "/app/ssl/public.crt", "--ssl-key", "/app/ssl/private.key", "--port", "8443"]
+CMD ["python", "src/server_umrs.py", "--conf", "conf_umrs_users.json", "--use-https", "--ssl-cert", "/app/ssl/public.crt", "--ssl-key", "/app/ssl/private.key", "--port", "8443"]
