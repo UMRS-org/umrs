@@ -105,13 +105,13 @@ def load_sentence_transformers_model(model_name):
 
 
 
-sql_username = "ejeannot"
-db_name =  "text_and_images_ejeannot"
+sql_username = "usr1_2"
+db_name =  "text_and_images_usr1_2"
 table = "text"
 
 DB_HOST = "localhost"
 DB_PORT = "5432"
-DB_SUPERUSER = "ejeannot"  # Use a superuser or admin account
+DB_SUPERUSER = "postgres"  # Use a superuser or admin account
 DB_NAME = db_name  # Replace with the target database
 DB_USER = sql_username  # Replace with the target user
 
