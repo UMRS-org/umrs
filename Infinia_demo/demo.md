@@ -10,16 +10,27 @@
 
 `minio server /data --console-address ":9001"`
 
+### ➤ Delete minIO users
+`mc admin user rm myminio user1 --insecure`
+`mc admin user rm myminio user2 --insecure`
+
+
 ## 2. Terminal Windows Setup
 
 ### Window 1 — PostgreSQL
 
-1. Connect to PostgreSQL and drop existing demo databases:
+1. Connect to PostgreSQL and drop existing demo databases and delete users:
 
 ```
 psql -U postgres
-DROP DATABASE IF EXISTS images_and_texts_ejeannot;
-DROP DATABASE IF EXISTS text_and_images_ejeannot;
+\t 
+drop database images_and_texts_usr1_1;
+drop database images_and_texts_usr2_1;
+drop database text_and_images_usr1_2;
+\du 
+drop user usr1_1;
+drop user usr1_2;
+drop user usr2_1;
 ```
 
 ### Window 2 — Server
@@ -36,24 +47,34 @@ Wait for the server to finish setup and listen for incoming requests.
 
 ### 3.1 Submit text examples
 ```
-./client_umrs.py "I eat apple at breakfast" ej-bucket-2
-./client_umrs.py "I like apple and any fruit!" ej-bucket-2 -k keywords:test
+./client_umrs.py -c users_json/user1.json "I eat an apple at breakfast" bucket-2
+./client_umrs.py -c users_json/user2.json "I eat an apple at breakfast" bucket-2
+
 ```
 
 ### 3.2 Query SQL to verify
 
 ```
-psql -d text_and_images_ejeannot
+psql -d text_and_images_usr1_2 usr1_2
 SELECT s3_object, _content, keywords, date, time FROM text ORDER BY time;
 ```
 
+check that credantial works and that you cannot read the database if you are not the right user: 
+
+```
+psql -d text_and_images_usr1_2 usr1_1
+SELECT s3_object, _content, keywords, date, time FROM text ORDER BY time;
+```
 ### 3.3 Upload a full text file
 
-`./client_umrs.py apple.txt ej-bucket-2`
+`./client_umrs.py -c users_json/user1.json apple.txt bucket-2`
 
 ### 3.4 Check results in DB
 
-`SELECT s3_object, _content, date, time FROM text ORDER BY time;`
+```
+psql -d text_and_images_usr1_2 usr1_2
+SELECT s3_object, _content, date, time FROM text ORDER BY time;
+```
 
 ### 3.5 Cluster texts using PGVector
 
@@ -63,11 +84,14 @@ SELECT s3_object, _content, keywords, date, time FROM text ORDER BY time;
 
 ### 4.1 Upload an entire image directory
 
-`./client_umrs.py ../../data/img ej-bucket-1`
+` ./client_umrs.py -c users_json/user1.json ../../data/img bucket-1`
 
 ### 4.2 Query the image table
 
-`SELECT s3_object, date, time FROM image ORDER BY time;`
+```
+psql -d text_and_images_usr1_2 usr1_2
+SELECT s3_object, date, time FROM image ORDER BY time;
+```
 
 ### 4.3 Cluster images using PGVector
 
@@ -78,14 +102,14 @@ SELECT s3_object, _content, keywords, date, time FROM text ORDER BY time;
 ### Upload images with/without keywords
 
 ```
-./client_umrs.py ../../data/img/Cat_2.jpeg ej-bucket-3
+./client_umrs.py -c users_json/user2.json ../../data/img/Cat_2.jpeg  bucket-1
 ./client_umrs.py ../../data/img/Cat_1.jpeg ej-bucket-3 -k keywords:cat -k author:internet -k x_resolution:256 -k y_resolution:512
 ```
 
 ### Query metadata
 
 ```
-psql -d images_and_texts_ejeannot
+psql -d images_and_texts_usr2_1  usr2_1
 SELECT id, s3_object, date, time, keywords, author, x_resolution, y_resolution FROM image ORDER BY time;
 ```
 
@@ -93,11 +117,11 @@ SELECT id, s3_object, date, time, keywords, author, x_resolution, y_resolution F
 
 ### Submit a large file
 
-`./client_umrs.py ../../data/texts/beast_in_the_jungle.txt ej-bucket-5`
+`./client_umrs.py -c users_json/user1.json "I eat an apple at breakfast" bucket-2`
 ### Inspect chunking results
 
 ```
-psql -d images_and_texts_ejeannot
+psql -d images_and_texts_usr1_1 usr1_1
 ```
 
 ```
