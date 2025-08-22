@@ -13,22 +13,33 @@ from glob import glob
 import argparse
 from collections import defaultdict
 
-
-def is_server_ready(mq, response_mq, timeout_ms=5000):
+def is_server_ready(mq, timeout_ms=5000):
     print("Checking for server availability...")
     if timeout_ms < 1500:
         timeout_ms = 1500
 
-    while timeout_ms > 100:
-        mq.handshake("READY?")
-        answer = response_mq.busy_wait(100) 
-        if answer == "READY!":
-            return True
+    mq.set_timeout(timeout_ms)
+    try: 
+        try:
+            mq.send_string("READY?")
+            answer = mq.recv_string()
+            if answer == "READY!":
+                return True
+        except zmq.Again:
+            # Retry once on timeout
+            try:
+                mq.send_string("READY?")
+                answer = mq.recv_string()
+                if answer == "READY!":
+                    return True
+            except zmq.Again:
+                return False
+        return False
+    finally:
+        mq.set_timeout(-1) # reset timeout before exiting
     
-    mq.handshake("READY?")
-    answer = response_mq.busy_wait(timeout_ms - 1000) 
-    return answer == "READY!"
-    
+
+
 def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name):
     if(bucket_store[bucket_alias]):
         sys.exit(f"Error: duplicate bucket_alias {bucket_alias}")
@@ -73,11 +84,10 @@ parser.add_argument("bucket", type=str, nargs="?", help="target bucket alias", d
 args = parser.parse_args()
 
 # Connect to message queue
-mq = MessageQueue(queue_type= args.queue_type, role = "client")
-response_mq = MessageQueue(queue_type= args.queue_type, role = "server", queue_name="/tmp/response")
+control_mq = MessageQueue(role = "client", queue_type = 'control')
 
 if not args.no_check_server:
-    if not is_server_ready(mq, response_mq, timeout_ms=5000):
+    if not is_server_ready(control_mq, timeout_ms=5000):
         sys.exit("Server connection timeout...\n"
                  "Cannot continue!"
                  )
@@ -128,6 +138,9 @@ modality              = entry['modality_name']
 s3_configuration_file = entry['s3_configuration_file']
 metadata              = entry['metadata']
 
+
+data_mq = control_mq.get_data_queue(username)
+
 s3, bucket_location = connect_to_s3(s3_configuration_file)
 
 full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username)
@@ -141,49 +154,73 @@ metadata_args = check_and_build_metadata(metadata, args.k)
 
 print(f"Storing data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
 
+server_notify_result = None
 if modality == "text" :
     if os.path.isfile(args.data): #if its a file store each line individually
         try:
             with open(args.data,"r") as file:
+                nb_objects = 0
                 for line in file.readlines():
                     line = line.strip()
-                    s3_key = s3_store_txt(s3, full_bucket_name, line, mq, metadata_args)
+                    s3_key = s3_store_txt(s3, full_bucket_name, line, data_mq, metadata_args)
+                    nb_objects += 1
                     print(f"'{line}' saved as {s3_key} on: {full_bucket_name}")
+                server_notify_result = control_mq.notify_server(username, nb_objets) 
         except UnicodeDecodeError as e:
             print(f"Unicode decoding error: {e}")
             print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file. Try an other bucket.")
     else:
-        s3_key = s3_store_txt(s3, full_bucket_name, args.data, mq, metadata_args)
+        s3_key = s3_store_txt(s3, full_bucket_name, args.data, data_mq, metadata_args)
         print(f"'{args.data}' saved as {s3_key} on: {full_bucket_name}")
+        server_notify_result = control_mq.notify_server(username, 1) 
 elif modality == "image" :
     if os.path.isfile(args.data): #if it is a file, store it
-        s3_key = s3_store_image(s3, full_bucket_name, args.data, mq, metadata_args)
+        s3_key = s3_store_image(s3, full_bucket_name, args.data, data_mq, metadata_args)
         if s3_key:
             print(f"'{s3_key}' saved on: {full_bucket_name}")
+            server_notify_result = control_mq.notify_server(username, 1) 
     elif os.path.isdir(args.data): #if it is a path, store each file in the corresponding directory
+        nb_objects = 0
         for file in glob(os.path.join(args.data, "*")):
             if os.path.isfile(file):
-                s3_key = s3_store_image(s3, full_bucket_name, file, mq, metadata_args)
+                s3_key = s3_store_image(s3, full_bucket_name, file, data_mq, metadata_args)
                 if s3_key:
+                    nb_objects += 1
                     print(f"'{s3_key}' saved on: {full_bucket_name}")
+        server_notify_result = control_mq.notify_server(username, nb_objets) 
+
     else :
         print(f"Error: do not know what to do with '{args.data}'...")
         print("Provide a path to an image or to a directory of images")
 
 elif modality == "text file" :
     if os.path.isfile(args.data): #if it is a file, store it
-        s3_key = s3_store_text_file(s3, full_bucket_name, args.data, mq, metadata_args)
+        s3_key = s3_store_text_file(s3, full_bucket_name, args.data, data_mq, metadata_args)
         if s3_key:
             print(f"'{s3_key}' saved on: {full_bucket_name}")
+            server_notify_result = control_mq.notify_server(username, 1) 
+
     elif os.path.isdir(args.data): #if it is a path, store each file in the corresponding directory
+        nb_objects = 0
         for file in glob(os.path.join(args.data, "*")):
             if os.path.isfile(file):
-                s3_key = s3_store_text_file(s3, full_bucket_name, file, mq, metadata_args)
+                s3_key = s3_store_text_file(s3, full_bucket_name, file, data_mq, metadata_args)
                 if s3_key:
+                    nb_objects += 1
                     print(f"'{s3_key}' saved on: {full_bucket_name}")
+        server_notify_result = control_mq.notify_server(username, nb_objets) 
     else :
         print(f"Error: do not know what to do with '{args.data}'...")
         print("Provide a path to a text file or to a directory of text_files")
 
 else:
     print(f"Error: Unknown modality '{modality}'. Nothing has been sent to the server")
+
+if server_notify_result != None:
+    if server_notify_result == True:
+        print("Server received data")
+    else:
+        print("Error: Server did not data")
+# close queues before exiting
+control_mq.close()
+data_mq.close()
