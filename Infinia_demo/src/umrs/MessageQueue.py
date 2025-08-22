@@ -14,9 +14,9 @@ if not (zmq):
 import zmq
 
 BASE_PORT = 5555
-
+DEFAULT_NB_MSG = 10240
 class MessageQueue:
-    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, max_nb_messages=1024):
+    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, max_nb_messages=DEFAULT_NB_MSG):
         """
         Initializes the MessageQueue.
 
@@ -33,7 +33,7 @@ class MessageQueue:
         self.server_ip = server_ip
         self.context = zmq.Context()
         self.client_dictionary={}
-        self.max_msg = max_nb_messages if max_nb_messages > 0 else 1024
+        self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
         
         # Initialize the selected queue type
         if self.type == "control":
