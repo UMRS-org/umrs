@@ -16,7 +16,7 @@ import zmq
 BASE_PORT = 5555
 
 class MessageQueue:
-    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, target_nb_messages=100, target_message_size=4096):
+    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, max_nb_messages=1024):
         """
         Initializes the MessageQueue.
 
@@ -31,17 +31,15 @@ class MessageQueue:
         self.role = role.lower()
         self.type = queue_type.lower()
         self.server_ip = server_ip
-        self.target_nb_messages = target_nb_messages
-        self.target_message_size = target_message_size
         self.context = zmq.Context()
         self.client_dictionary={}
-
+        self.max_msg = max_nb_messages if max_nb_messages > 0 else 1024
+        
         # Initialize the selected queue type
         if self.type == "control":
             self.port = BASE_PORT
             self._initialize_control_queue()
         elif self.type == "data":
-            self._initialize_data_queue()
             if port == BASE_PORT:
                 raise ValueError(f"Cannot use port {BASE_PORT} for data channel")
             self.port = port
@@ -61,22 +59,25 @@ class MessageQueue:
 
     def _initialize_data_queue(self):
         if self.role == 'server':
-            self.socket = self.context.socket(zmq.SUB)
-            self.socket.bind(f"tcp://*:{self.port}")  # Data channel
-            self.socket.setsockopt_string(zmq.SUBSCRIBE, "")  # Subscribe to all topics
+            # Server uses PULL socket to receive pushed data
+            self.socket = self.context.socket(zmq.PULL)
+            self.socket.bind(f"tcp://*:{self.port}")  # Data channel bind
+            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
         else:  # client
-            self.socket = self.context.socket(zmq.PUB)
+            # Client uses PUSH socket to send data
+            self.socket = self.context.socket(zmq.PUSH)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
 
+        
     # ------------------------ Core Methods ------------------------
 
     def send_string(self, string):
-        # print(f"Sending '{string}' to '{self.queue_type}")
+        print(f"Sending '{string}' to '{self.type}")
         self.socket.send_string(string)
 
     def recv_string(self):
-        # print(f"Sending '{string}' to '{self.queue_type}")
-        self.socket.recv_string(string)
+        return self.socket.recv_string()
 
     def set_timeout(self, timeout_ms):
         self.socket.RCVTIMEO = timeout_ms  
@@ -89,7 +90,7 @@ class MessageQueue:
             data_socket = entry.get("data_socket")
             if data_socket:
                 try:
-                    data_socket.close()
+                    data_socket.socket.close()
                 except Exception as e:
                     print(f"Warning: Failed to close data socket: {e}")
 
@@ -99,8 +100,7 @@ class MessageQueue:
         except Exception as e:
             print(f"Warning: Failed to close main socket: {e}")
 
-        print("All Queue(s) closed successfully.")
-    
+            
     # ------------------------ Server methods ------------------------
     def server_control_queue_loop(self):
         if self.role != "server":
@@ -113,32 +113,35 @@ class MessageQueue:
             cmd = splited_msg[0]
             
             if cmd == "READY?":  # handshake
-                self._send_string("READY!")
+                self.send_string("READY!")
 
-            elif cmd = "CREATE_DATA_QUEUE":  # prepare PUB-SUB request
+            elif cmd == "CREATE_DATA_QUEUE":  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
                     port = self.client_dictionary[client_id]["port"]
                 else:
-                    max_port_entry = max(self.client_dictionary.values(), key=lambda x: x.get("port", BASE_PORT))
-                    port = max_port_entry.get("port", BASE_PORT) + 1
+                    max_port = max((entry.get("port", BASE_PORT) for entry in self.client_dictionary.values()), default=BASE_PORT)
+                    port = max_port + 1
                     self.client_dictionary.setdefault(client_id, {})["port"] = port
                     data_socket = MessageQueue(role='server', queue_type='data', server_ip=self.server_ip, port=port)
                     self.client_dictionary[client_id]["data_socket"] = data_socket
                     
                 reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
-                self._send_string(reply)
-
-            elif cmd = "OBJECT:":
+                self.send_string(reply)
+            elif cmd == "OBJECT":  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 nb_objects = int(splited_msg[2])
                 if client_id in self.client_dictionary and "data_socket" in self.client_dictionary[client_id]:
                     data_socket = self.client_dictionary[client_id]["data_socket"]
+                    port = self.client_dictionary[client_id]["port"]
+                    print(f"Listening data to port {port}")
                     objects =  data_socket.wait_for_s3_events(nb_objects)
                     self.send_string("ACKNOWLEDGE")
                     return objects
                 else:
-                    self._send_string("PORT ERROR")
+                    self.send_string("NO_DATA_SOCKET")
+            else:
+                raise RuntimeError("Unknown command: {cmd}")
                     
     def wait_for_s3_events(self, nb_objects, debug=False):
         """Block until new messages arrive, then read all available messages."""
@@ -146,17 +149,50 @@ class MessageQueue:
             raise PermissionError(f"Only server can call '{wait_for_s3_events}'.")
         
         messages = []
-        print("Listening for new messages...")
-        while len(messages) < nb_objects:
-            message = self._receive_message(blocking=True)
+        print(f"Listening for {nb_objects} new messages...")
+        nb_received = 0
+        while nb_received < nb_objects:
+            message = self.recv_string()
             if message:
                 print("Received :", message)
                 messages.append(message)
+                nb_received += 1
 
         return messages
 
     # ------------------------ client methods ------------------------
-    
+
+    def is_server_ready(self, timeout_ms=5000):
+        if self.role != "client":
+            raise PermissionError(f"Only client can call 'get_data_queue'")
+
+        if self.type != "control":
+            raise PermissionError(f"Only control message queue can check server")
+
+        print("Checking for server availability...")
+        if timeout_ms < 1500:
+            timeout_ms = 1500
+
+        self.set_timeout(timeout_ms)
+        try: 
+            try:
+                self.send_string("READY?")
+                answer = self.recv_string()
+                if answer == "READY!":
+                    return True
+            except zmq.Again:
+                # Retry once on timeout
+                try:
+                    self.send_string("READY?")
+                    answer = self.recv_string()
+                    if answer == "READY!":
+                        return True
+                except zmq.Again:
+                    return False
+            return False
+        finally:
+            self.set_timeout(-1) # always reset timeout before exiting
+        
     def get_data_queue(self, client_id):
         if self.role != "client":
             raise PermissionError(f"Only client can call 'get_data_queue'")
@@ -203,7 +239,7 @@ class MessageQueue:
             if verbose:
                 print("Server acknowledges reception of the objects")
             return True
-        elif reply == "PORT ERROR":
+        elif reply == "NO_DATA_SOCKET":
             raise RuntimeError(f"Error: the server cannot find the data queue for user {client_id}.")
         else:
             raise RuntimeError(f"Unexpected error on server side for user {client_id}: {reply}.")
@@ -213,25 +249,12 @@ class MessageQueue:
         if self.role != 'client':
             raise PermissionError("notify_s3 can only be used by the client.")
 
+        print(f"sending data to port: {self.port}")
         self.send_string(s3_object)
         
         print(f"Notifying: {s3_object}")
 
         
-    # ------------------------ Private Methods ------------------------
-
-
-    def _receive_message(self, blocking=False):
-        """Receive message from ZeroMQ queue."""
-        poller = zmq.Poller()
-        poller.register(self.socket, zmq.POLLIN)
-        timeout = None if blocking else 0
-
-        socks = dict(poller.poll(timeout))
-        if self.socket in socks:
-            return self.socket.recv_string()
-        return None
-
 
 
                 
