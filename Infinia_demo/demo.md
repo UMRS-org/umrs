@@ -117,7 +117,7 @@ SELECT id, s3_object, date, time, keywords, author, x_resolution, y_resolution F
 
 ### Submit a large file
 
-`./client_umrs.py -c users_json/user1.json "I eat an apple at breakfast" bucket-2`
+`./client_umrs.py -c users_json/user1.json ../../data/texts/beast_in_the_jungle.txt bucket-5`
 ### Inspect chunking results
 
 ```
