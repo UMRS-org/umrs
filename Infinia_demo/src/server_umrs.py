@@ -263,9 +263,8 @@ def main():
     print("Configuration loaded successfully.")
 
     # create the message queue:
-    mq = MessageQueue(queue_type = args.queue_type);
-    response_mq = MessageQueue(queue_type = args.queue_type, role='client', queue_name="/tmp/response")
-    print (f"Subscribed to message queue '{args.queue_type}'")
+    control_mq = MessageQueue(role='server', queue_type='control');
+    print (f"Subscribed to zeroMQ message queue'")
 
 
     # create S3/SQL  users if necessary 
@@ -301,21 +300,14 @@ def main():
 
     try:
         # loop for new new object to be created
-        is_handshake = False
         while True:
-            if not is_handshake: #Only print if we did not have handshake in the last round
-                print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+            print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+            s3_objects = control_mq.server_control_queue_loop()
+            process_s3_objects(s3_objects, db_model_store, device)
 
-            s3_objects, is_handshake = mq.wait_for_s3_events()
-            if is_handshake: # The client ask me if I am ready.
-                print("Received handshake request. Answering 'READY!'")
-                response_mq.handshake("READY!")
-            else:
-                process_s3_objects(s3_objects, db_model_store, device)
-        
     except KeyboardInterrupt:
         print("\nInterrupted by user. Exiting gracefully...")
-        mq.close()
+        control_mq.close()
         sys.exit(0)  # Ensures a clean exit
 
 

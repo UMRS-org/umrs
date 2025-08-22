@@ -4,245 +4,224 @@ import os
 import hashlib
 import time
 
-# Conditional imports based on queue type and OS
-try:
-    import posix_ipc
-except ImportError:
-    posix_ipc = None
-
-try:
-    import sysv_ipc
-except ImportError:
-    sysv_ipc = None
-
 try:
     import zmq
 except ImportError:
     zmq = None
 
-if not (zmq or sysv_ipc or posix_ipc):
-    raise ImportError("No usefull message queue module found (Posix IPC or SYSV or zeroMQ.)")
+if not (zmq):
+    raise ImportError("Cannot find zeroMQ module")
+import zmq
 
-
-DEFAULT_QUEUE_NAME = '/tmp/MQ_Queue'
+BASE_PORT = 5555
 
 class MessageQueue:
-    def __init__(self, queue_type='zeromq', role='server', queue_name=DEFAULT_QUEUE_NAME, target_nb_messages=100, target_message_size=4096):
+    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, target_nb_messages=100, target_message_size=4096):
         """
         Initializes the MessageQueue.
 
         Args:
-            queue_type (str): 'zeromq', 'posix_ipc', or 'sysv_ipc'.
+            queue_type (str): 'control' or 'data'.
             role (str): 'server' or 'client'.
-            queue_name (str): Unique queue identifier.
+            server_ip (str): IP address of server.
+            port (int): Port number.
             target_nb_messages (int): Max number of messages in queue (for POSIX/SYSV).
             target_message_size (int): Max size per message (for POSIX/SYSV).
         """
-        self.queue_type = queue_type.lower()
         self.role = role.lower()
-        self.queue_name = queue_name
+        self.type = queue_type.lower()
+        self.server_ip = server_ip
         self.target_nb_messages = target_nb_messages
         self.target_message_size = target_message_size
-
-        # Check for macOS limitations
-        if platform.system() == 'Darwin' and self.queue_type == 'posix_ipc':
-            raise EnvironmentError("POSIX IPC is not supported on macOS. Use sysv_ipc or zeromq instead.")
+        self.context = zmq.Context()
+        self.client_dictionary={}
 
         # Initialize the selected queue type
-        if self.queue_type == 'zeromq':
-            self._init_zeromq()
-        elif self.queue_type == 'posix_ipc':
-            self._init_posix_ipc()
-        elif self.queue_type == 'sysv_ipc':
-            self._init_sysv_ipc()
+        if self.type == "control":
+            self.port = BASE_PORT
+            self._initialize_control_queue()
+        elif self.type == "data":
+            self._initialize_data_queue()
+            if port == BASE_PORT:
+                raise ValueError(f"Cannot use port {BASE_PORT} for data channel")
+            self.port = port
+            self._initialize_data_queue()
         else:
-            raise ValueError(f"Unsupported queue type: {self.queue_type}")
+            raise ValueError(f"Unsupported queue type: {self.type}")
 
     # ------------------------ Initializers ------------------------
 
-    def _init_zeromq(self):
-        if zmq is None:
-            raise ImportError("zeroMQ module not found.")
+    def _initialize_control_queue(self):
+        if self.role == 'server':
+            self.socket = self.context.socket(zmq.REP)
+            self.socket.bind(f"tcp://*:{self.port}")  # Control channel
+        else:  # client
+            self.socket = self.context.socket(zmq.REQ)
+            self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
 
-        """Initialize ZeroMQ context and sockets."""
-
-        ## intitialize port based on queue_name
-        ZMQ_PORT_MAP = {
-            DEFAULT_QUEUE_NAME: 5555,
-            "/tmp/response": 5556,
-        }
-        port = ZMQ_PORT_MAP.get(self.queue_name, 5600)
-        if port == 5557:
-            print(f"[ZeroMQ] Warning: Unknown queue name '{self.queue_name}'. Using special port {port}")
-
-
-        self.context = zmq.Context()
+    def _initialize_data_queue(self):
         if self.role == 'server':
             self.socket = self.context.socket(zmq.SUB)
-            self.socket.bind(f"tcp://127.0.0.1:{port}")
-            self.socket.setsockopt_string(zmq.SUBSCRIBE, "")            
-        else:  # Client
+            self.socket.bind(f"tcp://*:{self.port}")  # Data channel
+            self.socket.setsockopt_string(zmq.SUBSCRIBE, "")  # Subscribe to all topics
+        else:  # client
             self.socket = self.context.socket(zmq.PUB)
-            self.socket.connect(f"tcp://127.0.0.1:{port}")
-
-    def _init_posix_ipc(self):
-        """Initialize POSIX IPC message queue."""
-        if posix_ipc is None:
-            raise ImportError("posix_ipc module not found.")
-        
-        flags = posix_ipc.O_CREAT if self.role == 'server' else 0
-        try :
-            self.mq = posix_ipc.MessageQueue(
-                self.queue_name,
-                flags,
-                max_messages=self.target_nb_messages,
-                max_message_size=self.target_message_size
-            )
-        except posix_ipc.ExistentialError:
-            sys.exit(f"Queue '{self.queue_name}' not found. Please ensure the server is running.")
-
-    def _init_sysv_ipc(self):
-        """Initialize SYSV IPC message queue."""
-        if sysv_ipc is None:
-            raise ImportError("sysv_ipc module not found.")
-
-        # Hash the queue_name to create a unique integer key
-        key = self._hash_queue_name(self.queue_name)
-
-        try:
-            self.mq = sysv_ipc.MessageQueue(key, sysv_ipc.IPC_CREX)  # Create new queue
-
-        except sysv_ipc.ExistentialError:
-            self.mq = sysv_ipc.MessageQueue(key)  # Connect if it already exists
-
-        except sysv_ipc.ExistentialError:
-            if self.role == 'server':
-                sys.exit(f"SYSV IPC queue '{self.queue_name}' already exists. Stop the existing server or use a different queue.")
-            else:
-                sys.exit(f"SYSV IPC queue '{self.queue_name}' not found. Please ensure the server is running.")
-                
-        except Exception as e:
-            sys.exit(f"Unexpected error during SYSV IPC setup: {e}")
-
-    def _hash_queue_name(self, queue_name):
-        """Hash the queue_name into a 32-bit integer for SYSV IPC."""
-        # Use SHA-256 and take first 4 bytes for a 32-bit key
-        hash_object = hashlib.sha256(queue_name.encode())
-        hash_digest = hash_object.digest()
-        unique_key = int.from_bytes(hash_digest[:4], byteorder='big')
-    
-        # Ensure the key is within SYSV IPC limits
-        return unique_key % sysv_ipc.KEY_MAX
-            
+            self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
 
     # ------------------------ Core Methods ------------------------
 
-    def wait_for_s3_events(self, debug=False):
+    def send_string(self, string):
+        # print(f"Sending '{string}' to '{self.queue_type}")
+        self.socket.send_string(string)
+
+    def recv_string(self):
+        # print(f"Sending '{string}' to '{self.queue_type}")
+        self.socket.recv_string(string)
+
+    def set_timeout(self, timeout_ms):
+        self.socket.RCVTIMEO = timeout_ms  
+
+    # ------------------------ Close ------------------------
+    
+    def close(self):
+        # Close data sockets for clients (if any)
+        for entry in self.client_dictionary.values():
+            data_socket = entry.get("data_socket")
+            if data_socket:
+                try:
+                    data_socket.close()
+                except Exception as e:
+                    print(f"Warning: Failed to close data socket: {e}")
+
+        # Close main socket
+        try:
+            self.socket.close()
+        except Exception as e:
+            print(f"Warning: Failed to close main socket: {e}")
+
+        print("All Queue(s) closed successfully.")
+    
+    # ------------------------ Server methods ------------------------
+    def server_control_queue_loop(self):
+        if self.role != "server":
+            raise PermissionError(f"Only server can call '{server_control_queue_loop}'.")
+
+        while True:
+            msg = self.recv_string()
+            print(f"Received request: {msg}")
+            splited_msg = msg.split(":")
+            cmd = splited_msg[0]
+            
+            if cmd == "READY?":  # handshake
+                self._send_string("READY!")
+
+            elif cmd = "CREATE_DATA_QUEUE":  # prepare PUB-SUB request
+                client_id = splited_msg[1]
+                if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
+                    port = self.client_dictionary[client_id]["port"]
+                else:
+                    max_port_entry = max(self.client_dictionary.values(), key=lambda x: x.get("port", BASE_PORT))
+                    port = max_port_entry.get("port", BASE_PORT) + 1
+                    self.client_dictionary.setdefault(client_id, {})["port"] = port
+                    data_socket = MessageQueue(role='server', queue_type='data', server_ip=self.server_ip, port=port)
+                    self.client_dictionary[client_id]["data_socket"] = data_socket
+                    
+                reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
+                self._send_string(reply)
+
+            elif cmd = "OBJECT:":
+                client_id = splited_msg[1]
+                nb_objects = int(splited_msg[2])
+                if client_id in self.client_dictionary and "data_socket" in self.client_dictionary[client_id]:
+                    data_socket = self.client_dictionary[client_id]["data_socket"]
+                    objects =  data_socket.wait_for_s3_events(nb_objects)
+                    self.send_string("ACKNOWLEDGE")
+                    return objects
+                else:
+                    self._send_string("PORT ERROR")
+                    
+    def wait_for_s3_events(self, nb_objects, debug=False):
         """Block until new messages arrive, then read all available messages."""
         if self.role != 'server':
-            raise PermissionError("wait_for_s3_events can only be used by the server.")
+            raise PermissionError(f"Only server can call '{wait_for_s3_events}'.")
         
         messages = []
         print("Listening for new messages...")
-
-        # BLOCKING: Wait for the first message
-        message = self._receive_message(blocking=True)
-        if message:
-            if message == "READY?":
-                if debug:
-                    print("Received handshake: 'READY?'")
-                return ([], True)
-            print("Received (blocking):", message)
-            messages.append(message)
-
-        # NON-BLOCKING: Check for more messages
-        while True:
-            message = self._receive_message(blocking=False)
+        while len(messages) < nb_objects:
+            message = self._receive_message(blocking=True)
             if message:
+                print("Received :", message)
                 messages.append(message)
-                if debug:
-                    print("Received (non-blocking):", message)
-            else:
-                if debug:
-                    print("No more messages in queue.")
-                break
 
-        return (messages, False)
+        return messages
 
+    # ------------------------ client methods ------------------------
     
+    def get_data_queue(self, client_id):
+        if self.role != "client":
+            raise PermissionError(f"Only client can call 'get_data_queue'")
+
+        request_str = f"CREATE_DATA_QUEUE:{client_id}"
+        self.send_string(request_str)
+
+        try:
+            reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in get_data_queue")
+
+        if reply.startswith("tcp://"):
+            # Remove protocol prefix
+            endpoint = reply[len("tcp://"):]
+            # Split IP and port
+            server_ip, port_str = endpoint.split(":")
+            port = int(port_str)
+
+            # Create MessageQueue with parsed IP and port
+            data_mq = MessageQueue(
+                role='client',
+                queue_type='data',
+                server_ip=server_ip,
+                port=port
+            )
+            return data_mq
+        else:
+            raise RuntimeError(f"Unexpected reply from server: {reply}")
+
+    def notify_server(self, client_id, nb_objects, verbose=False):
+        if self.role != "client":
+            raise PermissionError(f"Only client can call 'notify_server'")
+
+        request_str = f"OBJECT:{client_id}:{nb_objects}"
+        self.send_string(request_str)
+
+        try:
+            reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in notify_server")
+
+        if reply == "ACKNOWLEDGE":
+            if verbose:
+                print("Server acknowledges reception of the objects")
+            return True
+        elif reply == "PORT ERROR":
+            raise RuntimeError(f"Error: the server cannot find the data queue for user {client_id}.")
+        else:
+            raise RuntimeError(f"Unexpected error on server side for user {client_id}: {reply}.")
+
     def notify_s3(self, s3_object):
         """Notify the server about a new S3 event."""
         if self.role != 'client':
             raise PermissionError("notify_s3 can only be used by the client.")
 
-        self._send(s3_object)
+        self.send_string(s3_object)
         
         print(f"Notifying: {s3_object}")
 
-    def close(self):
-        """Close the queue (server only)."""
-        if self.role != 'server':
-            raise PermissionError("close can only be used by the server.")
-
-        if self.queue_type == 'zeromq':
-            self.socket.close()
-            self.context.term()
-        elif self.queue_type == 'posix_ipc':
-            self.mq.close()
-            self.mq.unlink()
-        elif self.queue_type == 'sysv_ipc':
-            self.mq.remove()
-        print("Queue closed successfully.")
-
-
-    def handshake(self, msg):
-        if msg in ["READY?", "READY!"]:
-            self._send(msg)
-        else:
-            print("Error. Not allow to send message '{msg}' for handshake...")
-
-    def busy_wait(self, timeout_ms):
-        start_time = time.time()
-        duration_ms = 0
-        sleep_time_ms = 1
-        max_sleep_time_ms = 100
-        while duration_ms < timeout_ms:
-            msg = self._receive_message(blocking=False)
-            if msg :
-                return msg                
-            duration_ms = (time.time() - start_time) * 1000
-            time.sleep(sleep_time_ms / 1000)
-            sleep_time_ms = max (sleep_time_ms *2, max_sleep_time_ms)
-        return "NOT READY..."
         
     # ------------------------ Private Methods ------------------------
 
-    def _send(self, string):
-        # print(f"Sending '{string}' to '{self.queue_type}")
-        if self.queue_type == 'zeromq':
-            self.socket.send_string(string)
-        elif self.queue_type == 'posix_ipc' or self.queue_type == 'sysv_ipc':
-            self.mq.send(string.encode())
-        else:
-            raise ValueError("Unsupported queue type.")
-        
-    def _receive_message(self, blocking=True):
-        """Handles message reception based on the queue type and blocking mode."""
-        try:
-            if self.queue_type == 'zeromq':
-                return self._receive_zeromq(blocking)
-            elif self.queue_type == 'posix_ipc':
-                return self._receive_posix_ipc(blocking)
-            elif self.queue_type == 'sysv_ipc':
-                return self._receive_sysv_ipc(blocking)
-            else:
-                raise ValueError(f"Unsupported queue type: {self.queue_type}")
-        except Exception as e:
-            if blocking:
-                print(f"Error during blocking receive: {e}")
-            return None
 
-    def _receive_zeromq(self, blocking):
+    def _receive_message(self, blocking=False):
         """Receive message from ZeroMQ queue."""
         poller = zmq.Poller()
         poller.register(self.socket, zmq.POLLIN)
@@ -253,19 +232,6 @@ class MessageQueue:
             return self.socket.recv_string()
         return None
 
-    def _receive_posix_ipc(self, blocking):
-        """Receive message from POSIX IPC queue."""
-        try:
-            timeout = None if blocking else 0
-            message, _ = self.mq.receive(timeout=timeout)
-            return message.decode()
-        except posix_ipc.BusyError:
-            return None
 
-    def _receive_sysv_ipc(self, blocking):
-        """Receive message from SYSV IPC queue."""
-        try:
-            message, _ = self.mq.receive(block=blocking)
-            return message.decode()
-        except sysv_ipc.BusyError:
-            return None
+
+                
