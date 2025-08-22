@@ -13,31 +13,6 @@ from glob import glob
 import argparse
 from collections import defaultdict
 
-def is_server_ready(mq, timeout_ms=5000):
-    print("Checking for server availability...")
-    if timeout_ms < 1500:
-        timeout_ms = 1500
-
-    mq.set_timeout(timeout_ms)
-    try: 
-        try:
-            mq.send_string("READY?")
-            answer = mq.recv_string()
-            if answer == "READY!":
-                return True
-        except zmq.Again:
-            # Retry once on timeout
-            try:
-                mq.send_string("READY?")
-                answer = mq.recv_string()
-                if answer == "READY!":
-                    return True
-            except zmq.Again:
-                return False
-        return False
-    finally:
-        mq.set_timeout(-1) # reset timeout before exiting
-    
 
 
 def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name):
@@ -75,7 +50,6 @@ def configure_bucket(user_cfg, bucket_store):
 parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
 parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
-parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue bewteen 'zeromq', 'posix_ipc', or 'sysv_ipc'")
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
 parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
@@ -87,12 +61,12 @@ args = parser.parse_args()
 control_mq = MessageQueue(role = "client", queue_type = 'control')
 
 if not args.no_check_server:
-    if not is_server_ready(control_mq, timeout_ms=5000):
+    if not control_mq.is_server_ready(timeout_ms=5000):
         sys.exit("Server connection timeout...\n"
                  "Cannot continue!"
                  )
 
-print (f"Server ready.\nConnected to message queue of type '{args.queue_type}'")
+print (f"Server ready.\nConnected to zeroMQ message queue'")
 
 # Path to the configuration file
 configure_file = args.conf
@@ -165,7 +139,7 @@ if modality == "text" :
                     s3_key = s3_store_txt(s3, full_bucket_name, line, data_mq, metadata_args)
                     nb_objects += 1
                     print(f"'{line}' saved as {s3_key} on: {full_bucket_name}")
-                server_notify_result = control_mq.notify_server(username, nb_objets) 
+                server_notify_result = control_mq.notify_server(username, nb_objects) 
         except UnicodeDecodeError as e:
             print(f"Unicode decoding error: {e}")
             print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file. Try an other bucket.")
@@ -187,7 +161,7 @@ elif modality == "image" :
                 if s3_key:
                     nb_objects += 1
                     print(f"'{s3_key}' saved on: {full_bucket_name}")
-        server_notify_result = control_mq.notify_server(username, nb_objets) 
+        server_notify_result = control_mq.notify_server(username, nb_objects) 
 
     else :
         print(f"Error: do not know what to do with '{args.data}'...")
@@ -208,7 +182,7 @@ elif modality == "text file" :
                 if s3_key:
                     nb_objects += 1
                     print(f"'{s3_key}' saved on: {full_bucket_name}")
-        server_notify_result = control_mq.notify_server(username, nb_objets) 
+        server_notify_result = control_mq.notify_server(username, nb_objects) 
     else :
         print(f"Error: do not know what to do with '{args.data}'...")
         print("Provide a path to a text file or to a directory of text_files")
