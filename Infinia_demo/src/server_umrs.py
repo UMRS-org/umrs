@@ -332,7 +332,13 @@ def main():
             active_threads = clean_finished_threads(active_threads)
 
     except KeyboardInterrupt:
-        print("\nInterrupted by user. Exiting gracefully...")
+        print("\nInterrupted by user. Waiting for running threads to finish...")
+
+        # Join all remaining threads
+        for thread in active_threads:
+            thread.join()
+
+        print("All threads finished. Exiting now.")
         control_mq.close()
         sys.exit(0)  # Ensures a clean exit
 
