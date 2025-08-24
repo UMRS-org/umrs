@@ -69,7 +69,7 @@ class MessageQueue:
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
 
-        
+
     # ------------------------ Core Methods ------------------------
 
     def send_string(self, string):
@@ -162,6 +162,22 @@ class MessageQueue:
 
     # ------------------------ client methods ------------------------
 
+
+    def reset_control_queue(self):
+        if self.role != 'client' or self.type != 'control':
+            raise PermissionError("reset_control_plane can only be called by client control queue")
+
+        # Close existing socket if it exists
+        if hasattr(self, 'socket'):
+            try:
+                self.socket.close()
+            except Exception:
+                pass
+
+        # Create a new REQ socket and connect
+        self.socket = self.context.socket(zmq.REQ)
+        self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+
     def is_server_ready(self, timeout_ms=5000):
         if self.role != "client":
             raise PermissionError(f"Only client can call 'get_data_queue'")
@@ -183,6 +199,9 @@ class MessageQueue:
             except zmq.Again:
                 # Retry once on timeout
                 try:
+                    # but first need to reset the socket to avoid error. 
+                    self.reset_control_queue()
+                    self.set_timeout(timeout_ms)
                     self.send_string("READY?")
                     answer = self.recv_string()
                     if answer == "READY!":

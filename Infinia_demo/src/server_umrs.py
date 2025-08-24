@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-
+import threading
 import argparse
 import json
 import os
@@ -131,6 +131,23 @@ def process_s3_objects(s3_objects, db_model_store, device):
             print(f"We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")")
 
 
+def launch_s3_thread(s3_objects, db_model_store, device):
+    thread = threading.Thread(
+        target=process_s3_objects,
+        args=(s3_objects, db_model_store, device)
+    )
+    thread.start()
+    return thread
+
+def clean_finished_threads(threads):
+    new_threads = []
+    for thread in threads:
+        if not thread.is_alive():
+            thread.join()  # join is instant if already finished
+        else:
+            new_threads.append(thread)
+    print (f"==> Running threads: {len(new_threads)}")
+    return new_threads
 
 def recompute_all_objects(db_model_store, device):
     print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
@@ -298,12 +315,21 @@ def main():
 
     pretty_print_cfg(db_model_store)
 
+    active_threads = []
+        
     try:
-        # loop for new new object to be created
+
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+            # Server loop, e.g. polling for S3 objects, etc.
             s3_objects = control_mq.server_control_queue_loop()
-            process_s3_objects(s3_objects, db_model_store, device)
+
+            # Launch worker
+            thread = launch_s3_thread(s3_objects, db_model_store, device)
+            active_threads.append(thread)
+
+            # Clean up finished threads (non-blocking)
+            active_threads = clean_finished_threads(active_threads)
 
     except KeyboardInterrupt:
         print("\nInterrupted by user. Exiting gracefully...")
