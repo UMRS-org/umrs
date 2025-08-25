@@ -108,9 +108,10 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
 def process_s3_objects(s3_objects, db_model_store, device):
-    
+
+    nb_objects = len(s3_objects)
     keys_per_bucket = defaultdict(list)  # Create a dictionary with lists
-    print(f"\t-->Detected {len(s3_objects)} new file(s):")
+    print(f"\t-->Detected {nb_objects} new file(s):")
         
     for s3_object in s3_objects:
         print(f"\t\t-->{s3_object}")
@@ -120,7 +121,7 @@ def process_s3_objects(s3_objects, db_model_store, device):
         if s3_key not in keys_per_bucket[path_to_bucket]:  # Ensure no duplicates
             keys_per_bucket[path_to_bucket].append(s3_key)
 
-
+    # Now that keys are sorted per bucket, process each bucket one at a time
     for path_to_bucket in keys_per_bucket.keys():
         username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
         s3_keys = keys_per_bucket[path_to_bucket]
@@ -130,7 +131,9 @@ def process_s3_objects(s3_objects, db_model_store, device):
         else:
             print(f"We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")")
 
-
+    print(f"\t--> Processing {nb_objects} file(s) done!")
+    print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+    
 def launch_s3_thread(s3_objects, db_model_store, device):
     thread = threading.Thread(
         target=process_s3_objects,
@@ -279,10 +282,9 @@ def main():
     # Print loaded content (optional)
     print("Configuration loaded successfully.")
 
-    # create the message queue:
-    control_mq = MessageQueue(role='server', queue_type='control');
+    # create the control message queue:
+    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000) # This timeout is only the sending. Receiving is always blocking for the server
     print (f"Subscribed to zeroMQ message queue'")
-
 
     # create S3/SQL  users if necessary 
     for user in users:

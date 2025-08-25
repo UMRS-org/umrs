@@ -16,7 +16,7 @@ import zmq
 BASE_PORT = 5555
 DEFAULT_NB_MSG = 10240
 class MessageQueue:
-    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, max_nb_messages=DEFAULT_NB_MSG):
+    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000):
         """
         Initializes the MessageQueue.
 
@@ -33,6 +33,7 @@ class MessageQueue:
         self.server_ip = server_ip
         self.context = zmq.Context()
         self.client_dictionary={}
+        self.timeout = timeout_ms
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
         
         # Initialize the selected queue type
@@ -53,9 +54,12 @@ class MessageQueue:
         if self.role == 'server':
             self.socket = self.context.socket(zmq.REP)
             self.socket.bind(f"tcp://*:{self.port}")  # Control channel
+            self.set_timeouts(-1, self.timeout) #receiving is always blocking. 
         else:  # client
             self.socket = self.context.socket(zmq.REQ)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+            self.set_timeouts(self.timeout, self.timeout)
+
 
     def _initialize_data_queue(self):
         if self.role == 'server':
@@ -63,24 +67,35 @@ class MessageQueue:
             self.socket = self.context.socket(zmq.PULL)
             self.socket.bind(f"tcp://*:{self.port}")  # Data channel bind
             self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
+            self.set_timeouts(self.timeout, self.timeout)
         else:  # client
             # Client uses PUSH socket to send data
             self.socket = self.context.socket(zmq.PUSH)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
+            self.set_timeouts(self.timeout, self.timeout)
 
 
     # ------------------------ Core Methods ------------------------
 
     def send_string(self, string):
-        print(f"Sending '{string}' to '{self.type}")
-        self.socket.send_string(string)
+        print(f"Sending '{string}' to {self.type}")
+        try:
+            self.socket.send_string(string)
+        except zmq.Again:
+            raise RuntimeError(f"Timeout: sending '{string}' from {self.role} to {self.type} failed (socket not ready or high-water mark reached)")
+        except zmq.ZMQError as e:
+            raise RuntimeError(f"ZeroMQ error while sending '{string}' from {self.role} to {self.type}: {e}")
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}")
+    
 
     def recv_string(self):
         return self.socket.recv_string()
 
-    def set_timeout(self, timeout_ms):
-        self.socket.RCVTIMEO = timeout_ms  
+    def set_timeouts(self, recv_timeout_ms, send_timeout_ms):
+        self.socket.RCVTIMEO = recv_timeout_ms  
+        self.socket.SNDTIMEO = send_timeout_ms  
 
     # ------------------------ Close ------------------------
     
@@ -113,8 +128,11 @@ class MessageQueue:
             cmd = splited_msg[0]
             
             if cmd == "READY?":  # handshake
-                self.send_string("READY!")
-
+                try: 
+                    self.send_string("READY!")
+                except RuntimeError as e:
+                    print(f"Error in client handshake: {e}")
+                    
             elif cmd == "CREATE_DATA_QUEUE":  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
@@ -127,7 +145,11 @@ class MessageQueue:
                     self.client_dictionary[client_id]["data_socket"] = data_socket
                     
                 reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
-                self.send_string(reply)
+                try:
+                    self.send_string(reply)
+                except RuntimeError as e:
+                    print(f"Error in sending back port to client: {e}")
+
             elif cmd == "OBJECT":  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 nb_objects = int(splited_msg[2])
@@ -136,10 +158,17 @@ class MessageQueue:
                     port = self.client_dictionary[client_id]["port"]
                     print(f"Listening data to port {port}")
                     objects =  data_socket.wait_for_s3_events(nb_objects)
-                    self.send_string("ACKNOWLEDGE")
+                    try: 
+                        self.send_string("ACKNOWLEDGE")
+                    except RuntimeError as e:
+                        print(f"Error in sending acknowleding client: {e}")
                     return objects
                 else:
-                    self.send_string("NO_DATA_SOCKET")
+                    try: 
+                        self.send_string("NO_DATA_SOCKET")
+                    except RuntimeError as e:
+                        print(f"Error in sending 'no available port' to client: {e}")
+
             else:
                 raise RuntimeError("Unknown command: {cmd}")
                     
@@ -161,7 +190,6 @@ class MessageQueue:
         return messages
 
     # ------------------------ client methods ------------------------
-
 
     def reset_control_queue(self):
         if self.role != 'client' or self.type != 'control':
@@ -189,7 +217,7 @@ class MessageQueue:
         if timeout_ms < 1500:
             timeout_ms = 1500
 
-        self.set_timeout(timeout_ms)
+        self.set_timeouts(timeout_ms, timeout_ms)
         try: 
             try:
                 self.send_string("READY?")
@@ -201,7 +229,7 @@ class MessageQueue:
                 try:
                     # but first need to reset the socket to avoid error. 
                     self.reset_control_queue()
-                    self.set_timeout(timeout_ms)
+                    self.set_timeouts(timeout_ms, timeout_ms)
                     self.send_string("READY?")
                     answer = self.recv_string()
                     if answer == "READY!":
@@ -210,7 +238,7 @@ class MessageQueue:
                     return False
             return False
         finally:
-            self.set_timeout(-1) # always reset timeout before exiting
+            self.set_timeouts(self.timeout, self.timeout) # always reset timeout before exiting
         
     def get_data_queue(self, client_id):
         if self.role != "client":
