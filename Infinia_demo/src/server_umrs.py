@@ -129,7 +129,7 @@ def process_s3_objects(s3_objects, db_model_store, device):
             print(f"\t--> Storing to data base in {table_name}")
             compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection) 
         else:
-            print(f"We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")")
+            print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
 
     print(f"\t--> Processing {nb_objects} file(s) done!")
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
@@ -324,11 +324,16 @@ def main():
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
             # Server loop, e.g. polling for S3 objects, etc.
-            s3_objects = control_mq.server_control_queue_loop()
+            cmd, payload = control_mq.server_control_queue_loop()
 
-            # Launch worker
-            thread = launch_s3_thread(s3_objects, db_model_store, device)
-            active_threads.append(thread)
+            if cmd == "OBJECT": # Launch worker
+                thread = launch_s3_thread(payload, db_model_store, device)
+                active_threads.append(thread)
+            elif cmd == "FILE":
+                for file in payload:
+                    print(f"Received file: {file}")
+            else:
+                print(f"====> Error: unknown command  '{cmd}' returned by server loop")
 
             # Clean up finished threads (non-blocking)
             active_threads = clean_finished_threads(active_threads)

@@ -14,6 +14,15 @@ import argparse
 from collections import defaultdict
 
 
+def send_files_to_server(username, file_path_list, control_mq, data_mq):
+    for file_path in file_path_list:
+        data_mq.send_file(file_path)
+    success = control_mq.notify_server(username, "FILE", len(file_path_list))
+    if success:
+        print(f"Files {file_path_list} recevied by server")
+    else:
+        print(f"Error sending file(s) {file_path_list} to server")
+        
 
 def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name):
     if(bucket_store[bucket_alias]):
@@ -115,6 +124,9 @@ metadata              = entry['metadata']
 
 data_mq = control_mq.get_data_queue(username)
 
+############# TEST CALLL ###########
+send_files_to_server(username, ["./server_umrs.py","./client_umrs.py"], control_mq, data_mq)
+
 s3, bucket_location = connect_to_s3(s3_configuration_file)
 
 full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username)
@@ -139,20 +151,20 @@ if modality == "text" :
                     s3_key = s3_store_txt(s3, full_bucket_name, line, data_mq, metadata_args)
                     nb_objects += 1
                     print(f"'{line}' saved as {s3_key} on: {full_bucket_name}")
-                server_notify_result = control_mq.notify_server(username, nb_objects) 
+                server_notify_result = control_mq.notify_server(username, "OBJECT", nb_objects) 
         except UnicodeDecodeError as e:
             print(f"Unicode decoding error: {e}")
             print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file. Try an other bucket.")
     else:
         s3_key = s3_store_txt(s3, full_bucket_name, args.data, data_mq, metadata_args)
         print(f"'{args.data}' saved as {s3_key} on: {full_bucket_name}")
-        server_notify_result = control_mq.notify_server(username, 1) 
+        server_notify_result = control_mq.notify_server(username, "OBJECT", 1) 
 elif modality == "image" :
     if os.path.isfile(args.data): #if it is a file, store it
         s3_key = s3_store_image(s3, full_bucket_name, args.data, data_mq, metadata_args)
         if s3_key:
             print(f"'{s3_key}' saved on: {full_bucket_name}")
-            server_notify_result = control_mq.notify_server(username, 1) 
+            server_notify_result = control_mq.notify_server(username, "OBJECT", 1) 
     elif os.path.isdir(args.data): #if it is a path, store each file in the corresponding directory
         nb_objects = 0
         for file in glob(os.path.join(args.data, "*")):
@@ -161,7 +173,7 @@ elif modality == "image" :
                 if s3_key:
                     nb_objects += 1
                     print(f"'{s3_key}' saved on: {full_bucket_name}")
-        server_notify_result = control_mq.notify_server(username, nb_objects) 
+        server_notify_result = control_mq.notify_server(username, "OBJECT", nb_objects) 
 
     else :
         print(f"Error: do not know what to do with '{args.data}'...")
@@ -172,7 +184,7 @@ elif modality == "text file" :
         s3_key = s3_store_text_file(s3, full_bucket_name, args.data, data_mq, metadata_args)
         if s3_key:
             print(f"'{s3_key}' saved on: {full_bucket_name}")
-            server_notify_result = control_mq.notify_server(username, 1) 
+            server_notify_result = control_mq.notify_server(username, "OBJECT", 1) 
 
     elif os.path.isdir(args.data): #if it is a path, store each file in the corresponding directory
         nb_objects = 0
@@ -182,7 +194,7 @@ elif modality == "text file" :
                 if s3_key:
                     nb_objects += 1
                     print(f"'{s3_key}' saved on: {full_bucket_name}")
-        server_notify_result = control_mq.notify_server(username, nb_objects) 
+        server_notify_result = control_mq.notify_server(username, "OBJECT", nb_objects) 
     else :
         print(f"Error: do not know what to do with '{args.data}'...")
         print("Provide a path to a text file or to a directory of text_files")
