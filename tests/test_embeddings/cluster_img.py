@@ -105,8 +105,8 @@ def load_sentence_transformers_model(model_name):
     return model;
 
 
-sql_username = "ejeannot"
-db_name =  "text_and_images_ejeannot"
+sql_username = "usr1_2"
+db_name =  "text_and_images_usr1_2"
 table = "image"
 
 DB_HOST = "localhost"
@@ -114,10 +114,11 @@ DB_PORT = "5432"
 DB_SUPERUSER = "ejeannot"  # Use a superuser or admin account
 DB_NAME = db_name  # Replace with the target database
 DB_USER = sql_username  # Replace with the target user
+DB_USER_PASSWORD = "ejeannot"
 
 print("Connecting to DB")
 # Connect to PostgreSQL default database (`postgres`)
-conn = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, host=DB_HOST, port=DB_PORT)
+conn = psycopg2.connect(dbname=DB_NAME, user=sql_username, host=DB_HOST, port=DB_PORT, password=DB_USER_PASSWORD)
 cur = conn.cursor()
 
 centroid_texts = cluster_from_embeddings(conn, cur, table, nb_clusters = 3)
@@ -127,7 +128,7 @@ for text in centroid_texts:
 print("Loading model...")
 model = load_sentence_transformers_model("clip-ViT-B-32")
     
-query_db_with_embeddings_image(model, conn, cur, "../../data/img_test/cat.jpeg", top_k=12)
-query_db_with_embeddings_image(model, conn, cur, "../../data/img_test/dog.jpeg", top_k=11)
-query_db_with_embeddings_image(model, conn, cur, "../../data/img_test/eagle.jpeg", top_k=11)
+query_db_with_embeddings_image(model, conn, cur, "../data/img_test/cat.jpeg", top_k=12)
+query_db_with_embeddings_image(model, conn, cur, "../data/img_test/dog.jpeg", top_k=11)
+query_db_with_embeddings_image(model, conn, cur, "../data/img_test/eagle.jpeg", top_k=11)
 
