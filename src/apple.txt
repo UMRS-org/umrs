@@ -1,1 +1,1 @@
-../../S3_Postgres_PGVector_demo/apple.txt
+../tests/S3_Postgres_PGVector_demo/apple.txt
