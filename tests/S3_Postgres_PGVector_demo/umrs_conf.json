@@ -1,0 +1,96 @@
+{
+    "users": [
+        {
+            "username": "ejeannot",
+	    "md5": "c4e3b8ce14815fbc1b26b8677f0b2c14",
+            "fullname": "Emmanuel Jeannot",
+            "experiences": [
+                {
+                    "xp_name": "Text and Images",
+		    "sql_username": "ejeannot",
+                    "modalities": [
+                        {
+			    "modality_name": "image",
+			    "s3": {
+				"bucket_name": "ej-bucket-1",
+				"s3_secret_key_path": "/Users/ejeannot/recherche/DDN_RIKEN/Unified_Multimodal_Retriever_Service/S3/Secret_access_key.txt",
+				"s3_access_key_path": "/Users/ejeannot/recherche/DDN_RIKEN/Unified_Multimodal_Retriever_Service/S3/Access_ID_key.txt",
+				"data":{ 
+				    "type": "file",
+				    "mime_type": "image/jpeg"
+				}
+			    },
+			    "sql": {
+				"table_name": "image",
+				"embeddings":{
+				    "store_embeddings" : "yes",
+				    "model_name": "clip-ViT-B-32",
+				    "vector_size": "512"
+				},
+				"meta_data":[
+				    {
+					"name": "keywords",
+					"type": "TEXT"
+				    },
+				    
+				    {
+					"name": "date",
+					"type": "DATE"
+				    },				    
+				    {
+					"name": "time",
+					"type": "TIME"
+				    }
+				    
+				]
+			    }
+			},
+			{
+			    "modality_name": "text",
+			    "s3": {
+				"bucket_name": "ej-bucket-2",
+				"s3_secret_key_path": "/Users/ejeannot/recherche/DDN_RIKEN/Unified_Multimodal_Retriever_Service/S3/Secret_access_key.txt",
+				"s3_access_key_path": "/Users/ejeannot/recherche/DDN_RIKEN/Unified_Multimodal_Retriever_Service/S3/Access_ID_key.txt",
+				"s3_key": "",
+				"data": {
+				    "type": "inline",
+				    "mime_type": "text/plain"
+				}
+			    },
+			    "sql": {
+				"username": "ejeannot",
+				"table_name": "text",
+				"embeddings":{
+				    "store_embeddings" : "yes",
+				    "model_name": "all-mpnet-base-v2",
+				    "vector_size": "768"
+				},
+				"meta_data":[
+				    {
+					"name": "text",
+					"type": "TEXT"
+				    },
+				    {
+					"name": "keywords",
+					"type": "TEXT"
+				    },
+				    {
+					"name": "date",
+					"type": "DATE"
+				    },				    
+				    {
+					"name": "time",
+					"type": "TIME"
+				    }
+				    
+				]
+			    }
+			}
+                        
+                    ]
+                }
+            ]
+        }
+    ]
+}
+
