@@ -1,0 +1,15 @@
+---------------
+- VM User = ejeannot
+- VM Password = Pass//^^010
+- VM IP address = 172.16.44.40
+- Infinia User = Same as VM
+- Infinia Password = Same as VM
+- Infinia Tenant = ten9
+- Infinia Subtenant = subten_ejeannot
+---------------
+
+redcli user login ejeannot -t ten9
+redcli tenant list
+redcli subtenant list
+redcli service create my_s3 -T file-and-object -t ten9 -s subten_ejeannot  --vhost ejvm01
+redcli s3 access add ejeannot --scope ten9/subten_ejeannot/my_s3 -e 1y -o yaml | tee ~/infinia_cred.yml
