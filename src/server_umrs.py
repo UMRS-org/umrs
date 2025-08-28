@@ -103,7 +103,6 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     if has_at_least_a_zero:
         zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name)
 
-    
     # Store **all** embeddings in batch
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 

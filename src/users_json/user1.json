@@ -20,7 +20,7 @@
             "model_name": "Resnet 50",
             "vector_size": "1000",
             "model_type": "Resnet-50",
-            "checkpoint_path": "../../data/models/nvidia_resnet50_200821.pth.tar"
+            "checkpoint_path": "../data/models/nvidia_resnet50_200821.pth.tar"
           },
           "sql": {
             "store_embeddings": "yes",
