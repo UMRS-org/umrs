@@ -114,10 +114,11 @@ DB_PORT = "5432"
 DB_SUPERUSER = "postgres"  # Use a superuser or admin account
 DB_NAME = db_name  # Replace with the target database
 DB_USER = sql_username  # Replace with the target user
+DB_USER_PASSWORD = "ejeannot"
 
 print("Connecting to DB")
 # Connect to PostgreSQL default database (`postgres`)
-conn = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, host=DB_HOST, port=DB_PORT)
+conn = psycopg2.connect(dbname=DB_NAME, user=sql_username, host=DB_HOST, port=DB_PORT, password=DB_USER_PASSWORD)
 cur = conn.cursor()
 
 centroid_texts = cluster_from_embeddings(conn, cur, table, nb_clusters = 4)

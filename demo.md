@@ -48,8 +48,6 @@ Wait for the server to finish setup and listen for incoming requests.
 ### 3.1 Submit text examples
 ```
 ./client_umrs.py -c users_json/user1.json "I eat an apple at breakfast" bucket-2
-./client_umrs.py -c users_json/user2.json "I eat an apple at breakfast" bucket-2
-
 ```
 
 ### 3.2 Query SQL to verify
@@ -78,13 +76,13 @@ SELECT s3_object, _content, date, time FROM text ORDER BY time;
 
 ### 3.5 Cluster texts using PGVector
 
-`../test_embeddings/cluster_txt.py`
+`../tests/test_embeddings/cluster_txt.py`
 
 ## 4. Work with Images
 
 ### 4.1 Upload an entire image directory
 
-` ./client_umrs.py -c users_json/user1.json ../../data/img bucket-1`
+` ./client_umrs.py -c users_json/user1.json ../data/img bucket-1`
 
 ### 4.2 Query the image table
 
@@ -95,15 +93,15 @@ SELECT s3_object, date, time FROM image ORDER BY time;
 
 ### 4.3 Cluster images using PGVector
 
-`../test_embeddings/cluster_img.py`
+`../tests/test_embeddings/cluster_img.py`
 
 ## 5. Metadata & Keywords
 
 ### Upload images with/without keywords
 
 ```
-./client_umrs.py -c users_json/user2.json ../../data/img/Cat_2.jpeg  bucket-1
-./client_umrs.py ../../data/img/Cat_1.jpeg ej-bucket-3 -k keywords:cat -k author:internet -k x_resolution:256 -k y_resolution:512
+./client_umrs.py -c users_json/user2.json ../data/img/Cat_2.jpeg bucket-1
+./client_umrs.py -c users_json/user2.json ../data/img/Cat_1.jpeg bucket-1 -k keywords:cat -k author:internet -k x_resolution:256 -k y_resolution:512
 ```
 
 ### Query metadata
@@ -117,7 +115,7 @@ SELECT id, s3_object, date, time, keywords, author, x_resolution, y_resolution F
 
 ### Submit a large file
 
-`./client_umrs.py -c users_json/user1.json ../../data/texts/beast_in_the_jungle.txt bucket-5`
+`./client_umrs.py -c users_json/user1.json ../data/texts/beast_in_the_jungle.txt bucket-5`
 ### Inspect chunking results
 
 ```
