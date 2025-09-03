@@ -4,8 +4,7 @@ from jsonschema import validate, ValidationError
 client_schema = {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  #"required": ["username", "fullname", "s3_configuration_file", "experiences"],
-  "required": ["username", "fullname", "experiences"],
+  "required": ["username", "fullname", "s3_configuration_file", "experiences"],
   "properties": {
     "username": { "type": "string" },
     "fullname": { "type": "string" },

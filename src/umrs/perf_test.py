@@ -89,7 +89,8 @@ def perf_test(s3, bucket_name, modality_name, model, db_pool, table_name, stage_
     
 def run_perf_test():
     bucket_name = "ejeannot-text-and-images-ej-bucket-1"
-    db_pool, table_name, model, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
+    # query_db_model returns: s3_username, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection
+    s3_username, db_pool, table_name, model, store_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
     bucket_name = "tarballs"
     perf_test(s3_connection, bucket_name, "image", model,db_pool, table_name, stage_max = 1)
     bucket_name = "ejeannot-text-and-images-ej-bucket-1"

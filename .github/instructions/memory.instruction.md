@@ -49,6 +49,20 @@ applyTo: '**'
 		- Fixing indentation and scope errors in check_bucket_path (now only uses passed-in s3 client)
 		- Validated: UMRS server starts, connects to MinIO S3 over HTTPS, all buckets created, no SSL or NameError issues
 		- All changes tested via docker compose up --build and confirmed in logs
+
+    - Recent edits (merge main -> multi_users & API conversion):
+        - Performed a merge of `main` into `multi_users` and began resolving conflicts.
+        - Replaced the FastAPI-based API implementation (`src/umrs/api.py`) with a ZeroMQ JSON-RPC style server (`UMRSAPIServer`) that preserves the `initialize_server()` and `run()` lifecycle.
+        - Cleaned and unified `src/umrs/sql.py` to remove merge markers and fix inconsistent DB helper behavior.
+        - Cleaned `src/umrs/json_utils.py` earlier to unify required fields and schemas.
+        - Cleaned `src/umrs/minio.py` to remove merge markers and provide a single coherent MinIO helper implementation.
+        - Updated `src/server_umrs.py` to call `create_api_server()` generically so it can use the ZeroMQ API implementation without FastAPI/uvicorn.
+        - Left to-do: update client examples (or provide a ZeroMQ client), run integration smoke tests, and commit the completed merge once all conflicts are resolved.
+
+    - Current status:
+        - `minio.py`, `api.py`, and `sql.py` cleaned; `api.py` now implements a ZeroMQ server.
+        - Static analysis reports unresolved runtime imports (e.g., `zmq`, `torch`, `psycopg2`) which are expected until dependencies are installed in the environment.
+        - Remaining work: finish repository-wide conflict marker scan, update client usage examples for ZeroMQ RPC, run integration tests, and commit the merge.
 - Recurring questions or topics: N/A
 - Solutions that worked well: Modular class-based API client, Docker-based automated testing
 - Things to avoid or that didn't work: N/A

@@ -22,6 +22,8 @@ def query_db_model(db_model_store, path_to_bucket):
     """Retrieves database and model for a given (user, bucket_alias)."""
     entry = db_model_store.get(path_to_bucket, None)
     if not entry:
-        return None, None, None, None, None, None
+        # Return 7 elements to match callers that expect:
+        # s3_username, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection
+        return None, None, None, None, None, None, None
     else:
         return entry["s3_username"], entry["data_base"], entry["table_name"], entry["model"], entry["store_embeddings_flag"], entry["modality_name"], entry["s3_connection"]

@@ -2,6 +2,7 @@
   "username": "ejeannot",
   "md5": "c4e3b8ce14815fbc1b26b8677f0b2c14",
   "fullname": "Emmanuel Jeannot",
+  "s3_configuration_file": "/root/.s3cfg",
 
   "experiences": [
     {

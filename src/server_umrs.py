@@ -270,7 +270,7 @@ def main():
             api_server = create_api_server()
             api_server.initialize_server(configure_file)
 
-            # Handle HTTPS configuration
+            # Handle HTTPS configuration (only applicable for HTTP servers; ZeroMQ ignores this)
             ssl_keyfile = None
             ssl_certfile = None
             if args.use_https:
@@ -288,8 +288,6 @@ def main():
             api_server.run(host=args.host, port=args.port, ssl_keyfile=ssl_keyfile, ssl_certfile=ssl_certfile)
             return
 
-        except ImportError:
-            sys.exit("Error: FastAPI dependencies not available. Please install fastapi and uvicorn.")
         except Exception as e:
             sys.exit(f"Error starting API server: {e}")
 
