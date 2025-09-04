@@ -169,6 +169,24 @@ class MessageQueue:
 
         return (messages, False)
 
+    def server_control_queue_loop(self):
+        """Compatibility wrapper for a control-plane server loop.
+
+        Uses the existing `wait_for_s3_events()` semantics: if the call returns a
+        handshake indicator, returns ("HANDSHAKE", None); otherwise returns
+        ("OBJECT", messages) where `messages` is a list of s3 object strings.
+        This keeps older code working while allowing future control-plane
+        extensions to be added.
+        """
+        if self.role != 'server':
+            raise PermissionError("Only server can call 'server_control_queue_loop'.")
+
+        messages, is_handshake = self.wait_for_s3_events()
+        if is_handshake:
+            return "HANDSHAKE", None
+        else:
+            return "OBJECT", messages
+
     
     def notify_s3(self, s3_object):
         """Notify the server about a new S3 event."""

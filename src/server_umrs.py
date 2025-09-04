@@ -337,15 +337,23 @@ def main():
         # loop for new new object to be created
         is_handshake = False
         while True:
-            if not is_handshake: #Only print if we did not have handshake in the last round
-                print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+                if not is_handshake: # Only print if we did not have handshake in the last round
+                    print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
-            s3_objects, is_handshake = mq.wait_for_s3_events()
-            if is_handshake: # The client ask me if I am ready.
-                print("Received handshake request. Answering 'READY!'")
-                response_mq.handshake("READY!")
-            else:
-                process_s3_objects(s3_objects, db_model_store, device)
+                cmd, payload = mq.server_control_queue_loop()
+                if cmd == "HANDSHAKE":
+                    # The client asked if server is ready — reply via response channel
+                    print("Received handshake request. Answering 'READY!'")
+                    response_mq.handshake("READY!")
+                    is_handshake = True
+                elif cmd == "OBJECT":
+                    # payload is a list of s3_objects
+                    is_handshake = False
+                    process_s3_objects(payload, db_model_store, device)
+                else:
+                    # Unknown command: be conservative and log
+                    is_handshake = False
+                    print(f"====> Warning: unknown command '{cmd}' from control loop")
 
     except KeyboardInterrupt:
         print("\nInterrupted by user. Exiting gracefully...")
