@@ -60,6 +60,22 @@ def configure_bucket(user_cfg, bucket_store):
             store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name)
 
 
+        def send_files_to_server(username, file_path_list, control_mq, data_mq):
+            """Helper to send multiple files to server over the data queue and notify via control queue.
+
+            This helper is intentionally not called automatically by the main flow — you can use it from an
+            interactive session or tests.
+            """
+            for file_path in file_path_list:
+                data_mq.send_file(file_path)
+            # Use the new notify_server helper if available; fall back to older notify_s3/notify pattern
+            try:
+                control_mq.notify_server(username, "FILE", len(file_path_list))
+            except TypeError:
+                # older signature: notify_server(client_id, nb_objects)
+                control_mq.notify_server(username, len(file_path_list))
+
+
 
 parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 

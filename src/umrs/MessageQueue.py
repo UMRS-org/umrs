@@ -250,8 +250,69 @@ class MessageQueue:
 
         socks = dict(poller.poll(timeout))
         if self.socket in socks:
-            return self.socket.recv_string()
+            # Try to receive as string first, but if raw bytes were sent, fall back to recv()
+            try:
+                return self.socket.recv_string()
+            except Exception:
+                return self.socket.recv()
         return None
+
+    # ------------------------ ZeroMQ file transfer helpers (ZeroMQ-only) ------------------------
+
+    def send_file(self, send_file_path, chunk_size=4096):
+        """Send a file in binary chunks over a ZeroMQ PUB socket.
+
+        This method is only supported when `queue_type == 'zeromq'` and the
+        instance was created with `role='client'` (so its socket is a PUB).
+        """
+        if self.queue_type != 'zeromq' or self.role != 'client':
+            raise PermissionError("send_file is only supported for ZeroMQ client data queues")
+        if not os.path.isfile(send_file_path):
+            raise FileNotFoundError(f"File '{send_file_path}' not found")
+
+        with open(send_file_path, 'rb') as f:
+            while True:
+                chunk = f.read(chunk_size)
+                if not chunk:
+                    break
+                # send raw bytes frame
+                self.socket.send(chunk)
+            # signal end of file
+            self.socket.send(b'__END_OF_FILE__')
+
+    def recv_file(self, dir="/tmp"):
+        """Receive a file sent by a peer over ZeroMQ and store it in `dir`.
+
+        This method is only supported when `queue_type == 'zeromq'` and the
+        instance was created with `role='server'` (so its socket is a SUB).
+        Returns the absolute path to the stored temporary file.
+        """
+        if self.queue_type != 'zeromq' or self.role != 'server':
+            raise PermissionError("recv_file is only supported for ZeroMQ server data queues")
+
+        if not os.path.exists(dir):
+            os.makedirs(dir, exist_ok=True)
+
+        import tempfile
+        with tempfile.NamedTemporaryFile(mode='w+b', dir=dir, delete=False) as tmp_file:
+            while True:
+                # Blocking recv of raw frames
+                chunk = self.socket.recv()
+                if chunk == b'__END_OF_FILE__':
+                    break
+                tmp_file.write(chunk)
+            tmp_file.flush()
+            tmp_path = os.path.abspath(tmp_file.name)
+
+        return tmp_path
+
+    def notify_server(self, client_id, notification_type, nb_objects):
+        """Simple helper to notify the server using the string protocol
+        "<TYPE>:<client_id>:<nb>". This uses the existing `_send` method and
+        keeps behavior generic across backends.
+        """
+        request_str = f"{notification_type}:{client_id}:{nb_objects}"
+        self._send(request_str)
 
     def _receive_posix_ipc(self, blocking):
         """Receive message from POSIX IPC queue."""
