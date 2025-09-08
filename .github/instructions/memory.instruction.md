@@ -103,7 +103,7 @@ applyTo: '**'
 - API endpoints for health, status, upload, bucket listing, and embedding management
 - Uses S3 for storage and PyTorch for embeddings
 - Designed for extensibility and modularity
-- src/client_umrs_api.py: Modular Python API client for UMRS endpoints, class-based, uses requests, robust error handling, covers all admin and user endpoints. Now supports CLI entry point for all major methods (health, status, list_buckets, upload_text, upload_image, upload_textfile, recompute_embeddings, update_embeddings, check_consistency, add_user_hot_reload, create_user, create_buckets) using argparse. Example: `python3 client_umrs_api.py --base_url https://localhost:8000 health`.
+- src/client_umrs_api.py: Modular Python API client for UMRS endpoints, class-based, uses ZeroMQ (`pyzmq` required), robust error handling, and covers all admin and user endpoints. Now supports CLI entry point for all major methods (health, status, list_buckets, upload_text, upload_image, upload_textfile, recompute_embeddings, update_embeddings, check_consistency, add_user_hot_reload, create_user, create_buckets) using argparse. Example: `python3 src/client_umrs_api.py --host localhost --port 8443 health`.
 - Test script: docker/test_umrs_api.sh (Bash wrapper, all logic calls client_umrs_api.py for every endpoint)
 - Dockerfile: docker/Dockerfile.umrs-api-test
 - Runner: docker/run_umrs_api_test.sh
@@ -113,3 +113,7 @@ applyTo: '**'
 - On container start, all tests run automatically for both users
 
 - MinIO SSL requirements: MinIO expects public.crt (certificate) and private.key (private key) in its SSL directory. Optionally, a CAs/ directory can be used for custom CA chains. The generate_ssl_certs.sh script was updated to robustly create or symlink public.crt and private.key from server.crt and server.key, and to create a CAs/ directory if not present. This ensures MinIO can use the same self-signed certs as the UMRS API for development/testing.
+
+## Recent Actions
+
+- 2025-09-08: Updated `Readme.md` to align CLI examples with the ZeroMQ-based client at `src/client_umrs_api.py`. Replaced outdated HTTP/--base_url examples with `--host`/`--port` usage, added example environment variable setup, and clarified file base64 encoding behavior for uploads.

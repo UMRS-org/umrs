@@ -170,61 +170,111 @@ For more details, see the [OWASP Docker Security Cheat Sheet](https://cheatsheet
 | POST   | /admin/create_user          | Create and initialize user                       |
 | POST   | /admin/create_buckets       | Create all buckets for a user                    |
 
-#### Example Usage with Python Client
+#### Example Usage with Python Client (ZeroMQ)
 
-The recommended way to interact with the API is via the Python CLI client. See the Quick Start section above for full examples and variable setup. Here are typical commands:
+The recommended way to interact with the API is via the ZeroMQ Python CLI client at `src/client_umrs_api.py`.
+This client uses ZeroMQ (REQ/REP JSON-RPC) and requires `pyzmq` to be installed. The client global flags are `--host`, `--port` and `--timeout` (ms). Below are typical commands — the global flags go before the command.
 
 ```bash
-# Health check
-$PY_CLIENT --base_url "$BASE_URL" health
+# Example setup (adjust host/port as needed)
+PY_CLIENT="python3 src/client_umrs_api.py"
+HOST=localhost
+PORT=8443
+CONFIG_PATH=src/conf_umrs_user1.json
+DATA_DIR=./data
 
-# List buckets for a user
-$PY_CLIENT --base_url "$BASE_URL" list_buckets "$USERNAME"
+# Health check
+$PY_CLIENT --host "$HOST" --port $PORT health
+
+# List buckets for a user (username optional)
+USERNAME=$(jq -r '.username' "$CONFIG_PATH")
+$PY_CLIENT --host "$HOST" --port $PORT list_buckets "$USERNAME"
 
 # Upload text to a bucket
-$PY_CLIENT --base_url "$BASE_URL" upload_text "Hello from test script!" "$BUCKET_ALIAS" "$USERNAME" '{}'
+BUCKET_ALIAS=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="text") | .s3.bucket_alias' "$CONFIG_PATH")
+$PY_CLIENT --host "$HOST" --port $PORT upload_text "Hello from test script!" "$BUCKET_ALIAS" "$USERNAME" '{}'
 
-# Upload an image to a bucket
-$PY_CLIENT --base_url "$BASE_URL" upload_image "$IMG_PATH" "$BUCKET_ALIAS_IMG" "$USERNAME" '{}'
+# Upload an image (the client reads and base64-encodes the file)
+IMG_PATH="$DATA_DIR/img/Cat_1.jpeg"
+BUCKET_ALIAS_IMG=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="image") | .s3.bucket_alias' "$CONFIG_PATH")
+$PY_CLIENT --host "$HOST" --port $PORT upload_image "$IMG_PATH" "$BUCKET_ALIAS_IMG" "$USERNAME" '{}'
 
-# Upload a text file to a bucket
-$PY_CLIENT --base_url "$BASE_URL" upload_textfile "$TXTFILE_PATH" "$BUCKET_ALIAS_TXT" "$USERNAME" '{}'
+# Upload a text file (base64-encoded by the client)
+TXTFILE_PATH="$DATA_DIR/texts/beast_in_the_jungle.txt"
+BUCKET_ALIAS_TXT=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="text file") | .s3.bucket_alias' "$CONFIG_PATH")
+$PY_CLIENT --host "$HOST" --port $PORT upload_textfile "$TXTFILE_PATH" "$BUCKET_ALIAS_TXT" "$USERNAME" '{}'
 
 # Recompute all embeddings
-$PY_CLIENT --base_url "$BASE_URL" recompute_embeddings
+$PY_CLIENT --host "$HOST" --port $PORT recompute_embeddings
 
 # Update missing/mismatched embeddings
-$PY_CLIENT --base_url "$BASE_URL" update_embeddings
+$PY_CLIENT --host "$HOST" --port $PORT update_embeddings
 
 # Check consistency between S3 and database
-$PY_CLIENT --base_url "$BASE_URL" check_consistency
+$PY_CLIENT --host "$HOST" --port $PORT check_consistency
 
-# Admin: Create and initialize a user
-$PY_CLIENT --base_url "$BASE_URL" create_user "$CONFIG_PATH"
+# Admin: Create and initialize a user (pass a JSON config file path)
+$PY_CLIENT --host "$HOST" --port $PORT create_user "$CONFIG_PATH"
 
 # Admin: Create all buckets for a user
-$PY_CLIENT --base_url "$BASE_URL" create_buckets "$CONFIG_PATH"
+$PY_CLIENT --host "$HOST" --port $PORT create_buckets "$CONFIG_PATH"
 
 # Admin: Add a user with hot reload
-$PY_CLIENT --base_url "$BASE_URL" add_user_hot_reload "$USER2_CONFIG"
+USER2_CONFIG=src/conf_umrs_user2.json
+$PY_CLIENT --host "$HOST" --port $PORT add_user_hot_reload "$USER2_CONFIG"
 ```
+
+Notes:
+- The client encodes files in base64 before sending, so provide local file paths for `upload_image` and `upload_textfile`.
+- `metadata` parameters (where shown) should be a JSON string (e.g. '{}') or omitted.
 
 ## Architecture
 
+The project is run with Docker Compose (see `docker/docker-compose.yml`). The main services and how they are wired in the compose file are shown below.
+
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   User 1        │    │   User 2        │    │   Admin         │
-│   Container     │    │   Container     │    │   Container     │
-├─────────────────┤    ├─────────────────┤    ├─────────────────┤
-│ - user1 env     │    │ - user2 env     │    │ - UMRS Server   │
-│ - config_user1  │    │ - config_user2  │    │   (HTTPS:8443)  │
-│                 │    │                 │    │ - PostgreSQL    │
-│                 │    │                 │    │ - MinIO         │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-          │                       │                       │
-          └───────────────────────┼───────────────────────┘
-                                  │
-                            HTTPS/TLS Encrypted
+Layer 1 (infrastructure):
+┌──────────────┐  ┌──────────────┐
+│  postgres    │  │    minio     │
+│ (container)  │  │  (container) │
+│   port 5432  │  │ ports 9000/9001│
+└──────┬───────┘  └──────┬───────┘
+       │                 │
+       │                 │
+       └──────┬──────────┘
+              │
+Layer 2 (application):
+       ┌──────▼────────┐
+       │  umrs-server  │
+       │  (container)  │
+       │ ports: 8000,  │
+       │        8443   │
+       └──────┬────────┘
+              │
+              │
+Layer 3 (tests):
+       ┌──────▼────────┐
+       │ umrs-api-test │
+       │  (test image) │
+       │ depends_on:   │
+       │   umrs-server │
+       └───────────────┘
+
+All services run on the same Docker network (`umrs-net`). In `docker/docker-compose.yml`:
+- `umrs-server` declares `depends_on` for `postgres` and `minio` (compose uses healthchecks to control start order).
+- `umrs-api-test` declares `depends_on` for `umrs-server` (the test container runs after the server is healthy).
+
+Key ports exposed by compose (host:container):
+- umrs-server: 8000 (HTTP, legacy), 8443 (HTTPS / ZeroMQ TCP port used by the test runner and clients)
+- minio: 9000 (MinIO API - configured with SSL certs), 9001 (MinIO Console)
+- postgres: 5432
+
+Notes:
+- The canonical client in the repo (`src/client_umrs_api.py`) connects to the UMRS server over TCP (default port 8443) using ZeroMQ JSON-RPC semantics. In compose the test runner sets UMRS_API_URL=https://umrs-server:8443 for compatibility with test scripts — the server listens on 8443 for its control plane.
+- `umrs-server` communicates with MinIO and PostgreSQL over the internal Docker network; both MinIO and Postgres run in separate containers and are required before `umrs-server` reports healthy.
+- The `umrs-api-test` container runs test suites (mounts configs and data) and is started only after `umrs-server` is healthy.
+
+See `docker/docker-compose.yml` for the exact service names, env vars, volumes and healthcheck commands.
 ```
 
 
