@@ -1,9 +1,5 @@
 """
 UMRS API Client: ZeroMQ-only client for UMRS ZeroMQ RPC API.
-
-This client keeps the same CLI commands as the previous HTTP client but
-communicates via ZeroMQ (REQ/REP JSON-RPC). It is compatible with
-`examples/zeromq_client.py` semantics and the server's action names.
 """
 
 import argparse
