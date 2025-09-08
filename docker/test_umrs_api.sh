@@ -9,8 +9,8 @@ set -e
 
 CONFIG_PATH=${1:-conf_umrs_user1.json}
 DATA_DIR=${2:-./data}
-PY_CLIENT="python3 ../examples/zeromq_client.py --host umrs-server --port 8000"
-BASE_URL=${UMRS_API_URL:-tcp://umrs-server:8000}
+PY_CLIENT="python3 /app/client_umrs_api.py --host umrs-server --port 8443 --timeout 60000"
+BASE_URL=${UMRS_API_URL:-tcp://umrs-server:8443}
 
 function test_admin_endpoints() {
   local config_path="$1"
@@ -36,33 +36,36 @@ function test_all_endpoints() {
   $PY_CLIENT status
 
   echo "[list_buckets]"
-  $PY_CLIENT buckets --username "$username"
+  $PY_CLIENT list_buckets "$username"
 
   # Upload text
   BUCKET_ALIAS=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="text") | .s3.bucket_alias' "$config_path")
   echo "[upload_text]"
-  $PY_CLIENT upload_text --username "$username" --bucket_alias "$BUCKET_ALIAS" --text "Hello from test script!"
+  # positional args: text bucket_alias username metadata
+  $PY_CLIENT upload_text "Hello from test script!" "$BUCKET_ALIAS" "$username" '{}'
 
   # Upload image
   IMG_PATH="$data_dir/img/Cat_1.jpeg"
   BUCKET_ALIAS_IMG=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="image") | .s3.bucket_alias' "$config_path")
   echo "[upload_image]"
-  $PY_CLIENT upload_image --username "$username" --bucket_alias "$BUCKET_ALIAS_IMG" --file "$IMG_PATH"
+  # positional args: file_path bucket_alias username metadata
+  $PY_CLIENT upload_image "$IMG_PATH" "$BUCKET_ALIAS_IMG" "$username" '{}'
 
   # Upload textfile
   TXTFILE_PATH="$data_dir/texts/beast_in_the_jungle.txt"
   BUCKET_ALIAS_TXT=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="text file") | .s3.bucket_alias' "$config_path")
   echo "[upload_textfile]"
-  $PY_CLIENT upload_textfile --username "$username" --bucket_alias "$BUCKET_ALIAS_TXT" --file "$TXTFILE_PATH"
+  # positional args: file_path bucket_alias username metadata
+  $PY_CLIENT upload_textfile "$TXTFILE_PATH" "$BUCKET_ALIAS_TXT" "$username" '{}'
 
   echo "[recompute_embeddings]"
-  $PY_CLIENT recompute
+  $PY_CLIENT recompute_embeddings
 
   echo "[update_embeddings]"
-  $PY_CLIENT update
+  $PY_CLIENT update_embeddings
 
   echo "[check_consistency]"
-  $PY_CLIENT check
+  $PY_CLIENT check_consistency
 
   echo -e "=== All tests completed for $username ===\n"
 }

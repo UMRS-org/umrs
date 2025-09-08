@@ -7,6 +7,7 @@ WORKDIR /app
 COPY ./src/client_umrs_api.py ./client_umrs_api.py
 COPY ./docker/test_umrs_api.sh ./test_umrs_api.sh
 
+# Copy examples (including ZeroMQ client) used by the test script
 # Copy user configs
 COPY ./docker/conf_umrs_user1.json ./conf_umrs_user1.json
 COPY ./docker/conf_umrs_user2.json ./conf_umrs_user2.json
@@ -17,10 +18,10 @@ COPY ./data ./data
 
 
 # Install dependencies: requests, curl, ca-certificates, jq, and placeholder for umrs-cli
-RUN pip install requests && \
-	apt-get update && \
-	apt-get install -y --no-install-recommends ca-certificates curl jq && \
-	rm -rf /var/lib/apt/lists/*
+RUN pip install requests pyzmq && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates curl jq && \
+    rm -rf /var/lib/apt/lists/*
 # TODO: Install umrs-cli here if available (e.g., via pip, copy, or other means)
 
 # Copy CA certificate and install as trusted

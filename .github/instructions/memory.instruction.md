@@ -5,6 +5,36 @@ applyTo: '**'
 # User Memory
 
 ## User Preferences
+- Programming languages: Python (3.10/3.11)
+- Code style preferences: repository conventions (PEP8-ish), CLI-first utilities
+- Development environment: Linux, Docker Compose, bash
+- Communication style: concise, technical
+
+## Project Context
+- Current project type: web service / microservice (UMRS) with ZeroMQ JSON-RPC API
+- Tech stack: Python, ZeroMQ (pyzmq), MinIO (S3), PostgreSQL (PGVector), Docker Compose
+- Key requirements: ZeroMQ is the official transport for UMRS; canonical client is `src/client_umrs_api.py`
+
+## Coding Patterns
+- ZeroMQ JSON-RPC payloads: {"action": "<action>", "params": {...}}
+- CLI tools should accept --host and --port and provide subcommands mirroring API actions
+
+## Context7 Research History
+- None recorded for this session.
+
+## Conversation History
+- 2025-09-08: Converted canonical client to ZeroMQ-only, updated README and test harness, increased client timeout to 20000ms, cleaned test image, and validated end-to-end tests via Docker Compose.
+- 2025-09-08: Ran local ZeroMQ smoke test (`tests/test_zmq_smoke.py`) — PASS. Verified `MessageQueue.send_file()` / `recv_file()` and handshake flows locally.
+
+## Notes
+- Persistent memory should not contain secrets or credentials. This file records preferences and high-level progress.
+---
+applyTo: '**'
+---
+
+# User Memory
+
+## User Preferences
 - Programming languages: Python
 - Code style preferences: Follows project conventions, modular, class-based for API
 - Development environment: Linux, VS Code, Docker

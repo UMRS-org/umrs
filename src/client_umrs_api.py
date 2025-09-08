@@ -1,282 +1,214 @@
 """
-UMRS API Client: Functions to interact with UMRS FastAPI endpoints.
+UMRS API Client: ZeroMQ-only client for UMRS ZeroMQ RPC API.
+
+This client keeps the same CLI commands as the previous HTTP client but
+communicates via ZeroMQ (REQ/REP JSON-RPC). It is compatible with
+`examples/zeromq_client.py` semantics and the server's action names.
 """
 
-import requests
-import json
-from typing import Optional, Dict, Any
 import argparse
+import json
 import sys
+import os
+import base64
+from typing import Optional
+
+try:
+    import zmq
+except Exception as e:
+    zmq = None
 
 
 class UMRSApiClientError(Exception):
-    """Custom exception for UMRSApiClient errors."""
     pass
 
+
 class UMRSApiClient:
+    def __init__(self, host: str = '127.0.0.1', port: int = 8443, timeout_ms: int = 60000):
+        if zmq is None:
+            raise UMRSApiClientError('pyzmq (zmq) is required for ZeroMQ client')
+        self.host = host
+        self.port = int(port)
+        self.timeout_ms = int(timeout_ms)
+        self.addr = f'tcp://{self.host}:{self.port}'
+        self.ctx = zmq.Context()
+        self.sock = self.ctx.socket(zmq.REQ)
+        self.sock.connect(self.addr)
 
-    def __init__(self, base_url: str):
-        self.base_url = base_url.rstrip('/')
-
-    def add_user_hot_reload(self, user_config: dict) -> Dict[str, Any]:
-        """Add a user, store JSON, update config, and hot-reload user (no restart)."""
+    def _send(self, action: str, params: Optional[dict] = None) -> dict:
+        params = params or {}
+        payload = {'action': action, 'params': params}
         try:
-            headers = {"Content-Type": "application/json"}
-            resp = requests.post(f"{self.base_url}/admin/add_user_hot_reload", json=user_config, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
+            self.sock.send_json(payload)
         except Exception as e:
-            raise UMRSApiClientError(f"Add user hot-reload failed: {e}")
-    def create_user(self, user_config: dict) -> Dict[str, Any]:
-        """Create and initialize a user (admin/server side)."""
-        try:
-            headers = {"Content-Type": "application/json"}
-            resp = requests.post(f"{self.base_url}/admin/create_user", json=user_config, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            raise UMRSApiClientError(f"Create user failed: {e}")
+            raise UMRSApiClientError(f'Failed to send request: {e}')
 
-    def create_buckets(self, user_config: dict) -> Dict[str, Any]:
-        """Create all buckets for a user from a client JSON file (admin/server side)."""
-        try:
-            headers = {"Content-Type": "application/json"}
-            resp = requests.post(f"{self.base_url}/admin/create_buckets", json=user_config, headers=headers)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            raise UMRSApiClientError(f"Create buckets failed: {e}")
-
-    def health(self) -> Dict[str, Any]:
-        import os, traceback
-        try:
-            resp = requests.get(f"{self.base_url}/health")
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.SSLError as ssl_err:
-            print("[SSL ERROR]", ssl_err)
-            print("REQUESTS_CA_BUNDLE:", os.environ.get("REQUESTS_CA_BUNDLE"))
-            print("Retrying with verify=False (NOT SECURE, for debug only)...")
+        poller = zmq.Poller()
+        poller.register(self.sock, zmq.POLLIN)
+        socks = dict(poller.poll(self.timeout_ms))
+        if socks.get(self.sock) == zmq.POLLIN:
             try:
-                resp = requests.get(f"{self.base_url}/health", verify=False)
-                resp.raise_for_status()
-                print("[WARNING] SSL verification was skipped!")
-                return resp.json()
-            except Exception as e2:
-                print("[SSL fallback failed]")
-                traceback.print_exc()
-                raise UMRSApiClientError(f"Health check failed (SSL fallback): {e2}")
-        except Exception as e:
-            raise UMRSApiClientError(f"Health check failed: {e}")
+                resp = self.sock.recv()
+                try:
+                    return json.loads(resp.decode('utf-8'))
+                except Exception:
+                    return {'raw_response': resp}
+            except Exception as e:
+                raise UMRSApiClientError(f'Failed to receive response: {e}')
+        else:
+            raise UMRSApiClientError(f'No response from server at {self.addr} within {self.timeout_ms}ms')
 
-    def status(self) -> Dict[str, Any]:
-        import os, traceback
-        try:
-            resp = requests.get(f"{self.base_url}/status")
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.SSLError as ssl_err:
-            print("[SSL ERROR]", ssl_err)
-            print("REQUESTS_CA_BUNDLE:", os.environ.get("REQUESTS_CA_BUNDLE"))
-            print("Retrying with verify=False (NOT SECURE, for debug only)...")
-            try:
-                resp = requests.get(f"{self.base_url}/status", verify=False)
-                resp.raise_for_status()
-                print("[WARNING] SSL verification was skipped!")
-                return resp.json()
-            except Exception as e2:
-                print("[SSL fallback failed]")
-                traceback.print_exc()
-                raise UMRSApiClientError(f"Status check failed (SSL fallback): {e2}")
-        except Exception as e:
-            raise UMRSApiClientError(f"Status check failed: {e}")
+    def add_user_hot_reload(self, user_config: dict):
+        return self._send('add_user_hot_reload', user_config)
 
-    def list_buckets(self, username: Optional[str] = None) -> Dict[str, Any]:
-        import os, traceback
-        try:
-            params = {"username": username} if username else {}
-            resp = requests.get(f"{self.base_url}/buckets", params=params)
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.SSLError as ssl_err:
-            print("[SSL ERROR]", ssl_err)
-            print("REQUESTS_CA_BUNDLE:", os.environ.get("REQUESTS_CA_BUNDLE"))
-            print("Retrying with verify=False (NOT SECURE, for debug only)...")
-            try:
-                resp = requests.get(f"{self.base_url}/buckets", params=params, verify=False)
-                resp.raise_for_status()
-                print("[WARNING] SSL verification was skipped!")
-                return resp.json()
-            except Exception as e2:
-                print("[SSL fallback failed]")
-                traceback.print_exc()
-                raise UMRSApiClientError(f"List buckets failed (SSL fallback): {e2}")
-        except Exception as e:
-            raise UMRSApiClientError(f"List buckets failed: {e}")
+    def create_user(self, user_config: dict):
+        return self._send('create_user', user_config)
 
-    def upload_text(self, text: str, bucket_alias: str, username: str, metadata: Optional[dict] = None) -> Dict[str, Any]:
-        try:
-            data = {
-                "text": text,
-                "bucket_alias": bucket_alias,
-                "username": username,
-                "metadata": None if metadata is None else json.dumps(metadata)
-            }
-            resp = requests.post(f"{self.base_url}/upload/text", data=data)
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            raise UMRSApiClientError(f"Upload text failed: {e}")
+    def create_buckets(self, user_config: dict):
+        return self._send('create_buckets', user_config)
 
-    def upload_image(self, file_path: str, bucket_alias: str, username: str, metadata: Optional[dict] = None) -> Dict[str, Any]:
-        try:
-            with open(file_path, "rb") as f:
-                files = {"file": f}
-                data = {
-                    "bucket_alias": bucket_alias,
-                    "username": username,
-                    "metadata": None if metadata is None else json.dumps(metadata)
-                }
-                resp = requests.post(f"{self.base_url}/upload/image", data=data, files=files)
-                resp.raise_for_status()
-                return resp.json()
-        except Exception as e:
-            raise UMRSApiClientError(f"Upload image failed: {e}")
+    def health(self):
+        return self._send('health')
 
-    def upload_textfile(self, file_path: str, bucket_alias: str, username: str, metadata: Optional[dict] = None) -> Dict[str, Any]:
-        try:
-            with open(file_path, "rb") as f:
-                files = {"file": f}
-                data = {
-                    "bucket_alias": bucket_alias,
-                    "username": username,
-                    "metadata": None if metadata is None else json.dumps(metadata)
-                }
-                resp = requests.post(f"{self.base_url}/upload/textfile", data=data, files=files)
-                resp.raise_for_status()
-                return resp.json()
-        except Exception as e:
-            raise UMRSApiClientError(f"Upload textfile failed: {e}")
+    def status(self):
+        return self._send('status')
 
-    def recompute_embeddings(self) -> Dict[str, Any]:
-        try:
-            resp = requests.post(f"{self.base_url}/recompute")
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            raise UMRSApiClientError(f"Recompute embeddings failed: {e}")
+    def list_buckets(self, username: Optional[str] = None):
+        params = {'username': username} if username else {}
+        return self._send('buckets', params)
 
-    def update_embeddings(self) -> Dict[str, Any]:
-        try:
-            resp = requests.post(f"{self.base_url}/update")
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            raise UMRSApiClientError(f"Update embeddings failed: {e}")
+    def upload_text(self, text: str, bucket_alias: str, username: str, metadata: Optional[dict] = None):
+        params = {'text': text, 'bucket_alias': bucket_alias, 'username': username, 'metadata': metadata or {}}
+        return self._send('upload_text', params)
 
-    def check_consistency(self) -> Dict[str, Any]:
+    def upload_image(self, file_path: str, bucket_alias: str, username: str, metadata: Optional[dict] = None):
+        if not os.path.exists(file_path):
+            raise UMRSApiClientError(f'File not found: {file_path}')
+        with open(file_path, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode('ascii')
+        params = {'filename': os.path.basename(file_path), 'file_bytes': b64, 'bucket_alias': bucket_alias, 'username': username, 'metadata': metadata or {}}
+        return self._send('upload_image', params)
+
+    def upload_textfile(self, file_path: str, bucket_alias: str, username: str, metadata: Optional[dict] = None):
+        if not os.path.exists(file_path):
+            raise UMRSApiClientError(f'File not found: {file_path}')
+        with open(file_path, 'rb') as f:
+            b64 = base64.b64encode(f.read()).decode('ascii')
+        params = {'filename': os.path.basename(file_path), 'file_bytes': b64, 'bucket_alias': bucket_alias, 'username': username, 'metadata': metadata or {}}
+        return self._send('upload_textfile', params)
+
+    def recompute_embeddings(self):
+        return self._send('recompute')
+
+    def update_embeddings(self):
+        return self._send('update')
+
+    def check_consistency(self):
+        return self._send('check')
+
+    def close(self):
         try:
-            resp = requests.get(f"{self.base_url}/check")
-            resp.raise_for_status()
-            return resp.json()
-        except Exception as e:
-            raise UMRSApiClientError(f"Check consistency failed: {e}")
+            self.sock.close()
+            self.ctx.term()
+        except Exception:
+            pass
 
 
 def main():
-    parser = argparse.ArgumentParser(description="UMRS API Client CLI")
-    parser.add_argument("--base_url", required=True, help="Base URL of the UMRS API (e.g., https://localhost:8000)")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    parser = argparse.ArgumentParser(description='UMRS ZeroMQ client CLI')
+    parser.add_argument('--host', default='127.0.0.1')
+    parser.add_argument('--port', type=int, default=8443)
+    parser.add_argument('--timeout', type=int, default=60000, help='ZeroMQ poll timeout in ms')
+    subparsers = parser.add_subparsers(dest='command', required=True)
 
-    # health
-    subparsers.add_parser("health", help="Check API health")
-    # status
-    subparsers.add_parser("status", help="Check API status")
-    # list_buckets
-    parser_list_buckets = subparsers.add_parser("list_buckets", help="List buckets for a username")
-    parser_list_buckets.add_argument("username", help="Username to filter buckets", nargs="?")
-    # upload_text
-    parser_upload_text = subparsers.add_parser("upload_text", help="Upload text to a bucket")
-    parser_upload_text.add_argument("text")
-    parser_upload_text.add_argument("bucket_alias")
-    parser_upload_text.add_argument("username")
-    parser_upload_text.add_argument("metadata", nargs="?")
-    # upload_image
-    parser_upload_image = subparsers.add_parser("upload_image", help="Upload image to a bucket")
-    parser_upload_image.add_argument("file_path")
-    parser_upload_image.add_argument("bucket_alias")
-    parser_upload_image.add_argument("username")
-    parser_upload_image.add_argument("metadata", nargs="?")
-    # upload_textfile
-    parser_upload_textfile = subparsers.add_parser("upload_textfile", help="Upload text file to a bucket")
-    parser_upload_textfile.add_argument("file_path")
-    parser_upload_textfile.add_argument("bucket_alias")
-    parser_upload_textfile.add_argument("username")
-    parser_upload_textfile.add_argument("metadata", nargs="?")
-    # recompute_embeddings
-    subparsers.add_parser("recompute_embeddings", help="Recompute all embeddings")
-    # update_embeddings
-    subparsers.add_parser("update_embeddings", help="Update embeddings")
-    # check_consistency
-    subparsers.add_parser("check_consistency", help="Check consistency")
-    # add_user_hot_reload
-    parser_add_user = subparsers.add_parser("add_user_hot_reload", help="Add user with hot reload (admin)")
-    parser_add_user.add_argument("user_config")
-    # create_user
-    parser_create_user = subparsers.add_parser("create_user", help="Create and initialize user (admin)")
-    parser_create_user.add_argument("user_config")
-    # create_buckets
-    parser_create_buckets = subparsers.add_parser("create_buckets", help="Create all buckets for a user (admin)")
-    parser_create_buckets.add_argument("user_config")
+    subparsers.add_parser('health', help='Check API health')
+    subparsers.add_parser('status', help='Check API status')
+
+    p_list = subparsers.add_parser('list_buckets', help='List buckets')
+    p_list.add_argument('username', nargs='?')
+
+    p_upload_text = subparsers.add_parser('upload_text', help='Upload text')
+    p_upload_text.add_argument('text')
+    p_upload_text.add_argument('bucket_alias')
+    p_upload_text.add_argument('username')
+    p_upload_text.add_argument('metadata', nargs='?')
+
+    p_upload_img = subparsers.add_parser('upload_image', help='Upload image')
+    p_upload_img.add_argument('file_path')
+    p_upload_img.add_argument('bucket_alias')
+    p_upload_img.add_argument('username')
+    p_upload_img.add_argument('metadata', nargs='?')
+
+    p_upload_txt = subparsers.add_parser('upload_textfile', help='Upload text file')
+    p_upload_txt.add_argument('file_path')
+    p_upload_txt.add_argument('bucket_alias')
+    p_upload_txt.add_argument('username')
+    p_upload_txt.add_argument('metadata', nargs='?')
+
+    subparsers.add_parser('recompute_embeddings', help='Recompute embeddings (sends action "recompute")')
+    subparsers.add_parser('update_embeddings', help='Update embeddings (sends action "update")')
+    subparsers.add_parser('check_consistency', help='Check consistency (sends action "check")')
+
+    p_add = subparsers.add_parser('add_user_hot_reload', help='Add user hot reload')
+    p_add.add_argument('user_config')
+
+    p_create_user = subparsers.add_parser('create_user', help='Create user')
+    p_create_user.add_argument('user_config')
+
+    p_create_buckets = subparsers.add_parser('create_buckets', help='Create buckets')
+    p_create_buckets.add_argument('user_config')
 
     args = parser.parse_args()
-    client = UMRSApiClient(args.base_url)
+
+    client = UMRSApiClient(host=args.host, port=args.port, timeout_ms=args.timeout)
 
     try:
-        if args.command == "health":
-            print(client.health())
-        elif args.command == "status":
-            print(client.status())
-        elif args.command == "list_buckets":
-            print(client.list_buckets(username=args.username))
-        elif args.command == "upload_text":
-            metadata = json.loads(args.metadata) if args.metadata else None
-            print(client.upload_text(args.text, args.bucket_alias, args.username, metadata=metadata))
-        elif args.command == "upload_image":
-            metadata = json.loads(args.metadata) if args.metadata else None
-            print(client.upload_image(args.file_path, args.bucket_alias, args.username, metadata=metadata))
-        elif args.command == "upload_textfile":
-            metadata = json.loads(args.metadata) if args.metadata else None
-            print(client.upload_textfile(args.file_path, args.bucket_alias, args.username, metadata=metadata))
-        elif args.command == "recompute_embeddings":
-            print(client.recompute_embeddings())
-        elif args.command == "update_embeddings":
-            print(client.update_embeddings())
-        elif args.command == "check_consistency":
-            print(client.check_consistency())
-        elif args.command == "add_user_hot_reload":
-            with open(args.user_config, "r") as f:
-                user_config = json.load(f)
-            print(client.add_user_hot_reload(user_config))
-        elif args.command == "create_user":
-            with open(args.user_config, "r") as f:
-                user_config = json.load(f)
-            print(client.create_user(user_config))
-        elif args.command == "create_buckets":
-            with open(args.user_config, "r") as f:
-                user_config = json.load(f)
-            print(client.create_buckets(user_config))
+        if args.command == 'health':
+            print(json.dumps(client.health(), indent=2))
+        elif args.command == 'status':
+            print(json.dumps(client.status(), indent=2))
+        elif args.command == 'list_buckets':
+            print(json.dumps(client.list_buckets(username=getattr(args, 'username', None)), indent=2))
+        elif args.command == 'upload_text':
+            metadata = json.loads(args.metadata) if getattr(args, 'metadata', None) else None
+            print(json.dumps(client.upload_text(args.text, args.bucket_alias, args.username, metadata=metadata), indent=2))
+        elif args.command == 'upload_image':
+            metadata = json.loads(args.metadata) if getattr(args, 'metadata', None) else None
+            print(json.dumps(client.upload_image(args.file_path, args.bucket_alias, args.username, metadata=metadata), indent=2))
+        elif args.command == 'upload_textfile':
+            metadata = json.loads(args.metadata) if getattr(args, 'metadata', None) else None
+            print(json.dumps(client.upload_textfile(args.file_path, args.bucket_alias, args.username, metadata=metadata), indent=2))
+        elif args.command == 'recompute_embeddings':
+            print(json.dumps(client.recompute_embeddings(), indent=2))
+        elif args.command == 'update_embeddings':
+            print(json.dumps(client.update_embeddings(), indent=2))
+        elif args.command == 'check_consistency':
+            print(json.dumps(client.check_consistency(), indent=2))
+        elif args.command == 'add_user_hot_reload':
+            with open(args.user_config, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+            print(json.dumps(client.add_user_hot_reload(cfg), indent=2))
+        elif args.command == 'create_user':
+            with open(args.user_config, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+            print(json.dumps(client.create_user(cfg), indent=2))
+        elif args.command == 'create_buckets':
+            with open(args.user_config, 'r', encoding='utf-8') as f:
+                cfg = json.load(f)
+            print(json.dumps(client.create_buckets(cfg), indent=2))
         else:
-            print(f"Unknown command: {args.command}", file=sys.stderr)
+            print(f'Unknown command: {args.command}', file=sys.stderr)
             sys.exit(1)
     except UMRSApiClientError as e:
-        print(f"[ERROR] {e}", file=sys.stderr)
+        print(f'[ERROR] {e}', file=sys.stderr)
         sys.exit(2)
     except Exception as e:
-        print(f"[UNEXPECTED ERROR] {e}", file=sys.stderr)
+        print(f'[UNEXPECTED ERROR] {e}', file=sys.stderr)
         sys.exit(3)
+    finally:
+        client.close()
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
 

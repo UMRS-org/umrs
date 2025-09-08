@@ -30,7 +30,9 @@ services:
       minio:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-k", "-f", "https://localhost:8443/health"]
+      # Use an explicit python3 TCP connect check; the server binds ZeroMQ on 8443
+      # so we only verify the TCP port is open (don't attempt HTTPS/TLS handshake).
+      test: ["CMD-SHELL", "python3 -c \"import socket,sys; s=socket.socket(); s.settimeout(1);\ntry:\n s.connect(('127.0.0.1',8443));\n s.close();\n sys.exit(0)\nexcept Exception as e:\n sys.exit(1)\n\""]
       interval: 10s
       timeout: 5s
       retries: 5

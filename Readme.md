@@ -46,53 +46,58 @@ UMRS is a comprehensive multi-modal retrieval system that supports secure HTTPS 
   - Health check: `curl -k https://localhost:8443/health`
 
 4. **Manual API/Client Testing (optional):**
-  After running the stack, you can interact with the API using the `client_umrs_api.py` script. The following examples use the same style and variable conventions as the automated test script (`docker/test_umrs_api.sh`):
+  After running the stack, you can interact with the ZeroMQ-based API using the `src/client_umrs_api.py` script.
+
+  The client is ZeroMQ-only (pyzmq required) and uses the `--host` and `--port` flags to reach the UMRS ZeroMQ server (default port 8443).
+
+  Example usage (same conventions as `docker/test_umrs_api.sh`):
   ```bash
-  # Set variables (as in test_umrs_api.sh)
-  BASE_URL=https://localhost:8443
+  # Local variables
   PY_CLIENT="python3 src/client_umrs_api.py"
+  HOST=localhost         # or the container name like 'umrs-server'
+  PORT=8443
   CONFIG_PATH=src/conf_umrs_user1.json
   DATA_DIR=./data
 
   # Health check
-  $PY_CLIENT --base_url "$BASE_URL" health
+  $PY_CLIENT --host "$HOST" --port $PORT health
 
   # List buckets for a user
   USERNAME=$(jq -r '.username' "$CONFIG_PATH")
-  $PY_CLIENT --base_url "$BASE_URL" list_buckets "$USERNAME"
+  $PY_CLIENT --host "$HOST" --port $PORT list_buckets "$USERNAME"
 
-  # Upload text to a bucket
+  # Upload text to a bucket (positional args: text bucket_alias username metadata)
   BUCKET_ALIAS=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="text") | .s3.bucket_alias' "$CONFIG_PATH")
-  $PY_CLIENT --base_url "$BASE_URL" upload_text "Hello from test script!" "$BUCKET_ALIAS" "$USERNAME" '{}'
+  $PY_CLIENT --host "$HOST" --port $PORT upload_text "Hello from test script!" "$BUCKET_ALIAS" "$USERNAME" '{}'
 
-  # Upload an image to a bucket
+  # Upload an image (positional args: file_path bucket_alias username metadata)
   IMG_PATH="$DATA_DIR/img/Cat_1.jpeg"
   BUCKET_ALIAS_IMG=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="image") | .s3.bucket_alias' "$CONFIG_PATH")
-  $PY_CLIENT --base_url "$BASE_URL" upload_image "$IMG_PATH" "$BUCKET_ALIAS_IMG" "$USERNAME" '{}'
+  $PY_CLIENT --host "$HOST" --port $PORT upload_image "$IMG_PATH" "$BUCKET_ALIAS_IMG" "$USERNAME" '{}'
 
-  # Upload a text file to a bucket
+  # Upload a text file
   TXTFILE_PATH="$DATA_DIR/texts/beast_in_the_jungle.txt"
   BUCKET_ALIAS_TXT=$(jq -r '.experiences[0].modalities[] | select(.modality_name=="text file") | .s3.bucket_alias' "$CONFIG_PATH")
-  $PY_CLIENT --base_url "$BASE_URL" upload_textfile "$TXTFILE_PATH" "$BUCKET_ALIAS_TXT" "$USERNAME" '{}'
+  $PY_CLIENT --host "$HOST" --port $PORT upload_textfile "$TXTFILE_PATH" "$BUCKET_ALIAS_TXT" "$USERNAME" '{}'
 
   # Recompute all embeddings
-  $PY_CLIENT --base_url "$BASE_URL" recompute_embeddings
+  $PY_CLIENT --host "$HOST" --port $PORT recompute_embeddings
 
   # Update missing/mismatched embeddings
-  $PY_CLIENT --base_url "$BASE_URL" update_embeddings
+  $PY_CLIENT --host "$HOST" --port $PORT update_embeddings
 
   # Check consistency between S3 and database
-  $PY_CLIENT --base_url "$BASE_URL" check_consistency
+  $PY_CLIENT --host "$HOST" --port $PORT check_consistency
 
   # Admin: Create and initialize a user
-  $PY_CLIENT --base_url "$BASE_URL" create_user "$CONFIG_PATH"
+  $PY_CLIENT --host "$HOST" --port $PORT create_user "$CONFIG_PATH"
 
   # Admin: Create all buckets for a user
-  $PY_CLIENT --base_url "$BASE_URL" create_buckets "$CONFIG_PATH"
+  $PY_CLIENT --host "$HOST" --port $PORT create_buckets "$CONFIG_PATH"
 
   # Admin: Add a user with hot reload
   USER2_CONFIG=src/conf_umrs_user2.json
-  $PY_CLIENT --base_url "$BASE_URL" add_user_hot_reload "$USER2_CONFIG"
+  $PY_CLIENT --host "$HOST" --port $PORT add_user_hot_reload "$USER2_CONFIG"
   ```
   See `python3 src/client_umrs_api.py --help` for all available commands and options.
 
