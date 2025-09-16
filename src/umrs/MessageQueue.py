@@ -5,13 +5,9 @@ import hashlib
 import time
 import tempfile
 try:
-    import zmq
-except ImportError:
-    zmq = None
-
-if not (zmq):
-    raise ImportError("Cannot find zeroMQ module")
-import zmq
+    import zmq  # type: ignore
+except ImportError as e:
+    raise ImportError("Cannot find zeroMQ module") from e
 
 BASE_PORT = 5555
 DEFAULT_NB_MSG = 10240
@@ -30,7 +26,12 @@ class MessageQueue:
         """
         self.role = role.lower()
         self.type = queue_type.lower()
-        self.server_ip = server_ip
+        # Determine server_ip: prefer explicit env var so other containers/hosts can connect
+        env_server_host = os.environ.get("UMRS_SERVER_HOST")
+        if env_server_host:
+            self.server_ip = env_server_host
+        else:
+            self.server_ip = server_ip
         self.context = zmq.Context()
         self.client_dictionary={}
         self.timeout = timeout_ms
@@ -156,7 +157,7 @@ class MessageQueue:
     # ------------------------ Server methods ------------------------
     def server_control_queue_loop(self):
         if self.role != "server":
-            raise PermissionError(f"Only server can call '{server_control_queue_loop}'.")
+            raise PermissionError("Only server can call 'server_control_queue_loop'.")
 
         while True:
             msg = self.recv_string() # Blocking call
@@ -197,13 +198,20 @@ class MessageQueue:
                 client_id = splited_msg[1]
                 nb_files = int(splited_msg[2])
                 return self._process_file_cmd(client_id, nb_files)
+            elif cmd in ("RECOMPUTE", "UPDATE", "CHECK"):
+                # Acknowledge and let the server main loop perform the operation
+                try:
+                    self.send_string("ACKNOWLEDGE")
+                except RuntimeError as e:
+                    print(f"Error acknowledging {cmd} request: {e}")
+                return cmd, None
             else:
                 raise RuntimeError("Unknown command: {cmd}")
                     
     def wait_for_s3_events(self, nb_objects, debug=False):
         """Block until new messages arrive, then read all available messages."""
         if self.role != 'server':
-            raise PermissionError(f"Only server can call '{wait_for_s3_events}'.")
+            raise PermissionError("Only server can call 'wait_for_s3_events'.")
         
         messages = []
         print(f"Listening for {nb_objects} new messages...")

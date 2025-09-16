@@ -187,13 +187,22 @@ def list_s3_bucket(s3, path_to_bucket):
     objects_list = []
     checksums = []
     total_size = 0
-    
+
     try:
-        response = s3.list_objects_v2(Bucket=path_to_bucket)
-        for obj in response.get('Contents', []):
-            objects_list.append(f"s3://{path_to_bucket}/{obj['Key']}")
-            checksums.append(obj['ETag'].strip('"'))
-            total_size += obj['Size']
+        continuation_token = None
+        while True:
+            kwargs = {"Bucket": path_to_bucket}
+            if continuation_token:
+                kwargs["ContinuationToken"] = continuation_token
+            response = s3.list_objects_v2(**kwargs)
+            for obj in response.get('Contents', []):
+                objects_list.append(f"s3://{path_to_bucket}/{obj['Key']}")
+                checksums.append(obj['ETag'].strip('"'))
+                total_size += obj['Size']
+            if response.get('IsTruncated'):
+                continuation_token = response.get('NextContinuationToken')
+            else:
+                break
     except s3.exceptions.NoSuchBucket:
         print(f"Bucket not found: {path_to_bucket}")
     except Exception as e:

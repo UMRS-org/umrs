@@ -285,7 +285,7 @@ def main():
     control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000) # This timeout is only the sending. Receiving is always blocking for the server
     print (f"Subscribed to zeroMQ message queue'")
 
-    # create S3/SQL  users if necessary 
+    # create S3/SQL users if necessary
     for user in users:
         create_s3_sql_users(user, admin_s3_configuration_file)
 
@@ -323,14 +323,29 @@ def main():
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
             # Server loop, e.g. polling for S3 objects, etc.
-            cmd, payload = control_mq.server_control_queue_loop()
+            result = control_mq.server_control_queue_loop()
+            if not result:
+                continue
+            cmd, payload = result
 
             if cmd == "OBJECT": # Launch worker
                 thread = launch_s3_thread(payload, db_model_store, device)
                 active_threads.append(thread)
             elif cmd == "FILE":
-                for file in payload:
-                    print(f"Received file: {file}")
+                if payload:
+                    for file in payload:
+                        print(f"Received file: {file}")
+                else:
+                    print("Warning: FILE command received with no payload")
+            elif cmd == "RECOMPUTE":
+                # Blocking recomputation across all buckets
+                recompute_all_objects(db_model_store, device)
+            elif cmd == "UPDATE":
+                # Update only missing/mismatched entries
+                update_objects(db_model_store, device)
+            elif cmd == "CHECK":
+                # Check consistency and print a summary
+                check_objects(db_model_store, verbose=False)
             else:
                 print(f"====> Error: unknown command  '{cmd}' returned by server loop")
 

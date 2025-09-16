@@ -235,29 +235,30 @@ def minio_grant_user_access(user, bucket, target):
 def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file):
     from umrs.s3 import s3_strong_password
 
-    config = {}
-
-    config_path = os.path.expanduser(admin_s3_configuration_file)
-
-    # Initialize parser
-    config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
-    config.read(config_path)
-    alias = config.getboolean("default", "alias", fallback="myminio")
+    # Load admin S3 config (for mc admin operations)
+    admin_cfg_path = os.path.expanduser(admin_s3_configuration_file)
+    admin_cfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+    admin_cfg.read(admin_cfg_path)
+    alias = admin_cfg.get("default", "alias", fallback="myminio")
+    s3_host = admin_cfg.get("default", "host_base")
+    use_https = admin_cfg.getboolean("default", "use_https", fallback=False)
+    verify_ssl = admin_cfg.getboolean("default", "check_ssl_certificate", fallback=True)
+    admin_access_key = admin_cfg.get("default", "access_key")
+    admin_secret_key = admin_cfg.get("default", "secret_key")
+    bucket_location = admin_cfg.get("default", "bucket_location", fallback="us-east-1")
+    protocol = "https" if use_https else "http"
+    endpoint_url = f"{protocol}://{s3_host}"
 
     
     if not os.path.exists(os.path.expanduser(user_s3_configuration_file)):
-        # Extract values with defaults
-        s3_host = config.get("default", "host_base")
-        use_https = config.getboolean("default", "use_https", fallback=False)
-        verify_ssl = config.getboolean("default", "check_ssl_certificate", fallback=True)
-        access_key = config.get("default", "access_key")
-        secret_key = config.get("default", "secret_key")
-        bucket_location = config.get("default", "bucket_location", fallback="ap-northeast-1")
-        # Ensure correct protocol (http or https)
-        protocol = "https" if use_https else "http"
-        endpoint_url = f"{protocol}://{s3_host}"
-    
+        # First-run: create mc alias (admin), ensure policy, create user with random password, then write user config
         user_passwd = s3_strong_password()
+
+        # Ensure mc alias exists using admin credentials
+        minio_check_create_alias(alias, endpoint_url, admin_access_key, admin_secret_key, insecure=not use_https or not verify_ssl)
+        list_only_policy = minio_check_create_list_only_policy(alias)
+        minio_create_user_with_policy(username, user_passwd, alias, list_only_policy)
+
         user_cfg = f"""[default]
         host_base = {s3_host}
         host_bucket = {s3_host}
@@ -266,6 +267,7 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         check_ssl_certificate = {verify_ssl}
         access_key = {username}
         secret_key = {user_passwd}
+        alias = {alias}
         """
 
         with open(os.path.expanduser(user_s3_configuration_file), "w") as file:
@@ -275,34 +277,23 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
     else:
         print(f"==> S3 configuration file '{user_s3_configuration_file}' allready exists for user '{username}' and alias '{alias}'.")
         print(f"==> Delete this file manually if you want to reconfigure the user.")
-        
-        config = {}
-        
-        config_path = os.path.expanduser(user_s3_configuration_file)
-        
-        # Initialize parser
-        config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
-        config.read(config_path)
-        s3_host = config.get("default", "host_base")
-        use_https = config.getboolean("default", "use_https", fallback=False)
-        verify_ssl = config.getboolean("default", "check_ssl_certificate", fallback=True)
-        access_key = config.get("default", "access_key")
-        secret_key = config.get("default", "secret_key")
-        bucket_location = config.get("default", "bucket_location", fallback="ap-northeast-1")
-        alias = config.getboolean("default", "alias", fallback="myminio")
-        # Ensure correct protocol (http or https)
-        protocol = "https" if use_https else "http"
-        endpoint_url = f"{protocol}://{s3_host}"
+        # Read existing user config
+        user_cfg_path = os.path.expanduser(user_s3_configuration_file)
+        ucfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+        ucfg.read(user_cfg_path)
+        u_access_key = ucfg.get("default", "access_key")
+        u_secret_key = ucfg.get("default", "secret_key")
 
-        if access_key != username:
+        if u_access_key != username:
             sys.exit(
-                f"Critical error. The access key in '{user_s3_configuration_file}' should be '{username}', but is '{access_key}'.\n"
+                f"Critical error. The access key in '{user_s3_configuration_file}' should be '{username}', but is '{u_access_key}'.\n"
                 "Cannot continue. Either update the JSON user config file or change/remove the S3 user config file."
             )
-            
-        minio_check_create_alias(alias, endpoint_url, access_key, secret_key, insecure=True)
+        # Ensure mc alias exists using admin credentials (needed for admin commands)
+        minio_check_create_alias(alias, endpoint_url, admin_access_key, admin_secret_key, insecure=not use_https or not verify_ssl)
         list_only_policy = minio_check_create_list_only_policy(alias)
-        minio_create_user_with_policy(access_key, secret_key, alias, list_only_policy)
+        # Ensure user exists with the password declared in the user's config
+        minio_create_user_with_policy(username, u_secret_key, alias, list_only_policy)
 
         
     return alias
