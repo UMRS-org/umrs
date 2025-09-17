@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 import os
 import sys
+import json
 import psycopg2
 from psycopg2 import sql
 from psycopg2 import pool as pg_pool
@@ -258,8 +259,6 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     else:
         table_columns.append({"name": "UNIQUE(s3_object)", "type": ""})
 
-
-
     metadata = metadata_dict(sql_cfg)
 
     conn = db_pool.getconn()
@@ -300,8 +299,9 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
             if not col["name"].upper().startswith("UNIQUE(")
         ]
 
-        # Vérification des colonnes dans la table existante
-        for column in real_columns:
+        # Verify required columns exist in the table (metadata columns must also exist)
+        core_required = real_columns
+        for column in core_required:
             if column["name"] not in existing_columns:
                 sys.exit(f"Missing column: {column['name']} ({column['type']}) in '{table_name}'.\nExisting columns: {list(existing_columns.keys())}")
 
@@ -397,26 +397,27 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
          # Now manage metadata if any
         if metadata:
+            unknown_keys = []
             for key, value in metadata.items():
                 sql_type = data_base.get_column_type(table_name, key)
                 if sql_type is None:
-                    print(f"Error: Field '{key}' unknown in table {table_name}. Skipping...")
+                    unknown_keys.append(key)
                     continue
 
                 if sql_type.upper() in ["INT", "INTEGER"]:
-                    if not value.isdigit():
-                        print(f"Key '{key}' must be of type INT but value '{value}' is not. Skipping...")
-                        continue
+                    if not str(value).isdigit():
+                        raise ValueError(f"Metadata '{key}' must be INT but value '{value}' is not.")
                 elif not is_string_type(sql_type):
-                    print(f"Checking field of type '{sql_type}' is not implemented. This might raise an error...")
+                    # For non-string/non-int types, rely on DB to validate
+                    pass
 
                 # Execute the UPDATE query to store metadata in the row with the matching ID
-                try:
-                    upd = sql.SQL("UPDATE {} SET {} = %s WHERE id = %s;").format(
-                        sql.Identifier(table_name), sql.Identifier(key))
-                    cur.execute(upd, (value, inserted_id))
-                except Exception as e:
-                    print(f"Error updating metadata '{key}' in {table_name}: {e}")
+                upd = sql.SQL("UPDATE {} SET {} = %s WHERE id = %s;").format(
+                    sql.Identifier(table_name), sql.Identifier(key))
+                cur.execute(upd, (value, inserted_id))
+
+            if unknown_keys:
+                raise ValueError(f"Unknown metadata key(s) for table '{table_name}': {', '.join(unknown_keys)}")
 
 
         conn.commit()
@@ -428,6 +429,11 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
 
     except Exception as e:
+        try:
+            if conn:
+                conn.rollback()
+        except Exception:
+            pass
         print(f"\t--> Error storing embedding for query: {e}")
 
     finally:
@@ -506,7 +512,8 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         cur.execute(query, (s3_object,))
         results = cur.fetchall()
 
-        if results is None:
+        # If no rows exist yet for this object, report as not_found (not mismatch)
+        if not results:
             return {
                 "status": "not_found",
                 "message": f"No entry found in table '{table_name}' for key: {s3_object}"
