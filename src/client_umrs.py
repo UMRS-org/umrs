@@ -145,7 +145,7 @@ parser.add_argument("-k", action="append", help="Metadatata key:value", required
 parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
 parser.add_argument('--server-ip', default='127.0.0.1', help='Server IP for ZeroMQ control channel')
 parser.add_argument('--output', choices=['json','text'], default='json', help='Output format for API actions')
-parser.add_argument('--auto-add-columns', action='store_true', help='Request server to auto-add missing typed metadata columns')
+# Removed deprecated auto-add-columns behavior; metadata must be declared in server config
 
 # Legacy positional arguments (only used when no action)
 parser.add_argument("data", type=str, nargs="?", help="input data (legacy mode)", default=None)
@@ -185,7 +185,7 @@ utb_grp.add_argument('--texts', nargs='+', help='Inline text objects')
 subparsers.add_parser('recompute', help='Recompute all embeddings for all buckets (server-side)')
 subparsers.add_parser('update', help='Update embeddings only for missing/mismatched entries (server-side)')
 subparsers.add_parser('check', help='Check consistency between S3 objects and DB (server-side)')
-subparsers.add_parser('add_columns', help='Auto-add missing typed metadata columns on server-side tables')
+# No 'add_columns' subcommand: strict, config-driven metadata schema only
 
 args = parser.parse_args()
 legacy_mode = (args.action is None)
@@ -201,20 +201,7 @@ if not args.no_check_server:
 
 print (f"Server ready.\nConnected to zeroMQ message queue'")
 
-# Optional one-shot: request server to auto-add missing typed metadata columns
-if args.auto_add_columns:
-    client_id = os.environ.get('UMRS_CLIENT_ID', 'client')
-    try:
-        ok = control_mq.notify_server(client_id, 'ADD_COLUMNS', 0)
-        if ok:
-            print(api_json(action='add_columns', accepted=True, output_format=args.output))
-        else:
-            print(api_json(status='error', action='add_columns', accepted=False, output_format=args.output))
-    except Exception as e:
-        print(api_json(status='error', action='add_columns', message=str(e), output_format=args.output))
-    if legacy_mode and args.action is None:
-        control_mq.close()
-        sys.exit(0)
+# Deprecated 'auto_add_columns' flag removed
 
 # Path to the configuration file (only required for config-backed actions)
 configure_file = args.conf
@@ -275,11 +262,11 @@ try:
             control_mq.close()
             sys.exit(0)
         # Embedding maintenance actions don't require bucket resolution or S3 access
-        if args.action in ('recompute', 'update', 'check', 'add_columns'):
+        if args.action in ('recompute', 'update', 'check'):
             # Use configured username as client id for control plane
             # Determine a stable client id for control-plane requests
             client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', 'client')
-            cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK', 'add_columns': 'ADD_COLUMNS'}[args.action]
+            cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK'}[args.action]
             try:
                 ok = control_mq.notify_server(client_id, cmd, 0)
                 if ok:

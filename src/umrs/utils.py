@@ -52,7 +52,6 @@ def chunk_text_by_max_tokens(doc, tokenizer, max_tokens):
             })
         else:
             # Otherwise, split the sentence into subchunks of max_tokens
-            print("Splitings...")
             for i in range(0, len(input_ids), max_tokens):
                 sub_ids = input_ids[i:i + max_tokens]
                 sub_offsets = offsets[i:i + max_tokens]
