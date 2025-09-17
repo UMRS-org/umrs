@@ -205,15 +205,8 @@ class MessageQueue:
                 except RuntimeError as e:
                     print(f"Error acknowledging {cmd} request: {e}")
                 return cmd, None
-            elif cmd == "ADD_COLUMNS":
-                # Add missing typed metadata columns on demand
-                try:
-                    self.send_string("ACKNOWLEDGE")
-                except RuntimeError as e:
-                    print(f"Error acknowledging ADD_COLUMNS request: {e}")
-                return cmd, None
             else:
-                raise RuntimeError("Unknown command: {cmd}")
+                raise RuntimeError(f"Unknown command: {cmd}")
                     
     def wait_for_s3_events(self, nb_objects, debug=False):
         """Block until new messages arrive, then read all available messages."""
