@@ -63,7 +63,8 @@ def configure_user(user_cfg, db_model_store):
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
             model = load_model(modality['model'], modality_name)
-            table_name, store_embeddings_flag, metadata = configure_table(data_base, modality["sql"], modality_name, model)
+            sql_cfg = modality["sql"]
+            table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
             store_db_model(db_model_store, path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
             print(f"\t\t\t==>Bucket alias: {bucket_alias}")
 
@@ -150,6 +151,40 @@ def clean_finished_threads(threads):
             new_threads.append(thread)
     print (f"==> Running threads: {len(new_threads)}")
     return new_threads
+
+def add_missing_columns(db_model_store):
+    from psycopg2 import sql as _sql
+    print(f"\n######################\nAuto-adding missing typed metadata columns\n######################\n")
+    for path_to_bucket, entry in db_model_store.items():
+        sql_cfg = entry.get("sql_cfg")
+        if not sql_cfg:
+            continue
+        data_base = entry["data_base"]
+        table_name = entry["table_name"]
+        db_pool = data_base.db_pool
+        conn = db_pool.getconn()
+        cur = None
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s;", (table_name,))
+            existing = {row[0] for row in cur.fetchall()}
+            for m in sql_cfg.get("meta_data", []):
+                name = m["name"]; typ = m["type"]
+                if name not in existing:
+                    try:
+                        cur.execute(_sql.SQL("ALTER TABLE {} ADD COLUMN {} {}; ").format(
+                            _sql.Identifier(table_name), _sql.Identifier(name), _sql.SQL(typ)))
+                        print(f"\t--> Added column '{name}' ({typ}) to '{table_name}'")
+                    except Exception as e:
+                        print(f"\t--> Failed to add column '{name}' to '{table_name}': {e}")
+            conn.commit()
+        finally:
+            if cur is not None:
+                try:
+                    cur.close()
+                except Exception:
+                    pass
+            db_pool.putconn(conn)
 
 def recompute_all_objects(db_model_store, device):
     print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
@@ -266,6 +301,7 @@ def main():
     parser.add_argument('--force-recompute', action='store_true', help='Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.')
     parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
+    # no auto add columns flag; metadata columns must be declared in config
 
 
     args = parser.parse_args()
@@ -346,6 +382,7 @@ def main():
             elif cmd == "CHECK":
                 # Check consistency and print a summary
                 check_objects(db_model_store, verbose=False)
+            
             else:
                 print(f"====> Error: unknown command  '{cmd}' returned by server loop")
 

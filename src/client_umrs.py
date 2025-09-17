@@ -145,6 +145,7 @@ parser.add_argument("-k", action="append", help="Metadatata key:value", required
 parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
 parser.add_argument('--server-ip', default='127.0.0.1', help='Server IP for ZeroMQ control channel')
 parser.add_argument('--output', choices=['json','text'], default='json', help='Output format for API actions')
+parser.add_argument('--auto-add-columns', action='store_true', help='Request server to auto-add missing typed metadata columns')
 
 # Legacy positional arguments (only used when no action)
 parser.add_argument("data", type=str, nargs="?", help="input data (legacy mode)", default=None)
@@ -156,37 +157,35 @@ ping_p = subparsers.add_parser('ping', help='Check server readiness')
 ut_p = subparsers.add_parser('upload_text', help='Upload inline text object')
 ut_p.add_argument('text', help='Inline text content')
 ut_p.add_argument('bucket_alias', help='Target bucket alias')
-ut_p.add_argument('username', help='Configured username owning the bucket')
-ut_p.add_argument('--meta', action='append', help='Metadata key:value (repeatable)')
+ut_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
 ui_p = subparsers.add_parser('upload_image', help='Upload image file')
 ui_p.add_argument('file_path')
 ui_p.add_argument('bucket_alias')
-ui_p.add_argument('username')
-ui_p.add_argument('--meta', action='append', help='Metadata key:value (repeatable)')
+ui_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
 utf_p = subparsers.add_parser('upload_textfile', help='Upload text file contents')
 utf_p.add_argument('file_path')
 utf_p.add_argument('bucket_alias')
-utf_p.add_argument('username')
-utf_p.add_argument('--meta', action='append', help='Metadata key:value (repeatable)')
+utf_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
 # New actions
 lb_p = subparsers.add_parser('list_buckets', help='List bucket aliases for a username')
-lb_p.add_argument('username')
+lb_p.add_argument('username', nargs='?', help='Username to filter buckets (defaults to config if omitted)')
 
 utb_p = subparsers.add_parser('upload_text_batch', help='Upload multiple text objects (batch)')
 utb_p.add_argument('bucket_alias')
-utb_p.add_argument('username')
+utb_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 utb_grp = utb_p.add_mutually_exclusive_group(required=True)
 utb_grp.add_argument('--file', help='File containing one text object per line')
 utb_grp.add_argument('--texts', nargs='+', help='Inline text objects')
-utb_p.add_argument('--meta', action='append', help='Metadata key:value (repeatable)')
+# Metadata is provided via repeated -k flags like legacy mode
 
 # Embedding maintenance actions
 subparsers.add_parser('recompute', help='Recompute all embeddings for all buckets (server-side)')
 subparsers.add_parser('update', help='Update embeddings only for missing/mismatched entries (server-side)')
 subparsers.add_parser('check', help='Check consistency between S3 objects and DB (server-side)')
+subparsers.add_parser('add_columns', help='Auto-add missing typed metadata columns on server-side tables')
 
 args = parser.parse_args()
 legacy_mode = (args.action is None)
@@ -201,6 +200,21 @@ if not args.no_check_server:
                  )
 
 print (f"Server ready.\nConnected to zeroMQ message queue'")
+
+# Optional one-shot: request server to auto-add missing typed metadata columns
+if args.auto_add_columns:
+    client_id = os.environ.get('UMRS_CLIENT_ID', 'client')
+    try:
+        ok = control_mq.notify_server(client_id, 'ADD_COLUMNS', 0)
+        if ok:
+            print(api_json(action='add_columns', accepted=True, output_format=args.output))
+        else:
+            print(api_json(status='error', action='add_columns', accepted=False, output_format=args.output))
+    except Exception as e:
+        print(api_json(status='error', action='add_columns', message=str(e), output_format=args.output))
+    if legacy_mode and args.action is None:
+        control_mq.close()
+        sys.exit(0)
 
 # Path to the configuration file (only required for config-backed actions)
 configure_file = args.conf
@@ -252,15 +266,20 @@ try:
             control_mq.close()
             sys.exit(0)
         if args.action == 'list_buckets':
-            print(action_list_buckets(bucket_store, args.username, args.output))
+            effective_username = args.username or (user.get('username') if isinstance(user, dict) else None)
+            if not effective_username:
+                print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+                control_mq.close()
+                sys.exit(1)
+            print(action_list_buckets(bucket_store, effective_username, args.output))
             control_mq.close()
             sys.exit(0)
         # Embedding maintenance actions don't require bucket resolution or S3 access
-        if args.action in ('recompute', 'update', 'check'):
+        if args.action in ('recompute', 'update', 'check', 'add_columns'):
             # Use configured username as client id for control plane
             # Determine a stable client id for control-plane requests
             client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', 'client')
-            cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK'}[args.action]
+            cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK', 'add_columns': 'ADD_COLUMNS'}[args.action]
             try:
                 ok = control_mq.notify_server(client_id, cmd, 0)
                 if ok:
@@ -276,7 +295,9 @@ try:
         bucket_alias = getattr(args, 'bucket_alias')
         entry = find_bucket_entry(bucket_store, bucket_alias)
         path_to_bucket        = entry['path_to_bucket']
-        username              = entry['username']
+        # If username not provided as arg, default to config
+        username_arg = getattr(args, 'username', None)
+        username              = username_arg or entry['username']
         xp_name               = entry['xp_name']
         modality              = entry['modality_name']
         s3_configuration_file = entry['s3_configuration_file']
@@ -310,15 +331,7 @@ except Exception as e:
     print(api_json(status="error", message=f"Metadata error: {e}", output_format=args.output))
     control_mq.close(); data_mq.close(); sys.exit(1)
 
-override_meta = {}
-if not legacy_mode:
-    # Parse extra metadata from action-specific --meta if any
-    try:
-        override_meta = parse_metadata_kv(getattr(args, 'meta', None))
-    except Exception as e:
-        print(api_json(status="error", message=f"Metadata parse error: {e}", output_format=args.output))
-        control_mq.close(); data_mq.close(); sys.exit(1)
-    metadata_args = merge_metadata(metadata_args, override_meta)
+# In API mode, metadata is provided via repeated -k flags like legacy mode
 
 if args.verbose or (not legacy_mode):
     print(f"Storing data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
