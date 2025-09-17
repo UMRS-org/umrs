@@ -254,8 +254,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
 
 
 def s3_store_txt(s3, path_to_bucket, text_data, mq, metadata_args):
-
-    print(f"text_data={text_data}|")
+    # Store inline text as an S3 object and notify server
 
     s3_key = compute_md5(text_data)+".txt"
     
@@ -296,7 +295,7 @@ def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args):
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
     else:
-        sys.exit(f"Error: {path} not found")
+        sys.exit(f"Error: {in_path} not found")
     
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
@@ -326,7 +325,7 @@ def s3_store_text_file(s3, path_to_bucket, in_path, mq, metadata_args):
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
     else:
-        sys.exit(f"Error: {path} not found")
+        sys.exit(f"Error: {in_path} not found")
     
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)

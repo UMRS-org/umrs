@@ -152,39 +152,7 @@ def clean_finished_threads(threads):
     print (f"==> Running threads: {len(new_threads)}")
     return new_threads
 
-def add_missing_columns(db_model_store):
-    from psycopg2 import sql as _sql
-    print(f"\n######################\nAuto-adding missing typed metadata columns\n######################\n")
-    for path_to_bucket, entry in db_model_store.items():
-        sql_cfg = entry.get("sql_cfg")
-        if not sql_cfg:
-            continue
-        data_base = entry["data_base"]
-        table_name = entry["table_name"]
-        db_pool = data_base.db_pool
-        conn = db_pool.getconn()
-        cur = None
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT column_name FROM information_schema.columns WHERE table_name = %s;", (table_name,))
-            existing = {row[0] for row in cur.fetchall()}
-            for m in sql_cfg.get("meta_data", []):
-                name = m["name"]; typ = m["type"]
-                if name not in existing:
-                    try:
-                        cur.execute(_sql.SQL("ALTER TABLE {} ADD COLUMN {} {}; ").format(
-                            _sql.Identifier(table_name), _sql.Identifier(name), _sql.SQL(typ)))
-                        print(f"\t--> Added column '{name}' ({typ}) to '{table_name}'")
-                    except Exception as e:
-                        print(f"\t--> Failed to add column '{name}' to '{table_name}': {e}")
-            conn.commit()
-        finally:
-            if cur is not None:
-                try:
-                    cur.close()
-                except Exception:
-                    pass
-            db_pool.putconn(conn)
+# No dynamic column addition; metadata columns are strictly defined by config
 
 def recompute_all_objects(db_model_store, device):
     print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
