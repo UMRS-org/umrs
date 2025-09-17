@@ -64,39 +64,47 @@ def minio_create_user_with_policy(user, password, target, policy_name):
         policy_name (str): Policy to attach (must already exist)
     """
 
-    # First, check if the user already exists
+    # First, ensure the user exists and the password matches the provided one
     try:
         result = subprocess.run(
             ["mc", "admin", "user", "list", target, "--insecure"],
             capture_output=True, text=True, check=True
         )
-        if user in result.stdout:
-            print(f"User '{user}' already exists.")
-        
-            # Check if the listonly  policy already exists for this user
-            try:
-                result = subprocess.run(
-                    ["mc", "admin", "policy", "list", target, "--insecure"],
-                    capture_output=True, text=True, check=True
-                )
-                policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
-                if policy_name in policies:
-                    print(f"Policy '{policy_name}' already exists on '{target}' for '{user}'.")
-                    return # user and policy exist
-            except subprocess.CalledProcessError as e:
-                sys.exit(f"Error listing policies: {e.stderr}")
-        else:
-            # Create the user
-            subprocess.run(
-                ["mc", "admin", "user", "add", target, user, password, "--insecure"],
-                check=True
-            )
-            print(f"User '{user}' created.")
+        user_exists = user in result.stdout
     except subprocess.CalledProcessError as e:
-        print(f"Error checking or creating user: {e.stderr}")
+        print(f"Error listing users: {e.stderr}")
         return
 
-    # Attach the policy
+    try:
+        # mc admin user add sets/updates the user's secret when invoked
+        subprocess.run(
+            ["mc", "admin", "user", "add", target, user, password, "--insecure"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        if user_exists:
+            print(f"User '{user}' exists; secret updated.")
+        else:
+            print(f"User '{user}' created.")
+    except subprocess.CalledProcessError as e:
+        # If add fails (unexpected), log and try to continue to attach policies
+        stderr = e.stderr or str(e)
+        print(f"Warning: Unable to add/update user '{user}': {stderr}")
+
+    # Ensure the policy exists on the cluster
+    try:
+        result = subprocess.run(
+            ["mc", "admin", "policy", "list", target, "--insecure"],
+            capture_output=True, text=True, check=True
+        )
+        policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
+        if policy_name not in policies:
+            print(f"Policy '{policy_name}' not found on '{target}', creating it first may be required.")
+    except subprocess.CalledProcessError as e:
+        sys.exit(f"Error listing policies: {e.stderr}")
+
+    # Attach the policy to the user (idempotent)
     try:
         subprocess.run(
             ["mc", "admin", "policy", "attach", target, policy_name, "--user", user, "--insecure"],
@@ -104,7 +112,7 @@ def minio_create_user_with_policy(user, password, target, policy_name):
         )
         print(f"Policy '{policy_name}' attached to user '{user}'.")
     except subprocess.CalledProcessError as e:
-        print(f"Error attaching policy to user: {e.stderr}")
+        print(f"Error attaching policy to user: {e}")
 
 
 def minio_check_create_list_only_policy(target):

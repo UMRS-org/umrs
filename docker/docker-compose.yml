@@ -20,6 +20,7 @@ services:
       - ./s3cfg:/root/.s3cfg:ro
       - $GLOBUS_DIR:/GLOBUS
     restart: unless-stopped
+    command: ["python", "src/server_umrs.py"]
 
   minio:
     image: minio/minio:latest
