@@ -1,12 +1,10 @@
 #!/usr/bin/python3
 import os
 import sys
-import json
 import psycopg2
 from psycopg2 import sql
 from psycopg2 import pool as pg_pool
 from datetime import datetime
-import psycopg2
 from umrs.db_store import query_db_model
 
 class DataBase:
@@ -330,7 +328,7 @@ def is_string_type(sql_type):
     string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
     return sql_type.upper() in string_types
 
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = {}, silent = False):
+def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = None, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -446,7 +444,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
                 pass
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, checksums, model_name, metadata_list=[]):
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, checksums, model_name, metadata_list=None):
     """
     Store embeddings in the database depending on the data modality.
 
@@ -459,6 +457,8 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
     - modality_name: Either 'image', 'text', or 'text_file'
     - metadata_list: Optional list of metadata dictionaries, one per S3 object
     """
+    if metadata_list is None:
+        metadata_list = [{} for _ in s3_keys]
 
     if modality_name == "image":
         # One embedding per image file
@@ -507,10 +507,7 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         s3_object = f"{bucket_name}/{s3_key}"  # Full S3 path
 
         # Query to get the existing checksum for this S3 object
-        query = f"""
-            SELECT checksum FROM {table_name}
-            WHERE s3_object = %s;
-        """
+        query = sql.SQL("SELECT checksum FROM {} WHERE s3_object = %s;").format(sql.Identifier(table_name))
         cur.execute(query, (s3_object,))
         results = cur.fetchall()
 
@@ -550,7 +547,7 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         db_pool.putconn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
-    username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+    _username, data_base, table_name, _model, _store_embeddings_flag, _modality_name, _s3_connection = query_db_model(db_model_store, path_to_bucket)
     status = []
     for i, s3_object in enumerate(s3_objects):
         _, s3_key = s3_object.replace("s3://", "").split("/", 1)
