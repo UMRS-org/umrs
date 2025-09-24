@@ -25,7 +25,7 @@ COPY ./doc /app/doc
 COPY ./docker/data /app/data
 COPY ./data/models /app/models
 # Use the server configuration (server schema) and include users_json
-COPY ./src/conf_umrs.json /app/conf_umrs.json
+COPY ./docker/conf_umrs.json /app/conf_umrs.json
 # Use docker user_files (mounted in compose for test container); server image does not need users_json
 COPY ./docker/user_files /app/user_files
 
