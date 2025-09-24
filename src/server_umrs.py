@@ -287,7 +287,7 @@ def main():
 
     # create the control message queue:
     control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000) # This timeout is only the sending. Receiving is always blocking for the server
-    print (f"Subscribed to zeroMQ message queue'")
+    print ("Subscribed to zeroMQ message queue")
 
     # create S3/SQL users if necessary
     for user in users:
