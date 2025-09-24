@@ -17,7 +17,7 @@ from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_p
 from umrs.modality import check_or_quit
 from umrs.db_store import store_db_model, query_db_model
 from umrs.utils import zero_out_embeddings_for_empty_objects
-from umrs.json_utils import load_server_cfg_file
+from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 
 
 # ---------------------- Provisioning and configuration ----------------------
@@ -284,7 +284,7 @@ def reload_configuration(configure_file, db_model_store):
         print(f"\n❌ Reload failed: {e}")
 
 
-def _ensure_user_file_in_conf(conf_path, user_file_path):
+def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     try:
         with open(conf_path, 'r', encoding='utf-8') as f:
             conf = json.load(f)
@@ -293,31 +293,76 @@ def _ensure_user_file_in_conf(conf_path, user_file_path):
         return False
 
     users = conf.get('users', [])
-    if user_file_path not in users:
-        users.append(user_file_path)
-        conf['users'] = users
+
+    # Build a new list that keeps only one entry for this username (the canonical path)
+    new_users = []
+    removed = []
+    for p in users:
+        if p == canonical_user_path:
+            # keep canonical path if already present
+            if p not in new_users:
+                new_users.append(p)
+            continue
+        # Try to read file and inspect username; if mismatch or file missing, keep as-is
         try:
-            with open(conf_path, 'w', encoding='utf-8') as f:
-                json.dump(conf, f, indent=2)
-            print(f"Updated server conf: added '{user_file_path}' to users list")
+            with open(p, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            u = data.get('username')
+        except Exception:
+            u = None
+        if u == username:
+            # Another config for the same user; drop it
+            removed.append(p)
+            continue
+        # Different user or unreadable -> keep entry
+        if p not in new_users:
+            new_users.append(p)
+
+    # Ensure canonical path present
+    if canonical_user_path not in new_users:
+        new_users.append(canonical_user_path)
+
+    if removed:
+        print(f"Updated server conf: removed {len(removed)} stale user config(s) for '{username}': {removed}")
+
+    conf['users'] = new_users
+    try:
+        with open(conf_path, 'w', encoding='utf-8') as f:
+            json.dump(conf, f, indent=2)
+        print(f"Updated server conf: ensured unique config for '{username}' -> {canonical_user_path}")
+    except Exception as e:
+        print(f"Warning: failed to update conf '{conf_path}': {e}")
+        return False
+    # Best-effort cleanup: remove pruned files under /app/user_files only
+    for stale in removed:
+        try:
+            if stale.startswith('/app/user_files/') and stale != canonical_user_path and os.path.isfile(stale):
+                os.remove(stale)
+                print(f"Deleted stale user config file: {stale}")
         except Exception as e:
-            print(f"Warning: failed to update conf '{conf_path}': {e}")
-            return False
+            print(f"Warning: failed to delete stale user config '{stale}': {e}")
     return True
 
 
-def _persist_uploaded_user_config(tmp_path, configure_file):
+def _persist_uploaded_user_config(tmp_path, configure_file, expected_username=None):
     """Persist an uploaded user config JSON: replace / create /app/user_files/<username>.json and ensure listed in conf.
 
     Returns (success: bool, username: str | None, dest_path: str | None)
     """
     try:
-        with open(tmp_path, 'r', encoding='utf-8') as f:
-            data = json.load(f)
+        # Validate against client schema (strict) and obtain data
+        data = load_client_cfg_file(tmp_path)
         username = data.get('username')
         if not username:
             print(f"Warning: uploaded file '{tmp_path}' missing 'username' field; ignoring")
             return False, None, None
+        if expected_username and username != expected_username:
+            print(f"Warning: uploaded config username '{username}' does not match client identity '{expected_username}'; ignoring file")
+            return False, None, None
+    except SystemExit as e:
+        # load_client_cfg_file may sys.exit() on validation error – treat as validation failure
+        print(f"Warning: uploaded file '{tmp_path}' failed validation; ignoring")
+        return False, None, None
     except Exception as e:
         print(f"Warning: cannot parse uploaded config '{tmp_path}': {e}")
         return False, None, None
@@ -331,16 +376,27 @@ def _persist_uploaded_user_config(tmp_path, configure_file):
         return False, username, None
 
     dest_path = os.path.join(user_dir, f"{username}.json")
+    # Atomically replace the destination file
     try:
-        shutil.move(tmp_path, dest_path)
+        with open(tmp_path, 'r', encoding='utf-8') as src:
+            content = src.read()
+        tmp_out = dest_path + ".tmp"
+        with open(tmp_out, 'w', encoding='utf-8') as out:
+            out.write(content)
+        os.replace(tmp_out, dest_path)
+        # Remove original temp upload
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
         print(f"Stored updated user config for '{username}' at '{dest_path}'")
     except Exception as e:
-        print(f"Warning: failed to move uploaded config to '{dest_path}': {e}")
+        print(f"Warning: failed to persist uploaded config to '{dest_path}': {e}")
         return False, username, None
 
     # Ensure conf contains this user file path
     conf_path = os.path.abspath(configure_file)
-    _ensure_user_file_in_conf(conf_path, dest_path)
+    _ensure_user_file_in_conf(conf_path, username, dest_path)
     return True, username, dest_path
 
 
@@ -359,14 +415,15 @@ def server_event_loop(control_mq, db_model_store, device, configure_file):
                 active_threads.append(thread)
             elif cmd == "FILE":
                 if payload:
-                    for file in payload:
+                    client_id, files = payload if isinstance(payload, tuple) else (None, payload)
+                    for file in files:
                         print(f"Received file: {file}")
-                        # Try to persist as a user configuration
-                        ok, uname, dest = _persist_uploaded_user_config(file, configure_file)
+                        # Try to persist as a user configuration; enforce identity if client_id known
+                        ok, uname, dest = _persist_uploaded_user_config(file, configure_file, expected_username=client_id)
                         if ok:
                             print(f"User config persisted for '{uname}' -> {dest}")
                         else:
-                            print(f"Note: file '{file}' not recognized as valid user config; left in place.")
+                            print(f"Note: file '{file}' not recognized as valid user config or identity mismatch; left in place.")
                 else:
                     print("Warning: FILE command received with no payload")
             elif cmd == "RECOMPUTE":
