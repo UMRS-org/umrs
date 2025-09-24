@@ -186,6 +186,7 @@ utb_grp.add_argument('--texts', nargs='+', help='Inline text objects')
 subparsers.add_parser('recompute', help='Recompute all embeddings for all buckets (server-side)')
 subparsers.add_parser('update', help='Update embeddings only for missing/mismatched entries (server-side)')
 subparsers.add_parser('check', help='Check consistency between S3 objects and DB (server-side)')
+rl_p = subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
 # No 'add_columns' subcommand: strict, config-driven metadata schema only
 
 args = parser.parse_args()
@@ -263,12 +264,33 @@ try:
             control_mq.close()
             sys.exit(0)
         # Embedding maintenance actions don't require bucket resolution or S3 access
-        if args.action in ('recompute', 'update', 'check'):
+        if args.action in ('recompute', 'update', 'check', 'reload'):
             # Use configured username as client id for control plane
             # Determine a stable client id for control-plane requests
             client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', 'client')
-            cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK'}[args.action]
+            cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK', 'reload': 'RELOAD'}[args.action]
             try:
+                # Special handling for reload with a user-config file: push file first, then RELOAD
+                if args.action == 'reload':
+                    # If -c points to an existing user.json, upload it first so the server persists and reloads it
+                    cfg_path = args.conf if getattr(args, 'conf', None) else None
+                    if cfg_path and os.path.isfile(cfg_path):
+                        try:
+                            with open(cfg_path, 'r', encoding='utf-8') as f:
+                                cfg_json = _json.load(f)
+                            upload_user = cfg_json.get('username') or client_id
+                        except Exception:
+                            upload_user = client_id
+                        data_mq = control_mq.get_data_queue(upload_user)
+                        try:
+                            data_mq.send_file(cfg_path)
+                            control_mq.notify_server(upload_user, 'FILE', 1)
+                        finally:
+                            try:
+                                data_mq.close()
+                            except Exception:
+                                pass
+                # Now send the control-plane command
                 ok = control_mq.notify_server(client_id, cmd, 0)
                 if ok:
                     print(api_json(action=args.action, accepted=True, output_format=args.output))
