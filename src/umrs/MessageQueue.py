@@ -1,8 +1,4 @@
-import platform
-import sys
 import os
-import hashlib
-import time
 import tempfile
 try:
     import zmq
@@ -115,14 +111,14 @@ class MessageQueue:
             self.socket.send(b'__END_OF_FILE__')
 
 
-    def recv_file(self, dir="/tmp"):
+    def recv_file(self, out_dir="/tmp"):
         if self.role != 'server' or self.type != 'data':
             raise PermissionError("Receiving file can only be done by the server using the data queue")
         
-        if not os.path.exists(dir):
-            os.makedirs(dir, exist_ok=True)  # Ensure directory exists
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)  # Ensure directory exists
 
-        with tempfile.NamedTemporaryFile(mode='w+b', dir=dir, delete=False) as tmp_file:
+        with tempfile.NamedTemporaryFile(mode='w+b', dir=out_dir, delete=False) as tmp_file:
             while True:
                 chunk = self.socket.recv()
                 if chunk == b'__END_OF_FILE__':
@@ -130,7 +126,6 @@ class MessageQueue:
                 tmp_file.write(chunk)
             tmp_file.flush()
             tmp_path = os.path.abspath(tmp_file.name)
-            
         return tmp_path
 
 
@@ -198,7 +193,7 @@ class MessageQueue:
                 client_id = splited_msg[1]
                 nb_files = int(splited_msg[2])
                 return self._process_file_cmd(client_id, nb_files)
-            elif cmd in ("RECOMPUTE", "UPDATE", "CHECK"):
+            elif cmd in ("RECOMPUTE", "UPDATE", "CHECK", "RELOAD"):
                 # Acknowledge and let the server main loop perform the operation
                 try:
                     self.send_string("ACKNOWLEDGE")
@@ -236,7 +231,7 @@ class MessageQueue:
             # For each expected file:
             for _ in range(nb_files):
                 # Receive file data into it
-                file_path = data_queue.recv_file(dir='./tmp')
+                file_path = data_queue.recv_file(out_dir='./tmp')
                 # Keep track of temp files
                 path_list.append(file_path)
 

@@ -31,6 +31,9 @@ CLIENT_CONF=/app/user_files/user1.json
 echo "Waiting for UMRS server control plane to be ready at ${UMRS_SERVER_HOST}..."
 retry 60 2 python /app/src/client_umrs.py ping
 
+# Ask server to reload configuration (hot load) before tests; use -c to push full user1.json so server replaces user1_init.json and updates mappings
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text reload
+
 # List buckets for user1 (text/image bucket aliases)
 retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text list_buckets
 
