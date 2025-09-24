@@ -184,7 +184,7 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
     if hasattr(sample, "shape") and getattr(sample, "shape") is not None:
         try:
             embedding_dim = int(sample.shape[0])
-        except Exception:
+        except (AttributeError, IndexError, TypeError):
             embedding_dim = len(sample)  # fallback
     else:
         embedding_dim = len(sample)
