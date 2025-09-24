@@ -192,6 +192,7 @@ class MessageQueue:
             elif cmd == "FILE":  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 nb_files = int(splited_msg[2])
+                # include client_id in the payload for server-side identity enforcement
                 return self._process_file_cmd(client_id, nb_files)
             elif cmd in ("RECOMPUTE", "UPDATE", "CHECK", "RELOAD"):
                 # Acknowledge and let the server main loop perform the operation
@@ -240,7 +241,8 @@ class MessageQueue:
                 self.send_string("ACKNOWLEDGE")
             except RuntimeError as e:
                 print(f"Error in sending acknowleding client: {e}")
-            return "FILE", path_list
+            # Return client_id along with received file paths so server can enforce identity
+            return "FILE", (client_id, path_list)
         else: # cannot find the client in the client_dictionnary         
             try: 
                 self.send_string("NO_DATA_QUEUE")
