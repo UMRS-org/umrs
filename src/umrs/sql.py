@@ -434,8 +434,8 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         try:
             if conn:
                 conn.rollback()
-        except Exception:
-            pass
+        except Exception as rollback_exc:
+            print(f"\t--> Error during rollback: {rollback_exc}")
         print(f"\t--> Error storing embedding for query: {e}")
 
     finally:
