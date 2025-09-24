@@ -5,7 +5,7 @@ import hashlib
 import time
 import tempfile
 try:
-    import zmq  # type: ignore
+    import zmq
 except ImportError as e:
     raise ImportError("Cannot find zeroMQ module") from e
 
