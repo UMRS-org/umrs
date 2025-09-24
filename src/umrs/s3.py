@@ -53,8 +53,8 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
     config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
     config.read(config_path)
     bucket_location = config.get("default", "bucket_location", fallback = None)
-    if not bucket_list:
-        sys.exit(f"file {admin_s3_configuration_file} must have a bucket_location entry for [deafult]")
+    if bucket_location is None:
+        sys.exit(f"file {admin_s3_configuration_file} must have a bucket_location entry for [default]")
 
     for bucket in bucket_list:
         if not check_bucket_path(s3_connection, bucket, indent=False):
@@ -73,7 +73,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
                 minio_grant_user_access(username, bucket, alias)
 
     else:
-        sys.exit("Do not know how to create user and buckets for server '{server}'") 
+        sys.exit(f"Do not know how to create user and buckets for server '{server}'") 
 
 
         

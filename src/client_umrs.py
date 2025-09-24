@@ -1,5 +1,4 @@
 #!/usr/bin/python3
-import json
 import os
 import sys
 from umrs.sql import *
@@ -98,26 +97,18 @@ def send_files_to_server(username, file_path_list, control_mq, data_mq):
         data_mq.send_file(file_path)
     success = control_mq.notify_server(username, "FILE", len(file_path_list))
     if success:
-        print(f"Files {file_path_list} recevied by server")
+        print(f"Files {file_path_list} received by server")
     else:
         print(f"Error sending file(s) {file_path_list} to server")
         
 
-def store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name):
-    if(bucket_store[bucket_alias]):
+def store_bucket(bucket_store, bucket_alias, entry):
+    if bucket_store[bucket_alias]:
         sys.exit(f"Error: duplicate bucket_alias {bucket_alias}")
-    bucket_store[bucket_alias]= {"path_to_bucket": path_to_bucket,
-                                "username": username,
-                                "xp_name": xp_name,
-                                "modality_name": modality_name,
-                                 "s3_configuration_file": s3_configuration_file,
-                                 "metadata": metadata,
-                                 "sql_username": sql_username,
-                                 "db_name": db_name}
+    bucket_store[bucket_alias] = entry
 
 
 def configure_bucket_store(user_cfg, bucket_store):
-    fullname = user_cfg["fullname"]
     username = user_cfg["username"]
     s3_configuration_file = user_cfg["s3_configuration_file"]
     for xp in user_cfg["experiences"]:
@@ -131,7 +122,17 @@ def configure_bucket_store(user_cfg, bucket_store):
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
             # print(bucket_alias, username, xp_name, modality_name)
             metadata = metadata_dict(modality["sql"])
-            store_bucket(bucket_store, bucket_alias, path_to_bucket, username, xp_name, modality_name, user, s3_configuration_file, metadata, sql_username, db_name)
+            entry = {
+                "path_to_bucket": path_to_bucket,
+                "username": username,
+                "xp_name": xp_name,
+                "modality_name": modality_name,
+                "s3_configuration_file": s3_configuration_file,
+                "metadata": metadata,
+                "sql_username": sql_username,
+                "db_name": db_name,
+            }
+            store_bucket(bucket_store, bucket_alias, entry)
 
 
 
@@ -227,7 +228,7 @@ legacy_mode = (args.action is None)
 try:
     if legacy_mode:
         if args.data is None or args.bucket is None:
-            print("Misssing data and/or bucket.")
+            print("Missing data and/or bucket.")
             pretty_print_user_cfg(bucket_store)
             sys.exit(
                 "Error: You must provide both the data and the bucket alias.\n"
@@ -457,7 +458,7 @@ if legacy_mode:
         if server_notify_result is True:
             print("Server received data")
         else:
-            print("Error: Server did not data")
+            print("Error: Server did not receive data")
 
 # close queues before exiting
 control_mq.close()
