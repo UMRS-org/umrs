@@ -440,7 +440,8 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             try:
                 cur.close()
             except Exception:
-                pass
+                # Consider logging the exception instead of silent pass
+                print(f"Warning: Failed to close cursor: {e}")
         db_pool.putconn(conn)
 
 def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, checksums, model_name, metadata_list=None):
