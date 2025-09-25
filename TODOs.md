@@ -11,9 +11,9 @@
 ## to make the user environments more separated
 - Define and persist a per-user stable identifier (user_id)
 	- Generate a server-side user_id (UUID v4 or short hash) when creating a user.
-	- Persist user_id in the canonical config at `/app/user_files/<username>.json` alongside `username`.
+	- Persist user_id in the canonical config at `/root/user_files/<username>.json` alongside `username`.
 	- Use `username` + `user_id` when deriving S3 paths and DB namespaces (where applicable) to avoid collisions.
-	- Acceptance: After user creation or first config load, `/app/user_files/<username>.json` contains both fields, and all resources can be traced back to this pair.
+	- Acceptance: After user creation or first config load, `/root/user_files/<username>.json` contains both fields, and all resources can be traced back to this pair.
 
 - Validate uploaded user configuration identity
 	- On FILE uploads, check that the `username` in the JSON matches the client identity (if available) and that `user_id` (if present) matches the stored canonical config for that username.
@@ -68,7 +68,7 @@
 		- Client wheel/image must not contain any modules from `umrs_server` (verify via CI grep and import checks).
 		- Server wheel/image must not include client test tooling beyond the CLI entrypoint.
 	- Do not include server-only configs or admin tools in client image:
-		- No `conf_umrs.json`, no `/app/user_files` baked in client image.
+		- No `conf_umrs.json`, no `/root/user_files` baked in client image.
 		- Exclude admin S3 tools (e.g., `mc admin`) and DB superuser utilities from client image.
 	- Define and enforce a minimal, stable client-server interface:
 		- Public client API = ZeroMQ control plane + S3 data plane; document allowed commands and expected replies.

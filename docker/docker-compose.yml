@@ -20,7 +20,7 @@ services:
       - ./s3cfg:/root/.s3cfg:ro
       - $GLOBUS_DIR:/GLOBUS
     restart: unless-stopped
-    command: ["python", "src/server_umrs.py"]
+    command: ["python", "src/server_umrs.py", "-c", "/root/conf_umrs.json"]
 
   minio:
     image: minio/minio:latest
@@ -67,8 +67,8 @@ services:
       #- ./s3cfg:/root/.s3cfg:ro
       #- ./s3cfg_user1:/root/.s3cfg_user1:ro
       #- ./s3cfg_user2:/root/.s3cfg_user2:ro
-      #- ../data:/app/data:ro
-      #- ../docker/user_files:/app/user_files:ro
+      #- ../data:/root/data:ro
+      #- ../docker/user_files:/root/user_files:ro
     command: ["/bin/bash", "-c", "chmod +x ./test_umrs_api.sh && ./test_umrs_api.sh"]
 
 volumes:

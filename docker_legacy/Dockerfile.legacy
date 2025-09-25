@@ -9,17 +9,17 @@ COPY ./requirements.txt ./requirements.txt
 # Copy application sources and docs
 COPY ./src /app/src
 COPY ./doc /app/doc
-COPY ./docker/data /app/data
+COPY ./docker/data /root/data
 
 # Copy helper test script for legacy mode
 COPY ./docker_legacy/test_umrs_legacy.sh /app/test_umrs_legacy.sh
 
 # Server configuration files
 COPY ./docker/s3cfg /root/.s3cfg
-COPY ./docker/conf_umrs.json /app/conf_umrs.json
+COPY ./docker/conf_umrs.json /root/conf_umrs.json
 
 # User specific configuration files
-COPY ./docker/user_files /app/user_files
+COPY ./docker/user_files /root/user_files
 COPY ./docker/s3cfg_user1 /root/.s3cfg_user1
 COPY ./docker/s3cfg_user2 /root/.s3cfg_user2
 
