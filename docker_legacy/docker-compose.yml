@@ -20,8 +20,8 @@ services:
       - UMRS_SERVER_HOST=127.0.0.1
     #volumes:
       # Reuse existing test data and user files
-      #- ../docker/data:/app/data:ro
-      #- ../docker/user_files:/app/user_files:ro
+      #- ../docker/data:/root/data:ro
+      #- ../docker/user_files:/root/user_files:ro
       # Provide s3cfg to the container (read-only)
       #- ../docker/s3cfg:/root/.s3cfg:ro
       #- ../docker/s3cfg_user1:/root/.s3cfg_user1:ro

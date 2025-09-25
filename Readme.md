@@ -17,7 +17,7 @@ Then try the client from inside the server container:
 
 ```bash
 docker exec -it umrs-server python src/client_umrs.py ping
-docker exec -it umrs-server python src/client_umrs.py --conf /app/conf_umrs.json list_buckets user1
+docker exec -it umrs-server python src/client_umrs.py --conf /root/conf_umrs.json list_buckets user1
 ```
 
 More examples and details are in `doc/umrs_overview.md` and `docker/README.md`.

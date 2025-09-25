@@ -117,7 +117,7 @@ MinIO console will be on `http://localhost:9001`, S3 API on `http://localhost:90
 
 ### Server configuration inside the container
 
-The server image copies `src/conf_umrs.json` to `/app/conf_umrs.json` and includes user files from `docker/user_files/`. By default it uses `~/.s3cfg` for the admin S3 config, which is mounted from `docker/s3cfg` in compose.
+The server image copies `docker/conf_umrs.json` to `/root/conf_umrs.json` and includes user files from `docker/user_files/` under `/root/user_files`. By default it uses `~/.s3cfg` for the admin S3 config, which is mounted from `docker/s3cfg` in compose.
 
 Environment variables used by the server (see `docker/docker-compose.yml`):
 
@@ -138,7 +138,7 @@ List configured buckets for a user:
 
 ```bash
 docker exec -it umrs-server python src/client_umrs.py \
-  --conf /app/conf_umrs.json \
+   --conf /root/conf_umrs.json \
   list_buckets user1
 ```
 
@@ -146,7 +146,7 @@ Upload inline text to a `text` bucket alias:
 
 ```bash
 docker exec -it umrs-server python src/client_umrs.py \
-  --conf /app/conf_umrs.json \
+   --conf /root/conf_umrs.json \
   upload_text "I eat apple at breakfast" bucket-2 user1 --meta keywords:fruit
 ```
 
@@ -154,16 +154,16 @@ Upload an image file to an `image` bucket alias (example data path):
 
 ```bash
 docker exec -it umrs-server python src/client_umrs.py \
-  --conf /app/conf_umrs.json \
-  upload_image /app/data/img/Cat_1.jpg bucket-1 user1 --meta keywords:cat
+   --conf /root/conf_umrs.json \
+   upload_image /root/data/img/Cat_1.jpg bucket-1 user1 --meta keywords:cat
 ```
 
 Recompute or update embeddings server-side:
 
 ```bash
-docker exec -it umrs-server python src/client_umrs.py --conf /app/conf_umrs.json recompute
-docker exec -it umrs-server python src/client_umrs.py --conf /app/conf_umrs.json update
-docker exec -it umrs-server python src/client_umrs.py --conf /app/conf_umrs.json check
+docker exec -it umrs-server python src/client_umrs.py --conf /root/conf_umrs.json recompute
+docker exec -it umrs-server python src/client_umrs.py --conf /root/conf_umrs.json update
+docker exec -it umrs-server python src/client_umrs.py --conf /root/conf_umrs.json check
 ```
 
 Alternatively, you can start the `umrs-api-test` container which runs `docker/test_umrs_api.sh` automatically when the stack is up.

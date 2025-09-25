@@ -11,15 +11,15 @@ COPY ./src /app/src
 COPY ./docker/test_umrs_api.sh ./test_umrs_api.sh
 RUN ln -sf /app/src/client_umrs.py /app/client_umrs.py
 
-# Copy user configs into /app/user_files
-COPY ./docker/user_files ./user_files
+# Copy user configs into /root/user_files
+COPY ./docker/user_files /root/user_files
 
 # user specific s3cfg files
 COPY ./docker/s3cfg_user1 /root/.s3cfg_user1
 COPY ./docker/s3cfg_user2 /root/.s3cfg_user2
 
-# Copy data directory
-COPY ./data ./data
+# Copy data directory under /root to use standard path
+COPY ./data /root/data
 
 # Install runtime deps for client & test tools
 RUN apt-get update && \
