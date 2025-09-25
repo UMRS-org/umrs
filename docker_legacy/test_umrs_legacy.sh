@@ -24,7 +24,7 @@ retry() {
 export UMRS_SERVER_HOST=${UMRS_SERVER_HOST:-127.0.0.1}
 
 echo "Starting UMRS server (legacy, in-container)..."
-python /app/src/server_umrs.py &
+python /app/src/server_umrs.py -c /root/conf_umrs.json &
 SERVER_PID=$!
 
 cleanup() {
@@ -34,7 +34,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-CLIENT_CONF=/app/user_files/user1.json
+CLIENT_CONF=/root/user_files/user1.json
 
 echo "Waiting for UMRS server control plane to be ready at ${UMRS_SERVER_HOST}..."
 retry 60 2 python /app/src/client_umrs.py ping
@@ -53,15 +53,15 @@ retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k key
 retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:batch upload_text_batch bucket-2 --texts "alpha one" "beta two" "gamma three"
 
 # Upload a text file object to the 'text file' bucket (bucket-5)
-if [ -f /app/data/texts/beast_in_the_jungle.txt ]; then
-  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:beast upload_textfile /app/data/texts/beast_in_the_jungle.txt bucket-5
+if [ -f /root/data/texts/beast_in_the_jungle.txt ]; then
+  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:beast upload_textfile /root/data/texts/beast_in_the_jungle.txt bucket-5
 fi
 
 # Upload a sample image to an image bucket for user1 if present
-if [ -f /app/data/img_test/cat.jpeg ]; then
-  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test upload_image /app/data/img_test/cat.jpeg bucket-1
+if [ -f /root/data/img_test/cat.jpeg ]; then
+  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test upload_image /root/data/img_test/cat.jpeg bucket-1
   # Also exercise the other image bucket (bucket-3) if desired
-  python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test2 -k author:demo -k x_resolution:256 -k y_resolution:512 upload_image /app/data/img_test/cat.jpeg bucket-3 || true
+  python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test2 -k author:demo -k x_resolution:256 -k y_resolution:512 upload_image /root/data/img_test/cat.jpeg bucket-3 || true
 fi
 
 # Trigger server-side embedding operations (no config required)
