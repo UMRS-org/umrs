@@ -403,7 +403,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
                 if sql_type.upper() in ["INT", "INTEGER"]:
                     try:
-                        int(value)
+                        value = int(value)
                     except (ValueError, TypeError):
                         raise ValueError(f"Metadata '{key}' must be INT but value '{value}' is not.")
                 elif not is_string_type(sql_type):
