@@ -344,7 +344,6 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
     db_pool = data_base.db_pool
     conn = db_pool.getconn()
-    query = None
     cur = None
     try:
         cur = conn.cursor()
