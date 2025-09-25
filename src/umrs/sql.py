@@ -2,9 +2,9 @@
 import os
 import sys
 import psycopg2
-from psycopg2 import sql, pool
+from psycopg2 import sql
+from psycopg2 import pool as pg_pool
 from datetime import datetime
-import psycopg2
 from umrs.db_store import query_db_model
 
 class DataBase:
@@ -72,17 +72,20 @@ def create_db_user(username):
     conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
     conn.autocommit = True  # Enable auto-commit mode
 
+    DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
+    cur = conn.cursor()
     if db_user_exists(conn, username):
         print(f"==> User '{username}' exist in DB")
+        # Ensure password matches the configured one
+        cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(sql.Identifier(username)), (DB_USER_PASSWORD,))
+        conn.commit()
+        cur.close()
         conn.close()
         return
 
-    password = username
-    
-    cur = conn.cursor()
     cur.execute(
         sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
-        (password,)
+        (DB_USER_PASSWORD,)
     )
     print(f"==> User '{username}' created in DB")
     cur.close()
@@ -120,8 +123,6 @@ def create_db(sql_username, xp_name):
         print(f"\t\t-->  Database '{db_name}' created successfully.")
 
         # Connect to the new database as superuser and create the extension
-        cur.close()
-        conn.close()
         conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
         conn_new.autocommit = True
         cur_new = conn_new.cursor()
@@ -133,24 +134,12 @@ def create_db(sql_username, xp_name):
         finally:
             cur_new.close()
             conn_new.close()
-        # Return a new connection to the created database
-        DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
-        db_pool = psycopg2.pool.SimpleConnectionPool(
-            minconn=1, maxconn=5,  # Adjust based on your needs
-            dbname=db_name,
-            user=sql_username,
-            password=DB_USER_PASSWORD,
-            host=DB_HOST,
-            port=DB_PORT
-        )
-        return DataBase(db_pool, db_name, sql_username), db_name
-
-    # Clean up
+    # Clean up and then create a pool to the target DB as the application user
     cur.close()
     conn.close()
-    # Return a new connection to the created database
+
     DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
-    db_pool = psycopg2.pool.SimpleConnectionPool(
+    db_pool = pg_pool.SimpleConnectionPool(
         minconn=1, maxconn=5,  # Adjust based on your needs
         dbname=db_name,
         user=sql_username,
@@ -268,8 +257,6 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     else:
         table_columns.append({"name": "UNIQUE(s3_object)", "type": ""})
 
-
-
     metadata = metadata_dict(sql_cfg)
 
     conn = db_pool.getconn()
@@ -289,6 +276,15 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         cur.execute(create_query)
         conn.commit()
         print(f"\t\t\t--> Table '{table_name}' created successfully.")
+        # Create helpful indexes
+        try:
+            cur.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (s3_object);").format(
+                sql.Identifier(f"idx_{table_name}_s3_object"), sql.Identifier(table_name)))
+            cur.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (checksum);").format(
+                sql.Identifier(f"idx_{table_name}_checksum"), sql.Identifier(table_name)))
+            conn.commit()
+        except Exception as e:
+            print(f"\t\t\t--> Warning: failed creating indexes on '{table_name}': {e}")
 
     else:
         # Validate existing table schema
@@ -301,15 +297,21 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
             if not col["name"].upper().startswith("UNIQUE(")
         ]
 
-        # Vérification des colonnes dans la table existante
-        for column in real_columns:
+        # Verify required columns exist in the table (metadata columns must also exist)
+        core_required = real_columns
+        for column in core_required:
             if column["name"] not in existing_columns:
                 sys.exit(f"Missing column: {column['name']} ({column['type']}) in '{table_name}'.\nExisting columns: {list(existing_columns.keys())}")
 
         table_vector_size = get_vector_size(cur, table_name)
-        if table_vector_size != vector_size:
-            sys.exit(f"Error: SQL configuration mispatch!\nThe vector size to store embeddings is {vector_size} in the json config file and {table_vector_size} in the sql database.")
-        print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embedding vector size: {vector_size}")
+        if sql_cfg.get("store_embeddings") == "yes":
+            expected_size = getattr(model, 'embedding_vector_size', None)
+            if expected_size is not None and table_vector_size != expected_size:
+                sys.exit(f"Error: SQL configuration mismatch!\nExpected vector size {expected_size} per model, found {table_vector_size} in database for table '{table_name}'.")
+            msg_size = expected_size if expected_size is not None else table_vector_size
+            print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embedding vector size: {msg_size}")
+        else:
+            print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embeddings not stored.")
 
 
 
@@ -326,7 +328,7 @@ def is_string_type(sql_type):
     string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
     return sql_type.upper() in string_types
 
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = {}, silent = False):
+def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = None, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -342,6 +344,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
     db_pool = data_base.db_pool
     conn = db_pool.getconn()
+    cur = None
     try:
         cur = conn.cursor()
 
@@ -391,29 +394,29 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
          # Now manage metadata if any
         if metadata:
+            unknown_keys = []
             for key, value in metadata.items():
                 sql_type = data_base.get_column_type(table_name, key)
                 if sql_type is None:
-                    print(f"Error: Field '{key}' unknown in table {table_name}. Skipping...")
+                    unknown_keys.append(key)
                     continue
 
                 if sql_type.upper() in ["INT", "INTEGER"]:
-                    if not value.isdigit():
-                        print(f"Key '{key}' must be of type INT but value '{value}' is not. Skipping...")
-                        continue
+                    try:
+                        value = int(value)
+                    except (ValueError, TypeError):
+                        raise ValueError(f"Metadata '{key}' must be INT but value '{value}' is not.")
                 elif not is_string_type(sql_type):
-                    print(f"Checking field of type '{sql_type}' is not implemented. This might raise an error...")
+                    # For non-string/non-int types, rely on DB to validate
+                    pass
 
                 # Execute the UPDATE query to store metadata in the row with the matching ID
-                try:
-                    query = f"""
-                    UPDATE {table_name}
-                    SET {key} = %s
-                    WHERE id = %s;
-                    """
-                    cur.execute(query, (value, inserted_id))
-                except Exception as e:
-                    print(f"Error updating metadata '{key}' in {table_name}: {e}")
+                upd = sql.SQL("UPDATE {} SET {} = %s WHERE id = %s;").format(
+                    sql.Identifier(table_name), sql.Identifier(key))
+                cur.execute(upd, (value, inserted_id))
+
+            if unknown_keys:
+                raise ValueError(f"Unknown metadata key(s) for table '{table_name}': {', '.join(unknown_keys)}")
 
 
         conn.commit()
@@ -425,13 +428,22 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
 
     except Exception as e:
-        print(f"\t--> Error storing embedding for query {query}: {e}")
+        try:
+            if conn:
+                conn.rollback()
+        except Exception as rollback_exc:
+            print(f"\t--> Error during rollback: {rollback_exc}")
+        print(f"\t--> Error storing embedding for query: {e}")
 
     finally:
-        cur.close()
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, checksums, model_name, metadata_list=[]):
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, checksums, model_name, metadata_list=None):
     """
     Store embeddings in the database depending on the data modality.
 
@@ -444,6 +456,8 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
     - modality_name: Either 'image', 'text', or 'text_file'
     - metadata_list: Optional list of metadata dictionaries, one per S3 object
     """
+    if metadata_list is None:
+        metadata_list = [{} for _ in s3_keys]
 
     if modality_name == "image":
         # One embedding per image file
@@ -486,19 +500,18 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
     db_pool = data_base.db_pool
     conn = db_pool.getconn()
+    cur = None
     try:
         cur = conn.cursor()
         s3_object = f"{bucket_name}/{s3_key}"  # Full S3 path
 
         # Query to get the existing checksum for this S3 object
-        query = f"""
-            SELECT checksum FROM {table_name}
-            WHERE s3_object = %s;
-        """
+        query = sql.SQL("SELECT checksum FROM {} WHERE s3_object = %s;").format(sql.Identifier(table_name))
         cur.execute(query, (s3_object,))
         results = cur.fetchall()
 
-        if results is None:
+        # If no rows exist yet for this object, report as not_found (not mismatch)
+        if not results:
             return {
                 "status": "not_found",
                 "message": f"No entry found in table '{table_name}' for key: {s3_object}"
@@ -516,20 +529,24 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         else:
             return {
                 "status": "mismatch",
-                "message": f"Checksum mismatch for '{s3_object}': DB has '{db_checksum}', expected '{checksum}'"
+                "message": f"Checksum mismatch for '{s3_object}': expected '{checksum}', found {db_checksums}"
             }
 
     except Exception as e:
         return {
             "status": "error",
-            "message": f"Exception occurred during DB check for query {query}: {e}"
+            "message": f"Exception occurred during DB check: {e}"
         }
     finally:
-        cur.close()
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                pass
         db_pool.putconn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
-    username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+    _username, data_base, table_name, _model, _store_embeddings_flag, _modality_name, _s3_connection = query_db_model(db_model_store, path_to_bucket)
     status = []
     for i, s3_object in enumerate(s3_objects):
         _, s3_key = s3_object.replace("s3://", "").split("/", 1)

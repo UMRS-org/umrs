@@ -53,8 +53,8 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
     config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
     config.read(config_path)
     bucket_location = config.get("default", "bucket_location", fallback = None)
-    if not bucket_list:
-        sys.exit(f"file {admin_s3_configuration_file} must have a bucket_location entry for [deafult]")
+    if bucket_location is None:
+        sys.exit(f"file {admin_s3_configuration_file} must have a bucket_location entry for [default]")
 
     for bucket in bucket_list:
         if not check_bucket_path(s3_connection, bucket, indent=False):
@@ -73,7 +73,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
                 minio_grant_user_access(username, bucket, alias)
 
     else:
-        sys.exit("Do not know how to create user and buckets for server '{server}'") 
+        sys.exit(f"Do not know how to create user and buckets for server '{server}'") 
 
 
         
@@ -187,13 +187,22 @@ def list_s3_bucket(s3, path_to_bucket):
     objects_list = []
     checksums = []
     total_size = 0
-    
+
     try:
-        response = s3.list_objects_v2(Bucket=path_to_bucket)
-        for obj in response.get('Contents', []):
-            objects_list.append(f"s3://{path_to_bucket}/{obj['Key']}")
-            checksums.append(obj['ETag'].strip('"'))
-            total_size += obj['Size']
+        continuation_token = None
+        while True:
+            kwargs = {"Bucket": path_to_bucket}
+            if continuation_token:
+                kwargs["ContinuationToken"] = continuation_token
+            response = s3.list_objects_v2(**kwargs)
+            for obj in response.get('Contents', []):
+                objects_list.append(f"s3://{path_to_bucket}/{obj['Key']}")
+                checksums.append(obj['ETag'].strip('"'))
+                total_size += obj['Size']
+            if response.get('IsTruncated'):
+                continuation_token = response.get('NextContinuationToken')
+            else:
+                break
     except s3.exceptions.NoSuchBucket:
         print(f"Bucket not found: {path_to_bucket}")
     except Exception as e:
@@ -245,8 +254,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
 
 
 def s3_store_txt(s3, path_to_bucket, text_data, mq, metadata_args):
-
-    print(f"text_data={text_data}|")
+    # Store inline text as an S3 object and notify server
 
     s3_key = compute_md5(text_data)+".txt"
     
@@ -287,7 +295,7 @@ def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args):
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
     else:
-        sys.exit(f"Error: {path} not found")
+        sys.exit(f"Error: {in_path} not found")
     
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
@@ -317,7 +325,7 @@ def s3_store_text_file(s3, path_to_bucket, in_path, mq, metadata_args):
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
     else:
-        sys.exit(f"Error: {path} not found")
+        sys.exit(f"Error: {in_path} not found")
     
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)

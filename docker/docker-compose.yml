@@ -9,15 +9,18 @@ services:
     container_name: umrs-server
     ports:
       - "8000:8000"
+      - "5555:5555" # ZeroMQ control plane
     environment:
       - PYTHONUNBUFFERED=1
       - DB_HOST=postgres
       - DB_SUPERUSER_PASSWORD=postgres
       - DB_USER_PASSWORD=ejeannot
+      - UMRS_SERVER_HOST=umrs-server
     volumes:
       - ./s3cfg:/root/.s3cfg:ro
       - $GLOBUS_DIR:/GLOBUS
     restart: unless-stopped
+    command: ["python", "src/server_umrs.py"]
 
   minio:
     image: minio/minio:latest
@@ -47,6 +50,26 @@ services:
       - pg_data:/var/lib/postgresql/data
       - ./init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
     restart: unless-stopped
+
+  umrs-api-test:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.umrs-api-test
+    container_name: umrs-api-test
+    depends_on:
+      - umrs-server
+      - minio
+      - postgres
+    environment:
+      - PYTHONUNBUFFERED=1
+      - UMRS_SERVER_HOST=umrs-server
+    volumes:
+      - ./s3cfg:/root/.s3cfg:ro
+      - ./s3cfg_user1:/root/.s3cfg_user1:ro
+      - ./s3cfg_user2:/root/.s3cfg_user2:ro
+      - ../data:/app/data:ro
+      - ../docker/user_files:/app/user_files:ro
+    command: ["/bin/bash", "-c", "chmod +x ./test_umrs_api.sh && ./test_umrs_api.sh"]
 
 volumes:
   minio_data:

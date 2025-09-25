@@ -15,7 +15,8 @@ def store_db_model(db_model_store, path_to_bucket, bucket_alias, s3_username, db
                                       "modality_name": modality_name,
                                       "s3_connection": s3_connection,
                                       "metadata": metadata,
-                                      "xp_name": xp_name}
+                                      "xp_name": xp_name,
+                                                  }
 
 
 def query_db_model(db_model_store, path_to_bucket):
