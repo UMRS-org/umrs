@@ -1,0 +1,6 @@
+{
+  "username": "user1",
+  "fullname": "Test User 1",
+  "s3_configuration_file": "~/.s3cfg_user1",
+  "experiences": []
+}

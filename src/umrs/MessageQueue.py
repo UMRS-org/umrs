@@ -1,17 +1,9 @@
-import platform
-import sys
 import os
-import hashlib
-import time
 import tempfile
 try:
     import zmq
-except ImportError:
-    zmq = None
-
-if not (zmq):
-    raise ImportError("Cannot find zeroMQ module")
-import zmq
+except ImportError as e:
+    raise ImportError("Cannot find zeroMQ module") from e
 
 BASE_PORT = 5555
 DEFAULT_NB_MSG = 10240
@@ -30,7 +22,12 @@ class MessageQueue:
         """
         self.role = role.lower()
         self.type = queue_type.lower()
-        self.server_ip = server_ip
+        # Determine server_ip: prefer explicit env var so other containers/hosts can connect
+        env_server_host = os.environ.get("UMRS_SERVER_HOST")
+        if env_server_host:
+            self.server_ip = env_server_host
+        else:
+            self.server_ip = server_ip
         self.context = zmq.Context()
         self.client_dictionary={}
         self.timeout = timeout_ms
@@ -114,14 +111,14 @@ class MessageQueue:
             self.socket.send(b'__END_OF_FILE__')
 
 
-    def recv_file(self, dir="/tmp"):
+    def recv_file(self, out_dir="/tmp"):
         if self.role != 'server' or self.type != 'data':
             raise PermissionError("Receiving file can only be done by the server using the data queue")
         
-        if not os.path.exists(dir):
-            os.makedirs(dir, exist_ok=True)  # Ensure directory exists
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)  # Ensure directory exists
 
-        with tempfile.NamedTemporaryFile(mode='w+b', dir=dir, delete=False) as tmp_file:
+        with tempfile.NamedTemporaryFile(mode='w+b', dir=out_dir, delete=False) as tmp_file:
             while True:
                 chunk = self.socket.recv()
                 if chunk == b'__END_OF_FILE__':
@@ -129,7 +126,6 @@ class MessageQueue:
                 tmp_file.write(chunk)
             tmp_file.flush()
             tmp_path = os.path.abspath(tmp_file.name)
-            
         return tmp_path
 
 
@@ -156,7 +152,7 @@ class MessageQueue:
     # ------------------------ Server methods ------------------------
     def server_control_queue_loop(self):
         if self.role != "server":
-            raise PermissionError(f"Only server can call '{server_control_queue_loop}'.")
+            raise PermissionError("Only server can call 'server_control_queue_loop'.")
 
         while True:
             msg = self.recv_string() # Blocking call
@@ -196,14 +192,22 @@ class MessageQueue:
             elif cmd == "FILE":  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 nb_files = int(splited_msg[2])
+                # include client_id in the payload for server-side identity enforcement
                 return self._process_file_cmd(client_id, nb_files)
+            elif cmd in ("RECOMPUTE", "UPDATE", "CHECK", "RELOAD"):
+                # Acknowledge and let the server main loop perform the operation
+                try:
+                    self.send_string("ACKNOWLEDGE")
+                except RuntimeError as e:
+                    print(f"Error acknowledging {cmd} request: {e}")
+                return cmd, None
             else:
-                raise RuntimeError("Unknown command: {cmd}")
+                raise RuntimeError(f"Unknown command: {cmd}")
                     
     def wait_for_s3_events(self, nb_objects, debug=False):
         """Block until new messages arrive, then read all available messages."""
         if self.role != 'server':
-            raise PermissionError(f"Only server can call '{wait_for_s3_events}'.")
+            raise PermissionError("Only server can call 'wait_for_s3_events'.")
         
         messages = []
         print(f"Listening for {nb_objects} new messages...")
@@ -228,7 +232,7 @@ class MessageQueue:
             # For each expected file:
             for _ in range(nb_files):
                 # Receive file data into it
-                file_path = data_queue.recv_file(dir='./tmp')
+                file_path = data_queue.recv_file(out_dir='./tmp')
                 # Keep track of temp files
                 path_list.append(file_path)
 
@@ -237,7 +241,8 @@ class MessageQueue:
                 self.send_string("ACKNOWLEDGE")
             except RuntimeError as e:
                 print(f"Error in sending acknowleding client: {e}")
-            return "FILE", path_list
+            # Return client_id along with received file paths so server can enforce identity
+            return "FILE", (client_id, path_list)
         else: # cannot find the client in the client_dictionnary         
             try: 
                 self.send_string("NO_DATA_QUEUE")
