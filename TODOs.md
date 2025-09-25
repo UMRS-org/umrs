@@ -9,6 +9,17 @@
 		- Admins may list all users and their resources; regular users can only list their own.
 
 ## to make the user environments more separated
+- Server-configured user configuration directory
+	- Add a `user_files_dir` field in the server configuration file (e.g., `conf_umrs.json`) to define where per-user configuration JSON files are stored on the server side.
+	- Default to `/root/user_files` if not specified; allow override via environment variable `UMRS_USER_FILES_DIR`.
+	- On server startup, validate the directory: create it if missing, ensure it is writable by the server process, and set restrictive permissions (e.g., 700).
+	- Canonical per-user config path: `<user_files_dir>/<username>.json`; all reads/writes must go through this location (single source of truth).
+	- Update Docker and docs to reference this path and remove any hardcoded alternatives to avoid drift.
+	- Acceptance:
+		- Server logs the resolved absolute `user_files_dir` on startup; changing the value redirects subsequent reads/writes to the new location.
+		- If the directory is missing or not writable, startup fails fast with a clear error; when valid, creating/updating a user writes the file under the configured directory.
+		- Only one directory is in use (no conflicting paths remain in configs or code).
+
 - Define and persist a per-user stable identifier (user_id)
 	- Generate a server-side user_id (UUID v4 or short hash) when creating a user.
 	- Persist user_id in the canonical config at `/root/user_files/<username>.json` alongside `username`.
