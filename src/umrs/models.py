@@ -1,12 +1,12 @@
 import torch
-import torchvision
-from typing import List, Dict
 import spacy
-from umrs.utils import compute_md5, flatten_text_chunks, add_embeddings_to_chunks_dict
-import numpy as np
+from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict
+
+from typing import Optional
+
 
 class EmbeddingModel:
-    def __init__(self, model_name: str, embedding_vector_size: int, max_tokens: int, model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
+    def __init__(self, model_name: str, embedding_vector_size: int, max_tokens: Optional[int], model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
         self.model_name = model_name
         self.embedding_vector_size = int(embedding_vector_size)
         self.max_tokens = int(max_tokens) if max_tokens is not None else None
@@ -66,7 +66,7 @@ def sentence_transformers(modality):
         compute_embeddings_func = compute_embeddings_img
         input_type = "image"
     else:
-        raise ValueError(f"Unsupported modality \"{model_type}\" for model type: {model_type}")
+        raise ValueError(f"Unsupported modality '{modality}' for SentenceTransformer model")
     return compute_embeddings_func, input_type
 
 ################################ ResNet-50 ###########################
@@ -74,10 +74,8 @@ def sentence_transformers(modality):
 def load_resnet50(model_path=None):
     import torchvision.models as models
     from torchvision.models import ResNet50_Weights
-    """
-    Load ResNet-50 model, handling DataParallel checkpoints if needed.
-    Uses updated PyTorch conventions.
-    """
+    """Load ResNet-50 model, handling DataParallel checkpoints if needed.
+    Uses updated PyTorch conventions."""
     # Use weights if no model_path provided
     if model_path is None:
         weights = ResNet50_Weights.DEFAULT
@@ -143,7 +141,6 @@ def compute_embeddings_resnet_50(self, images):
 def load_transformer_encoder(model_name):
     from transformers import AutoTokenizer, AutoModel
     from transformers.utils import logging
-    import os
 
     logging.set_verbosity_error()  # avoid verbose warning
     print(f"\t\t\t--> Loading model '{model_name}'...")

@@ -1,25 +1,27 @@
 #!/usr/bin/python3
 import threading
 import argparse
-import json
 import os
 import sys
+from collections import defaultdict
+import time
+import torch
+import json
+import shutil
+
 from umrs.sql import *
 from umrs.s3 import *
 from umrs.models import load_model
-from umrs.perf_test import run_perf_test
 from umrs.MessageQueue import MessageQueue
 from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check
-from umrs.modality import *
-from umrs.db_store import *
+from umrs.modality import check_or_quit
+from umrs.db_store import store_db_model, query_db_model
 from umrs.utils import zero_out_embeddings_for_empty_objects
-from umrs.json_utils import load_server_cfg_file
-from collections import defaultdict
-import signal
-import torch
-import time
+from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 
-    
+
+# ---------------------- Provisioning and configuration ----------------------
+
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
@@ -35,7 +37,6 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
             check_or_quit(modality_name)
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
-            # print(f"{bucket_alias} -> {path_to_bucket}")
             bucket_list.append(path_to_bucket)
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
@@ -43,14 +44,15 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list)
     s3_connection.close()
 
+
 def configure_user(user_cfg, db_model_store):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
-
     s3_connection, bucket_location = connect_to_s3(user_s3_configuration_file)
+
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
         print(f"\t==> Experience: {xp_name}")
@@ -63,93 +65,64 @@ def configure_user(user_cfg, db_model_store):
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
             model = load_model(modality['model'], modality_name)
-            table_name, store_embeddings_flag, metadata = configure_table(data_base, modality["sql"], modality_name, model)
+            sql_cfg = modality["sql"]
+            table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
             store_db_model(db_model_store, path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
             print(f"\t\t\t==>Bucket alias: {bucket_alias}")
 
-def load_json_conf_file(configure_file):
-# Load JSON content from the file
-    users = []
-    with open(configure_file, "r", encoding="utf-8") as file:
-        content = json.load(file)
-        admin_s3_configuration_file = content["admin_s3_configuration_file"]
-        for user_conf_file in content["users"]:
-            with open(user_conf_file, "r", encoding="utf-8") as file:
-                user_content = json.load(file)
-                users.append(user_content)
 
-    return admin_s3_configuration_file, users
+# --------------------------- Embedding operations ---------------------------
 
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection):
-    """
-    Loads data from S3, computes embeddings **in batch**, and stores them in the database.
-
-    Args:
-        bucket_alias (str): The name of the S3 bucket.
-        s3_keys (list): List of S3 object keys.
-        db_pool: Database connection pool.
-        table_name (str): Target table for storing embeddings.
-        model (SentenceTransformer): Model used for embedding computation.
-        device (str): "cpu" or "cuda".
-        modality_name (str): "text" or "image".
-        s3_connection: Boto3 S3 client.
-    """
     objects, metadata, checksums, sizes, has_at_least_a_zero = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
-
-    # text objects of size zeo are replaced by string " ". Because some models cannot compute embedding on empty strings
     embeddings = model.compute_embeddings(objects)
-
-    # once all the embeddings are computed we zero the embeddings for which the the size is zero
     if has_at_least_a_zero:
         zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name)
-
-    # Store **all** embeddings in batch
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
-def process_s3_objects(s3_objects, db_model_store, device):
 
+def process_s3_objects(s3_objects, db_model_store, device):
     nb_objects = len(s3_objects)
-    keys_per_bucket = defaultdict(list)  # Create a dictionary with lists
+    keys_per_bucket = defaultdict(list)
     print(f"\t-->Detected {nb_objects} new file(s):")
-        
+
     for s3_object in s3_objects:
         print(f"\t\t-->{s3_object}")
         path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
-    
-        # Append s3_key to the list associated with the bucket
-        if s3_key not in keys_per_bucket[path_to_bucket]:  # Ensure no duplicates
+        if s3_key not in keys_per_bucket[path_to_bucket]:
             keys_per_bucket[path_to_bucket].append(s3_key)
 
-    # Now that keys are sorted per bucket, process each bucket one at a time
     for path_to_bucket in keys_per_bucket.keys():
-        username, data_base, table_name, model, strore_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+        _, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
         s3_keys = keys_per_bucket[path_to_bucket]
-        if strore_embeddings_flag:
+        if store_embeddings_flag:
             print(f"\t--> Storing to data base in {table_name}")
-            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection) 
+            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection)
         else:
             print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
 
     print(f"\t--> Processing {nb_objects} file(s) done!")
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
-    
+
+
 def launch_s3_thread(s3_objects, db_model_store, device):
-    thread = threading.Thread(
-        target=process_s3_objects,
-        args=(s3_objects, db_model_store, device)
-    )
+    thread = threading.Thread(target=process_s3_objects, args=(s3_objects, db_model_store, device))
     thread.start()
     return thread
+
 
 def clean_finished_threads(threads):
     new_threads = []
     for thread in threads:
         if not thread.is_alive():
-            thread.join()  # join is instant if already finished
+            thread.join()
         else:
             new_threads.append(thread)
     print (f"==> Running threads: {len(new_threads)}")
     return new_threads
+
+
+# --------------------------- Maintenance commands ---------------------------
 
 def recompute_all_objects(db_model_store, device):
     print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
@@ -158,11 +131,10 @@ def recompute_all_objects(db_model_store, device):
 
     for path_to_bucket, entry in db_model_store.items():
         s3_objects, total_size, _ = list_s3_bucket(entry["s3_connection"], path_to_bucket)
-
         if len(s3_objects) > 0:
-            start_time = time.perf_counter()  # More precise than time.time()
+            start_time = time.perf_counter()
             process_s3_objects(s3_objects, db_model_store, device)
-            duration = round((time.perf_counter() - start_time),3)            
+            duration = round((time.perf_counter() - start_time),3)
         else:
             duration = 0
 
@@ -178,10 +150,11 @@ def recompute_all_objects(db_model_store, device):
 
     pretty_print_recompute(recompute_dict)
 
+
 def update_objects(db_model_store, device, verbose=False):
     print(f"\n######################\nUpdating missing/mismatched objects in all buckets\n######################\n")
 
-    update_dict = {}  
+    update_dict = {}
 
     for path_to_bucket, entry in db_model_store.items():
         s3_objects, total_size, checksums = list_s3_bucket(entry["s3_connection"], path_to_bucket)
@@ -212,9 +185,10 @@ def update_objects(db_model_store, device, verbose=False):
             "model": entry["model"]
         }
 
-    pretty_print_recompute(update_dict, update=True) 
+    pretty_print_recompute(update_dict, update=True)
 
-def check_objects(db_model_store, verbose= False):
+
+def check_objects(db_model_store, verbose=False):
     print(f"\n######################\nChecking all objects in all buckets\n######################\n")
 
     perform_update = False
@@ -225,7 +199,7 @@ def check_objects(db_model_store, verbose= False):
         status = check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store)
         for i, s3_object in enumerate(s3_objects):
             s = status[i]['status']
-            if verbose: 
+            if verbose:
                 print(f"{s3_object}: {s}")
             if s == "match":
                 nb_match += 1
@@ -239,7 +213,7 @@ def check_objects(db_model_store, verbose= False):
 
         if len(s3_objects) != nb_match:
             perform_update = True
-                
+
         check_dict[path_to_bucket] = {
             "bucket_alias": entry["bucket_alias"],
             "nb_objects": len(s3_objects),
@@ -247,7 +221,7 @@ def check_objects(db_model_store, verbose= False):
             "s3_username": entry["s3_username"],
             "total_size_MB": round(total_size / (1024**2), 3),
             "model": entry["model"],
-            "matches":  nb_match,
+            "matches": nb_match,
             "Mismatches": nb_mismatch,
             "Not_found": nb_not_found,
             "Errors": nb_error
@@ -259,6 +233,231 @@ def check_objects(db_model_store, verbose= False):
     else:
         print("\n ✅ No problem: The database is fully consistent with the objects stored in S3.")
 
+
+# --------------------------- Boot and hot-reload ----------------------------
+
+def perform_initial_config(configure_file):
+    if not os.path.exists(configure_file):
+        sys.exit(f"Configuration file '{configure_file}' not found.")
+
+    admin_s3_configuration_file, users = load_server_cfg_file(configure_file)
+    print("Configuration loaded successfully.")
+
+    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000)
+    print ("Subscribed to zeroMQ message queue")
+
+    for user in users:
+        create_s3_sql_users(user, admin_s3_configuration_file)
+
+    db_model_store = defaultdict(dict)
+    for user in users:
+        configure_user(user, db_model_store)
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"-->  Models will be run on device: {device}")
+    print(f"\n######################\nServer configuration done!\n######################\n")
+
+    return control_mq, db_model_store, device
+
+
+def reload_configuration(configure_file, db_model_store):
+    print("\n######################\nReloading configuration...\n######################\n")
+    try:
+        new_admin_s3_cfg, new_users = load_server_cfg_file(configure_file)
+        for u in new_users:
+            create_s3_sql_users(u, new_admin_s3_cfg)
+        new_store = defaultdict(dict)
+        for u in new_users:
+            configure_user(u, new_store)
+        for _, entry in db_model_store.items():
+            try:
+                conn = entry.get("s3_connection")
+                if conn:
+                    conn.close()
+            except Exception:
+                pass
+        db_model_store.clear()
+        db_model_store.update(new_store)
+        pretty_print_cfg(db_model_store)
+        print("\n✅ Reload complete.")
+    except Exception as e:
+        print(f"\n❌ Reload failed: {e}")
+
+
+def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
+    try:
+        with open(conf_path, 'r', encoding='utf-8') as f:
+            conf = json.load(f)
+    except Exception as e:
+        print(f"Warning: failed to read conf '{conf_path}': {e}")
+        return False
+
+    users = conf.get('users', [])
+
+    # Build a new list that keeps only one entry for this username (the canonical path)
+    new_users = []
+    removed = []
+    for p in users:
+        if p == canonical_user_path:
+            # keep canonical path if already present
+            if p not in new_users:
+                new_users.append(p)
+            continue
+        # Try to read file and inspect username; if mismatch or file missing, keep as-is
+        try:
+            with open(p, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            u = data.get('username')
+        except Exception:
+            u = None
+        if u == username:
+            # Another config for the same user; drop it
+            removed.append(p)
+            continue
+        # Different user or unreadable -> keep entry
+        if p not in new_users:
+            new_users.append(p)
+
+    # Ensure canonical path present
+    if canonical_user_path not in new_users:
+        new_users.append(canonical_user_path)
+
+    if removed:
+        print(f"Updated server conf: removed {len(removed)} stale user config(s) for '{username}': {removed}")
+
+    conf['users'] = new_users
+    try:
+        with open(conf_path, 'w', encoding='utf-8') as f:
+            json.dump(conf, f, indent=2)
+        print(f"Updated server conf: ensured unique config for '{username}' -> {canonical_user_path}")
+    except Exception as e:
+        print(f"Warning: failed to update conf '{conf_path}': {e}")
+        return False
+    # Best-effort cleanup: remove pruned files under /app/user_files only
+    for stale in removed:
+        try:
+            if stale.startswith('/app/user_files/') and stale != canonical_user_path and os.path.isfile(stale):
+                os.remove(stale)
+                print(f"Deleted stale user config file: {stale}")
+        except Exception as e:
+            print(f"Warning: failed to delete stale user config '{stale}': {e}")
+    return True
+
+
+def _persist_uploaded_user_config(tmp_path, configure_file, expected_username=None):
+    """Persist an uploaded user config JSON: replace / create /app/user_files/<username>.json and ensure listed in conf.
+
+    Returns (success: bool, username: str | None, dest_path: str | None)
+    """
+    try:
+        # Validate against client schema (strict) and obtain data
+        data = load_client_cfg_file(tmp_path)
+        username = data.get('username')
+        if not username:
+            print(f"Warning: uploaded file '{tmp_path}' missing 'username' field; ignoring")
+            return False, None, None
+        if expected_username and username != expected_username:
+            print(f"Warning: uploaded config username '{username}' does not match client identity '{expected_username}'; ignoring file")
+            return False, None, None
+    except SystemExit as e:
+        # load_client_cfg_file may sys.exit() on validation error – treat as validation failure
+        print(f"Warning: uploaded file '{tmp_path}' failed validation; ignoring")
+        return False, None, None
+    except Exception as e:
+        print(f"Warning: cannot parse uploaded config '{tmp_path}': {e}")
+        return False, None, None
+
+    # Destination path (canonical)
+    user_dir = '/app/user_files'
+    try:
+        os.makedirs(user_dir, exist_ok=True)
+    except Exception as e:
+        print(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
+        return False, username, None
+
+    dest_path = os.path.join(user_dir, f"{username}.json")
+    # Atomically replace the destination file
+    try:
+        with open(tmp_path, 'r', encoding='utf-8') as src:
+            content = src.read()
+        tmp_out = dest_path + ".tmp"
+        with open(tmp_out, 'w', encoding='utf-8') as out:
+            out.write(content)
+        os.replace(tmp_out, dest_path)
+        # Remove original temp upload
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+        print(f"Stored updated user config for '{username}' at '{dest_path}'")
+    except Exception as e:
+        print(f"Warning: failed to persist uploaded config to '{dest_path}': {e}")
+        return False, username, None
+
+    # Ensure conf contains this user file path
+    conf_path = os.path.abspath(configure_file)
+    _ensure_user_file_in_conf(conf_path, username, dest_path)
+    return True, username, dest_path
+
+
+def server_event_loop(control_mq, db_model_store, device, configure_file):
+    active_threads = []
+    try:
+        while True:
+            print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+            result = control_mq.server_control_queue_loop()
+            if not result:
+                continue
+            cmd, payload = result
+
+            if cmd == "OBJECT":
+                thread = launch_s3_thread(payload, db_model_store, device)
+                active_threads.append(thread)
+            elif cmd == "FILE":
+                if payload:
+                    client_id, files = payload if isinstance(payload, tuple) else (None, payload)
+                    for file in files:
+                        print(f"Received file: {file}")
+                        # Try to persist as a user configuration; enforce identity if client_id known
+                        ok, uname, dest = _persist_uploaded_user_config(file, configure_file, expected_username=client_id)
+                        if ok:
+                            print(f"User config persisted for '{uname}' -> {dest}")
+                        else:
+                            print(f"Note: file '{file}' not recognized as valid user config or identity mismatch; left in place.")
+                else:
+                    print("Warning: FILE command received with no payload")
+            elif cmd == "RECOMPUTE":
+                recompute_all_objects(db_model_store, device)
+            elif cmd == "UPDATE":
+                update_objects(db_model_store, device)
+            elif cmd == "CHECK":
+                check_objects(db_model_store, verbose=False)
+            elif cmd == "RELOAD":
+                reload_configuration(configure_file, db_model_store)
+            else:
+                print(f"====> Error: unknown command  '{cmd}' returned by server loop")
+
+            active_threads = clean_finished_threads(active_threads)
+    except KeyboardInterrupt:
+        print("\nInterrupted by user. Waiting for running threads to finish...")
+        for thread in active_threads:
+            thread.join()
+        print("All threads finished. Exiting now.")
+        control_mq.close()
+        sys.exit(0)
+
+
+def handle_maintenance_flags(args, db_model_store, device):
+    if args.force_recompute:
+        recompute_all_objects(db_model_store, device)
+    if args.force_update:
+        update_objects(db_model_store, device)
+    if args.check_objects:
+        check_objects(db_model_store, verbose=False)
+
+
+# ---------------------------------- CLI ------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('-q', '--queue_type', default='zeromq', help="Message Queue 'zeromq' or 'posix_ipc', or 'sysv_ipc'")
@@ -267,86 +466,13 @@ def main():
     parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
 
-
     args = parser.parse_args()
-
     configure_file = args.conf
 
-    # Check if the file exists
-    if not os.path.exists(configure_file):
-        sys.exit(f"Configuration file '{configure_file}' not found.")
-
-
-    admin_s3_configuration_file, users = load_server_cfg_file(configure_file)
-    # Print loaded content (optional)
-    print("Configuration loaded successfully.")
-
-    # create the control message queue:
-    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000) # This timeout is only the sending. Receiving is always blocking for the server
-    print (f"Subscribed to zeroMQ message queue'")
-
-    # create S3/SQL  users if necessary 
-    for user in users:
-        create_s3_sql_users(user, admin_s3_configuration_file)
-
-
-    #configure server for each users
-    db_model_store = defaultdict(dict)
-    for user in users:
-        configure_user(user, db_model_store)
-
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"-->  Models will be run on device: {device}")
-
-    print(f"\n######################\nServer configuration done!\n######################\n")
-
-
-
-    # run_perf_test()
-
-    if args.force_recompute:
-        recompute_all_objects(db_model_store, device)
-
-    if args.force_update:
-        update_objects(db_model_store, device)
-
-    if args.check_objects:
-        check_objects(db_model_store, verbose=False)
-
-
+    control_mq, db_model_store, device = perform_initial_config(configure_file)
+    handle_maintenance_flags(args, db_model_store, device)
     pretty_print_cfg(db_model_store)
-
-    active_threads = []
-        
-    try:
-
-        while True:
-            print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
-            # Server loop, e.g. polling for S3 objects, etc.
-            cmd, payload = control_mq.server_control_queue_loop()
-
-            if cmd == "OBJECT": # Launch worker
-                thread = launch_s3_thread(payload, db_model_store, device)
-                active_threads.append(thread)
-            elif cmd == "FILE":
-                for file in payload:
-                    print(f"Received file: {file}")
-            else:
-                print(f"====> Error: unknown command  '{cmd}' returned by server loop")
-
-            # Clean up finished threads (non-blocking)
-            active_threads = clean_finished_threads(active_threads)
-
-    except KeyboardInterrupt:
-        print("\nInterrupted by user. Waiting for running threads to finish...")
-
-        # Join all remaining threads
-        for thread in active_threads:
-            thread.join()
-
-        print("All threads finished. Exiting now.")
-        control_mq.close()
-        sys.exit(0)  # Ensures a clean exit
+    server_event_loop(control_mq, db_model_store, device, configure_file)
 
 
 if __name__ == "__main__":

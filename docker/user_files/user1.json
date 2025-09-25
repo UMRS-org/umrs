@@ -20,28 +20,16 @@
             "model_name": "Resnet 50",
             "vector_size": "1000",
             "model_type": "Resnet-50",
-            "checkpoint_path": "../data/models/nvidia_resnet50_200821.pth.tar"
+            "checkpoint_path": "/app/data/models/nvidia_resnet50_200821.pth.tar"
           },
           "sql": {
             "store_embeddings": "yes",
             "table_name": "image",
             "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              },
-              {
-                "name": "author",
-                "type": "TEXT"
-              },
-              {
-                "name": "x_resolution",
-                "type": "INT"
-              },
-              {
-                "name": "y_resolution",
-                "type": "INT"
-              }
+              { "name": "keywords", "type": "TEXT" },
+              { "name": "author", "type": "TEXT" },
+              { "name": "x_resolution", "type": "INT" },
+              { "name": "y_resolution", "type": "INT" }
             ]
           }
         },
@@ -49,10 +37,7 @@
           "modality_name": "text",
           "s3": {
             "bucket_alias": "bucket-4",
-            "data": {
-              "type": "inline",
-              "mime_type": "text/plain"
-            }
+            "data": { "type": "inline", "mime_type": "text/plain" }
           },
           "model": {
             "model_name": "intfloat/e5-base-v2",
@@ -63,22 +48,14 @@
           "sql": {
             "store_embeddings": "yes",
             "table_name": "text",
-            "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              }
-            ]
+            "meta_data": [ { "name": "keywords", "type": "TEXT" } ]
           }
         },
         {
           "modality_name": "text file",
           "s3": {
             "bucket_alias": "bucket-5",
-            "data": {
-              "type": "inline",
-              "mime_type": "text/plain"
-            }
+            "data": { "type": "inline", "mime_type": "text/plain" }
           },
           "model": {
             "model_name": "intfloat/e5-base-v2",
@@ -89,12 +66,7 @@
           "sql": {
             "store_embeddings": "yes",
             "table_name": "text_file",
-            "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              }
-            ]
+            "meta_data": [ { "name": "keywords", "type": "TEXT" } ]
           }
         }
       ]
@@ -107,10 +79,7 @@
           "modality_name": "image",
           "s3": {
             "bucket_alias": "bucket-1",
-            "data": {
-              "type": "file",
-              "mime_type": "image/jpeg"
-            }
+            "data": { "type": "file", "mime_type": "image/jpeg" }
           },
           "model": {
             "model_name": "clip-ViT-B-32",
@@ -120,22 +89,14 @@
           "sql": {
             "store_embeddings": "yes",
             "table_name": "image",
-            "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              }
-            ]
+            "meta_data": [ { "name": "keywords", "type": "TEXT" } ]
           }
         },
         {
           "modality_name": "text",
           "s3": {
             "bucket_alias": "bucket-2",
-            "data": {
-              "type": "inline",
-              "mime_type": "text/plain"
-            }
+            "data": { "type": "inline", "mime_type": "text/plain" }
           },
           "model": {
             "model_name": "all-mpnet-base-v2",
@@ -146,12 +107,7 @@
           "sql": {
             "store_embeddings": "yes",
             "table_name": "text",
-            "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              }
-            ]
+            "meta_data": [ { "name": "keywords", "type": "TEXT" } ]
           }
         }
       ]
