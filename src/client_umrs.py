@@ -224,7 +224,6 @@ if requires_config:
         print("Configuration loaded successfully.")
 
 
-legacy_mode = (args.action is None)
 
 try:
     if legacy_mode:
