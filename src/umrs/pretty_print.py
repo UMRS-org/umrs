@@ -79,6 +79,11 @@ def pretty_print_recompute(recompute_dict, update=False):
     else:
         print("\nRecompute Summary:")
 
+    # If no rows to display, avoid tabulate alignment issues and print a friendly message
+    if df.empty:
+        print("(no buckets to process)")
+        return
+
     colalign = ("right", "left", "left", "left", "left", "right", "right", "right")
     print(tabulate(df, headers="keys", tablefmt="fancy_grid", colalign=colalign))
 
