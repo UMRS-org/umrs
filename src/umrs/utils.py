@@ -186,8 +186,6 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
             embedding_dim = int(sample.shape[0])
         except (AttributeError, IndexError, TypeError):
             embedding_dim = len(sample)  # fallback
-    else:
-        embedding_dim = len(sample)
 
     # Use plain Python list to ensure DB serialization robustness
     zero_vec = [0.0] * embedding_dim
