@@ -13,13 +13,13 @@ RUN ln -sf /app/src/client_umrs.py /app/client_umrs.py
 
 # Copy user configs into /app/user_files
 COPY ./docker/user_files ./user_files
-# Provide docker s3cfg within image as a fallback
-COPY ./docker/s3cfg /app/docker/s3cfg
+
+# user specific s3cfg files
+COPY ./docker/s3cfg_user1 /root/.s3cfg_user1
+COPY ./docker/s3cfg_user2 /root/.s3cfg_user2
 
 # Copy data directory
 COPY ./data ./data
-
-
 
 # Install runtime deps for client & test tools
 RUN apt-get update && \
@@ -33,9 +33,6 @@ RUN apt-get update && \
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/app/src
-
-# Set environment variable for API URL (can be overridden)
-#ENV UMRS_API_URL=https://umrs-server:8000
 
 # Run the bash test script on container start
 CMD ["/bin/bash", "-c", "chmod +x ./test_umrs_api.sh && ./test_umrs_api.sh"]

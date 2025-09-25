@@ -1,0 +1,45 @@
+# Dockerfile for UMRS legacy test container (server + client in the same image)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Copy requirements early for caching
+COPY ./requirements.txt ./requirements.txt
+
+# Copy application sources and docs
+COPY ./src /app/src
+COPY ./doc /app/doc
+COPY ./docker/data /app/data
+
+# Copy helper test script for legacy mode
+COPY ./docker_legacy/test_umrs_legacy.sh /app/test_umrs_legacy.sh
+
+# Server configuration files
+COPY ./docker/s3cfg /root/.s3cfg
+COPY ./docker/conf_umrs.json /app/conf_umrs.json
+
+# User specific configuration files
+COPY ./docker/user_files /app/user_files
+COPY ./docker/s3cfg_user1 /root/.s3cfg_user1
+COPY ./docker/s3cfg_user2 /root/.s3cfg_user2
+
+# System deps and build tools for Python packages
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends build-essential ca-certificates curl jq \
+    && pip install --no-cache-dir -r requirements.txt \
+    && python -m spacy download en_core_web_sm \
+    && curl -sSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc \
+    && chmod +x /usr/local/bin/mc \
+    && mc --version || true \
+    && apt-get remove -y build-essential \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app/src
+
+# Expose control-plane port only inside compose network; not published
+EXPOSE 5555
+
+# Start the legacy test workflow
+CMD ["/bin/bash", "-c", "chmod +x ./test_umrs_legacy.sh && ./test_umrs_legacy.sh"]

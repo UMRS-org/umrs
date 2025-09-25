@@ -34,7 +34,8 @@ retry 60 2 python /app/src/client_umrs.py ping
 # Ask server to reload configuration (hot load) before tests; use -c to push full user1.json so server replaces user1_init.json and updates mappings
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text reload
 
-# List buckets for user1 (text/image bucket aliases)
+# List buckets for user1 (text/image bucket aliases) # TODO this should show only the buckets of user1 (not all buckets)
+# TODO: STD of listing buckets etc. should be returned to the client side as well.
 retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text list_buckets
 
 # Upload a sample text to a text bucket for user1 (xp2/text => bucket-2)
