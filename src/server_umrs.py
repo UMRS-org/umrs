@@ -46,16 +46,21 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     s3_connection.close()
 
 
-def configure_user(user_cfg, db_model_store):
+def configure_user(user_cfg, cfg_store):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
     user_conf_file = user_cfg['config_file_path'] 
 
-    if 'user_config_map' not in db_model_store:
-        db_model_store['user_config_map'] = {}
+    if 'user_config_map' not in cfg_store:
+        cfg_store['user_config_map'] = {}
 
-    user_config_map = db_model_store['user_config_map']
+    user_config_map = cfg_store['user_config_map']
     user_config_map[username] = user_conf_file
+
+    if 'db_model_store' not in cfg_store:
+        cfg_store['db_model_store'] = {}
+    
+    db_model_store = cfg_store['db_model_store']
 
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
@@ -266,18 +271,18 @@ def perform_initial_config(configure_file):
     for user in users:
         create_s3_sql_users(user, admin_s3_configuration_file)
 
-    db_model_store = defaultdict(dict)
+    cfg_store = defaultdict(dict)
     for i, user in enumerate(users):
-        configure_user(user, db_model_store)
+        configure_user(user, cfg_store)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"-->  Models will be run on device: {device}")
     print(f"\n######################\nServer configuration done!\n######################\n")
 
-    return control_mq, db_model_store, device
+    return control_mq, cfg_store, device
 
 
-def reload_configuration(configure_file, db_model_store):
+def reload_configuration(configure_file, db_model_store, user_config_map):
     print("\n######################\nReloading configuration...\n######################\n")
     try:
         new_admin_s3_cfg, new_users = load_server_cfg_file(configure_file)
@@ -293,9 +298,13 @@ def reload_configuration(configure_file, db_model_store):
                     conn.close()
             except Exception:
                 pass
+            
+        print(new_store)
         db_model_store.clear()
-        db_model_store.update(new_store)
-        pretty_print_cfg(db_model_store)
+        db_model_store.update(new_store['db_model_store'])     
+        user_config_map.clear()
+        user_config_map.update(new_store['user_config_map'])
+        pretty_print_cfg(new_store)
         print("\n✅ Reload complete.")
     except Exception as e:
         print(f"\n❌ Reload failed: {e}")
@@ -423,8 +432,10 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
     return True, username, dest_path
 
 
-def server_event_loop(control_mq, db_model_store, device, configure_file):
+def server_event_loop(control_mq, cfg_store, device, configure_file):
     active_threads = []
+    db_model_store = cfg_store['db_model_store']
+    user_config_map = cfg_store['user_config_map']
     try:
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
@@ -443,7 +454,7 @@ def server_event_loop(control_mq, db_model_store, device, configure_file):
                         print(f"Received file: {file}")
                         # Try to persist as a user configuration; enforce identity if client_id known
                         # db_model_store['user_config_map'] contains the connection between users and their config_file_path
-                        ok, uname, dest = _persist_uploaded_user_config(file, configure_file, db_model_store['user_config_map'], expected_username=client_id)
+                        ok, uname, dest = _persist_uploaded_user_config(file, configure_file, user_config_map, expected_username=client_id)
                         if ok:
                             print(f"User config persisted for '{uname}' -> {dest}")
                         else:
@@ -457,7 +468,7 @@ def server_event_loop(control_mq, db_model_store, device, configure_file):
             elif cmd == "CHECK":
                 check_objects(db_model_store, verbose=False)
             elif cmd == "RELOAD":
-                reload_configuration(configure_file, db_model_store)
+                reload_configuration(configure_file, db_model_store, user_config_map)
             else:
                 print(f"====> Error: unknown command  '{cmd}' returned by server loop")
 
@@ -496,7 +507,8 @@ def check_umrs_config_directory():
 # ---------------------------------- CLI ------------------------------------
 
 def main():
-  
+    
+    # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()
     if umrs_cfg_dir:
         default_json_server_path = f"{umrs_cfg_dir}/{get_default_json_server_file()}"
@@ -512,10 +524,10 @@ def main():
     args = parser.parse_args()
     configure_file = args.conf
 
-    control_mq, db_model_store, device = perform_initial_config(configure_file)
-    handle_maintenance_flags(args, db_model_store, device)
-    pretty_print_cfg(db_model_store)
-    server_event_loop(control_mq, db_model_store, device, configure_file)
+    control_mq, cfg_store, device = perform_initial_config(configure_file)
+    handle_maintenance_flags(args, cfg_store['db_model_store'], device)
+    pretty_print_cfg(cfg_store)
+    server_event_loop(control_mq, cfg_store, device, configure_file)
 
 
 if __name__ == "__main__":

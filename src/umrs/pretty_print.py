@@ -5,7 +5,8 @@ from tabulate import tabulate
 def pretty_print_cfg(cfg_dict):
     # Create an empty DataFrame with predefined columns
     df = pd.DataFrame(columns=["Bucket alias", "S3 user", "S3 path", "Experience", "Modality", "Database", "SQL table", "SQL user", "Model", "Embeds?", "Metadata"])
-    for key, entry in cfg_dict.items():
+    db_model_store = cfg_dict['db_model_store']
+    for key, entry in db_model_store.items():
         bucket_alias = entry["bucket_alias"]
         s3_username = entry["s3_username"]
         sql_username = entry["sql_username"]
