@@ -333,10 +333,10 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     except Exception as e:
         print(f"Warning: failed to update conf '{conf_path}': {e}")
         return False
-    # Best-effort cleanup: remove pruned files under /app/user_files only
+    # Best-effort cleanup: remove pruned files under /root/user_files only
     for stale in removed:
         try:
-            if stale.startswith('/app/user_files/') and stale != canonical_user_path and os.path.isfile(stale):
+            if stale.startswith('/root/user_files/') and stale != canonical_user_path and os.path.isfile(stale):
                 os.remove(stale)
                 print(f"Deleted stale user config file: {stale}")
         except Exception as e:
@@ -345,7 +345,7 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
 
 
 def _persist_uploaded_user_config(tmp_path, configure_file, expected_username=None):
-    """Persist an uploaded user config JSON: replace / create /app/user_files/<username>.json and ensure listed in conf.
+    """Persist an uploaded user config JSON: replace / create /root/user_files/<username>.json and ensure listed in conf.
 
     Returns (success: bool, username: str | None, dest_path: str | None)
     """
@@ -368,7 +368,7 @@ def _persist_uploaded_user_config(tmp_path, configure_file, expected_username=No
         return False, None, None
 
     # Destination path (canonical)
-    user_dir = '/app/user_files'
+    user_dir = '/root/user_files'
     try:
         os.makedirs(user_dir, exist_ok=True)
     except Exception as e:
