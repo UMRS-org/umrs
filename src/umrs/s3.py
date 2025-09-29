@@ -124,7 +124,7 @@ def connect_to_s3(config_file):
         response = s3.list_buckets()
         print("--> Succesfully connected to S3 service.")
     except Exception as e:
-        sys.exit(f"S3 Connection Failed: {e}")
+        sys.exit(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.")
 
     
     return s3, bucket_location

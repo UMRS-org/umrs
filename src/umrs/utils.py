@@ -192,14 +192,16 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
 
     index = 0
     for chunk_list in embeddings:
-        for chunk in chunk_list:
-            if sizes[index] == 0:
+        if sizes[index] == 0:
+            if len(chunk_list) != 1:
+                print(f"Warining: chunk list len should be 1 and is {len(chunk_list)}. Zeroing everything...")    
+            for chunk in chunk_list:
                 chunk["embedding"] = zero_vec
                 chunk["text"] = ''
                 chunk["md5"] = 'd41d8cd98f00b204e9800998ecf8427e' #md5 of empty string
                 chunk["start"] = 0
                 chunk["end"] = 0
                 chunk["num_tokens"] = 0
-            index += 1
+        index += 1
 
             
