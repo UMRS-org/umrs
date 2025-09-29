@@ -8,7 +8,7 @@ except ImportError as e:
 BASE_PORT = 5555
 DEFAULT_NB_MSG = 10240
 class MessageQueue:
-    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000):
+    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None):
         """
         Initializes the MessageQueue.
 
@@ -32,6 +32,7 @@ class MessageQueue:
         self.client_dictionary={}
         self.timeout = timeout_ms
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
+        self.tmp_dir = tmp_dir
         
         # Initialize the selected queue type
         if self.type == "control":
@@ -229,10 +230,16 @@ class MessageQueue:
             print(f"Listening data to port {port}")
             
             path_list = []
+            if not self.tmp_dir or not os.path.exists(self.tmp_dir) :
+                print(f"Warning no directory set for temporary receiving files or not accessible, using {os.devnull}")
+                recv_dir = os.devnull
+            else :
+                recv_dir = self.tmp_dir
+     
             # For each expected file:
             for _ in range(nb_files):
                 # Receive file data into it
-                file_path = data_queue.recv_file(out_dir='./tmp')
+                file_path = data_queue.recv_file(out_dir=recv_dir)
                 # Keep track of temp files
                 path_list.append(file_path)
 

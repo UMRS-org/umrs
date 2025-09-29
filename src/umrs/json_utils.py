@@ -132,6 +132,7 @@ def load_server_cfg_file(json_filename):
             admin_s3_configuration_file = content["admin_s3_configuration_file"]
             for user_conf_file in content["users"]:
                 user_content = load_client_cfg_file(user_conf_file)
+                user_content['config_file_path'] = user_conf_file
                 users.append(user_content)
             return admin_s3_configuration_file, users
         except ValidationError as e:

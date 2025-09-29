@@ -49,6 +49,14 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
 def configure_user(user_cfg, db_model_store):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
+    user_conf_file = user_cfg['config_file_path'] 
+
+    if 'user_config_map' not in db_model_store:
+        db_model_store['user_config_map'] = {}
+
+    user_config_map = db_model_store['user_config_map']
+    user_config_map[username] = user_conf_file
+
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
@@ -244,14 +252,22 @@ def perform_initial_config(configure_file):
     admin_s3_configuration_file, users = load_server_cfg_file(configure_file)
     print("Configuration loaded successfully.")
 
-    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000)
+    # Get the directory containing configure_file
+    umrs_dir = os.path.dirname(configure_file)
+    
+    # Define the temp directory path inside that directory
+    tmp_dir = os.path.join(umrs_dir, get_default_tmp_subdir())
+
+    # Create the tmp_dir if it does not exist
+    os.makedirs(tmp_dir, exist_ok=True)
+    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir)
     print ("Subscribed to zeroMQ message queue")
 
     for user in users:
         create_s3_sql_users(user, admin_s3_configuration_file)
 
     db_model_store = defaultdict(dict)
-    for user in users:
+    for i, user in enumerate(users):
         configure_user(user, db_model_store)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -334,10 +350,11 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     except Exception as e:
         print(f"Warning: failed to update conf '{conf_path}': {e}")
         return False
-    # Best-effort cleanup: remove pruned files under /root/user_files only
+    # Best-effort cleanup: remove pruned files under user_cfg_path only
+    user_cfg_path = os.path.join(os.path.dirname(conf_path), get_users_default_cfg_subdir())
     for stale in removed:
         try:
-            if stale.startswith('/root/user_files/') and stale != canonical_user_path and os.path.isfile(stale):
+            if stale.startswith(user_cfg_path) and stale != canonical_user_path and os.path.isfile(stale):
                 os.remove(stale)
                 print(f"Deleted stale user config file: {stale}")
         except Exception as e:
@@ -345,8 +362,8 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     return True
 
 
-def _persist_uploaded_user_config(tmp_path, configure_file, expected_username=None):
-    """Persist an uploaded user config JSON: replace / create /root/user_files/<username>.json and ensure listed in conf.
+def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, expected_username=None):
+    """Persist an uploaded user config JSON: replace / create teh dir and file and ensure listed in conf.
 
     Returns (success: bool, username: str | None, dest_path: str | None)
     """
@@ -368,15 +385,20 @@ def _persist_uploaded_user_config(tmp_path, configure_file, expected_username=No
         print(f"Warning: cannot parse uploaded config '{tmp_path}': {e}")
         return False, None, None
 
-    # Destination path (canonical)
-    user_dir = '/root/user_files'
-    try:
-        os.makedirs(user_dir, exist_ok=True)
-    except Exception as e:
-        print(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
-        return False, username, None
+    # look up existing users configuration path
+    dest_path = user_config_map.get(username, None)
 
-    dest_path = os.path.join(user_dir, f"{username}.json")
+    if not dest_path:
+        # Destination path (canonical)
+        umrs_dir = os.path.dir(configure_file)
+        user_dir = os.path.join(umrs_dir, get_users_default_cfg_subdir())
+        try:
+            os.makedirs(user_dir, exist_ok=True)
+        except Exception as e:
+            print(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
+            return False, username, None
+        dest_path = os.path.join(user_dir, f"{username}.json")
+
     # Atomically replace the destination file
     try:
         with open(tmp_path, 'r', encoding='utf-8') as src:
@@ -420,7 +442,8 @@ def server_event_loop(control_mq, db_model_store, device, configure_file):
                     for file in files:
                         print(f"Received file: {file}")
                         # Try to persist as a user configuration; enforce identity if client_id known
-                        ok, uname, dest = _persist_uploaded_user_config(file, configure_file, expected_username=client_id)
+                        # db_model_store['user_config_map'] contains the connection between users and their config_file_path
+                        ok, uname, dest = _persist_uploaded_user_config(file, configure_file, db_model_store['user_config_map'], expected_username=client_id)
                         if ok:
                             print(f"User config persisted for '{uname}' -> {dest}")
                         else:
