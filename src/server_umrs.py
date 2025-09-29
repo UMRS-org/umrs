@@ -18,6 +18,7 @@ from umrs.modality import check_or_quit
 from umrs.db_store import store_db_model, query_db_model
 from umrs.utils import zero_out_embeddings_for_empty_objects
 from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
+from umrs.config import *
 
 
 # ---------------------- Provisioning and configuration ----------------------
@@ -455,12 +456,32 @@ def handle_maintenance_flags(args, db_model_store, device):
     if args.check_objects:
         check_objects(db_model_store, verbose=False)
 
-
+def check_umrs_config_directory():
+    umrs_config_dir = os.getenv(get_umrs_cfg_env_var_name())
+    
+    if umrs_config_dir:
+        if os.path.isdir(umrs_config_dir):
+            return umrs_config_dir
+        else:
+            return None
+    else:
+        default_dir = get_default_umrs_cfg_dir()
+        if os.path.isdir(default_dir):
+            return default_dir
+        else:
+            return None
 # ---------------------------------- CLI ------------------------------------
 
 def main():
+  
+    umrs_cfg_dir = check_umrs_config_directory()
+    if umrs_cfg_dir:
+        default_json_server_path = f"{umrs_cfg_dir}/{get_default_json_server_file()}"
+    else: 
+        sys.exit(f"No valid UMRS configuration directory. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}. Check it exists.")
+
     parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
+    parser.add_argument('-c', '--conf', required=(default_json_server_path is None), default=default_json_server_path, help=f"Config file path. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}.")
     parser.add_argument('--force-recompute', action='store_true', help='Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.')
     parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')

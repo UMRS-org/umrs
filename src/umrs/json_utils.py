@@ -1,5 +1,7 @@
 import sys
 import json
+import os
+
 from jsonschema import validate, ValidationError
 client_schema = {
   "$schema": "http://json-schema.org/draft-07/schema#",
@@ -105,6 +107,9 @@ server_schema = {
 }
 
 def load_client_cfg_file(json_filename):
+    if not os.path.exists(json_filename):
+      sys.exit(f"Client JSON file {json_filename} does not exist. Exiting...")
+
     with open(json_filename, encoding="utf-8") as f:
         data = json.load(f)
 
@@ -118,6 +123,8 @@ def load_client_cfg_file(json_filename):
 
 def load_server_cfg_file(json_filename):
     users = []
+    if not os.path.exists(json_filename):
+      sys.exit(f"Server JSON file {json_filename} does not exist. Exiting...")
     with open(json_filename, "r", encoding="utf-8") as file:
         content = json.load(file)
         try:
