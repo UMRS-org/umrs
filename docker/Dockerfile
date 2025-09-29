@@ -17,17 +17,19 @@ RUN curl -sSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd
     && chmod +x /usr/local/bin/mc \
     && mc --version || true
 
-#COPY ./Infinia_demo/src /app/src
-#COPY ./Infinia_demo/doc /app/doc
-#COPY ./Infinia_demo/demo.md /app/demo.md
 COPY ./src /app/src
 COPY ./doc /app/doc
-COPY ./docker/data /app/data
-COPY ./data/models /app/models
+COPY ./docker/data /root/data
+
 # Use the server configuration (server schema) and include users_json
-COPY ./docker/conf_umrs.json /app/conf_umrs.json
+COPY ./docker/conf_umrs.json /root/conf_umrs.json
 # Use docker user_files (mounted in compose for test container); server image does not need users_json
-COPY ./docker/user_files /app/user_files
+COPY ./docker/user_files /root/user_files
+
+# s3cfg files 
+COPY ./docker/s3cfg /root/.s3cfg
+COPY ./docker/s3cfg_user1 /root/.s3cfg_user1
+COPY ./docker/s3cfg_user2 /root/.s3cfg_user2
 
 EXPOSE 8000
-CMD ["python", "src/server_umrs.py"]
+CMD ["python", "src/server_umrs.py", "-c", "/root/conf_umrs.json"]
