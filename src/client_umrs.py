@@ -8,6 +8,7 @@ from umrs.metadata import check_and_build_metadata
 from umrs.modality import *
 from umrs.json_utils import load_client_cfg_file 
 from umrs.pretty_print import pretty_print_user_cfg
+from umrs.config import get_default_docker_s3cfg
 from glob import glob
 import argparse
 from collections import defaultdict
@@ -137,7 +138,7 @@ def configure_bucket_store(user_cfg, bucket_store):
 
 
 parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-subparsers = parser.add_subparsers(dest="action", help="API action (optional; legacy mode if omitted)")
+subparsers = parser.add_subparsers(dest="action", help="API action", required=True)
 
 # Global / legacy flags
 parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
@@ -148,25 +149,16 @@ parser.add_argument('--server-ip', default='127.0.0.1', help='Server IP for Zero
 parser.add_argument('--output', choices=['json','text'], default='json', help='Output format for API actions')
 # Removed deprecated auto-add-columns behavior; metadata must be declared in server config
 
-# Legacy positional arguments (only used when no action)
-parser.add_argument("data", type=str, nargs="?", help="input data (legacy mode)", default=None)
-parser.add_argument("bucket", type=str, nargs="?", help="target bucket alias (legacy mode)", default=None)
-
 # API subcommands
 ping_p = subparsers.add_parser('ping', help='Check server readiness')
 
-ut_p = subparsers.add_parser('upload_text', help='Upload inline text object')
-ut_p.add_argument('text', help='Inline text content')
-ut_p.add_argument('bucket_alias', help='Target bucket alias')
-ut_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
-
-ui_p = subparsers.add_parser('upload_image', help='Upload image file')
+ui_p = subparsers.add_parser('upload_file', help="Upload file to a bucket (ommit empty lines in case of 'text' modality)")
 ui_p.add_argument('file_path')
 ui_p.add_argument('bucket_alias')
 ui_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
-utf_p = subparsers.add_parser('upload_textfile', help='Upload text file contents')
-utf_p.add_argument('file_path')
+utf_p = subparsers.add_parser('upload_dir', help='Upload all fileq of a directory to a bucket')
+utf_p.add_argument('path')
 utf_p.add_argument('bucket_alias')
 utf_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
@@ -174,23 +166,17 @@ utf_p.add_argument('username', nargs='?', help='Configured username owning the b
 lb_p = subparsers.add_parser('list_buckets', help='List bucket aliases for a username')
 lb_p.add_argument('username', nargs='?', help='Username to filter buckets (defaults to config if omitted)')
 
-utb_p = subparsers.add_parser('upload_text_batch', help='Upload multiple text objects (batch)')
-utb_p.add_argument('bucket_alias')
-utb_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
-utb_grp = utb_p.add_mutually_exclusive_group(required=True)
-utb_grp.add_argument('--file', help='File containing one text object per line')
-utb_grp.add_argument('--texts', nargs='+', help='Inline text objects')
-# Metadata is provided via repeated -k flags like legacy mode
-
 # Embedding maintenance actions
 subparsers.add_parser('recompute', help='Recompute all embeddings for all buckets (server-side)')
 subparsers.add_parser('update', help='Update embeddings only for missing/mismatched entries (server-side)')
 subparsers.add_parser('check', help='Check consistency between S3 objects and DB (server-side)')
 rl_p = subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
-# No 'add_columns' subcommand: strict, config-driven metadata schema only
+
 
 args = parser.parse_args()
-legacy_mode = (args.action is None)
+
+if not args.action in []:
+    print 
 
 # Connect to message queue
 control_mq = MessageQueue(role = "client", queue_type = 'control', server_ip=args.server_ip)
@@ -209,9 +195,10 @@ print (f"Server ready.\nConnected to zeroMQ message queue'")
 configure_file = args.conf
 
 # Only enforce config file for legacy mode or actions that need bucket/user config
-requires_config = legacy_mode or (args.action in {
-    'list_buckets', 'upload_text', 'upload_image', 'upload_textfile', 'upload_text_batch'
-})
+requires_config =  args.action in {
+    'list_buckets', 'upload_file', 'upload_dir'
+}
+
 if requires_config and not os.path.exists(configure_file):
     sys.exit(f"Configuration file \"{configure_file}\" not found.")
 
@@ -226,92 +213,72 @@ if requires_config:
 
 
 try:
-    if legacy_mode:
-        if args.data is None or args.bucket is None:
-            print("Missing data and/or bucket.")
-            pretty_print_user_cfg(bucket_store)
-            sys.exit(
-                "Error: You must provide both the data and the bucket alias.\n"
-                "These are required to upload data to the S3 server according to the configuration above."
-            )
-        if args.verbose:
-            pretty_print_user_cfg(bucket_store)
-        bucket_alias = args.bucket
-        entry = find_bucket_entry(bucket_store, bucket_alias)
-        path_to_bucket        = entry['path_to_bucket']
-        username              = entry['username']
-        xp_name               = entry['xp_name']
-        modality              = entry['modality_name']
-        s3_configuration_file = entry['s3_configuration_file']
-        metadata              = entry['metadata']
-        data_mq = control_mq.get_data_queue(username)
-        # Removed previous hard-coded test file transfer
-    else:
-        # API mode: pre-initialize a data queue for the provided username in action args (if any)
-        # Some actions require username (upload_*), ping does not.
-        if args.action == 'ping':
-            print(action_ping(control_mq, args.output))
+    # API mode: pre-initialize a data queue for the provided username in action args (if any)
+    # Some actions require username (upload_*), ping does not.
+    if args.action == 'ping':
+        print(action_ping(control_mq, args.output))
+        control_mq.close()
+        sys.exit(0)
+    if args.action == 'list_buckets':
+        effective_username = args.username or (user.get('username') if isinstance(user, dict) else None)
+        if not effective_username:
+            print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
             control_mq.close()
-            sys.exit(0)
-        if args.action == 'list_buckets':
-            effective_username = args.username or (user.get('username') if isinstance(user, dict) else None)
-            if not effective_username:
-                print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
-                control_mq.close()
-                sys.exit(1)
-            print(action_list_buckets(bucket_store, effective_username, args.output))
-            control_mq.close()
-            sys.exit(0)
-        # Embedding maintenance actions don't require bucket resolution or S3 access
-        if args.action in ('recompute', 'update', 'check', 'reload'):
-            # Use configured username as client id for control plane
-            # Determine a stable client id for control-plane requests
-            client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', 'client')
-            cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK', 'reload': 'RELOAD'}[args.action]
-            try:
-                # Special handling for reload with a user-config file: push file first, then RELOAD
-                if args.action == 'reload':
-                    # If -c points to an existing user.json, upload it first so the server persists and reloads it
-                    cfg_path = args.conf if getattr(args, 'conf', None) else None
-                    if cfg_path and os.path.isfile(cfg_path):
+            sys.exit(1)
+        print(action_list_buckets(bucket_store, effective_username, args.output))
+        control_mq.close()
+        sys.exit(0)
+    # Embedding maintenance actions don't require bucket resolution or S3 access
+    if args.action in ('recompute', 'update', 'check', 'reload'):
+        # Use configured username as client id for control plane
+        # Determine a stable client id for control-plane requests
+        client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', 'client')
+        cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK', 'reload': 'RELOAD'}[args.action]
+        try:
+            # Special handling for reload with a user-config file: push file first, then RELOAD
+            if args.action == 'reload':
+                # If -c points to an existing user.json, upload it first so the server persists and reloads it
+                cfg_path = args.conf if getattr(args, 'conf', None) else None
+                if cfg_path and os.path.isfile(cfg_path):
+                    try:
+                        with open(cfg_path, 'r', encoding='utf-8') as f:
+                            cfg_json = _json.load(f)
+                        upload_user = cfg_json.get('username') or client_id
+                    except Exception:
+                        upload_user = client_id
+                    data_mq = control_mq.get_data_queue(upload_user)
+                    try:
+                        data_mq.send_file(cfg_path)
+                        control_mq.notify_server(upload_user, 'FILE', 1)
+                    finally:
                         try:
-                            with open(cfg_path, 'r', encoding='utf-8') as f:
-                                cfg_json = _json.load(f)
-                            upload_user = cfg_json.get('username') or client_id
+                            data_mq.close()
                         except Exception:
-                            upload_user = client_id
-                        data_mq = control_mq.get_data_queue(upload_user)
-                        try:
-                            data_mq.send_file(cfg_path)
-                            control_mq.notify_server(upload_user, 'FILE', 1)
-                        finally:
-                            try:
-                                data_mq.close()
-                            except Exception:
-                                pass
-                # Now send the control-plane command
-                ok = control_mq.notify_server(client_id, cmd, 0)
-                if ok:
-                    print(api_json(action=args.action, accepted=True, output_format=args.output))
-                else:
-                    print(api_json(status='error', action=args.action, accepted=False, output_format=args.output))
-            except Exception as e:
-                print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
-            finally:
-                control_mq.close()
-            sys.exit(0)
-        # For upload_* actions we need configuration + bucket alias
-        bucket_alias = getattr(args, 'bucket_alias')
-        entry = find_bucket_entry(bucket_store, bucket_alias)
-        path_to_bucket        = entry['path_to_bucket']
-        # If username not provided as arg, default to config
-        username_arg = getattr(args, 'username', None)
-        username              = username_arg or entry['username']
-        xp_name               = entry['xp_name']
-        modality              = entry['modality_name']
-        s3_configuration_file = entry['s3_configuration_file']
-        metadata              = entry['metadata']
-        data_mq = control_mq.get_data_queue(username)
+                            pass
+            # Now send the control-plane command
+            ok = control_mq.notify_server(client_id, cmd, 0)
+            if ok:
+                print(api_json(action=args.action, accepted=True, output_format=args.output))
+            else:
+                print(api_json(status='error', action=args.action, accepted=False, output_format=args.output))
+        except Exception as e:
+            print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
+        finally:
+            control_mq.close()
+        sys.exit(0)
+    # For upload_* actions we need configuration + bucket alias
+    print(f"args= {args}")
+    bucket_alias = getattr(args, 'bucket_alias')
+    entry = find_bucket_entry(bucket_store, bucket_alias)
+    path_to_bucket        = entry['path_to_bucket']
+    # If username not provided as arg, default to config
+    username_arg = getattr(args, 'username', None)
+    username              = username_arg or entry['username']
+    xp_name               = entry['xp_name']
+    modality              = entry['modality_name']
+    s3_configuration_file = entry['s3_configuration_file']
+    metadata              = entry['metadata']
+    data_mq = control_mq.get_data_queue(username)
 except Exception as e:
     print(api_json(status="error", message=str(e), output_format=args.output))
     if args.verbose:
@@ -321,8 +288,9 @@ except Exception as e:
 
 # Allow fallback to default docker s3cfg if user-specific config is missing inside container
 expanded_cfg = os.path.expanduser(s3_configuration_file)
-if not os.path.exists(expanded_cfg) and os.path.exists("/app/docker/s3cfg"):
-    expanded_cfg = "/app/docker/s3cfg"
+default_docker_s3cfg = get_default_docker_s3cfg()
+if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
+    expanded_cfg = default_docker_s3cfg
 
 s3, bucket_location = connect_to_s3(expanded_cfg)
 
@@ -331,7 +299,7 @@ full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, usernam
 if not success or full_bucket_name != path_to_bucket:
     sys.exit(f"No bucket {bucket_alias} for  modality {modality} and for user {username}")
 
-if args.verbose or (not legacy_mode):
+if args.verbose :
     print(f"Bucket '{bucket_alias}' for  modality '{modality}' and for user '{username}': OK!")
 
 try:
@@ -342,144 +310,104 @@ except Exception as e:
 
 # In API mode, metadata is provided via repeated -k flags like legacy mode
 
-if args.verbose or (not legacy_mode):
+if args.verbose :
     print(f"Storing data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
 
 server_notify_result = None
 
-def legacy_flow():
-    global server_notify_result
-    if modality == "text" :
-        if os.path.isfile(args.data):
-            try:
-                with open(args.data,"r") as file:
-                    nb_objects = 0
-                    for line in file.readlines():
-                        line = line.strip()
+def process_file(s3, full_bucket_name, file_path, modality, data_mq, metadata_args, username, notify_server=True):
+    if not os.path.isfile(file_path):
+        print("Error: file {file_path} is not a valid.")
+        return None, 0
+
+    print(f"Processing file '{file_path}' for modality '{modality}'")
+
+    if modality == "image" : # send an image
+        if os.path.isfile(file_path):
+            s3_key = s3_store_image(s3, full_bucket_name, file_path, data_mq, metadata_args)
+            if s3_key and notify_server:
+                control_mq.notify_server(username, "OBJECT", 1)
+            return s3_key, 1
+    elif modality == "text file" : # send a text file by chunking it
+            s3_key = s3_store_text_file(s3, full_bucket_name, file_path, data_mq, metadata_args)
+            if s3_key and notify_server:
+                control_mq.notify_server(username, "OBJECT", 1)
+            return s3_key, 1
+    elif modality == "text": # consider each line of the file as a string to be process
+        try:
+            with open(file_path,"r") as file:
+                nb_objects = 0
+                s3_key_list = []
+                for line in file.readlines():
+                    line = line.strip()
+                    if line != "" : # skip empty lines as it brings nothing and as it slows down the process 
                         s3_key = s3_store_txt(s3, full_bucket_name, line, data_mq, metadata_args)
+                        s3_key_list.append(s3_key)
                         nb_objects += 1
-                        print(f"'{line}' saved as {s3_key} on: {full_bucket_name}")
-                    server_notify_result = control_mq.notify_server(username, "OBJECT", nb_objects)
-            except UnicodeDecodeError as e:
-                print(f"Unicode decoding error: {e}")
-                print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file.")
-        else:
-            s3_key = s3_store_txt(s3, full_bucket_name, args.data, data_mq, metadata_args)
-            print(f"'{args.data}' saved as {s3_key} on: {full_bucket_name}")
-            server_notify_result = control_mq.notify_server(username, "OBJECT", 1)
-    elif modality == "image" :
-        if os.path.isfile(args.data):
-            s3_key = s3_store_image(s3, full_bucket_name, args.data, data_mq, metadata_args)
-            if s3_key:
-                print(f"'{s3_key}' saved on: {full_bucket_name}")
-                server_notify_result = control_mq.notify_server(username, "OBJECT", 1)
-        elif os.path.isdir(args.data):
-            nb_objects = 0
-            for file in glob(os.path.join(args.data, "*")):
-                if os.path.isfile(file):
-                    s3_key = s3_store_image(s3, full_bucket_name, file, data_mq, metadata_args)
-                    if s3_key:
-                        nb_objects += 1
-                        print(f"'{s3_key}' saved on: {full_bucket_name}")
-            server_notify_result = control_mq.notify_server(username, "OBJECT", nb_objects)
-        else:
-            print(f"Error: do not know what to do with '{args.data}'...")
-            print("Provide a path to an image or to a directory of images")
-    elif modality == "text file" :
-        if os.path.isfile(args.data):
-            s3_key = s3_store_text_file(s3, full_bucket_name, args.data, data_mq, metadata_args)
-            if s3_key:
-                print(f"'{s3_key}' saved on: {full_bucket_name}")
-                server_notify_result = control_mq.notify_server(username, "OBJECT", 1)
-        elif os.path.isdir(args.data):
-            nb_objects = 0
-            for file in glob(os.path.join(args.data, "*")):
-                if os.path.isfile(file):
-                    s3_key = s3_store_text_file(s3, full_bucket_name, file, data_mq, metadata_args)
-                    if s3_key:
-                        nb_objects += 1
-                        print(f"'{s3_key}' saved on: {full_bucket_name}")
-            server_notify_result = control_mq.notify_server(username, "OBJECT", nb_objects)
-        else:
-            print(f"Error: do not know what to do with '{args.data}'...")
-            print("Provide a path to a text file or to a directory of text_files")
+                if notify_server and nb_objects > 0:
+                    control_mq.notify_server(username, "OBJECT", nb_objects)
+                return s3_key_list, nb_objects
+        except UnicodeDecodeError as e:
+            print(f"Unicode decoding error: {e}")
+            print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file.")
     else:
         print(f"Error: Unknown modality '{modality}'. Nothing has been sent to the server")
 
-def api_flow():
-    # Determine action specifics
-    action = args.action
-    try:
-        if action == 'upload_text':
-            if modality != 'text':
-                print(api_json(status='error', message=f"Bucket alias '{bucket_alias}' modality mismatch: expected 'text' got '{modality}'", output_format=args.output))
-                return
-            s3_key = perform_upload_text(s3, full_bucket_name, args.text, data_mq, metadata_args)
-            control_mq.notify_server(username, 'OBJECT', 1)
+    return None, 0
+
+def process_dir(path, s3, full_bucket_name, modality, data_mq, metadata_args, username, control_mq):
+    if not os.path.isdir(path):
+        print(f"Error: {path} is not a valid directory.")
+        return [], []
+    
+    s3_key_list = []
+    file_list = []
+    nb_objects= 0
+    for file_path in glob(os.path.join(path, "*")):
+        if os.path.isfile(file_path):
+            s3_key, nb_sent = process_file(s3, full_bucket_name, file_path, modality, data_mq, metadata_args, username, notify_server=False)
+            if s3_key:
+                if isinstance(s3_key, list): # files of text are processed line by line (each leading to a file stored on the s3 server)
+                    s3_key_list.extend(s3_key)  # add each element individually if s3_key is a list
+                    assert(len(s3_key)==nb_sent)
+                    file_list.extend([file_path] * nb_sent) #ensure that file_list is of same size as s3_key_list
+                else:
+                    s3_key_list.append(s3_key)
+                    file_list.append(file_path)
+                nb_objects += nb_sent
+
+    if nb_objects>0: 
+        control_mq.notify_server(username, 'OBJECT', nb_objects)
+    return s3_key_list, file_list
+    
+    
+     
+
+# Determine action specifics
+action = args.action
+try:
+    if action == "upload_file":
+        s3_key, nb_sent = process_file(s3, full_bucket_name, args.file_path, modality, data_mq, metadata_args, username, notify_server=True)
+        if s3_key:
             print(api_json(s3_key=s3_key, bucket=full_bucket_name, modality=modality, output_format=args.output))
-        elif action == 'upload_image':
-            if modality != 'image':
-                print(api_json(status='error', message=f"Bucket alias '{bucket_alias}' modality mismatch: expected 'image' got '{modality}'", output_format=args.output))
-                return
-            s3_key = perform_upload_image(s3, full_bucket_name, args.file_path, data_mq, metadata_args)
-            if s3_key:
-                control_mq.notify_server(username, 'OBJECT', 1)
-                print(api_json(s3_key=s3_key, bucket=full_bucket_name, modality=modality, output_format=args.output))
-            else:
-                print(api_json(status='error', message='File not uploaded (invalid image?)', output_format=args.output))
-        elif action == 'upload_textfile':
-            if modality != 'text file':
-                print(api_json(status='error', message=f"Bucket alias '{bucket_alias}' modality mismatch: expected 'text file' got '{modality}'", output_format=args.output))
-                return
-            s3_key = perform_upload_textfile(s3, full_bucket_name, args.file_path, data_mq, metadata_args)
-            if s3_key:
-                control_mq.notify_server(username, 'OBJECT', 1)
-                print(api_json(s3_key=s3_key, bucket=full_bucket_name, modality=modality, output_format=args.output))
-            else:
-                print(api_json(status='error', message='File not uploaded (not a text file?)', output_format=args.output))
-        elif action == 'upload_text_batch':
-            if modality != 'text':
-                print(api_json(status='error', message=f"Bucket alias '{bucket_alias}' modality mismatch: expected 'text' got '{modality}'", output_format=args.output))
-                return
-            texts = []
-            if getattr(args, 'file', None):
-                if not os.path.isfile(args.file):
-                    print(api_json(status='error', message=f"File '{args.file}' not found", output_format=args.output))
-                    return
-                with open(args.file, 'r', encoding='utf-8') as f:
-                    for line in f:
-                        line=line.strip()
-                        if line:
-                            texts.append(line)
-            else:
-                texts = getattr(args, 'texts', [])
-            if not texts:
-                print(api_json(status='error', message='No text objects provided', output_format=args.output))
-                return
-            s3_keys = []
-            for t in texts:
-                k = perform_upload_text(s3, full_bucket_name, t, data_mq, metadata_args)
-                s3_keys.append(k)
-            control_mq.notify_server(username, 'OBJECT', len(s3_keys))
-            print(api_json(s3_keys=s3_keys, count=len(s3_keys), bucket=full_bucket_name, modality=modality, output_format=args.output))
         else:
-            print(api_json(status='error', message=f'Unknown action {action}', output_format=args.output))
-    except Exception as e:
-        print(api_json(status='error', message=str(e), output_format=args.output))
-        if args.verbose:
-            traceback.print_exc()
+            print(api_json(status='error', message=f"Cannot process file: {args.file_path}", bucket=full_bucket_name, modality=modality, output_format=args.output))
 
-if legacy_mode:
-    legacy_flow()
-else:
-    api_flow()
-
-if legacy_mode:
-    if server_notify_result is not None:
-        if server_notify_result is True:
-            print("Server received data")
+    elif action == "upload_dir":
+        s3_key_list, file_list =  process_dir(args.path, s3, full_bucket_name, modality, data_mq, metadata_args, username, control_mq)
+        if len(s3_key_list)>0:
+            print(api_json(s3_key_list=s3_key_list, file_list=file_list, bucket=full_bucket_name, modality=modality, output_format=args.output))
         else:
-            print("Error: Server did not receive data")
+            print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, modality=modality, output_format=args.output))
+    
+    else:
+        print(f"Error: action '{action}' not yet implemented. exiting...")
+
+except Exception as e:
+    print(api_json(status='error', message=str(e), output_format=args.output))
+    if args.verbose:
+        traceback.print_exc()
+
 
 # close queues before exiting
 control_mq.close()

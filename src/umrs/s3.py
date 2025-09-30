@@ -257,7 +257,6 @@ def s3_store_txt(s3, path_to_bucket, text_data, mq, metadata_args):
     # Store inline text as an S3 object and notify server
 
     s3_key = compute_md5(text_data)+".txt"
-    
     s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, Metadata=metadata_args["Metadata"], ContentType="text/plain")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
