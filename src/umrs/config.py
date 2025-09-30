@@ -6,6 +6,7 @@ DEFAULT_USERS_CFG_SUBDIR = "users"
 DEFAULT_TMP_SUBDIR = "tmp" 
 UMRS_CFG_ENV_VAR_NAME = "UMRS_CONFIG"
 DEFAULT_JSON_SERVER_FILE ="conf_umrs.json"
+DEFAULT_DOCKER_S3CFG = "/app/docker/s3cfg"
 
 
 def get_default_umrs_cfg_dir():
@@ -22,3 +23,6 @@ def get_users_default_cfg_subdir():
 
 def get_default_tmp_subdir():
     return DEFAULT_TMP_SUBDIR
+
+def get_default_docker_s3cfg():
+    return DEFAULT_DOCKER_S3CFG

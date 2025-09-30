@@ -380,11 +380,9 @@ class MessageQueue:
         if self.role != 'client':
             raise PermissionError("notify_s3 can only be used by the client.")
 
-        print(f"sending data to port: {self.port}")
+        # print(f"sending data to port: {self.port}")
         self.send_string(s3_object)
         
-        print(f"Notifying: {s3_object}")
-
         
 
 
