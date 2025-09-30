@@ -299,7 +299,6 @@ def reload_configuration(configure_file, db_model_store, user_config_map):
             except Exception:
                 pass
             
-        print(new_store)
         db_model_store.clear()
         db_model_store.update(new_store['db_model_store'])     
         user_config_map.clear()
@@ -311,6 +310,8 @@ def reload_configuration(configure_file, db_model_store, user_config_map):
 
 
 def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
+    canonical_user_path = os.path.expanduser(canonical_user_path)
+
     try:
         with open(conf_path, 'r', encoding='utf-8') as f:
             conf = json.load(f)
@@ -324,6 +325,7 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     new_users = []
     removed = []
     for p in users:
+        p = os.path.expanduser(p)
         if p == canonical_user_path:
             # keep canonical path if already present
             if p not in new_users:
@@ -351,6 +353,10 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     if removed:
         print(f"Updated server conf: removed {len(removed)} stale user config(s) for '{username}': {removed}")
 
+    # change absolute path to '~' if possible
+    home = os.path.expanduser('~')
+    new_users = [path.replace(home, '~',1) for path in new_users]
+    
     conf['users'] = new_users
     try:
         with open(conf_path, 'w', encoding='utf-8') as f:
@@ -372,7 +378,7 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
 
 
 def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, expected_username=None):
-    """Persist an uploaded user config JSON: replace / create teh dir and file and ensure listed in conf.
+    """Persist an uploaded user config JSON: replace create the dir and file and ensure listed in conf.
 
     Returns (success: bool, username: str | None, dest_path: str | None)
     """
@@ -407,6 +413,8 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
             print(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
             return False, username, None
         dest_path = os.path.join(user_dir, f"{username}.json")
+
+    dest_path = os.path.expanduser(dest_path)
 
     # Atomically replace the destination file
     try:
