@@ -15,27 +15,114 @@ Note on metadata: Metadata keys must be declared in the configuration. Unknown k
 
 Optional: Docker and Docker Compose (for an all-in-one local stack).
 
-## 2) Local (bare-metal) quick start
 
-We recommend running from the `src/` directory so script paths and config defaults work out-of-the-box.
+### 1.1 deploy the configuration files
+Configuration files should be in `~/.config/umrs` like:
+
+```
+~/.config/umrs
+├── conf_umrs_full.json
+├── conf_umrs.json
+├── tmp
+└── users
+    ├── user1.json
+    └── user2.json
+```
+You can deploy the demo configuration files from `src` using:
+
+```
+cfg_example/deploy_cfg.sh
+tree ~/.config/umrs
+```
+
+
+### 1.2 Prepare the Environment
+
+Before running commands, switch to the source directory so paths and defaults match the code layout.
 
 ```
 cd src
 ```
 
-### 2.1 Start the UMRS server
+#### ➤ Switch to the demo branch
+
+`git checkout demo`
+
+#### ➤ [Optional] Launch the local S3 service (e.g., MinIO)
+
+`minio server /data --console-address ":9001"`
+
+#### ➤ Delete minIO users
+`mc admin user rm myminio user1 --insecure`
+`mc admin user rm myminio user2 --insecure`
+
+
+### 1.3 Terminal Windows Setup
+
+#### Window 1 — PostgreSQL
+
+1. Connect to PostgreSQL and drop existing demo databases and delete users:
+
+```
+psql -U postgres
+\t 
+drop database images_and_texts_usr1_1;
+drop database images_and_texts_usr2_1;
+drop database text_and_images_usr1_2;
+\du 
+drop user usr1_1;
+drop user usr1_2;
+drop user usr2_1;
+```
+
+#### Window 2 — Server
+
+1. Launch the U.M.R.S. server:
+
 
 Server reads the server configuration (which references user configs) and initializes S3 buckets, DBs, and tables as needed.
 
 ```
-./server_umrs.py -c ./conf_umrs.json
+./server_umrs.py 
 ```
 
 Wait until you see “Server configuration done!” and “Waiting for new objects…”. Keep it running.
 
-### 2.2 Use the client (API mode)
 
-The client uses a per-user config (`-c users_json/user1.json`) that defines the user’s experiences, modalities, and bucket aliases.
+#### Window 3 — Client
+
+The client support the API mode (subcommands): explicit, structured operations (also used by Docker tests)
+
+
+## 2) Local (bare-metal) quick start
+
+
+### 2.1 How the Client Works  
+
+The client is used with a set of commands:
+
+**Utils:**  
+- `ping`: Check server readiness  
+- `list_buckets`: list bucket aliases for a username  
+
+
+**Uploading data to s3 server and post-processing:**    
+- `upload_file`: The client uploads a file to a bucket (empty lines are omitted if the modality is 'text'), then the server processes the data, e.g., computing embeddings and storing metadata in the PostgreSQL database  
+- `upload_dir`: Same as above but operates on all files in a given directory  
+
+**Manage embeddings and data consistency:**  
+- `recompute`: The server recomputes all embeddings for all buckets (server-side)  
+- `update`: The server updates embeddings only for missing or mismatched entries (server-side)  
+- `check`: The server checks consistency between S3 objects and the database (server-side)  
+
+**Configuration management:**  
+- `reload`: Reload server configuration (users, buckets, models) without restart; if `-c` points to a user JSON configuration file, it will be uploaded and persisted on the server before reloading  
+
+The model used to compute embeddings depends on the bucket where data is uploaded; this correspondence is specified in the user configuration file.
+
+### 2.2 Use the client
+
+The client uses a per-user config (`-c ~/.config/umrs/users/user1.json`) that defines the user’s experiences, modalities, and bucket aliases.
 
 - Ping the server (no config required):
 
@@ -46,35 +133,21 @@ The client uses a per-user config (`-c users_json/user1.json`) that defines the 
 - List the configured buckets for a user (username inferred from `-c` when omitted):
 
 ```
-./client_umrs.py -c users_json/user1.json --output text list_buckets
-```
-
-- Upload a single inline text to the text bucket (user1’s `bucket-2`):
-
-```
-./client_umrs.py -c users_json/user1.json --output text -k keywords:greeting \
-	upload_text "Hello world" bucket-2
-```
-
-- Upload multiple inline texts at once:
-
-```
-./client_umrs.py -c users_json/user1.json --output text -k keywords:batch \
-	upload_text_batch bucket-2 --texts "alpha one" "beta two" "gamma three"
-```
-
-- Upload a text file as a single “text file” object (user1’s `bucket-5`):
-
-```
-./client_umrs.py -c users_json/user1.json --output text -k keywords:beast \
-	upload_textfile ../data/texts/beast_in_the_jungle.txt bucket-5
+./client_umrs.py -c ~/.config/umrs/users/user1.json --output text list_buckets
 ```
 
 - Upload an image (user1’s `bucket-1` expects only `keywords`):
 
 ```
-./client_umrs.py -c users_json/user1.json --output text -k keywords:demo \
-	upload_image ../data/img_test/cat.jpeg bucket-1
+./client_umrs.py -c  ~/.config/umrs/users/user1.json --output text -k keywords:demo \
+	upload_file ../data/img_test/cat.jpeg bucket-1
+```
+
+
+- Upload a file where each line is consider as a single “text” object (user1’s `bucket-2`):
+
+```
+./client_umrs.py -c ~/.config/umrs/users/user1.json --output text upload_file ../data/file_of_texts/apple.txt bucket-2
 ```
 
 - Upload an image to the “rich metadata” bucket (user1’s `bucket-3`):
@@ -82,11 +155,28 @@ The client uses a per-user config (`-c users_json/user1.json`) that defines the 
 ```
 ./client_umrs.py -c users_json/user1.json --output text \
 	-k keywords:cat -k author:demo -k x_resolution:256 -k y_resolution:512 \
-	upload_image ../data/img_test/cat.jpeg bucket-3
+	upload_file ../data/img_test/cat.jpeg bucket-3
 ```
 
-Notes
-- Legacy mode is still available (positional `data bucket`), but API mode is recommended.
+- Upload a text file as a single “text file” object (user1’s `bucket-5`):
+
+```
+./client_umrs.py -c  ~/.config/umrs/users/user1.json --output text -k keywords:beast \
+	upload_file ../data/texts/beast_in_the_jungle.txt bucket-5
+```
+
+
+
+- Upload all the image of `./data/img_test` (user1’s `bucket-1` expects only `keywords`):
+
+```
+./client_umrs.py -c  ~/.config/umrs/users/user1.json --output text -k keywords:demo \
+	upload_dir ../data/img bucket-1
+```
+
+
+
+
 - If your server runs on another host, set `UMRS_SERVER_HOST=<server-hostname>` or pass `--server-ip <host>`.
 
 ### 2.3 Verify data in PostgreSQL
@@ -112,6 +202,20 @@ psql -d text_and_images_usr1_2 usr1_2
 SELECT s3_object, date, time FROM image ORDER BY time;
 ```
 
+Inspect chunking results
+
+```
+psql -d images_and_texts_usr1_1 usr1_1
+```
+
+```
+SELECT _content, chunk_start, chunk_end, chunk_md5
+FROM text_file
+WHERE s3_object ~* 'beast'
+ORDER BY chunk_start;
+```
+
+
 ## 3) Local via Docker Compose (optional)
 
 There’s a ready-to-run stack under `docker/` that brings up Postgres, MinIO, and the UMRS server, and runs an integration test container.
@@ -136,7 +240,7 @@ On the server host:
 
 ```
 cd /path/to/umrs/src
-./server_umrs.py -c ./conf_umrs.json
+./server_umrs.py 
 ```
 
 Ensure TCP port 5555 is reachable by clients.
@@ -146,7 +250,7 @@ On the client host:
 ```
 cd /path/to/umrs/src
 ./client_umrs.py --server-ip <server-ip-or-dns> ping
-./client_umrs.py -c users_json/user1.json --server-ip <server-ip-or-dns> \
+./client_umrs.py -c ~/.config/umrs/users/user1.json  --server-ip <server-ip-or-dns> \
 	--output text list_buckets
 ```
 
@@ -165,9 +269,9 @@ For the default user1 config:
 Example (image rich metadata):
 
 ```
-./client_umrs.py -c users_json/user1.json --output text \
+./client_umrs.py ~/.config/umrs/users/user1.json  --output text \
 	-k keywords:cat -k author:demo -k x_resolution:256 -k y_resolution:512 \
-	upload_image ../data/img_test/cat.jpeg bucket-3
+	upload_file ../data/img_test/cat.jpeg bucket-3
 ```
 
 ## 6) Extras: clustering examples
@@ -186,208 +290,8 @@ To experiment with clustering using pgvector-embedded data:
 - Client can’t reach server: set `UMRS_SERVER_HOST` or `--server-ip` to the server hostname/IP; ensure TCP 5555 is reachable.
 - DB query errors: confirm the DB name pattern is `<xp_name>_<sql_username>` lowercased (e.g., `text_and_images_usr1_2`).
 
-# U.M.R.S. Demo Guide
 
-## 1. Prepare the Environment
-
-Before running commands, switch to the source directory so paths and defaults match the code layout.
-
-```
-cd src
-```
-
-### ➤ Switch to the demo branch
-
-`git checkout demo`
-
-### ➤ [Optional] Launch the local S3 service (e.g., MinIO)
-
-`minio server /data --console-address ":9001"`
-
-### ➤ Delete minIO users
-`mc admin user rm myminio user1 --insecure`
-`mc admin user rm myminio user2 --insecure`
-
-
-## 2. Terminal Windows Setup
-
-### Window 1 — PostgreSQL
-
-1. Connect to PostgreSQL and drop existing demo databases and delete users:
-
-```
-psql -U postgres
-\t 
-drop database images_and_texts_usr1_1;
-drop database images_and_texts_usr2_1;
-drop database text_and_images_usr1_2;
-\du 
-drop user usr1_1;
-drop user usr1_2;
-drop user usr2_1;
-```
-
-### Window 2 — Server
-
-1. Launch the U.M.R.S. server:
-
-`./server_umrs.py`
-
-Wait for the server to finish setup and listen for incoming requests.
-
-### Window 3 — Client
-
-The client supports two modes that are both available in the current implementation:
-
-- Legacy mode (positional arguments): convenient for quick uploads
-- API mode (subcommands): explicit, structured operations (also used by Docker tests)
-
-Basic usage examples for both are shown below.
-
-## 3. Upload and Query Data
-
-### 3.0 Basic client usage
-
-- Check server readiness (API mode, no config required):
-
-```
-./client_umrs.py ping
-```
-
-- If your server runs on another host/container, either set the environment variable `UMRS_SERVER_HOST` or pass `--server-ip <host>` to the client.
-
-- List configured buckets for a given user (API mode):
-
-```
-./client_umrs.py -c users_json/user1.json --output text list_buckets user1
-```
-
-- Upload inline text (choose the text bucket alias from list_buckets):
-	- Legacy mode:
-
-```
-./client_umrs.py -c users_json/user1.json "Hello world" bucket-2
-```
-
-		- API mode (metadata via -k; username inferred from config):
-
-```
-	./client_umrs.py -c users_json/user1.json --output text -k keywords:greeting upload_text "Hello world" bucket-2
-```
-
-- Upload an image file (API mode):
-
-```
-./client_umrs.py -c users_json/user1.json --output text -k keywords:demo upload_image ../data/img_test/cat.jpeg bucket-1
-```
-
-- Upload a full text file to the "text file" modality with chunking (API mode):
-
-```
-./client_umrs.py -c users_json/user1.json --output text upload_textfile ../data/texts/beast_in_the_jungle.txt bucket-5
-```
-
-### 3.1 Submit text examples
-```
-./client_umrs.py -c users_json/user1.json "I eat an apple at breakfast" bucket-2
-```
-
-### 3.2 Query SQL to verify
-
-```
-psql -d text_and_images_usr1_2 usr1_2
-SELECT s3_object, _content, keywords, date, time FROM text ORDER BY time;
-```
-
-Check that credential isolation works and that you cannot read the database if you are not the right user: 
-
-```
-psql -d text_and_images_usr1_2 usr1_1
-SELECT s3_object, _content, keywords, date, time FROM text ORDER BY time;
-```
-### 3.3 Upload a full text file
-
-Note: For the "text" modality, providing a filename will read and upload the file line-by-line as separate text objects.
-
-`./client_umrs.py -c users_json/user1.json apple.txt bucket-2`
-
-### 3.4 Check results in DB
-
-```
-psql -d text_and_images_usr1_2 usr1_2
-SELECT s3_object, _content, date, time FROM text ORDER BY time;
-```
-
-### 3.5 Cluster texts using PGVector
-
-`../tests/test_embeddings/cluster_txt.py`
-
-## 4. Work with Images
-
-### 4.1 Upload an entire image directory
-
-` ./client_umrs.py -c users_json/user1.json ../data/img bucket-1`
-
-### 4.2 Query the image table
-
-```
-psql -d text_and_images_usr1_2 usr1_2
-SELECT s3_object, date, time FROM image ORDER BY time;
-```
-
-### 4.3 Cluster images using PGVector
-
-`../tests/test_embeddings/cluster_img.py`
-
-## 5. Metadata & Keywords
-
-### Valid metadata keys per modality/bucket
-
-Metadata provided with -k must match the configured schema per bucket/modality. Unknown keys are rejected as errors—add them to the config first.
-
-- Text (user1, bucket-2 → table text):
-	- keywords
-- Text file (user1, bucket-5 → table text_file):
-	- keywords
-- Image (user1, bucket-1 → table image):
-	- keywords
-- Image (user1, bucket-3 → table image):
-	- keywords, author, x_resolution, y_resolution
-
-### Upload images with/without keywords
-
-```
-./client_umrs.py -c users_json/user2.json ../data/img/Cat_2.jpeg bucket-1
-./client_umrs.py -c users_json/user2.json ../data/img/Cat_1.jpeg bucket-1 -k keywords:cat -k author:internet -k x_resolution:256 -k y_resolution:512
-```
-
-### Query metadata
-
-```
-psql -d images_and_texts_usr2_1  usr2_1
-SELECT id, s3_object, date, time, keywords, author, x_resolution, y_resolution FROM image ORDER BY time;
-```
-
-## 6. Upload a Full Text File as a Document
-
-### Submit a large file
-
-`./client_umrs.py -c users_json/user1.json ../data/texts/beast_in_the_jungle.txt bucket-5`
-### Inspect chunking results
-
-```
-psql -d images_and_texts_usr1_1 usr1_1
-```
-
-```
-SELECT _content, chunk_start, chunk_end, chunk_md5
-FROM text_file
-WHERE s3_object ~* 'beast'
-ORDER BY chunk_start;
-```
-
-
-## 7. Wrap Up
+## 8) Wrap Up
 
 ### Return to the main branch
 
