@@ -284,8 +284,8 @@ def is_an_image(filename):
     # If extension is valid, confirm by opening
     return is_image_by_opening(filename)
 
-def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args):
-    if not is_an_image(in_path):
+def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args, check = True):
+    if check and not is_an_image(in_path):
         print(f"Error: '{in_path}' is not an image. Skipping...")
         return None
     
