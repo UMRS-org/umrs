@@ -220,8 +220,8 @@ def metadata_dict(sql_cfg):
 def configure_table(data_base, sql_cfg,  modality_name, model):
 
     db_pool = data_base.db_pool;
-    table_name = modality_name.replace(" ","_").lower()
-    print(f"\t\t\t--> Configuring table '{table_name}'...")
+    table_name = sql_cfg['table_name'].lower()
+    (f"\t\t\t--> Configuring table '{table_name}'...")
     table_columns = [];
     column = {"name": "id", "type": "SERIAL PRIMARY KEY"}
     table_columns.append(column)
@@ -460,9 +460,10 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
     if metadata_list is None:
         metadata_list = [{} for _ in s3_keys]
 
-    if modality_name == "image":
+    if modality_name in ("image", "tomography"):
         # One embedding per image file
         for embedding, s3_key, metadata, checksum in zip(embeddings, s3_keys, metadata_list, checksums):
+            print(f"storing embedding for {s3_key}... ")
             store_one_embedding_in_db(
                 data_base,
                 embedding=embedding,
@@ -472,7 +473,8 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 content=None,
                 metadata=metadata,
                 model_name = model_name,
-                checksum=checksum
+                checksum=checksum, 
+                silent = False
             )
 
     elif modality_name in ("text", "text file"):

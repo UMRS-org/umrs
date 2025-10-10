@@ -27,7 +27,7 @@ client_schema = {
               "properties": {
                 "modality_name": {
                   "type": "string",
-                  "enum": ["image", "text", "text file"]
+                  "enum": ["image", "text", "text file", 'tomography']
                 },
                 "s3": {
                   "type": "object",
@@ -51,6 +51,7 @@ client_schema = {
                     "model_name": { "type": "string" },
                     "vector_size": { "type": "string" },
                     "model_type": { "type": "string" },
+                    "model_cfg_file" : { "type": "string" },
                     "checkpoint_path": { "type": "string" },
                     "spacy_model": { "type": "string" }
                   },

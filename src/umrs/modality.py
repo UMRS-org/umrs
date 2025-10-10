@@ -3,7 +3,7 @@
 
 import sys
 
-VALID_MODALITIES = ["image", "text", "text file"]
+VALID_MODALITIES = ["image", "text", "text file", "tomography"]
 
 def is_valid_modality(modality):
     return modality in VALID_MODALITIES
