@@ -38,22 +38,23 @@ retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text reload
 # TODO: STD of listing buckets etc. should be returned to the client side as well.
 retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text list_buckets
 
-# Upload a sample text to a text bucket for user1 (xp2/text => bucket-2)
-retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test upload_text "hello from test" bucket-2
-
-# Upload a small batch of inline texts to the same text bucket (upload_text_batch)
-retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:batch upload_text_batch bucket-2 --texts "alpha one" "beta two" "gamma three"
+# Skipping inline text-sending via CLI; not supported anymore. Use upload_file with actual files or upload_dir.
 
 # Upload a text file object to the 'text file' bucket (bucket-5)
 if [ -f /root/data/texts/beast_in_the_jungle.txt ]; then
-  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:beast upload_textfile /root/data/texts/beast_in_the_jungle.txt bucket-5
+  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:beast upload_file /root/data/texts/beast_in_the_jungle.txt bucket-5
 fi
 
 # Upload a sample image to an image bucket for user1 if present
 if [ -f /root/data/img_test/cat.jpeg ]; then
-  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test upload_image /root/data/img_test/cat.jpeg bucket-1
+  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test upload_file /root/data/img_test/cat.jpeg bucket-1
   # Also exercise the other image bucket (bucket-3) if desired
-  python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test2 -k author:demo -k x_resolution:256 -k y_resolution:512 upload_image /root/data/img_test/cat.jpeg bucket-3 || true
+  python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test2 -k author:demo -k x_resolution:256 -k y_resolution:512 upload_file /root/data/img_test/cat.jpeg bucket-3 || true
+fi
+
+# Also exercise upload_dir for images if directory is present (aligns with demo.md)
+if [ -d /root/data/img ]; then
+  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:demo upload_dir /root/data/img bucket-1
 fi
 
 # Trigger server-side embedding operations (no config required)
