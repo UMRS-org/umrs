@@ -1,5 +1,5 @@
 # Deploying configuration file
-`./deploy_cfg.sh` to deploy example configuration file to ~/config/umrs: 
+`./deploy_cfg.sh` to deploy example configuration file to `~/.config/umrs`: 
 
 The directory is as follow: 
 
