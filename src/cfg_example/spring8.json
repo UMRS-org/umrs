@@ -1,0 +1,40 @@
+{
+  "username": "spring8",
+  "fullname": "Spring8 User",
+  "s3_configuration_file": "~/.s3cfg_spring8",
+  "experiences": [
+    {
+      "xp_name": "Tomography",
+      "sql_username": "spring8",
+      "modalities": [
+        {
+          "modality_name": "tomography",
+          "s3": {
+            "bucket_alias": "bucket-tomography",
+            "data": {
+              "type": "file",
+              "mime_type": "image/raw"
+            }
+          },
+          "model": {
+            "model_name": "Masked Autoencoder",
+            "vector_size": "768",
+            "model_type": "MAE",
+            "model_cfg_file": "../data/models/mae_vit-p128-s8d/mae-vit-b128_S8D.yaml",
+            "checkpoint_path": "../data/models/mae_vit-p128-s8d/best_model.pth"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "cls",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
+            ]
+          }
+        }   
+      ]
+    } 
+  ]
+}
