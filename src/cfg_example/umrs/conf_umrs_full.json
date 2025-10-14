@@ -1,8 +1,0 @@
-{
-   "admin_s3_configuration_file": "~/.s3cfg",
-    "users": [
-    "~/.config/umrs/users/user1.json",
-    "~/.config/umrs/users/user2.json"
-    ]
-}
-
