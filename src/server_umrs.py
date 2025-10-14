@@ -9,9 +9,14 @@ import torch
 import json
 import shutil
 
+
+# Add the parent directory of this script (src) to sys.path
+sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
+
+
 from umrs.sql import *
 from umrs.s3 import *
-from umrs.models import load_model
+from umrs.models_loading import load_model
 from umrs.MessageQueue import MessageQueue
 from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check
 from umrs.modality import check_or_quit
