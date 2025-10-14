@@ -18,13 +18,15 @@ from umrs.sql import *
 from umrs.s3 import *
 from umrs.models_loading import load_model
 from umrs.MessageQueue import MessageQueue
-from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check
+from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_global_thread_status
 from umrs.modality import check_or_quit
 from umrs.db_store import store_db_model, query_db_model
 from umrs.utils import zero_out_embeddings_for_empty_objects
 from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 from umrs.config import *
 
+# a global dictionnary for easly handling thread status
+global_thread_status = {}
 
 # ---------------------- Provisioning and configuration ----------------------
 
@@ -106,8 +108,29 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
 
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
+def update_global_thread_status(db_model_store, keys_per_bucket, thread):
+    thread_id = len(global_thread_status)
+    array_of_work = []
+    for path_to_bucket in keys_per_bucket.keys():
+        user, _, table_name, _, _, modality_name, _, data_base = query_db_model(db_model_store, path_to_bucket)
+        s3_keys = keys_per_bucket[path_to_bucket]
+        work = {
+            "user": user,
+            "data_base": data_base, 
+            "table_name": table_name,
+            "modality_name": modality_name,
+            "bucket": path_to_bucket,        
+            "nb_objects": len(s3_keys),
+        }
+        array_of_work.append(work)
+    global_thread_status[thread] = {         
+        "thread_id" : thread_id,
+        "status": "Running",
+        "work": array_of_work,
+    }
 
 def process_s3_objects(s3_objects, db_model_store, device):
+    current_thread = threading.current_thread()
     nb_objects = len(s3_objects)
     keys_per_bucket = defaultdict(list)
     print(f"\t-->Detected {nb_objects} new file(s):")
@@ -118,8 +141,10 @@ def process_s3_objects(s3_objects, db_model_store, device):
         if s3_key not in keys_per_bucket[path_to_bucket]:
             keys_per_bucket[path_to_bucket].append(s3_key)
 
+    update_global_thread_status(db_model_store, keys_per_bucket, current_thread)
+
     for path_to_bucket in keys_per_bucket.keys():
-        _, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection = query_db_model(db_model_store, path_to_bucket)
+        _, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, _ = query_db_model(db_model_store, path_to_bucket)
         s3_keys = keys_per_bucket[path_to_bucket]
         if store_embeddings_flag:
             print(f"\t--> Storing to data base in {table_name}")
@@ -127,13 +152,21 @@ def process_s3_objects(s3_objects, db_model_store, device):
         else:
             print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
 
+    global_thread_status[current_thread]["status"] = "Done"
     print(f"\t--> Processing {nb_objects} file(s) done!")
+    pretty_print_global_thread_status(global_thread_status)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+   
 
+def wait_for_key(d, key, check_interval=0.05):
+    while key not in d:
+        time.sleep(check_interval)  # wait for 50ms before checking again
+    # key is now valid in dictionary
 
 def launch_s3_thread(s3_objects, db_model_store, device):
     thread = threading.Thread(target=process_s3_objects, args=(s3_objects, db_model_store, device))
     thread.start()
+    wait_for_key(global_thread_status, thread) # wait for th thread status to be updated
     return thread
 
 
@@ -145,6 +178,7 @@ def clean_finished_threads(threads):
         else:
             new_threads.append(thread)
     print (f"==> Running threads: {len(new_threads)}")
+    pretty_print_global_thread_status(global_thread_status)
     return new_threads
 
 
