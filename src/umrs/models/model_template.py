@@ -1,50 +1,46 @@
-from transformers import AutoTokenizer, AutoModel
-from transformers.utils import logging
-from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict
-import torch
+'''
+# How to Import a New Model in UMRS
 
-################################ TransformerEncoder  ###########################
-def load_transformer_encoder(model_name):
-   
+Copy this template:
 
-    logging.set_verbosity_error()  # avoid verbose warning
-    print(f"\t\t\t--> Loading model '{model_name}'...")
+1. Create a function to load the model.
 
-    try:
-        # 1. Try to load locally
-        model = AutoModel.from_pretrained(model_name, local_files_only=True)
-        tokenizer = AutoTokenizer.from_pretrained(model_name, local_files_only=True)
-    except Exception:
-        print("\t\t\t--> Local cache not available or incomplete. Downloading from Hugging Face...")
-        model = AutoModel.from_pretrained(model_name)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        print("\t\t\t--> Downloaded and cached model.")
+2. Create a function to compute the embedding based on this model (taking the data/file as a parameter).  
+   Since this function will be part of a class, the model will be called using `self.model`.
 
+3. In `model_loading.py`:  
+   - Add the model loading using the function you created to load the model.  
+   - Attach the function to compute the embedding to the `EmbeddingModel` class. There are two supported ways to compute embeddings:  
+     - Using a tensor of data as in `sentence_transformer.py`.  
+     - Or a list of files as in `masked_autoencoder.py`.  
+   - Be sure that all values of `"model_name"`, `"vector_size"`, `"max_tokens"`, `"model"`, `"input_type"`, `"compute_embeddings_func"`, `"modality"`, `"spacy_model"`, `"tokenizer"`  
+     are correctly set before calling the `EmbeddingModel` constructor that is returned.
+
+4. Create or update a user configuration file by setting the values of:  
+   - `"model_name"`  
+   - `"vector_size"`  
+   - `"model_type"`  
+   And eventually:  
+   - `"checkpoint_path"`  
+   - `"model_cfg_file"`  
+   Also update other parts of the configuration for metadata and the datatype handled, if necessary.
+
+5. If you have a new modality, add it in `umrs/modality.py`, update `umrs/json_utils.py`, and check how to store it in `umrs/sql.py` (see the function `store_embeddings_in_db`). You should also customize the `client.py` (the `process_file` function).
+
+6. In `server_umrs.py`, check `compute_and_store_embedding()` to see if you are using the file or the tensor method for your modality.
+
+7. Create tests and test both `upload_file` and `upload_dir` commands from the client side. Look at the database to verify the embeddings are correctly stored.
+
+'''
+
+
+
+################################ ModelName  ###########################
+def load_model_name(model_name):
+    pass
     return model, tokenizer
 
 
-def compute_embeddings_transformer_encoder(self, texts):
-     # Step 1: Chunk the texts respecting token limits
-    flat_texts, chunks_dict = flatten_text_chunks(
-        texts,
-        self.nlp,
-        tokenizer=self.tokenizer,
-        max_tokens=self.max_tokens
-    )
-
-    # Step 2: Tokenize the chunks
-    inputs = self.tokenizer(flat_texts, return_tensors="pt", truncation=True, padding=True)
-
-    # Step 3: Send inputs to correct device
-    inputs = {key: value.to(self.device) for key, value in inputs.items()}
-
-    # Step 4: Forward pass
-    with torch.no_grad():
-        outputs = self.model(**inputs)
-        embeddings = outputs.last_hidden_state.mean(dim=1)  # Mean pooling
-
-    # Step 5: Bring embeddings back to CPU if needed
-    embeddings = embeddings.cpu().tolist() if self.device == "cuda" else embeddings
-
-    # Step 6: Reinsert embeddings into chunk metadata
-    return add_embeddings_to_chunks_dict(embeddings, chunks_dict)
+def compute_embeddings_model_name(self, tensor_or_file_list):
+    pass
+    return embeddings
