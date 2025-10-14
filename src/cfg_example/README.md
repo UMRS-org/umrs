@@ -1,5 +1,5 @@
 # Deploying configuration file
-`./deploy_cfg.sh` to deploy example configuration file to `~/.config/umrs`: 
+`./deploy_cfg.sh` to deploy example configuration files to `~/.config/umrs`: 
 
 The directory is as follow: 
 
@@ -15,8 +15,6 @@ umrs/
     └── user2.json
 ```
  
-
-
 
 The root folder `umrs/` mainly contains JSON configuration files and two directories:
 
