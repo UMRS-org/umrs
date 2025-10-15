@@ -97,7 +97,7 @@ def configure_user(user_cfg, cfg_store):
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection):
     if modality_name in ["tomography"]: # case of models where we compute everything from the files (e.g. using data loader)
         embeddings, checksums, metadata = model.compute_embeddings(s3_connection, s3_keys, path_to_bucket)
-    else: # case where we need to load data into a tensor and then compute embeddings 
+    else: # case where we need to load data into a tensor and then compute embeddings
         objects, metadata, checksums, sizes, has_at_least_a_zero = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
         embeddings = model.compute_embeddings(objects)
         if has_at_least_a_zero:
@@ -116,14 +116,14 @@ def update_global_thread_status(db_model_store, keys_per_bucket, thread):
         s3_keys = keys_per_bucket[path_to_bucket]
         work = {
             "user": user,
-            "data_base": data_base, 
+            "data_base": data_base,
             "table_name": table_name,
             "modality_name": modality_name,
-            "bucket": path_to_bucket,        
+            "bucket": path_to_bucket,
             "nb_objects": len(s3_keys),
         }
         array_of_work.append(work)
-    global_thread_status[thread] = {         
+    global_thread_status[thread] = {
         "thread_id" : thread_id,
         "status": "Running",
         "work": array_of_work,
@@ -156,7 +156,7 @@ def process_s3_objects(s3_objects, db_model_store, device):
     print(f"\t--> Processing {nb_objects} file(s) done!")
     pretty_print_global_thread_status(global_thread_status, running_only=False)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
-   
+
 
 def wait_for_key(d, key, check_interval=0.05):
     while key not in d:
