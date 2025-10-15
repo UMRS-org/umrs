@@ -154,7 +154,7 @@ def process_s3_objects(s3_objects, db_model_store, device):
 
     global_thread_status[current_thread]["status"] = "Done"
     print(f"\t--> Processing {nb_objects} file(s) done!")
-    pretty_print_global_thread_status(global_thread_status)
+    pretty_print_global_thread_status(global_thread_status, running_only=False)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
    
 
@@ -178,7 +178,7 @@ def clean_finished_threads(threads):
         else:
             new_threads.append(thread)
     print (f"==> Running threads: {len(new_threads)}")
-    pretty_print_global_thread_status(global_thread_status)
+    pretty_print_global_thread_status(global_thread_status, running_only=True)
     return new_threads
 
 
