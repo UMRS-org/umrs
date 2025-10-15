@@ -2,6 +2,40 @@ import pandas as pd
 import sys
 from tabulate import tabulate
 
+def pretty_print_global_thread_status(global_thread_status, running_only=True, print_output=True):
+    rows = []
+    for thread, info in global_thread_status.items():
+        thread_id = info.get("thread_id", "N/A")
+        status = info.get("status", "N/A")
+        if status != "Running" and running_only:
+            continue
+        works = info.get("work", [])
+        for work in works:
+            nb_objects = work.get("nb_objects", "N/A")
+            modality = work.get("modality_name", "N/A")
+            bucket = work.get("bucket", "N/A")
+            table_name = work.get("table_name", "N/A")
+            data_base = work.get("data_base", "N/A")
+            user = work.get("user", "N/A")
+            table_db = f"{table_name}/{data_base}"
+            if running_only:
+                rows.append([thread_id, user, nb_objects, modality, bucket, table_db])
+            else:
+                rows.append([thread_id, user, nb_objects, modality, bucket, table_db, status])
+
+    if rows:
+        if running_only:
+            headers = ["Thread ID", "Username", "Nb Objects", "Modality", "Bucket", "Table/Database"]
+        else:
+            headers = ["Thread ID", "Username", "Nb Objects", "Modality", "Bucket", "Table/Database", "Status"]
+        table = tabulate(rows, headers, tablefmt="fancy_grid")
+        message = "Server status:\n" + table
+    else:
+        message = "Server is idle"
+    if print_output:
+        print(message)
+    return message
+
 def pretty_print_cfg(cfg_dict, print_output=True):
     # Create an empty DataFrame with predefined columns
     df = pd.DataFrame(columns=["Bucket alias", "S3 user", "S3 path", "Experience", "Modality", "Database", "SQL table", "SQL user", "Model", "Embeds?", "Metadata"])

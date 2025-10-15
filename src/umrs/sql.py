@@ -549,7 +549,7 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         db_pool.putconn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
-    _username, data_base, table_name, _model, _store_embeddings_flag, _modality_name, _s3_connection = query_db_model(db_model_store, path_to_bucket)
+    _username, data_base, table_name, _model, _store_embeddings_flag, _modality_name, _s3_connection, _ = query_db_model(db_model_store, path_to_bucket)
     status = []
     for i, s3_object in enumerate(s3_objects):
         _, s3_key = s3_object.replace("s3://", "").split("/", 1)
