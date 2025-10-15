@@ -1,12 +1,20 @@
 # TODO list
 
+## Completed (recent)
+- Per-user scoping for STATUS summaries
+    - Server stores and returns maintenance summaries (check/update/recompute/reload) scoped to the requesting user only.
+    - Clients querying `status` only see their own summaries; cross-user data is never included.
+- Server pretty-print tables muted
+    - Pretty-printed tables (config, check/update/recompute) are no longer printed on the server console; they are generated as strings for client retrieval.
+    - Server still logs concise, non-sensitive progress messages for operators.
+
 ## admin users
 - We need to have admin users/roles
 	- Purpose: allow privileged operations such as CREATE_USER, RELOAD, UPDATE, CHECK, RECOMPUTE, and viewing multi-user summaries.
 	- Scope: authorization model and credential store are out of scope here; at minimum, server-side checks must enforce role on incoming commands.
 	- Acceptance:
 		- Admin-only commands are rejected for non-admins with a clear message; accepted for admins.
-		- Admins may list all users and their resources; regular users can only list their own.
+		- Admins may list all users and their resources and fetch any user's status; regular users can only list/fetch their own.
 
 ## to make the user environments more separated
 - Server-configured user configuration directory
@@ -19,6 +27,22 @@
 		- Server logs the resolved absolute `user_files_dir` on startup; changing the value redirects subsequent reads/writes to the new location.
 		- If the directory is missing or not writable, startup fails fast with a clear error; when valid, creating/updating a user writes the file under the configured directory.
 		- Only one directory is in use (no conflicting paths remain in configs or code).
+
+- Adopt XDG Base Directory standard for configuration
+	- Default config directory resolution order (first match wins):
+		1. If environment variable `UMRS_CONFIG` is set: use its value (must be an absolute path; if relative, resolve to cwd and warn).
+		2. Else if `XDG_CONFIG_HOME` is set: use `$XDG_CONFIG_HOME/umrs`.
+		3. Else fallback to `~/.config/umrs`.
+	- On startup, create the resolved directory if missing with permissions 700 (do not relax existing stricter perms) and log the final absolute path exactly once.
+	- All global (non per-user JSON) configuration files (e.g., main `conf_umrs.json`, staging/pipeline defaults, logging config) must live under this directory; remove / deprecate ad‑hoc scattered locations.
+	- Do not silently mix legacy locations: if a legacy `conf_umrs.json` is detected elsewhere while an XDG path is active, log a deprecation warning and ignore the legacy file (never merge implicitly).
+	- Provide a helper function `resolve_config_dir()` used consistently across server and client code to avoid drift.
+	- Document override behavior and precedence in README / HOWTO.
+	- Acceptance:
+		- Running without `UMRS_CONFIG` creates/uses `~/.config/umrs` (or `$XDG_CONFIG_HOME/umrs`) and logs: `UMRS config dir: <abs_path>`.
+		- Setting `UMRS_CONFIG=/tmp/custom_umrs_cfg` causes all config reads/writes to occur solely under that directory; no accesses to the default path appear in logs (can verify via debug logging / grep).
+		- Supplying both a legacy path and new XDG path results in a single clear deprecation warning and only the XDG-resolved directory being used.
+		- A unit test (to be added later) can monkeypatch env vars and assert the resolution order.
 
 - Define and persist a per-user stable identifier (user_id)
 	- Generate a server-side user_id (UUID v4 or short hash) when creating a user.
@@ -33,13 +57,14 @@
 
 - Clarify server logs vs client feedback
 	- Server stdout/stderr is not streamed to clients; only acknowledgements and concise summaries are sent back.
+	- Pretty-print tables are not emitted to server logs; summaries are returned to clients on demand via the `status` command.
 	- Update client UI/CLI to state that operations are asynchronous; show high-level statuses (READY, CHECK, UPDATE, RECOMPUTE, RELOAD) and final summaries.
-	- Acceptance: Client shows succinct status without raw server logs; operators still see full logs on the server.
+	- Acceptance: Client shows succinct status without raw server logs/tables; operators still see concise progress logs on the server.
 
-- Per-user scoping for list operations
-	- Any listing (buckets, experiences, tables) must be filtered server-side by the authenticated requester (username/user_id).
-	- Admins may pass a target user to list cross-user; non-admins cannot.
-	- Acceptance: Regular users see only their own resources; cross-user data is never returned to them.
+- Per-user scoping for list and status operations
+	- Any listing (buckets, experiences, tables) and status retrieval must be filtered server-side by the authenticated requester (username/user_id).
+	- Admins may pass a target user to list cross-user and to fetch cross-user status; non-admins cannot.
+	- Acceptance: Regular users see only their own resources and their own status summaries; cross-user data is never returned to them.
 
 ## to make the processes more flexible
 - we want to add more processes but not only the embedding calculation.
@@ -96,5 +121,48 @@
 	- Running `python src/server_umrs.py` and `python src/client_umrs.py` still works unchanged for end users.
 	- Unit tests for server and client can be run independently (e.g., `pytest tests/server` vs `tests/client`).
 	- A minimal README explains the three-layer layout (server/client/core) and public entrypoints.
+
+## API command simplification & legacy mode removal
+- Rationale: Current API flow/command set is redundant and not generic; modality is already implied by the bucket so explicit modality arguments and legacy branching are unnecessary.
+- Remove: All legacy mode code paths and flags ("legacy mode" concept entirely eliminated).
+- Unified command set (authoritative list; replace prior/legacy commands):
+	- `ping`                : Check server readiness.
+	- `upload_file`         : Upload a single file (text/image/etc.) to a given bucket; modality inferred from bucket.
+	- `upload_dir`          : Recursively upload all files in a directory to a given bucket; optional include/exclude patterns.
+	- `list_buckets`        : List bucket aliases for the authenticated username (admins may specify a target user).
+	- `recompute`           : Recompute all embeddings for all buckets (server-side, admin or per-user scope depending on auth model).
+	- `update`              : Compute embeddings only for missing/mismatched entries (idempotent, resumable).
+	- `check`               : Check consistency between S3 objects and DB entries (count, missing, orphan, hash mismatch stats).
+	- `reload`              : Reload server configuration / models (admin only).
+- Behavior changes:
+	- Modality resolution: Server derives modality strictly from bucket metadata / naming convention; no client-provided modality allowed (reject if supplied to prevent drift).
+	- Upload validation: On `upload_file` and `upload_dir`, server performs the same content-type / extension checks previously done in legacy path; errors reported per-file (multi-file continues on failures, summarizing at end).
+	- Idempotency: `upload_dir` must skip already ingested identical files (hash or size+mtime heuristic) unless a `--force` flag is provided.
+	- Progress feedback: For bulk uploads, client shows a concise progress bar + final summary (counts: uploaded, skipped, failed).
+- Removal tasks:
+	- Delete / refactor legacy branching code and flags in both client and server entrypoints.
+	- Remove obsolete command names from help/README and docs (`TODO: enumerate after code scan`).
+	- Add migration note: "Legacy mode removed; use unified commands; modality now inferred from bucket." in HOWTO / README.
+- Implementation tasks:
+	- Refactor command dispatch layer to a single registry dict: {command_name: handler} shared across client & server interface definition (avoid drift).
+	- Introduce a structured request object schema (command, args, username, user_id) and validate before dispatch.
+	- Implement bucket->modality lookup helper (cached) with clear errors if bucket unknown or misconfigured.
+	- Add filtering/pattern options for `upload_dir` (e.g. `--include "*.txt" --exclude "*.bak"`).
+	- Ensure `recompute`, `update`, `check`, `reload` enforce admin/non-admin authorization rules defined in earlier admin section.
+	- Update pretty_print summaries to include: command, duration, counts, error summary.
+	- Extend tests: command parser, bucket modality inference, upload idempotency, error handling for mixed success in directory upload.
+- Acceptance criteria:
+	- Help output (client `--help`) lists only the unified commands above and no legacy options.
+	- Attempting a removed/legacy command returns a clear error: `Unknown command '<name>' (legacy commands removed)`.
+	- Uploading a file to a bucket with known modality proceeds without requiring modality argument; providing one yields a validation error.
+	- Directory upload with mixed file types processes only those valid for the inferred modality and reports skipped/invalid separately.
+	- `recompute`, `update`, `check`, `reload` rejected for non-admin users with clear authorization message; succeed for admins.
+	- All prior embedding-only flows remain functional via `upload_file` / `upload_dir` + `update` / `recompute` without regressions.
+	- Tests cover: command dispatch (positive + unknown), bucket modality inference failure, idempotent skip logic, partial failure reporting.
+	- Legacy code paths fully removed (grep for markers / flags returns no matches) and CI check passes.
+- Follow-up (optional enhancements):
+	- Add `dry-run` flag for `upload_dir` to report would-be actions without side effects.
+	- Add concurrency controls / rate limiting for large directory uploads.
+	- Support checksum pre-manifest to accelerate idempotency check for massive directories.
 
 
