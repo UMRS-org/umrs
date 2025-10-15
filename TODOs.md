@@ -22,7 +22,8 @@
 	- In `_persist_uploaded_user_config`, use `os.path.dirname(...)` instead of `os.path.dir(...)`.
 - Guard against MinIO storage exhaustion during demos/tests
 	- Add a small preflight space check or warn when free space is low.
-	- Provide a documented cleanup target to reset MinIO state between runs (e.g., prune `docker_minio_data` volume).
+	- Prefer object-level cleanup: document how to delete unnecessary files/objects from the affected buckets (e.g., via `s3cmd` or `mc`) to quickly recover space without resetting the service.
+	- Provide a documented cleanup target to reset MinIO state between runs (e.g., prune `docker_minio_data` volume) as a last resort.
 	- Add an optional flag in `docker/test_umrs_api.sh` to skip bulk uploads when running in constrained environments.
 - Authorization/roles (foundation)
 	- Enforce admin-only for global commands: RELOAD, RECOMPUTE (all users), UPDATE (all), CHECK (all), and cross-user STATUS.
