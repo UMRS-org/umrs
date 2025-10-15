@@ -7,6 +7,27 @@
 - Server pretty-print tables muted
     - Pretty-printed tables (config, check/update/recompute) are no longer printed on the server console; they are generated as strings for client retrieval.
     - Server still logs concise, non-sensitive progress messages for operators.
+- Client-visible STATUS end-to-end
+	- Implemented client `status` subcommands (all, recompute, update, check, reload, config) wired to server-side summaries.
+	- pretty_print functions now return strings and are reused by the server to build responses.
+	- Integrated thread status table printing on the server for operator visibility (not exposed to clients).
+- Integration test hardening (docker/test_umrs_api.sh)
+	- Added explicit status calls with comments after each maintenance operation.
+	- Added a second full pass using `user2` to validate per-user isolation; verified isolation end-to-end.
+- Upstream sync
+	- Merged latest `main` into `update_docker`, resolved conflicts while preserving per-user STATUS behavior and thread status integration.
+
+## Short-term next steps (actionable)
+- Fix minor path bug in server user-config persistence
+	- In `_persist_uploaded_user_config`, use `os.path.dirname(...)` instead of `os.path.dir(...)`.
+- Guard against MinIO storage exhaustion during demos/tests
+	- Add a small preflight space check or warn when free space is low.
+	- Provide a documented cleanup target to reset MinIO state between runs (e.g., prune `docker_minio_data` volume).
+	- Add an optional flag in `docker/test_umrs_api.sh` to skip bulk uploads when running in constrained environments.
+- Authorization/roles (foundation)
+	- Enforce admin-only for global commands: RELOAD, RECOMPUTE (all users), UPDATE (all), CHECK (all), and cross-user STATUS.
+	- Non-admins can run per-user scope for CHECK/UPDATE/RECOMPUTE and fetch only their own STATUS.
+	- Return clear "unauthorized" errors for disallowed commands.
 
 ## admin users
 - We need to have admin users/roles
