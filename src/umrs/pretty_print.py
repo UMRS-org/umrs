@@ -2,7 +2,7 @@ import pandas as pd
 import sys
 from tabulate import tabulate
 
-def pretty_print_cfg(cfg_dict):
+def pretty_print_cfg(cfg_dict, print_output=True):
     # Create an empty DataFrame with predefined columns
     df = pd.DataFrame(columns=["Bucket alias", "S3 user", "S3 path", "Experience", "Modality", "Database", "SQL table", "SQL user", "Model", "Embeds?", "Metadata"])
     db_model_store = cfg_dict['db_model_store']
@@ -29,12 +29,14 @@ def pretty_print_cfg(cfg_dict):
 
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
-    print("\nServer confuguration:")
-    print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
+    message = "\nServer confuguration:" + "\n" + tabulate(df, headers='keys', tablefmt='fancy_grid')
+    if print_output:
+        print(message)
+    return message
 
 
-def pretty_print_user_cfg(cfg_dict):
-    
+def pretty_print_user_cfg(cfg_dict, print_output=True):
+
     df = pd.DataFrame(columns=["Modality", "Bucket alias", "Experience", "Bucket path", "DB name", "SQL user"])
     username = None
     for key, entry in cfg_dict.items():
@@ -50,15 +52,17 @@ def pretty_print_user_cfg(cfg_dict):
             username = user
         elif user != username:
             sys.exit(f"user mismatch between {username} and {user}")
-        
+
         df.loc[len(df)] = [modality, bucket_alias, xp_name, bucket_path, db_name, sql_username]
     df.sort_values(by=["Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
-        
-    print(f"Configuration for S3 user '{username}':")
-    print(tabulate(df, headers='keys', tablefmt='fancy_grid'))
 
-def pretty_print_recompute(recompute_dict, update=False):
+    message = f"Configuration for S3 user '{username}':\n" + tabulate(df, headers='keys', tablefmt='fancy_grid')
+    if print_output:
+        print(message)
+    return message
+
+def pretty_print_recompute(recompute_dict, update=False, print_output=True):
     df = pd.DataFrame(columns=["Bucket alias", "S3 user",  "Bucket path", "Modality", "Model", "Objects", "Size (MB)", "Duration (s)"])
 
     for path_to_bucket, entry in recompute_dict.items():
@@ -76,19 +80,25 @@ def pretty_print_recompute(recompute_dict, update=False):
     df.reset_index(drop=True, inplace=True)
 
     if update:
-        print("\nUpdate Summary:")
+        title = "\nUpdate Summary:"
     else:
-        print("\nRecompute Summary:")
+        title = "\nRecompute Summary:"
 
     # If no rows to display, avoid tabulate alignment issues and print a friendly message
     if df.empty:
-        print("(no buckets to process)")
-        return
+        message = f"{title}\n(no buckets to process)"
+        if print_output:
+            print(message)
+        return message
 
     colalign = ("right", "left", "left", "left", "left", "right", "right", "right")
-    print(tabulate(df, headers="keys", tablefmt="fancy_grid", colalign=colalign))
+    table = tabulate(df, headers="keys", tablefmt="fancy_grid", colalign=colalign)
+    message = f"{title}\n{table}"
+    if print_output:
+        print(message)
+    return message
 
-def pretty_print_check(check_dict):
+def pretty_print_check(check_dict, print_output=True):
     df = pd.DataFrame(columns=["Bucket alias", "S3 user", "Bucket path", "Modality", "Model",
                                "Objects", "Size (MB)", "Matches", "Mismatches", "Not Found", "Errors"])
 
@@ -121,5 +131,7 @@ def pretty_print_check(check_dict):
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    print("\nObject Check Summary:")
-    print(tabulate(df, headers="keys", tablefmt="fancy_grid"))
+    message = "\nObject Check Summary:" + "\n" + tabulate(df, headers="keys", tablefmt="fancy_grid")
+    if print_output:
+        print(message)
+    return message
