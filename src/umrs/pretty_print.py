@@ -2,12 +2,12 @@ import pandas as pd
 import sys
 from tabulate import tabulate
 
-def pretty_print_global_thread_status(global_thread_status):
+def pretty_print_global_thread_status(global_thread_status, running_only=True):
     rows = []
     for thread, info in global_thread_status.items():
         thread_id = info.get("thread_id", "N/A")
         status = info.get("status", "N/A")
-        if status != "Running": 
+        if status != "Running" and running_only: 
             continue
         works = info.get("work", [])
         for work in works:
@@ -18,12 +18,18 @@ def pretty_print_global_thread_status(global_thread_status):
             data_base = work.get("data_base", "N/A")
             user = work.get("user", "N/A")
             table_db = f"{table_name}/{data_base}"
-            rows.append([thread_id, user, nb_objects, modality, bucket, table_db])
-
+            if running_only:
+                rows.append([thread_id, user, nb_objects, modality, bucket, table_db])
+            else:
+                rows.append([thread_id, user, nb_objects, modality, bucket, table_db, status])
     print("Server status:")
 
     if len(rows)>0:
-        headers = ["Thread ID", "Username", "Nb Objects", "Modality", "Bucket", "Table/Database"]
+        if running_only:
+            headers = ["Thread ID", "Username", "Nb Objects", "Modality", "Bucket", "Table/Database"]
+        else:
+            headers = ["Thread ID", "Username", "Nb Objects", "Modality", "Bucket", "Table/Database", "Status"]
+
         print(tabulate(rows, headers, tablefmt="fancy_grid"))
     else:
         print("Server is idle")
