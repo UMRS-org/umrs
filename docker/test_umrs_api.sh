@@ -96,3 +96,57 @@ retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status 
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status all  # Show consolidated status for this client
 
 echo "UMRS API test completed."  # Final message indicating the integration run finished
+
+
+# ==========================
+# Second pass: run as user2
+# ==========================
+# Goal: sanity-check per-user isolation by repeating the flow as user2 and
+# verifying status outputs are scoped to the requesting user only.
+
+# Switch the client identity for maintenance commands and status scoping
+export UMRS_CLIENT_ID="user2"
+CLIENT_CONF=/root/user_files/user2.json  # Path to client configuration for user2
+
+# Quick readiness check (should already be up); keep retry to be robust
+echo "Running second pass as user2..."
+retry 10 2 python /app/src/client_umrs.py ping
+
+# Reload configuration using user2.json so the server persists and refreshes mappings if needed
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text reload
+
+# Status: reload — user2-scoped configuration summary
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status reload
+
+# List buckets for user2 — should only show user2's buckets
+retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text list_buckets
+
+# Upload a sample text file to user2's text bucket (bucket-2: modality 'text' → file lines are sent as separate objects)
+if [ -f /root/data/texts/beast_in_the_jungle.txt ]; then
+  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:beast upload_file /root/data/texts/beast_in_the_jungle.txt bucket-2
+fi
+
+# Upload images to user2's image bucket (bucket-1)
+if [ -f /root/data/img_test/cat.jpeg ]; then
+  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test upload_file /root/data/img_test/cat.jpeg bucket-1
+fi
+
+# Optionally upload a whole directory of images into bucket-1
+if [ -d /root/data/img ]; then
+  retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:demo upload_dir /root/data/img bucket-1
+fi
+
+# Trigger maintenance ops as user2
+retry 10 3 python /app/src/client_umrs.py --output text check
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status check
+
+retry 10 3 python /app/src/client_umrs.py --output text update
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status update
+
+retry 10 3 python /app/src/client_umrs.py --output text recompute
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status recompute
+
+# Consolidated status for user2 — should not include user1 buckets/rows
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status all
+
+echo "UMRS API second pass (user2) completed."
