@@ -26,10 +26,14 @@ COPY ./docker/conf_umrs.json /root/conf_umrs.json
 # Use docker user_files (mounted in compose for test container); server image does not need users_json
 COPY ./docker/user_files /root/user_files
 
-# s3cfg files 
+# s3cfg files
 COPY ./docker/s3cfg /root/.s3cfg
 COPY ./docker/s3cfg_user1 /root/.s3cfg_user1
 COPY ./docker/s3cfg_user2 /root/.s3cfg_user2
+
+# specify the umrs config directory
+ENV UMRS_CONFIG /root/
+# or use the default /root/.config/umrs/
 
 EXPOSE 8000
 CMD ["python", "src/server_umrs.py", "-c", "/root/conf_umrs.json"]
