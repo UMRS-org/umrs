@@ -1,5 +1,6 @@
 import os
 import tempfile
+import json
 try:
     import zmq
 except ImportError as e:
@@ -33,7 +34,8 @@ class MessageQueue:
         self.timeout = timeout_ms
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
         self.tmp_dir = tmp_dir
-        
+        self.status_store = None
+
         # Initialize the selected queue type
         if self.type == "control":
             self.port = BASE_PORT
@@ -52,7 +54,7 @@ class MessageQueue:
         if self.role == 'server':
             self.socket = self.context.socket(zmq.REP)
             self.socket.bind(f"tcp://*:{self.port}")  # Control channel
-            self.set_timeouts(-1, self.timeout) #receiving is always blocking. 
+            self.set_timeouts(-1, self.timeout) #receiving is always blocking.
         else:  # client
             self.socket = self.context.socket(zmq.REQ)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
@@ -86,13 +88,13 @@ class MessageQueue:
             raise RuntimeError(f"ZeroMQ error while sending '{string}' from {self.role} to {self.type}: {e}")
         except Exception as e:
             raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}")
-    
+
 
     def recv_string(self):
         return self.socket.recv_string()
 
     def set_timeouts(self, recv_timeout_ms, send_timeout_ms):
-        self.socket.RCVTIMEO = recv_timeout_ms  
+        self.socket.RCVTIMEO = recv_timeout_ms
         self.socket.SNDTIMEO = send_timeout_ms
 
     def send_file(self, send_file_path, chunk_size=4096):
@@ -115,7 +117,7 @@ class MessageQueue:
     def recv_file(self, out_dir="/tmp"):
         if self.role != 'server' or self.type != 'data':
             raise PermissionError("Receiving file can only be done by the server using the data queue")
-        
+
         if not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)  # Ensure directory exists
 
@@ -132,7 +134,7 @@ class MessageQueue:
 
 
     # ------------------------ Close ------------------------
-    
+
     def close(self):
         # Close data sockets for clients (if any)
         for entry in self.client_dictionary.values():
@@ -149,7 +151,7 @@ class MessageQueue:
         except Exception as e:
             print(f"Warning: Failed to close main socket: {e}")
 
-            
+
     # ------------------------ Server methods ------------------------
     def server_control_queue_loop(self):
         if self.role != "server":
@@ -160,14 +162,14 @@ class MessageQueue:
             print(f"Received request: {msg}")
             # messgae structure should be "{command}:{username}:{other information (e.g file/object count)}"
             splited_msg = msg.split(":")
-            
+
             cmd = splited_msg[0]
             if cmd == "READY?":  # handshake
-                try: 
+                try:
                     self.send_string("READY!")
                 except RuntimeError as e:
                     print(f"Error in client handshake: {e}")
-                    
+
             elif cmd == "CREATE_DATA_QUEUE":  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
@@ -178,7 +180,7 @@ class MessageQueue:
                     self.client_dictionary.setdefault(client_id, {})["port"] = port
                     data_queue = MessageQueue(role='server', queue_type='data', server_ip=self.server_ip, port=port)
                     self.client_dictionary[client_id]["data_queue"] = data_queue
-                    
+
                 reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
                 try:
                     self.send_string(reply)
@@ -195,21 +197,31 @@ class MessageQueue:
                 nb_files = int(splited_msg[2])
                 # include client_id in the payload for server-side identity enforcement
                 return self._process_file_cmd(client_id, nb_files)
+            elif cmd == "STATUS":
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
+                payload = self._get_status_payload(client_id, status_key)
+                try:
+                    self.send_string(payload)
+                except RuntimeError as e:
+                    print(f"Error sending status payload: {e}")
+                continue
             elif cmd in ("RECOMPUTE", "UPDATE", "CHECK", "RELOAD"):
                 # Acknowledge and let the server main loop perform the operation
                 try:
                     self.send_string("ACKNOWLEDGE")
                 except RuntimeError as e:
                     print(f"Error acknowledging {cmd} request: {e}")
-                return cmd, None
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                return cmd, client_id
             else:
                 raise RuntimeError(f"Unknown command: {cmd}")
-                    
+
     def wait_for_s3_events(self, nb_objects, debug=False):
         """Block until new messages arrive, then read all available messages."""
         if self.role != 'server':
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
-        
+
         messages = []
         print(f"Listening for {nb_objects} new messages...")
         nb_received = 0
@@ -228,14 +240,14 @@ class MessageQueue:
             data_queue = self.client_dictionary[client_id]["data_queue"]
             port = self.client_dictionary[client_id]["port"]
             print(f"Listening data to port {port}")
-            
+
             path_list = []
             if not self.tmp_dir or not os.path.exists(self.tmp_dir) :
                 print(f"Warning no directory set for temporary receiving files or not accessible, using {os.devnull}")
                 recv_dir = os.devnull
             else :
                 recv_dir = self.tmp_dir
-     
+
             # For each expected file:
             for _ in range(nb_files):
                 # Receive file data into it
@@ -244,14 +256,14 @@ class MessageQueue:
                 path_list.append(file_path)
 
             # Send acknowledgment to client after receiving all files
-            try: 
+            try:
                 self.send_string("ACKNOWLEDGE")
             except RuntimeError as e:
                 print(f"Error in sending acknowleding client: {e}")
             # Return client_id along with received file paths so server can enforce identity
             return "FILE", (client_id, path_list)
-        else: # cannot find the client in the client_dictionnary         
-            try: 
+        else: # cannot find the client in the client_dictionnary
+            try:
                 self.send_string("NO_DATA_QUEUE")
             except RuntimeError as e:
                 print(f"Error in sending 'no available data queue' to client: {e}")
@@ -262,19 +274,19 @@ class MessageQueue:
             port = self.client_dictionary[client_id]["port"]
             print(f"Listening data to port {port}")
             objects =  data_queue.wait_for_s3_events(nb_objects)
-            try: 
+            try:
                 self.send_string("ACKNOWLEDGE")
             except RuntimeError as e:
                 print(f"Error in sending acknowleding client: {e}")
             return "OBJECT", objects
         else:
-            try: 
+            try:
                 self.send_string("NO_DATA_QUEUE")
             except RuntimeError as e:
                 print(f"Error in sending 'no available data queue' to client: {e}")
 
     # ------------------------ client methods ------------------------
-    
+
     def reset_control_queue(self):
         if self.role != 'client' or self.type != 'control':
             raise PermissionError("reset_control_plane can only be called by client control queue")
@@ -302,7 +314,7 @@ class MessageQueue:
             timeout_ms = 1500
 
         self.set_timeouts(timeout_ms, timeout_ms)
-        try: 
+        try:
             try:
                 self.send_string("READY?")
                 answer = self.recv_string()
@@ -311,7 +323,7 @@ class MessageQueue:
             except zmq.Again:
                 # Retry once on timeout
                 try:
-                    # but first need to reset the socket to avoid error. 
+                    # but first need to reset the socket to avoid error.
                     self.reset_control_queue()
                     self.set_timeouts(timeout_ms, timeout_ms)
                     self.send_string("READY?")
@@ -323,7 +335,7 @@ class MessageQueue:
             return False
         finally:
             self.set_timeouts(self.timeout, self.timeout) # always reset timeout before exiting
-        
+
     def get_data_queue(self, client_id):
         if self.role != "client":
             raise PermissionError(f"Only client can call 'get_data_queue'")
@@ -375,6 +387,48 @@ class MessageQueue:
         else:
             raise RuntimeError(f"Unexpected error on server side for user {client_id}: {reply}.")
 
+    def request_status(self, client_id, status_key="all"):
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_status'")
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        safe_status_key = (status_key or "all").replace(":", "_")
+        request_str = f"STATUS:{safe_client_id}:{safe_status_key}"
+        self.send_string(request_str)
+
+        try:
+            reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in request_status")
+
+        return reply
+
+    def set_status_store(self, status_store):
+        self.status_store = status_store
+
+    def _get_status_payload(self, client_id, status_key):
+        store = self.status_store or {}
+        key = (status_key or "all").lower()
+
+        if not client_id:
+            payload = {"status": "error", "message": "Missing client identifier"}
+            return json.dumps(payload, ensure_ascii=False)
+
+        client_store = store.get(client_id, {})
+        if key in ("all", "*"):
+            if not client_store:
+                payload = {"status": "error", "message": "No status entries", "client": client_id}
+            else:
+                payload = {"status": "ok", "client": client_id, "summaries": client_store}
+            return json.dumps(payload, ensure_ascii=False)
+
+        entry = client_store.get(key)
+        if not entry:
+            payload = {"status": "error", "message": f"No status for '{key}'", "client": client_id}
+        else:
+            payload = {"status": "ok", "client": client_id, "summary": entry}
+        return json.dumps(payload, ensure_ascii=False)
+
     def notify_s3(self, s3_object):
         """Notify the server about a new S3 event."""
         if self.role != 'client':
@@ -382,8 +436,8 @@ class MessageQueue:
 
         # print(f"sending data to port: {self.port}")
         self.send_string(s3_object)
-        
-        
 
 
-                
+
+
+
