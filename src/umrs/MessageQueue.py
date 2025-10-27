@@ -91,8 +91,12 @@ class MessageQueue:
 
 
     def recv_string(self):
-        return self.socket.recv_string()
-
+        try:
+            res = self.socket.recv_string()
+            return res
+        except zmq.error.Again:
+            return None
+        
     def set_timeouts(self, recv_timeout_ms, send_timeout_ms):
         self.socket.RCVTIMEO = recv_timeout_ms
         self.socket.SNDTIMEO = send_timeout_ms
