@@ -5,9 +5,9 @@ import os
 import sys
 from collections import defaultdict
 import time
+from datetime import datetime
 import torch
 import json
-import shutil
 
 
 # Add the parent directory of this script (src) to sys.path
@@ -56,7 +56,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
 def configure_user(user_cfg, cfg_store):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
-    user_conf_file = user_cfg['config_file_path'] 
+    user_conf_file = user_cfg['config_file_path']
 
     if 'user_config_map' not in cfg_store:
         cfg_store['user_config_map'] = {}
@@ -66,7 +66,7 @@ def configure_user(user_cfg, cfg_store):
 
     if 'db_model_store' not in cfg_store:
         cfg_store['db_model_store'] = {}
-    
+
     db_model_store = cfg_store['db_model_store']
 
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
@@ -97,7 +97,7 @@ def configure_user(user_cfg, cfg_store):
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection):
     if modality_name in ["tomography"]: # case of models where we compute everything from the files (e.g. using data loader)
         embeddings, checksums, metadata = model.compute_embeddings(s3_connection, s3_keys, path_to_bucket)
-    else: # case where we need to load data into a tensor and then compute embeddings 
+    else: # case where we need to load data into a tensor and then compute embeddings
         objects, metadata, checksums, sizes, has_at_least_a_zero = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
         embeddings = model.compute_embeddings(objects)
         if has_at_least_a_zero:
@@ -116,10 +116,10 @@ def update_global_thread_status(db_model_store, keys_per_bucket, thread):
         s3_keys = keys_per_bucket[path_to_bucket]
         work = {
             "user": user,
-            "data_base": data_base, 
+            "data_base": data_base,
             "table_name": table_name,
             "modality_name": modality_name,
-            "bucket": path_to_bucket,        
+            "bucket": path_to_bucket,
             "nb_objects": len(s3_keys),
         }
         array_of_works.append(work)
@@ -156,7 +156,7 @@ def process_s3_objects(s3_objects, db_model_store, device):
     print(f"\t--> Processing {nb_objects} file(s) done!")
     pretty_print_global_thread_status(global_thread_status, running_only=False)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
-   
+
 
 def wait_for_key(d, key, check_interval=0.05):
     while key not in d:
@@ -184,8 +184,9 @@ def clean_finished_threads(threads):
 
 # --------------------------- Maintenance commands ---------------------------
 
-def recompute_all_objects(db_model_store, device):
-    print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
+def recompute_all_objects(db_model_store, device, log_output=True):
+    if log_output:
+        print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
 
     recompute_dict = {}
 
@@ -208,11 +209,15 @@ def recompute_all_objects(db_model_store, device):
             "model": entry["model"]
         }
 
-    pretty_print_recompute(recompute_dict)
+    summary = pretty_print_recompute(recompute_dict, print_output=False)
+    if log_output:
+        print(summary)
+    return {"summary": summary, "data": recompute_dict}
 
 
-def update_objects(db_model_store, device, verbose=False):
-    print(f"\n######################\nUpdating missing/mismatched objects in all buckets\n######################\n")
+def update_objects(db_model_store, device, verbose=False, log_output=True):
+    if log_output:
+        print(f"\n######################\nUpdating missing/mismatched objects in all buckets\n######################\n")
 
     update_dict = {}
 
@@ -245,11 +250,15 @@ def update_objects(db_model_store, device, verbose=False):
             "model": entry["model"]
         }
 
-    pretty_print_recompute(update_dict, update=True)
+    summary = pretty_print_recompute(update_dict, update=True, print_output=False)
+    if log_output:
+        print(summary)
+    return {"summary": summary, "data": update_dict}
 
 
-def check_objects(db_model_store, verbose=False):
-    print(f"\n######################\nChecking all objects in all buckets\n######################\n")
+def check_objects(db_model_store, verbose=False, log_output=True):
+    if log_output:
+        print(f"\n######################\nChecking all objects in all buckets\n######################\n")
 
     perform_update = False
     check_dict = {}
@@ -286,12 +295,118 @@ def check_objects(db_model_store, verbose=False):
             "Not_found": nb_not_found,
             "Errors": nb_error
         }
-    pretty_print_check(check_dict)
+    summary = pretty_print_check(check_dict, print_output=False)
+    if log_output:
+        print(summary)
     if perform_update:
-        print("\n⚠️ Warning: The database is not fully consistent with the objects stored in S3.")
-        print("→ To recompute and update the missing or mismatched entries, restart the server with the `--force-update` option.\n")
+        note = "\n⚠️ Warning: The database is not fully consistent with the objects stored in S3.\n→ To recompute and update the missing or mismatched entries, restart the server with the `--force-update` option."
     else:
-        print("\n ✅ No problem: The database is fully consistent with the objects stored in S3.")
+        note = "\n ✅ No problem: The database is fully consistent with the objects stored in S3."
+    if log_output:
+        print(note)
+    summary_with_note = summary + note
+    return {"summary": summary_with_note, "data": check_dict, "requires_update": perform_update}
+
+
+def _record_status(status_store, client_id, key, payload):
+    if status_store is None:
+        return
+
+    owner = client_id or "system"
+    entry = {
+        "summary": payload.get("summary", ""),
+        "generated_at": datetime.utcnow().isoformat() + "Z"
+    }
+    if "data" in payload:
+        entry["data"] = _sanitize_status_data(payload["data"])
+    if "requires_update" in payload:
+        entry["requires_update"] = payload["requires_update"]
+    if "error" in payload:
+        entry["error"] = payload["error"]
+
+    status_store.setdefault(owner, {})[key] = entry
+
+
+def _handle_maintenance_command(cmd, client_id, db_model_store, device, configure_file, user_config_map, status_store):
+    if cmd == "RECOMPUTE":
+        outcome = recompute_all_objects(db_model_store, device)
+        key = "recompute"
+    elif cmd == "UPDATE":
+        outcome = update_objects(db_model_store, device)
+        key = "update"
+    elif cmd == "CHECK":
+        outcome = check_objects(db_model_store, verbose=False)
+        key = "check"
+    elif cmd == "RELOAD":
+        outcome = reload_configuration(configure_file, db_model_store, user_config_map)
+        key = "reload"
+    else:
+        print(f"====> Error: unknown command '{cmd}' returned by maintenance handler")
+        return
+
+    # Ensure only the requesting user's data is stored and later visible via STATUS
+    filtered_outcome = _filter_outcome_for_client(key, outcome, client_id, db_model_store)
+    _record_status(status_store, client_id, key, filtered_outcome)
+
+
+def _sanitize_status_data(data):
+    if isinstance(data, dict):
+        return {k: _sanitize_status_data(v) for k, v in data.items()}
+    if isinstance(data, (list, tuple)):
+        return [_sanitize_status_data(item) for item in data]
+    if hasattr(data, "model_name"):
+        return getattr(data, "model_name")
+    if isinstance(data, (str, int, float, bool)) or data is None:
+        return data
+    return str(data)
+
+
+def _filter_dict_by_user(data_dict, client_id):
+    """Return a shallow copy of data_dict entries that belong to client_id (match on 's3_username')."""
+    if not isinstance(data_dict, dict):
+        return {}
+    return {k: v for k, v in data_dict.items() if isinstance(v, dict) and v.get('s3_username') == client_id}
+
+
+def _filter_outcome_for_client(key, outcome, client_id, db_model_store):
+    """Filter an operation outcome so it only contains information for the requesting client_id.
+
+    For recompute/update/check: filter the 'data' dict by s3_username then rebuild the summary.
+    For reload: build a per-user configuration summary from the current db_model_store.
+    """
+    try:
+        if key in ("recompute", "update"):
+            full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
+            filtered = _filter_dict_by_user(full, client_id)
+            summary = pretty_print_recompute(filtered, update=(key == "update"), print_output=False)
+            return {"summary": summary, "data": filtered}
+
+        if key == "check":
+            full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
+            filtered = _filter_dict_by_user(full, client_id)
+            summary = pretty_print_check(filtered, print_output=False)
+            # Recompute requires_update flag scoped to this client's subset
+            requires_update = False
+            for entry in filtered.values():
+                mism = int(entry.get("Mismatches", 0))
+                not_found = int(entry.get("Not_found", 0))
+                errs = int(entry.get("Errors", 0))
+                matches = int(entry.get("matches", 0))
+                nb_objects = int(entry.get("nb_objects", 0))
+                if mism > 0 or not_found > 0 or errs > 0 or matches != nb_objects:
+                    requires_update = True
+                    break
+            return {"summary": summary, "data": filtered, "requires_update": requires_update}
+
+        if key == "reload":
+            # Derive a per-user configuration view from the live db_model_store
+            filtered_store = {k: v for k, v in db_model_store.items() if v.get('s3_username') == client_id}
+            summary = pretty_print_cfg({"db_model_store": filtered_store}, print_output=False)
+            return {"summary": summary}
+    except Exception:
+        # If filtering fails for any reason, fall back to original outcome but do not raise
+        pass
+    return outcome
 
 
 # --------------------------- Boot and hot-reload ----------------------------
@@ -305,7 +420,7 @@ def perform_initial_config(configure_file):
 
     # Get the directory containing configure_file
     umrs_dir = os.path.dirname(configure_file)
-    
+
     # Define the temp directory path inside that directory
     tmp_dir = os.path.join(umrs_dir, get_default_tmp_subdir())
 
@@ -318,7 +433,9 @@ def perform_initial_config(configure_file):
         create_s3_sql_users(user, admin_s3_configuration_file)
 
     cfg_store = defaultdict(dict)
-    for i, user in enumerate(users):
+    cfg_store['status_store'] = {}
+    control_mq.set_status_store(cfg_store['status_store'])
+    for user in users:
         configure_user(user, cfg_store)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -328,8 +445,9 @@ def perform_initial_config(configure_file):
     return control_mq, cfg_store, device
 
 
-def reload_configuration(configure_file, db_model_store, user_config_map):
-    print("\n######################\nReloading configuration...\n######################\n")
+def reload_configuration(configure_file, db_model_store, user_config_map, log_output=True):
+    if log_output:
+        print("\n######################\nReloading configuration...\n######################\n")
     try:
         new_admin_s3_cfg, new_users = load_server_cfg_file(configure_file)
         for u in new_users:
@@ -344,15 +462,21 @@ def reload_configuration(configure_file, db_model_store, user_config_map):
                     conn.close()
             except Exception:
                 pass
-            
+
         db_model_store.clear()
-        db_model_store.update(new_store['db_model_store'])     
+        db_model_store.update(new_store['db_model_store'])
         user_config_map.clear()
         user_config_map.update(new_store['user_config_map'])
-        pretty_print_cfg(new_store)
-        print("\n✅ Reload complete.")
+        summary = pretty_print_cfg(new_store, print_output=False)
+        if log_output:
+            print(summary)
+            print("\n✅ Reload complete.")
+        return {"summary": summary}
     except Exception as e:
-        print(f"\n❌ Reload failed: {e}")
+        error_msg = f"\n❌ Reload failed: {e}"
+        if log_output:
+            print(error_msg)
+        return {"summary": error_msg, "error": str(e)}
 
 
 def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
@@ -402,7 +526,7 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     # change absolute path to '~' if possible
     home = os.path.expanduser('~')
     new_users = [path.replace(home, '~',1) for path in new_users]
-    
+
     conf['users'] = new_users
     try:
         with open(conf_path, 'w', encoding='utf-8') as f:
@@ -438,7 +562,7 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
         if expected_username and username != expected_username:
             print(f"Warning: uploaded config username '{username}' does not match client identity '{expected_username}'; ignoring file")
             return False, None, None
-    except SystemExit as e:
+    except SystemExit:
         # load_client_cfg_file may sys.exit() on validation error – treat as validation failure
         print(f"Warning: uploaded file '{tmp_path}' failed validation; ignoring")
         return False, None, None
@@ -490,6 +614,8 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
     active_threads = []
     db_model_store = cfg_store['db_model_store']
     user_config_map = cfg_store['user_config_map']
+    status_store = cfg_store.setdefault('status_store', {})
+    control_mq.set_status_store(status_store)
     try:
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
@@ -515,14 +641,9 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
                             print(f"Note: file '{file}' not recognized as valid user config or identity mismatch; left in place.")
                 else:
                     print("Warning: FILE command received with no payload")
-            elif cmd == "RECOMPUTE":
-                recompute_all_objects(db_model_store, device)
-            elif cmd == "UPDATE":
-                update_objects(db_model_store, device)
-            elif cmd == "CHECK":
-                check_objects(db_model_store, verbose=False)
-            elif cmd == "RELOAD":
-                reload_configuration(configure_file, db_model_store, user_config_map)
+            elif cmd in ("RECOMPUTE", "UPDATE", "CHECK", "RELOAD"):
+                client_id = payload
+                _handle_maintenance_command(cmd, client_id, db_model_store, device, configure_file, user_config_map, status_store)
             else:
                 print(f"====> Error: unknown command  '{cmd}' returned by server loop")
 
@@ -546,7 +667,7 @@ def handle_maintenance_flags(args, db_model_store, device):
 
 def check_umrs_config_directory():
     umrs_config_dir = os.getenv(get_umrs_cfg_env_var_name())
-    
+
     if umrs_config_dir:
         if os.path.isdir(umrs_config_dir):
             return umrs_config_dir
@@ -561,12 +682,12 @@ def check_umrs_config_directory():
 # ---------------------------------- CLI ------------------------------------
 
 def main():
-    
+
     # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()
     if umrs_cfg_dir:
         default_json_server_path = f"{umrs_cfg_dir}/{get_default_json_server_file()}"
-    else: 
+    else:
         sys.exit(f"No valid UMRS configuration directory. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}. Check it exists.")
 
     parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -580,7 +701,8 @@ def main():
 
     control_mq, cfg_store, device = perform_initial_config(configure_file)
     handle_maintenance_flags(args, cfg_store['db_model_store'], device)
-    pretty_print_cfg(cfg_store)
+    cfg_summary = pretty_print_cfg(cfg_store)
+    _record_status(cfg_store.get('status_store'), "system", "config", {"summary": cfg_summary})
     server_event_loop(control_mq, cfg_store, device, configure_file)
 
 
