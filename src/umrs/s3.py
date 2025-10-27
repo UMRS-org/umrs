@@ -156,6 +156,12 @@ def check_bucket_path(s3, path_to_bucket, indent = True):
     return True
 
 
+def decompose_bucket_alias_arg(bucket_alias_arg):
+    parts = bucket_alias_arg.split("/", 1)
+    first_subdir = parts[0]
+    remaining = parts[1] if len(parts) > 1 else None
+    return first_subdir, remaining
+
 def check_bucket_name(s3, xp_name, bucket_alias, username):
     path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
     return path_to_bucket, check_bucket_path(s3, path_to_bucket)
@@ -253,10 +259,13 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
 
 
 
-def s3_store_txt(s3, path_to_bucket, text_data, mq, metadata_args):
+def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):
     # Store inline text as an S3 object and notify server
 
     s3_key = compute_md5(text_data)+".txt"
+    if subdir is not None:
+        s3_key = f"{subdir}/s3key"
+    
     s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, Metadata=metadata_args["Metadata"], ContentType="text/plain")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
@@ -284,12 +293,14 @@ def is_an_image(filename):
     # If extension is valid, confirm by opening
     return is_image_by_opening(filename)
 
-def s3_store_image(s3, path_to_bucket, in_path, mq, metadata_args, check = True):
+def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check = True):
     if check and not is_an_image(in_path):
         print(f"Error: '{in_path}' is not an image. Skipping...")
         return None
     
     s3_key = os.path.basename(in_path)
+    if subdir is not None:
+        s3_key = f"{subdir}/s3key"
     
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
@@ -314,13 +325,15 @@ def is_a_text_file(in_path):
     
     
 
-def s3_store_text_file(s3, path_to_bucket, in_path, mq, metadata_args):
+def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     if not is_a_text_file(in_path):
         print(f"Error: '{in_path}' is not a txt file. Skipping...")
         return None
     
     s3_key = os.path.basename(in_path)
-    
+    if subdir is not None:
+        s3_key = f"{subdir}/s3key"
+
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
     else:
