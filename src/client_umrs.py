@@ -6,7 +6,7 @@ from umrs.s3 import *
 from umrs.MessageQueue import MessageQueue
 from umrs.metadata import check_and_build_metadata
 from umrs.modality import *
-from umrs.json_utils import load_client_cfg_file 
+from umrs.json_utils import load_client_cfg_file
 from umrs.pretty_print import pretty_print_user_cfg
 from umrs.config import get_default_docker_s3cfg
 from glob import glob
@@ -62,6 +62,51 @@ def merge_metadata(base_metadata, override_meta_dict):
     merged['Metadata'] = md
     return merged
 
+
+STATUS_CHOICES = ("all", "recompute", "update", "check", "reload", "config")
+
+
+def format_status_text(response_payload, default_key):
+    if response_payload.get('status') != 'ok':
+        message = response_payload.get('message', 'status unavailable')
+        return api_json(status='error', message=message, output_format='text')
+
+    client_label = response_payload.get('client')
+    lines = []
+
+    def append_entry(name, entry):
+        header_parts = []
+        if client_label:
+            header_parts.append(client_label)
+        if name:
+            header_parts.append(name)
+        generated_at = entry.get('generated_at')
+        if header_parts or generated_at:
+            header = ' - '.join(header_parts)
+            if generated_at:
+                header = f"{header} (generated {generated_at})" if header else f"generated {generated_at}"
+            if header:
+                lines.append(header)
+        summary_body = entry.get('summary')
+        if summary_body:
+            lines.append(summary_body)
+        else:
+            lines.append("(no summary)")
+
+    if 'summary' in response_payload:
+        append_entry(default_key, response_payload['summary'])
+    elif 'summaries' in response_payload:
+        summaries = response_payload['summaries'] or {}
+        for key in sorted(summaries.keys()):
+            append_entry(key, summaries[key])
+            lines.append("")
+        if lines and lines[-1] == "":
+            lines.pop()
+    else:
+        return api_json(status='error', message='Unexpected status payload', output_format='text')
+
+    return "\n".join(lines)
+
 def action_ping(control_mq, output_format):
     ready = control_mq.is_server_ready(timeout_ms=2000)
     return api_json(server_ready=ready, output_format=output_format)
@@ -101,7 +146,7 @@ def send_files_to_server(username, file_path_list, control_mq, data_mq):
         print(f"Files {file_path_list} received by server")
     else:
         print(f"Error sending file(s) {file_path_list} to server")
-        
+
 
 def store_bucket(bucket_store, bucket_alias, entry):
     if bucket_store[bucket_alias]:
@@ -180,6 +225,10 @@ utf_p.add_argument('username', nargs='?', help='Configured username owning the b
 lb_p = subparsers.add_parser('list_buckets', help='List bucket aliases for a username')
 lb_p.add_argument('username', nargs='?', help='Username to filter buckets (defaults to config if omitted)')
 
+status_p = subparsers.add_parser('status', help='Fetch the latest server summary for maintenance commands')
+status_p.add_argument('target', choices=STATUS_CHOICES, nargs='?', default='all', help='Summary to fetch (defaults to all available summaries)')
+status_p.add_argument('--username', help='User whose summary should be retrieved (defaults to config if omitted)')
+
 # Embedding maintenance actions
 subparsers.add_parser('recompute', help='Recompute all embeddings for all buckets (server-side)')
 subparsers.add_parser('update', help='Update embeddings only for missing/mismatched entries (server-side)')
@@ -189,8 +238,6 @@ rl_p = subparsers.add_parser('reload', help='Reload server configuration (users,
 
 args = parser.parse_args()
 
-if not args.action in []:
-    print 
 
 # Connect to message queue
 control_mq = MessageQueue(role = "client", queue_type = 'control', server_ip=args.server_ip)
@@ -209,9 +256,10 @@ print (f"Server ready.\nConnected to zeroMQ message queue'")
 configure_file = args.conf
 
 # Only enforce config file for legacy mode or actions that need bucket/user config
+status_needs_config = args.action == 'status' and not getattr(args, 'username', None)
 requires_config =  args.action in {
     'list_buckets', 'upload_file', 'upload_dir'
-}
+} or status_needs_config
 
 if requires_config and not os.path.exists(configure_file):
     sys.exit(f"Configuration file \"{configure_file}\" not found.")
@@ -241,6 +289,31 @@ try:
             sys.exit(1)
         print(action_list_buckets(bucket_store, effective_username, args.output))
         control_mq.close()
+        sys.exit(0)
+    if args.action == 'status':
+        effective_username = args.username
+        if not effective_username and isinstance(user, dict):
+            effective_username = user.get('username')
+        if not effective_username:
+            print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+            control_mq.close()
+            sys.exit(1)
+        try:
+            raw_response = control_mq.request_status(effective_username, args.target)
+            if args.output == 'json':
+                print(raw_response)
+            else:
+                try:
+                    parsed = _json.loads(raw_response)
+                except Exception as exc:
+                    print(api_json(status='error', message=f'Invalid status payload: {exc}', output_format=args.output))
+                    control_mq.close()
+                    sys.exit(1)
+                print(format_status_text(parsed, args.target))
+        except Exception as e:
+            print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
+        finally:
+            control_mq.close()
         sys.exit(0)
     # Embedding maintenance actions don't require bucket resolution or S3 access
     if args.action in ('recompute', 'update', 'check', 'reload'):
@@ -374,7 +447,7 @@ def process_dir(path, s3, full_bucket_name, subdir, modality, data_mq, metadata_
     if not os.path.isdir(path):
         print(f"Error: {path} is not a valid directory.")
         return [], []
-    
+
     s3_key_list = []
     file_list = []
     nb_objects= 0
@@ -391,12 +464,12 @@ def process_dir(path, s3, full_bucket_name, subdir, modality, data_mq, metadata_
                     file_list.append(file_path)
                 nb_objects += nb_sent
 
-    if nb_objects>0: 
+    if nb_objects>0:
         control_mq.notify_server(username, 'OBJECT', nb_objects)
     return s3_key_list, file_list
-    
-    
-     
+
+
+
 
 # Determine action specifics
 action = args.action
