@@ -264,7 +264,7 @@ def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):
 
     s3_key = compute_md5(text_data)+".txt"
     if subdir is not None:
-        s3_key = f"{subdir}/s3key"
+        s3_key = f"{subdir}/{s3_key}"
     
     s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, Metadata=metadata_args["Metadata"], ContentType="text/plain")
 
@@ -300,7 +300,7 @@ def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check
     
     s3_key = os.path.basename(in_path)
     if subdir is not None:
-        s3_key = f"{subdir}/s3key"
+        s3_key = f"{subdir}/{s3_key}"
     
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
@@ -332,7 +332,7 @@ def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     
     s3_key = os.path.basename(in_path)
     if subdir is not None:
-        s3_key = f"{subdir}/s3key"
+        s3_key = f"{subdir}/{s3_key}"
 
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
