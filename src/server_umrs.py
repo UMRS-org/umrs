@@ -110,7 +110,7 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
 
 def update_global_thread_status(db_model_store, keys_per_bucket, thread):
     thread_id = len(global_thread_status)
-    array_of_work = []
+    array_of_works = []
     for path_to_bucket in keys_per_bucket.keys():
         user, _, table_name, _, _, modality_name, _, data_base = query_db_model(db_model_store, path_to_bucket)
         s3_keys = keys_per_bucket[path_to_bucket]
@@ -122,11 +122,11 @@ def update_global_thread_status(db_model_store, keys_per_bucket, thread):
             "bucket": path_to_bucket,        
             "nb_objects": len(s3_keys),
         }
-        array_of_work.append(work)
+        array_of_works.append(work)
     global_thread_status[thread] = {         
         "thread_id" : thread_id,
         "status": "Running",
-        "work": array_of_work,
+        "work": array_of_works,
     }
 
 def process_s3_objects(s3_objects, db_model_store, device):

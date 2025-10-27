@@ -154,12 +154,26 @@ ping_p = subparsers.add_parser('ping', help='Check server readiness')
 
 ui_p = subparsers.add_parser('upload_file', help="Upload file to a bucket (ommit empty lines in case of 'text' modality)")
 ui_p.add_argument('file_path')
-ui_p.add_argument('bucket_alias')
+ui_p.add_argument(
+    'bucket_alias',
+    help=(
+        "Alias of a bucket as defined in the client configuration file.\n"
+        "Use the list_bucket command to show available bucket aliases for a given user.\n"
+        "You may append a subdirectory using '/' as in a typical Unix path."
+    )
+)
 ui_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
 utf_p = subparsers.add_parser('upload_dir', help='Upload all fileq of a directory to a bucket')
 utf_p.add_argument('path')
-utf_p.add_argument('bucket_alias')
+utf_p.add_argument(
+    'bucket_alias',
+    help=(
+        "Alias of a bucket as defined in the client configuration file.\n"
+        "Use the list_bucket command to show available bucket aliases for a given user.\n"
+        "You may append a subdirectory using '/' as in a typical Unix path."
+    )
+)
 utf_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
 # New actions
@@ -268,7 +282,8 @@ try:
         sys.exit(0)
     # For upload_* actions we need configuration + bucket alias
     print(f"args= {args}")
-    bucket_alias = getattr(args, 'bucket_alias')
+    bucket_alias_arg = getattr(args, 'bucket_alias')
+    bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
     entry = find_bucket_entry(bucket_store, bucket_alias)
     path_to_bucket        = entry['path_to_bucket']
     # If username not provided as arg, default to config
@@ -315,7 +330,7 @@ if args.verbose :
 
 server_notify_result = None
 
-def process_file(s3, full_bucket_name, file_path, modality, data_mq, metadata_args, username, notify_server=True):
+def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=True):
     if not os.path.isfile(file_path):
         print("Error: file {file_path} is not a valid.")
         return None, 0
@@ -324,12 +339,12 @@ def process_file(s3, full_bucket_name, file_path, modality, data_mq, metadata_ar
 
     if modality in ["image" , "tomography"]: # send an image
         if os.path.isfile(file_path):
-            s3_key = s3_store_image(s3, full_bucket_name, file_path, data_mq, metadata_args, check = (modality!="tomography"))
+            s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check = (modality!="tomography"))
             if s3_key and notify_server:
                 control_mq.notify_server(username, "OBJECT", 1)
             return s3_key, 1
     elif modality == "text file" : # send a text file by chunking it
-            s3_key = s3_store_text_file(s3, full_bucket_name, file_path, data_mq, metadata_args)
+            s3_key = s3_store_text_file(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args)
             if s3_key and notify_server:
                 control_mq.notify_server(username, "OBJECT", 1)
             return s3_key, 1
@@ -341,7 +356,7 @@ def process_file(s3, full_bucket_name, file_path, modality, data_mq, metadata_ar
                 for line in file.readlines():
                     line = line.strip()
                     if line != "" : # skip empty lines as it brings nothing and as it slows down the process 
-                        s3_key = s3_store_txt(s3, full_bucket_name, line, data_mq, metadata_args)
+                        s3_key = s3_store_txt(s3, full_bucket_name, subdir, line, data_mq, metadata_args)
                         s3_key_list.append(s3_key)
                         nb_objects += 1
                 if notify_server and nb_objects > 0:
@@ -355,7 +370,7 @@ def process_file(s3, full_bucket_name, file_path, modality, data_mq, metadata_ar
 
     return None, 0
 
-def process_dir(path, s3, full_bucket_name, modality, data_mq, metadata_args, username, control_mq):
+def process_dir(path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username, control_mq):
     if not os.path.isdir(path):
         print(f"Error: {path} is not a valid directory.")
         return [], []
@@ -365,7 +380,7 @@ def process_dir(path, s3, full_bucket_name, modality, data_mq, metadata_args, us
     nb_objects= 0
     for file_path in glob(os.path.join(path, "*")):
         if os.path.isfile(file_path):
-            s3_key, nb_sent = process_file(s3, full_bucket_name, file_path, modality, data_mq, metadata_args, username, notify_server=False)
+            s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=False)
             if s3_key:
                 if isinstance(s3_key, list): # files of text are processed line by line (each leading to a file stored on the s3 server)
                     s3_key_list.extend(s3_key)  # add each element individually if s3_key is a list
@@ -387,18 +402,18 @@ def process_dir(path, s3, full_bucket_name, modality, data_mq, metadata_args, us
 action = args.action
 try:
     if action == "upload_file":
-        s3_key, nb_sent = process_file(s3, full_bucket_name, args.file_path, modality, data_mq, metadata_args, username, notify_server=True)
+        s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, args.file_path, modality, data_mq, metadata_args, username, notify_server=True)
         if s3_key:
-            print(api_json(s3_key=s3_key, bucket=full_bucket_name, modality=modality, output_format=args.output))
+            print(api_json(s3_key=s3_key, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
         else:
-            print(api_json(status='error', message=f"Cannot process file: {args.file_path}", bucket=full_bucket_name, modality=modality, output_format=args.output))
+            print(api_json(status='error', message=f"Cannot process file: {args.file_path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
 
     elif action == "upload_dir":
-        s3_key_list, file_list =  process_dir(args.path, s3, full_bucket_name, modality, data_mq, metadata_args, username, control_mq)
+        s3_key_list, file_list =  process_dir(args.path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username, control_mq)
         if len(s3_key_list)>0:
-            print(api_json(s3_key_list=s3_key_list, file_list=file_list, bucket=full_bucket_name, modality=modality, output_format=args.output))
+            print(api_json(s3_key_list=s3_key_list, file_list=file_list, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
         else:
-            print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, modality=modality, output_format=args.output))
+            print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
     
     else:
         print(f"Error: action '{action}' not yet implemented. exiting...")
