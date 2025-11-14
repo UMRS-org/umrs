@@ -28,6 +28,53 @@ from umrs.config import *
 # a global dictionnary for easly handling thread status
 global_thread_status = {}
 
+# Module-level reference to status store so we can update client-visible TASKS status
+_status_store_global = None
+ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
+
+def _set_status_store_global(store):
+    global _status_store_global
+    _status_store_global = store
+
+def _filter_thread_status_for_user(client_id):
+    """Build a filtered view of global_thread_status containing only works for a given client_id."""
+    filtered = {}
+    for thread, info in global_thread_status.items():
+        works = info.get("work", [])
+        user_works = [w for w in works if w.get("user") == client_id]
+        if user_works:
+            # Shallow copy with filtered works
+            filtered[thread] = {
+                "thread_id": info.get("thread_id"),
+                "status": info.get("status"),
+                "work": user_works,
+            }
+    return filtered
+
+def _json_safe_thread_status(ts_dict):
+    """Convert thread-keyed dict into a JSON-serializable dict keyed by thread_id strings."""
+    safe = {}
+    for _thread, info in ts_dict.items():
+        tid = info.get("thread_id")
+        key = str(tid) if tid is not None else "thread"
+        safe[key] = {
+            "thread_id": info.get("thread_id"),
+            "status": info.get("status"),
+            "work": info.get("work", []),
+        }
+    return safe
+
+def _record_tasks_status_for_users(users):
+    """Record 'tasks' status summaries for the provided user list into the global status store."""
+    if _status_store_global is None:
+        return
+    for user in users:
+        filtered = _filter_thread_status_for_user(user)
+        # Include both Running and Done tasks, preserving status column
+        summary = pretty_print_global_thread_status(filtered, running_only=False, print_output=False)
+        json_safe = _json_safe_thread_status(filtered)
+        _record_status(_status_store_global, user, "tasks", {"summary": summary, "data": json_safe})
+
 # ---------------------- Provisioning and configuration ----------------------
 
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
@@ -123,7 +170,7 @@ def update_global_thread_status(db_model_store, keys_per_bucket, thread):
             "nb_objects": len(s3_keys),
         }
         array_of_works.append(work)
-    global_thread_status[thread] = {         
+    global_thread_status[thread] = {
         "thread_id" : thread_id,
         "status": "Running",
         "work": array_of_works,
@@ -154,7 +201,7 @@ def process_s3_objects(s3_objects, db_model_store, device):
 
     global_thread_status[current_thread]["status"] = "Done"
     print(f"\t--> Processing {nb_objects} file(s) done!")
-    pretty_print_global_thread_status(global_thread_status, running_only=False)
+    pretty_print_global_thread_status(global_thread_status, running_only=False, print_output=ENABLE_PRETTY_PRINT)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
 
@@ -178,7 +225,7 @@ def clean_finished_threads(threads):
         else:
             new_threads.append(thread)
     print (f"==> Running threads: {len(new_threads)}")
-    pretty_print_global_thread_status(global_thread_status, running_only=True)
+    pretty_print_global_thread_status(global_thread_status, running_only=True, print_output=ENABLE_PRETTY_PRINT)
     return new_threads
 
 
@@ -329,16 +376,16 @@ def _record_status(status_store, client_id, key, payload):
 
 def _handle_maintenance_command(cmd, client_id, db_model_store, device, configure_file, user_config_map, status_store):
     if cmd == "RECOMPUTE":
-        outcome = recompute_all_objects(db_model_store, device)
+        outcome = recompute_all_objects(db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
         key = "recompute"
     elif cmd == "UPDATE":
-        outcome = update_objects(db_model_store, device)
+        outcome = update_objects(db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
         key = "update"
     elif cmd == "CHECK":
-        outcome = check_objects(db_model_store, verbose=False)
+        outcome = check_objects(db_model_store, verbose=False, log_output=ENABLE_PRETTY_PRINT)
         key = "check"
     elif cmd == "RELOAD":
-        outcome = reload_configuration(configure_file, db_model_store, user_config_map)
+        outcome = reload_configuration(configure_file, db_model_store, user_config_map, log_output=ENABLE_PRETTY_PRINT)
         key = "reload"
     else:
         print(f"====> Error: unknown command '{cmd}' returned by maintenance handler")
@@ -435,6 +482,7 @@ def perform_initial_config(configure_file):
     cfg_store = defaultdict(dict)
     cfg_store['status_store'] = {}
     control_mq.set_status_store(cfg_store['status_store'])
+    _set_status_store_global(cfg_store['status_store'])
     for user in users:
         configure_user(user, cfg_store)
 
@@ -616,6 +664,7 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
     user_config_map = cfg_store['user_config_map']
     status_store = cfg_store.setdefault('status_store', {})
     control_mq.set_status_store(status_store)
+    _set_status_store_global(status_store)
     try:
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
@@ -632,8 +681,6 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
                     client_id, files = payload if isinstance(payload, tuple) else (None, payload)
                     for file in files:
                         print(f"Received file: {file}")
-                        # Try to persist as a user configuration; enforce identity if client_id known
-                        # db_model_store['user_config_map'] contains the connection between users and their config_file_path
                         ok, uname, dest = _persist_uploaded_user_config(file, configure_file, user_config_map, expected_username=client_id)
                         if ok:
                             print(f"User config persisted for '{uname}' -> {dest}")
@@ -645,9 +692,17 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
                 client_id = payload
                 _handle_maintenance_command(cmd, client_id, db_model_store, device, configure_file, user_config_map, status_store)
             else:
-                print(f"====> Error: unknown command  '{cmd}' returned by server loop")
+                print(f"====> Error: unknown command '{cmd}' returned by server loop")
 
             active_threads = clean_finished_threads(active_threads)
+            # After any event and cleanup, update per-user task status summaries
+            try:
+                users = set(entry.get('s3_username') for entry in db_model_store.values())
+                users = {u for u in users if u}
+                _record_tasks_status_for_users(users)
+            except Exception:
+                # Non-fatal: do not disrupt server loop on status recording errors
+                pass
     except KeyboardInterrupt:
         print("\nInterrupted by user. Waiting for running threads to finish...")
         for thread in active_threads:
@@ -656,14 +711,13 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
         control_mq.close()
         sys.exit(0)
 
-
 def handle_maintenance_flags(args, db_model_store, device):
     if args.force_recompute:
-        recompute_all_objects(db_model_store, device)
+        recompute_all_objects(db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
     if args.force_update:
-        update_objects(db_model_store, device)
+        update_objects(db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
     if args.check_objects:
-        check_objects(db_model_store, verbose=False)
+        check_objects(db_model_store, verbose=False, log_output=ENABLE_PRETTY_PRINT)
 
 def check_umrs_config_directory():
     umrs_config_dir = os.getenv(get_umrs_cfg_env_var_name())
@@ -695,13 +749,17 @@ def main():
     parser.add_argument('--force-recompute', action='store_true', help='Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.')
     parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
+    parser.add_argument('--pretty-print', action='store_true', help='Enable server-side pretty-printed tables and summaries (default: off)')
 
     args = parser.parse_args()
     configure_file = args.conf
 
+    global ENABLE_PRETTY_PRINT
+    ENABLE_PRETTY_PRINT = bool(getattr(args, 'pretty_print', False))
+
     control_mq, cfg_store, device = perform_initial_config(configure_file)
     handle_maintenance_flags(args, cfg_store['db_model_store'], device)
-    cfg_summary = pretty_print_cfg(cfg_store)
+    cfg_summary = pretty_print_cfg(cfg_store, print_output=ENABLE_PRETTY_PRINT)
     _record_status(cfg_store.get('status_store'), "system", "config", {"summary": cfg_summary})
     server_event_loop(control_mq, cfg_store, device, configure_file)
 
