@@ -35,6 +35,7 @@ class MessageQueue:
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
         self.tmp_dir = tmp_dir
         self.status_store = None
+        self.debug = False  # disable noisy send/recv logs by default
 
         # Initialize the selected queue type
         if self.type == "control":
@@ -79,7 +80,8 @@ class MessageQueue:
     # ------------------------ Core Methods ------------------------
 
     def send_string(self, string):
-        print(f"Sending '{string}' to {self.type}")
+        if self.debug:
+            print(f"Sending '{string}' to {self.type}")
         try:
             self.socket.send_string(string)
         except zmq.Again:
@@ -409,6 +411,9 @@ class MessageQueue:
 
     def set_status_store(self, status_store):
         self.status_store = status_store
+
+    def set_debug(self, enabled: bool):
+        self.debug = bool(enabled)
 
     def _get_status_payload(self, client_id, status_key):
         store = self.status_store or {}
