@@ -63,7 +63,7 @@ def merge_metadata(base_metadata, override_meta_dict):
     return merged
 
 
-STATUS_CHOICES = ("all", "recompute", "update", "check", "reload", "config")
+STATUS_CHOICES = ("all", "recompute", "update", "check", "reload", "config", "tasks")
 
 
 def format_status_text(response_payload, default_key):
