@@ -474,6 +474,11 @@ def perform_initial_config(configure_file):
     # Create the tmp_dir if it does not exist
     os.makedirs(tmp_dir, exist_ok=True)
     control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir)
+    # Align MessageQueue debug with server pretty-print setting (off by default)
+    try:
+        control_mq.set_debug(ENABLE_PRETTY_PRINT)
+    except Exception:
+        pass
     print ("Subscribed to zeroMQ message queue")
 
     for user in users:
