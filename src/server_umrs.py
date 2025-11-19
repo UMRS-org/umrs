@@ -705,9 +705,9 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
                 users = set(entry.get('s3_username') for entry in db_model_store.values())
                 users = {u for u in users if u}
                 _record_tasks_status_for_users(users)
-            except Exception:
+            except Exception as e:
                 # Non-fatal: do not disrupt server loop on status recording errors
-                pass
+                print(f"Warning: failed to update task status: {e}")
     except KeyboardInterrupt:
         print("\nInterrupted by user. Waiting for running threads to finish...")
         for thread in active_threads:
