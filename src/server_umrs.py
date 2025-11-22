@@ -236,7 +236,11 @@ def clean_finished_threads(threads):
         else:
             new_threads.append(thread)
     print (f"==> Running threads: {len(new_threads)}")
+    # Clean up finished threads from global_thread_status to avoid unbounded growth
     with global_thread_status_lock:
+        finished_threads = [t for t, info in global_thread_status.items() if info.get("status") == "Done" and t not in new_threads]
+        for t in finished_threads:
+            del global_thread_status[t]
         snapshot = dict(global_thread_status)
     pretty_print_global_thread_status(snapshot, running_only=True, print_output=ENABLE_PRETTY_PRINT)
     return new_threads
