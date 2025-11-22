@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+echo "===== Starting UMRS API integration test (user1 + user2) ====="
+
 # Use the Bash interpreter found in the environment
 set -euo pipefail
 # -e: Exit immediately if a command exits with a non-zero status
@@ -50,6 +52,9 @@ retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text reload 
 # (effective mappings, buckets, models), scoped to UMRS_CLIENT_ID
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status reload  # Show last reload summary for this client
 
+# Status: tasks — running/queued server tasks for this client (per-thread view)
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
+
 # List buckets for user1 (text/image bucket aliases) # TODO this should show only the buckets of user1 (not all buckets)
 # TODO: STD of listing buckets etc. should be returned to the client side as well.
 retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text list_buckets  # Verify bucket visibility for user1
@@ -68,6 +73,8 @@ if [ -f /root/data/img_test/cat.jpeg ]; then
   retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test upload_file /root/data/img_test/cat.jpeg bucket-1
   # Also exercise the other image bucket (bucket-3) if desired
   python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test2 -k author:demo -k x_resolution:256 -k y_resolution:512 upload_file /root/data/img_test/cat.jpeg bucket-3 || true  # Don't fail the whole script if this optional upload fails
+  # Right after uploads, check running tasks
+  retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
 fi
 
 # Also exercise upload_dir for images if directory is present (aligns with demo.md)
@@ -91,6 +98,8 @@ retry 10 3 python /app/src/client_umrs.py --output text recompute  # Recompute e
 # Status: recompute — retrieves the last recompute-operation summary (embeddings recomputed)
 # for this client (UMRS_CLIENT_ID)
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status recompute  # Show last recompute summary
+# After maintenance, tasks may be idle
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
 # Status: all — consolidated view of all stored summaries (config + maintenance)
 # for this client (UMRS_CLIENT_ID)
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status all  # Show consolidated status for this client
@@ -118,6 +127,9 @@ retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text reload
 # Status: reload — user2-scoped configuration summary
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status reload
 
+# Quick look at tasks for user2
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
+
 # List buckets for user2 — should only show user2's buckets
 retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text list_buckets
 
@@ -129,6 +141,7 @@ fi
 # Upload images to user2's image bucket (bucket-1)
 if [ -f /root/data/img_test/cat.jpeg ]; then
   retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test upload_file /root/data/img_test/cat.jpeg bucket-1
+  retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
 fi
 
 # Optionally upload a whole directory of images into bucket-1
@@ -145,6 +158,9 @@ retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status 
 
 retry 10 3 python /app/src/client_umrs.py --output text recompute
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status recompute
+
+# Final tasks snapshot for user2
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
 
 # Consolidated status for user2 — should not include user1 buckets/rows
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status all
