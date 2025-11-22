@@ -778,7 +778,7 @@ def main():
     configure_file = args.conf
 
     global ENABLE_PRETTY_PRINT
-    ENABLE_PRETTY_PRINT = bool(getattr(args, 'pretty_print', False))
+    ENABLE_PRETTY_PRINT = args.pretty_print
 
     control_mq, cfg_store, device = perform_initial_config(configure_file)
     handle_maintenance_flags(args, cfg_store['db_model_store'], device)
