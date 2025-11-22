@@ -54,16 +54,14 @@ def _filter_thread_status_for_user(client_id):
     return filtered
 
 def _json_safe_thread_status(ts_dict):
-    """Convert thread-keyed dict into a JSON-serializable dict keyed by thread_id strings."""
-    safe = {}
+    """Convert thread-keyed dict into a JSON-serializable list of thread info dicts, avoiding key collisions."""
+    safe = []
     for _thread, info in ts_dict.items():
-        tid = info.get("thread_id")
-        key = str(tid) if tid is not None else "thread"
-        safe[key] = {
+        safe.append({
             "thread_id": info.get("thread_id"),
             "status": info.get("status"),
             "work": info.get("work", []),
-        }
+        })
     return safe
 
 def _record_tasks_status_for_users(users):
