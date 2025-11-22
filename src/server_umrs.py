@@ -27,6 +27,7 @@ from umrs.config import *
 
 # a global dictionnary for easly handling thread status
 global_thread_status = {}
+global_thread_status_lock = threading.Lock()
 
 # Module-level reference to status store so we can update client-visible TASKS status
 _status_store_global = None
@@ -39,16 +40,17 @@ def _set_status_store_global(store):
 def _filter_thread_status_for_user(client_id):
     """Build a filtered view of global_thread_status containing only works for a given client_id."""
     filtered = {}
-    for thread, info in global_thread_status.items():
-        works = info.get("work", [])
-        user_works = [w for w in works if w.get("user") == client_id]
-        if user_works:
-            # Shallow copy with filtered works
-            filtered[thread] = {
-                "thread_id": info.get("thread_id"),
-                "status": info.get("status"),
-                "work": user_works,
-            }
+    with global_thread_status_lock:
+        for thread, info in global_thread_status.items():
+            works = info.get("work", [])
+            user_works = [w for w in works if w.get("user") == client_id]
+            if user_works:
+                # Shallow copy with filtered works
+                filtered[thread] = {
+                    "thread_id": info.get("thread_id"),
+                    "status": info.get("status"),
+                    "work": user_works,
+                }
     return filtered
 
 def _json_safe_thread_status(ts_dict):
@@ -156,7 +158,8 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
 def update_global_thread_status(db_model_store, keys_per_bucket, thread):
-    thread_id = len(global_thread_status)
+    with global_thread_status_lock:
+        thread_id = len(global_thread_status)
     array_of_works = []
     for path_to_bucket in keys_per_bucket.keys():
         user, _, table_name, _, _, modality_name, _, data_base = query_db_model(db_model_store, path_to_bucket)
@@ -170,11 +173,12 @@ def update_global_thread_status(db_model_store, keys_per_bucket, thread):
             "nb_objects": len(s3_keys),
         }
         array_of_works.append(work)
-    global_thread_status[thread] = {
-        "thread_id" : thread_id,
-        "status": "Running",
-        "work": array_of_works,
-    }
+    with global_thread_status_lock:
+        global_thread_status[thread] = {
+            "thread_id" : thread_id,
+            "status": "Running",
+            "work": array_of_works,
+        }
 
 def process_s3_objects(s3_objects, db_model_store, device):
     current_thread = threading.current_thread()
@@ -199,14 +203,19 @@ def process_s3_objects(s3_objects, db_model_store, device):
         else:
             print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
 
-    global_thread_status[current_thread]["status"] = "Done"
+    with global_thread_status_lock:
+        if current_thread in global_thread_status:
+            global_thread_status[current_thread]["status"] = "Done"
     print(f"\t--> Processing {nb_objects} file(s) done!")
     pretty_print_global_thread_status(global_thread_status, running_only=False, print_output=ENABLE_PRETTY_PRINT)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
 
 def wait_for_key(d, key, check_interval=0.05):
-    while key not in d:
+    while True:
+        with global_thread_status_lock:
+            if key in d:
+                break
         time.sleep(check_interval)  # wait for 50ms before checking again
     # key is now valid in dictionary
 
@@ -225,7 +234,9 @@ def clean_finished_threads(threads):
         else:
             new_threads.append(thread)
     print (f"==> Running threads: {len(new_threads)}")
-    pretty_print_global_thread_status(global_thread_status, running_only=True, print_output=ENABLE_PRETTY_PRINT)
+    with global_thread_status_lock:
+        snapshot = dict(global_thread_status)
+    pretty_print_global_thread_status(snapshot, running_only=True, print_output=ENABLE_PRETTY_PRINT)
     return new_threads
 
 

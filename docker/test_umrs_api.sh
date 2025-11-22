@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+echo "===== Starting UMRS API integration test (user1 + user2) ====="
+
 # Use the Bash interpreter found in the environment
 set -euo pipefail
 # -e: Exit immediately if a command exits with a non-zero status
