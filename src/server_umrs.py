@@ -489,6 +489,7 @@ def perform_initial_config(configure_file):
     try:
         control_mq.set_debug(ENABLE_PRETTY_PRINT)
     except Exception:
+        # Debug flag is optional; ignore failures setting it
         pass
     print ("Subscribed to zeroMQ message queue")
 

@@ -544,8 +544,8 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         if cur is not None:
             try:
                 cur.close()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: failed to close cursor: {e}")
         db_pool.putconn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):

@@ -302,6 +302,7 @@ class MessageQueue:
             try:
                 self.socket.close()
             except Exception:
+                # Best-effort cleanup: ignore errors while closing old socket
                 pass
 
         # Create a new REQ socket and connect
