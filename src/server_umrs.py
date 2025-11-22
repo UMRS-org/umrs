@@ -28,6 +28,7 @@ from umrs.config import *
 # a global dictionary for easily handling thread status
 global_thread_status = {}
 global_thread_status_lock = threading.Lock()
+global_thread_id_counter = 0  # monotonically increasing counter for unique thread IDs
 
 # Module-level reference to status store so we can update client-visible TASKS status
 _status_store_global = None
@@ -156,6 +157,7 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
 def update_global_thread_status(db_model_store, keys_per_bucket, thread):
+    global global_thread_id_counter
     array_of_works = []
     for path_to_bucket in keys_per_bucket.keys():
         user, _, table_name, _, _, modality_name, _, data_base = query_db_model(db_model_store, path_to_bucket)
@@ -170,7 +172,8 @@ def update_global_thread_status(db_model_store, keys_per_bucket, thread):
         }
         array_of_works.append(work)
     with global_thread_status_lock:
-        thread_id = len(global_thread_status)
+        thread_id = global_thread_id_counter
+        global_thread_id_counter += 1
         global_thread_status[thread] = {
             "thread_id" : thread_id,
             "status": "Running",
