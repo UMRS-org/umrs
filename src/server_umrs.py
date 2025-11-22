@@ -207,7 +207,9 @@ def process_s3_objects(s3_objects, db_model_store, device):
         if current_thread in global_thread_status:
             global_thread_status[current_thread]["status"] = "Done"
     print(f"\t--> Processing {nb_objects} file(s) done!")
-    pretty_print_global_thread_status(global_thread_status, running_only=False, print_output=ENABLE_PRETTY_PRINT)
+    with global_thread_status_lock:
+        snapshot = dict(global_thread_status)
+    pretty_print_global_thread_status(snapshot, running_only=False, print_output=ENABLE_PRETTY_PRINT)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
 
