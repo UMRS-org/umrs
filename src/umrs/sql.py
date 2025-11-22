@@ -60,7 +60,7 @@ def db_user_exists(conn, username):
         cur.execute("SELECT 1 FROM pg_roles where rolname = %s;", (username,))
         exists = cur.fetchone()
         return exists
-        
+
 
 def create_db_user(username):
     # Database credentials
@@ -91,8 +91,8 @@ def create_db_user(username):
     cur.close()
     conn.close()
 
-    
-        
+
+
 def create_db(sql_username, xp_name):
     db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")
@@ -473,7 +473,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 content=None,
                 metadata=metadata,
                 model_name = model_name,
-                checksum=checksum, 
+                checksum=checksum,
                 silent = False
             )
 
@@ -520,10 +520,10 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
                 "message": f"No entry found in table '{table_name}' for key: {s3_object}"
             }
 
-        
+
         # Extract checksums into a list (flatten from rows)
         db_checksums = [row[0] for row in results]
-        
+
         if checksum in db_checksums:
             return {
                 "status": "match",
@@ -544,8 +544,8 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         if cur is not None:
             try:
                 cur.close()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: failed to close cursor: {e}")
         db_pool.putconn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
