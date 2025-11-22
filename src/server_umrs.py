@@ -25,7 +25,7 @@ from umrs.utils import zero_out_embeddings_for_empty_objects
 from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 from umrs.config import *
 
-# a global dictionary for easly handling thread status
+# a global dictionary for easily handling thread status
 global_thread_status = {}
 global_thread_status_lock = threading.Lock()
 
