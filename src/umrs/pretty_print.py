@@ -2,9 +2,10 @@ import pandas as pd
 import sys
 from tabulate import tabulate
 
-def pretty_print_global_thread_status(global_thread_status, running_only=True, print_output=True):
+def pretty_print_thread_status(thread_status, running_only=True, print_output=True):
     rows = []
-    for thread, info in global_thread_status.items():
+    for key in thread_status:
+        info = thread_status[key]
         thread_id = info.get("thread_id", "N/A")
         status = info.get("status", "N/A")
         if status != "Running" and running_only:

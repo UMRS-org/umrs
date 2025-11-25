@@ -9,7 +9,8 @@ except ImportError as e:
 BASE_PORT = 5555
 DEFAULT_NB_MSG = 10240
 class MessageQueue:
-    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT, max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None):
+    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
+                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, status_store=None):
         """
         Initializes the MessageQueue.
 
@@ -20,6 +21,8 @@ class MessageQueue:
             port (int): Port number.
             target_nb_messages (int): Max number of messages in queue (for POSIX/SYSV).
             target_message_size (int): Max size per message (for POSIX/SYSV).
+            status_store: a dictionnary to stire event related to task in server. 
+                          Shared with UMRSTasks (ZeroMQ reads theis event while UMRSTasks writes it)
         """
         self.role = role.lower()
         self.type = queue_type.lower()
@@ -34,7 +37,7 @@ class MessageQueue:
         self.timeout = timeout_ms
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
         self.tmp_dir = tmp_dir
-        self.status_store = None
+        self.status_store = status_store
         self.debug = False  # disable noisy send/recv logs by default
 
         # Initialize the selected queue type
@@ -410,8 +413,8 @@ class MessageQueue:
 
         return reply
 
-    def set_status_store(self, status_store):
-        self.status_store = status_store
+    def get_status_store(self):
+        return self.status_store
 
     def set_debug(self, enabled: bool):
         self.debug = bool(enabled)
