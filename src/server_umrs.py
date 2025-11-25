@@ -1,80 +1,35 @@
 #!/usr/bin/python3
-import threading
+
 import argparse
 import os
 import sys
 from collections import defaultdict
 import time
-from datetime import datetime
 import torch
 import json
-
+from diskcache import Cache
 
 # Add the parent directory of this script (src) to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
-from umrs.sql import *
+
 from umrs.s3 import *
+from umrs.sql import create_db_user, create_db, configure_table, check_S3_object_status_in_db
 from umrs.models_loading import load_model
 from umrs.MessageQueue import MessageQueue
-from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_global_thread_status
+from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_thread_status
 from umrs.modality import check_or_quit
 from umrs.db_store import store_db_model, query_db_model
-from umrs.utils import zero_out_embeddings_for_empty_objects
+
 from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 from umrs.config import *
+from umrs.UMRSTasks import UMRSTasks
+from umrs.embeddings import compute_and_store_embedding
 
-# a global dictionary for easily handling thread status
-global_thread_status = {}
-global_thread_status_lock = threading.Lock()
-global_thread_id_counter = 0  # monotonically increasing counter for unique thread IDs
-
-# Module-level reference to status store so we can update client-visible TASKS status
 _status_store_global = None
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
 
-def _set_status_store_global(store):
-    global _status_store_global
-    _status_store_global = store
-
-def _filter_thread_status_for_user(client_id):
-    """Build a filtered view of global_thread_status containing only works for a given client_id."""
-    filtered = {}
-    with global_thread_status_lock:
-        for thread, info in global_thread_status.items():
-            works = info.get("work", [])
-            user_works = [w for w in works if w.get("user") == client_id]
-            if user_works:
-                # Shallow copy with filtered works
-                filtered[thread] = {
-                    "thread_id": info.get("thread_id"),
-                    "status": info.get("status"),
-                    "work": user_works,
-                }
-    return filtered
-
-def _json_safe_thread_status(ts_dict):
-    """Convert thread-keyed dict into a JSON-serializable list of thread info dicts, avoiding key collisions."""
-    safe = []
-    for _thread, info in ts_dict.items():
-        safe.append({
-            "thread_id": info.get("thread_id"),
-            "status": info.get("status"),
-            "work": info.get("work", []),
-        })
-    return safe
-
-def _record_tasks_status_for_users(users):
-    """Record 'tasks' status summaries for the provided user list into the global status store."""
-    if _status_store_global is None:
-        return
-    for user in users:
-        filtered = _filter_thread_status_for_user(user)
-        # Include both Running and Done tasks, preserving status column
-        summary = pretty_print_global_thread_status(filtered, running_only=False, print_output=False)
-        json_safe = _json_safe_thread_status(filtered)
-        _record_status(_status_store_global, user, "tasks", {"summary": summary, "data": json_safe})
 
 # ---------------------- Provisioning and configuration ----------------------
 
@@ -140,115 +95,12 @@ def configure_user(user_cfg, cfg_store):
             print(f"\t\t\t==>Bucket alias: {bucket_alias}")
 
 
-# --------------------------- Embedding operations ---------------------------
 
-def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection):
-    if modality_name in ["tomography"]: # case of models where we compute everything from the files (e.g. using data loader)
-        embeddings, checksums, metadata = model.compute_embeddings(s3_connection, s3_keys, path_to_bucket)
-    else: # case where we need to load data into a tensor and then compute embeddings
-        objects, metadata, checksums, sizes, has_at_least_a_zero = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
-        embeddings = model.compute_embeddings(objects)
-        if has_at_least_a_zero:
-            zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name)
-
-    assert(len(embeddings) == len(checksums))
-    assert(len(embeddings) == len(metadata))
-
-    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
-
-def update_global_thread_status(db_model_store, keys_per_bucket, thread):
-    global global_thread_id_counter
-    array_of_works = []
-    for path_to_bucket in keys_per_bucket.keys():
-        user, _, table_name, _, _, modality_name, _, data_base = query_db_model(db_model_store, path_to_bucket)
-        s3_keys = keys_per_bucket[path_to_bucket]
-        work = {
-            "user": user,
-            "data_base": data_base,
-            "table_name": table_name,
-            "modality_name": modality_name,
-            "bucket": path_to_bucket,
-            "nb_objects": len(s3_keys),
-        }
-        array_of_works.append(work)
-    with global_thread_status_lock:
-        thread_id = global_thread_id_counter
-        global_thread_id_counter += 1
-        global_thread_status[thread] = {
-            "thread_id" : thread_id,
-            "status": "Running",
-            "work": array_of_works,
-        }
-
-def process_s3_objects(s3_objects, db_model_store, device):
-    current_thread = threading.current_thread()
-    nb_objects = len(s3_objects)
-    keys_per_bucket = defaultdict(list)
-    print(f"\t-->Detected {nb_objects} new file(s):")
-
-    for s3_object in s3_objects:
-        print(f"\t\t-->{s3_object}")
-        path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
-        if s3_key not in keys_per_bucket[path_to_bucket]:
-            keys_per_bucket[path_to_bucket].append(s3_key)
-
-    update_global_thread_status(db_model_store, keys_per_bucket, current_thread)
-
-    for path_to_bucket in keys_per_bucket.keys():
-        _, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, _ = query_db_model(db_model_store, path_to_bucket)
-        s3_keys = keys_per_bucket[path_to_bucket]
-        if store_embeddings_flag:
-            print(f"\t--> Storing to data base in {table_name}")
-            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection)
-        else:
-            print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
-
-    with global_thread_status_lock:
-        if current_thread in global_thread_status:
-            global_thread_status[current_thread]["status"] = "Done"
-    print(f"\t--> Processing {nb_objects} file(s) done!")
-    with global_thread_status_lock:
-        snapshot = dict(global_thread_status)
-    pretty_print_global_thread_status(snapshot, running_only=False, print_output=ENABLE_PRETTY_PRINT)
-    print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
-
-
-def wait_for_key(d, key, check_interval=0.05):
-    while True:
-        with global_thread_status_lock:
-            if key in d:
-                break
-        time.sleep(check_interval)  # wait for 50ms before checking again
-    # key is now valid in dictionary
-
-def launch_s3_thread(s3_objects, db_model_store, device):
-    thread = threading.Thread(target=process_s3_objects, args=(s3_objects, db_model_store, device))
-    thread.start()
-    wait_for_key(global_thread_status, thread) # wait for th thread status to be updated
-    return thread
-
-
-def clean_finished_threads(threads):
-    new_threads = []
-    for thread in threads:
-        if not thread.is_alive():
-            thread.join()
-        else:
-            new_threads.append(thread)
-    print (f"==> Running threads: {len(new_threads)}")
-    # Clean up finished threads from global_thread_status to avoid unbounded growth
-    with global_thread_status_lock:
-        finished_threads = [t for t, info in global_thread_status.items() if info.get("status") == "Done" and t not in new_threads]
-        for t in finished_threads:
-            del global_thread_status[t]
-        snapshot = dict(global_thread_status)
-    pretty_print_global_thread_status(snapshot, running_only=True, print_output=ENABLE_PRETTY_PRINT)
-    return new_threads
 
 
 # --------------------------- Maintenance commands ---------------------------
 
-def recompute_all_objects(db_model_store, device, log_output=True):
+def recompute_all_objects(active_tasks, db_model_store, device, log_output=True):
     if log_output:
         print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
 
@@ -258,7 +110,7 @@ def recompute_all_objects(db_model_store, device, log_output=True):
         s3_objects, total_size, _ = list_s3_bucket(entry["s3_connection"], path_to_bucket)
         if len(s3_objects) > 0:
             start_time = time.perf_counter()
-            process_s3_objects(s3_objects, db_model_store, device)
+            process_s3_objects(active_tasks, s3_objects, db_model_store, device)
             duration = round((time.perf_counter() - start_time),3)
         else:
             duration = 0
@@ -279,7 +131,7 @@ def recompute_all_objects(db_model_store, device, log_output=True):
     return {"summary": summary, "data": recompute_dict}
 
 
-def update_objects(db_model_store, device, verbose=False, log_output=True):
+def update_objects(active_tasks, db_model_store, device, verbose=False, log_output=True):
     if log_output:
         print(f"\n######################\nUpdating missing/mismatched objects in all buckets\n######################\n")
 
@@ -299,7 +151,7 @@ def update_objects(db_model_store, device, verbose=False, log_output=True):
 
         if len(to_update_objects) > 0:
             start_time = time.perf_counter()
-            process_s3_objects(to_update_objects, db_model_store, device)
+            process_s3_objects(active_tasks, to_update_objects, db_model_store, device)
             duration = round(time.perf_counter() - start_time, 3)
         else:
             duration = 0.0
@@ -372,31 +224,14 @@ def check_objects(db_model_store, verbose=False, log_output=True):
     return {"summary": summary_with_note, "data": check_dict, "requires_update": perform_update}
 
 
-def _record_status(status_store, client_id, key, payload):
-    if status_store is None:
-        return
 
-    owner = client_id or "system"
-    entry = {
-        "summary": payload.get("summary", ""),
-        "generated_at": datetime.utcnow().isoformat() + "Z"
-    }
-    if "data" in payload:
-        entry["data"] = _sanitize_status_data(payload["data"])
-    if "requires_update" in payload:
-        entry["requires_update"] = payload["requires_update"]
-    if "error" in payload:
-        entry["error"] = payload["error"]
-
-    status_store.setdefault(owner, {})[key] = entry
-
-
-def _handle_maintenance_command(cmd, client_id, db_model_store, device, configure_file, user_config_map, status_store):
+def _handle_maintenance_command(active_tasks, cmd, client_id, db_model_store, device, 
+                                configure_file, user_config_map):
     if cmd == "RECOMPUTE":
-        outcome = recompute_all_objects(db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
+        outcome = recompute_all_objects(active_tasks, db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
         key = "recompute"
     elif cmd == "UPDATE":
-        outcome = update_objects(db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
+        outcome = update_objects(active_tasks, db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
         key = "update"
     elif cmd == "CHECK":
         outcome = check_objects(db_model_store, verbose=False, log_output=ENABLE_PRETTY_PRINT)
@@ -410,19 +245,8 @@ def _handle_maintenance_command(cmd, client_id, db_model_store, device, configur
 
     # Ensure only the requesting user's data is stored and later visible via STATUS
     filtered_outcome = _filter_outcome_for_client(key, outcome, client_id, db_model_store)
-    _record_status(status_store, client_id, key, filtered_outcome)
+    active_tasks.record_status(client_id, key, filtered_outcome)
 
-
-def _sanitize_status_data(data):
-    if isinstance(data, dict):
-        return {k: _sanitize_status_data(v) for k, v in data.items()}
-    if isinstance(data, (list, tuple)):
-        return [_sanitize_status_data(item) for item in data]
-    if hasattr(data, "model_name"):
-        return getattr(data, "model_name")
-    if isinstance(data, (str, int, float, bool)) or data is None:
-        return data
-    return str(data)
 
 
 def _filter_dict_by_user(data_dict, client_id):
@@ -475,7 +299,7 @@ def _filter_outcome_for_client(key, outcome, client_id, db_model_store):
 
 # --------------------------- Boot and hot-reload ----------------------------
 
-def perform_initial_config(configure_file):
+def perform_initial_config(configure_file, status_store):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
@@ -490,7 +314,7 @@ def perform_initial_config(configure_file):
 
     # Create the tmp_dir if it does not exist
     os.makedirs(tmp_dir, exist_ok=True)
-    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir)
+    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir, status_store=status_store)
     # Align MessageQueue debug with server pretty-print setting (off by default)
     try:
         control_mq.set_debug(ENABLE_PRETTY_PRINT)
@@ -503,9 +327,6 @@ def perform_initial_config(configure_file):
         create_s3_sql_users(user, admin_s3_configuration_file)
 
     cfg_store = defaultdict(dict)
-    cfg_store['status_store'] = {}
-    control_mq.set_status_store(cfg_store['status_store'])
-    _set_status_store_global(cfg_store['status_store'])
     for user in users:
         configure_user(user, cfg_store)
 
@@ -681,13 +502,48 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
     return True, username, dest_path
 
 
-def server_event_loop(control_mq, cfg_store, device, configure_file):
-    active_threads = []
+
+def process_s3_objects(active_tasks, s3_objects, db_model_store, device):
+    nb_objects = len(s3_objects)
+    keys_per_bucket = defaultdict(list)
+    users = set()
+    print(f"\t-->Detected {nb_objects} new file(s):")
+
+    for s3_object in s3_objects:
+        print(f"\t\t-->{s3_object}")
+        path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
+        if s3_key not in keys_per_bucket[path_to_bucket]:
+            keys_per_bucket[path_to_bucket].append(s3_key)
+
+    active_tasks.update_thread_dict(db_model_store, keys_per_bucket)
+
+    for path_to_bucket in keys_per_bucket.keys():
+        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, _ = query_db_model(db_model_store, path_to_bucket)
+        users.add(user)
+        s3_keys = keys_per_bucket[path_to_bucket]
+        if store_embeddings_flag:
+            print(f"\t--> Storing to data base in {table_name}")
+            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection)
+        else:
+            print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
+
+    active_tasks.update_status_to_done()
+    active_tasks.record_tasks_status_for_users(list(users))
+
+
+    print(f"\t--> Processing {nb_objects} file(s) done!")
+    with active_tasks.lock:
+        pretty_print_thread_status(active_tasks.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
+    print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+
+
+def server_event_loop(active_tasks, control_mq, cfg_store, device, configure_file):
     db_model_store = cfg_store['db_model_store']
     user_config_map = cfg_store['user_config_map']
-    status_store = cfg_store.setdefault('status_store', {})
-    control_mq.set_status_store(status_store)
-    _set_status_store_global(status_store)
+    status_store = control_mq.get_status_store()
+    assert status_store is not None
+    assert status_store == active_tasks.get_status_store() 
+
     try:
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
@@ -697,8 +553,7 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
             cmd, payload = result
 
             if cmd == "OBJECT":
-                thread = launch_s3_thread(payload, db_model_store, device)
-                active_threads.append(thread)
+                active_tasks.launch_s3_tasks(payload, db_model_store, device)
             elif cmd == "FILE":
                 if payload:
                     client_id, files = payload if isinstance(payload, tuple) else (None, payload)
@@ -713,32 +568,33 @@ def server_event_loop(control_mq, cfg_store, device, configure_file):
                     print("Warning: FILE command received with no payload")
             elif cmd in ("RECOMPUTE", "UPDATE", "CHECK", "RELOAD"):
                 client_id = payload
-                _handle_maintenance_command(cmd, client_id, db_model_store, device, configure_file, user_config_map, status_store)
+                _handle_maintenance_command(active_tasks, cmd, client_id, db_model_store, 
+                                            device, configure_file, user_config_map)
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
 
-            active_threads = clean_finished_threads(active_threads)
+            active_tasks.clean_finished_tasks()
             # After any event and cleanup, update per-user task status summaries
             try:
                 users = set(entry.get('s3_username') for entry in db_model_store.values())
                 users = {u for u in users if u}
-                _record_tasks_status_for_users(users)
+                active_tasks.record_tasks_status_for_users(users)
             except Exception as e:
                 # Non-fatal: do not disrupt server loop on status recording errors
                 print(f"Warning: failed to update task status: {e}")
     except KeyboardInterrupt:
-        print("\nInterrupted by user. Waiting for running threads to finish...")
-        for thread in active_threads:
-            thread.join()
-        print("All threads finished. Exiting now.")
+        print("\nInterrupted by user. Waiting for running tasks to finish...")
+        active_tasks.waitall()
+        active_tasks.close()
+        print("All tasks finished. Exiting now.")
         control_mq.close()
         sys.exit(0)
 
-def handle_maintenance_flags(args, db_model_store, device):
+def handle_maintenance_flags(active_tasks, args, db_model_store, device):
     if args.force_recompute:
-        recompute_all_objects(db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
+        recompute_all_objects(active_tasks, db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
     if args.force_update:
-        update_objects(db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
+        update_objects(active_tasks, db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
     if args.check_objects:
         check_objects(db_model_store, verbose=False, log_output=ENABLE_PRETTY_PRINT)
 
@@ -779,12 +635,16 @@ def main():
 
     global ENABLE_PRETTY_PRINT
     ENABLE_PRETTY_PRINT = args.pretty_print
+        
+    status_store = Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
+    thread_dict = Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
+    active_tasks = UMRSTasks(status_store, thread_dict)
 
-    control_mq, cfg_store, device = perform_initial_config(configure_file)
-    handle_maintenance_flags(args, cfg_store['db_model_store'], device)
+    control_mq, cfg_store, device = perform_initial_config(configure_file, status_store)
+    handle_maintenance_flags(active_tasks, args, cfg_store['db_model_store'], device)
     cfg_summary = pretty_print_cfg(cfg_store, print_output=ENABLE_PRETTY_PRINT)
-    _record_status(cfg_store.get('status_store'), "system", "config", {"summary": cfg_summary})
-    server_event_loop(control_mq, cfg_store, device, configure_file)
+    active_tasks.record_status("system", "config", {"summary": cfg_summary})
+    server_event_loop(active_tasks,control_mq, cfg_store, device, configure_file)
 
 
 if __name__ == "__main__":
