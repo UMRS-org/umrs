@@ -1,7 +1,7 @@
 # A class to manage server threads
 
 import threading
-import time 
+import time
 from collections import defaultdict
 from umrs.db_store import store_db_model, query_db_model
 from umrs.pretty_print import pretty_print_thread_status
@@ -25,9 +25,9 @@ class UMRSTasks:
         self.lock = threading.Lock()
         self.thread_dict = thread_dict
         self.status_store = status_store # shared with ZeroMQ. Here we write. ZerMQ reads it
-            
-    
-    def launch_s3_tasks(self, s3_objects, db_model_store, device):
+
+
+    def launch_s3_tasks(self, s3_objects, db_model_store, device, embedding_backend):
         from server_umrs import process_s3_objects
         def _wait_for_key_in_dict( dict, key, check_interval=0.05):
             while True:
@@ -37,11 +37,14 @@ class UMRSTasks:
                 time.sleep(check_interval)  # wait for 50ms before checking again
             # key is now valid in dictionary
 
-        thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, db_model_store, device))
+        thread = threading.Thread(
+            target=process_s3_objects,
+            args=(self, s3_objects, db_model_store, device, embedding_backend),
+        )
         thread.start()
         _wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for th thread status to be updated
         self.thread_list.append(thread)
-        
+
 
     def update_thread_dict(self, db_model_store, keys_per_bucket):
         current_thread = threading.current_thread()
@@ -66,7 +69,7 @@ class UMRSTasks:
             "work": array_of_works,
             "status": ThreadStatus.RUNNING,
         }
-    
+
     def update_status_to_done(self):
         current_thread = threading.current_thread()
         with self.lock:
@@ -75,10 +78,10 @@ class UMRSTasks:
                 entry = self.thread_dict[thread_id]  # get the full dict
                 entry["status"] = ThreadStatus.DONE    # modify it
                 self.thread_dict[thread_id] = entry    # reassign back to cache
-                
+
     def clean_finished_tasks(self):
         from server_umrs import ENABLE_PRETTY_PRINT
-        with self.lock:  
+        with self.lock:
             running_threads = []
             for thread in self.thread_list:
                 if not thread.is_alive():
@@ -101,7 +104,7 @@ class UMRSTasks:
         filtered = {}
         with self.lock:
             for thread_ident in self.thread_dict:
-                info = self.thread_dict[thread_ident] 
+                info = self.thread_dict[thread_ident]
                 works = info.get("work", [])
                 user_works = [w for w in works if w.get("user") == client_id]
                 if user_works:
@@ -153,7 +156,7 @@ class UMRSTasks:
         owner_dict = self.status_store.get(owner, {})
         owner_dict[key] = entry
         self.status_store[owner] = owner_dict
-        
+
 
     def _json_safe_thread_status(self, ts_dict):
         """Convert thread-keyed dict into a JSON-serializable list of thread info dicts, avoiding key collisions."""
@@ -167,7 +170,7 @@ class UMRSTasks:
         return safe
 
 
-    
+
     def record_tasks_status_for_users(self, users):
         """Record 'tasks' status summaries for the provided user list into the global status store."""
         if self.status_store is None:
@@ -179,16 +182,15 @@ class UMRSTasks:
             json_safe = self._json_safe_thread_status(filtered)
             self.record_status(user, "tasks", {"summary": summary, "data": json_safe})
 
-    
+
     def close(self):
         try:
             # if using diskcache.Cache
             self.thread_dict.close()   # closes the cache
             self.status_store.close()   # closes the cache
             # optionally clear on disk
-            self.thread_dict.clear()   
-            self.status_store.clear()   
+            self.thread_dict.clear()
+            self.status_store.clear()
             print("thread_dict and status store dictionnary deleted")
         except Exception as e:
             print(f"Cannot close thread_dict/status_store dictionary properly: {e}")
-    
