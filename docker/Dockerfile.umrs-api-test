@@ -4,7 +4,7 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # Copy requirements first for better layer caching
-COPY ./requirements.txt ./requirements.txt
+COPY ./src/requirements.txt ./requirements.txt
 
 # Copy API client (source) and test script
 COPY ./src /app/src
