@@ -22,6 +22,19 @@ services:
     restart: unless-stopped
     command: ["python", "src/server_umrs.py", "-c", "/root/conf_umrs.json"]
 
+  umrs-embed-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: umrs-embed-worker
+    environment:
+      - PYTHONUNBUFFERED=1
+      - EMBEDDING_WORKER_BIND=tcp://0.0.0.0:6000
+      - EMBEDDING_DEVICE=cuda
+    volumes:
+      - ./s3cfg:/root/.s3cfg:ro
+    command: ["python", "src/embedding_worker.py"]
+
   minio:
     image: minio/minio:latest
     container_name: minio
