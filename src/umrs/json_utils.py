@@ -46,14 +46,18 @@ client_schema = {
                 },
                 "model": {
                   "type": "object",
-                  "required": ["model_name", "vector_size", "model_type"],
+                  "required": ["model_name", "vector_size", "model_type", "return_type"],
                   "properties": {
                     "model_name": { "type": "string" },
                     "vector_size": { "type": "string" },
                     "model_type": { "type": "string" },
                     "model_cfg_file" : { "type": "string" },
                     "checkpoint_path": { "type": "string" },
-                    "spacy_model": { "type": "string" }
+                    "spacy_model": { "type": "string" },
+                    "return_type": {
+                      "type": ["string", "null"],
+                      "enum": ["File", null]
+                    }
                   },
                   "additionalProperties": False
                 },
