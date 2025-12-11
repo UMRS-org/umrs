@@ -8,8 +8,9 @@ from typing import Optional
 
 
 class EmbeddingModel:
-    def __init__(self, model_name: str, embedding_vector_size: int, max_tokens: Optional[int], model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
+    def __init__(self, model_name: str, return_type: str, embedding_vector_size: int, max_tokens: Optional[int], model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
         self.model_name = model_name
+        self.return_type = return_type
         self.embedding_vector_size = int(embedding_vector_size)
         self.max_tokens = int(max_tokens) if max_tokens is not None else None
         self.input_type = input_type
@@ -35,6 +36,7 @@ def load_model(model_cfg, modality):
     model_name = model_cfg["model_name"]
     vector_size = model_cfg["vector_size"]
     model_type = model_cfg["model_type"]
+    return_type  = model_cfg["return_type"]
     
     tokenizer = None
     max_tokens = None
@@ -70,5 +72,5 @@ def load_model(model_cfg, modality):
 
 
     # Create and return the EmbeddingModel object
-    return EmbeddingModel(model_name, vector_size, max_tokens, model, input_type, compute_embeddings_func, modality, spacy_model, tokenizer)
+    return EmbeddingModel(model_name, return_type, vector_size, max_tokens, model, input_type, compute_embeddings_func, modality, spacy_model, tokenizer)
 

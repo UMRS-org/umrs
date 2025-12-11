@@ -124,6 +124,23 @@ class MAEDecoder(nn.Module):
             
         dec_out = self.norm(full_sequence)
         recon_flat = self.reconstruction_head(dec_out)
+
+
+         # --- Replace non masked patches with white patches for debugging ---
+        B, N, D = recon_flat.shape        # batch, num patches, embedding dim
+        white_patches = torch.ones_like(recon_flat)
+
+        # Build mask: masked positions are at indices >= num_visible_patches
+        num_visible_patches = x.shape[1] - 1
+        mask_positions = (ids_restore < num_visible_patches)   # shape [B, N]
+
+        # Expand to match last dim
+        mask_positions = mask_positions.unsqueeze(-1)
+
+        # Replace masked patches only
+        recon_flat = torch.where(mask_positions, white_patches, recon_flat)
+        # -------------------------------------------------------------
+        
         return recon_flat
 
 class MAE(nn.Module):
@@ -147,7 +164,8 @@ class MAE(nn.Module):
         self.patch_size = patch_size
         self.num_patches = (img_size // patch_size) ** 2
         self.norm_pix_loss = norm_pix_loss
-
+        self.in_chans = in_chans
+        
         # Instantiate encoder and decoder with the specified configurations
         self.encoder = MAEEncoder(
             img_size=img_size, patch_size=patch_size, in_chans=in_chans,

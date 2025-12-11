@@ -40,7 +40,25 @@ def get_s3_server_name(s3):
 def s3_strong_password(length=24):
     chars = string.ascii_letters + string.digits + "-_@"
     return ''.join(secrets.choice(chars) for _ in range(length))
-        
+
+
+def s3_key_exists(s3, bucket_name, key):
+    """
+    Check if a specific key exists in the given S3 bucket.
+
+    Returns True if the key exists, False otherwise.
+    """
+    try:
+        s3.head_object(Bucket=bucket_name, Key=key)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == "404":
+            return False
+        else:
+            # Something else went wrong, re-raise
+            raise
+
+
 def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list):
 
 
@@ -324,6 +342,28 @@ def is_a_text_file(in_path):
         return False
     
     
+def save_tiff_image_to_s3(s3, img_array, path_to_bucket, s3_key):
+    """
+    Save a NumPy image array to S3 as a TIFF file.
+    
+    img_array: HWC or CHW uint8 NumPy array
+    bucket_name: str, name of the bucket
+    s3_key: str, full key/path in the bucket
+    """
+    # Convert CHW -> HWC if needed
+    if img_array.shape[0] in [1, 3]:  # CHW
+        img_array = img_array.transpose(1, 2, 0)
+    
+    # Convert to PIL Image
+    img = Image.fromarray(img_array)
+    
+    # Save to in-memory buffer
+    buffer = BytesIO()
+    img.save(buffer, format="TIFF")
+    buffer.seek(0)
+    
+    # Upload to S3
+    return s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=buffer.getvalue())
 
 def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     if not is_a_text_file(in_path):
