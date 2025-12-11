@@ -15,7 +15,46 @@ class ThreadStatus:
 
 
 
+
 class UMRSTasks:
+    """
+    UMRSTasks: A class for managing asynchronous tasks executed in server threads.
+
+    This class handles the lifecycle of tasks submitted to server threads, including:
+
+    1. Launching tasks:
+    - Supports processing S3 objects or other work asynchronously in separate threads.
+    - Tracks each thread and associates it with the work being done.
+
+    2. Thread bookkeeping:
+    - Maintains a thread-safe dictionary of active thread statuses (running/done) using a lock.
+    - Assigns a unique thread ID for each task.
+    - Allows filtering of thread status per user/client.
+
+    3. Status tracking and persistence:
+    - Uses a disk-backed cache (via `diskcache.Cache`) to store thread and task status.
+    - Supports recording summaries and JSON-safe representations for external systems (e.g., ZeroMQ).
+
+    4. Cleanup and synchronization:
+    - Waits for all threads to finish or periodically cleans up finished threads.
+    - Ensures that resources (thread cache, status store) can be safely closed and cleared.
+
+    5. Utilities:
+    - Pretty-prints running thread statuses.
+    - Converts internal thread status data into JSON-safe formats.
+    - Provides helper methods for per-user views and status recording.
+
+    Key components:
+    - `thread_list`: list of currently running `threading.Thread` objects.
+    - `thread_dict`: disk-backed cache storing per-thread info, work, and status.
+    - `status_store`: disk-backed cache storing per-user task summaries, shared with other processes (e.g., ZeroMQ).
+    - `lock`: a `threading.Lock` ensuring thread-safe updates to shared resources.
+
+    Dependencies:
+    - `diskcache.Cache` for persistent shared state.
+    - `threading` and `time` for task execution and synchronization.
+    - Database query helpers (`query_db_model`) and pretty-print helpers (`pretty_print_thread_status`).
+    """
     def __init__(self, status_store, thread_dict):
 
         if not isinstance(status_store, Cache) or not isinstance(thread_dict, Cache) :

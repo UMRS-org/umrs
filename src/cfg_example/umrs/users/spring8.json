@@ -21,7 +21,8 @@
             "vector_size": "768",
             "model_type": "MAE",
             "model_cfg_file": "../data/models/mae_vit-p128-s8d/mae-vit-b128_S8D.yaml",
-            "checkpoint_path": "../data/models/mae_vit-p128-s8d/best_model.pth"
+            "checkpoint_path": "../data/models/mae_vit-p128-s8d/best_model.pth",
+            "return_type": "File"
           },
           "sql": {
             "store_embeddings": "yes",

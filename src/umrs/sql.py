@@ -242,6 +242,13 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         column = {"name": "model", "type": "TEXT"}
         table_columns.append(column)
 
+    if model.return_type is not None:
+        if model.return_type == "File":
+            column = {"name": "saved_s3_object", "type": "TEXT"}
+            table_columns.append(column)
+        else:
+            sys.exit(f"Do not know how to manage return type '{model.return_type}' in cfg file")
+
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
 
@@ -328,7 +335,7 @@ def is_string_type(sql_type):
     string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
     return sql_type.upper() in string_types
 
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key,  checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = None, silent = False):
+def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, saved_s3_key=None checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = None, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -353,41 +360,102 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
         s3_object = f"{bucket_name}/{s3_key}"  # Full S3 path
 
+        saved_s3_object = f"{bucket_name}/{saved_s3_key}" if saved_s3_key is not None else None
+     
         # INSERT and UPDATE if s3_object already exists
+        # Start building the INSERT query dynamically for the given table
+        query = f"""
+        INSERT INTO {table_name} (
+            s3_object, embedding, date, time
+        """
+        # Initialize the list of values corresponding to the columns
+        values = [s3_object, embedding, date, time]
+
+        # If the table has the "_content" column, add related columns to the query
         if data_base.has_column(table_name, "_content"):
-            if start == 0:
-                # Delete all previous chunks for this S3 object before inserting new ones
-                query=f"DELETE FROM {table_name} WHERE s3_object = %s;"
-                cur.execute(query, (s3_object,))
-            query = f"""
-            INSERT INTO {table_name} (
-            s3_object, _content, embedding, date, time,
-            chunk_start, chunk_end, chunk_md5, checksum, model
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
+            query += ", _content, chunk_start, chunk_end, chunk_md5, checksum, model"
+            # Add the corresponding values for these columns
+            values.extend([content, start, end, md5, checksum, model_name])
+
+        # If a saved S3 object key is provided, add the column and its value
+        if saved_s3_object is not None:
+            query += ", saved_s3_object"
+            values.append(saved_s3_object)
+
+        # Close the column list and create the VALUES placeholders dynamically
+        query += ") VALUES ({})".format(", ".join(["%s"] * len(values)))
+
+        # Determine the ON CONFLICT clause depending on whether the "_content" column exists
+        if data_base.has_column(table_name, "_content"):
+            # Use a compound unique key for conflicts when storing chunked content
+            query += " ON CONFLICT (s3_object, chunk_start) DO UPDATE SET"
+        else:
+            # Use only the s3_object key for conflicts in simpler tables
+            query += " ON CONFLICT (s3_object) DO UPDATE SET"
+
+        # Specify the columns to update in case of conflict (always update these)
+        query += """
             embedding = EXCLUDED.embedding,
             date = EXCLUDED.date,
-            time = EXCLUDED.time,
+            time = EXCLUDED.time
+        """
+
+        # If the "_content" column exists, also update all content-related fields
+        if data_base.has_column(table_name, "_content"):
+            query += """,
             _content = EXCLUDED._content,
             chunk_start = EXCLUDED.chunk_start,
             chunk_end = EXCLUDED.chunk_end,
             chunk_md5 = EXCLUDED.chunk_md5,
             checksum = EXCLUDED.checksum,
             model = EXCLUDED.model
-            RETURNING id;
-            """
-            cur.execute(query, (s3_object, content, embedding, date, time, start, end, md5, checksum, model_name))
-        else:
-            query = f"""
-            INSERT INTO {table_name} (s3_object, embedding, date, time, checksum, model)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (s3_object) DO UPDATE
-            SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time, checksum = EXCLUDED.checksum, model = EXCLUDED.model
+        """
 
-            RETURNING id;
-            """
-            cur.execute(query, (s3_object, embedding, date, time, checksum, model_name))
+        # If a saved S3 object key is provided, update it as well
+        if saved_s3_object is not None:
+            query += ", saved_s3_object = EXCLUDED.saved_s3_object"
+
+        # Finish the query by returning the ID of the inserted or updated row
+        query += " RETURNING id;"
+
+        # Execute the query with the prepared values
+        cur.execute(query, values)
+
+        # # INSERT and UPDATE if s3_object already exists
+        # if data_base.has_column(table_name, "_content"):
+        #     if start == 0:
+        #         # Delete all previous chunks for this S3 object before inserting new ones
+        #         query=f"DELETE FROM {table_name} WHERE s3_object = %s;"
+        #         cur.execute(query, (s3_object,))
+        #     query = f"""
+        #     INSERT INTO {table_name} (
+        #     s3_object, _content, embedding, date, time,
+        #     chunk_start, chunk_end, chunk_md5, checksum, model
+        #     )
+        #     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        #     ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
+        #     embedding = EXCLUDED.embedding,
+        #     date = EXCLUDED.date,
+        #     time = EXCLUDED.time,
+        #     _content = EXCLUDED._content,
+        #     chunk_start = EXCLUDED.chunk_start,
+        #     chunk_end = EXCLUDED.chunk_end,
+        #     chunk_md5 = EXCLUDED.chunk_md5,
+        #     checksum = EXCLUDED.checksum,
+        #     model = EXCLUDED.model
+        #     RETURNING id;
+        #     """
+        #     cur.execute(query, (s3_object, content, embedding, date, time, start, end, md5, checksum, model_name))
+        # else:
+        #     query = f"""
+        #     INSERT INTO {table_name} (s3_object, embedding, date, time, checksum, model)
+        #     VALUES (%s, %s, %s, %s, %s, %s)
+        #     ON CONFLICT (s3_object) DO UPDATE
+        #     SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time, checksum = EXCLUDED.checksum, model = EXCLUDED.model
+
+        #     RETURNING id;
+        #     """
+        #     cur.execute(query, (s3_object, embedding, date, time, checksum, model_name))
 
          # Fetch the inserted/updated ID
         inserted_id = cur.fetchone()[0]  # Fetch the first column of the result
@@ -444,7 +512,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
                 print(f"Warning: Failed to close cursor: {e}")
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, modality_name, checksums, model_name, metadata_list=None):
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_keys, modality_name, checksums, model_name, metadata_list=None):
     """
     Store embeddings in the database depending on the data modality.
 
@@ -460,9 +528,11 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
     if metadata_list is None:
         metadata_list = [{} for _ in s3_keys]
 
+    if saved_s3_keys = None: 
+
     if modality_name in ("image", "tomography"):
         # One embedding per image file
-        for embedding, s3_key, metadata, checksum in zip(embeddings, s3_keys, metadata_list, checksums):
+        for embedding, s3_key, saved_s3_key, metadata, checksum in zip(embeddings, s3_keys, saved_s3_keys, metadata_list, checksums):
             print(f"storing embedding for {s3_key}... ")
             store_one_embedding_in_db(
                 data_base,
@@ -470,6 +540,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 table_name=table_name,
                 bucket_name=bucket_name,
                 s3_key=s3_key,
+                saved_s3_key = saved_s3_key,
                 content=None,
                 metadata=metadata,
                 model_name = model_name,
@@ -479,7 +550,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     elif modality_name in ("text", "text file"):
         # Multiple embeddings per file (one per text chunk)
-        for chunked_embeddings, s3_key, metadata, checksum in zip(embeddings, s3_keys, metadata_list, checksums):
+        for chunked_embeddings, s3_key, saved_s3_key, metadata, checksum in zip(embeddings, s3_keys, saved_s3_keys, metadata_list, checksums):
             sorted_chunks = sorted(chunked_embeddings, key=lambda chunk: chunk["start"])
             for chunk in sorted_chunks:
                 store_one_embedding_in_db(
@@ -488,6 +559,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                     table_name=table_name,
                     bucket_name=bucket_name,
                     s3_key=s3_key,
+                    saved_s3_key = saved_s3_key,
                     content=chunk["text"],
                     start=chunk["start"],
                     end=chunk["end"],
