@@ -14,7 +14,8 @@
             "data": {
               "type": "file",
               "mime_type": "image/raw"
-            }
+            },
+            "need_output_bucket": true
           },
           "model": {
             "model_name": "Masked Autoencoder",
@@ -22,7 +23,7 @@
             "model_type": "MAE",
             "model_cfg_file": "../data/models/mae_vit-p128-s8d/mae-vit-b128_S8D.yaml",
             "checkpoint_path": "../data/models/mae_vit-p128-s8d/best_model.pth",
-            "return_type": "File"
+            "return_type": "file"
           },
           "sql": {
             "store_embeddings": "yes",

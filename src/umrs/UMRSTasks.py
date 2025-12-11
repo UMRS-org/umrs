@@ -86,7 +86,7 @@ class UMRSTasks:
         current_thread = threading.current_thread()
         array_of_works = []
         for path_to_bucket in keys_per_bucket.keys():
-            user, _, table_name, _, _, modality_name, _, data_base = query_db_model(db_model_store, path_to_bucket)
+            user, _, table_name, _, _, modality_name, _, data_base, _ = query_db_model(db_model_store, path_to_bucket)
             s3_keys = keys_per_bucket[path_to_bucket]
             work = {
                 "user": user,

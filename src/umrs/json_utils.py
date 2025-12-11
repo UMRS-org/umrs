@@ -31,7 +31,7 @@ client_schema = {
                 },
                 "s3": {
                   "type": "object",
-                  "required": ["bucket_alias", "data"],
+                  "required": ["bucket_alias",  "data"],
                   "properties": {
                     "bucket_alias": { "type": "string" },
                     "data": {
@@ -40,6 +40,10 @@ client_schema = {
                       "properties": {
                         "type": { "type": "string", "enum": ["file", "inline"] },
                         "mime_type": { "type": "string" }
+                      },
+                      "need_output_bucket": {
+                        "type": "boolean",
+                        "default": False
                       }
                     }
                   }
@@ -56,7 +60,7 @@ client_schema = {
                     "spacy_model": { "type": "string" },
                     "return_type": {
                       "type": ["string", "null"],
-                      "enum": ["File", null]
+                      "enum": ["file", None]
                     }
                   },
                   "additionalProperties": False

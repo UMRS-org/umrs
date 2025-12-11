@@ -49,6 +49,11 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
             bucket_list.append(path_to_bucket)
+            need_output_bucket = modality["s3"].get("need_output_bucket", False)
+            if need_output_bucket:
+                output_path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username, output=True)
+                bucket_list.append(output_path_to_bucket)
+                    
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
     s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
@@ -87,11 +92,17 @@ def configure_user(user_cfg, cfg_store):
             check_or_quit(modality_name)
             print(f"\t\tModality: {modality_name}")
             bucket_alias = modality["s3"]["bucket_alias"]
+            need_output_bucket = modality["s3"].get("need_output_bucket", False)
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
             model = load_model(modality['model'], modality_name)
+            if model.return_type == "file":
+                assert need_output_bucket
+                output_path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location, output=True)
+            else: 
+                output_path_to_bucket = None
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
-            store_db_model(db_model_store, path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
+            store_db_model(db_model_store, path_to_bucket, output_path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
             print(f"\t\t\t==>Bucket alias: {bucket_alias}")
 
 
@@ -518,12 +529,12 @@ def process_s3_objects(active_tasks, s3_objects, db_model_store, device):
     active_tasks.update_thread_dict(db_model_store, keys_per_bucket)
 
     for path_to_bucket in keys_per_bucket.keys():
-        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, _ = query_db_model(db_model_store, path_to_bucket)
+        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, _ , output_bucket= query_db_model(db_model_store, path_to_bucket)
         users.add(user)
         s3_keys = keys_per_bucket[path_to_bucket]
         if store_embeddings_flag:
             print(f"\t--> Storing to data base in {table_name}")
-            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection)
+            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection, output_bucket)
         else:
             print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
 
