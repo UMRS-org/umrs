@@ -226,7 +226,7 @@ class MAE(nn.Module):
         recon_patches_flat = self.decoder(enc_out, ids_restore)
         loss = self.forward_loss(x, recon_patches_flat, mask)
         
-        return loss, recon_patches_flat, mask
+        return loss, recon_patches_flat, mask, enc_out
     
     def encode(self, x: torch.Tensor, convert_to_tensor = True):
         """
