@@ -1,11 +1,11 @@
-import sys
+import sys, os
 import yaml
 import torch
 from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from s3 import s3_key_exists, save_tiff_image_to_s3
+from umrs.s3 import s3_key_exists, save_tiff_image_to_s3
 
 ################################ Masked Autoencoder(  ###########################
 def load_masked_autoencoder(config_path, checkpoint_path):
@@ -275,7 +275,7 @@ def save_one_reconstruction_in_one_image(patches,
         print(f"❌ Upload failed, status code: {status_code}")
         print(response)
 
-    return save_file
+    return path_to_bucket+"/"+s3_key
 
 
 def save_all_reconstructions_in_one_image(all_reconstructions,
@@ -305,18 +305,19 @@ def save_all_reconstructions_in_one_image(all_reconstructions,
     for idx in range(num_samples):
         patches = all_reconstructions[idx]     # shape [num_patches, patch_dim]
 
-        base = os.path.splitext(os.path.basename(s3_keys[idx]))[0]
+        base = os.path.splitext(s3_keys[idx])[0]
         save_key= f"{base}_patches.tiff"
 
-        save_one_reconstruction_in_one_image(
+        saved_path = save_one_reconstruction_in_one_image(
             patches, s3, save_key, path_to_bucket, patch_shape, resolution, overwrite=True
         )
-
-        saved_keys.append(save_key)
+        # print(f"Output saved to: {saved_path}")
+        
+        saved_keys.append(saved_path)
 
     return saved_keys    
 
-def compute_embeddings_masked_autoencoder(self, s3, s3_keys, path_to_bucket):
+def compute_embeddings_masked_autoencoder(self, s3, s3_keys, path_to_bucket, output_bucket):
      # 2. Load data
     data_loader = build_s8d_val_dataloader(
         s3,
@@ -334,8 +335,9 @@ def compute_embeddings_masked_autoencoder(self, s3, s3_keys, path_to_bucket):
     
     saved_keys = None
     if all_reconstructions is not None:
-        saved_keys = save_all_reconstructions_in_one_image(all_reconstructions, patch_shape, s3, s3_keys, path_to_bucket, resolution=self.model.img_size)
-        # saved_files = save_all_reconstructions(all_reconstructions, "./reconstruction", file_list, patch_shape)
+        saved_keys = save_all_reconstructions_in_one_image(all_reconstructions, patch_shape, s3, s3_keys, output_bucket, resolution=self.model.img_size)
+        # saved_files = save_all_reconstructions(all_reconstructions, "./reconstruction", file_list, patch_shape
+        
 
     
     return cls_embeddings, checksums, metadata, saved_keys

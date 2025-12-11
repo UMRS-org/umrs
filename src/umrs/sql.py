@@ -243,7 +243,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         table_columns.append(column)
 
     if model.return_type is not None:
-        if model.return_type == "File":
+        if model.return_type == "file":
             column = {"name": "saved_s3_object", "type": "TEXT"}
             table_columns.append(column)
         else:
@@ -335,7 +335,7 @@ def is_string_type(sql_type):
     string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
     return sql_type.upper() in string_types
 
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, saved_s3_key=None checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = None, silent = False):
+def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, saved_s3_object=None, checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = None, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -360,8 +360,6 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
         s3_object = f"{bucket_name}/{s3_key}"  # Full S3 path
 
-        saved_s3_object = f"{bucket_name}/{saved_s3_key}" if saved_s3_key is not None else None
-     
         # INSERT and UPDATE if s3_object already exists
         # Start building the INSERT query dynamically for the given table
         query = f"""
@@ -493,6 +491,9 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             print(f"\t--> Stored/Updated embedding in '{table_name}' for '{s3_object}'")
             if metadata:
                 print(f"\t--> metadata have been added/updated'")
+            if saved_s3_object:
+                  print(f"\t--> Output saved in {saved_s3_object}'")
+          
 
 
     except Exception as e:
@@ -512,7 +513,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
                 print(f"Warning: Failed to close cursor: {e}")
         db_pool.putconn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_keys, modality_name, checksums, model_name, metadata_list=None):
+def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_objects, modality_name, checksums, model_name, metadata_list=None):
     """
     Store embeddings in the database depending on the data modality.
 
@@ -528,11 +529,9 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
     if metadata_list is None:
         metadata_list = [{} for _ in s3_keys]
 
-    if saved_s3_keys = None: 
-
     if modality_name in ("image", "tomography"):
         # One embedding per image file
-        for embedding, s3_key, saved_s3_key, metadata, checksum in zip(embeddings, s3_keys, saved_s3_keys, metadata_list, checksums):
+        for embedding, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
             print(f"storing embedding for {s3_key}... ")
             store_one_embedding_in_db(
                 data_base,
@@ -540,7 +539,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 table_name=table_name,
                 bucket_name=bucket_name,
                 s3_key=s3_key,
-                saved_s3_key = saved_s3_key,
+                saved_s3_object= saved_s3_object,
                 content=None,
                 metadata=metadata,
                 model_name = model_name,
@@ -550,7 +549,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     elif modality_name in ("text", "text file"):
         # Multiple embeddings per file (one per text chunk)
-        for chunked_embeddings, s3_key, saved_s3_key, metadata, checksum in zip(embeddings, s3_keys, saved_s3_keys, metadata_list, checksums):
+        for chunked_embeddings, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
             sorted_chunks = sorted(chunked_embeddings, key=lambda chunk: chunk["start"])
             for chunk in sorted_chunks:
                 store_one_embedding_in_db(
@@ -559,7 +558,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                     table_name=table_name,
                     bucket_name=bucket_name,
                     s3_key=s3_key,
-                    saved_s3_key = saved_s3_key,
+                    saved_s3_object= saved_s3_object,
                     content=chunk["text"],
                     start=chunk["start"],
                     end=chunk["end"],
@@ -621,7 +620,7 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         db_pool.putconn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
-    _username, data_base, table_name, _model, _store_embeddings_flag, _modality_name, _s3_connection, _ = query_db_model(db_model_store, path_to_bucket)
+    _username, data_base, table_name, _model, _store_embeddings_flag, _modality_name, _s3_connection, _, _ = query_db_model(db_model_store, path_to_bucket)
     status = []
     for i, s3_object in enumerate(s3_objects):
         _, s3_key = s3_object.replace("s3://", "").split("/", 1)

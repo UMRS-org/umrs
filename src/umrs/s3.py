@@ -147,8 +147,10 @@ def connect_to_s3(config_file):
     
     return s3, bucket_location
 
-def create_path_to_bucket(xp_name, bucket_alias, username):
+def create_path_to_bucket(xp_name, bucket_alias, username, output=False):
     path = username+"."+xp_name+"."+bucket_alias
+    if output:
+        path += "-output"
     return path.lower().replace(" ","-").replace("_","-")
 
 
@@ -180,13 +182,13 @@ def decompose_bucket_alias_arg(bucket_alias_arg):
     remaining = parts[1] if len(parts) > 1 else None
     return first_subdir, remaining
 
-def check_bucket_name(s3, xp_name, bucket_alias, username):
-    path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
+def check_bucket_name(s3, xp_name, bucket_alias, username, output=False):
+    path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username, output=output)
     return path_to_bucket, check_bucket_path(s3, path_to_bucket)
 
-def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location):
+def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, output=False):
 
-    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username)
+    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=output)
     if success:    
         print(f"\t\t\t--> Bucket '{path_to_bucket}' already exists!")
         # add_bucket_sqs_queue(s3, path_to_bucket)
