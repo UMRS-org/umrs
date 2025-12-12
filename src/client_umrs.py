@@ -14,7 +14,7 @@ import argparse
 from collections import defaultdict
 import traceback
 import json as _json
-
+import time
 
 # ======================= Helper / API abstractions (new) =======================
 
@@ -166,10 +166,15 @@ def configure_bucket_store(user_cfg, bucket_store):
             check_or_quit(modality_name)
             bucket_alias =  modality["s3"]["bucket_alias"]
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
+            if modality["s3"]["need_output_bucket"]:
+                output_path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username, output=True)
+            else:
+                output_path_to_bucket = None
             # print(bucket_alias, username, xp_name, modality_name)
             metadata = metadata_dict(modality["sql"])
             entry = {
                 "path_to_bucket": path_to_bucket,
+                "output_path_to_bucket": output_path_to_bucket,
                 "username": username,
                 "xp_name": xp_name,
                 "modality_name": modality_name,
@@ -207,9 +212,11 @@ ui_p.add_argument(
         "You may append a subdirectory using '/' as in a typical Unix path."
     )
 )
+
+
 ui_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
-utf_p = subparsers.add_parser('upload_dir', help='Upload all fileq of a directory to a bucket')
+utf_p = subparsers.add_parser('upload_dir', help='Upload all files of a directory to a bucket')
 utf_p.add_argument('path')
 utf_p.add_argument(
     'bucket_alias',
@@ -220,6 +227,31 @@ utf_p.add_argument(
     )
 )
 utf_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
+
+dr_p = subparsers.add_parser('download_results', help="Download file results computed by the server")
+dr_p.add_argument(
+    'bucket_alias',
+    help=(
+        "Alias of a bucket as defined in the client configuration file.\n"
+        "Use the list_bucket command to show available bucket aliases for a given user.\n"
+        "You may append a subdirectory using '/' as in a typical Unix path."
+    )
+)
+dr_p.add_argument(
+    'local_path',
+    help=(
+        "local Unix path where the results will be stored.\n"
+        "New files will erase local files."
+    )
+)
+
+dr_p.add_argument(
+    '--force-overwrite',
+    action='store_true',
+    default=False,
+    help="Force overwriting existing local files even if checksums mismatch."
+)
+dr_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
 # New actions
 lb_p = subparsers.add_parser('list_buckets', help='List bucket aliases for a username')
@@ -258,7 +290,7 @@ configure_file = args.conf
 # Only enforce config file for legacy mode or actions that need bucket/user config
 status_needs_config = args.action == 'status' and not getattr(args, 'username', None)
 requires_config =  args.action in {
-    'list_buckets', 'upload_file', 'upload_dir'
+    'list_buckets', 'upload_file', 'upload_dir', "download_results"
 } or status_needs_config
 
 if requires_config and not os.path.exists(configure_file):
@@ -358,7 +390,10 @@ try:
     bucket_alias_arg = getattr(args, 'bucket_alias')
     bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
     entry = find_bucket_entry(bucket_store, bucket_alias)
-    path_to_bucket        = entry['path_to_bucket']
+    if args.action == "download_results":
+        path_to_bucket        = entry['output_path_to_bucket']
+    else : 
+        path_to_bucket        = entry['path_to_bucket']
     # If username not provided as arg, default to config
     username_arg = getattr(args, 'username', None)
     username              = username_arg or entry['username']
@@ -382,7 +417,10 @@ if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
 
 s3, bucket_location = connect_to_s3(expanded_cfg)
 
-full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username)
+if args.action == "download_results":
+    full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
+else :
+    full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, indent=False)
 
 if not success or full_bucket_name != path_to_bucket:
     sys.exit(f"No bucket {bucket_alias} for  modality {modality} and for user {username}")
@@ -399,7 +437,8 @@ except Exception as e:
 # In API mode, metadata is provided via repeated -k flags like legacy mode
 
 if args.verbose :
-    print(f"Storing data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
+   action = "Retreiving" if args.action == "download_results" else "Storing"
+   print(f"{action} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
 
 server_notify_result = None
 
@@ -487,10 +526,61 @@ try:
             print(api_json(s3_key_list=s3_key_list, file_list=file_list, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
         else:
             print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
-    
-    else:
-        print(f"Error: action '{action}' not yet implemented. exiting...")
+    elif action == "download_results":
+        # check if the target path exists
+        if not os.path.exists(args.local_path):
+            print(api_json(status="error", 
+                            message=f"Local path {args.local_path} does not exists",
+                            bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+        else: 
+            done = False
+            print_only_new = False
+            while not done: # loop until we are sure the server has done with this bucket
+                #get the list of objects on s3 server
+                objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+                #down load these object talink into account if we force overwrite or not
+                download_objects(s3, objects_list, checksums, args.local_path, 
+                                 force_overwrite=args.force_overwrite, print_only_new=print_only_new)
+                print_only_new = True
+                # now we need to check if teh server is still computing things for this bucket
+                effective_username = args.username
+                if not effective_username and isinstance(user, dict):
+                    effective_username = user.get('username')
+                if not effective_username:
+                    done = True
+                else:
+                    # ask the server
+                    raw_response = control_mq.request_status(effective_username, "all")
+                    if raw_response is None:
+                        break;
+                    # raw response is a string of a serialized json. transform it into json
+                    parsed = _json.loads(raw_response)
 
+                    # if there is no entry, we are done
+                    message = parsed.get("message")
+                    if  message == "No status entries":
+                        done=True
+                    else : #if there re entries, check thz one that correspond to this bucket
+                        data = parsed["summaries"]["tasks"]["data"]
+                        done = True
+                        for entry in data: # for each entries
+                            status = entry['status']
+                            bucket = entry['work'][0]['bucket']
+                            if full_bucket_name.startswith(bucket): #this correspond to the buecket
+                                if status != "Done": #But it is not done
+                                    if args.verbose:
+                                        print("The server is still computing, waiting for new results")
+                                    time.sleep(0.5)
+                                    done = False
+                                    break
+            # Do it one more time in case the server finished after the last check 
+            #get the list of objects on s3 server
+            objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+            #down load these object talink into account if we force overwrite or not
+            download_objects(s3, objects_list, checksums, args.local_path, 
+                                force_overwrite=args.force_overwrite, print_only_new=print_only_new)
+
+                            
 except Exception as e:
     print(api_json(status='error', message=str(e), output_format=args.output))
     if args.verbose:
