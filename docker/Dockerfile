@@ -21,6 +21,11 @@ COPY ./src /app/src
 COPY ./doc /app/doc
 COPY ./docker/data /root/data
 
+# Shared models directory used by both server and worker (simulating
+# the shared filesystem on HPC where model weights live).
+RUN mkdir -p /shared/models \
+    && cp /root/data/models/nvidia_resnet50_200821.pth.tar /shared/models/nvidia_resnet50_200821.pth.tar || true
+
 # Use the server configuration (server schema) and include users_json
 COPY ./docker/conf_umrs.json /root/conf_umrs.json
 # Use docker user_files (mounted in compose for test container); server image does not need users_json
