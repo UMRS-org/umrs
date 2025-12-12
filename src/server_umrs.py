@@ -8,6 +8,12 @@ import time
 import torch
 import json
 from diskcache import Cache
+from functools import lru_cache
+from typing import Optional
+from urllib.parse import quote
+from pathlib import Path
+
+import requests
 
 # Add the parent directory of this script (src) to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -26,12 +32,92 @@ from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 from umrs.config import *
 from umrs.UMRSTasks import UMRSTasks
 from umrs.embedding_backend import LocalEmbeddingBackend, create_embedding_backend_from_config
+from umrs.cache_paths import find_model_cache
 
 _status_store_global = None
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
 
 
 # ---------------------- Provisioning and configuration ----------------------
+
+
+def _normalize_rivault_endpoint(raw_endpoint: str) -> str:
+    endpoint = raw_endpoint.rstrip("/")
+    if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
+        raise RuntimeError(
+            f"RIVAULT endpoint must include http/https scheme (got '{raw_endpoint}')"
+        )
+    return endpoint
+
+
+@lru_cache(maxsize=32)
+def _get_rivault_endpoint() -> Optional[str]:
+    raw = os.getenv("RIVAULT_ENDPOINT")
+    if not raw:
+        return None
+    return _normalize_rivault_endpoint(raw)
+
+
+def _make_safe_model_name(model_name: str) -> str:
+    # Keep behaviour in sync with rivault_service: replace '/' by '__'
+    return model_name.replace("/", "__")
+
+
+def _tar_model_cache(model_name: str, tmp_root: str) -> Optional[str]:
+    """Create a tarball containing the cached model files for RiVault uploads."""
+
+    import tarfile
+
+    cache_entry = find_model_cache(model_name)
+    if not cache_entry:
+        return None
+
+    safe_name = _make_safe_model_name(model_name)
+    out_dir = os.path.join(tmp_root, "umrs_models", safe_name)
+    os.makedirs(out_dir, exist_ok=True)
+    tar_path = os.path.join(out_dir, "weights.tar")
+
+    relative_posix = Path(cache_entry.relative_path).as_posix().lstrip("./")
+    arcname = f"{cache_entry.kind}/{relative_posix}" if relative_posix else cache_entry.kind
+
+    try:
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(cache_entry.path, arcname=arcname)
+        return tar_path
+    except Exception:
+        # Best-effort: if we cannot create the archive, just skip
+        return None
+
+
+def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
+    endpoint = _get_rivault_endpoint()
+    if not endpoint:
+        return
+
+    safe_name = quote(model_name, safe="")
+    weights_url = f"{endpoint}/api/models/{safe_name}/weights"
+
+    # If weights already exist on RiVault, do nothing
+    try:
+        head_resp = requests.head(weights_url, timeout=5)
+        if head_resp.status_code == 200:
+            return
+    except Exception:
+        # If RiVault is unreachable, keep normal behaviour
+        return
+
+    tar_path = _tar_model_cache(model_name, tmp_root)
+    if not tar_path or not os.path.exists(tar_path):
+        return
+
+    try:
+        with open(tar_path, "rb") as handle:
+            files = {"file": ("weights.tar", handle, "application/octet-stream")}
+            resp = requests.put(weights_url, files=files, timeout=600)
+            resp.raise_for_status()
+    except Exception:
+        # Weight upload is best-effort; failures must not break server config
+        return
 
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
@@ -88,7 +174,15 @@ def configure_user(user_cfg, cfg_store):
             print(f"\t\tModality: {modality_name}")
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
-            model = load_model(modality['model'], modality_name)
+            model_cfg = modality['model']
+            model = load_model(model_cfg, modality_name)
+            # Best-effort upload of model weights to RiVault so that
+            # compute workers can later stream them from there.
+            try:
+                _upload_weights_to_rivault(model_cfg.get("model_name"), os.path.dirname(user_conf_file))
+            except Exception:
+                # Never fail user configuration because of RiVault upload issues
+                pass
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
             store_db_model(db_model_store, path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)

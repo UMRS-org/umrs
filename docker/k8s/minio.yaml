@@ -1,0 +1,85 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: minio
+  namespace: umrs-system
+  labels:
+    app.kubernetes.io/name: umrs
+    app.kubernetes.io/component: object-storage
+spec:
+  selector:
+    app.kubernetes.io/name: umrs
+    app.kubernetes.io/component: object-storage
+  ports:
+    - name: api
+      port: 9000
+      targetPort: 9000
+    - name: console
+      port: 9001
+      targetPort: 9001
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: minio
+  namespace: umrs-system
+  labels:
+    app.kubernetes.io/name: umrs
+    app.kubernetes.io/component: object-storage
+spec:
+  serviceName: minio
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: umrs
+      app.kubernetes.io/component: object-storage
+  volumeClaimTemplates:
+    - metadata:
+        name: minio-data
+      spec:
+      storageClassName: standard
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 50Gi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: umrs
+        app.kubernetes.io/component: object-storage
+    spec:
+      containers:
+        - name: minio
+          image: minio/minio:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - server
+            - /data
+            - "--console-address"
+            - :9001
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: umrs-minio-secret
+                  key: MINIO_ROOT_USER
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: umrs-minio-secret
+                  key: MINIO_ROOT_PASSWORD
+          ports:
+            - containerPort: 9000
+              name: api
+            - containerPort: 9001
+              name: console
+          volumeMounts:
+            - name: minio-data
+              mountPath: /data
