@@ -3,6 +3,7 @@ import json
 from typing import List, Any, Optional
 
 import zmq
+import numpy as np
 
 from umrs.embeddings import compute_and_store_embedding
 from umrs.sql import store_embeddings_in_db
@@ -113,7 +114,21 @@ class RemoteEmbeddingBackend(EmbeddingBackend):
 
         try:
             self._socket.send_json(payload)
-            reply = self._socket.recv_json()
+
+            # The worker may reply with either a JSON error (single frame)
+            # or a multipart message with a JSON header + binary payloads.
+            frames = self._socket.recv_multipart()
+            if len(frames) == 1:
+                reply = json.loads(frames[0].decode("utf-8"))
+                is_binary = False
+            elif len(frames) == 4:
+                header = json.loads(frames[0].decode("utf-8"))
+                reply = header
+                is_binary = True
+            else:
+                raise RuntimeError(
+                    f"RemoteEmbeddingBackend: unexpected number of frames ({len(frames)}) from worker"
+                )
         except Exception as exc:
             if self._local_fallback is not None:
                 # Fallback to local backend on communication failure
@@ -153,9 +168,33 @@ class RemoteEmbeddingBackend(EmbeddingBackend):
                 return
             raise RuntimeError(f"RemoteEmbeddingBackend worker error: {error_msg}")
 
-        embeddings = reply.get("embeddings")
-        checksums = reply.get("checksums")
-        metadata = reply.get("metadata")
+        # For JSON replies (local/legacy), embeddings/checksums/metadata are lists
+        # and everything is already present in `reply`.
+        # For binary replies, we reconstruct the embeddings array and decode the
+        # checksums/metadata from the additional frames.
+        if 'is_binary' in locals() and is_binary:
+            # frames[1] = embeddings binary, frames[2] = checksums JSON, frames[3] = metadata JSON
+            embeddings_bytes = frames[1]
+            checksums = json.loads(frames[2].decode("utf-8"))
+            metadata = json.loads(frames[3].decode("utf-8"))
+
+            shape = reply.get("shape")
+            dtype = reply.get("dtype", "float32")
+            if not isinstance(shape, list) or len(shape) != 2:
+                raise RuntimeError(
+                    f"RemoteEmbeddingBackend: invalid shape in header: {shape}"
+                )
+            arr = np.frombuffer(embeddings_bytes, dtype=dtype)
+            try:
+                embeddings = arr.reshape(shape).tolist()
+            except Exception as exc:
+                raise RuntimeError(
+                    f"RemoteEmbeddingBackend: could not reshape embeddings buffer to {shape}: {exc}"
+                )
+        else:
+            embeddings = reply.get("embeddings")
+            checksums = reply.get("checksums")
+            metadata = reply.get("metadata")
 
         if embeddings is None or checksums is None or metadata is None:
             raise RuntimeError("RemoteEmbeddingBackend: reply missing required fields")
