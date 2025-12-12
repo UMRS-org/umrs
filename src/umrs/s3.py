@@ -11,7 +11,7 @@ from io import BytesIO
 import configparser
 from charset_normalizer import from_path, from_bytes
 from typing import List, Dict
-from umrs.utils import compute_md5
+from umrs.utils import compute_md5, md5_of_file
 
 import secrets
 import string
@@ -182,9 +182,9 @@ def decompose_bucket_alias_arg(bucket_alias_arg):
     remaining = parts[1] if len(parts) > 1 else None
     return first_subdir, remaining
 
-def check_bucket_name(s3, xp_name, bucket_alias, username, output=False):
+def check_bucket_name(s3, xp_name, bucket_alias, username, output=False, indent=False):
     path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username, output=output)
-    return path_to_bucket, check_bucket_path(s3, path_to_bucket)
+    return path_to_bucket, check_bucket_path(s3, path_to_bucket, indent=indent)
 
 def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, output=False):
 
@@ -207,36 +207,63 @@ def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, outpu
 
 
 
+def list_s3_bucket(s3, bucket_name, prefix=""):
+    """
+    List all objects in an S3 bucket, optionally restricted to one subdirectory.
 
-def list_s3_bucket(s3, path_to_bucket):
-    print(f"Listing objects in bucket: {path_to_bucket}")
+    Parameters
+    ----------
+    s3 : boto3 client
+    bucket_name : str
+    prefix : str
+        e.g. "folder/subfolder/" — only files under this path are listed.
+
+    Returns
+    -------
+    objects_list : list[str]
+        Full S3 URIs
+    total_size : int
+        Sum of object sizes in bytes
+    checksums : list[str]
+        ETag checksums
+    """
+    print(f"Listing objects in bucket: {bucket_name} (prefix='{prefix}')")
+    
     objects_list = []
     checksums = []
     total_size = 0
 
+    prefix = "" if prefix == None else prefix
+
     try:
         continuation_token = None
+
         while True:
-            kwargs = {"Bucket": path_to_bucket}
+            kwargs = {
+                "Bucket": bucket_name,
+                "Prefix": prefix        # <── FILTER HERE
+            }
             if continuation_token:
                 kwargs["ContinuationToken"] = continuation_token
+
             response = s3.list_objects_v2(**kwargs)
+
             for obj in response.get('Contents', []):
-                objects_list.append(f"s3://{path_to_bucket}/{obj['Key']}")
+                objects_list.append(f"s3://{bucket_name}/{obj['Key']}")
                 checksums.append(obj['ETag'].strip('"'))
                 total_size += obj['Size']
+
             if response.get('IsTruncated'):
                 continuation_token = response.get('NextContinuationToken')
             else:
                 break
+
     except s3.exceptions.NoSuchBucket:
-        print(f"Bucket not found: {path_to_bucket}")
+        print(f"Bucket not found: {bucket_name}")
     except Exception as e:
-        print(f"Error listing bucket '{path_to_bucket}': {e}")
+        print(f"Error listing bucket '{bucket_name}': {e}")
 
     return objects_list, total_size, checksums
-
-      
         
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     objects = []  
@@ -277,6 +304,53 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     return objects, metadata, checksums, sizes, has_at_least_a_zero
 
 
+
+def download_objects(s3, objects_list, checksums, local_path, force_overwrite=False, print_only_new=False):
+    """
+    Download S3 objects into a local directory ONLY if the directory already exists.
+
+    objects_list : ["s3://bucket/key1", ...]
+    checksums    : ["etag1", "etag2", ...]
+    local_path   : local folder (must already exist)
+    """
+
+    # --- 1. Local directory must exist ---
+    if not os.path.isdir(local_path):
+        print(f"Local directory does not exist: {local_path}. Nothing done.")
+        return
+
+    print(f"Downloading {len(objects_list)} objects into {local_path}")
+
+    for s3_uri, s3_etag in zip(objects_list, checksums):
+
+        # Extract bucket + key
+        # e.g. "s3://my-bucket/path/to/file" → bucket="my-bucket", key="path/to/file"
+        assert s3_uri.startswith("s3://")
+        _, _, bucket_key = s3_uri.partition("s3://")
+        bucket, _, key = bucket_key.partition("/")
+
+        # Local destination path
+        filename = os.path.basename(key)
+        local_file = os.path.join(local_path, filename)
+
+        # --- 2. If the file already exists → use checksum to skip or overwrite ---
+        if os.path.exists(local_file):
+            local_md5 = md5_of_file(local_file)
+            if local_md5 == s3_etag and not print_only_new:
+                print(f"[SKIP] {filename} (checksums match)")
+                continue
+            else:
+                if  force_overwrite :
+                    print(f"[OVERWRITE] {filename} (checksum mismatch)")
+                else :
+                    print(f"[NO OVERWRITE - SKIP] {filename} (checksum mismatch) -")
+                    continue
+        # --- 3. Download the file ---
+        try:
+            print(f"[DOWNLOAD] {s3_uri} → {local_file}")
+            s3.download_file(bucket, key, local_file)
+        except Exception as e:
+            print(f"Error downloading {s3_uri}: {e}")
 
 
 def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):

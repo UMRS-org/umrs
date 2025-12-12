@@ -5,6 +5,17 @@ import torch
 def compute_md5(input_string):
     return hashlib.md5(input_string.encode()).hexdigest()
 
+
+
+def md5_of_file(local_file):
+    """Compute MD5 checksum of a file (S3 ETag for non-multipart uploads)."""
+    hash_md5 = hashlib.md5()
+    with open(local_file, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+
 ################################## Chunking texts ##################################
 
 def chunk_text_by_max_tokens(doc, tokenizer, max_tokens):
