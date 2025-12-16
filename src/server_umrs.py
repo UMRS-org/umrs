@@ -8,6 +8,12 @@ import time
 import torch
 import json
 from diskcache import Cache
+from functools import lru_cache
+from typing import Optional
+from urllib.parse import quote
+from pathlib import Path
+
+import requests
 
 # Add the parent directory of this script (src) to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -25,13 +31,93 @@ from umrs.db_store import store_db_model, query_db_model
 from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 from umrs.config import *
 from umrs.UMRSTasks import UMRSTasks
-from umrs.embeddings import compute_and_store_embedding
+from umrs.embedding_backend import LocalEmbeddingBackend, create_embedding_backend_from_config
+from umrs.cache_paths import find_model_cache
 
 _status_store_global = None
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
 
 
 # ---------------------- Provisioning and configuration ----------------------
+
+
+def _normalize_rivault_endpoint(raw_endpoint: str) -> str:
+    endpoint = raw_endpoint.rstrip("/")
+    if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
+        raise RuntimeError(
+            f"RIVAULT endpoint must include http/https scheme (got '{raw_endpoint}')"
+        )
+    return endpoint
+
+
+@lru_cache(maxsize=32)
+def _get_rivault_endpoint() -> Optional[str]:
+    raw = os.getenv("RIVAULT_ENDPOINT")
+    if not raw:
+        return None
+    return _normalize_rivault_endpoint(raw)
+
+
+def _make_safe_model_name(model_name: str) -> str:
+    # Keep behaviour in sync with rivault_service: replace '/' by '__'
+    return model_name.replace("/", "__")
+
+
+def _tar_model_cache(model_name: str, tmp_root: str) -> Optional[str]:
+    """Create a tarball containing the cached model files for RiVault uploads."""
+
+    import tarfile
+
+    cache_entry = find_model_cache(model_name)
+    if not cache_entry:
+        return None
+
+    safe_name = _make_safe_model_name(model_name)
+    out_dir = os.path.join(tmp_root, "umrs_models", safe_name)
+    os.makedirs(out_dir, exist_ok=True)
+    tar_path = os.path.join(out_dir, "weights.tar")
+
+    relative_posix = Path(cache_entry.relative_path).as_posix().lstrip("./")
+    arcname = f"{cache_entry.kind}/{relative_posix}" if relative_posix else cache_entry.kind
+
+    try:
+        with tarfile.open(tar_path, "w:gz") as tar:
+            tar.add(cache_entry.path, arcname=arcname)
+        return tar_path
+    except Exception:
+        # Best-effort: if we cannot create the archive, just skip
+        return None
+
+
+def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
+    endpoint = _get_rivault_endpoint()
+    if not endpoint:
+        return
+
+    safe_name = quote(model_name, safe="")
+    weights_url = f"{endpoint}/api/models/{safe_name}/weights"
+
+    # If weights already exist on RiVault, do nothing
+    try:
+        head_resp = requests.head(weights_url, timeout=5)
+        if head_resp.status_code == 200:
+            return
+    except Exception:
+        # If RiVault is unreachable, keep normal behaviour
+        return
+
+    tar_path = _tar_model_cache(model_name, tmp_root)
+    if not tar_path or not os.path.exists(tar_path):
+        return
+
+    try:
+        with open(tar_path, "rb") as handle:
+            files = {"file": ("weights.tar", handle, "application/octet-stream")}
+            resp = requests.put(weights_url, files=files, timeout=600)
+            resp.raise_for_status()
+    except Exception:
+        # Weight upload is best-effort; failures must not break server config
+        return
 
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
@@ -88,7 +174,15 @@ def configure_user(user_cfg, cfg_store):
             print(f"\t\tModality: {modality_name}")
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
-            model = load_model(modality['model'], modality_name)
+            model_cfg = modality['model']
+            model = load_model(model_cfg, modality_name)
+            # Best-effort upload of model weights to RiVault so that
+            # compute workers can later stream them from there.
+            try:
+                _upload_weights_to_rivault(model_cfg.get("model_name"), os.path.dirname(user_conf_file))
+            except Exception:
+                # Never fail user configuration because of RiVault upload issues
+                pass
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
             store_db_model(db_model_store, path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
@@ -100,7 +194,7 @@ def configure_user(user_cfg, cfg_store):
 
 # --------------------------- Maintenance commands ---------------------------
 
-def recompute_all_objects(active_tasks, db_model_store, device, log_output=True):
+def recompute_all_objects(active_tasks, db_model_store, device, embedding_backend, log_output=True):
     if log_output:
         print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
 
@@ -110,7 +204,7 @@ def recompute_all_objects(active_tasks, db_model_store, device, log_output=True)
         s3_objects, total_size, _ = list_s3_bucket(entry["s3_connection"], path_to_bucket)
         if len(s3_objects) > 0:
             start_time = time.perf_counter()
-            process_s3_objects(active_tasks, s3_objects, db_model_store, device)
+            process_s3_objects(active_tasks, s3_objects, db_model_store, device, embedding_backend)
             duration = round((time.perf_counter() - start_time),3)
         else:
             duration = 0
@@ -131,7 +225,7 @@ def recompute_all_objects(active_tasks, db_model_store, device, log_output=True)
     return {"summary": summary, "data": recompute_dict}
 
 
-def update_objects(active_tasks, db_model_store, device, verbose=False, log_output=True):
+def update_objects(active_tasks, db_model_store, device, embedding_backend, verbose=False, log_output=True):
     if log_output:
         print(f"\n######################\nUpdating missing/mismatched objects in all buckets\n######################\n")
 
@@ -151,7 +245,7 @@ def update_objects(active_tasks, db_model_store, device, verbose=False, log_outp
 
         if len(to_update_objects) > 0:
             start_time = time.perf_counter()
-            process_s3_objects(active_tasks, to_update_objects, db_model_store, device)
+            process_s3_objects(active_tasks, to_update_objects, db_model_store, device, embedding_backend)
             duration = round(time.perf_counter() - start_time, 3)
         else:
             duration = 0.0
@@ -225,13 +319,13 @@ def check_objects(db_model_store, verbose=False, log_output=True):
 
 
 
-def _handle_maintenance_command(active_tasks, cmd, client_id, db_model_store, device, 
+def _handle_maintenance_command(active_tasks, cmd, client_id, db_model_store, device, embedding_backend,
                                 configure_file, user_config_map):
     if cmd == "RECOMPUTE":
-        outcome = recompute_all_objects(active_tasks, db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
+        outcome = recompute_all_objects(active_tasks, db_model_store, device, embedding_backend, log_output=ENABLE_PRETTY_PRINT)
         key = "recompute"
     elif cmd == "UPDATE":
-        outcome = update_objects(active_tasks, db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
+        outcome = update_objects(active_tasks, db_model_store, device, embedding_backend, log_output=ENABLE_PRETTY_PRINT)
         key = "update"
     elif cmd == "CHECK":
         outcome = check_objects(db_model_store, verbose=False, log_output=ENABLE_PRETTY_PRINT)
@@ -303,7 +397,7 @@ def perform_initial_config(configure_file, status_store):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
-    admin_s3_configuration_file, users = load_server_cfg_file(configure_file)
+    admin_s3_configuration_file, users, server_cfg = load_server_cfg_file(configure_file)
     print("Configuration loaded successfully.")
 
     # Get the directory containing configure_file
@@ -332,16 +426,25 @@ def perform_initial_config(configure_file, status_store):
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"-->  Models will be run on device: {device}")
+
+    # Select embedding backend based on configuration (local or remote).
+    try:
+        embedding_backend = create_embedding_backend_from_config(server_cfg)
+        backend_name = type(embedding_backend).__name__
+        print(f"-->  Using embedding backend: {backend_name}")
+    except Exception as exc:
+        print(f"Error while creating embedding backend from config, falling back to local backend: {exc}")
+        embedding_backend = LocalEmbeddingBackend()
     print(f"\n######################\nServer configuration done!\n######################\n")
 
-    return control_mq, cfg_store, device
+    return control_mq, cfg_store, device, embedding_backend
 
 
 def reload_configuration(configure_file, db_model_store, user_config_map, log_output=True):
     if log_output:
         print("\n######################\nReloading configuration...\n######################\n")
     try:
-        new_admin_s3_cfg, new_users = load_server_cfg_file(configure_file)
+        new_admin_s3_cfg, new_users, _ = load_server_cfg_file(configure_file)
         for u in new_users:
             create_s3_sql_users(u, new_admin_s3_cfg)
         new_store = defaultdict(dict)
@@ -503,7 +606,7 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
 
 
 
-def process_s3_objects(active_tasks, s3_objects, db_model_store, device):
+def process_s3_objects(active_tasks, s3_objects, db_model_store, device, embedding_backend):
     nb_objects = len(s3_objects)
     keys_per_bucket = defaultdict(list)
     users = set()
@@ -523,7 +626,16 @@ def process_s3_objects(active_tasks, s3_objects, db_model_store, device):
         s3_keys = keys_per_bucket[path_to_bucket]
         if store_embeddings_flag:
             print(f"\t--> Storing to data base in {table_name}")
-            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection)
+            embedding_backend.compute_and_store(
+                path_to_bucket,
+                s3_keys,
+                data_base,
+                table_name,
+                model,
+                device,
+                modality_name,
+                s3_connection,
+            )
         else:
             print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
 
@@ -537,12 +649,12 @@ def process_s3_objects(active_tasks, s3_objects, db_model_store, device):
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
 
-def server_event_loop(active_tasks, control_mq, cfg_store, device, configure_file):
+def server_event_loop(active_tasks, control_mq, cfg_store, device, embedding_backend, configure_file):
     db_model_store = cfg_store['db_model_store']
     user_config_map = cfg_store['user_config_map']
     status_store = control_mq.get_status_store()
     assert status_store is not None
-    assert status_store == active_tasks.get_status_store() 
+    assert status_store == active_tasks.get_status_store()
 
     try:
         while True:
@@ -553,7 +665,7 @@ def server_event_loop(active_tasks, control_mq, cfg_store, device, configure_fil
             cmd, payload = result
 
             if cmd == "OBJECT":
-                active_tasks.launch_s3_tasks(payload, db_model_store, device)
+                active_tasks.launch_s3_tasks(payload, db_model_store, device, embedding_backend)
             elif cmd == "FILE":
                 if payload:
                     client_id, files = payload if isinstance(payload, tuple) else (None, payload)
@@ -568,8 +680,8 @@ def server_event_loop(active_tasks, control_mq, cfg_store, device, configure_fil
                     print("Warning: FILE command received with no payload")
             elif cmd in ("RECOMPUTE", "UPDATE", "CHECK", "RELOAD"):
                 client_id = payload
-                _handle_maintenance_command(active_tasks, cmd, client_id, db_model_store, 
-                                            device, configure_file, user_config_map)
+                _handle_maintenance_command(active_tasks, cmd, client_id, db_model_store,
+                                            device, embedding_backend, configure_file, user_config_map)
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
 
@@ -590,11 +702,11 @@ def server_event_loop(active_tasks, control_mq, cfg_store, device, configure_fil
         control_mq.close()
         sys.exit(0)
 
-def handle_maintenance_flags(active_tasks, args, db_model_store, device):
+def handle_maintenance_flags(active_tasks, args, db_model_store, device, embedding_backend):
     if args.force_recompute:
-        recompute_all_objects(active_tasks, db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
+        recompute_all_objects(active_tasks, db_model_store, device, embedding_backend, log_output=ENABLE_PRETTY_PRINT)
     if args.force_update:
-        update_objects(active_tasks, db_model_store, device, log_output=ENABLE_PRETTY_PRINT)
+        update_objects(active_tasks, db_model_store, device, embedding_backend, log_output=ENABLE_PRETTY_PRINT)
     if args.check_objects:
         check_objects(db_model_store, verbose=False, log_output=ENABLE_PRETTY_PRINT)
 
@@ -635,16 +747,16 @@ def main():
 
     global ENABLE_PRETTY_PRINT
     ENABLE_PRETTY_PRINT = args.pretty_print
-        
+
     status_store = Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
     thread_dict = Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
     active_tasks = UMRSTasks(status_store, thread_dict)
 
-    control_mq, cfg_store, device = perform_initial_config(configure_file, status_store)
-    handle_maintenance_flags(active_tasks, args, cfg_store['db_model_store'], device)
+    control_mq, cfg_store, device, embedding_backend = perform_initial_config(configure_file, status_store)
+    handle_maintenance_flags(active_tasks, args, cfg_store['db_model_store'], device, embedding_backend)
     cfg_summary = pretty_print_cfg(cfg_store, print_output=ENABLE_PRETTY_PRINT)
     active_tasks.record_status("system", "config", {"summary": cfg_summary})
-    server_event_loop(active_tasks,control_mq, cfg_store, device, configure_file)
+    server_event_loop(active_tasks, control_mq, cfg_store, device, embedding_backend, configure_file)
 
 
 if __name__ == "__main__":
