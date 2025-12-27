@@ -4,7 +4,7 @@ from tabulate import tabulate
 
 def pretty_print_thread_status(thread_status, running_only=True, print_output=True):
     rows = []
-    for key in thread_status:
+    for key in sorted(thread_status, key=lambda k: thread_status[k]["thread_id"]):
         info = thread_status[key]
         thread_id = info.get("thread_id", "N/A")
         status = info.get("status", "N/A")
@@ -18,17 +18,18 @@ def pretty_print_thread_status(thread_status, running_only=True, print_output=Tr
             table_name = work.get("table_name", "N/A")
             data_base = work.get("data_base", "N/A")
             user = work.get("user", "N/A")
-            table_db = f"{table_name}/{data_base}"
+            work_type = work.get("work_type", "N/A")
+            table_db = f"{data_base}/{table_name}"
             if running_only:
-                rows.append([thread_id, user, nb_objects, modality, bucket, table_db])
+                rows.append([thread_id, work_type, user, nb_objects, modality, bucket, table_db])
             else:
-                rows.append([thread_id, user, nb_objects, modality, bucket, table_db, status])
+                rows.append([thread_id, work_type, user, nb_objects, modality, bucket, table_db, status])
 
     if rows:
         if running_only:
-            headers = ["Thread ID", "Username", "Nb Objects", "Modality", "Bucket", "Table/Database"]
+            headers = ["Thread ID", "Work Type", "Username", "Nb Objects", "Modality", "Bucket", "Database/Table"]
         else:
-            headers = ["Thread ID", "Username", "Nb Objects", "Modality", "Bucket", "Table/Database", "Status"]
+            headers = ["Thread ID", "Work Type", "Username", "Nb Objects", "Modality", "Bucket", "Database/Table", "Status"]
         table = tabulate(rows, headers, tablefmt="fancy_grid")
         message = "Server status:\n" + table
     else:
@@ -138,6 +139,7 @@ def pretty_print_check(check_dict, print_output=True):
                                "Objects", "Size (MB)", "Matches", "Mismatches", "Not Found", "Errors"])
 
     for path_to_bucket, entry in check_dict.items():
+        print(f"{path_to_bucket=}\n{entry=}")
         bucket_alias   = entry["bucket_alias"]
         s3_user        = entry["s3_username"]
         modality       = entry["modality_name"]
@@ -163,6 +165,7 @@ def pretty_print_check(check_dict, print_output=True):
             nb_error
         ]
 
+    
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
