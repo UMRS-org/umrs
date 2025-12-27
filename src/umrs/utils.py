@@ -1,5 +1,16 @@
 import hashlib
 import torch
+import json
+################################## json ##################################
+def normalize_json(obj):
+    if isinstance(obj, dict):
+        return {k: normalize_json(obj[k]) for k in sorted(obj)}
+    elif isinstance(obj, list):
+        # on suppose que l’ordre n’a pas de sens → on trie
+        return sorted((normalize_json(x) for x in obj), key=str)
+    else:
+        return obj
+
 ################################## md5 ##################################
 
 def compute_md5(input_string):

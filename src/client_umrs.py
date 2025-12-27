@@ -15,6 +15,11 @@ from collections import defaultdict
 import traceback
 import json as _json
 import time
+from umrs.TaskCmd import TaskCmd
+
+
+STATUS_CHOICES = TaskCmd.status_cmd()
+
 
 # ======================= Helper / API abstractions (new) =======================
 
@@ -62,8 +67,6 @@ def merge_metadata(base_metadata, override_meta_dict):
     merged['Metadata'] = md
     return merged
 
-
-STATUS_CHOICES = ("all", "recompute", "update", "check", "reload", "config", "tasks")
 
 
 def format_status_text(response_payload, default_key):
@@ -141,7 +144,7 @@ def resolve_bucket(bucket_store, bucket_alias):
 def send_files_to_server(username, file_path_list, control_mq, data_mq):
     for file_path in file_path_list:
         data_mq.send_file(file_path)
-    success = control_mq.notify_server(username, "FILE", len(file_path_list))
+    success = control_mq.notify_server(username, TaskCmd.FILE, len(file_path_list))
     if success:
         print(f"Files {file_path_list} received by server")
     else:
@@ -165,9 +168,9 @@ def configure_bucket_store(user_cfg, bucket_store):
             modality_name = modality["modality_name"]
             check_or_quit(modality_name)
             bucket_alias =  modality["s3"]["bucket_alias"]
-            path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
-            if modality["s3"]["need_output_bucket"]:
-                output_path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username, output=True)
+            path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
+            if modality["s3"].get("need_output_bucket", False):
+                output_path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
             else:
                 output_path_to_bucket = None
             # print(bucket_alias, username, xp_name, modality_name)
@@ -258,7 +261,7 @@ lb_p = subparsers.add_parser('list_buckets', help='List bucket aliases for a use
 lb_p.add_argument('username', nargs='?', help='Username to filter buckets (defaults to config if omitted)')
 
 status_p = subparsers.add_parser('status', help='Fetch the latest server summary for maintenance commands')
-status_p.add_argument('target', choices=STATUS_CHOICES, nargs='?', default='all', help='Summary to fetch (defaults to all available summaries)')
+status_p.add_argument('target', choices=STATUS_CHOICES, metavar='key', nargs='?', default='all', help=f'Summary to fetch (options: {", ".join(STATUS_CHOICES)}; defaults to all)')#help='Summary to fetch (defaults to all available summaries)')
 status_p.add_argument('--username', help='User whose summary should be retrieved (defaults to config if omitted)')
 
 # Embedding maintenance actions
@@ -290,7 +293,8 @@ configure_file = args.conf
 # Only enforce config file for legacy mode or actions that need bucket/user config
 status_needs_config = args.action == 'status' and not getattr(args, 'username', None)
 requires_config =  args.action in {
-    'list_buckets', 'upload_file', 'upload_dir', "download_results"
+    'list_buckets', 'upload_file', 'upload_dir', "download_results", 
+    "recompute", "update", "reload"
 } or status_needs_config
 
 if requires_config and not os.path.exists(configure_file):
@@ -337,6 +341,7 @@ try:
             else:
                 try:
                     parsed = _json.loads(raw_response)
+                    print(f"{parsed=}")
                 except Exception as exc:
                     print(api_json(status='error', message=f'Invalid status payload: {exc}', output_format=args.output))
                     control_mq.close()
@@ -351,8 +356,9 @@ try:
     if args.action in ('recompute', 'update', 'check', 'reload'):
         # Use configured username as client id for control plane
         # Determine a stable client id for control-plane requests
-        client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', 'client')
-        cmd = {'recompute': 'RECOMPUTE', 'update': 'UPDATE', 'check': 'CHECK', 'reload': 'RELOAD'}[args.action]
+        print(f"\n\n****************************\n{user=}")
+        client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', '_')
+        cmd = {'recompute': TaskCmd.RECOMPUTE, 'update': TaskCmd.UPDATE, 'check': TaskCmd.CHECK, 'reload': TaskCmd.RELOAD}[args.action]
         try:
             # Special handling for reload with a user-config file: push file first, then RELOAD
             if args.action == 'reload':
@@ -368,7 +374,7 @@ try:
                     data_mq = control_mq.get_data_queue(upload_user)
                     try:
                         data_mq.send_file(cfg_path)
-                        control_mq.notify_server(upload_user, 'FILE', 1)
+                        control_mq.notify_server(upload_user, TaskCmd.FILE, 1)
                     finally:
                         try:
                             data_mq.close()
@@ -386,7 +392,6 @@ try:
             control_mq.close()
         sys.exit(0)
     # For upload_* actions we need configuration + bucket alias
-    print(f"args= {args}")
     bucket_alias_arg = getattr(args, 'bucket_alias')
     bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
     entry = find_bucket_entry(bucket_store, bucket_alias)
@@ -419,14 +424,16 @@ s3, bucket_location = connect_to_s3(expanded_cfg)
 
 if args.action == "download_results":
     full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
+    if not success or full_bucket_name != path_to_bucket:
+            sys.exit(f"Error:\tNo output bucket for {bucket_alias} for  modality {modality} and for user {username}\n"
+                     f"\tCheck that this modality has 'need_output_bucket' set to 'true'")
 else :
     full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, indent=False)
-
-if not success or full_bucket_name != path_to_bucket:
-    sys.exit(f"No bucket {bucket_alias} for  modality {modality} and for user {username}")
+    if not success or full_bucket_name != path_to_bucket:
+        sys.exit(f"Error:\tNo bucket {bucket_alias} for modality {modality} and for user {username}")
 
 if args.verbose :
-    print(f"Bucket '{bucket_alias}' for  modality '{modality}' and for user '{username}': OK!")
+    print(f"Bucket '{bucket_alias}' for modality '{modality}' and for user '{username}': OK!")
 
 try:
     metadata_args = check_and_build_metadata(metadata, args.k)
@@ -442,6 +449,7 @@ if args.verbose :
 
 server_notify_result = None
 
+
 def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=True):
     if not os.path.isfile(file_path):
         print("Error: file {file_path} is not a valid.")
@@ -453,12 +461,12 @@ def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, met
         if os.path.isfile(file_path):
             s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check = (modality!="tomography"))
             if s3_key and notify_server:
-                control_mq.notify_server(username, "OBJECT", 1)
+                control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
             return s3_key, 1
     elif modality == "text file" : # send a text file by chunking it
             s3_key = s3_store_text_file(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args)
             if s3_key and notify_server:
-                control_mq.notify_server(username, "OBJECT", 1)
+                control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
             return s3_key, 1
     elif modality == "text": # consider each line of the file as a string to be process
         try:
@@ -472,7 +480,7 @@ def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, met
                         s3_key_list.append(s3_key)
                         nb_objects += 1
                 if notify_server and nb_objects > 0:
-                    control_mq.notify_server(username, "OBJECT", nb_objects)
+                    control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
                 return s3_key_list, nb_objects
         except UnicodeDecodeError as e:
             print(f"Unicode decoding error: {e}")
@@ -504,11 +512,114 @@ def process_dir(path, s3, full_bucket_name, subdir, modality, data_mq, metadata_
                 nb_objects += nb_sent
 
     if nb_objects>0:
-        control_mq.notify_server(username, 'OBJECT', nb_objects)
+        control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
     return s3_key_list, file_list
 
+def download_results(args, full_bucket_name, modality, subdir):
+    effective_username = args.username
+    verbose = args.verbose
+    if not effective_username and isinstance(user, dict):
+        effective_username = user.get('username')
+    if not effective_username:
+        response = {
+            "status": "error",
+            "message": f"Cannot find effective username for {args.username}",
+            "bucket": full_bucket_name,
+            "subdir": subdir,
+            "modality": modality,
+            "output_format": args.output,
+        }
+        return False, response
+        
 
+    # check if the target path exists
+    if not os.path.exists(args.local_path):
+        response = {
+            "status": "error",
+            "message": f"Local path {args.local_path} does not exists",
+            "bucket": full_bucket_name,
+            "subdir": subdir,
+            "modality": modality,
+            "output_format": args.output,
+        }
+        return False, response
+    
+    done = False
+    print_only_new = False
+    objects_received = set()
+    timeout = 1
+    while not done: # loop until we are sure the server has done with this bucket
+        #get the list of objects on s3 server
+        objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+        #down load these object talink into account if we force overwrite or not
+        downloaded_object_set = download_objects(s3, objects_list, checksums, args.local_path, 
+                            force_overwrite=args.force_overwrite, verbose=args.verbose, print_only_new=print_only_new)
+        objects_received.update(downloaded_object_set)
+        # for now print only new dowloaded files
+        print_only_new = True
+        # now we need to check if the server is still computing things for this bucket
+        # ask the server
+        raw_response = control_mq.request_status(effective_username, TaskCmd.PROCESS_OBJECTS)
+        if raw_response is None:
+            break;
+        # raw response is a string of a serialized json. transform it into json dict
+        parsed = _json.loads(raw_response)
 
+        # if there is no entry, we are done
+        message = parsed.get("message")
+        if  message == "No status entries":
+            done=True
+        else : #if there are entries, check the one that correspond to this bucket
+            # first extract data
+            # from pprint import pprint
+
+            data = parsed["summary"]["data"]
+            # pprint(data, width=100)
+            # Check whether all tasks related to this bucket are finished.
+            # If there exists at least one task whose status is not "Done"
+            # and whose work bucket matches the requested bucket prefix 
+            # and are of processing S3 objectstype ,
+            # then the computation is still running.
+            done = not any(
+                entry["status"] != "Done"
+                and any(
+                    full_bucket_name.startswith(w["bucket"]) # and w["work_type"] == "process_objects"
+                    for w in entry["work"]
+                )
+                for entry in data
+            )
+        if not done : 
+            if verbose:
+                print("Waiting for update")
+            res = control_mq.wait_for_new_data(effective_username, full_bucket_name, timeout=timeout)
+            if res == "TIMEOUT":
+                timeout = min(timeout*2, 64)
+            elif res == "UPDATE":
+                timeout= 1
+            else : 
+                if verbose:
+                    print(f"Error: receiving '{res}' from server while waiting to be notified for new data")
+    # print("Done. Final check...")    
+    # Do it one more time in case the server finished after the last check 
+    # get the list of objects on s3 server
+    objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+    #down load these object talink into account if we force overwrite or not
+    downloaded_object_set =download_objects(s3, objects_list, checksums, args.local_path, 
+                        force_overwrite=args.force_overwrite, print_only_new=print_only_new)
+
+    objects_received.update(downloaded_object_set)
+
+    response = {
+            "status": "ok",
+            "message": f"Files downloaded with overwrite={args.force_overwrite}",
+            "bucket": full_bucket_name,
+            "local_path": args.local_path, 
+            "subdir": subdir,
+            "modality": modality,
+            "output_format": args.output,
+            "objects_received": f"{sorted(objects_received)}", 
+        }
+    return True, response
 
 # Determine action specifics
 action = args.action
@@ -527,59 +638,9 @@ try:
         else:
             print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
     elif action == "download_results":
-        # check if the target path exists
-        if not os.path.exists(args.local_path):
-            print(api_json(status="error", 
-                            message=f"Local path {args.local_path} does not exists",
-                            bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
-        else: 
-            done = False
-            print_only_new = False
-            while not done: # loop until we are sure the server has done with this bucket
-                #get the list of objects on s3 server
-                objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
-                #down load these object talink into account if we force overwrite or not
-                download_objects(s3, objects_list, checksums, args.local_path, 
-                                 force_overwrite=args.force_overwrite, print_only_new=print_only_new)
-                print_only_new = True
-                # now we need to check if teh server is still computing things for this bucket
-                effective_username = args.username
-                if not effective_username and isinstance(user, dict):
-                    effective_username = user.get('username')
-                if not effective_username:
-                    done = True
-                else:
-                    # ask the server
-                    raw_response = control_mq.request_status(effective_username, "all")
-                    if raw_response is None:
-                        break;
-                    # raw response is a string of a serialized json. transform it into json
-                    parsed = _json.loads(raw_response)
-
-                    # if there is no entry, we are done
-                    message = parsed.get("message")
-                    if  message == "No status entries":
-                        done=True
-                    else : #if there re entries, check thz one that correspond to this bucket
-                        data = parsed["summaries"]["tasks"]["data"]
-                        done = True
-                        for entry in data: # for each entries
-                            status = entry['status']
-                            bucket = entry['work'][0]['bucket']
-                            if full_bucket_name.startswith(bucket): #this correspond to the buecket
-                                if status != "Done": #But it is not done
-                                    if args.verbose:
-                                        print("The server is still computing, waiting for new results")
-                                    time.sleep(0.5)
-                                    done = False
-                                    break
-            # Do it one more time in case the server finished after the last check 
-            #get the list of objects on s3 server
-            objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
-            #down load these object talink into account if we force overwrite or not
-            download_objects(s3, objects_list, checksums, args.local_path, 
-                                force_overwrite=args.force_overwrite, print_only_new=print_only_new)
-
+        ok, response = download_results(args, full_bucket_name, modality, subdir)
+        print(api_json(**response))
+        
                             
 except Exception as e:
     print(api_json(status='error', message=str(e), output_format=args.output))

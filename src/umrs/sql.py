@@ -48,6 +48,93 @@ class DataBase:
         else:
             print(f"Column '{column_name}' not found in table '{table_name}'.")
             return None
+        
+    def table_exists(self, conn, table_name: str) -> bool:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.tables
+                    WHERE table_schema = 'public'
+                    AND table_name = %s
+                );
+            """, (table_name,))
+            return cur.fetchone()[0]
+        
+    
+    def wait_for_table_update(self, table_name, timeout=None):
+        import select
+        """
+        Blocks until the given table is updated (via NOTIFY).
+
+        Args:
+            table_name (str): Table to listen to
+            timeout (float or None): Seconds before returning None
+
+        Returns:
+            str or None: Notification payload
+        """
+        conn = self.db_pool.getconn()
+        try:
+            conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
+
+            # 1️⃣ Check the table exist
+            if not self.table_exists(conn, table_name):
+                raise ValueError(
+                    f"Table '{table_name}' does not exist in database '{self.db_name}'"
+                )
+
+            channel = f"{table_name}_update"
+
+            with conn.cursor() as cur:
+                cur.execute(f"LISTEN {channel};")
+
+            # 2️⃣ Block until notification
+
+            if select.select([conn.fileno()], [], [], timeout) == ([], [], []):
+                return None  # timeout
+
+            conn.poll()
+            notify = conn.notifies.pop(0)
+            conn.notifies.clear()
+            
+            return notify.payload
+
+        finally:
+           
+            self.db_pool.putconn(conn)
+
+def wait_table_modification_on_db(active_tasks, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id):
+    from server_umrs import ENABLE_PRETTY_PRINT
+    from umrs.pretty_print import pretty_print_thread_status
+
+    try:
+        res = data_base.wait_for_table_update(
+            table_name,
+            timeout=timeout
+        )
+    except Exception as e:
+        raise RuntimeError(
+            f"Error while waiting for table '{table_name}' update: {e}"
+        ) from e
+    
+    if res is None : 
+        msg = "TIMEOUT"
+    else : 
+        msg = res 
+    
+    control_mq.send_string(msg, zmq_sender_id)
+
+    active_tasks.update_status_to_done()
+    # print(f"wait is done for {user=}")
+    active_tasks.record_status_for_users_by_key([user], key)
+
+    with active_tasks.lock:
+        pretty_print_thread_status(active_tasks.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
+    print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+
+    
+
 
 def create_db_name(sql_username, xp_name):
     db_name = xp_name+"_"+sql_username
@@ -90,7 +177,6 @@ def create_db_user(username):
     print(f"==> User '{username}' created in DB")
     cur.close()
     conn.close()
-
 
 
 def create_db(sql_username, xp_name):
@@ -140,7 +226,7 @@ def create_db(sql_username, xp_name):
 
     DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
     db_pool = pg_pool.SimpleConnectionPool(
-        minconn=1, maxconn=5,  # Adjust based on your needs
+        minconn=1, maxconn=50,  # Adjust based on your needs
         dbname=db_name,
         user=sql_username,
         password=DB_USER_PASSWORD,
@@ -216,6 +302,42 @@ def metadata_dict(sql_cfg):
         metadata[f"key{i}"] = column
 
     return metadata
+
+def enable_table_notifications(conn, table_name: str):
+    """
+    Enable PostgreSQL NOTIFY on INSERT/UPDATE/DELETE for a given table.
+    Creates a trigger and trigger function if they do not exist.
+    """
+    func_name = f"notify_{table_name}_update"
+    trigger_name = f"{table_name}_notify_trigger"
+    channel = f"{table_name}_update"
+
+    with conn.cursor() as cur:
+        # 1️⃣ Create trigger function
+        cur.execute(f"""
+        CREATE OR REPLACE FUNCTION {func_name}()
+        RETURNS trigger AS $$
+        BEGIN
+            PERFORM pg_notify('{channel}', TG_OP);
+            RETURN NEW;
+        END;
+        $$ LANGUAGE plpgsql;
+        """)
+
+        # 2️⃣ Drop trigger if exists (idempotent)
+        cur.execute(f"""
+        DROP TRIGGER IF EXISTS {trigger_name} ON {table_name};
+        """)
+
+        # 3️⃣ Create trigger
+        cur.execute(f"""
+        CREATE TRIGGER {trigger_name}
+        AFTER INSERT OR UPDATE OR DELETE ON {table_name}
+        FOR EACH STATEMENT
+        EXECUTE FUNCTION {func_name}();
+        """)
+
+    conn.commit()
 
 def configure_table(data_base, sql_cfg,  modality_name, model):
 
@@ -293,6 +415,15 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         except Exception as e:
             print(f"\t\t\t--> Warning: failed creating indexes on '{table_name}': {e}")
 
+    # enble notification for table that generate something so the server can listen to such notifications
+    if model.return_type is not None:
+        if model.return_type == "file":
+            enable_table_notifications(conn, table_name)
+        else:
+            sys.exit(f"Do not know how to manage return type '{model.return_type}' in cfg file")
+
+        
+
     else:
         # Validate existing table schema
         cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s;", (table_name,))
@@ -364,16 +495,16 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         # Start building the INSERT query dynamically for the given table
         query = f"""
         INSERT INTO {table_name} (
-            s3_object, embedding, date, time
+            s3_object, embedding, date, time, checksum, model
         """
         # Initialize the list of values corresponding to the columns
-        values = [s3_object, embedding, date, time]
+        values = [s3_object, embedding, date, time, checksum, model_name]
 
         # If the table has the "_content" column, add related columns to the query
         if data_base.has_column(table_name, "_content"):
-            query += ", _content, chunk_start, chunk_end, chunk_md5, checksum, model"
-            # Add the corresponding values for these columns
-            values.extend([content, start, end, md5, checksum, model_name])
+            query += ", _content, chunk_start, chunk_end, chunk_md5"
+                        # Add the corresponding values for these columns
+            values.extend([content, start, end, md5])
 
         # If a saved S3 object key is provided, add the column and its value
         if saved_s3_object is not None:
@@ -395,7 +526,9 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         query += """
             embedding = EXCLUDED.embedding,
             date = EXCLUDED.date,
-            time = EXCLUDED.time
+            time = EXCLUDED.time,
+            checksum = EXCLUDED.checksum,
+            model = EXCLUDED.model
         """
 
         # If the "_content" column exists, also update all content-related fields
@@ -404,10 +537,8 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             _content = EXCLUDED._content,
             chunk_start = EXCLUDED.chunk_start,
             chunk_end = EXCLUDED.chunk_end,
-            chunk_md5 = EXCLUDED.chunk_md5,
-            checksum = EXCLUDED.checksum,
-            model = EXCLUDED.model
-        """
+            chunk_md5 = EXCLUDED.chunk_md5
+            """
 
         # If a saved S3 object key is provided, update it as well
         if saved_s3_object is not None:
@@ -416,46 +547,13 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         # Finish the query by returning the ID of the inserted or updated row
         query += " RETURNING id;"
 
+    
+
         # Execute the query with the prepared values
         cur.execute(query, values)
 
-        # # INSERT and UPDATE if s3_object already exists
-        # if data_base.has_column(table_name, "_content"):
-        #     if start == 0:
-        #         # Delete all previous chunks for this S3 object before inserting new ones
-        #         query=f"DELETE FROM {table_name} WHERE s3_object = %s;"
-        #         cur.execute(query, (s3_object,))
-        #     query = f"""
-        #     INSERT INTO {table_name} (
-        #     s3_object, _content, embedding, date, time,
-        #     chunk_start, chunk_end, chunk_md5, checksum, model
-        #     )
-        #     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        #     ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
-        #     embedding = EXCLUDED.embedding,
-        #     date = EXCLUDED.date,
-        #     time = EXCLUDED.time,
-        #     _content = EXCLUDED._content,
-        #     chunk_start = EXCLUDED.chunk_start,
-        #     chunk_end = EXCLUDED.chunk_end,
-        #     chunk_md5 = EXCLUDED.chunk_md5,
-        #     checksum = EXCLUDED.checksum,
-        #     model = EXCLUDED.model
-        #     RETURNING id;
-        #     """
-        #     cur.execute(query, (s3_object, content, embedding, date, time, start, end, md5, checksum, model_name))
-        # else:
-        #     query = f"""
-        #     INSERT INTO {table_name} (s3_object, embedding, date, time, checksum, model)
-        #     VALUES (%s, %s, %s, %s, %s, %s)
-        #     ON CONFLICT (s3_object) DO UPDATE
-        #     SET embedding = EXCLUDED.embedding, date = EXCLUDED.date, time = EXCLUDED.time, checksum = EXCLUDED.checksum, model = EXCLUDED.model
-
-        #     RETURNING id;
-        #     """
-        #     cur.execute(query, (s3_object, embedding, date, time, checksum, model_name))
-
-         # Fetch the inserted/updated ID
+    
+        # Fetch the inserted/updated ID
         inserted_id = cur.fetchone()[0]  # Fetch the first column of the result
 
          # Now manage metadata if any
@@ -532,7 +630,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
     if modality_name in ("image", "tomography"):
         # One embedding per image file
         for embedding, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
-            print(f"storing embedding for {s3_key}... ")
+            # print(f"storing embedding for {s3_key}... ")
             store_one_embedding_in_db(
                 data_base,
                 embedding=embedding,
@@ -594,6 +692,8 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
 
         # Extract checksums into a list (flatten from rows)
         db_checksums = [row[0] for row in results]
+
+        # print(f"{checksum=} <=> {db_checksums=}")
 
         if checksum in db_checksums:
             return {

@@ -158,6 +158,7 @@ def extract_embeddings(model, data_loader, device):
     with torch.no_grad():
         sample_idx = 0  # keep track of current sample index
         for batch_idx, (images, checksums, metadatas) in enumerate(data_loader):
+            print(f"Processesing batch {batch_idx+1}/{len(data_loader)}")
 
             # Accumulate metadata and checksums from current batch
             res_checksums.extend(checksums)
@@ -172,8 +173,7 @@ def extract_embeddings(model, data_loader, device):
             sample_idx += batch_count
             
             
-            print(f"Processed batch {batch_idx}/{len(data_loader)}")
-
+            
     if sample_idx > 0:
         # Concatenate all embeddings
         final_embeddings = all_embeddings.cpu().numpy()
@@ -323,7 +323,7 @@ def compute_embeddings_masked_autoencoder(self, s3, s3_keys, path_to_bucket, out
         s3,
         s3_keys,
         path_to_bucket,
-        batch_size=32,  # Adjust based on your GPU memory
+        batch_size=8,  # Adjust based on your GPU memory
         num_workers=0, # this could be larger but requires a s3 endpoint per worker and hnce to pass the s3 configuration file and not the s3_connection
         resolution=self.model.img_size
     )
