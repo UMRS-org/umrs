@@ -6,7 +6,7 @@ import string
 import configparser
 import textwrap
 import subprocess
-
+from umrs.utils import normalize_json
 
 def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     """
@@ -115,6 +115,45 @@ def minio_create_user_with_policy(user, password, target, policy_name):
         print(f"Error attaching policy to user: {e}")
 
 
+def check_statement_policy(target, policy_name, policy_json):
+    """
+    Check if a policy exists on MinIO and whether its 'Statement' matches policy_json
+    """
+    # Load input policy and extract Statement
+    input_policy = json.loads(policy_json)
+    input_statement = normalize_json(input_policy.get("Statement", []))
+    
+    try:
+        # List policies on the MinIO server
+        result = subprocess.run(
+            ["mc", "admin", "policy", "list", target, "--insecure"],
+            capture_output=True, text=True, check=True
+        )
+        policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
+
+        if policy_name not in policies:
+            print(f"Policy '{policy_name}' does not exist on '{target}'.")
+            return False
+
+        # Get the actual policy content
+        result = subprocess.run(
+            ["mc", "admin", "policy", "info", target, policy_name, "--insecure"],
+            capture_output=True, text=True, check=True
+        )
+        actual_policy = json.loads(result.stdout)
+        actual_statement = normalize_json(actual_policy.get("Policy", {}).get("Statement", []))
+     
+        if input_statement == actual_statement:
+            print(f"Policy '{policy_name}' exists and Statement matches.")
+            return True
+        else:
+            print(f"Policy '{policy_name}' exists but Statement does NOT match.")
+            return False
+
+    except subprocess.CalledProcessError as e:
+        print("Error accessing MinIO:", e)
+        return False
+    
 def minio_check_create_list_only_policy(target):
     policy = {
         "Version": "2012-10-17",
@@ -122,6 +161,7 @@ def minio_check_create_list_only_policy(target):
             {
                 "Effect": "Allow",
                 "Action": [
+                    "s3:ListBucket",
                     "s3:GetBucketLocation"
                 ],
                 "Resource": [
@@ -135,16 +175,9 @@ def minio_check_create_list_only_policy(target):
     policy_name = f"listonly"
     policy_file = "/tmp/policy.json"
 
-
-
     # Check if the policy already exists
     try:
-        result = subprocess.run(
-            ["mc", "admin", "policy", "list", target, "--insecure"],
-            capture_output=True, text=True, check=True
-        )
-        policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
-        if policy_name in policies:
+       if check_statement_policy(target, policy_name, policy_json):
             print(f"Policy '{policy_name}' already exists on '{target}'.")
             return policy_name
     except subprocess.CalledProcessError as e:

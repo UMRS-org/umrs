@@ -147,7 +147,7 @@ def connect_to_s3(config_file):
     
     return s3, bucket_location
 
-def create_path_to_bucket(xp_name, bucket_alias, username, output=False):
+def make_path_to_bucket_string(xp_name, bucket_alias, username, output=False):
     path = username+"."+xp_name+"."+bucket_alias
     if output:
         path += "-output"
@@ -155,11 +155,11 @@ def create_path_to_bucket(xp_name, bucket_alias, username, output=False):
 
 
     
-def check_bucket_path(s3, path_to_bucket, indent = True):
+def check_bucket_path(s3, path_to_bucket, indent = True, exit_on_error = True):
     if indent:
-        print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'...")
+        print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'... ", end="")
     else:
-        print(f"--> Checking Bucket '{path_to_bucket}'...")
+        print(f"--> Checking Bucket '{path_to_bucket}'... ", end="")
         
     try:
         s3.head_bucket(Bucket = path_to_bucket)
@@ -168,11 +168,14 @@ def check_bucket_path(s3, path_to_bucket, indent = True):
         if e.response["Error"]["Code"] == "404":
             return False #Not found 
         else:
-            sys.exit(f"S3 Error: {e}") #Un-managed head_bucket exception
-            
+            if exit_on_error:
+                sys.exit(f"\nS3 Error: {e}") #Un-managed head_bucket exception
+            else:
+                return False
     except Exception as e:        
-        sys.exit(f"S3 Connection Failed: {e}") #Un-managed S3 error
+        sys.exit(f"\nS3 Connection Failed: {e}") #Un-managed S3 error
 
+    print("OK")
     return True
 
 
@@ -183,7 +186,7 @@ def decompose_bucket_alias_arg(bucket_alias_arg):
     return first_subdir, remaining
 
 def check_bucket_name(s3, xp_name, bucket_alias, username, output=False, indent=False):
-    path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username, output=output)
+    path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=output)
     return path_to_bucket, check_bucket_path(s3, path_to_bucket, indent=indent)
 
 def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, output=False):
@@ -206,7 +209,39 @@ def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, outpu
     return path_to_bucket
 
 
+def count_objects_in_bucket(s3, bucket_name, verbose=False):
+    """
+    Counts the total number of objects in an S3 bucket.
 
+    Args:
+        s3 (boto3.client): A boto3 S3 client object.
+        bucket_name (str): Name of the S3 bucket.
+        verbose (bool): If True, prints progress for each paginated request.
+
+    Returns:
+        int: Total number of objects in the bucket.
+    """
+    total_objects = 0
+
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        page_iter = paginator.paginate(Bucket=bucket_name)
+
+        for i, page in enumerate(page_iter, start=1):
+            count = page.get("KeyCount", 0)
+            total_objects += count
+            if verbose:
+                print(f"Page {i}: {count} objects, cumulative total: {total_objects}")
+
+        if verbose:
+            print(f"Total objects in bucket '{bucket_name}': {total_objects}")
+
+        return total_objects
+
+    except ClientError as e:
+        print(f"Error accessing bucket '{bucket_name}': {e}")
+        return None
+    
 def list_s3_bucket(s3, bucket_name, prefix=""):
     """
     List all objects in an S3 bucket, optionally restricted to one subdirectory.
@@ -227,7 +262,7 @@ def list_s3_bucket(s3, bucket_name, prefix=""):
     checksums : list[str]
         ETag checksums
     """
-    print(f"Listing objects in bucket: {bucket_name} (prefix='{prefix}')")
+    # print(f"Listing objects in bucket: {bucket_name} (prefix='{prefix}')")
     
     objects_list = []
     checksums = []
@@ -305,7 +340,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
 
 
 
-def download_objects(s3, objects_list, checksums, local_path, force_overwrite=False, print_only_new=False):
+def download_objects(s3, objects_list, checksums, local_path, force_overwrite=False, verbose=False, print_only_new=False):
     """
     Download S3 objects into a local directory ONLY if the directory already exists.
 
@@ -313,13 +348,14 @@ def download_objects(s3, objects_list, checksums, local_path, force_overwrite=Fa
     checksums    : ["etag1", "etag2", ...]
     local_path   : local folder (must already exist)
     """
+    downloaded_objects = set()
 
     # --- 1. Local directory must exist ---
     if not os.path.isdir(local_path):
         print(f"Local directory does not exist: {local_path}. Nothing done.")
         return
 
-    print(f"Downloading {len(objects_list)} objects into {local_path}")
+    # print(f"Downloading {len(objects_list)} objects into {local_path}")
 
     for s3_uri, s3_etag in zip(objects_list, checksums):
 
@@ -336,22 +372,31 @@ def download_objects(s3, objects_list, checksums, local_path, force_overwrite=Fa
         # --- 2. If the file already exists → use checksum to skip or overwrite ---
         if os.path.exists(local_file):
             local_md5 = md5_of_file(local_file)
-            if local_md5 == s3_etag and not print_only_new:
-                print(f"[SKIP] {filename} (checksums match)")
+            # print(f"{local_md5=} <=> {s3_etag=}")
+            if local_md5 == s3_etag:
+                if not print_only_new and verbose:
+                    print(f"[SKIP] {filename} (checksums match)")
                 continue
             else:
                 if  force_overwrite :
-                    print(f"[OVERWRITE] {filename} (checksum mismatch)")
+                    if verbose: 
+                        print(f"[OVERWRITE] {filename} (checksum mismatch)")
                 else :
-                    print(f"[NO OVERWRITE - SKIP] {filename} (checksum mismatch) -")
+                    if verbose: 
+                        print(f"[NO OVERWRITE - SKIP] {filename} (checksum mismatch) -")
                     continue
         # --- 3. Download the file ---
         try:
-            print(f"[DOWNLOAD] {s3_uri} → {local_file}")
+            if verbose:
+                print(f"[DOWNLOAD] {s3_uri} → {local_file}")
             s3.download_file(bucket, key, local_file)
         except Exception as e:
             print(f"Error downloading {s3_uri}: {e}")
+        
+        downloaded_objects.add(key)
 
+    return downloaded_objects
+    
 
 def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):
     # Store inline text as an S3 object and notify server
