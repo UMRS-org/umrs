@@ -1,7 +1,7 @@
 # A class to manage server threads
 
 import threading
-import time 
+import time
 from collections import defaultdict
 from umrs.db_store import  query_db_model
 from umrs.pretty_print import pretty_print_thread_status
@@ -89,7 +89,7 @@ class UMRSTasks:
         thread.start()
         self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
         self.thread_list.append(thread)
-        
+
 
 
     def launch_wait_table_modification_on_db(self, path_to_bucket, db_model_store, user, data_base, table_name, timeout, control_mq, zmq_sender_id, key):
@@ -204,7 +204,7 @@ class UMRSTasks:
     
     def clean_finished_tasks(self):
         from server_umrs import ENABLE_PRETTY_PRINT
-        with self.lock:  
+        with self.lock:
             running_threads = []
             for thread in self.thread_list:
                 if not thread.is_alive():
@@ -227,7 +227,7 @@ class UMRSTasks:
         filtered = {}
         with self.lock:
             for thread_ident in self.thread_dict:
-                info = self.thread_dict[thread_ident] 
+                info = self.thread_dict[thread_ident]
                 works = info.get("work", [])
                 user_works = [w for w in works if w.get("user") == client_id and w.get("work_type") == key]
                 if user_works:
@@ -279,7 +279,7 @@ class UMRSTasks:
         owner_dict = self.status_store.get(owner, {})
         owner_dict[key] = entry
         self.status_store[owner] = owner_dict
-        
+
 
     def _json_safe_thread_status(self, ts_dict):
         """Convert thread-keyed dict into a JSON-serializable list of thread info dicts, avoiding key collisions."""
@@ -306,16 +306,15 @@ class UMRSTasks:
             json_safe = self._json_safe_thread_status(filtered)
             self.record_status(user, key, {"summary": summary, "data": json_safe})
 
-    
+
     def close(self):
         try:
             # if using diskcache.Cache
             self.thread_dict.close()   # closes the cache
             self.status_store.close()   # closes the cache
             # optionally clear on disk
-            self.thread_dict.clear()   
-            self.status_store.clear()   
+            self.thread_dict.clear()
+            self.status_store.clear()
             print("thread_dict and status store dictionnary deleted")
         except Exception as e:
             print(f"Cannot close thread_dict/status_store dictionary properly: {e}")
-    

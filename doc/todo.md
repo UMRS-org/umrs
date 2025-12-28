@@ -1,44 +1,94 @@
-Here are several **follow-up ideas, new features, and possible extensions** for the **Unified Multimodal Retriever Service (UMRS)** project that could enhance its capabilities and long-term value:
+## UMRS Future Plan: Deployment Focus
+
+This document captures the near-term plan for turning the current embedding worker implementation into production-ready deployments using Docker and Kubernetes (with Kind for local development).
 
 ---
 
-### 🔄 **Workflow Enhancements & Automation**
-- **Automated Data Lifecycle Policies**: Integrate rules for auto-archiving, compression, or deletion based on metadata (e.g., age, access frequency, tags).
-- **Real-Time Monitoring Dashboard**: Visualize data ingestion, embedding status, storage usage, and model performance metrics.
-- **Event-Driven Triggers**: Extend UMRS to respond to external events (e.g., new experiment completion, sensor alerts) to trigger data processing.
+### 1. Docker Compose (Single-Node) – Baseline
+
+Status: **Implemented and working**.
+
+- Keep docker/docker-compose.yml as the reference deployment for:
+	- umrs-server
+	- umrs-embed-worker
+	- postgres (pgvector)
+	- minio
+	- umrs-api-test
+- Ensure the following are documented and stable:
+	- Shared model cache volume (model_cache:/shared/models) between server and worker.
+	- Recommended workflow (build, up, avoid down -v unless resetting state).
+	- How to switch between local and remote embedding backends via configuration.
+
+**Next small steps**
+
+- Add short pointers from README.md to the new doc/embedding_worker_deployment.md.
+- Optionally add a simple Makefile or helper script to run the standard compose workflow.
 
 ---
 
-### 🧠 **AI & Model Integration**
-- **Model Versioning and Comparison**: Track and compare embeddings from different model versions to evaluate performance over time.
-- **Active Learning Loop**: Incorporate user feedback to refine models or prioritize uncertain samples for reprocessing.
-- **Multimodal Fusion Models**: Add support for models that combine multiple modalities (e.g., image + text) for richer embeddings.
+### 2. Kubernetes Deployment (Multi-Node)
+
+Goal: Run UMRS server and embedding workers as separate Kubernetes deployments, using a shared model cache and externalized Postgres/MinIO where appropriate.
+
+**Planned tasks**
+
+- Define Kubernetes manifests (or Helm chart) for:
+	- UMRS server Deployment + Service.
+	- Embedding worker Deployment(s) + Service.
+	- MinIO and Postgres (for environments that don’t provide managed equivalents).
+- Model cache and data:
+	- Design a PersistentVolume / PersistentVolumeClaim for /shared/models so server and worker pods share model caches.
+	- Decide on PersistentVolume for Postgres data in non-managed setups.
+- Configuration:
+	- Map existing conf_umrs.json and user config files into Kubernetes via ConfigMaps/Secrets.
+	- Expose embedding backend settings (remote address, timeouts) via ConfigMap values.
+- Observability:
+	- Add basic logging and readiness/liveness probes for server and worker pods.
+
+**Acceptance criteria**
+
+- Ability to deploy UMRS and a single worker into a Kubernetes cluster.
+- umrs-api-test (or an equivalent job) completes successfully against the K8s deployment.
 
 ---
 
-### 🔍 **Search & Retrieval Features**
-- **Semantic Search Interface**: Build a user-facing interface for similarity search across modalities using PGVector.
-- **Cross-Modality Retrieval**: Enable queries like “find images similar to this text description” or “retrieve documents related to this video.”
-- **Embedding Visualization Tools**: Use dimensionality reduction (e.g., t-SNE, UMAP) to visualize embedding clusters and relationships.
+### 3. Local Kubernetes with Kind
+
+Goal: Provide a reproducible, local K8s environment for development and testing, using Kind and a local Docker registry.
+
+**Current building blocks (already present)**
+
+- docker/kind-config.yaml – Kind cluster configuration.
+- docker/setup_kind_k8s.sh – script to create a Kind cluster and local registry wiring.
+- docker/rivault-deployment.yaml, docker/rivault-service.yaml – example of deploying a supporting service into Kind.
+
+**Planned usage pattern**
+
+1. Start Kind + registry:
+	 - Run setup_kind_k8s.sh.
+	 - Switch kubectl context to the Kind cluster.
+2. Build and push images:
+	 - Build UMRS server and worker images tagged into localhost:5001/....
+	 - Push them so that Kind can pull from the local registry.
+3. Apply K8s manifests:
+	 - Deploy UMRS server, worker, Postgres, MinIO, and (optionally) RiVault.
+4. Run tests:
+	 - Trigger umrs-api-test as a Kubernetes Job or from outside the cluster.
+
+**Acceptance criteria**
+
+- A developer can spin up a full UMRS + worker stack in Kind using a small number of scripted commands.
+- The behavior matches the Docker Compose deployment (same tests pass, same embedding flows work).
 
 ---
 
-### 🔐 **Security & Access Control**
-- **Fine-Grained Access Policies**: Integrate role-based access to metadata and embeddings, especially for sensitive datasets.
-- **Audit Logging**: Track who accessed or modified data and embeddings for compliance and reproducibility.
+### 4. Later Enhancements (Optional)
 
----
+Once Docker and K8s deployments are stable, we can revisit feature-oriented ideas such as:
 
-### 🌐 **Scalability & Interoperability**
-- **Federated UMRS Nodes**: Allow multiple UMRS instances across institutions to interoperate and share metadata or embeddings.
-- **Standardized APIs**: Expose REST or GraphQL APIs for external tools to interact with UMRS.
-- **Integration with Workflow Managers**: Connect with tools like Nextflow, Snakemake, or Airflow for orchestrating complex pipelines.
+- Multiple workers / horizontal scaling for heavy workloads.
+- Metrics and dashboards for embedding throughput and latency.
+- More advanced access control, audit logging, and cross-institution deployments.
 
----
-
-### 📊 **Feedback & Optimization**
-- **User Feedback Loop**: Collect user input on retrieval quality to refine embeddings or metadata tagging strategies.
-- **Performance Profiling**: Benchmark and optimize embedding computation and metadata queries using RedSQL and PostgreSQL.
-
----
+These are intentionally kept out of the near-term plan to keep focus on a small, reliable deployment surface.
 
