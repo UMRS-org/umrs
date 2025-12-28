@@ -61,6 +61,12 @@ class LocalEmbeddingBackend(EmbeddingBackend):
         )
 
 
+
+################# TODO (EJ)
+# Now computing embedings needs the output bucket path  (set to `None` if there is no output generated)
+# So the following code should be updated accordingly as above for local
+
+
 class RemoteEmbeddingBackend(EmbeddingBackend):
     """Remote backend that delegates embedding computation to a worker.
 
