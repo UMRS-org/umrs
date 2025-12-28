@@ -13,7 +13,7 @@ import diskcache
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
-
+import threading
 from umrs.s3 import *
 from umrs.sql import create_db_user, create_db, configure_table, check_S3_object_status_in_db
 from umrs.models_loading import load_model
@@ -103,8 +103,11 @@ def configure_user(user_cfg, cfg_store):
                 output_path_to_bucket = None
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
-            store_db_model(db_model_store, path_to_bucket, output_path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name)
-            print(f"\t\t\t==>Bucket alias: {bucket_alias}")
+            num_objects =  count_objects_in_bucket(s3_connection, path_to_bucket)
+            # in case of race condition. In practice we certainly do not want several procesing on the same bucket happening in parallel
+            lock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
+            store_db_model(db_model_store, path_to_bucket, output_path_to_bucket, bucket_alias, username, data_base, db_name, table_name, sql_username, model, store_embeddings_flag, modality_name, s3_connection, metadata, xp_name, num_objects, lock)
+            print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
 
 
 
@@ -119,26 +122,27 @@ def recompute_all_objects(active_tasks, username, db_model_store, device, key, l
     recompute_dict = {}
 
     for path_to_bucket, entry in db_model_store.items():
-         # skip none matching username
-        if username is not None and username != entry["s3_username"]:
-            continue
-        s3_objects, total_size, _ = list_s3_bucket(entry["s3_connection"], path_to_bucket)
-        if len(s3_objects) > 0:
-            start_time = time.perf_counter()
-            process_s3_objects(active_tasks, s3_objects, db_model_store, device, key, update_when_done=False)
-            duration = round((time.perf_counter() - start_time),3)
-        else:
-            duration = 0
+        with entry['reentrant_lock'] :
+            # skip none matching username
+            if username is not None and username != entry["s3_username"]:
+                continue
+            s3_objects, total_size, _ = list_s3_bucket(entry["s3_connection"], path_to_bucket)
+            if len(s3_objects) > 0:
+                start_time = time.perf_counter()
+                process_s3_objects(active_tasks, s3_objects, db_model_store, device, key, update_when_done=False)
+                duration = round((time.perf_counter() - start_time),3)
+            else:
+                duration = 0
 
-        recompute_dict[path_to_bucket] = {
-            "bucket_alias": entry["bucket_alias"],
-            "duration": duration,
-            "nb_objects": len(s3_objects),
-            "modality_name": entry["modality_name"],
-            "s3_username": entry["s3_username"],
-            "total_size_MB": round(total_size / (1024**2), 3),
-            "model": entry["model"]
-        }
+            recompute_dict[path_to_bucket] = {
+                "bucket_alias": entry["bucket_alias"],
+                "duration": duration,
+                "nb_objects": len(s3_objects),
+                "modality_name": entry["modality_name"],
+                "s3_username": entry["s3_username"],
+                "total_size_MB": round(total_size / (1024**2), 3),
+                "model": entry["model"]
+            }
 
     summary = pretty_print_recompute(recompute_dict, print_output=False)
     if log_output:
@@ -161,36 +165,37 @@ def update_objects(active_tasks, username, db_model_store, device, key, verbose=
     update_dict = {}
 
     for path_to_bucket, entry in db_model_store.items():
-        # skip none matching username
-        if username is not None and username != entry["s3_username"]:
-            continue
-        s3_objects, total_size, checksums = list_s3_bucket(entry["s3_connection"], path_to_bucket)
-        status = check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store)
+       with entry['reentrant_lock'] :
+            # skip none matching username
+            if username is not None and username != entry["s3_username"]:
+                continue
+            s3_objects, total_size, checksums = list_s3_bucket(entry["s3_connection"], path_to_bucket)
+            status = check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store)
 
-        to_update_objects = []
-        for i, s3_object in enumerate(s3_objects):
-            s = status[i]['status']
-            if verbose:
-                print(f"{s3_object}: {s}")
-            if s != "match":
-                to_update_objects.append(s3_object)
+            to_update_objects = []
+            for i, s3_object in enumerate(s3_objects):
+                s = status[i]['status']
+                if verbose:
+                    print(f"{s3_object}: {s}")
+                if s != "match":
+                    to_update_objects.append(s3_object)
 
-        if len(to_update_objects) > 0:
-            start_time = time.perf_counter()
-            process_s3_objects(active_tasks, to_update_objects, db_model_store, device, key, update_when_done=False)
-            duration = round(time.perf_counter() - start_time, 3)
-        else:
-            duration = 0.0
+            if len(to_update_objects) > 0:
+                start_time = time.perf_counter()
+                process_s3_objects(active_tasks, to_update_objects, db_model_store, device, key, update_when_done=False)
+                duration = round(time.perf_counter() - start_time, 3)
+            else:
+                duration = 0.0
 
-        update_dict[path_to_bucket] = {
-            "bucket_alias": entry["bucket_alias"],
-            "duration": duration,
-            "nb_objects": f"{len(to_update_objects)}/{len(s3_objects)}",
-            "modality_name": entry["modality_name"],
-            "s3_username": entry["s3_username"],
-            "total_size_MB": round(total_size / (1024**2), 3),
-            "model": entry["model"]
-        }
+            update_dict[path_to_bucket] = {
+                "bucket_alias": entry["bucket_alias"],
+                "duration": duration,
+                "nb_objects": f"{len(to_update_objects)}/{len(s3_objects)}",
+                "modality_name": entry["modality_name"],
+                "s3_username": entry["s3_username"],
+                "total_size_MB": round(total_size / (1024**2), 3),
+                "model": entry["model"]
+            }
 
     summary = pretty_print_recompute(update_dict, update=True, print_output=False)
     if log_output:
@@ -302,8 +307,6 @@ def _filter_outcome_for_client(cmd, outcome, client_id, db_model_store):
     """
 
     
-    print(f"\n*****\n{outcome=} {client_id=}")
-
     try:
         if cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
@@ -544,7 +547,13 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
     _ensure_user_file_in_conf(conf_path, username, dest_path)
     return True, username, dest_path
 
-
+def update_num_objects(db_model_store, path_to_bucket):
+    entry = db_model_store.get(path_to_bucket, None)
+    if entry is None :
+        return
+    s3_connection = entry['s3_connection']
+    num_objects = count_objects_in_bucket(s3_connection, path_to_bucket)
+    entry['num_objects'] = num_objects
 
 def process_s3_objects(active_tasks, s3_objects, db_model_store, device, key, update_when_done = True):
     nb_objects = len(s3_objects)
@@ -561,15 +570,17 @@ def process_s3_objects(active_tasks, s3_objects, db_model_store, device, key, up
     active_tasks.update_thread_dict(db_model_store, keys_per_bucket, key)
 
     for path_to_bucket in keys_per_bucket.keys():
-        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, _ , output_bucket= query_db_model(db_model_store, path_to_bucket)
+        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, _ , output_bucket, reentrant_lock= query_db_model(db_model_store, path_to_bucket)
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
-        if store_embeddings_flag:
-            print(f"\t--> Storing to data base in {table_name}")
-            compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection, output_bucket)
-        else:
-            print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
-   
+        with reentrant_lock:
+            if store_embeddings_flag:
+                print(f"\t--> Storing to data base in {table_name}")
+                compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection, output_bucket)
+            else:
+                print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
+        update_num_objects(db_model_store, path_to_bucket)
+
     if update_when_done:
         active_tasks.update_status_to_done()
         active_tasks.record_status_for_users_by_key(users, key)
@@ -649,11 +660,11 @@ def server_event_loop(active_tasks, control_mq, cfg_store, device, configure_fil
 def handle_maintenance_flags(active_tasks, args, db_model_store, device):
     # do in this order
     if args.force_recompute:
-        recompute_all_objects(active_tasks, None, db_model_store, device, TaskCmd.RECOMPUTE, log_output=ENABLE_PRETTY_PRINT)
+        recompute_all_objects(active_tasks, None, db_model_store, device, TaskCmd.RECOMPUTE.lower(), log_output=ENABLE_PRETTY_PRINT)
     if args.force_update:
-        update_objects(active_tasks, None, db_model_store, device, TaskCmd.UPDATE, log_output=ENABLE_PRETTY_PRINT)
+        update_objects(active_tasks, None, db_model_store, device, TaskCmd.UPDATE.lower(), log_output=ENABLE_PRETTY_PRINT)
     if args.check_objects:
-        check_objects(active_tasks, db_model_store, TaskCmd.CHECK, verbose=False, log_output=ENABLE_PRETTY_PRINT)
+        check_objects(active_tasks, db_model_store, TaskCmd.CHECK.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
 
 def check_umrs_config_directory():
     umrs_config_dir = os.getenv(get_umrs_cfg_env_var_name())

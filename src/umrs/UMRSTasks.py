@@ -3,7 +3,7 @@
 import threading
 import time 
 from collections import defaultdict
-from umrs.db_store import store_db_model, query_db_model
+from umrs.db_store import  query_db_model
 from umrs.pretty_print import pretty_print_thread_status
 from datetime import datetime
 import sys
@@ -108,51 +108,46 @@ class UMRSTasks:
 
     def launch_check_objects(self, db_model_store, key, verbose, log_output) : 
         from server_umrs import check_objects
-        from umrs.s3 import count_objects_in_bucket
-
+     
         thread = threading.Thread(target=check_objects, args=(self, db_model_store, key, verbose, log_output))
         thread.start()
        
         keys_per_bucket = defaultdict(list)
         for path_to_bucket in list(db_model_store.keys()):
             entry = db_model_store[path_to_bucket]
-            s3 = entry.get("s3_connection")
-            keys_per_bucket[path_to_bucket] = count_objects_in_bucket(s3, path_to_bucket)
-
+            keys_per_bucket[path_to_bucket] = entry['num_objects']
+        
         self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
         
     def launch_update_objects(self, client_id, db_model_store, device, key, log_output) :
         from server_umrs import update_objects
-        from umrs.s3 import count_objects_in_bucket
+  
 
         thread = threading.Thread(target=update_objects, args=(self, client_id, db_model_store, device, key, log_output))
         thread.start()
-       
         keys_per_bucket = defaultdict(list)
         for path_to_bucket in list(db_model_store.keys()):
             entry = db_model_store[path_to_bucket]
-            s3 = entry.get("s3_connection")
-            keys_per_bucket[path_to_bucket] = count_objects_in_bucket(s3, path_to_bucket)
+            keys_per_bucket[path_to_bucket] = entry['num_objects']
+           
 
         self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
-
+    
         self.thread_list.append(thread)
-
+   
     def launch_recompute_all_objects(self, client_id,  db_model_store, device, key, log_output):
         from server_umrs import recompute_all_objects
-        from umrs.s3 import count_objects_in_bucket
-
+  
         thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, db_model_store, device, key, log_output))
         thread.start()
        
         keys_per_bucket = defaultdict(list)
         for path_to_bucket in list(db_model_store.keys()):
             entry = db_model_store[path_to_bucket]
-            s3 = entry.get("s3_connection")
-            keys_per_bucket[path_to_bucket] = count_objects_in_bucket(s3, path_to_bucket)
-
+            keys_per_bucket[path_to_bucket] = entry['num_objects']
+        
         self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
@@ -161,7 +156,7 @@ class UMRSTasks:
     def update_thread_dict(self, db_model_store, keys_per_bucket, key, thread_ident = "self"):
         array_of_works = []
         for path_to_bucket in keys_per_bucket.keys():
-            user, _, table_name, _, _, modality_name, _, data_base, _ = query_db_model(db_model_store, path_to_bucket)
+            user, _, table_name, _, _, modality_name, _, data_base, _, _ = query_db_model(db_model_store, path_to_bucket)
             s3_keys = keys_per_bucket[path_to_bucket]
             work = {
                 "user": user,

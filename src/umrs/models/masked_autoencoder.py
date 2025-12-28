@@ -158,7 +158,7 @@ def extract_embeddings(model, data_loader, device):
     with torch.no_grad():
         sample_idx = 0  # keep track of current sample index
         for batch_idx, (images, checksums, metadatas) in enumerate(data_loader):
-            print(f"Processesing batch {batch_idx+1}/{len(data_loader)}")
+            print(f"Processing batch {batch_idx+1}/{len(data_loader)}")
 
             # Accumulate metadata and checksums from current batch
             res_checksums.extend(checksums)
