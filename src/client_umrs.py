@@ -341,7 +341,6 @@ try:
             else:
                 try:
                     parsed = _json.loads(raw_response)
-                    print(f"{parsed=}")
                 except Exception as exc:
                     print(api_json(status='error', message=f'Invalid status payload: {exc}', output_format=args.output))
                     control_mq.close()
@@ -356,7 +355,6 @@ try:
     if args.action in ('recompute', 'update', 'check', 'reload'):
         # Use configured username as client id for control plane
         # Determine a stable client id for control-plane requests
-        print(f"\n\n****************************\n{user=}")
         client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', '_')
         cmd = {'recompute': TaskCmd.RECOMPUTE, 'update': TaskCmd.UPDATE, 'check': TaskCmd.CHECK, 'reload': TaskCmd.RELOAD}[args.action]
         try:
