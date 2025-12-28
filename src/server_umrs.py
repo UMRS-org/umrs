@@ -8,6 +8,8 @@ import time
 import torch
 import json
 import diskcache
+from functools import lru_cache
+from typing import Optional
 
 # Add the parent directory of this script (src) to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -204,7 +206,7 @@ def configure_user(user_cfg, cfg_store):
 
 # --------------------------- Maintenance commands ---------------------------
 
-def recompute_all_objects(active_tasks, username, db_model_store, embedding_backend, device, key, log_output=True):
+def recompute_all_objects(active_tasks, username, db_model_store, device, embedding_backend, key, log_output=True):
 
     if log_output:
         print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
@@ -219,7 +221,7 @@ def recompute_all_objects(active_tasks, username, db_model_store, embedding_back
             s3_objects, total_size, _ = list_s3_bucket(entry["s3_connection"], path_to_bucket)
             if len(s3_objects) > 0:
                 start_time = time.perf_counter()
-                process_s3_objects(active_tasks, s3_objects, db_model_store, device, key, update_when_done=False)
+                process_s3_objects(active_tasks, s3_objects, db_model_store, device, embedding_backend, key, update_when_done=False)
                 duration = round((time.perf_counter() - start_time),3)
             else:
                 duration = 0
@@ -272,7 +274,7 @@ def update_objects(active_tasks, username, db_model_store, device, embedding_bac
 
             if len(to_update_objects) > 0:
                 start_time = time.perf_counter()
-                process_s3_objects(active_tasks, to_update_objects, db_model_store, device, key, update_when_done=False)
+                process_s3_objects(active_tasks, to_update_objects, db_model_store, device, embedding_backend, key, update_when_done=False)
                 duration = round(time.perf_counter() - start_time, 3)
             else:
                 duration = 0.0
@@ -687,7 +689,7 @@ def process_s3_objects(active_tasks, s3_objects, db_model_store, device, embeddi
                   device,
                   modality_name,
                   s3_connection,
-                 output_bucket
+                  output_bucket
               )
           else:
               print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")

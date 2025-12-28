@@ -82,10 +82,10 @@ class UMRSTasks:
         # key is now valid in dictionary
 
 
-    def launch_s3_tasks(self, s3_objects, db_model_store, device, key):
+    def launch_s3_tasks(self, s3_objects, db_model_store, device,  embedding_backend, key):
         from server_umrs import process_s3_objects
         
-        thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, db_model_store, device, key))
+        thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, db_model_store, device,  embedding_backend, key))
         thread.start()
         self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
         self.thread_list.append(thread)
@@ -121,11 +121,11 @@ class UMRSTasks:
 
         self.thread_list.append(thread)
         
-    def launch_update_objects(self, client_id, db_model_store, device, key, log_output) :
+    def launch_update_objects(self, client_id, db_model_store, device, embedding_backend, key, log_output) :
         from server_umrs import update_objects
   
 
-        thread = threading.Thread(target=update_objects, args=(self, client_id, db_model_store, device, key, log_output))
+        thread = threading.Thread(target=update_objects, args=(self, client_id, db_model_store, device, embedding_backend, key, log_output))
         thread.start()
         keys_per_bucket = defaultdict(list)
         for path_to_bucket in list(db_model_store.keys()):
@@ -137,10 +137,10 @@ class UMRSTasks:
     
         self.thread_list.append(thread)
    
-    def launch_recompute_all_objects(self, client_id,  db_model_store, device, key, log_output):
+    def launch_recompute_all_objects(self, client_id,  db_model_store, device, embedding_backend, key, log_output):
         from server_umrs import recompute_all_objects
   
-        thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, db_model_store, device, key, log_output))
+        thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, db_model_store, device, embedding_backend, key, log_output))
         thread.start()
        
         keys_per_bucket = defaultdict(list)

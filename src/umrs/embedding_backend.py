@@ -46,6 +46,7 @@ class LocalEmbeddingBackend(EmbeddingBackend):
         device: str,
         modality_name: str,
         s3_connection: Any,
+        output_bucket: str,
     ) -> None:
         compute_and_store_embedding(
             path_to_bucket,
@@ -56,6 +57,7 @@ class LocalEmbeddingBackend(EmbeddingBackend):
             device,
             modality_name,
             s3_connection,
+            output_bucket,
         )
 
 
@@ -100,6 +102,7 @@ class RemoteEmbeddingBackend(EmbeddingBackend):
         device: str,
         modality_name: str,
         s3_connection: Any,
+        output_bucket: str,
     ) -> None:
         job_id = uuid.uuid4().hex
 
