@@ -1,0 +1,97 @@
+# Minimal "RiVault" GenAI stack for local testing
+#
+# Components (inspired by internal_genAI/genai-docker-compose.yaml):
+#   - nginx        : reverse proxy and TLS terminator
+#   - openwebui    : chat UI and orchestrator
+#   - vllm         : OpenAI-compatible LLM backend
+#   - ollama       : additional LLM backend
+#
+# This file is intended as a small, self-contained GenAI stack that can be used
+# as a "RiVault mock" environment alongside UMRS.
+
+version: "3.8"
+
+networks:
+  rivault-net:
+    driver: bridge
+
+services:
+  rivault-nginx:
+    image: nginx:stable-alpine
+    container_name: rivault-nginx
+    networks:
+      - rivault-net
+    ports:
+      # HTTPS entrypoint for OpenWebUI (change to 80 if you prefer plain HTTP)
+      - "9443:443"
+      # Direct access to vLLM and Ollama APIs (optional)
+      - "18000:8000"   # vLLM OpenAI-compatible API
+      - "11435:11434"  # Ollama API
+    volumes:
+      - type: bind
+        source: ./nginx-rivault.conf
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+    depends_on:
+      - rivault-openwebui
+      - rivault-ollama
+      - rivault-vllm
+    restart: unless-stopped
+
+  rivault-openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: rivault-openwebui
+    networks:
+      - rivault-net
+    expose:
+      - "8080"
+    volumes:
+      - type: bind
+        source: ./openwebui_data
+        target: /app/backend/data
+        read_only: false
+    environment:
+      OFFLINE_MODE: "True"
+      # Point OpenWebUI to the local Ollama and vLLM services
+      OLLAMA_BASE_URL: http://rivault-ollama:11434
+      USE_OLLAMA_DOCKER: "False"
+      ENABLE_OPENAI_API: "True"
+      OPENAI_API_BASE_URLS: http://rivault-vllm:8000/v1
+      OPENAI_API_KEYS: "local-dev-key"
+      RAG_EMBEDDING_MODEL: sentence-transformers/all-MiniLM-L6-v2
+      RAG_EMBEDDING_MODEL_AUTO_UPDATE: "False"
+      ENABLE_SIGNUP: "True"
+      DEFAULT_USER_ROLE: user
+    restart: unless-stopped
+
+  rivault-ollama:
+    image: ollama/ollama:latest
+    container_name: rivault-ollama
+    networks:
+      - rivault-net
+    volumes:
+      - type: bind
+        source: ./ollama_data
+        target: /root/.ollama
+        read_only: false
+    environment:
+      OLLAMA_KEEP_ALIVE: "5m"
+    expose:
+      - "11434"
+    restart: unless-stopped
+
+  rivault-vllm:
+    # Minimal example using the public vLLM OpenAI-compatible image.
+    # Adjust the image/tag and model name to your environment.
+    image: vllm/vllm-openai:latest
+    container_name: rivault-vllm
+    networks:
+      - rivault-net
+    command: [
+      "--model", "Qwen/Qwen2.5-0.5B-Instruct",
+      "--host", "0.0.0.0",
+      "--port", "8000"
+    ]
+    expose:
+      - "8000"
+    restart: unless-stopped

@@ -1,0 +1,88 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: umrs-system
+  labels:
+    app.kubernetes.io/name: umrs
+    app.kubernetes.io/component: database
+spec:
+  selector:
+    app.kubernetes.io/name: umrs
+    app.kubernetes.io/component: database
+  ports:
+    - name: tcp-postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: umrs-system
+  labels:
+    app.kubernetes.io/name: umrs
+    app.kubernetes.io/component: database
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: umrs
+      app.kubernetes.io/component: database
+  volumeClaimTemplates:
+    - metadata:
+        name: postgres-data
+      spec:
+        storageClassName: standard
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 20Gi
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: umrs
+        app.kubernetes.io/component: database
+    spec:
+      containers:
+        - name: postgres
+          image: ankane/pgvector:latest
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            seccompProfile:
+              type: RuntimeDefault
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: umrs-postgres-secret
+                  key: POSTGRES_USER
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: umrs-postgres-secret
+                  key: POSTGRES_PASSWORD
+            - name: POSTGRES_DB
+              valueFrom:
+                configMapKeyRef:
+                  name: umrs-config
+                  key: POSTGRES_DB
+          ports:
+            - containerPort: 5432
+              name: tcp-postgres
+          volumeMounts:
+            - name: postgres-data
+              mountPath: /var/lib/postgresql/data
+            - name: init-script
+              mountPath: /docker-entrypoint-initdb.d/init_pgvector.sql
+              subPath: init_pgvector.sql
+      volumes:
+        - name: init-script
+          configMap:
+            name: umrs-init-sql
+            defaultMode: 0644

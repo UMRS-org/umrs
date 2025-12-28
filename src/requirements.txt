@@ -16,3 +16,9 @@ tabulate
 spacy
 diskcache
 jsonschema
+fastapi
+uvicorn[standard]
+requests
+python-multipart
+langchain
+langchain-community
