@@ -127,10 +127,16 @@ class BucketsCfg:
                                 for field in entry.__dataclass_fields__.values()}
         return result
 
-    def replace_cfg(self, other: "BucketStore"):
+    def replace_cfg(self, other: "BucketsCfg"):
         """Replace current store with the contents of another BucketStore."""
-        if not isinstance(other, BucketStore):
-            raise TypeError("other must be a BucketStore")
+        if not isinstance(other, BucketsCfg):
+            raise TypeError("other must be a BucketCfg")
+        
+        if type(self) is not type(other):
+            raise TypeError(
+                f"Cannot replace {type(self).__name__} "
+                f"with {type(other).__name__}"
+            )
         self._store = other._store.copy()
 
     def items(self):
