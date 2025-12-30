@@ -5,7 +5,7 @@ import psycopg2
 from psycopg2 import sql
 from psycopg2 import pool as pg_pool
 from datetime import datetime
-from umrs.db_store import query_db_model
+from umrs.BucketsCfg import BucketsCfg
 
 class DataBase:
     def __init__(self, db_pool, db_name, username):
@@ -719,8 +719,10 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
                 print(f"Warning: failed to close cursor: {e}")
         db_pool.putconn(conn)
 
-def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
-    _username, data_base, table_name, _model, _store_embeddings_flag, _modality_name, _s3_connection, _, _, _ = query_db_model(db_model_store, path_to_bucket)
+def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, buckets_cfg: BucketsCfg):
+    
+    selected_fields = ["data_base", "table_name"]
+    data_base, table_name  = buckets_cfg.get(path_to_bucket, filter=selected_fields)
     status = []
     for i, s3_object in enumerate(s3_objects):
         _, s3_key = s3_object.replace("s3://", "").split("/", 1)

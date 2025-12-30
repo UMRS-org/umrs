@@ -41,18 +41,18 @@ def pretty_print_thread_status(thread_status, running_only=True, print_output=Tr
 def pretty_print_cfg(cfg_dict, print_output=True):
     # Create an empty DataFrame with predefined columns
     df = pd.DataFrame(columns=["Bucket alias", "S3 user", "S3 path", "Experience", "Modality", "Database", "SQL table", "SQL user", "Model", "Embeds?", "Metadata"])
-    db_model_store = cfg_dict['db_model_store']
-    for key, entry in db_model_store.items():
-        bucket_alias = entry["bucket_alias"]
-        s3_username = entry["s3_username"]
-        sql_username = entry["sql_username"]
-        model_name = entry["model"].model_name
-        store_embeddings_flag = entry["store_embeddings_flag"]
-        modality = entry["modality_name"]
-        table_name = entry["table_name"]
-        xp = entry["xp_name"]
-        db_name = entry["db_name"]
-        metadata = entry["metadata"]
+    buckets_cfg = cfg_dict.buckets_cfg
+    for key, entry in buckets_cfg.items():
+        bucket_alias = entry.bucket_alias
+        s3_username = entry.s3_username
+        sql_username = entry.sql_username
+        model_name = entry.model.model_name
+        store_embeddings_flag = entry.store_embeddings_flag
+        modality = entry.modality_name
+        table_name = entry.table_name
+        xp = entry.xp_name
+        db_name = entry.db_name
+        metadata = entry.metadata
         metadata_str= ""
         for mkey, mentry in metadata.items():
             name = mentry["name"];
@@ -77,13 +77,13 @@ def pretty_print_user_cfg(cfg_dict, print_output=True):
     username = None
     for key, entry in cfg_dict.items():
         bucket_alias = key
-        bucket_path = entry['path_to_bucket']
-        xp_name = entry['xp_name']
-        modality = entry['modality_name']
-        sql_username = entry['sql_username']
-        db_name = entry['db_name']
+        bucket_path = entry.path_to_bucket
+        xp_name = entry.xp_name
+        modality = entry.modality_name
+        sql_username = entry.sql_username
+        db_name = entry.db_name
 
-        user = entry['username']
+        user = entry.username
         if not username:
             username = user
         elif user != username:
@@ -139,7 +139,6 @@ def pretty_print_check(check_dict, print_output=True):
                                "Objects", "Size (MB)", "Matches", "Mismatches", "Not Found", "Errors"])
 
     for path_to_bucket, entry in check_dict.items():
-        print(f"{path_to_bucket=}\n{entry=}")
         bucket_alias   = entry["bucket_alias"]
         s3_user        = entry["s3_username"]
         modality       = entry["modality_name"]
