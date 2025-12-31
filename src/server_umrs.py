@@ -199,7 +199,8 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
                 output_path_to_bucket = None
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
-            num_objects =  count_objects_in_bucket(s3_connection, path_to_bucket)
+            # num_objects =  count_objects_in_bucket(s3_connection, path_to_bucket)
+            num_objects = data_base.count_s3_objects(table_name)
             # in case of race condition. In practice we certainly do not want several procesing on the same bucket happening in parallel
             rlock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
             bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name, 
@@ -676,28 +677,28 @@ def process_s3_objects(active_tasks, s3_objects, buckets_cfg, device, embedding_
 
     for path_to_bucket in keys_per_bucket.keys():
         selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "s3_connection", "output_path_to_bucket", "reentrant_lock"]
-        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket,filter=selected_fields)
+        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket, filter=selected_fields)
         
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
 
         with reentrant_lock:
-          buckets_cfg.update_num_objects(path_to_bucket)
-          if store_embeddings_flag:
-              print(f"\t--> Storing to data base in {table_name}")
-              embedding_backend.compute_and_store(
-                  path_to_bucket,
-                  s3_keys,
-                  data_base,
-                  table_name,
-                  model,
-                  device,
-                  modality_name,
-                  s3_connection,
-                  output_bucket
-              )
-          else:
-              print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
+            if store_embeddings_flag:
+                print(f"\t--> Storing to data base in {table_name}")
+                embedding_backend.compute_and_store(
+                    path_to_bucket,
+                    s3_keys,
+                    data_base,
+                    table_name,
+                    model,
+                    device,
+                    modality_name,
+                    s3_connection,
+                    output_bucket
+                )
+            else:
+                print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
+            buckets_cfg.update_num_objects(path_to_bucket)
 
     if update_when_done:
         active_tasks.update_status_to_done()

@@ -103,6 +103,39 @@ class DataBase:
         finally:
            
             self.db_pool.putconn(conn)
+            
+    def count_s3_objects(self, table_name: str) -> int:
+        """
+        Count the number of unique S3 objects stored in the given table.
+
+        Assumes the table contains a TEXT column named 's3_object'.
+
+        Args:
+            table_name (str): Name of the table to query.
+
+        Returns:
+            int: Number of distinct s3_object values.
+        """
+        # 1️⃣ Vérifications de cohérence côté méta-modèle
+        if not self.has_column(table_name, "s3_object"):
+            raise ValueError(
+                f"Table '{table_name}' has no 's3_object' column."
+            )
+
+        conn = self.db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT s3_object)
+                    FROM {table_name}
+                    WHERE s3_object IS NOT NULL;
+                    """
+                )
+                return cur.fetchone()[0]
+
+        finally:
+            self.db_pool.putconn(conn)
 
 def wait_table_modification_on_db(active_tasks, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id):
     from server_umrs import ENABLE_PRETTY_PRINT
@@ -133,7 +166,7 @@ def wait_table_modification_on_db(active_tasks, user, key, data_base, table_name
         pretty_print_thread_status(active_tasks.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
-    
+
 
 
 def create_db_name(sql_username, xp_name):
