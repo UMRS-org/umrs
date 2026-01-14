@@ -1,6 +1,6 @@
 {
   "admin_s3_configuration_file": "~/.s3cfg",
   "users": [
-    "~/.config/umrs/users/spring8.json"
+      "~/.config/umrs/users/openai_api.json"
   ]
 }
