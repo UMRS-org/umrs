@@ -108,6 +108,36 @@ def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0) ->
     raise RuntimeError(f"Model {model_name} not found on vLLM server")
 
 def make_openai_compute_embeddings(url, model_name):
+    """
+    Factory that builds a `compute_embeddings` method backed by an
+    OpenAI-compatible embedding API (e.g. vLLM).
+
+    This function returns a callable that:
+      - Is bound to an EmbeddingModel instance (`self`)
+      - Automatically handles long inputs by splitting texts into
+        sentence-level chunks using spaCy and a HuggingFace tokenizer,
+        ensuring no chunk exceeds the model's max token limit
+      - Sends the flattened list of chunks to the remote embedding server
+      - Re-associates the returned embeddings with their original texts
+        and chunk metadata
+
+    Design rationale:
+      - Keeps the EmbeddingModel API uniform: callers simply pass a list
+        of texts, regardless of whether embeddings are computed locally
+        or via a remote OpenAI-compatible service
+      - Avoids leaking transport- or API-specific parameters (URL, model
+        name) into the rest of the codebase
+      - Makes sentence-level embeddings a first-class concept while still
+        safely handling pathological long sentences
+
+    Parameters:
+      - url: Base URL of the OpenAI-compatible server (e.g. vLLM)
+      - model_name: Name of the embedding model exposed by the server
+
+    Returns:
+      - A method compatible with `EmbeddingModel.compute_embeddings`
+        that returns embeddings aligned with the original input structure
+    """
     def _compute_embeddings_openai_api(self, texts):
         client = get_client(url, model_name)
 
