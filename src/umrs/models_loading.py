@@ -18,7 +18,8 @@ class EmbeddingModel:
         self.modality = modality
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.tokenizer = tokenizer
-        self.model.to(self.device)
+        if self.model:
+            self.model.to(self.device)
         self.compute_embeddings = compute_embeddings.__get__(self)  # Bind the method to the instance
         if spacy_model:
             self.nlp = spacy.load(spacy_model, disable=["ner", "tagger", "parser"])
@@ -67,6 +68,20 @@ def load_model(model_cfg, modality):
         model = load_masked_autoencoder(cfg_file, checkpoint_path)
         compute_embeddings_func = compute_embeddings_masked_autoencoder
         input_type = "raw_image"
+    elif model_type.startswith("openai://") :
+        from .models.openai_api import make_openai_compute_embeddings, is_server_alive, get_max_tokens_from_vllm
+        from transformers import AutoTokenizer
+        model_url = model_type[len("openai://"):]
+        max_tokens = get_max_tokens_from_vllm(model_url, model_name)
+        tokenizer = AutoTokenizer.from_pretrained("intfloat/e5-base-v2") 
+        if not is_server_alive(model_url):
+            raise RuntimeError(
+                f"Cannot reach OpenAI-compatible server at {model_url}.\n"
+                "Check that it is running and reachable from UMRS server."
+            )
+        model = None
+        compute_embeddings_func = make_openai_compute_embeddings(model_url, model_name)
+        input_type = "text"
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
