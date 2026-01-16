@@ -20,7 +20,8 @@
             "model_name": "Resnet 50",
             "vector_size": "1000",
             "model_type": "Resnet-50",
-            "checkpoint_path": "/shared/models/nvidia_resnet50_200821.pth.tar"
+            "checkpoint_path": "/shared/models/nvidia_resnet50_200821.pth.tar",
+            "return_type": null
           },
           "sql": {
             "store_embeddings": "yes",
@@ -43,7 +44,8 @@
             "model_name": "intfloat/e5-base-v2",
             "vector_size": "768",
             "model_type": "TransformerEncoder",
-            "spacy_model": "en_core_web_sm"
+            "spacy_model": "en_core_web_sm",
+            "return_type": null
           },
           "sql": {
             "store_embeddings": "yes",
@@ -61,7 +63,8 @@
             "model_name": "intfloat/e5-base-v2",
             "vector_size": "768",
             "model_type": "TransformerEncoder",
-            "spacy_model": "en_core_web_sm"
+            "spacy_model": "en_core_web_sm",
+            "return_type": null
           },
           "sql": {
             "store_embeddings": "yes",
@@ -84,7 +87,8 @@
           "model": {
             "model_name": "clip-ViT-B-32",
             "vector_size": "512",
-            "model_type": "SentenceTransformer"
+            "model_type": "SentenceTransformer",
+            "return_type": null
           },
           "sql": {
             "store_embeddings": "yes",
@@ -102,7 +106,8 @@
             "model_name": "all-mpnet-base-v2",
             "vector_size": "768",
             "model_type": "SentenceTransformer",
-            "spacy_model": "en_core_web_sm"
+            "spacy_model": "en_core_web_sm",
+            "return_type": null
           },
           "sql": {
             "store_embeddings": "yes",

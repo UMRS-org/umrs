@@ -52,8 +52,8 @@ retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text reload 
 # (effective mappings, buckets, models), scoped to UMRS_CLIENT_ID
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status reload  # Show last reload summary for this client
 
-# Status: tasks — running/queued server tasks for this client (per-thread view)
-retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
+# Status: all — consolidated view of all stored summaries (config + maintenance)
+retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status all
 
 # List buckets for user1 (text/image bucket aliases) # TODO this should show only the buckets of user1 (not all buckets)
 # TODO: STD of listing buckets etc. should be returned to the client side as well.
@@ -74,7 +74,7 @@ if [ -f /root/data/img_test/cat.jpeg ]; then
   # Also exercise the other image bucket (bucket-3) if desired
   python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:test2 -k author:demo -k x_resolution:256 -k y_resolution:512 upload_file /root/data/img_test/cat.jpeg bucket-3 || true  # Don't fail the whole script if this optional upload fails
   # Right after uploads, check running tasks
-  retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
+  retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status all
 fi
 
 # Also exercise upload_dir for images if directory is present (aligns with demo.md)
@@ -83,24 +83,22 @@ if [ -d /root/data/img ]; then
   retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text -k keywords:demo upload_dir /root/data/img bucket-1
 fi
 
-# Trigger server-side embedding operations (no config required)
-retry 10 3 python /app/src/client_umrs.py --output text check  # Ask server to check which items need updates/recompute
+# Trigger server-side embedding operations (explicitly provide client config)
+retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text check  # Ask server to check which items need updates/recompute
 # Status: check — retrieves the last check-operation summary (items requiring update/recompute)
 # for this client (UMRS_CLIENT_ID)
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status check  # Show last check summary
 
-retry 10 3 python /app/src/client_umrs.py --output text update  # Perform incremental updates (index new or changed items)
+retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text update  # Perform incremental updates (index new or changed items)
 # Status: update — retrieves the last update-operation summary (what was indexed/updated)
 # for this client (UMRS_CLIENT_ID)
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status update  # Show last update summary
 
-retry 10 3 python /app/src/client_umrs.py --output text recompute  # Recompute embeddings as needed or requested
+retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text recompute  # Recompute embeddings as needed or requested
 # Status: recompute — retrieves the last recompute-operation summary (embeddings recomputed)
 # for this client (UMRS_CLIENT_ID)
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status recompute  # Show last recompute summary
-# After maintenance, tasks may be idle
-retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status tasks
-# Status: all — consolidated view of all stored summaries (config + maintenance)
+# Final consolidated view of all stored summaries (config + maintenance)
 # for this client (UMRS_CLIENT_ID)
 retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status all  # Show consolidated status for this client
 
@@ -150,13 +148,13 @@ echo "UMRS API test completed."  # Final message indicating the integration run 
 #######fi
 #######
 ######## Trigger maintenance ops as user2
-#######retry 10 3 python /app/src/client_umrs.py --output text check
+#######retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text check
 #######retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status check
 #######
-#######retry 10 3 python /app/src/client_umrs.py --output text update
+#######retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text update
 #######retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status update
 #######
-#######retry 10 3 python /app/src/client_umrs.py --output text recompute
+#######retry 10 3 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text recompute
 #######retry 5 2 python /app/src/client_umrs.py -c "$CLIENT_CONF" --output text status recompute
 #######
 ######## Final tasks snapshot for user2

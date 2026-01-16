@@ -33,8 +33,30 @@ services:
       - DB_HOST=postgres
       - DB_SUPERUSER_PASSWORD=postgres
       - DB_USER_PASSWORD=ejeannot
+      # LLM endpoint used by the agentic RAG service (OpenAI-compatible)
+      # Adjust these variables to point to your vLLM / RiVault stack.
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://localhost:8000/v1}
+      - VLLM_API_KEY=${VLLM_API_KEY:-local-dev-key}
       # Optional: override embedding model for query side to match ingestion
-      # - UMRS_RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+      - UMRS_RAG_EMBEDDING_MODEL=intfloat/e5-base-v2
     ports:
       - "8081:8081"
     command: ["python", "src/rag_service.py"]
+
+  # End-to-end RAG demo container: ingests sample data into UMRS and then
+  # exercises the agentic RAG microservice via /rag/qa.
+  umrs-rag-demo:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.umrs-api-test
+    container_name: umrs-rag-demo
+    depends_on:
+      - umrs-server
+      - minio
+      - postgres
+      - umrs-rag
+    environment:
+      - PYTHONUNBUFFERED=1
+      - UMRS_SERVER_HOST=umrs-server
+      - UMRS_RAG_HOST=umrs-rag
+      - UMRS_RAG_PORT=8081
