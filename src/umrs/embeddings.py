@@ -15,10 +15,12 @@ from umrs.sql import store_embeddings_in_db
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, modality_name, s3_connection):
+def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, 
+                                modality_name, s3_connection, output_bucket):
     if modality_name in ["tomography"]: # case of models where we compute everything from the files (e.g. using data loader)
-        embeddings, checksums, metadata = model.compute_embeddings(s3_connection, s3_keys, path_to_bucket)
+        embeddings, checksums, metadata, saved_s3_keys = model.compute_embeddings(s3_connection, s3_keys, path_to_bucket, output_bucket)
     else: # case where we need to load data into a tensor and then compute embeddings
+        saved_s3_keys = [None] * len(s3_keys)
         objects, metadata, checksums, sizes, has_at_least_a_zero = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
         embeddings = model.compute_embeddings(objects)
         if has_at_least_a_zero:
@@ -27,7 +29,7 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     assert(len(embeddings) == len(checksums))
     assert(len(embeddings) == len(metadata))
 
-    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
+    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, saved_s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
 
 

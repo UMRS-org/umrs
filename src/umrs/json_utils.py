@@ -31,7 +31,7 @@ client_schema = {
                 },
                 "s3": {
                   "type": "object",
-                  "required": ["bucket_alias", "data"],
+                  "required": ["bucket_alias",  "data"],
                   "properties": {
                     "bucket_alias": { "type": "string" },
                     "data": {
@@ -40,20 +40,28 @@ client_schema = {
                       "properties": {
                         "type": { "type": "string", "enum": ["file", "inline"] },
                         "mime_type": { "type": "string" }
+                      },
+                      "need_output_bucket": {
+                        "type": "boolean",
+                        "default": False
                       }
                     }
                   }
                 },
                 "model": {
                   "type": "object",
-                  "required": ["model_name", "vector_size", "model_type"],
+                  "required": ["model_name", "vector_size", "model_type", "return_type"],
                   "properties": {
                     "model_name": { "type": "string" },
                     "vector_size": { "type": "string" },
                     "model_type": { "type": "string" },
                     "model_cfg_file" : { "type": "string" },
                     "checkpoint_path": { "type": "string" },
-                    "spacy_model": { "type": "string" }
+                    "spacy_model": { "type": "string" },
+                    "return_type": {
+                      "type": ["string", "null"],
+                      "enum": ["file", None]
+                    }
                   },
                   "additionalProperties": False
                 },
