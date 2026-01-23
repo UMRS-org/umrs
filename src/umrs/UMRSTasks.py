@@ -3,7 +3,7 @@
 import threading
 import time
 from collections import defaultdict
-from umrs.db_store import store_db_model, query_db_model
+from umrs.db_store import  query_db_model
 from umrs.pretty_print import pretty_print_thread_status
 from datetime import datetime
 import sys
@@ -14,43 +14,149 @@ class ThreadStatus:
     DONE = "Done"
 
 
-
 class UMRSTasks:
+    """
+    UMRSTasks: A class for managing asynchronous tasks executed in server threads.
+
+    This class handles the lifecycle of tasks submitted to server threads, including:
+
+    1. Launching tasks:
+    - Supports processing S3 objects or other work asynchronously in separate threads.
+    - Launching thread for waiting an udate of a table in the database
+    - Tracks each thread and associates it with the work being done.
+
+    2. Thread bookkeeping:
+    - Maintains a thread-safe dictionary of active thread statuses (running/done) using a lock.
+    - Assigns a unique thread ID for each task.
+    - Allows filtering of thread status per user/client.
+
+    3. Status tracking and persistence:
+    - Uses a disk-backed cache (via `diskcache.Cache`) to store thread and task status.
+    - Supports recording summaries and JSON-safe representations for external systems (e.g., ZeroMQ).
+
+    4. Cleanup and synchronization:
+    - Waits for all threads to finish or periodically cleans up finished threads.
+    - Ensures that resources (thread cache, status store) can be safely closed and cleared.
+
+    5. Utilities:
+    - Pretty-prints running thread statuses.
+    - Converts internal thread status data into JSON-safe formats.
+    - Provides helper methods for per-user views and status recording.
+
+    Key components:
+    - `thread_list`: list of currently running `threading.Thread` objects.
+    - `thread_dict`: disk-backed cache storing per-thread info, work, and status.
+    - `status_store`: disk-backed cache storing per-user task summaries, shared with other processes (e.g., ZeroMQ).
+    - `lock`: a `threading.Lock` ensuring thread-safe updates to shared resources.
+
+    Dependencies:
+    - `diskcache.Cache` for persistent shared state.
+    - `threading` and `time` for task execution and synchronization.
+    - Database query helpers (`query_db_model`) and pretty-print helpers (`pretty_print_thread_status`).
+    """
     def __init__(self, status_store, thread_dict):
 
         if not isinstance(status_store, Cache) or not isinstance(thread_dict, Cache) :
             sys.exit("Passed variables of UMRSTasks constructor must be Cache objects")
+        
+   
         self.thread_id = 0
+        
+        # for now restart from sctatch enev in case of crash
+        # this could be changed later by updatring self.thread_id accordingly
+        status_store.clear()
+        thread_dict.clear()
+
         self.thread_list = []
         self.lock = threading.Lock()
         self.thread_dict = thread_dict
         self.status_store = status_store # shared with ZeroMQ. Here we write. ZerMQ reads it
+            
+    
+    def _wait_for_key_in_dict(self, dict, key, check_interval=0.05):
+        while True:
+            with self.lock:
+                if key in dict:
+                    break
+            time.sleep(check_interval)  # wait for 50ms before checking again
+        # key is now valid in dictionary
 
 
-    def launch_s3_tasks(self, s3_objects, db_model_store, device, embedding_backend):
+    def launch_s3_tasks(self, s3_objects, db_model_store, device,  embedding_backend, key):
         from server_umrs import process_s3_objects
-        def _wait_for_key_in_dict( dict, key, check_interval=0.05):
-            while True:
-                with self.lock:
-                    if key in dict:
-                        break
-                time.sleep(check_interval)  # wait for 50ms before checking again
-            # key is now valid in dictionary
-
-        thread = threading.Thread(
-            target=process_s3_objects,
-            args=(self, s3_objects, db_model_store, device, embedding_backend),
-        )
+        
+        thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, db_model_store, device,  embedding_backend, key))
         thread.start()
-        _wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for th thread status to be updated
+        self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
         self.thread_list.append(thread)
 
 
-    def update_thread_dict(self, db_model_store, keys_per_bucket):
-        current_thread = threading.current_thread()
+
+    def launch_wait_table_modification_on_db(self, path_to_bucket, db_model_store, user, data_base, table_name, timeout, control_mq, zmq_sender_id, key):
+        from umrs.sql import wait_table_modification_on_db
+        from collections import defaultdict
+                
+        thread = threading.Thread(target=wait_table_modification_on_db, args=(self, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id))
+        thread.start()
+       
+        keys_per_bucket = defaultdict(list)
+        keys_per_bucket[path_to_bucket] = None
+
+        self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
+
+        self.thread_list.append(thread)
+
+    def launch_check_objects(self, db_model_store, key, verbose, log_output) : 
+        from server_umrs import check_objects
+     
+        thread = threading.Thread(target=check_objects, args=(self, db_model_store, key, verbose, log_output))
+        thread.start()
+       
+        keys_per_bucket = defaultdict(list)
+        for path_to_bucket in list(db_model_store.keys()):
+            entry = db_model_store[path_to_bucket]
+            keys_per_bucket[path_to_bucket] = entry['num_objects']
+        
+        self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
+
+        self.thread_list.append(thread)
+        
+    def launch_update_objects(self, client_id, db_model_store, device, embedding_backend, key, log_output) :
+        from server_umrs import update_objects
+  
+
+        thread = threading.Thread(target=update_objects, args=(self, client_id, db_model_store, device, embedding_backend, key, log_output))
+        thread.start()
+        keys_per_bucket = defaultdict(list)
+        for path_to_bucket in list(db_model_store.keys()):
+            entry = db_model_store[path_to_bucket]
+            keys_per_bucket[path_to_bucket] = entry['num_objects']
+           
+
+        self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
+    
+        self.thread_list.append(thread)
+   
+    def launch_recompute_all_objects(self, client_id,  db_model_store, device, embedding_backend, key, log_output):
+        from server_umrs import recompute_all_objects
+  
+        thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, db_model_store, device, embedding_backend, key, log_output))
+        thread.start()
+       
+        keys_per_bucket = defaultdict(list)
+        for path_to_bucket in list(db_model_store.keys()):
+            entry = db_model_store[path_to_bucket]
+            keys_per_bucket[path_to_bucket] = entry['num_objects']
+        
+        self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
+
+        self.thread_list.append(thread)
+        
+
+    def update_thread_dict(self, db_model_store, keys_per_bucket, key, thread_ident = "self"):
         array_of_works = []
         for path_to_bucket in keys_per_bucket.keys():
-            user, _, table_name, _, _, modality_name, _, data_base = query_db_model(db_model_store, path_to_bucket)
+            user, _, table_name, _, _, modality_name, _, data_base, _, _ = query_db_model(db_model_store, path_to_bucket)
             s3_keys = keys_per_bucket[path_to_bucket]
             work = {
                 "user": user,
@@ -58,27 +164,44 @@ class UMRSTasks:
                 "table_name": table_name,
                 "modality_name": modality_name,
                 "bucket": path_to_bucket,
-                "nb_objects": len(s3_keys),
+                "work_type": key,
+                "nb_objects": s3_keys if isinstance(s3_keys, int) else (len(s3_keys) if s3_keys is not None else "N/A"),
             }
             array_of_works.append(work)
         with self.lock:
             thread_id = self.thread_id
             self.thread_id += 1
-        self.thread_dict[current_thread.ident] = {
+        if thread_ident == "self" : #we are inside a task thread, we need to get its ident 
+            current_thread = threading.current_thread()
+            thread_ident = current_thread.ident
+        self.thread_dict[thread_ident] = {
             "thread_id" : thread_id,
             "work": array_of_works,
             "status": ThreadStatus.RUNNING,
         }
 
+        # print(f"{thread_ident=}\n\t{thread_id=}\n\t{ThreadStatus.RUNNING}" )
+        self.record_status_for_users_by_key([user], key)
+    
+    def is_worker_task(self):
+        current_thread = threading.current_thread()
+        thread_ident = current_thread.ident
+        return thread_ident in self.thread_dict
+    
+
     def update_status_to_done(self):
         current_thread = threading.current_thread()
+        new_key = None
         with self.lock:
-            thread_id = current_thread.ident
-            if thread_id in self.thread_dict:
-                entry = self.thread_dict[thread_id]  # get the full dict
+            thread_ident = current_thread.ident
+            if thread_ident in self.thread_dict:
+                entry = self.thread_dict.pop(thread_ident)  # remove  get the full dict
                 entry["status"] = ThreadStatus.DONE    # modify it
-                self.thread_dict[thread_id] = entry    # reassign back to cache
-
+                new_key = f"{thread_ident}-{entry['thread_id']}" # done thread keys are prepended with their ID
+                self.thread_dict[new_key] = entry    # reassign back to cache
+            else:
+                print(f"Error: cannot find '{thread_ident}' entry for {self.thread_dict=}")
+    
     def clean_finished_tasks(self):
         from server_umrs import ENABLE_PRETTY_PRINT
         with self.lock:
@@ -99,14 +222,14 @@ class UMRSTasks:
             self.thread_list.remove(thread)
 
 
-    def filter_thread_status_for_user(self, client_id):
+    def filter_thread_status_for_user(self, client_id, key):
         """Build a filtered view of global_thread_status containing only works for a given client_id."""
         filtered = {}
         with self.lock:
             for thread_ident in self.thread_dict:
                 info = self.thread_dict[thread_ident]
                 works = info.get("work", [])
-                user_works = [w for w in works if w.get("user") == client_id]
+                user_works = [w for w in works if w.get("user") == client_id and w.get("work_type") == key]
                 if user_works:
                     # Shallow copy with filtered works
                     filtered[thread_ident] = {
@@ -122,7 +245,7 @@ class UMRSTasks:
         return self.status_store
 
     def record_status(self, client_id, key, payload):
-        # record entry about teh status of the thread for a given used in a status_stire (shared with ZeoMQ)
+        # record entry about the status of the thread for a given used in a status_stire (shared with ZeoMQ)
         def _sanitize_status_data(data):
             if isinstance(data, dict):
                 return {k: _sanitize_status_data(v) for k, v in data.items()}
@@ -152,7 +275,7 @@ class UMRSTasks:
 
         # print(f"[{owner}]: {key} -> {entry}")
 
-        # get owner doct or empty dict
+        # get owner dict or empty dict
         owner_dict = self.status_store.get(owner, {})
         owner_dict[key] = entry
         self.status_store[owner] = owner_dict
@@ -170,17 +293,18 @@ class UMRSTasks:
         return safe
 
 
-
-    def record_tasks_status_for_users(self, users):
+    
+    def record_status_for_users_by_key(self, users, key):
         """Record 'tasks' status summaries for the provided user list into the global status store."""
         if self.status_store is None:
             return
         for user in users:
-            filtered = self.filter_thread_status_for_user(user)
+            filtered = self.filter_thread_status_for_user(user, key)
             # Include both Running and Done tasks, preserving status column
             summary = pretty_print_thread_status(filtered, running_only=False, print_output=False)
+            # print(f"{summary=}")
             json_safe = self._json_safe_thread_status(filtered)
-            self.record_status(user, "tasks", {"summary": summary, "data": json_safe})
+            self.record_status(user, key, {"summary": summary, "data": json_safe})
 
 
     def close(self):

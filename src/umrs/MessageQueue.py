@@ -1,6 +1,7 @@
 import os
 import tempfile
-import json
+import json                                             
+from umrs.TaskCmd import TaskCmd
 try:
     import zmq
 except ImportError as e:
@@ -21,7 +22,7 @@ class MessageQueue:
             port (int): Port number.
             target_nb_messages (int): Max number of messages in queue (for POSIX/SYSV).
             target_message_size (int): Max size per message (for POSIX/SYSV).
-            status_store: a dictionnary to stire event related to task in server. 
+            status_store: a dictionnary to store event related to task in server. 
                           Shared with UMRSTasks (ZeroMQ reads theis event while UMRSTasks writes it)
         """
         self.role = role.lower()
@@ -54,16 +55,6 @@ class MessageQueue:
 
     # ------------------------ Initializers ------------------------
 
-    def _initialize_control_queue(self):
-        if self.role == 'server':
-            self.socket = self.context.socket(zmq.REP)
-            self.socket.bind(f"tcp://*:{self.port}")  # Control channel
-            self.set_timeouts(-1, self.timeout) #receiving is always blocking.
-        else:  # client
-            self.socket = self.context.socket(zmq.REQ)
-            self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
-            self.set_timeouts(self.timeout, self.timeout)
-
 
     def _initialize_data_queue(self):
         if self.role == 'server':
@@ -80,32 +71,91 @@ class MessageQueue:
             self.set_timeouts(self.timeout, self.timeout)
 
 
+    def _initialize_control_queue(self):
+        if self.role == 'server':
+            self.socket = self.context.socket(zmq.ROUTER)
+            self.socket.bind(f"tcp://*:{self.port}")
+            self.set_timeouts(-1, self.timeout)
+        else:  # client
+            self.socket = self.context.socket(zmq.DEALER)
+            self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+            self.set_timeouts(self.timeout, self.timeout)
+
     # ------------------------ Core Methods ------------------------
 
-    def send_string(self, string):
+    def send_string(self, string, client_id=None):
         if self.debug:
-            print(f"Sending '{string}' to {self.type}")
+            print(
+                f"[SEND] role={self.role}, type={self.type}, "
+                f"client_id={client_id}, msg='{string}'"
+            )
+
         try:
-            self.socket.send_string(string)
+            # ---------- CONTROL PLANE ----------
+            if self.type == "control":
+                if self.role == "server":
+                    # ROUTER socket
+                    if client_id is None:
+                        raise RuntimeError(
+                            "Server ROUTER socket requires client_id to send a message"
+                        )
+                    self.socket.send_multipart([
+                        client_id,
+                        string.encode("utf-8")
+                    ])
+                else:
+                    # DEALER socket
+                    self.socket.send_string(string)
+
+            # ---------- DATA PLANE ----------
+            elif self.type == "data":
+                if self.role == "server":
+                    raise RuntimeError("Server cannot send message on data plane")
+
+                # PUSH socket (server or client, no difference)
+                self.socket.send_string(string)
+
+            else:
+                raise RuntimeError(f"Unknown queue type: {self.type}")
+
         except zmq.Again:
-            raise RuntimeError(f"Timeout: sending '{string}' from {self.role} to {self.type} failed (socket not ready or high-water mark reached)")
+            raise RuntimeError("Timeout while sending message")
+
         except zmq.ZMQError as e:
-            raise RuntimeError(f"ZeroMQ error while sending '{string}' from {self.role} to {self.type}: {e}")
+            raise RuntimeError(f"ZMQ error while sending: {e}")
+        
         except Exception as e:
             raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}")
-
-
+        
     def recv_string(self):
+        """
+        Receive a string from the socket.
+
+        Returns:
+            (client_id, message)
+            - client_id is bytes for ROUTER sockets
+            - client_id is None otherwise
+        """
         try:
-            res = self.socket.recv_string()
-            return res
-        except zmq.error.Again:
-            return None
+            if self.type == "control" and self.role == "server":
+                # ROUTER receives: [client_id][payload]
+                client_id, msg = self.socket.recv_multipart()
+                return client_id, msg.decode()
+
+            else:
+                # DEALER or PULL: single frame
+                msg = self.socket.recv_string()
+                return None, msg
+
+        except zmq.Again:
+            return None, None
 
     def set_timeouts(self, recv_timeout_ms, send_timeout_ms):
         self.socket.RCVTIMEO = recv_timeout_ms
         self.socket.SNDTIMEO = send_timeout_ms
 
+
+    
     def send_file(self, send_file_path, chunk_size=4096):
         if self.role != 'client' or self.type != 'data':
             raise PermissionError("Sending file can only be done by the client using the data queue")
@@ -167,19 +217,19 @@ class MessageQueue:
             raise PermissionError("Only server can call 'server_control_queue_loop'.")
 
         while True:
-            msg = self.recv_string() # Blocking call
+            zmq_sender_id, msg = self.recv_string() # Blocking call
             print(f"Received request: {msg}")
             # messgae structure should be "{command}:{username}:{other information (e.g file/object count)}"
             splited_msg = msg.split(":")
 
             cmd = splited_msg[0]
-            if cmd == "READY?":  # handshake
+            if cmd == TaskCmd.HAND_CHECK:  # handshake
                 try:
-                    self.send_string("READY!")
+                    self.send_string("READY!", zmq_sender_id)
                 except RuntimeError as e:
                     print(f"Error in client handshake: {e}")
 
-            elif cmd == "CREATE_DATA_QUEUE":  # prepare PUB-SUB request
+            elif cmd == TaskCmd.CREATE_DATA_QUEUE:  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
                     port = self.client_dictionary[client_id]["port"]
@@ -192,33 +242,47 @@ class MessageQueue:
 
                 reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
                 try:
-                    self.send_string(reply)
+                    self.send_string(reply, zmq_sender_id)
                 except RuntimeError as e:
                     print(f"Error in sending back port to client: {e}")
 
-            elif cmd == "OBJECT":  # prepare PUB-SUB request
+            elif cmd == TaskCmd.PROCESS_OBJECTS:  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 nb_objects = int(splited_msg[2])
-                return self._process_object_cmd(client_id, nb_objects)
+                return self._process_object_cmd(client_id, nb_objects, zmq_sender_id)
 
-            elif cmd == "FILE":  # prepare PUB-SUB request
+            elif cmd == TaskCmd.FILE:  # prepare PUB-SUB request
                 client_id = splited_msg[1]
                 nb_files = int(splited_msg[2])
                 # include client_id in the payload for server-side identity enforcement
-                return self._process_file_cmd(client_id, nb_files)
-            elif cmd == "STATUS":
+                return self._process_file_cmd(client_id, nb_files, zmq_sender_id)
+            elif cmd ==  TaskCmd.STATUS:
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
                 payload = self._get_status_payload(client_id, status_key)
                 try:
-                    self.send_string(payload)
+                    self.send_string(payload, zmq_sender_id)
                 except RuntimeError as e:
                     print(f"Error sending status payload: {e}")
                 continue
-            elif cmd in ("RECOMPUTE", "UPDATE", "CHECK", "RELOAD"):
+            elif cmd == TaskCmd.WAIT_OUTPUT :
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                args = splited_msg[2] if len(splited_msg) > 2 else None
+                if client_id is None or args is None:
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError as e:
+                        print(f"Error sending status payload: {e}")
+                    continue
+                splited_args = args.split(";")
+                bucket_name = splited_args[0]
+                timeout = int(splited_args[1]) if len(splited_args) > 1 else None
+                return TaskCmd.WAIT_OUTPUT, (client_id, bucket_name, timeout, zmq_sender_id)
+
+            elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
                 # Acknowledge and let the server main loop perform the operation
                 try:
-                    self.send_string("ACKNOWLEDGE")
+                    self.send_string("ACKNOWLEDGE", zmq_sender_id)
                 except RuntimeError as e:
                     print(f"Error acknowledging {cmd} request: {e}")
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
@@ -235,7 +299,7 @@ class MessageQueue:
         print(f"Listening for {nb_objects} new messages...")
         nb_received = 0
         while nb_received < nb_objects:
-            message = self.recv_string()
+            _, message = self.recv_string()
             if message:
                 print("Received :", message)
                 messages.append(message)
@@ -243,7 +307,7 @@ class MessageQueue:
 
         return messages
 
-    def _process_file_cmd(self, client_id, nb_files):
+    def _process_file_cmd(self, client_id, nb_files, zmq_sender_id):
         # Verify client has a data socket ready
         if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
             data_queue = self.client_dictionary[client_id]["data_queue"]
@@ -266,31 +330,31 @@ class MessageQueue:
 
             # Send acknowledgment to client after receiving all files
             try:
-                self.send_string("ACKNOWLEDGE")
+                self.send_string("ACKNOWLEDGE", zmq_sender_id)
             except RuntimeError as e:
                 print(f"Error in sending acknowleding client: {e}")
             # Return client_id along with received file paths so server can enforce identity
             return "FILE", (client_id, path_list)
         else: # cannot find the client in the client_dictionnary
             try:
-                self.send_string("NO_DATA_QUEUE")
+                self.send_string("NO_DATA_QUEUE", zmq_sender_id)
             except RuntimeError as e:
                 print(f"Error in sending 'no available data queue' to client: {e}")
 
-    def _process_object_cmd(self, client_id, nb_objects):
+    def _process_object_cmd(self, client_id, nb_objects, zmq_sender_id):
         if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
             data_queue = self.client_dictionary[client_id]["data_queue"]
             port = self.client_dictionary[client_id]["port"]
             print(f"Listening data to port {port}")
             objects =  data_queue.wait_for_s3_events(nb_objects)
             try:
-                self.send_string("ACKNOWLEDGE")
+                self.send_string("ACKNOWLEDGE", zmq_sender_id)
             except RuntimeError as e:
                 print(f"Error in sending acknowleding client: {e}")
-            return "OBJECT", objects
+            return TaskCmd.PROCESS_OBJECTS, objects
         else:
             try:
-                self.send_string("NO_DATA_QUEUE")
+                self.send_string("NO_DATA_QUEUE", zmq_sender_id)
             except RuntimeError as e:
                 print(f"Error in sending 'no available data queue' to client: {e}")
 
@@ -326,8 +390,8 @@ class MessageQueue:
         self.set_timeouts(timeout_ms, timeout_ms)
         try:
             try:
-                self.send_string("READY?")
-                answer = self.recv_string()
+                self.send_string(TaskCmd.HAND_CHECK)
+                _, answer = self.recv_string()
                 if answer == "READY!":
                     return True
             except zmq.Again:
@@ -337,7 +401,7 @@ class MessageQueue:
                     self.reset_control_queue()
                     self.set_timeouts(timeout_ms, timeout_ms)
                     self.send_string("READY?")
-                    answer = self.recv_string()
+                    _, answer = self.recv_string()
                     if answer == "READY!":
                         return True
                 except zmq.Again:
@@ -354,7 +418,7 @@ class MessageQueue:
         self.send_string(request_str)
 
         try:
-            reply = self.recv_string()
+            _, reply = self.recv_string()
         except zmq.Again:
             raise RuntimeError("Timeout waiting for server response in get_data_queue")
 
@@ -384,7 +448,7 @@ class MessageQueue:
         self.send_string(request_str)
 
         try:
-            reply = self.recv_string()
+            _, reply = self.recv_string()
         except zmq.Again:
             raise RuntimeError("Timeout waiting for server response in notify_server")
 
@@ -403,15 +467,41 @@ class MessageQueue:
 
         safe_client_id = (client_id or "").replace(":", "_")
         safe_status_key = (status_key or "all").replace(":", "_")
-        request_str = f"STATUS:{safe_client_id}:{safe_status_key}"
+        request_str = f"{TaskCmd.STATUS}:{safe_client_id}:{safe_status_key}"
         self.send_string(request_str)
 
         try:
-            reply = self.recv_string()
+            _, reply = self.recv_string()
         except zmq.Again:
             raise RuntimeError("Timeout waiting for server response in request_status")
 
         return reply
+    
+    def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_status'")
+    
+
+        timeout_ms = 10000*(timeout*2)
+       
+        self.set_timeouts(timeout_ms,self.timeout)
+        
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        safe_args = f"{full_bucket_name};{timeout}".replace(":", "_")
+        request_str = f"{TaskCmd.WAIT_OUTPUT}:{safe_client_id}:{safe_args}"
+        self.send_string(request_str)
+
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in request_status")
+
+        finally: 
+            self.set_timeouts(self.timeout,self.timeout)
+        
+        return reply
+
 
     def get_status_store(self):
         return self.status_store

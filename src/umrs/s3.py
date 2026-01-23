@@ -11,7 +11,7 @@ from io import BytesIO
 import configparser
 from charset_normalizer import from_path, from_bytes
 from typing import List, Dict
-from umrs.utils import compute_md5
+from umrs.utils import compute_md5, md5_of_file
 
 import secrets
 import string
@@ -40,7 +40,25 @@ def get_s3_server_name(s3):
 def s3_strong_password(length=24):
     chars = string.ascii_letters + string.digits + "-_@"
     return ''.join(secrets.choice(chars) for _ in range(length))
-        
+
+
+def s3_key_exists(s3, bucket_name, key):
+    """
+    Check if a specific key exists in the given S3 bucket.
+
+    Returns True if the key exists, False otherwise.
+    """
+    try:
+        s3.head_object(Bucket=bucket_name, Key=key)
+        return True
+    except ClientError as e:
+        if e.response['Error']['Code'] == "404":
+            return False
+        else:
+            # Something else went wrong, re-raise
+            raise
+
+
 def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list):
 
 
@@ -129,17 +147,19 @@ def connect_to_s3(config_file):
     
     return s3, bucket_location
 
-def create_path_to_bucket(xp_name, bucket_alias, username):
+def make_path_to_bucket_string(xp_name, bucket_alias, username, output=False):
     path = username+"."+xp_name+"."+bucket_alias
+    if output:
+        path += "-output"
     return path.lower().replace(" ","-").replace("_","-")
 
 
     
-def check_bucket_path(s3, path_to_bucket, indent = True):
+def check_bucket_path(s3, path_to_bucket, indent = True, exit_on_error = True):
     if indent:
-        print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'...")
+        print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'... ", end="")
     else:
-        print(f"--> Checking Bucket '{path_to_bucket}'...")
+        print(f"--> Checking Bucket '{path_to_bucket}'... ", end="")
         
     try:
         s3.head_bucket(Bucket = path_to_bucket)
@@ -148,11 +168,14 @@ def check_bucket_path(s3, path_to_bucket, indent = True):
         if e.response["Error"]["Code"] == "404":
             return False #Not found 
         else:
-            sys.exit(f"S3 Error: {e}") #Un-managed head_bucket exception
-            
+            if exit_on_error:
+                sys.exit(f"\nS3 Error: {e}") #Un-managed head_bucket exception
+            else:
+                return False
     except Exception as e:        
-        sys.exit(f"S3 Connection Failed: {e}") #Un-managed S3 error
+        sys.exit(f"\nS3 Connection Failed: {e}") #Un-managed S3 error
 
+    print("OK")
     return True
 
 
@@ -162,13 +185,13 @@ def decompose_bucket_alias_arg(bucket_alias_arg):
     remaining = parts[1] if len(parts) > 1 else None
     return first_subdir, remaining
 
-def check_bucket_name(s3, xp_name, bucket_alias, username):
-    path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
-    return path_to_bucket, check_bucket_path(s3, path_to_bucket)
+def check_bucket_name(s3, xp_name, bucket_alias, username, output=False, indent=False):
+    path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=output)
+    return path_to_bucket, check_bucket_path(s3, path_to_bucket, indent=indent)
 
-def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location):
+def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, output=False):
 
-    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username)
+    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=output)
     if success:    
         print(f"\t\t\t--> Bucket '{path_to_bucket}' already exists!")
         # add_bucket_sqs_queue(s3, path_to_bucket)
@@ -186,37 +209,96 @@ def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location):
     return path_to_bucket
 
 
+def count_objects_in_bucket(s3, bucket_name, verbose=False):
+    """
+    Counts the total number of objects in an S3 bucket.
 
+    Args:
+        s3 (boto3.client): A boto3 S3 client object.
+        bucket_name (str): Name of the S3 bucket.
+        verbose (bool): If True, prints progress for each paginated request.
 
-def list_s3_bucket(s3, path_to_bucket):
-    print(f"Listing objects in bucket: {path_to_bucket}")
+    Returns:
+        int: Total number of objects in the bucket.
+    """
+    total_objects = 0
+
+    try:
+        paginator = s3.get_paginator("list_objects_v2")
+        page_iter = paginator.paginate(Bucket=bucket_name)
+
+        for i, page in enumerate(page_iter, start=1):
+            count = page.get("KeyCount", 0)
+            total_objects += count
+            if verbose:
+                print(f"Page {i}: {count} objects, cumulative total: {total_objects}")
+
+        if verbose:
+            print(f"Total objects in bucket '{bucket_name}': {total_objects}")
+
+        return total_objects
+
+    except ClientError as e:
+        print(f"Error accessing bucket '{bucket_name}': {e}")
+        return None
+    
+def list_s3_bucket(s3, bucket_name, prefix=""):
+    """
+    List all objects in an S3 bucket, optionally restricted to one subdirectory.
+
+    Parameters
+    ----------
+    s3 : boto3 client
+    bucket_name : str
+    prefix : str
+        e.g. "folder/subfolder/" — only files under this path are listed.
+
+    Returns
+    -------
+    objects_list : list[str]
+        Full S3 URIs
+    total_size : int
+        Sum of object sizes in bytes
+    checksums : list[str]
+        ETag checksums
+    """
+    # print(f"Listing objects in bucket: {bucket_name} (prefix='{prefix}')")
+    
     objects_list = []
     checksums = []
     total_size = 0
 
+    prefix = "" if prefix == None else prefix
+
     try:
         continuation_token = None
+
         while True:
-            kwargs = {"Bucket": path_to_bucket}
+            kwargs = {
+                "Bucket": bucket_name,
+                "Prefix": prefix        # <── FILTER HERE
+            }
             if continuation_token:
                 kwargs["ContinuationToken"] = continuation_token
+
             response = s3.list_objects_v2(**kwargs)
+
             for obj in response.get('Contents', []):
-                objects_list.append(f"s3://{path_to_bucket}/{obj['Key']}")
+                objects_list.append(f"s3://{bucket_name}/{obj['Key']}")
                 checksums.append(obj['ETag'].strip('"'))
                 total_size += obj['Size']
+
             if response.get('IsTruncated'):
                 continuation_token = response.get('NextContinuationToken')
             else:
                 break
+
     except s3.exceptions.NoSuchBucket:
-        print(f"Bucket not found: {path_to_bucket}")
+        print(f"Bucket not found: {bucket_name}")
     except Exception as e:
-        print(f"Error listing bucket '{path_to_bucket}': {e}")
+        print(f"Error listing bucket '{bucket_name}': {e}")
 
     return objects_list, total_size, checksums
-
-      
         
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     objects = []  
@@ -258,6 +340,63 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
 
 
 
+def download_objects(s3, objects_list, checksums, local_path, force_overwrite=False, verbose=False, print_only_new=False):
+    """
+    Download S3 objects into a local directory ONLY if the directory already exists.
+
+    objects_list : ["s3://bucket/key1", ...]
+    checksums    : ["etag1", "etag2", ...]
+    local_path   : local folder (must already exist)
+    """
+    downloaded_objects = set()
+
+    # --- 1. Local directory must exist ---
+    if not os.path.isdir(local_path):
+        print(f"Local directory does not exist: {local_path}. Nothing done.")
+        return
+
+    # print(f"Downloading {len(objects_list)} objects into {local_path}")
+
+    for s3_uri, s3_etag in zip(objects_list, checksums):
+
+        # Extract bucket + key
+        # e.g. "s3://my-bucket/path/to/file" → bucket="my-bucket", key="path/to/file"
+        assert s3_uri.startswith("s3://")
+        _, _, bucket_key = s3_uri.partition("s3://")
+        bucket, _, key = bucket_key.partition("/")
+
+        # Local destination path
+        filename = os.path.basename(key)
+        local_file = os.path.join(local_path, filename)
+
+        # --- 2. If the file already exists → use checksum to skip or overwrite ---
+        if os.path.exists(local_file):
+            local_md5 = md5_of_file(local_file)
+            # print(f"{local_md5=} <=> {s3_etag=}")
+            if local_md5 == s3_etag:
+                if not print_only_new and verbose:
+                    print(f"[SKIP] {filename} (checksums match)")
+                continue
+            else:
+                if  force_overwrite :
+                    if verbose: 
+                        print(f"[OVERWRITE] {filename} (checksum mismatch)")
+                else :
+                    if verbose: 
+                        print(f"[NO OVERWRITE - SKIP] {filename} (checksum mismatch) -")
+                    continue
+        # --- 3. Download the file ---
+        try:
+            if verbose:
+                print(f"[DOWNLOAD] {s3_uri} → {local_file}")
+            s3.download_file(bucket, key, local_file)
+        except Exception as e:
+            print(f"Error downloading {s3_uri}: {e}")
+        
+        downloaded_objects.add(key)
+
+    return downloaded_objects
+    
 
 def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):
     # Store inline text as an S3 object and notify server
@@ -324,6 +463,28 @@ def is_a_text_file(in_path):
         return False
     
     
+def save_tiff_image_to_s3(s3, img_array, path_to_bucket, s3_key):
+    """
+    Save a NumPy image array to S3 as a TIFF file.
+    
+    img_array: HWC or CHW uint8 NumPy array
+    bucket_name: str, name of the bucket
+    s3_key: str, full key/path in the bucket
+    """
+    # Convert CHW -> HWC if needed
+    if img_array.shape[0] in [1, 3]:  # CHW
+        img_array = img_array.transpose(1, 2, 0)
+    
+    # Convert to PIL Image
+    img = Image.fromarray(img_array)
+    
+    # Save to in-memory buffer
+    buffer = BytesIO()
+    img.save(buffer, format="TIFF")
+    buffer.seek(0)
+    
+    # Upload to S3
+    return s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=buffer.getvalue())
 
 def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     if not is_a_text_file(in_path):

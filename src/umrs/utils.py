@@ -1,9 +1,31 @@
 import hashlib
 import torch
+import json
+################################## json ##################################
+def normalize_json(obj):
+    if isinstance(obj, dict):
+        return {k: normalize_json(obj[k]) for k in sorted(obj)}
+    elif isinstance(obj, list):
+        # on suppose que l’ordre n’a pas de sens → on trie
+        return sorted((normalize_json(x) for x in obj), key=str)
+    else:
+        return obj
+
 ################################## md5 ##################################
 
 def compute_md5(input_string):
     return hashlib.md5(input_string.encode()).hexdigest()
+
+
+
+def md5_of_file(local_file):
+    """Compute MD5 checksum of a file (S3 ETag for non-multipart uploads)."""
+    hash_md5 = hashlib.md5()
+    with open(local_file, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
 
 ################################## Chunking texts ##################################
 
