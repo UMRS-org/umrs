@@ -1,0 +1,23 @@
+# CI/CD test dependencies (no GPU/ML packages)
+# Use this for running tests in CI environments without GPU
+
+numpy
+scikit-learn
+psycopg2-binary
+boto3
+pillow
+posix_ipc
+sysv_ipc
+pyzmq
+configparser
+pandas
+tabulate
+diskcache
+jsonschema
+fastapi
+uvicorn[standard]
+requests
+python-multipart
+
+# Mock ML dependencies for testing (lightweight)
+# These provide the interfaces without heavy GPU backends
