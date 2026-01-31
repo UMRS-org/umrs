@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Copy both requirements files (ci version may not exist locally)
 COPY ./src/requirements*.txt /app/
 RUN pip install --no-cache-dir -r /app/${REQUIREMENTS_FILE} && \
-    python -m spacy download en_core_web_sm
+    (python -c "import spacy" && python -m spacy download en_core_web_sm || echo "spacy not installed, skipping model download")
 
 # Install MinIO Client (mc) for user/bucket management used by minio.py
 RUN curl -sSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc \
