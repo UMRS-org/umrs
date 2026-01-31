@@ -1,0 +1,610 @@
+"""
+Unit tests for UMRS Orchestrator backends (U-601).
+
+Tests orchestrator lifecycle, job management, and backend abstraction.
+"""
+
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from umrs.orchestrator.base import (
+    EndpointInfo,
+    JobInfo,
+    JobStatus,
+    OrchestratorBackend,
+    OrchestratorConfig,
+)
+
+
+# =============================================================================
+# Fixtures
+# =============================================================================
+
+
+@pytest.fixture
+def config():
+    """Create test orchestrator configuration."""
+    return OrchestratorConfig(
+        model_path="/models/test-model",
+        litellm_master_key="sk-test-key",
+        litellm_port=11434,
+        vllm_port=8000,
+        vllm_max_model_len=4096,
+        startup_timeout_sec=10,
+        idle_timeout_sec=60,
+        readiness_poll_interval_sec=1,
+    )
+
+
+@pytest.fixture
+def endpoint_info():
+    """Create test endpoint info."""
+    return EndpointInfo(
+        node="test-node",
+        litellm_port=11434,
+        vllm_port=8000,
+        model_name="rivault-gpt-oss-static",
+    )
+
+
+@pytest.fixture
+def job_info(endpoint_info):
+    """Create test job info."""
+    return JobInfo(
+        job_id="test-job-123",
+        status=JobStatus.READY,
+        endpoint=endpoint_info,
+        model_path="/models/test-model",
+        created_at=datetime.now(timezone.utc),
+        ready_at=datetime.now(timezone.utc),
+        backend="test",
+    )
+
+
+# =============================================================================
+# Test EndpointInfo
+# =============================================================================
+
+
+class TestEndpointInfo:
+    """Tests for EndpointInfo dataclass."""
+
+    def test_litellm_url(self, endpoint_info):
+        """Test LiteLLM URL generation."""
+        assert endpoint_info.litellm_url == "http://test-node:11434/v1"
+
+    def test_health_url(self, endpoint_info):
+        """Test health URL generation."""
+        assert endpoint_info.health_url == "http://test-node:11434/health"
+
+    def test_models_url(self, endpoint_info):
+        """Test models URL generation."""
+        assert endpoint_info.models_url == "http://test-node:11434/v1/models"
+
+    def test_custom_port(self):
+        """Test with custom port."""
+        endpoint = EndpointInfo(node="192.168.1.100", litellm_port=8080)
+        assert endpoint.litellm_url == "http://192.168.1.100:8080/v1"
+
+
+# =============================================================================
+# Test JobInfo
+# =============================================================================
+
+
+class TestJobInfo:
+    """Tests for JobInfo dataclass."""
+
+    def test_is_active_ready(self, job_info):
+        """Test is_active for ready job."""
+        assert job_info.is_active() is True
+
+    def test_is_active_pending(self, endpoint_info):
+        """Test is_active for pending job."""
+        job = JobInfo(
+            job_id="test",
+            status=JobStatus.PENDING,
+            endpoint=endpoint_info,
+        )
+        assert job.is_active() is True
+
+    def test_is_active_stopped(self, endpoint_info):
+        """Test is_active for stopped job."""
+        job = JobInfo(
+            job_id="test",
+            status=JobStatus.STOPPED,
+            endpoint=endpoint_info,
+        )
+        assert job.is_active() is False
+
+    def test_is_active_failed(self, endpoint_info):
+        """Test is_active for failed job."""
+        job = JobInfo(
+            job_id="test",
+            status=JobStatus.FAILED,
+            endpoint=endpoint_info,
+            error_message="GPU allocation failed",
+        )
+        assert job.is_active() is False
+
+    def test_is_ready_true(self, job_info):
+        """Test is_ready for ready job."""
+        assert job_info.is_ready() is True
+
+    def test_is_ready_running(self, endpoint_info):
+        """Test is_ready for running job."""
+        job = JobInfo(
+            job_id="test",
+            status=JobStatus.RUNNING,
+            endpoint=endpoint_info,
+        )
+        assert job.is_ready() is True
+
+    def test_is_ready_pending(self, endpoint_info):
+        """Test is_ready for pending job."""
+        job = JobInfo(
+            job_id="test",
+            status=JobStatus.PENDING,
+            endpoint=endpoint_info,
+        )
+        assert job.is_ready() is False
+
+
+# =============================================================================
+# Test OrchestratorConfig
+# =============================================================================
+
+
+class TestOrchestratorConfig:
+    """Tests for OrchestratorConfig."""
+
+    def test_default_values(self):
+        """Test default configuration values."""
+        config = OrchestratorConfig()
+        assert config.litellm_port == 11434
+        assert config.vllm_port == 8000
+        assert config.vllm_max_model_len == 4096
+        assert config.startup_timeout_sec == 600
+        assert config.idle_timeout_sec == 3600
+
+    def test_custom_values(self, config):
+        """Test custom configuration values."""
+        assert config.model_path == "/models/test-model"
+        assert config.startup_timeout_sec == 10
+
+    @patch.dict(
+        "os.environ",
+        {
+            "VLLM_MODEL_PATH": "/custom/model",
+            "LITELLM_PORT": "9000",
+            "VLLM_MAX_MODEL_LEN": "8192",
+            "SLURM_PARTITION": "a100",
+        },
+    )
+    def test_from_env(self):
+        """Test loading config from environment."""
+        config = OrchestratorConfig.from_env()
+        assert config.model_path == "/custom/model"
+        assert config.litellm_port == 9000
+        assert config.vllm_max_model_len == 8192
+        assert config.slurm_partition == "a100"
+
+
+# =============================================================================
+# Test OrchestratorBackend (Abstract)
+# =============================================================================
+
+
+class MockBackend(OrchestratorBackend):
+    """Mock backend for testing."""
+
+    def __init__(self, config=None):
+        super().__init__(config)
+        self._jobs: dict[str, JobInfo] = {}
+        self._job_counter = 0
+
+    @property
+    def backend_name(self) -> str:
+        return "mock"
+
+    async def submit_job(self, model_path=None, **kwargs):
+        self._job_counter += 1
+        job_id = f"mock-job-{self._job_counter}"
+        job = JobInfo(
+            job_id=job_id,
+            status=JobStatus.PENDING,
+            model_path=model_path or self.config.model_path,
+            created_at=datetime.now(timezone.utc),
+            backend="mock",
+        )
+        self._jobs[job_id] = job
+        return job
+
+    async def get_job_status(self, job_id: str):
+        if job_id not in self._jobs:
+            return JobInfo(
+                job_id=job_id,
+                status=JobStatus.UNKNOWN,
+                backend="mock",
+            )
+        return self._jobs[job_id]
+
+    async def wait_for_ready(self, job_id: str, timeout_sec=None):
+        job = self._jobs.get(job_id)
+        if not job:
+            raise RuntimeError(f"Job not found: {job_id}")
+
+        # Simulate immediate readiness for testing
+        job.status = JobStatus.READY
+        job.endpoint = EndpointInfo(
+            node="mock-node",
+            litellm_port=self.config.litellm_port,
+        )
+        job.ready_at = datetime.now(timezone.utc)
+        return job.endpoint
+
+    async def cleanup(self, job_id: str, force: bool = False):
+        if job_id in self._jobs:
+            self._jobs[job_id].status = JobStatus.STOPPED
+            self._jobs[job_id].stopped_at = datetime.now(timezone.utc)
+
+    async def list_jobs(self, status_filter=None):
+        jobs = list(self._jobs.values())
+        if status_filter:
+            jobs = [j for j in jobs if j.status in status_filter]
+        return jobs
+
+    async def cleanup_orphans(self):
+        orphan_count = 0
+        for job_id, job in list(self._jobs.items()):
+            if job.status == JobStatus.UNKNOWN:
+                del self._jobs[job_id]
+                orphan_count += 1
+        return orphan_count
+
+
+class TestOrchestratorBackend:
+    """Tests for OrchestratorBackend interface."""
+
+    @pytest.fixture
+    def backend(self, config):
+        """Create mock backend."""
+        return MockBackend(config)
+
+    @pytest.mark.asyncio
+    async def test_submit_job(self, backend):
+        """Test job submission."""
+        job = await backend.submit_job()
+        assert job.job_id == "mock-job-1"
+        assert job.status == JobStatus.PENDING
+        assert job.backend == "mock"
+
+    @pytest.mark.asyncio
+    async def test_submit_job_with_model_path(self, backend):
+        """Test job submission with custom model path."""
+        job = await backend.submit_job(model_path="/custom/model")
+        assert job.model_path == "/custom/model"
+
+    @pytest.mark.asyncio
+    async def test_get_job_status(self, backend):
+        """Test getting job status."""
+        job = await backend.submit_job()
+        status = await backend.get_job_status(job.job_id)
+        assert status.job_id == job.job_id
+        assert status.status == JobStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_get_job_status_unknown(self, backend):
+        """Test getting status of unknown job."""
+        status = await backend.get_job_status("nonexistent-job")
+        assert status.status == JobStatus.UNKNOWN
+
+    @pytest.mark.asyncio
+    async def test_wait_for_ready(self, backend):
+        """Test waiting for job readiness."""
+        job = await backend.submit_job()
+        endpoint = await backend.wait_for_ready(job.job_id)
+        assert endpoint.node == "mock-node"
+        assert endpoint.litellm_port == 11434
+
+    @pytest.mark.asyncio
+    async def test_wait_for_ready_unknown_job(self, backend):
+        """Test waiting for unknown job raises error."""
+        with pytest.raises(RuntimeError, match="Job not found"):
+            await backend.wait_for_ready("nonexistent-job")
+
+    @pytest.mark.asyncio
+    async def test_cleanup(self, backend):
+        """Test job cleanup."""
+        job = await backend.submit_job()
+        await backend.cleanup(job.job_id)
+
+        status = await backend.get_job_status(job.job_id)
+        assert status.status == JobStatus.STOPPED
+        assert status.stopped_at is not None
+
+    @pytest.mark.asyncio
+    async def test_list_jobs(self, backend):
+        """Test listing jobs."""
+        await backend.submit_job()
+        await backend.submit_job()
+
+        jobs = await backend.list_jobs()
+        assert len(jobs) == 2
+
+    @pytest.mark.asyncio
+    async def test_list_jobs_with_filter(self, backend):
+        """Test listing jobs with status filter."""
+        job1 = await backend.submit_job()
+        await backend.submit_job()
+
+        await backend.wait_for_ready(job1.job_id)
+
+        pending_jobs = await backend.list_jobs(status_filter=[JobStatus.PENDING])
+        assert len(pending_jobs) == 1
+
+        ready_jobs = await backend.list_jobs(status_filter=[JobStatus.READY])
+        assert len(ready_jobs) == 1
+
+    @pytest.mark.asyncio
+    async def test_cleanup_orphans(self, backend):
+        """Test cleaning up orphaned resources."""
+        backend._jobs["orphan-1"] = JobInfo(
+            job_id="orphan-1",
+            status=JobStatus.UNKNOWN,
+            backend="mock",
+        )
+        backend._jobs["orphan-2"] = JobInfo(
+            job_id="orphan-2",
+            status=JobStatus.UNKNOWN,
+            backend="mock",
+        )
+
+        count = await backend.cleanup_orphans()
+        assert count == 2
+        assert len(backend._jobs) == 0
+
+    @pytest.mark.asyncio
+    async def test_check_readiness_success(self, backend, endpoint_info):
+        """Test readiness check with successful response."""
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_response = AsyncMock()
+            mock_response.status = 200
+
+            mock_session.return_value.__aenter__.return_value.get.return_value.__aenter__.return_value = mock_response
+
+            result = await backend.check_readiness(endpoint_info)
+            assert result is True
+
+    @pytest.mark.asyncio
+    async def test_check_readiness_failure(self, backend, endpoint_info):
+        """Test readiness check with failed response."""
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_response = AsyncMock()
+            mock_response.status = 503
+
+            mock_session.return_value.__aenter__.return_value.get.return_value.__aenter__.return_value = mock_response
+
+            result = await backend.check_readiness(endpoint_info)
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_check_readiness_exception(self, backend, endpoint_info):
+        """Test readiness check with connection error."""
+        with patch("aiohttp.ClientSession") as mock_session:
+            mock_session.return_value.__aenter__.return_value.get.side_effect = Exception("Connection refused")
+
+            result = await backend.check_readiness(endpoint_info)
+            assert result is False
+
+    @pytest.mark.asyncio
+    async def test_health_check(self, backend):
+        """Test backend health check."""
+        health = await backend.health_check()
+        assert health["backend"] == "mock"
+        assert health["healthy"] is True
+
+
+# =============================================================================
+# Test Job Lifecycle
+# =============================================================================
+
+
+class TestJobLifecycle:
+    """Integration tests for complete job lifecycle."""
+
+    @pytest.fixture
+    def backend(self, config):
+        """Create mock backend."""
+        return MockBackend(config)
+
+    @pytest.mark.asyncio
+    async def test_full_lifecycle(self, backend):
+        """Test complete job lifecycle: submit -> ready -> cleanup."""
+        # Submit job
+        job = await backend.submit_job()
+        assert job.status == JobStatus.PENDING
+
+        # Wait for ready
+        endpoint = await backend.wait_for_ready(job.job_id)
+        assert endpoint is not None
+
+        # Verify job is ready
+        status = await backend.get_job_status(job.job_id)
+        assert status.status == JobStatus.READY
+        assert status.endpoint is not None
+
+        # Cleanup
+        await backend.cleanup(job.job_id)
+        status = await backend.get_job_status(job.job_id)
+        assert status.status == JobStatus.STOPPED
+
+    @pytest.mark.asyncio
+    async def test_multiple_jobs(self, backend):
+        """Test managing multiple jobs."""
+        jobs = []
+        for _ in range(3):
+            job = await backend.submit_job()
+            jobs.append(job)
+
+        all_jobs = await backend.list_jobs()
+        assert len(all_jobs) == 3
+
+        # Make first job ready
+        await backend.wait_for_ready(jobs[0].job_id)
+
+        ready_jobs = await backend.list_jobs(status_filter=[JobStatus.READY])
+        pending_jobs = await backend.list_jobs(status_filter=[JobStatus.PENDING])
+
+        assert len(ready_jobs) == 1
+        assert len(pending_jobs) == 2
+
+        # Cleanup all
+        for job in jobs:
+            await backend.cleanup(job.job_id)
+
+        active_jobs = await backend.list_jobs(
+            status_filter=[JobStatus.READY, JobStatus.PENDING]
+        )
+        assert len(active_jobs) == 0
+
+
+# =============================================================================
+# Test Slurm Backend (Mocked)
+# =============================================================================
+
+
+class TestSlurmBackendMocked:
+    """Tests for Slurm backend with mocked subprocess."""
+
+    @pytest.fixture
+    def slurm_config(self):
+        """Slurm-specific config."""
+        return OrchestratorConfig(
+            model_path="/models/test",
+            slurm_partition="gpu",
+            slurm_time="01:00:00",
+            slurm_gpus=1,
+            singularity_image="/opt/mini-rivault.sif",
+        )
+
+    @pytest.mark.asyncio
+    async def test_slurm_submit_job_mocked(self, slurm_config):
+        """Test Slurm job submission (mocked)."""
+        # Import the actual backend
+        try:
+            from umrs.orchestrator.slurm_backend import SlurmBackend
+        except ImportError:
+            pytest.skip("SlurmBackend not available")
+
+        backend = SlurmBackend(slurm_config)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            # Mock sbatch output
+            mock_process = AsyncMock()
+            mock_process.communicate.return_value = (b"Submitted batch job 12345\n", b"")
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            job = await backend.submit_job()
+            assert job.job_id == "12345"
+            assert job.status == JobStatus.PENDING
+
+    @pytest.mark.asyncio
+    async def test_slurm_cleanup_mocked(self, slurm_config):
+        """Test Slurm job cleanup (mocked)."""
+        try:
+            from umrs.orchestrator.slurm_backend import SlurmBackend
+        except ImportError:
+            pytest.skip("SlurmBackend not available")
+
+        backend = SlurmBackend(slurm_config)
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = AsyncMock()
+            mock_process.communicate.return_value = (b"", b"")
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            await backend.cleanup("12345")
+            mock_exec.assert_called_once()
+
+
+# =============================================================================
+# Test Kubernetes Backend (Mocked)
+# =============================================================================
+
+
+class TestKubernetesBackendMocked:
+    """Tests for Kubernetes backend with mocked client."""
+
+    @pytest.fixture
+    def k8s_config(self):
+        """Kubernetes-specific config."""
+        return OrchestratorConfig(
+            model_path="/models/test",
+            k8s_namespace="rivault-test",
+            k8s_image="ghcr.io/rccs/mini-rivault:test",
+        )
+
+    @pytest.mark.asyncio
+    async def test_k8s_submit_job_mocked(self, k8s_config):
+        """Test Kubernetes job submission (mocked)."""
+        try:
+            from umrs.orchestrator.kubernetes_backend import KubernetesBackend
+        except ImportError:
+            pytest.skip("KubernetesBackend not available")
+
+        with patch("kubernetes.client.BatchV1Api") as mock_batch, \
+             patch("kubernetes.client.CoreV1Api"), \
+             patch("kubernetes.config.load_incluster_config"):
+
+            mock_job_result = MagicMock()
+            mock_job_result.metadata.name = "rivault-test-123"
+            mock_batch.return_value.create_namespaced_job.return_value = mock_job_result
+
+            backend = KubernetesBackend(k8s_config)
+            job = await backend.submit_job()
+
+            assert job.job_id.startswith("rivault-")
+            assert job.status == JobStatus.PENDING
+
+
+# =============================================================================
+# Test Compose Backend (Mocked)
+# =============================================================================
+
+
+class TestComposeBackendMocked:
+    """Tests for Docker Compose backend with mocked subprocess."""
+
+    @pytest.fixture
+    def compose_config(self):
+        """Compose-specific config."""
+        return OrchestratorConfig(
+            model_path="/models/test",
+            compose_project_name="test-rivault",
+            compose_file="/path/to/compose.yaml",
+        )
+
+    @pytest.mark.asyncio
+    async def test_compose_submit_job_mocked(self, compose_config):
+        """Test Compose job submission (mocked)."""
+        try:
+            from umrs.orchestrator.compose_backend import ComposeBackend
+        except ImportError:
+            pytest.skip("ComposeBackend not available")
+
+        with patch("asyncio.create_subprocess_exec") as mock_exec:
+            mock_process = AsyncMock()
+            mock_process.communicate.return_value = (b"", b"")
+            mock_process.returncode = 0
+            mock_exec.return_value = mock_process
+
+            backend = ComposeBackend(compose_config)
+            job = await backend.submit_job()
+
+            assert job.job_id.startswith("compose-")
+            assert job.status == JobStatus.STARTING

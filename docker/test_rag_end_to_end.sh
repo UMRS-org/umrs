@@ -3,6 +3,11 @@
 # End-to-end RAG demo:
 # 1. Run the standard UMRS API test to ingest data and build embeddings.
 # 2. Call the UMRS RAG microservice to answer a question over the ingested data.
+#
+# Environment variables:
+#   SKIP_RAG_TESTS: If set to "true", skip the RAG microservice tests (steps 2-3)
+#   UMRS_RAG_HOST: Hostname for RAG service (default: umrs-rag)
+#   UMRS_RAG_PORT: Port for RAG service (default: 8081)
 
 set -euo pipefail
 
@@ -27,6 +32,14 @@ retry() {
 echo "===== Step 1: running UMRS API integration + ingestion ====="
 chmod +x ./test_umrs_api.sh
 ./test_umrs_api.sh
+
+# Check if RAG tests should be skipped
+SKIP_RAG_TESTS=${SKIP_RAG_TESTS:-false}
+if [ "$SKIP_RAG_TESTS" = "true" ]; then
+  echo "===== Skipping RAG tests (SKIP_RAG_TESTS=true) ====="
+  echo "===== UMRS API tests completed successfully ====="
+  exit 0
+fi
 
 echo "===== Step 2: waiting for UMRS RAG microservice to be ready ====="
 UMRS_RAG_HOST=${UMRS_RAG_HOST:-umrs-rag}

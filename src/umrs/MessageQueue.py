@@ -1,6 +1,6 @@
 import os
 import tempfile
-import json                                             
+import json
 from umrs.TaskCmd import TaskCmd
 try:
     import zmq
@@ -9,75 +9,137 @@ except ImportError as e:
 
 BASE_PORT = 5555
 DEFAULT_NB_MSG = 10240
+TUNNEL_MODE_DATA_PORT = 5556  # Fixed data port for tunnel mode
+
+
 class MessageQueue:
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
-                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, status_store=None):
+                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir=None, status_store=None,
+                 tunnel_mode=None):
         """
         Initializes the MessageQueue.
 
         Args:
-            queue_type (str): 'control' or 'data'.
             role (str): 'server' or 'client'.
-            server_ip (str): IP address of server.
+            queue_type (str): 'control' or 'data'.
+            server_ip (str): IP address of server (ignored if tunnel_mode=True).
             port (int): Port number.
-            target_nb_messages (int): Max number of messages in queue (for POSIX/SYSV).
-            target_message_size (int): Max size per message (for POSIX/SYSV).
-            status_store: a dictionnary to store event related to task in server. 
-                          Shared with UMRSTasks (ZeroMQ reads theis event while UMRSTasks writes it)
+            max_nb_messages (int): Max number of messages in queue.
+            timeout_ms (int): Timeout in milliseconds.
+            tmp_dir (str): Directory for temporary files.
+            status_store: Dictionary to store task status.
+            tunnel_mode (bool): If True, use localhost (127.0.0.1) for all connections.
+                Assumes SSH tunnel provides the actual transport layer.
+                If None, uses UMRS_TUNNEL_MODE env var (defaults to False).
+
+                In tunnel mode:
+                - Server binds to 127.0.0.1 (localhost only)
+                - Client connects to 127.0.0.1
+                - SSH tunnel bridges the two localhost endpoints
+
+                SSH tunnel setup (run from client side):
+                    ssh -L 5555:localhost:5555 -L 5556:localhost:5556 user@server -N
         """
         self.role = role.lower()
         self.type = queue_type.lower()
-        # Determine server_ip: prefer explicit env var so other containers/hosts can connect
-        env_server_host = os.environ.get("UMRS_SERVER_HOST")
-        if env_server_host:
-            self.server_ip = env_server_host
+
+        # Determine tunnel_mode: explicit parameter takes precedence, then env var, then default
+        if tunnel_mode is not None:
+            self.tunnel_mode = tunnel_mode
         else:
-            self.server_ip = server_ip
+            env_tunnel_mode = os.environ.get("UMRS_TUNNEL_MODE", "").lower()
+            self.tunnel_mode = env_tunnel_mode in ("1", "true", "yes")
+
+        # In tunnel mode, always use localhost
+        if self.tunnel_mode:
+            self.server_ip = "127.0.0.1"
+        else:
+            # Determine server_ip: prefer explicit env var so other containers/hosts can connect
+            env_server_host = os.environ.get("UMRS_SERVER_HOST")
+            if env_server_host:
+                self.server_ip = env_server_host
+            else:
+                self.server_ip = server_ip
+
         self.context = zmq.Context()
-        self.client_dictionary={}
+        self.client_dictionary = {}
         self.timeout = timeout_ms
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
         self.tmp_dir = tmp_dir
         self.status_store = status_store
         self.debug = False  # disable noisy send/recv logs by default
 
+        # Check environment variable for port override
+        env_control_port = os.environ.get("UMRS_CONTROL_PORT")
+        env_data_port = os.environ.get("UMRS_DATA_PORT")
+
         # Initialize the selected queue type
         if self.type == "control":
-            self.port = BASE_PORT
+            if env_control_port:
+                self.port = int(env_control_port)
+            elif not self.tunnel_mode:
+                self.port = BASE_PORT
+            else:
+                self.port = port if port != BASE_PORT else BASE_PORT
             self._initialize_control_queue()
         elif self.type == "data":
-            if port == BASE_PORT:
+            if env_data_port:
+                self.port = int(env_data_port)
+            elif port == BASE_PORT and not self.tunnel_mode:
                 raise ValueError(f"Cannot use port {BASE_PORT} for data channel")
-            self.port = port
+            else:
+                self.port = port
             self._initialize_data_queue()
         else:
             raise ValueError(f"Unsupported queue type: {self.type}")
 
     # ------------------------ Initializers ------------------------
 
-
     def _initialize_data_queue(self):
+        """
+        Initialize data plane sockets (PUSH/PULL).
+
+        Server binds PULL socket, Client connects PUSH socket.
+        In tunnel mode, server binds to localhost only for SSH tunnel compatibility.
+        """
         if self.role == 'server':
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
-            self.socket.bind(f"tcp://*:{self.port}")  # Data channel bind
-            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
+            if self.tunnel_mode:
+                # Tunnel mode: bind to localhost only (SSH tunnel provides transport)
+                self.socket.bind(f"tcp://127.0.0.1:{self.port}")
+            else:
+                # Normal mode: bind to all interfaces
+                self.socket.bind(f"tcp://*:{self.port}")
+            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)
             self.set_timeouts(self.timeout, self.timeout)
         else:  # client
             # Client uses PUSH socket to send data
             self.socket = self.context.socket(zmq.PUSH)
+            # Client always connects (to localhost in tunnel mode, or to server_ip otherwise)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
-            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
+            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)
             self.set_timeouts(self.timeout, self.timeout)
 
-
     def _initialize_control_queue(self):
+        """
+        Initialize control plane sockets (ROUTER/DEALER).
+
+        Server binds ROUTER socket, Client connects DEALER socket.
+        In tunnel mode, server binds to localhost only for SSH tunnel compatibility.
+        """
         if self.role == 'server':
             self.socket = self.context.socket(zmq.ROUTER)
-            self.socket.bind(f"tcp://*:{self.port}")
+            if self.tunnel_mode:
+                # Tunnel mode: bind to localhost only (SSH tunnel provides transport)
+                self.socket.bind(f"tcp://127.0.0.1:{self.port}")
+            else:
+                # Normal mode: bind to all interfaces
+                self.socket.bind(f"tcp://*:{self.port}")
             self.set_timeouts(-1, self.timeout)
         else:  # client
             self.socket = self.context.socket(zmq.DEALER)
+            # Client always connects (to localhost in tunnel mode, or to server_ip otherwise)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.set_timeouts(self.timeout, self.timeout)
 
@@ -123,10 +185,10 @@ class MessageQueue:
 
         except zmq.ZMQError as e:
             raise RuntimeError(f"ZMQ error while sending: {e}")
-        
+
         except Exception as e:
             raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}")
-        
+
     def recv_string(self):
         """
         Receive a string from the socket.
@@ -155,7 +217,7 @@ class MessageQueue:
         self.socket.SNDTIMEO = send_timeout_ms
 
 
-    
+
     def send_file(self, send_file_path, chunk_size=4096):
         if self.role != 'client' or self.type != 'data':
             raise PermissionError("Sending file can only be done by the client using the data queue")
@@ -231,16 +293,52 @@ class MessageQueue:
 
             elif cmd == TaskCmd.CREATE_DATA_QUEUE:  # prepare PUB-SUB request
                 client_id = splited_msg[1]
-                if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
-                    port = self.client_dictionary[client_id]["port"]
-                else:
-                    max_port = max((entry.get("port", BASE_PORT) for entry in self.client_dictionary.values()), default=BASE_PORT)
-                    port = max_port + 1
-                    self.client_dictionary.setdefault(client_id, {})["port"] = port
-                    data_queue = MessageQueue(role='server', queue_type='data', server_ip=self.server_ip, port=port)
-                    self.client_dictionary[client_id]["data_queue"] = data_queue
 
-                reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
+                # Determine port allocation strategy:
+                # - tunnel_mode: fixed port, localhost reply (for SSH tunnels)
+                # - UMRS_SINGLE_DATA_PORT: fixed port, hostname reply (for K8s/containers)
+                # - normal mode: dynamic port allocation
+                single_data_port = os.environ.get("UMRS_SINGLE_DATA_PORT", "").lower() in ("1", "true", "yes")
+
+                if self.tunnel_mode:
+                    port = int(os.environ.get("UMRS_DATA_PORT", TUNNEL_MODE_DATA_PORT))
+                    if client_id not in self.client_dictionary or "data_queue" not in self.client_dictionary.get(client_id, {}):
+                        self.client_dictionary.setdefault(client_id, {})["port"] = port
+                        data_queue = MessageQueue(
+                            role='server', queue_type='data',
+                            server_ip=self.server_ip, port=port,
+                            tunnel_mode=True
+                        )
+                        self.client_dictionary[client_id]["data_queue"] = data_queue
+                    reply = f"tcp://127.0.0.1:{port}"
+                elif single_data_port:
+                    # K8s/container mode: use fixed port but with proper hostname
+                    port = int(os.environ.get("UMRS_DATA_PORT", TUNNEL_MODE_DATA_PORT))
+                    if client_id not in self.client_dictionary or "data_queue" not in self.client_dictionary.get(client_id, {}):
+                        self.client_dictionary.setdefault(client_id, {})["port"] = port
+                        data_queue = MessageQueue(
+                            role='server', queue_type='data',
+                            server_ip=self.server_ip, port=port,
+                            tunnel_mode=False
+                        )
+                        self.client_dictionary[client_id]["data_queue"] = data_queue
+                    reply = f"tcp://{self.server_ip}:{port}"
+                else:
+                    # Normal mode: allocate port dynamically
+                    if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
+                        port = self.client_dictionary[client_id]["port"]
+                    else:
+                        max_port = max((entry.get("port", BASE_PORT) for entry in self.client_dictionary.values()), default=BASE_PORT)
+                        port = max_port + 1
+                        self.client_dictionary.setdefault(client_id, {})["port"] = port
+                        data_queue = MessageQueue(
+                            role='server', queue_type='data',
+                            server_ip=self.server_ip, port=port,
+                            tunnel_mode=False
+                        )
+                        self.client_dictionary[client_id]["data_queue"] = data_queue
+                    reply = f"tcp://{self.server_ip}:{port}"
+
                 try:
                     self.send_string(reply, zmq_sender_id)
                 except RuntimeError as e:
@@ -373,8 +471,12 @@ class MessageQueue:
                 pass
 
         # Create a new REQ socket and connect
+        # In tunnel mode, connect to localhost (SSH tunnel forwards to server)
         self.socket = self.context.socket(zmq.REQ)
-        self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+        if self.tunnel_mode:
+            self.socket.connect(f"tcp://127.0.0.1:{self.port}")
+        else:
+            self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
 
     def is_server_ready(self, timeout_ms=5000):
         if self.role != "client":
@@ -410,9 +512,24 @@ class MessageQueue:
         finally:
             self.set_timeouts(self.timeout, self.timeout) # always reset timeout before exiting
 
-    def get_data_queue(self, client_id):
+    def get_data_queue(self, client_id, tunnel_mode=None):
+        """
+        Request a data queue from the server.
+
+        Args:
+            client_id: Unique identifier for this client.
+            tunnel_mode: If True, use localhost (127.0.0.1) for data queue connection,
+                        assuming SSH tunnel provides the transport layer.
+                        If None, inherits from this control queue's tunnel_mode setting.
+
+        Returns:
+            MessageQueue configured for data transfer.
+        """
         if self.role != "client":
-            raise PermissionError(f"Only client can call 'get_data_queue'")
+            raise PermissionError("Only client can call 'get_data_queue'")
+
+        # Inherit tunnel_mode from control queue if not explicitly specified
+        use_tunnel_mode = tunnel_mode if tunnel_mode is not None else self.tunnel_mode
 
         request_str = f"CREATE_DATA_QUEUE:{client_id}"
         self.send_string(request_str)
@@ -425,16 +542,23 @@ class MessageQueue:
         if reply.startswith("tcp://"):
             # Remove protocol prefix
             endpoint = reply[len("tcp://"):]
+
             # Split IP and port
-            server_ip, port_str = endpoint.split(":")
-            port = int(port_str)
+            parts = endpoint.split(":")
+            server_ip = parts[0]
+            port = int(parts[1])
+
+            # In tunnel mode, override server_ip with localhost
+            if use_tunnel_mode:
+                server_ip = "127.0.0.1"
 
             # Create MessageQueue with parsed IP and port
             data_mq = MessageQueue(
                 role='client',
                 queue_type='data',
                 server_ip=server_ip,
-                port=port
+                port=port,
+                tunnel_mode=use_tunnel_mode,
             )
             return data_mq
         else:
@@ -476,16 +600,16 @@ class MessageQueue:
             raise RuntimeError("Timeout waiting for server response in request_status")
 
         return reply
-    
+
     def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):
         if self.role != "client":
             raise PermissionError("Only client can call 'request_status'")
-    
+
 
         timeout_ms = 10000*(timeout*2)
-       
+
         self.set_timeouts(timeout_ms,self.timeout)
-        
+
 
         safe_client_id = (client_id or "").replace(":", "_")
         safe_args = f"{full_bucket_name};{timeout}".replace(":", "_")
@@ -497,9 +621,9 @@ class MessageQueue:
         except zmq.Again:
             raise RuntimeError("Timeout waiting for server response in request_status")
 
-        finally: 
+        finally:
             self.set_timeouts(self.timeout,self.timeout)
-        
+
         return reply
 
 
