@@ -18,6 +18,8 @@ fastapi
 uvicorn[standard]
 requests
 python-multipart
+httpx
+anyio
 
 # Mock ML dependencies for testing (lightweight)
 # These provide the interfaces without heavy GPU backends
