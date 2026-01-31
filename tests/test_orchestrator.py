@@ -502,9 +502,9 @@ class TestSlurmBackendMocked:
         backend = SlurmBackend(slurm_config)
 
         with patch("asyncio.create_subprocess_exec") as mock_exec:
-            # Mock sbatch output
+            # Mock sbatch --parsable output (returns "JOBID" or "JOBID;CLUSTER")
             mock_process = AsyncMock()
-            mock_process.communicate.return_value = (b"Submitted batch job 12345\n", b"")
+            mock_process.communicate.return_value = (b"12345\n", b"")
             mock_process.returncode = 0
             mock_exec.return_value = mock_process
 

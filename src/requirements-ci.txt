@@ -20,6 +20,8 @@ requests
 python-multipart
 httpx
 anyio
+aiohttp
+kubernetes
 
 # Mock ML dependencies for testing (lightweight)
 # These provide the interfaces without heavy GPU backends
