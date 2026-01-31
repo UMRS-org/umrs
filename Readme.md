@@ -1,5 +1,7 @@
 # UMRS
 
+[![codecov](https://codecov.io/gh/mnagaso/ai4s-platform/graph/badge.svg?flag=umrs)](https://codecov.io/gh/mnagaso/ai4s-platform)
+
 Config-driven server and client for multimodal ingestion into S3 + embeddings in PostgreSQL/pgvector. See the project overview for architecture, Docker usage, and implementation guide:
 
 - doc: `doc/umrs_overview.md`
