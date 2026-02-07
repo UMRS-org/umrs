@@ -394,6 +394,8 @@ def create_backend_factory(
     port_manager,
     embedding_worker=None,
     s3_client=None,
+    model_store=None,
+    path_validator=None,
 ):
     """
     Create a backend factory function for JobService.
@@ -404,6 +406,8 @@ def create_backend_factory(
         port_manager: Port allocation manager
         embedding_worker: Worker for index jobs (optional)
         s3_client: S3 client (optional)
+        model_store: Model registry store for download jobs (optional)
+        path_validator: Path validator for download jobs (optional)
 
     Returns:
         Factory function: (JobType) -> OrchestratorBackend
@@ -422,6 +426,15 @@ def create_backend_factory(
             s3_client=s3_client,
         )
 
+    model_download_backend = None
+    if model_store and path_validator:
+        from .model_download import ModelDownloadBackend
+
+        model_download_backend = ModelDownloadBackend(
+            model_store=model_store,
+            path_validator=path_validator,
+        )
+
     def factory(job_type: JobType) -> OrchestratorBackend:
         if job_type == JobType.ENDPOINT_PROVISION:
             return endpoint_backend
@@ -429,6 +442,13 @@ def create_backend_factory(
             if index_backend is None:
                 raise RuntimeError("Index build backend not configured")
             return index_backend
+        elif job_type == JobType.MODEL_DOWNLOAD:
+            if model_download_backend is None:
+                raise RuntimeError(
+                    "Model download backend not configured. "
+                    "Provide model_store and path_validator."
+                )
+            return model_download_backend
         else:
             raise ValueError(f"Unsupported job type: {job_type}")
 
@@ -439,6 +459,7 @@ def create_status_checker(
     readiness_poller: "ReadinessPoller",
     registry: "EndpointRegistry",
     embedding_worker=None,
+    include_model_download: bool = True,
 ):
     """
     Create a composite status checker for JobService.
@@ -447,6 +468,7 @@ def create_status_checker(
         readiness_poller: For endpoint provisioning checks
         registry: Endpoint registry
         embedding_worker: For index build checks (optional)
+        include_model_download: Whether to include model download checker
 
     Returns:
         CompositeStatusChecker instance
@@ -464,5 +486,10 @@ def create_status_checker(
         checkers.append(
             IndexBuildStatusChecker(embedding_worker=embedding_worker),
         )
+
+    if include_model_download:
+        from .model_download import ModelDownloadStatusChecker
+
+        checkers.append(ModelDownloadStatusChecker())
 
     return CompositeStatusChecker(checkers)

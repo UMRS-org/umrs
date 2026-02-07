@@ -370,21 +370,21 @@ class TestOrchestratorBackend:
     async def test_check_readiness_success(self, backend, endpoint_info):
         """Test readiness check with successful response."""
         import aiohttp
-        
+
         mock_response = MagicMock()
         mock_response.status = 200
-        
+
         mock_get = AsyncMock()
         mock_get.__aenter__.return_value = mock_response
         mock_get.__aexit__.return_value = None
-        
+
         mock_session_instance = MagicMock()
         mock_session_instance.get.return_value = mock_get
-        
+
         mock_session = MagicMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session_instance)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch.object(aiohttp, 'ClientSession', return_value=mock_session):
             result = await backend.check_readiness(endpoint_info)
             assert result is True
@@ -393,21 +393,21 @@ class TestOrchestratorBackend:
     async def test_check_readiness_failure(self, backend, endpoint_info):
         """Test readiness check with failed response."""
         import aiohttp
-        
+
         mock_response = MagicMock()
         mock_response.status = 503
-        
+
         mock_get = AsyncMock()
         mock_get.__aenter__.return_value = mock_response
         mock_get.__aexit__.return_value = None
-        
+
         mock_session_instance = MagicMock()
         mock_session_instance.get.return_value = mock_get
-        
+
         mock_session = MagicMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session_instance)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch.object(aiohttp, 'ClientSession', return_value=mock_session):
             result = await backend.check_readiness(endpoint_info)
             assert result is False
@@ -416,14 +416,14 @@ class TestOrchestratorBackend:
     async def test_check_readiness_exception(self, backend, endpoint_info):
         """Test readiness check with connection error."""
         import aiohttp
-        
+
         mock_session_instance = MagicMock()
         mock_session_instance.get.side_effect = Exception("Connection refused")
-        
+
         mock_session = MagicMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session_instance)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        
+
         with patch.object(aiohttp, 'ClientSession', return_value=mock_session):
             result = await backend.check_readiness(endpoint_info)
             assert result is False

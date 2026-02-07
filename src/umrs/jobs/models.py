@@ -22,6 +22,7 @@ class JobType(Enum):
     EMBEDDING_BATCH = "embedding_batch"   # Batch embedding computation
     PIPELINE_RUN = "pipeline_run"         # Execute ingestion pipeline
     ENDPOINT_PROVISION = "endpoint_provision"  # Provision Mini-RiVault
+    MODEL_DOWNLOAD = "model_download"     # Download model weights to approved path
     CLEANUP = "cleanup"                   # Delete resources
 
 
@@ -72,6 +73,10 @@ DEFAULT_BACKOFFS: Dict[JobType, Dict[str, Any]] = {
     JobType.PIPELINE_RUN: {
         "delays": [15, 30, 60],     # Medium
         "max_attempts": 4,
+    },
+    JobType.MODEL_DOWNLOAD: {
+        "delays": [60, 120],        # Slow retry for downloads
+        "max_attempts": 2,          # Limited retries (network issues)
     },
     JobType.CLEANUP: {
         "delays": [],
