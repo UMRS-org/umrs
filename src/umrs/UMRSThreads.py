@@ -8,12 +8,8 @@ from datetime import datetime
 import sys
 from diskcache import Cache
 
-class ThreadStatus:
-    RUNNING = "Running"
-    DONE = "Done"
 
-
-class UMRSTasks:
+class UMRSThreads:
     """
     UMRSTasks: A class for managing asynchronous tasks executed in server threads.
 
@@ -88,9 +84,8 @@ class UMRSTasks:
         thread.start()
         self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
         self.thread_list.append(thread)
-
-
-
+        return thread.ident
+        
     def launch_wait_table_modification_on_db(self, path_to_bucket, buckets_cfg, user, data_base, table_name, timeout, control_mq, zmq_sender_id, key):
         from umrs.sql import wait_table_modification_on_db
         from collections import defaultdict
@@ -104,7 +99,8 @@ class UMRSTasks:
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
-
+        return thread.ident
+        
     def launch_check_objects(self, buckets_cfg, key, verbose, log_output) : 
         from server_umrs import check_objects
      
@@ -118,6 +114,7 @@ class UMRSTasks:
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
+        return thread.ident
         
     def launch_update_objects(self, client_id, buckets_cfg, device, embedding_backend, key, log_output) :
         from server_umrs import update_objects
@@ -133,7 +130,9 @@ class UMRSTasks:
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
-   
+        return thread.ident
+        
+
     def launch_recompute_all_objects(self, client_id,  buckets_cfg, device, embedding_backend, key, log_output):
         from server_umrs import recompute_all_objects
   
@@ -149,6 +148,7 @@ class UMRSTasks:
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
+        return thread.ident
         
 
     def update_thread_dict(self, buckets_cfg, keys_per_bucket, key, thread_ident = "self"):
@@ -203,10 +203,12 @@ class UMRSTasks:
     
     def clean_finished_tasks(self):
         from server_umrs import ENABLE_PRETTY_PRINT
+        finished_threads = []
         with self.lock:
             running_threads = []
             for thread in self.thread_list:
                 if not thread.is_alive():
+                    finished_threads.append(thread.ident)
                     thread.join()
                 else:
                     running_threads.append(thread)
@@ -214,11 +216,15 @@ class UMRSTasks:
             # No need to cleanup old entries as we use diskcache to cache them on dsk if necessary
             pretty_print_thread_status(self.thread_dict, running_only=True, print_output=ENABLE_PRETTY_PRINT)
             self.thread_list = running_threads
+            return finished_threads
 
     def waitall(self):
+        finish_threads = []
         for thread in self.thread_list:
+            finish_threads.append(thread.ident)
             thread.join()
             self.thread_list.remove(thread)
+        return finish_threads
 
 
     def filter_thread_status_for_user(self, client_id, key):
