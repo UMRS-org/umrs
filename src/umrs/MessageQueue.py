@@ -334,7 +334,7 @@ class MessageQueue:
             except RuntimeError as e:
                 print(f"Error in sending acknowleding client: {e}")
             # Return client_id along with received file paths so server can enforce identity
-            return "FILE", (client_id, path_list)
+            return TaskCmd.FILE, (client_id, path_list)
         else: # cannot find the client in the client_dictionnary
             try:
                 self.send_string("NO_DATA_QUEUE", zmq_sender_id)
@@ -351,12 +351,13 @@ class MessageQueue:
                 self.send_string("ACKNOWLEDGE", zmq_sender_id)
             except RuntimeError as e:
                 print(f"Error in sending acknowleding client: {e}")
-            return TaskCmd.PROCESS_OBJECTS, objects
+            return TaskCmd.PROCESS_OBJECTS, (client_id, objects)
         else:
             try:
                 self.send_string("NO_DATA_QUEUE", zmq_sender_id)
             except RuntimeError as e:
                 print(f"Error in sending 'no available data queue' to client: {e}")
+        return None
 
     # ------------------------ client methods ------------------------
 
