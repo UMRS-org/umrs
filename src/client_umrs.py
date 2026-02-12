@@ -15,7 +15,7 @@ from collections import defaultdict
 import traceback
 import json as _json
 import time
-from umrs.TaskCmd import TaskCmd
+from umrs.TaskCmdStatus import TaskCmd
 from umrs.BucketsCfg import BucketsCfg, ClientBucketEntry
 
 

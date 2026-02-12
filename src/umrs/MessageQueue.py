@@ -1,7 +1,7 @@
 import os
 import tempfile
 import json                                             
-from umrs.TaskCmd import TaskCmd
+from umrs.TaskCmdStatus import TaskCmd
 try:
     import zmq
 except ImportError as e:
