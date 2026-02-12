@@ -24,8 +24,7 @@ class JobType(Enum):
     ENDPOINT_PROVISION = "endpoint_provision"  # Provision Mini-RiVault
     MODEL_DOWNLOAD = "model_download"     # Download model weights to approved path
     CLEANUP = "cleanup"                   # Delete resources
-    CONTEXT_RETENTION = "context_retention"     # Cleanup expired conversations
-    CONVERSATION_SUMMARIZE = "conversation_summarize"  # Summarize long conversations
+    # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
 class JobStatus(Enum):
@@ -84,14 +83,7 @@ DEFAULT_BACKOFFS: Dict[JobType, Dict[str, Any]] = {
         "delays": [],
         "max_attempts": 1,         # No retry for cleanup
     },
-    JobType.CONTEXT_RETENTION: {
-        "delays": [60, 120],       # Retry after delay
-        "max_attempts": 3,
-    },
-    JobType.CONVERSATION_SUMMARIZE: {
-        "delays": [30, 60, 120],   # Medium retry for LLM calls
-        "max_attempts": 3,
-    },
+    # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE backoffs excluded
 }
 
 
