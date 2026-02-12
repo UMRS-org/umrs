@@ -318,9 +318,12 @@ async def demo_orchestration(config: DemoConfig) -> dict:
             from umrs.orchestrator import get_orchestrator, OrchestratorConfig
 
             orch_config = OrchestratorConfig(
-                partition=config.partition,
-                time_limit=config.time_limit,
-                gpus=config.gpus,
+                model_path=config.model_path,
+                slurm_partition=config.partition,
+                slurm_time=config.time_limit,
+                slurm_gpus=config.gpus,
+                litellm_port=config.litellm_port,
+                litellm_master_key=config.litellm_key,
             )
             orchestrator = get_orchestrator(backend="slurm", config=orch_config)
 

@@ -1,0 +1,211 @@
+# =============================================================================
+# Slurm Development Environment for E2E Demo
+# =============================================================================
+#
+# Creates a real Slurm cluster in Docker for local development/testing.
+# Mini-RiVault (vLLM + LiteLLM) runs OUTSIDE this compose - either on host or
+# managed by the compute node via the job script.
+#
+# Architecture:
+#   ┌─────────────────┐    ┌───────────────────┐
+#   │  slurmctld      │    │  compute-01       │
+#   │  (controller)   │───▶│  (slurmd)         │
+#   │  Port 6817      │    │  SSH: 2222        │
+#   └─────────────────┘    └───────────────────┘
+#           │                       │
+#           └───────┬───────────────┘
+#                   ▼
+#           ┌───────────────┐
+#           │  munge        │ (shared authentication)
+#           └───────────────┘
+#
+# Mini-RiVault runs externally:
+#   - On host machine with GPU
+#   - Or in a separate container with GPU passthrough
+#   - UMRS discovers endpoint via job info files
+#
+# Usage:
+#   # Start Slurm cluster
+#   docker compose -f demos/slurm-dev/docker-compose.yaml up -d
+#
+#   # Check status
+#   docker exec slurmctld sinfo
+#
+#   # Submit a test job
+#   docker exec slurmctld sbatch /etc/slurm/test-job.sh
+#
+#   # Run E2E demo in live mode
+#   python demos/e2e_rivault_slurm_rag.py --live \
+#       --model-path /path/to/model
+#
+#   # Stop
+#   docker compose -f demos/slurm-dev/docker-compose.yaml down
+#
+# =============================================================================
+
+name: slurm-dev
+
+services:
+  # =============================================================================
+  # Slurm Controller (slurmctld)
+  # =============================================================================
+  slurmctld:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurmctld
+    container_name: slurmctld
+    hostname: slurmctld
+    networks:
+      slurm-net:
+        aliases:
+          - slurmctld
+          - slurm-controller
+    ports:
+      - "6817:6817"    # Slurm control daemon
+    volumes:
+      - munge-key:/etc/munge:ro
+      - slurm-spool:/var/spool/slurmctld
+      - job-info:/var/run/rivault
+      - ./slurm.conf:/etc/slurm/slurm.conf:ro
+      - ./mini-rivault-job.sh:/etc/slurm/mini-rivault-job.sh:ro
+    environment:
+      - SLURM_CONF=/etc/slurm/slurm.conf
+    depends_on:
+      munge:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sinfo", "-N"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # =============================================================================
+  # Slurm Compute Node (slurmd)
+  # =============================================================================
+  compute-01:
+    build:
+      context: .
+      dockerfile: Dockerfile.slurmd
+    container_name: compute-01
+    hostname: compute-01
+    networks:
+      slurm-net:
+        aliases:
+          - compute-01
+    ports:
+      - "2222:22"      # SSH for debugging
+      - "11434:11434"  # LiteLLM (if mini-rivault runs in container)
+      - "8000:8000"    # vLLM (if mini-rivault runs in container)
+    volumes:
+      - munge-key:/etc/munge:ro
+      - slurm-spool-d:/var/spool/slurmd
+      - job-info:/var/run/rivault
+      - ./slurm.conf:/etc/slurm/slurm.conf:ro
+      - ./mini-rivault-job.sh:/etc/slurm/mini-rivault-job.sh:ro
+      # Mount model path from host (adjust as needed)
+      - ${MODEL_PATH:-/tmp/models}:/models:ro
+    environment:
+      - SLURM_CONF=/etc/slurm/slurm.conf
+      - SLURMD_OPTIONS=-D --conf-server slurmctld
+    depends_on:
+      munge:
+        condition: service_healthy
+      slurmctld:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "sinfo", "-N"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # =============================================================================
+  # Munge Authentication Service
+  # Shared between controller and compute nodes
+  # =============================================================================
+  munge:
+    build:
+      context: .
+      dockerfile: Dockerfile.munge
+    container_name: munge
+    hostname: munge
+    networks:
+      slurm-net:
+        aliases:
+          - munge
+    volumes:
+      - munge-key:/etc/munge
+      - munge-run:/run/munge
+    healthcheck:
+      test: ["CMD", "munge", "-n"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  # =============================================================================
+  # PostgreSQL with pgvector (for UMRS)
+  # =============================================================================
+  postgres:
+    image: ankane/pgvector:latest
+    container_name: demo-postgres
+    networks:
+      slurm-net:
+        aliases:
+          - postgres
+    ports:
+      - "15432:5432"
+    environment:
+      POSTGRES_USER: umrs
+      POSTGRES_PASSWORD: umrs_dev
+      POSTGRES_DB: umrs_demo
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U umrs"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # =============================================================================
+  # MinIO (S3-compatible storage for UMRS)
+  # =============================================================================
+  minio:
+    image: minio/minio:latest
+    container_name: demo-minio
+    networks:
+      slurm-net:
+        aliases:
+          - minio
+          - s3
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  slurm-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  munge-key:
+  munge-run:
+  slurm-spool:
+  slurm-spool-d:
+  job-info:
+  pg-data:
+  minio-data:

@@ -1,0 +1,6 @@
+# Environment file (contains secrets)
+.env
+
+# Local test data
+*.log
+*.pid

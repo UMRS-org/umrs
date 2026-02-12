@@ -1,0 +1,49 @@
+# =============================================================================
+# Slurm Compute Node (slurmd)
+# =============================================================================
+# Runs the Slurm compute daemon for job execution.
+# When a job is submitted, it runs the mini-rivault-job.sh script.
+#
+# For GPU support, run with:
+#   --gpus all --runtime=nvidia
+# =============================================================================
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Slurm, Python, and dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    slurm-wlm \
+    slurmd \
+    munge \
+    libmunge-dev \
+    python3 \
+    python3-pip \
+    curl \
+    jq \
+    openssh-server \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create necessary directories
+RUN mkdir -p \
+    /var/spool/slurmd \
+    /var/log/slurm \
+    /var/run/rivault \
+    /etc/slurm \
+    /models \
+    && chown -R slurm:slurm /var/spool/slurmd /var/log/slurm
+
+# Configure SSH (for debugging)
+RUN mkdir -p /run/sshd \
+    && echo 'root:slurm' | chpasswd \
+    && sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+
+# Copy entrypoint
+COPY entrypoint-slurmd.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+EXPOSE 22 6818 11434 8000
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["slurmd", "-D", "-vv"]
