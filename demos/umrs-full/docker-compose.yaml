@@ -130,6 +130,9 @@ services:
     volumes:
       - model_cache:/shared/models
       - ../../src:/app/src:ro
+      - ./conf_umrs.json:/root/conf_umrs.json:ro
+      - ./user_files:/root/user_files:ro
+      - ./s3cfg:/root/.s3cfg:ro
     depends_on:
       postgres:
         condition: service_healthy
