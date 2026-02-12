@@ -259,7 +259,7 @@ def recompute_all_objects(active_threads, username, buckets_cfg, device, embeddi
     filter_outcome(active_threads, outcome, buckets_cfg, key)
     # execute callback to update task status to completed
     if on_finish:
-        on_finish()
+        on_finish(TaskStatus.COMPLETED)
 
 
 
@@ -315,11 +315,9 @@ def update_objects(active_threads, username, buckets_cfg, device, embedding_back
     outcome= {"summary": summary, "data": update_dict}
     filter_outcome(active_threads, outcome, buckets_cfg, key)
 
-    print(f"{on_finish=}")
-
     # execute callback to update task status to completed
     if on_finish:
-        on_finish()
+        on_finish(TaskStatus.COMPLETED)
 
 
 
@@ -383,7 +381,7 @@ def check_objects(active_threads, buckets_cfg, key, verbose=False, log_output=Tr
 
     # execute callback to update task status to completed
     if on_finish:
-        on_finish()
+        on_finish(TaskStatus.COMPLETED)
 
 
 def _handle_maintenance_command(active_threads, cmd, client_id, buckets_cfg, device, embedding_backend,
@@ -728,7 +726,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         active_threads.record_status_for_users_by_key(users, key)
         active_threads.remove_from_running_list()
     if on_finish:
-        on_finish()
+        on_finish(TaskStatus.COMPLETED)
 
     print(f"\t--> Processing {nb_objects} file(s) done!")
     with active_threads.lock:
@@ -740,11 +738,11 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
 ##################################################################################
 def make_task_finished_callback(task_manager, task_id):
     """
-    Return a simple callback to update the task status to COMPLETED.
-    Call the returned function when the thread finishes its work.
+    Return a callback function that updates the task status for the given task_id.
+    The returned function accepts a `status` argument when called.
     """
-    def callback():
-        task_manager.tasks_status.update_status(task_id, TaskStatus.COMPLETED)
+    def callback(status):
+        task_manager.tasks_status.update_status(task_id, status)
     return callback
 
 def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file):
@@ -837,14 +835,62 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
         control_mq.close()
         sys.exit(0)
 
-def handle_maintenance_flags(active_threads, args, buckets_cfg, device, embedding_backend):
+def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_backend, configure_file, server_cfg):
     # do in this order
     if args.force_recompute:
-        recompute_all_objects(active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.RECOMPUTE.lower(), log_output=ENABLE_PRETTY_PRINT)
+        recompute_all_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.RECOMPUTE.lower(), log_output=ENABLE_PRETTY_PRINT)
     if args.force_update:
-        update_objects(active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.UPDATE.lower(), log_output=ENABLE_PRETTY_PRINT)
+        update_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.UPDATE.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
     if args.check_objects:
-        check_objects(active_threads, buckets_cfg, TaskCmd.CHECK.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
+        check_objects(task_manager.active_threads, buckets_cfg, TaskCmd.CHECK.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
+    if args.check_incomplete_command:
+        incomplete_commands = task_manager.tasks_status.list_incomplete_tasks(mark_override=True)
+        for command, info in incomplete_commands.items():
+            client_id, cmd, payload = command
+            task_id = int(info["id"])
+            status = info["status"]
+            print(f"==> Recovering {cmd} for {client_id} with status: {status}")
+
+            # create a callback with task_id embedded
+            on_finish = make_task_finished_callback(task_manager, task_id)
+
+            if cmd == TaskCmd.PROCESS_OBJECTS:
+                s3_objects = json.loads(payload)
+                thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects, 
+                                                                             buckets_cfg, device, embedding_backend, 
+                                                                             cmd.lower(),
+                                                                             on_finish=on_finish)
+                task_manager.associate_thread_with_task(thread_ident, task_id, status=TaskStatus.RUNNING)
+            elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK):
+                user_config_map = server_cfg.user_config_map
+                thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg, 
+                                                            device, embedding_backend, configure_file, user_config_map, cmd.lower(),
+                                                            on_finish=on_finish)
+                if thread_ident is None:
+                    task_manager.tasks_status.update_status(task_id, TaskStatus.COMPLETED)
+                else: 
+                    task_manager.associate_thread_with_task(thread_ident, task_id, status=TaskStatus.RUNNING)
+
+            elif cmd == TaskCmd.FILE:
+                user_config_map = server_cfg.user_config_map
+                files = json.loads(payload)
+                for file in files:
+                    if not os.path.exists(file):
+                        print(f"Trying to recover file: {file}, but it no longer exists. Skipping.")
+                        continue
+                    print(f"Recovering file: {file}")
+
+                    ok, uname, dest = _persist_uploaded_user_config(
+                        file, configure_file, user_config_map, expected_username=client_id
+                    )
+                    if ok:
+                        print(f"User config persisted for '{uname}' -> {dest}")
+                    else:
+                        print(f"Note: file '{file}' was not recognized as a valid user config or there was an identity mismatch; left in place.")
+
+                task_manager.tasks_status.update_status(task_id, TaskStatus.COMPLETED)
+            else: 
+                print("\tNothing to do for command of type {cmd}")
 
 def check_umrs_config_directory():
     umrs_config_dir = os.getenv(get_umrs_cfg_env_var_name())
@@ -877,7 +923,7 @@ def main():
     parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
     parser.add_argument('--pretty-print', action='store_true', help='Enable server-side pretty-printed tables and summaries (default: off)')
-
+    parser.add_argument('--check-incomplete-command', action='store_true', help='Force checking for incomplete commands after a crash (default: off)')
     args = parser.parse_args()
     configure_file = args.conf
 
@@ -890,7 +936,7 @@ def main():
     
 
     control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store)
-    handle_maintenance_flags(task_manager.active_threads, args, server_cfg.buckets_cfg, device, embedding_backend)
+    handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
     cfg_summary = pretty_print_cfg(server_cfg, print_output=ENABLE_PRETTY_PRINT)
     task_manager.active_threads.record_status("system", "config", {"summary": cfg_summary})
     server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file)
