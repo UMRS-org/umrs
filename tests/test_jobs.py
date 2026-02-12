@@ -208,6 +208,7 @@ class TestJobTypes:
             "embedding_batch",
             "pipeline_run",
             "endpoint_provision",
+            "model_download",
             "cleanup",
         ]
         actual = [t.value for t in JobType]
