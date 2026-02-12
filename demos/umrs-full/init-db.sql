@@ -27,7 +27,7 @@ CREATE TABLE IF NOT EXISTS embeddings (
 );
 
 -- Create index for similarity search (IVFFlat for larger datasets)
-CREATE INDEX IF NOT EXISTS embeddings_vector_idx ON embeddings 
+CREATE INDEX IF NOT EXISTS embeddings_vector_idx ON embeddings
 USING ivfflat (embedding vector_cosine_ops)
 WITH (lists = 100);
 
@@ -93,7 +93,7 @@ RETURNS TABLE (
 ) AS $$
 BEGIN
     RETURN QUERY
-    SELECT 
+    SELECT
         d.id,
         d.title,
         d.content,

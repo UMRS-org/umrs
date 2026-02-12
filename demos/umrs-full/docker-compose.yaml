@@ -98,28 +98,28 @@ services:
       # ZeroMQ settings
       UMRS_CONTROL_PORT: "5555"
       UMRS_DATA_PORT: "5556"
-      
+
       # S3 settings
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: demo-bucket
-      
+
       # Database settings
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: postgres
       DB_PASSWORD: postgres
       DB_NAME: umrs_demo
-      
+
       # Model settings
       SENTENCE_TRANSFORMERS_HOME: /shared/models
       HF_HOME: /shared/models
-      
+
       # Embedding worker settings
       EMBEDDING_WORKER_HOST: umrs-embed-worker
       EMBEDDING_WORKER_PORT: "6000"
-      
+
       # Demo settings
       PYTHONPATH: /app/src
       PYTHONUNBUFFERED: "1"
@@ -141,7 +141,7 @@ services:
     networks:
       - umrs-net
     healthcheck:
-      test: ["CMD", "python", "-c", "import zmq; c=zmq.Context(); s=c.socket(zmq.REQ); s.connect('tcp://localhost:5555'); s.send_string('ping'); print(s.recv_string()); s.close()"]
+      test: ["CMD", "python", "-c", "import zmq; c=zmq.Context(); s=c.socket(zmq.REQ); s.connect('tcp://localhost:5555'); s.send_string('HAND_CHECK'); print(s.recv_string()); s.close()"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -159,23 +159,23 @@ services:
     environment:
       # Worker settings
       EMBEDDING_WORKER_BIND: tcp://0.0.0.0:6000
-      
+
       # Model settings
       EMBEDDING_MODEL: all-MiniLM-L6-v2
       SENTENCE_TRANSFORMERS_HOME: /shared/models
       HF_HOME: /shared/models
       TRANSFORMERS_OFFLINE: "0"  # Allow download for demo
-      
+
       # RiVault settings (optional)
       RIVAULT_ENDPOINT: ""  # Empty = use local model
-      
+
       # Database settings (for direct storage)
       DB_HOST: postgres
       DB_PORT: "5432"
       DB_USER: postgres
       DB_PASSWORD: postgres
       DB_NAME: umrs_demo
-      
+
       PYTHONPATH: /app/src
       PYTHONUNBUFFERED: "1"
     ports:
@@ -217,7 +217,7 @@ services:
   # Mini-RiVault (Optional - for full LLM integration)
   # =========================================================================
   # Uncomment for full LLM integration testing
-  # 
+  #
   # litellm:
   #   image: ghcr.io/berriai/litellm:main-stable
   #   container_name: umrs-demo-litellm

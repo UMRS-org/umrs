@@ -1,7 +1,7 @@
 {
   "username": "demo_user",
   "fullname": "Demo User",
-  "s3_configuration_file": "/root/.s3cfg",
+  "s3_configuration_file": "/root/.s3cfg_demo_user",
   "experiences": [
     {
       "xp_name": "Demo Experience",

@@ -6,3 +6,4 @@ use_https = False
 check_ssl_certificate = False
 access_key = minioadmin
 secret_key = minioadmin
+alias = myminio
