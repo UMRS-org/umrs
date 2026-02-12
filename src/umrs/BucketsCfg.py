@@ -1,38 +1,22 @@
 from dataclasses import dataclass, field
 from threading import RLock
-<<<<<<< HEAD
 from typing import Any, Dict, Optional, Tuple, Union, TYPE_CHECKING
 from umrs.s3 import count_objects_in_bucket
-from typing import Union
 
 if TYPE_CHECKING:
     from umrs.sql import DataBase
 
-=======
-from typing import Any, Dict, Optional, Tuple, Union
-from umrs.s3 import count_objects_in_bucket
-from typing import Union
-
->>>>>>> 3a30661 (change dictionary store froi client and server to a class for better lisibility)
 @dataclass
 class ServerBucketEntry:
     """
     Represents a single server bucket entry, storing all metadata, connections, and configuration
     for a given user/bucket combination.
-<<<<<<< HEAD
-    Must be keyed but path_to_bucket
-=======
-    Must nut keyed but path_to_bucket
->>>>>>> 3a30661 (change dictionary store froi client and server to a class for better lisibility)
+    Must be keyed by path_to_bucket
     """
     bucket_alias: str
     s3_username: str
     sql_username: str
-<<<<<<< HEAD
     data_base: "DataBase"
-=======
-    data_base: Any  # Could be a database connection object
->>>>>>> 3a30661 (change dictionary store froi client and server to a class for better lisibility)
     db_name: str
     table_name: str
     model: Any  # Reference to a model object
@@ -117,25 +101,19 @@ class BucketsCfg:
             if entry.output_path_to_bucket == output_path:
                 return path, entry
         return None, None
-    
+
     def update_num_objects(self, path_to_bucket: str):
         """Update the num_objects field for a given bucket entry."""
         entry = self.get(path_to_bucket)
         if entry is None:
             raise KeyError(f"No entry found for bucket path: {path_to_bucket}")
 
-<<<<<<< HEAD
         data_base = entry.data_base
         table_name = entry.table_name
-        # num_objects = count_objects_in_bucket(s3_connection, path_to_bucket)  
+        # num_objects = count_objects_in_bucket(s3_connection, path_to_bucket)
         num_objects = data_base.count_s3_objects(table_name)
-=======
-        s3_connection = entry.s3_connection
-        # Replace with your actual function to count objects
-        num_objects = count_objects_in_bucket(s3_connection, path_to_bucket)  
->>>>>>> 3a30661 (change dictionary store froi client and server to a class for better lisibility)
         entry.num_objects = num_objects
-    
+
     def build_dict_for_user(self, s3_username: str) -> dict[str, dict[str, Any]]:
         """
         Builds a dictionary for all entries matching the given s3_username.
@@ -148,56 +126,46 @@ class BucketsCfg:
         for path, entry in self._store.items():
             if entry.s3_username == s3_username:
                 # Convert dataclass to dictionary
-                result[path] = {field.name: getattr(entry, field.name) 
+                result[path] = {field.name: getattr(entry, field.name)
                                 for field in entry.__dataclass_fields__.values()}
         return result
 
-<<<<<<< HEAD
     def replace_cfg(self, other: "BucketsCfg"):
-        """Replace current store with the contents of another BucketStore."""
+        """Replace current store with the contents of another BucketsCfg."""
         if not isinstance(other, BucketsCfg):
-            raise TypeError("other must be a BucketCfg")
-        
+            raise TypeError("other must be a BucketsCfg")
+
         if type(self) is not type(other):
             raise TypeError(
                 f"Cannot replace {type(self).__name__} "
                 f"with {type(other).__name__}"
             )
-=======
-    def replace_cfg(self, other: "BucketStore"):
-        """Replace current store with the contents of another BucketStore."""
-        if not isinstance(other, BucketStore):
-            raise TypeError("other must be a BucketStore")
->>>>>>> 3a30661 (change dictionary store froi client and server to a class for better lisibility)
         self._store = other._store.copy()
 
     def items(self):
         """Allow iteration like a dict: for path, entry in bucket_cfg.items()"""
         return self._store.items()
-    
+
     def values(self):
         """Allow iteration over entries only."""
         return self._store.values()
-    
+
     def keys(self):
         """Allow iteration over keys only."""
         return self._store.keys()
-    
+
     def clear(self):
         """Remove all entries from the store."""
         self._store.clear()
-<<<<<<< HEAD
- 
-=======
-    
-# def store_db_model(db_model_store, path_to_bucket, output_path_to_bucket, bucket_alias, 
+
+# def store_db_model(db_model_store, path_to_bucket, output_path_to_bucket, bucket_alias,
 #                    s3_username, data_base, db_name, table_name, sql_username, model,
 #                    store_embeddings_flag, modality_name, s3_connection, metadata, xp_name,
 #                    num_objects, reentrant_lock):
 #     """Stores data base and model for a given (user, bucket_alias)."""
 #     # if user not in db_model_store:
 #     #     storage[user] = {}  # Initialize user entry
-    
+
 #     db_model_store[path_to_bucket] = {
 #                                         "bucket_alias": bucket_alias,
 #                                         "s3_username": s3_username,
@@ -230,4 +198,3 @@ class BucketsCfg:
 #         if entry.get("output_path_to_bucket") == output_path_to_bucket:
 #             return path_to_bucket, entry
 #     return None, None
->>>>>>> 3a30661 (change dictionary store froi client and server to a class for better lisibility)

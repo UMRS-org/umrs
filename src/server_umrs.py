@@ -43,7 +43,7 @@ from typing import Literal
 @dataclass
 class ServerCfg:
     """
-    All inforations realted to server configuration
+    All information related to server configuration
     """
     user_config_map: dict = field(default_factory=dict)
     buckets_cfg: "BucketsCfg" = field(default_factory=lambda: BucketsCfg())
@@ -151,7 +151,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
                 assert modality["model"]["return_type"] is not None, f"return_type must be set in 'model' for modality '{modality}' of {fullname} ({username})"
                 output_path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
                 bucket_list.append(output_path_to_bucket)
-                    
+
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
     s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
@@ -162,10 +162,10 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
 def configure_user(user_cfg, server_cfg: ServerCfg):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
-   
+
     server_cfg.user_config_map[username] = user_cfg['config_file_path']
     buckets_cfg = server_cfg.buckets_cfg
-    
+
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
@@ -195,7 +195,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             if model.return_type == "file":
                 assert need_output_bucket
                 output_path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location, output=True)
-            else: 
+            else:
                 output_path_to_bucket = None
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
@@ -203,8 +203,8 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             num_objects = data_base.count_s3_objects(table_name)
             # in case of race condition. In practice we certainly do not want several procesing on the same bucket happening in parallel
             rlock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
-            bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name, 
-                                       model, store_embeddings_flag, modality_name, s3_connection, metadata, 
+            bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name,
+                                       model, store_embeddings_flag, modality_name, s3_connection, metadata,
                                        xp_name, num_objects, output_path_to_bucket, rlock)
             buckets_cfg.store(path_to_bucket, bucket_entry)
             print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
@@ -253,7 +253,7 @@ def recompute_all_objects(active_tasks, username, buckets_cfg, device, embedding
         active_tasks.update_status_to_done()
         users = {entry.s3_username for entry in buckets_cfg.values()}
         active_tasks.record_status_for_users_by_key(users, key)
-        
+
     outcome = {"summary": summary, "data": recompute_dict}
     filter_outcome(active_tasks, outcome, buckets_cfg, key)
 
@@ -366,9 +366,9 @@ def check_objects(active_tasks, buckets_cfg, key, verbose=False, log_output=True
 
 def _handle_maintenance_command(active_tasks, cmd, client_id, buckets_cfg, device, embedding_backend,
                                 configure_file, user_config_map, key):
-    
+
     # print(f"handle {cmd=} {client_id=}")
-    
+
     if cmd == TaskCmd.RECOMPUTE:
         active_tasks.launch_recompute_all_objects(client_id, buckets_cfg, device, embedding_backend, key, log_output=ENABLE_PRETTY_PRINT)
     elif cmd == TaskCmd.UPDATE:
@@ -381,14 +381,14 @@ def _handle_maintenance_command(active_tasks, cmd, client_id, buckets_cfg, devic
     else:
         print(f"====> Error: unknown command '{cmd}' returned by maintenance handler")
         return
-   
-    
+
+
 
 def filter_outcome(active_tasks, outcome, buckets_cfg, key):
-    # For each user in the configuration, store its relevant data 
+    # For each user in the configuration, store its relevant data
     # to be later visible via STATUS
     users = {entry.s3_username for entry in buckets_cfg.values()}
-    for user in users: 
+    for user in users:
         filtered_outcome = _filter_outcome_for_client(key, outcome, user, buckets_cfg)
         active_tasks.record_status(user, key, filtered_outcome)
 
@@ -407,7 +407,7 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
     For reload: build a per-user configuration summary from the current buckets_cfg.
     """
 
-    
+
     try:
         if cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
@@ -498,7 +498,7 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
         print("\n######################\nReloading configuration...\n######################\n")
     try:
         new_admin_s3_cfg, new_users, _ = load_server_cfg_file(configure_file)
-    
+
         for entry in buckets_cfg.values():
             try:
                 conn = entry.s3_connection
@@ -513,7 +513,7 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
         new_server_cfg = ServerCfg()
         for u in new_users:
             configure_user(u, new_server_cfg)
-     
+
         buckets_cfg.replace_cfg(new_server_cfg.buckets_cfg)
         user_config_map.clear()
         user_config_map.update(new_server_cfg.user_config_map)
@@ -677,17 +677,12 @@ def process_s3_objects(active_tasks, s3_objects, buckets_cfg, device, embedding_
 
     for path_to_bucket in keys_per_bucket.keys():
         selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "s3_connection", "output_path_to_bucket", "reentrant_lock"]
-<<<<<<< HEAD
         user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket, filter=selected_fields)
-=======
-        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket,filter=selected_fields)
->>>>>>> 3a30661 (change dictionary store froi client and server to a class for better lisibility)
-        
+
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
 
         with reentrant_lock:
-<<<<<<< HEAD
             if store_embeddings_flag:
                 print(f"\t--> Storing to data base in {table_name}")
                 embedding_backend.compute_and_store(
@@ -704,24 +699,6 @@ def process_s3_objects(active_tasks, s3_objects, buckets_cfg, device, embedding_
             else:
                 print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
             buckets_cfg.update_num_objects(path_to_bucket)
-=======
-          buckets_cfg.update_num_objects(path_to_bucket)
-          if store_embeddings_flag:
-              print(f"\t--> Storing to data base in {table_name}")
-              embedding_backend.compute_and_store(
-                  path_to_bucket,
-                  s3_keys,
-                  data_base,
-                  table_name,
-                  model,
-                  device,
-                  modality_name,
-                  s3_connection,
-                  output_bucket
-              )
-          else:
-              print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
->>>>>>> 3a30661 (change dictionary store froi client and server to a class for better lisibility)
 
     if update_when_done:
         active_tasks.update_status_to_done()
@@ -748,7 +725,7 @@ def server_event_loop(active_tasks, control_mq, server_cfg, device, embedding_ba
             if not result:
                 continue
             cmd, payload = result
-    
+
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 active_tasks.launch_s3_tasks(payload, buckets_cfg, device, embedding_backend, cmd.lower())
@@ -766,17 +743,17 @@ def server_event_loop(active_tasks, control_mq, server_cfg, device, embedding_ba
                     print("Warning: FILE command received with no payload")
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
                 client_id = payload
-                _handle_maintenance_command(active_tasks, cmd, client_id, buckets_cfg, 
+                _handle_maintenance_command(active_tasks, cmd, client_id, buckets_cfg,
                                             device, embedding_backend, configure_file, user_config_map, cmd.lower())
             elif cmd == TaskCmd.WAIT_OUTPUT : # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
                 client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
 
                 path_to_bucket, entry = buckets_cfg.find_by_output_path(output_path_to_bucket)
-                if entry is None: 
+                if entry is None:
                     msg = "NO_SUCH_BUCKET"
                     control_mq.send_string(msg, zmq_sender_id)
                 else:
-                    active_tasks.launch_wait_table_modification_on_db(path_to_bucket, buckets_cfg, client_id, 
+                    active_tasks.launch_wait_table_modification_on_db(path_to_bucket, buckets_cfg, client_id,
                                                                       entry.data_base, entry.table_name,
                                                                      timeout, control_mq, zmq_sender_id, cmd.lower())
             else:
@@ -845,7 +822,7 @@ def main():
 
     global ENABLE_PRETTY_PRINT
     ENABLE_PRETTY_PRINT = args.pretty_print
-        
+
     status_store = diskcache.Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
     thread_dict = diskcache.Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
     active_tasks = UMRSTasks(status_store, thread_dict)
