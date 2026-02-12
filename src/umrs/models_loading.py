@@ -18,7 +18,8 @@ class EmbeddingModel:
         self.modality = modality
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.tokenizer = tokenizer
-        self.model.to(self.device)
+        if self.model:
+            self.model.to(self.device)
         self.compute_embeddings = compute_embeddings.__get__(self)  # Bind the method to the instance
         if spacy_model:
             self.nlp = spacy.load(spacy_model, disable=["ner", "tagger", "parser"])
@@ -67,6 +68,37 @@ def load_model(model_cfg, modality):
         model = load_masked_autoencoder(cfg_file, checkpoint_path)
         compute_embeddings_func = compute_embeddings_masked_autoencoder
         input_type = "raw_image"
+    elif model_type.startswith("openai://"):
+        # Import OpenAI-compatible embedding utilities and vLLM liveness / capability checks
+        from .models.openai_api import make_openai_compute_embeddings, is_server_alive, get_max_tokens_from_vllm
+
+        # Import HuggingFace tokenizer to locally mirror the server-side tokenization logic
+        from transformers import AutoTokenizer
+
+        # Extract the actual server URL from the openai:// pseudo-scheme
+        model_url = model_type[len("openai://"):]
+
+        # Query the vLLM server to discover the maximum supported token length for this model
+        max_tokens = get_max_tokens_from_vllm(model_url, model_name)
+
+        # Load the tokenizer corresponding to the embedding model to perform local chunking when necessary
+        tokenizer = AutoTokenizer.from_pretrained("intfloat/e5-base-v2")
+
+        # Fail fast if the OpenAI-compatible (vLLM) server is not reachable
+        if not is_server_alive(model_url):
+            raise RuntimeError(
+                f"Cannot reach OpenAI-compatible server at {model_url}.\n"
+                "Check that it is running and reachable from UMRS server."
+            )
+
+        # No local model object is instantiated since inference is delegated to the remote server
+        model = None
+
+        # Build a closure that captures (url, model_name) and exposes a uniform compute_embeddings API
+        compute_embeddings_func = make_openai_compute_embeddings(model_url, model_name)
+
+        # Declare that this embedding model expects raw text as input
+        input_type = "text"
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 

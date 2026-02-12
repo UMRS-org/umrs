@@ -16,22 +16,48 @@ import traceback
 import json as _json
 import time
 from umrs.TaskCmd import TaskCmd
+from umrs.BucketsCfg import BucketsCfg, ClientBucketEntry
 
 
 STATUS_CHOICES = TaskCmd.status_cmd()
 
 
 # ======================= Helper / API abstractions (new) =======================
+def configure_buckets(user_cfg, buckets_cfg):
+    username = user_cfg["username"]
+    s3_configuration_file = user_cfg["s3_configuration_file"]
+    for xp in user_cfg["experiences"]:
+        sql_username  = xp["sql_username"]
+        xp_name = xp["xp_name"]
+        db_name = create_db_name(sql_username, xp_name)
+        for modality in xp["modalities"]:
+            modality_name = modality["modality_name"]
+            check_or_quit(modality_name)
+            bucket_alias =  modality["s3"]["bucket_alias"]
+            path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
+            if modality["s3"].get("need_output_bucket", False):
+                output_path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
+            else:
+                output_path_to_bucket = None
+            # print(bucket_alias, username, xp_name, modality_name)
+            metadata = metadata_dict(modality["sql"])
+            entry = ClientBucketEntry(   
+                path_to_bucket,
+                username,
+                xp_name,
+                modality_name,
+                s3_configuration_file,
+                metadata,
+                sql_username,
+                db_name,
+                output_path_to_bucket
+            )
+            buckets_cfg.store(bucket_alias, entry)
 
-def build_bucket_store(user_cfg):
-    bucket_store = defaultdict(dict)
-    configure_bucket_store(user_cfg, bucket_store)
-    return bucket_store
-
-def find_bucket_entry(bucket_store, bucket_alias):
-    if not bucket_store[bucket_alias]:
-        raise ValueError(f"Unknown bucket alias '{bucket_alias}' in configuration")
-    return bucket_store[bucket_alias]
+def build_buckets_cfg(user_cfg):
+    buckets_cfg = BucketsCfg()
+    configure_buckets(user_cfg, buckets_cfg)
+    return buckets_cfg
 
 def api_json(status="ok", output_format='json', **payload):
     out = {"status": status}
@@ -114,14 +140,14 @@ def action_ping(control_mq, output_format):
     ready = control_mq.is_server_ready(timeout_ms=2000)
     return api_json(server_ready=ready, output_format=output_format)
 
-def action_list_buckets(bucket_store, username, output_format):
+def action_list_buckets(bucket_cfg, username, output_format):
     buckets = []
-    for alias, entry in bucket_store.items():
-        if entry and entry['username'] == username:
+    for alias, entry in bucket_cfg.items():
+        if entry.username == username :
             buckets.append({
                 'bucket_alias': alias,
-                'modality': entry['modality_name'],
-                'path_to_bucket': entry['path_to_bucket']
+                'modality': entry.modality_name,
+                'path_to_bucket': entry.path_to_bucket
             })
     return api_json(buckets=buckets, output_format=output_format)
 
@@ -151,42 +177,6 @@ def send_files_to_server(username, file_path_list, control_mq, data_mq):
         print(f"Error sending file(s) {file_path_list} to server")
 
 
-def store_bucket(bucket_store, bucket_alias, entry):
-    if bucket_store[bucket_alias]:
-        sys.exit(f"Error: duplicate bucket_alias {bucket_alias}")
-    bucket_store[bucket_alias] = entry
-
-
-def configure_bucket_store(user_cfg, bucket_store):
-    username = user_cfg["username"]
-    s3_configuration_file = user_cfg["s3_configuration_file"]
-    for xp in user_cfg["experiences"]:
-        sql_username  = xp["sql_username"]
-        xp_name = xp["xp_name"]
-        db_name = create_db_name(sql_username, xp_name)
-        for modality in xp["modalities"]:
-            modality_name = modality["modality_name"]
-            check_or_quit(modality_name)
-            bucket_alias =  modality["s3"]["bucket_alias"]
-            path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
-            if modality["s3"].get("need_output_bucket", False):
-                output_path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
-            else:
-                output_path_to_bucket = None
-            # print(bucket_alias, username, xp_name, modality_name)
-            metadata = metadata_dict(modality["sql"])
-            entry = {
-                "path_to_bucket": path_to_bucket,
-                "output_path_to_bucket": output_path_to_bucket,
-                "username": username,
-                "xp_name": xp_name,
-                "modality_name": modality_name,
-                "s3_configuration_file": s3_configuration_file,
-                "metadata": metadata,
-                "sql_username": sql_username,
-                "db_name": db_name,
-            }
-            store_bucket(bucket_store, bucket_alias, entry)
 
 
 
@@ -301,10 +291,10 @@ if requires_config and not os.path.exists(configure_file):
     sys.exit(f"Configuration file \"{configure_file}\" not found.")
 
 user = None
-bucket_store = None
+buckets_cfg = None
 if requires_config:
     user = load_client_cfg_file(configure_file)
-    bucket_store = build_bucket_store(user)
+    buckets_cfg = build_buckets_cfg(user)
     if args.verbose:
         print("Configuration loaded successfully.")
 
@@ -323,7 +313,7 @@ try:
             print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
             control_mq.close()
             sys.exit(1)
-        print(action_list_buckets(bucket_store, effective_username, args.output))
+        print(action_list_buckets(buckets_cfg, effective_username, args.output))
         control_mq.close()
         sys.exit(0)
     if args.action == 'status':
@@ -392,18 +382,18 @@ try:
     # For upload_* actions we need configuration + bucket alias
     bucket_alias_arg = getattr(args, 'bucket_alias')
     bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
-    entry = find_bucket_entry(bucket_store, bucket_alias)
+    
+    selected_fields = ["username", "xp_name", "modality_name", "s3_configuration_file", "metadata"]
     if args.action == "download_results":
-        path_to_bucket        = entry['output_path_to_bucket']
+        selected_fields.append("output_path_to_bucket")
     else : 
-        path_to_bucket        = entry['path_to_bucket']
-    # If username not provided as arg, default to config
+        selected_fields.append("path_to_bucket")
+    username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = buckets_cfg.get(bucket_alias, filter=selected_fields)
+
+    # If username is provided as arg change it otherwise stay default
     username_arg = getattr(args, 'username', None)
-    username              = username_arg or entry['username']
-    xp_name               = entry['xp_name']
-    modality              = entry['modality_name']
-    s3_configuration_file = entry['s3_configuration_file']
-    metadata              = entry['metadata']
+    username = username_arg or username
+
     data_mq = control_mq.get_data_queue(username)
 except Exception as e:
     print(api_json(status="error", message=str(e), output_format=args.output))
