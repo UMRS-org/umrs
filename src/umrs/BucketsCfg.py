@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 from typing import Any, Dict, Optional, Tuple, Union, TYPE_CHECKING
 from umrs.s3 import count_objects_in_bucket
+from typing import Union
 
 if TYPE_CHECKING:
     from umrs.sql import DataBase
@@ -101,7 +102,7 @@ class BucketsCfg:
             if entry.output_path_to_bucket == output_path:
                 return path, entry
         return None, None
-
+    
     def update_num_objects(self, path_to_bucket: str):
         """Update the num_objects field for a given bucket entry."""
         entry = self.get(path_to_bucket)
@@ -110,10 +111,10 @@ class BucketsCfg:
 
         data_base = entry.data_base
         table_name = entry.table_name
-        # num_objects = count_objects_in_bucket(s3_connection, path_to_bucket)
+        # num_objects = count_objects_in_bucket(s3_connection, path_to_bucket)  
         num_objects = data_base.count_s3_objects(table_name)
         entry.num_objects = num_objects
-
+    
     def build_dict_for_user(self, s3_username: str) -> dict[str, dict[str, Any]]:
         """
         Builds a dictionary for all entries matching the given s3_username.
@@ -126,15 +127,15 @@ class BucketsCfg:
         for path, entry in self._store.items():
             if entry.s3_username == s3_username:
                 # Convert dataclass to dictionary
-                result[path] = {field.name: getattr(entry, field.name)
+                result[path] = {field.name: getattr(entry, field.name) 
                                 for field in entry.__dataclass_fields__.values()}
         return result
 
     def replace_cfg(self, other: "BucketsCfg"):
-        """Replace current store with the contents of another BucketsCfg."""
+        """Replace current store with the contents of another BucketStore."""
         if not isinstance(other, BucketsCfg):
-            raise TypeError("other must be a BucketsCfg")
-
+            raise TypeError("other must be a BucketCfg")
+        
         if type(self) is not type(other):
             raise TypeError(
                 f"Cannot replace {type(self).__name__} "
@@ -145,56 +146,16 @@ class BucketsCfg:
     def items(self):
         """Allow iteration like a dict: for path, entry in bucket_cfg.items()"""
         return self._store.items()
-
+    
     def values(self):
         """Allow iteration over entries only."""
         return self._store.values()
-
+    
     def keys(self):
         """Allow iteration over keys only."""
         return self._store.keys()
-
+    
     def clear(self):
         """Remove all entries from the store."""
         self._store.clear()
-
-# def store_db_model(db_model_store, path_to_bucket, output_path_to_bucket, bucket_alias,
-#                    s3_username, data_base, db_name, table_name, sql_username, model,
-#                    store_embeddings_flag, modality_name, s3_connection, metadata, xp_name,
-#                    num_objects, reentrant_lock):
-#     """Stores data base and model for a given (user, bucket_alias)."""
-#     # if user not in db_model_store:
-#     #     storage[user] = {}  # Initialize user entry
-
-#     db_model_store[path_to_bucket] = {
-#                                         "bucket_alias": bucket_alias,
-#                                         "s3_username": s3_username,
-#                                         "sql_username": sql_username,
-#                                         "data_base": data_base,
-#                                         "db_name": db_name,
-#                                         "table_name": table_name,
-#                                         "model": model,
-#                                         "store_embeddings_flag": store_embeddings_flag,
-#                                         "modality_name": modality_name,
-#                                         "s3_connection": s3_connection,
-#                                         "metadata": metadata,
-#                                         "xp_name": xp_name,
-#                                         "output_path_to_bucket": output_path_to_bucket,
-#                                         "num_objects": num_objects,
-#                                         "reentrant_lock": reentrant_lock,
-#                                         }
-
-
-# def query_db_model(db_model_store, path_to_bucket):
-#     """Retrieves database and model for a given (user, bucket_alias)."""
-#     entry = db_model_store.get(path_to_bucket, None)
-#     if not entry:
-#         return None, None, None, None, None, None, None, None, None, None
-#     else:
-#         return entry["s3_username"], entry["data_base"], entry["table_name"], entry["model"], entry["store_embeddings_flag"], entry["modality_name"], entry["s3_connection"], entry['db_name'], entry["output_path_to_bucket"], entry["reentrant_lock"]
-
-# def find_entry_by_output_bucket(db_model_store, output_path_to_bucket):
-#     for path_to_bucket, entry in db_model_store.items():
-#         if entry.get("output_path_to_bucket") == output_path_to_bucket:
-#             return path_to_bucket, entry
-#     return None, None
+ 
