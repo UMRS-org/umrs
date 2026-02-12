@@ -6,6 +6,7 @@ from psycopg2 import sql
 from psycopg2 import pool as pg_pool
 from datetime import datetime
 from umrs.BucketsCfg import BucketsCfg
+from umrs.TaskCmdStatus import TaskStatus
 
 class DataBase:
     def __init__(self, db_pool, db_name, username):
@@ -165,7 +166,7 @@ def wait_table_modification_on_db(active_threads, user, key, data_base, table_na
 
     # execute callback to update task status to completed
     if on_finish:
-        on_finish()
+        on_finish(TaskStatus.COMPLETED)
 
     with active_threads.lock:
         pretty_print_thread_status(active_threads.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)

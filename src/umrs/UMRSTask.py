@@ -33,6 +33,59 @@ class UMRSTask:
             )
             """)
 
+    def list_incomplete_tasks(self, mark_override=False):
+        """
+        List unique tasks that are not completed, deduplicated by (client_id, cmd, payload).
+
+        Rules:
+        - Tasks are ordered by submitted_at descending (newest first).
+        - For each unique task, only the latest status is considered.
+        - If mark_override=True:
+            * Earlier incomplete tasks that were later not completed are marked as OVERRIDDEN.
+            * Completed tasks remain as COMPLETED.
+        
+        Returns:
+        dict with key = (client_id, cmd, payload) and value = status (or task dict)
+        """
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
+        rows = cursor.fetchall()
+
+        seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
+        
+        for row in rows:
+            task_id, client_id, cmd, payload, status, submitted_at = row
+            key = (client_id, cmd, payload)
+
+            # If task is not yet seen, store it
+            if key not in seen_tasks:
+                seen_tasks[key] = {
+                    "id": task_id,
+                    "status": status,
+                    "submitted_at": submitted_at
+                }
+            else:
+                # Task already seen
+                if mark_override:
+                    # Only consider overriding earlier incomplete tasks
+                    current_status = seen_tasks[key]["status"]
+                    if current_status == TaskStatus.COMPLETED and status != TaskStatus.COMPLETED:
+                        # Mark older incomplete task as OVERRIDDEN
+                        with self.conn:
+                            self.conn.execute(
+                                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                                (TaskStatus.OVERRIDDEN, datetime.utcnow().isoformat(), task_id)
+                            )
+    
+
+        # Return dict of unique tasks not completed
+        result = {
+            key: {"id": info["id"], "status": info["status"]}
+            for key, info in seen_tasks.items()
+            if info["status"] != TaskStatus.COMPLETED
+        }
+        return result
+
     def mark_running_tasks_aborted(self):
         """Set all tasks with status 'Running' to 'Aborted' (for restart/recovery)."""
         now = datetime.utcnow().isoformat()
