@@ -239,8 +239,8 @@ def count_objects_in_bucket(s3, bucket_name, verbose=False):
         return total_objects
 
     except ClientError as e:
-        print(f"Error accessing bucket '{bucket_name}': {e}")
-        return None
+        sys.exit(f"Error accessing bucket '{bucket_name}': {e}, while counting number of objects")
+
     
 def list_s3_bucket(s3, bucket_name, prefix=""):
     """

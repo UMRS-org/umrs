@@ -5,7 +5,7 @@ import psycopg2
 from psycopg2 import sql
 from psycopg2 import pool as pg_pool
 from datetime import datetime
-from umrs.db_store import query_db_model
+from umrs.BucketsCfg import BucketsCfg
 
 class DataBase:
     def __init__(self, db_pool, db_name, username):
@@ -103,6 +103,39 @@ class DataBase:
         finally:
            
             self.db_pool.putconn(conn)
+            
+    def count_s3_objects(self, table_name: str) -> int:
+        """
+        Count the number of unique S3 objects stored in the given table.
+
+        Assumes the table contains a TEXT column named 's3_object'.
+
+        Args:
+            table_name (str): Name of the table to query.
+
+        Returns:
+            int: Number of distinct s3_object values.
+        """
+        # 1️⃣ Vérifications de cohérence côté méta-modèle
+        if not self.has_column(table_name, "s3_object"):
+            raise ValueError(
+                f"Table '{table_name}' has no 's3_object' column."
+            )
+
+        conn = self.db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT COUNT(DISTINCT s3_object)
+                    FROM {table_name}
+                    WHERE s3_object IS NOT NULL;
+                    """
+                )
+                return cur.fetchone()[0]
+
+        finally:
+            self.db_pool.putconn(conn)
 
 def wait_table_modification_on_db(active_tasks, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id):
     from server_umrs import ENABLE_PRETTY_PRINT
@@ -133,7 +166,7 @@ def wait_table_modification_on_db(active_tasks, user, key, data_base, table_name
         pretty_print_thread_status(active_tasks.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
-    
+
 
 
 def create_db_name(sql_username, xp_name):
@@ -719,8 +752,10 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
                 print(f"Warning: failed to close cursor: {e}")
         db_pool.putconn(conn)
 
-def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, db_model_store):
-    _username, data_base, table_name, _model, _store_embeddings_flag, _modality_name, _s3_connection, _, _, _ = query_db_model(db_model_store, path_to_bucket)
+def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, buckets_cfg: BucketsCfg):
+    
+    selected_fields = ["data_base", "table_name"]
+    data_base, table_name  = buckets_cfg.get(path_to_bucket, filter=selected_fields)
     status = []
     for i, s3_object in enumerate(s3_objects):
         _, s3_key = s3_object.replace("s3://", "").split("/", 1)
