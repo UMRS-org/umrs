@@ -137,7 +137,7 @@ class DataBase:
         finally:
             self.db_pool.putconn(conn)
 
-def wait_table_modification_on_db(active_tasks, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id):
+def wait_table_modification_on_db(active_threads, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id, on_finish=None):
     from server_umrs import ENABLE_PRETTY_PRINT
     from umrs.pretty_print import pretty_print_thread_status
 
@@ -158,12 +158,17 @@ def wait_table_modification_on_db(active_tasks, user, key, data_base, table_name
     
     control_mq.send_string(msg, zmq_sender_id)
 
-    active_tasks.update_status_to_done()
+    active_threads.update_status_to_done()
     # print(f"wait is done for {user=}")
-    active_tasks.record_status_for_users_by_key([user], key)
+    active_threads.record_status_for_users_by_key([user], key)
+    active_threads.remove_from_running_list()        
 
-    with active_tasks.lock:
-        pretty_print_thread_status(active_tasks.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
+    # execute callback to update task status to completed
+    if on_finish:
+        on_finish()
+
+    with active_threads.lock:
+        pretty_print_thread_status(active_threads.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
 
