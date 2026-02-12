@@ -918,6 +918,10 @@ def main():
         help="MinIO S3 endpoint URL"
     )
     parser.add_argument(
+        "--db-port", type=int, default=None,
+        help="PostgreSQL port"
+    )
+    parser.add_argument(
         "--query", default="How does UMRS handle file transfer?",
         help="Query for RAG demo"
     )
@@ -932,6 +936,8 @@ def main():
         config.control_port = args.control_port
     if args.s3_endpoint:
         config.s3_endpoint = args.s3_endpoint
+    if args.db_port:
+        config.db_port = args.db_port
     
     asyncio.run(run_demo(config))
 

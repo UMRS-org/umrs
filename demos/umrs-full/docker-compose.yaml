@@ -18,8 +18,6 @@
 #     # Clean up
 #     docker compose down -v
 
-version: "3.8"
-
 services:
   # =========================================================================
   # Object Storage (MinIO)
@@ -32,8 +30,8 @@ services:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
-      - "9000:9000"   # S3 API
-      - "9001:9001"   # Web console
+      - "19000:9000"   # S3 API (mapped to 19000 to avoid conflicts)
+      - "19001:9001"   # Web console (mapped to 19001)
     volumes:
       - minio_data:/data
     healthcheck:
@@ -75,7 +73,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: umrs_demo
     ports:
-      - "5432:5432"
+      - "15432:5432"   # Mapped to 15432 to avoid conflicts
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./init-db.sql:/docker-entrypoint-initdb.d/init-db.sql:ro
@@ -95,7 +93,7 @@ services:
       context: ../../
       dockerfile: docker/Dockerfile
     container_name: umrs-demo-server
-    command: python -m umrs.server_umrs
+    command: python -m server_umrs
     environment:
       # ZeroMQ settings
       UMRS_CONTROL_PORT: "5555"
@@ -126,9 +124,9 @@ services:
       PYTHONPATH: /app/src
       PYTHONUNBUFFERED: "1"
     ports:
-      - "8001:8000"   # HTTP API
-      - "5555:5555"   # ZeroMQ control channel
-      - "5556:5556"   # ZeroMQ data channel
+      - "18001:8000"   # HTTP API (mapped to 18001)
+      - "15555:5555"   # ZeroMQ control channel
+      - "15556:5556"   # ZeroMQ data channel
     volumes:
       - model_cache:/shared/models
       - ../../src:/app/src:ro
@@ -154,7 +152,7 @@ services:
       context: ../../
       dockerfile: docker/Dockerfile
     container_name: umrs-demo-embed-worker
-    command: python -m umrs.embedding_worker
+    command: python -m embedding_worker
     environment:
       # Worker settings
       EMBEDDING_WORKER_BIND: tcp://0.0.0.0:6000
@@ -178,7 +176,7 @@ services:
       PYTHONPATH: /app/src
       PYTHONUNBUFFERED: "1"
     ports:
-      - "6000:6000"
+      - "16000:6000"   # Embedding worker port (mapped to 16000)
     volumes:
       - model_cache:/shared/models
       - ../../src:/app/src:ro
