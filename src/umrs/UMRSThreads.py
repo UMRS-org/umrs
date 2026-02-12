@@ -119,11 +119,11 @@ class UMRSThreads:
         self.thread_list.append(thread)
         return thread.ident
         
-    def launch_update_objects(self, client_id, buckets_cfg, device, embedding_backend, key, log_output, on_finish=None) :
+    def launch_update_objects(self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, on_finish=None) :
         from server_umrs import update_objects
   
 
-        thread = threading.Thread(target=update_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, log_output, on_finish))
+        thread = threading.Thread(target=update_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, on_finish))
         thread.start()
         
         keys_per_bucket = defaultdict(list)

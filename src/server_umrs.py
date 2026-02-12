@@ -394,7 +394,7 @@ def _handle_maintenance_command(active_threads, cmd, client_id, buckets_cfg, dev
     if cmd == TaskCmd.RECOMPUTE:
         return active_threads.launch_recompute_all_objects(client_id, buckets_cfg, device, embedding_backend, key, log_output=ENABLE_PRETTY_PRINT, on_finish=on_finish)
     elif cmd == TaskCmd.UPDATE:
-        return active_threads.launch_update_objects(client_id, buckets_cfg, device, embedding_backend, key, log_output=ENABLE_PRETTY_PRINT, on_finish=on_finish)
+        return active_threads.launch_update_objects(client_id, buckets_cfg, device, embedding_backend, key, verbose=False, log_output=ENABLE_PRETTY_PRINT, on_finish=on_finish)
     elif cmd == TaskCmd.CHECK:
         return active_threads.launch_check_objects(buckets_cfg, key, verbose=False, log_output=ENABLE_PRETTY_PRINT, on_finish=on_finish)
     elif cmd == TaskCmd.RELOAD:
