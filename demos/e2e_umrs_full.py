@@ -133,7 +133,7 @@ class DemoConfig:
 
     # Demo settings
     username: str = "demo_user"
-    experiment_name: str = "e2e_demo"
+    experiment_name: str = "demo_experience"  # Match server's Demo_Experience
     bucket_alias: str = "demo_bucket"
 
     # RAG configuration
@@ -280,13 +280,13 @@ class MockS3Client:
         if Bucket not in self.buckets or Key not in self.buckets[Bucket]:
             raise Exception(f"Object not found: s3://{Bucket}/{Key}")
         body = self.buckets[Bucket][Key]
-        
+
         class MockBody:
             def __init__(self, data):
                 self._data = data
             def read(self):
                 return self._data
-        
+
         return {"Body": MockBody(body)}
 
     def list_objects_v2(self, Bucket: str, Prefix: str = ""):
@@ -364,12 +364,12 @@ class MockLLMClient:
     ) -> str:
         # Extract user query
         user_msg = messages[-1].get("content", "")
-        
+
         # Find matching response
         for keyword, response in self.responses.items():
             if keyword.lower() in user_msg.lower():
                 return response
-        
+
         return "Based on the UMRS documentation, the system provides comprehensive data management capabilities."
 
 
@@ -379,12 +379,20 @@ class MockLLMClient:
 
 
 class UMRSClient:
-    """UMRS Client for server communication and file operations."""
+    """UMRS Client for server communication and file operations.
+
+    In live mode, uses real UMRS MessageQueue protocol.
+    In mock mode, uses mock implementations for testing.
+    """
 
     def __init__(self, config: DemoConfig, mock: bool = True):
         self.config = config
         self.mock = mock
-        
+        self.control_mq = None
+        self.data_mq = None
+        self.s3_client = None
+        self.s3 = None
+
         if mock:
             self.control_socket = MockZMQSocket("DEALER")
             self.s3_client = MockS3Client()
@@ -392,27 +400,40 @@ class UMRSClient:
             self._init_live_connections()
 
     def _init_live_connections(self):
-        """Initialize live ZeroMQ and S3 connections."""
+        """Initialize live UMRS connections using real MessageQueue."""
         try:
-            import zmq
-            import boto3
-            
-            # ZeroMQ control channel
-            context = zmq.Context()
-            self.control_socket = context.socket(zmq.DEALER)
-            self.control_socket.connect(
-                f"tcp://{self.config.server_host}:{self.config.control_port}"
+            from umrs.MessageQueue import MessageQueue
+            from umrs.s3 import connect_to_s3
+            import tempfile
+            import os
+
+            # Create temporary s3cfg file for demo user
+            s3cfg_content = f"""[default]
+host_base = {self.config.s3_endpoint.replace('http://', '').replace('https://', '')}
+host_bucket = {self.config.s3_endpoint.replace('http://', '').replace('https://', '')}
+bucket_location = us-east-1
+use_https = {'True' if self.config.s3_endpoint.startswith('https') else 'False'}
+check_ssl_certificate = False
+access_key = {self.config.s3_access_key}
+secret_key = {self.config.s3_secret_key}
+alias = myminio
+"""
+            # Write temp s3cfg
+            self.s3cfg_path = os.path.join(tempfile.gettempdir(), 'demo_s3cfg')
+            with open(self.s3cfg_path, 'w') as f:
+                f.write(s3cfg_content)
+
+            # Connect to S3
+            self.s3, _ = connect_to_s3(self.s3cfg_path)
+
+            # Initialize UMRS control MessageQueue
+            self.control_mq = MessageQueue(
+                role='client',
+                queue_type='control',
+                server_ip=self.config.server_host,
+                port=self.config.control_port
             )
-            self.control_socket.setsockopt(zmq.RCVTIMEO, self.config.server_timeout_ms)
-            self.control_socket.setsockopt(zmq.SNDTIMEO, self.config.server_timeout_ms)
-            
-            # S3 client
-            self.s3_client = boto3.client(
-                "s3",
-                endpoint_url=self.config.s3_endpoint,
-                aws_access_key_id=self.config.s3_access_key,
-                aws_secret_access_key=self.config.s3_secret_key,
-            )
+
             logger.info("Live connections initialized")
         except Exception as e:
             logger.error(f"Failed to initialize live connections: {e}")
@@ -420,20 +441,32 @@ class UMRSClient:
 
     def ping(self) -> Dict[str, Any]:
         """Check if UMRS server is ready."""
-        request = json.dumps({"action": "ping", "username": self.config.username})
-        self.control_socket.send_string(request)
-        response = self.control_socket.recv_string()
-        return json.loads(response)
+        if self.mock:
+            return {"status": "ok", "server_ready": True}
+
+        # Use real UMRS handshake
+        ready = self.control_mq.is_server_ready(timeout_ms=self.config.server_timeout_ms)
+        return {"status": "ok" if ready else "error", "server_ready": ready}
 
     def list_buckets(self) -> List[Dict[str, str]]:
         """List available buckets for the user."""
-        request = json.dumps({
-            "action": "list_buckets",
-            "username": self.config.username,
-        })
-        self.control_socket.send_string(request)
-        response = json.loads(self.control_socket.recv_string())
-        return response.get("buckets", [])
+        if self.mock:
+            request = json.dumps({
+                "action": "list_buckets",
+                "username": self.config.username,
+            })
+            self.control_socket.send_string(request)
+            response = json.loads(self.control_socket.recv_string())
+            return response.get("buckets", [])
+
+        # Live mode: return configured bucket info
+        # In real UMRS, buckets are configured server-side
+        return [{"bucket_alias": self.config.bucket_alias, "modality": "text", "path": "demo/bucket"}]
+
+    def _get_full_bucket_name(self) -> str:
+        """Get the full S3 bucket name for the demo user."""
+        # UMRS naming: username.xp_name.bucket_alias (all lowercase, _ -> -)
+        return f"{self.config.username}.{self.config.experiment_name}.{self.config.bucket_alias}".lower().replace('_', '-')
 
     def upload_file(
         self,
@@ -442,32 +475,52 @@ class UMRSClient:
         metadata: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Upload a file to S3 via UMRS."""
+        if self.mock:
+            with open(file_path, "rb") as f:
+                content = f.read()
+            filename = os.path.basename(file_path)
+            s3_key = f"{self.config.experiment_name}/{bucket_alias}/{filename}"
+            self.s3_client.put_object(
+                Bucket=self.config.bucket_alias,
+                Key=s3_key,
+                Body=content,
+                Metadata=metadata or {},
+            )
+            request = json.dumps({
+                "action": "upload",
+                "username": self.config.username,
+                "bucket_alias": bucket_alias,
+                "s3_key": s3_key,
+                "metadata": metadata or {},
+            })
+            self.control_socket.send_string(request)
+            response = json.loads(self.control_socket.recv_string())
+            response["s3_key"] = s3_key
+            return response
+
+        # Live mode: Upload using real S3 and notify server
+        from umrs.TaskCmdStatus import TaskCmd
+        import tempfile
+
         with open(file_path, "rb") as f:
             content = f.read()
-        
+
         filename = os.path.basename(file_path)
-        s3_key = f"{self.config.experiment_name}/{bucket_alias}/{filename}"
-        
+        bucket_name = self._get_full_bucket_name()
+        s3_key = filename
+
         # Upload to S3
-        self.s3_client.put_object(
-            Bucket=self.config.bucket_alias,
+        self.s3.put_object(
+            Bucket=bucket_name,
             Key=s3_key,
             Body=content,
             Metadata=metadata or {},
         )
-        
-        # Notify server
-        request = json.dumps({
-            "action": "upload",
-            "username": self.config.username,
-            "bucket_alias": bucket_alias,
-            "s3_key": s3_key,
-            "metadata": metadata or {},
-        })
-        self.control_socket.send_string(request)
-        response = json.loads(self.control_socket.recv_string())
-        response["s3_key"] = s3_key
-        return response
+        logger.info(f"[LIVE] Uploaded to S3: s3://{bucket_name}/{s3_key}")
+
+        # S3-based workflow: Server's bucket watcher will detect new objects
+
+        return {"status": "ok", "s3_key": s3_key}
 
     def upload_text(
         self,
@@ -477,69 +530,129 @@ class UMRSClient:
         metadata: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         """Upload text content directly."""
-        s3_key = f"{self.config.experiment_name}/{bucket_alias}/{filename}"
-        
-        # Upload to S3
-        self.s3_client.put_object(
-            Bucket=self.config.bucket_alias,
+        if self.mock:
+            s3_key = f"{self.config.experiment_name}/{bucket_alias}/{filename}"
+            self.s3_client.put_object(
+                Bucket=self.config.bucket_alias,
+                Key=s3_key,
+                Body=text.encode("utf-8"),
+                Metadata=metadata or {},
+            )
+            request = json.dumps({
+                "action": "upload",
+                "username": self.config.username,
+                "bucket_alias": bucket_alias,
+                "s3_key": s3_key,
+                "content_type": "text",
+                "metadata": metadata or {},
+            })
+            self.control_socket.send_string(request)
+            response = json.loads(self.control_socket.recv_string())
+            response["s3_key"] = s3_key
+            return response
+
+        # Live mode: Upload text to S3
+        from umrs.TaskCmdStatus import TaskCmd
+
+        bucket_name = self._get_full_bucket_name()
+        s3_key = filename
+
+        # Upload text to S3
+        self.s3.put_object(
+            Bucket=bucket_name,
             Key=s3_key,
             Body=text.encode("utf-8"),
             Metadata=metadata or {},
+            ContentType="text/plain",
         )
-        
-        # Notify server
-        request = json.dumps({
-            "action": "upload",
-            "username": self.config.username,
-            "bucket_alias": bucket_alias,
-            "s3_key": s3_key,
-            "content_type": "text",
-            "metadata": metadata or {},
-        })
-        self.control_socket.send_string(request)
-        response = json.loads(self.control_socket.recv_string())
-        response["s3_key"] = s3_key
-        return response
+        logger.info(f"[LIVE] Uploaded text to S3: s3://{bucket_name}/{s3_key}")
+
+        # S3-based workflow: Server's bucket watcher will detect new objects
+        # No notification needed - server polls S3 for changes automatically
+
+        return {"status": "ok", "s3_key": s3_key}
 
     def download_file(self, s3_key: str, local_path: str) -> Dict[str, Any]:
         """Download a file from S3."""
-        response = self.s3_client.get_object(
-            Bucket=self.config.bucket_alias,
-            Key=s3_key,
-        )
+        if self.mock:
+            response = self.s3_client.get_object(
+                Bucket=self.config.bucket_alias,
+                Key=s3_key,
+            )
+            content = response["Body"].read()
+            os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+            with open(local_path, "wb") as f:
+                f.write(content)
+            return {"status": "ok", "local_path": local_path, "size": len(content)}
+
+        # Live mode: Download from S3
+        bucket_name = self._get_full_bucket_name()
+        response = self.s3.get_object(Bucket=bucket_name, Key=s3_key)
         content = response["Body"].read()
-        
+
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
         with open(local_path, "wb") as f:
             f.write(content)
-        
+
+        logger.info(f"[LIVE] Downloaded from S3: s3://{bucket_name}/{s3_key}")
         return {"status": "ok", "local_path": local_path, "size": len(content)}
 
     def get_status(self, target: str = "all") -> Dict[str, Any]:
         """Get server status and statistics."""
-        request = json.dumps({
-            "action": "status",
-            "username": self.config.username,
-            "target": target,
-        })
-        self.control_socket.send_string(request)
-        response = json.loads(self.control_socket.recv_string())
-        return response
+        if self.mock:
+            request = json.dumps({
+                "action": "status",
+                "username": self.config.username,
+                "target": target,
+            })
+            self.control_socket.send_string(request)
+            response = json.loads(self.control_socket.recv_string())
+            return response
+
+        # Live mode: Use real UMRS status
+        try:
+            raw_response = self.control_mq.request_status(self.config.username, target)
+            return json.loads(raw_response)
+        except Exception as e:
+            logger.error(f"Status request failed: {e}")
+            return {"status": "error", "message": str(e)}
 
     def trigger_recompute(self) -> Dict[str, Any]:
         """Trigger embedding recomputation on server."""
-        request = json.dumps({
-            "action": "recompute",
-            "username": self.config.username,
-        })
-        self.control_socket.send_string(request)
-        response = json.loads(self.control_socket.recv_string())
-        return response
+        if self.mock:
+            request = json.dumps({
+                "action": "recompute",
+                "username": self.config.username,
+            })
+            self.control_socket.send_string(request)
+            response = json.loads(self.control_socket.recv_string())
+            return response
+
+        # Live mode: Use real UMRS recompute
+        from umrs.TaskCmdStatus import TaskCmd
+        try:
+            success = self.control_mq.notify_server(self.config.username, TaskCmd.RECOMPUTE, 0)
+            return {"status": "ok" if success else "error", "accepted": success}
+        except Exception as e:
+            logger.error(f"Recompute request failed: {e}")
+            return {"status": "error", "message": str(e)}
 
     def close(self):
         """Close connections."""
-        if hasattr(self.control_socket, "close"):
-            self.control_socket.close()
+        if self.mock:
+            if hasattr(self.control_socket, "close"):
+                self.control_socket.close()
+        else:
+            if self.data_mq:
+                try:
+                    self.data_mq.close()
+                except Exception:
+                    pass
+            if self.control_mq:
+                try:
+                    self.control_mq.close()
+                except Exception:
+                    pass
 
 
 # =============================================================================
@@ -553,7 +666,8 @@ class EmbeddingWorker:
     def __init__(self, config: DemoConfig, mock: bool = True):
         self.config = config
         self.mock = mock
-        
+        self.db_conn = None
+
         if mock:
             self.model = MockEmbeddingModel(dim=config.embedding_dim)
             self.db = MockDatabase()
@@ -565,45 +679,107 @@ class EmbeddingWorker:
         try:
             from sentence_transformers import SentenceTransformer
             import psycopg2
-            
+
             self.model = SentenceTransformer(self.config.embedding_model)
-            self.db = psycopg2.connect(
+            self.db_conn = psycopg2.connect(
                 host=self.config.db_host,
                 port=self.config.db_port,
                 user=self.config.db_user,
                 password=self.config.db_password,
                 database=self.config.db_name,
             )
+            self._ensure_table()
             logger.info("Live embedding worker initialized")
         except Exception as e:
             logger.error(f"Failed to initialize embedding worker: {e}")
             raise
+
+    def _ensure_table(self):
+        """Ensure the documents table exists with pgvector."""
+        with self.db_conn.cursor() as cur:
+            cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS demo_documents (
+                    id TEXT PRIMARY KEY,
+                    title TEXT,
+                    content TEXT,
+                    category TEXT,
+                    doc_type TEXT,
+                    embedding vector({self.config.embedding_dim}),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            self.db_conn.commit()
 
     def compute_embeddings(
         self, documents: List[Dict[str, Any]]
     ) -> Dict[str, np.ndarray]:
         """Compute embeddings for a list of documents."""
         embeddings = {}
-        
+
         texts = [doc["content"] for doc in documents]
         doc_ids = [doc["id"] for doc in documents]
-        
+
         # Compute embeddings
         vectors = self.model.encode(texts, show_progress_bar=False)
-        
+
         for doc_id, vector, doc in zip(doc_ids, vectors, documents):
             embeddings[doc_id] = vector
-            self.db.store_embedding(doc_id, vector, doc.get("metadata", {}))
-        
+            if self.mock:
+                self.db.store_embedding(doc_id, vector, doc.get("metadata", {}))
+            else:
+                self._store_embedding_live(doc_id, vector, doc)
+
         return embeddings
+
+    def _store_embedding_live(self, doc_id: str, vector: np.ndarray, doc: Dict[str, Any]):
+        """Store embedding in PostgreSQL with pgvector."""
+        with self.db_conn.cursor() as cur:
+            # Convert numpy array to list for pgvector
+            embedding_list = vector.tolist()
+            metadata = doc.get("metadata", {})
+
+            cur.execute("""
+                INSERT INTO demo_documents (id, title, content, category, doc_type, embedding)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (id) DO UPDATE SET
+                    title = EXCLUDED.title,
+                    content = EXCLUDED.content,
+                    category = EXCLUDED.category,
+                    doc_type = EXCLUDED.doc_type,
+                    embedding = EXCLUDED.embedding
+            """, (
+                doc_id,
+                doc.get("title", ""),
+                doc.get("content", ""),
+                metadata.get("category", ""),
+                metadata.get("type", ""),
+                embedding_list
+            ))
+            self.db_conn.commit()
+            logger.info(f"[LIVE DB] Stored embedding for {doc_id}")
 
     def search_similar(
         self, query: str, top_k: int = 5
     ) -> List[Tuple[str, float]]:
         """Search for similar documents."""
         query_embedding = self.model.encode([query])[0]
-        return self.db.search_similar(query_embedding, top_k)
 
+        if self.mock:
+            return self.db.search_similar(query_embedding, top_k)
+
+        # Live mode: Use pgvector for similarity search
+        with self.db_conn.cursor() as cur:
+            embedding_list = query_embedding.tolist()
+            cur.execute("""
+                SELECT id, 1 - (embedding <=> %s::vector) as similarity
+                FROM demo_documents
+                ORDER BY embedding <=> %s::vector
+                LIMIT %s
+            """, (embedding_list, embedding_list, top_k))
+            results = [(row[0], float(row[1])) for row in cur.fetchall()]
+            logger.info(f"[LIVE DB] Found {len(results)} similar documents")
+            return results
 
 # =============================================================================
 # Demo Steps
@@ -629,7 +805,7 @@ def print_step(step_num: int, title: str):
 async def demo_server_connection(client: UMRSClient, config: DemoConfig) -> bool:
     """Step 1: Test UMRS server connection."""
     print_step(1, "UMRS Server Connection")
-    
+
     try:
         result = client.ping()
         if result.get("status") == "ok" or result.get("server_ready"):
@@ -648,7 +824,7 @@ async def demo_server_connection(client: UMRSClient, config: DemoConfig) -> bool
 async def demo_bucket_management(client: UMRSClient, config: DemoConfig) -> bool:
     """Step 2: Bucket management."""
     print_step(2, "Bucket Management")
-    
+
     try:
         buckets = client.list_buckets()
         print(f"✓ Found {len(buckets)} bucket(s) for user '{config.username}':")
@@ -666,11 +842,11 @@ async def demo_file_upload(
 ) -> Dict[str, str]:
     """Step 3: File upload to S3."""
     print_step(3, "File Upload (Client → S3 → Server)")
-    
+
     uploaded = {}
     try:
         print(f"→ Uploading {len(documents)} documents...")
-        
+
         for doc in documents:
             result = client.upload_text(
                 text=doc["content"],
@@ -681,7 +857,7 @@ async def demo_file_upload(
             s3_key = result.get("s3_key", f"unknown/{doc['id']}.txt")
             uploaded[doc["id"]] = s3_key
             print(f"  ✓ {doc['title']} → {s3_key}")
-        
+
         print(f"\n✓ Uploaded {len(uploaded)} documents successfully")
         return uploaded
     except Exception as e:
@@ -694,14 +870,14 @@ async def demo_embedding_computation(
 ) -> Dict[str, np.ndarray]:
     """Step 4: Compute embeddings (Embedding Worker)."""
     print_step(4, "Embedding Computation (Worker)")
-    
+
     try:
         print(f"→ Computing embeddings for {len(documents)} documents...")
         embeddings = worker.compute_embeddings(documents)
-        
+
         for doc_id, emb in embeddings.items():
             print(f"  ✓ {doc_id}: dim={len(emb)}, norm={np.linalg.norm(emb):.4f}")
-        
+
         print(f"\n✓ Computed {len(embeddings)} embeddings")
         return embeddings
     except Exception as e:
@@ -714,13 +890,13 @@ async def demo_similarity_search(
 ) -> List[Tuple[str, float]]:
     """Step 5: Similarity search."""
     print_step(5, "Similarity Search (pgvector)")
-    
+
     try:
         print(f'Query: "{query}"')
         print(f"→ Searching for top {top_k} similar documents...")
-        
+
         results = worker.search_similar(query, top_k)
-        
+
         print(f"\n✓ Search results:")
         for i, (doc_id, score) in enumerate(results, 1):
             # Find document title
@@ -728,7 +904,7 @@ async def demo_similarity_search(
             title = doc["title"] if doc else doc_id
             print(f"  [{i}] {title}")
             print(f"      Score: {score:.4f}")
-        
+
         return results
     except Exception as e:
         print(f"✗ Search failed: {e}")
@@ -743,14 +919,14 @@ async def demo_llm_completion(
 ) -> str:
     """Step 6: LLM completion with RAG context."""
     print_step(6, "LLM Completion (via RiVault)")
-    
+
     try:
         # Build context from retrieved documents
         context = "\n\n".join([
             f"Document: {doc['title']}\n{doc['content']}"
             for doc in context_docs
         ])
-        
+
         # Build messages
         messages = [
             {
@@ -763,18 +939,18 @@ async def demo_llm_completion(
                 "content": f"Context:\n{context}\n\nQuestion: {query}",
             },
         ]
-        
+
         print(f"→ Sending request to LLM...")
         print(f"  - Model: rivault-gpt-oss-static")
         print(f"  - Context: {len(context_docs)} documents")
-        
+
         response = await llm_client.chat_completion(messages)
-        
+
         print("\n" + "─" * 50)
         print("Answer:")
         print(response)
         print("─" * 50)
-        
+
         return response
     except Exception as e:
         print(f"✗ LLM completion failed: {e}")
@@ -786,18 +962,18 @@ async def demo_file_download(
 ) -> bool:
     """Step 7: File download verification."""
     print_step(7, "File Download (S3 → Client)")
-    
+
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
             downloaded = 0
             for doc_id, s3_key in list(uploaded.items())[:2]:  # Download first 2
                 local_path = os.path.join(tmpdir, f"{doc_id}_downloaded.txt")
                 result = client.download_file(s3_key, local_path)
-                
+
                 if result.get("status") == "ok":
                     print(f"  ✓ Downloaded {doc_id}: {result.get('size', 0)} bytes")
                     downloaded += 1
-        
+
         print(f"\n✓ Downloaded {downloaded} files successfully")
         return True
     except Exception as e:
@@ -808,19 +984,23 @@ async def demo_file_download(
 async def demo_server_status(client: UMRSClient) -> Dict[str, Any]:
     """Step 8: Server status and statistics."""
     print_step(8, "Server Status")
-    
+
     try:
         status = client.get_status("all")
-        
+
         if status.get("status") == "ok":
             summary = status.get("summary", {})
             print("✓ Server status:")
             print(f"  - Documents: {summary.get('documents', 'N/A')}")
             print(f"  - Embeddings: {summary.get('embeddings', 'N/A')}")
             print(f"  - Last update: {summary.get('last_update', 'N/A')}")
+        elif status.get("message") == "No status entries":
+            # Expected for S3-only workflow without data queue notifications
+            print("ℹ Server has no status entries")
+            print("  (Expected for S3-only workflow - bucket watcher poll pending)")
         else:
             print(f"  Status: {status}")
-        
+
         return status
     except Exception as e:
         print(f"✗ Failed to get status: {e}")
@@ -834,81 +1014,91 @@ async def demo_server_status(client: UMRSClient) -> Dict[str, Any]:
 
 async def run_demo(config: DemoConfig):
     """Run the full E2E demo."""
-    
+
     mode = "LIVE" if config.live_mode else "MOCK"
     print_banner("E2E DEMO: UMRS Full Stack", mode)
-    
-    # Initialize components with fallback to mock on failure
+
+    # Initialize components - NO fallback in live mode
     use_mock = not config.live_mode
-    
+
     try:
         client = UMRSClient(config, mock=use_mock)
     except Exception as e:
+        if config.live_mode:
+            print(f"✗ Client initialization failed: {e}")
+            print("  Live mode requires running Docker environment.")
+            print("  Run: cd demos/umrs-full && docker compose up -d")
+            return False
         print(f"⚠ Client initialization failed: {e}")
         print("  Falling back to mock client...")
         client = UMRSClient(config, mock=True)
         use_mock = True
-    
+
     try:
         worker = EmbeddingWorker(config, mock=use_mock)
     except Exception as e:
+        if config.live_mode:
+            print(f"✗ Worker initialization failed: {e}")
+            print("  Live mode requires running Docker environment.")
+            return False
         print(f"⚠ Worker initialization failed: {e}")
         print("  Falling back to mock worker...")
         worker = EmbeddingWorker(config, mock=True)
         use_mock = True
-    
+
     llm_client = MockLLMClient()
-    
+
     try:
         # Step 1: Server connection
         connected = await demo_server_connection(client, config)
         if not connected:
             if config.live_mode:
-                print("\n⚠ Server connection failed. Falling back to mock mode...")
-                print("  Note: Live mode requires full UMRS server setup with proper")
-                print("  S3 user credentials and bucket configuration.")
-                print("  See demos/umrs-full/README.md for details.\n")
+                print("\n✗ Server connection failed.")
+                print("  Live mode requires UMRS server to be running.")
+                print("  Run: cd demos/umrs-full && docker compose up -d")
+                print("  Then: docker logs umrs-demo-server")
+                return False
             # Fall back to mock for remaining demo
             client = UMRSClient(config, mock=True)
             worker = EmbeddingWorker(config, mock=True)
-        
+
         # Step 2: Bucket management
         await demo_bucket_management(client, config)
-        
+
         # Step 3: File upload
         uploaded = await demo_file_upload(client, config, SAMPLE_DOCUMENTS)
-        
+
         # Step 4: Embedding computation
         embeddings = await demo_embedding_computation(worker, SAMPLE_DOCUMENTS)
-        
+
         # Step 5: Similarity search
         query = "How does UMRS handle file transfer and communication?"
         results = await demo_similarity_search(
             worker, query, SAMPLE_DOCUMENTS, config.top_k
         )
-        
+
         # Get context documents for LLM
         context_docs = []
         for doc_id, score in results:
             doc = next((d for d in SAMPLE_DOCUMENTS if d["id"] == doc_id), None)
             if doc:
                 context_docs.append(doc)
-        
+
         # Step 6: LLM completion
         await demo_llm_completion(llm_client, query, context_docs, config)
-        
+
         # Step 7: File download
         await demo_file_download(client, uploaded)
-        
+
         # Step 8: Server status
         await demo_server_status(client)
-        
+
         print("\n" + "=" * 70)
         print("✓ Demo completed successfully!")
         print("=" * 70)
-        
+
         return True
-        
+
     finally:
         client.close()
 
@@ -918,7 +1108,7 @@ def main():
         description="Comprehensive UMRS E2E Demo",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
+
     parser.add_argument(
         "--live", action="store_true",
         help="Use live connections (requires running Docker environment)"
@@ -947,11 +1137,11 @@ def main():
         "--query", default="How does UMRS handle file transfer?",
         help="Query for RAG demo"
     )
-    
+
     args = parser.parse_args()
-    
+
     config = DemoConfig(live_mode=args.live)
-    
+
     if args.server_host:
         config.server_host = args.server_host
     if args.control_port:
@@ -960,7 +1150,7 @@ def main():
         config.s3_endpoint = args.s3_endpoint
     if args.db_port:
         config.db_port = args.db_port
-    
+
     asyncio.run(run_demo(config))
 
 
