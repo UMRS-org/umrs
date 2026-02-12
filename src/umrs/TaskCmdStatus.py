@@ -30,3 +30,11 @@ class TaskCmd:
             cls.RELOAD.lower(),
             "all"
         )
+    
+class TaskStatus:
+    SUBMITTED = "Submitted"
+    RUNNING = "Running"
+    COMPLETED = "Completed"
+    NO_SUCH_BUCKET = "No Such Bucket"
+    UNKNOWN = "Unknown"
+    ABORTED = "Aborted"
