@@ -1,0 +1,242 @@
+"""
+Reconciler - Boot-time crash recovery (U-713, U-721-U-723).
+
+On UMRS startup:
+1. Generate new umrs_instance_id
+2. Find all attempts with status IN ('SUBMITTED', 'RUNNING')
+   where umrs_instance_id != current (stale from previous instance)
+3. Mark them LOST
+4. Requeue parent jobs (if retries remain and policy allows)
+
+NO backend cleanup (scancel/delete) - rely on attempt-scoped isolation.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from datetime import datetime
+from typing import List, Optional, Tuple
+
+from .models import AttemptStatus, JobStatus, RestartPolicy
+from .store import JobStore
+
+logger = logging.getLogger(__name__)
+
+
+class ReconcileResult:
+    """Result of reconciliation process."""
+
+    def __init__(self):
+        self.lost_attempts: List[str] = []
+        self.requeued_jobs: List[str] = []
+        self.failed_jobs: List[str] = []  # No more retries
+        self.errors: List[Tuple[str, str]] = []  # (id, error_message)
+
+    @property
+    def total_processed(self) -> int:
+        return len(self.lost_attempts)
+
+    def __str__(self) -> str:
+        return (
+            f"ReconcileResult(lost={len(self.lost_attempts)}, "
+            f"requeued={len(self.requeued_jobs)}, "
+            f"failed={len(self.failed_jobs)}, "
+            f"errors={len(self.errors)})"
+        )
+
+
+class Reconciler:
+    """
+    Boot-time crash recovery.
+
+    Marks in-flight attempts as LOST and requeues their parent jobs
+    if retries remain. Does NOT perform any backend cleanup.
+    """
+
+    def __init__(self, job_store: JobStore):
+        """
+        Initialize Reconciler.
+
+        Args:
+            job_store: JobStore instance (provides umrs_instance_id)
+        """
+        self.job_store = job_store
+        self.umrs_instance_id = job_store.umrs_instance_id
+
+    def reconcile_on_boot(self) -> ReconcileResult:
+        """
+        Perform boot-time reconciliation.
+
+        This should be called once at UMRS startup, before the scheduler
+        starts processing new jobs.
+
+        Returns:
+            ReconcileResult with details of what was processed
+        """
+        result = ReconcileResult()
+
+        logger.info(
+            f"Starting boot reconciliation (instance={self.umrs_instance_id})"
+        )
+
+        # Find stale attempts (from previous UMRS instance or crashed state)
+        stale_attempts = self._find_stale_attempts()
+
+        if not stale_attempts:
+            logger.info("No stale attempts found - clean startup")
+            return result
+
+        logger.warning(f"Found {len(stale_attempts)} stale attempts to reconcile")
+
+        # Process each stale attempt
+        for attempt_id, job_id, attempt_no, old_instance_id in stale_attempts:
+            try:
+                self._process_stale_attempt(
+                    attempt_id, job_id, attempt_no, old_instance_id, result
+                )
+            except Exception as e:
+                logger.error(f"Error reconciling attempt {attempt_id}: {e}")
+                result.errors.append((attempt_id, str(e)))
+
+        logger.info(f"Boot reconciliation complete: {result}")
+        return result
+
+    def _find_stale_attempts(self) -> List[Tuple[str, str, int, Optional[str]]]:
+        """
+        Find attempts that are stale (from previous UMRS instance).
+
+        Returns list of (attempt_id, job_id, attempt_no, umrs_instance_id)
+        """
+        conn = self.job_store.db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                # Find all in-flight attempts that either:
+                # - Have a different umrs_instance_id (from previous instance)
+                # - Have NULL umrs_instance_id (legacy or failed to set)
+                cur.execute("""
+                    SELECT
+                        attempt_id,
+                        job_id,
+                        attempt_no,
+                        umrs_instance_id
+                    FROM job_attempts
+                    WHERE status IN (%s, %s)
+                      AND (umrs_instance_id IS NULL OR umrs_instance_id != %s)
+                    ORDER BY created_at ASC
+                """, (
+                    AttemptStatus.SUBMITTED.value,
+                    AttemptStatus.RUNNING.value,
+                    self.umrs_instance_id,
+                ))
+
+                return cur.fetchall()
+        finally:
+            self.job_store.db_pool.putconn(conn)
+
+    def _process_stale_attempt(
+        self,
+        attempt_id: str,
+        job_id: str,
+        attempt_no: int,
+        old_instance_id: Optional[str],
+        result: ReconcileResult,
+    ) -> None:
+        """
+        Process a single stale attempt.
+
+        1. Mark attempt as LOST
+        2. Check if job can be retried
+        3. Requeue job if allowed
+        """
+        logger.info(
+            f"Processing stale attempt {attempt_id} "
+            f"(job={job_id}, no={attempt_no}, old_instance={old_instance_id})"
+        )
+
+        # Mark attempt as LOST
+        ignore_reason = f"umrs_restart_no_cleanup (prev={old_instance_id})"
+        self.job_store.mark_attempt_lost(attempt_id, ignore_reason)
+        result.lost_attempts.append(attempt_id)
+
+        # Get job to check retry policy
+        job = self.job_store.get_job(job_id)
+
+        # Only process if job is still in RUNNING status
+        # (could have been cancelled or completed by other means)
+        if job.status != JobStatus.RUNNING:
+            logger.debug(f"Job {job_id} not in RUNNING state, skipping requeue")
+            return
+
+        # Check if we should retry
+        if job.can_retry(attempt_no):
+            # Calculate backoff delay
+            delay = job.get_backoff_delay(attempt_no)
+            next_run = datetime.utcnow()  # Run immediately on crash recovery
+
+            # Requeue the job
+            self._requeue_job(job_id, next_run)
+            result.requeued_jobs.append(job_id)
+            logger.info(f"Requeued job {job_id} (attempt {attempt_no} was lost)")
+        else:
+            # No more retries - mark job as failed
+            self._fail_job(job_id, f"exhausted retries after crash (last attempt: {attempt_no})")
+            result.failed_jobs.append(job_id)
+            logger.warning(f"Job {job_id} failed - no more retries after crash")
+
+    def _requeue_job(self, job_id: str, next_run: datetime) -> None:
+        """
+        Requeue a job for scheduling.
+
+        Transitions: RUNNING → QUEUED
+        """
+        conn = self.job_store.db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE jobs SET
+                        status = %s,
+                        active_attempt_id = NULL,
+                        next_run_at = %s,
+                        last_state_change_at = NOW()
+                    WHERE job_id = %s
+                """, (JobStatus.QUEUED.value, next_run, job_id))
+                conn.commit()
+        finally:
+            self.job_store.db_pool.putconn(conn)
+
+    def _fail_job(self, job_id: str, reason: str) -> None:
+        """
+        Mark a job as failed (no more retries).
+
+        Transitions: RUNNING → FAILED
+        """
+        conn = self.job_store.db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    UPDATE jobs SET
+                        status = %s,
+                        active_attempt_id = NULL,
+                        last_state_change_at = NOW()
+                    WHERE job_id = %s
+                """, (JobStatus.FAILED.value, job_id))
+                conn.commit()
+        finally:
+            self.job_store.db_pool.putconn(conn)
+
+
+def reconcile_on_startup(job_store: JobStore) -> ReconcileResult:
+    """
+    Convenience function for boot-time reconciliation.
+
+    Call this once at UMRS startup before starting the scheduler.
+
+    Example:
+        job_store = JobStore(db_pool)
+        result = reconcile_on_startup(job_store)
+        logger.info(f"Reconciled: {result}")
+        # Now safe to start scheduler
+    """
+    reconciler = Reconciler(job_store)
+    return reconciler.reconcile_on_boot()
