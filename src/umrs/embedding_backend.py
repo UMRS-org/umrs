@@ -8,6 +8,11 @@ import numpy as np
 from umrs.embeddings import compute_and_store_embedding
 from umrs.sql import store_embeddings_in_db
 
+# avoid circular import
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from server_umrs import ServerCfg
+
 
 class EmbeddingBackend:
     """Abstract backend for computing and storing embeddings.
@@ -232,8 +237,7 @@ class RemoteEmbeddingBackend(EmbeddingBackend):
             metadata_list=metadata,
         )
 
-
-def create_embedding_backend_from_config(cfg: dict) -> EmbeddingBackend:
+def create_embedding_backend_from_config(cfg: "ServerCfg") -> EmbeddingBackend:
     """Factory to create an embedding backend from server configuration.
 
     The configuration is expected to contain optional keys:
@@ -242,7 +246,7 @@ def create_embedding_backend_from_config(cfg: dict) -> EmbeddingBackend:
     - embedding_worker_timeout_sec: timeout in seconds
     """
 
-    backend_type = cfg.get("embedding_backend", "local").lower()
+    backend_type = cfg.embedding_backend.lower()
 
     if backend_type == "remote":
         addr = cfg.get("embedding_worker_address", "tcp://umrs-embed-worker:6000")

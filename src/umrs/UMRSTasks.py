@@ -3,7 +3,6 @@
 import threading
 import time
 from collections import defaultdict
-from umrs.db_store import  query_db_model
 from umrs.pretty_print import pretty_print_thread_status
 from datetime import datetime
 import sys
@@ -82,17 +81,17 @@ class UMRSTasks:
         # key is now valid in dictionary
 
 
-    def launch_s3_tasks(self, s3_objects, db_model_store, device,  embedding_backend, key):
+    def launch_s3_tasks(self, s3_objects, buckets_cfg, device,  embedding_backend, key):
         from server_umrs import process_s3_objects
         
-        thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, db_model_store, device,  embedding_backend, key))
+        thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, buckets_cfg, device,  embedding_backend, key))
         thread.start()
         self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
         self.thread_list.append(thread)
 
 
 
-    def launch_wait_table_modification_on_db(self, path_to_bucket, db_model_store, user, data_base, table_name, timeout, control_mq, zmq_sender_id, key):
+    def launch_wait_table_modification_on_db(self, path_to_bucket, buckets_cfg, user, data_base, table_name, timeout, control_mq, zmq_sender_id, key):
         from umrs.sql import wait_table_modification_on_db
         from collections import defaultdict
                 
@@ -102,65 +101,65 @@ class UMRSTasks:
         keys_per_bucket = defaultdict(list)
         keys_per_bucket[path_to_bucket] = None
 
-        self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
 
-    def launch_check_objects(self, db_model_store, key, verbose, log_output) : 
+    def launch_check_objects(self, buckets_cfg, key, verbose, log_output) : 
         from server_umrs import check_objects
      
-        thread = threading.Thread(target=check_objects, args=(self, db_model_store, key, verbose, log_output))
+        thread = threading.Thread(target=check_objects, args=(self, buckets_cfg, key, verbose, log_output))
         thread.start()
        
         keys_per_bucket = defaultdict(list)
-        for path_to_bucket in list(db_model_store.keys()):
-            entry = db_model_store[path_to_bucket]
-            keys_per_bucket[path_to_bucket] = entry['num_objects']
+        for path_to_bucket, entry in buckets_cfg.items():
+            keys_per_bucket[path_to_bucket] = entry.num_objects
         
-        self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
         
-    def launch_update_objects(self, client_id, db_model_store, device, embedding_backend, key, log_output) :
+    def launch_update_objects(self, client_id, buckets_cfg, device, embedding_backend, key, log_output) :
         from server_umrs import update_objects
   
 
-        thread = threading.Thread(target=update_objects, args=(self, client_id, db_model_store, device, embedding_backend, key, log_output))
+        thread = threading.Thread(target=update_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, log_output))
         thread.start()
+        
         keys_per_bucket = defaultdict(list)
-        for path_to_bucket in list(db_model_store.keys()):
-            entry = db_model_store[path_to_bucket]
-            keys_per_bucket[path_to_bucket] = entry['num_objects']
-           
+        for path_to_bucket, entry in buckets_cfg.items():
+            keys_per_bucket[path_to_bucket] = entry.num_objects
+        
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
-        self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
-    
         self.thread_list.append(thread)
    
-    def launch_recompute_all_objects(self, client_id,  db_model_store, device, embedding_backend, key, log_output):
+    def launch_recompute_all_objects(self, client_id,  buckets_cfg, device, embedding_backend, key, log_output):
         from server_umrs import recompute_all_objects
   
-        thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, db_model_store, device, embedding_backend, key, log_output))
+        thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, log_output))
         thread.start()
        
         keys_per_bucket = defaultdict(list)
-        for path_to_bucket in list(db_model_store.keys()):
-            entry = db_model_store[path_to_bucket]
-            keys_per_bucket[path_to_bucket] = entry['num_objects']
         
-        self.update_thread_dict(db_model_store, keys_per_bucket, key, thread_ident=thread.ident)
+        keys_per_bucket = defaultdict(list)
+        for path_to_bucket, entry in buckets_cfg.items():
+            keys_per_bucket[path_to_bucket] = entry.num_objects
+        
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
         
 
-    def update_thread_dict(self, db_model_store, keys_per_bucket, key, thread_ident = "self"):
+    def update_thread_dict(self, buckets_cfg, keys_per_bucket, key, thread_ident = "self"):
         array_of_works = []
         for path_to_bucket in keys_per_bucket.keys():
-            user, _, table_name, _, _, modality_name, _, data_base, _, _ = query_db_model(db_model_store, path_to_bucket)
+            selected_fields = ["s3_username", "table_name","modality_name", "db_name"]
+            user, table_name,  modality_name, db_name = buckets_cfg.get(path_to_bucket, filter=selected_fields)
             s3_keys = keys_per_bucket[path_to_bucket]
             work = {
                 "user": user,
-                "data_base": data_base,
+                "data_base": db_name,
                 "table_name": table_name,
                 "modality_name": modality_name,
                 "bucket": path_to_bucket,
