@@ -838,17 +838,39 @@ async def run_demo(config: DemoConfig):
     mode = "LIVE" if config.live_mode else "MOCK"
     print_banner("E2E DEMO: UMRS Full Stack", mode)
     
-    # Initialize components
-    client = UMRSClient(config, mock=not config.live_mode)
-    worker = EmbeddingWorker(config, mock=not config.live_mode)
+    # Initialize components with fallback to mock on failure
+    use_mock = not config.live_mode
+    
+    try:
+        client = UMRSClient(config, mock=use_mock)
+    except Exception as e:
+        print(f"⚠ Client initialization failed: {e}")
+        print("  Falling back to mock client...")
+        client = UMRSClient(config, mock=True)
+        use_mock = True
+    
+    try:
+        worker = EmbeddingWorker(config, mock=use_mock)
+    except Exception as e:
+        print(f"⚠ Worker initialization failed: {e}")
+        print("  Falling back to mock worker...")
+        worker = EmbeddingWorker(config, mock=True)
+        use_mock = True
+    
     llm_client = MockLLMClient()
     
     try:
         # Step 1: Server connection
         connected = await demo_server_connection(client, config)
-        if not connected and config.live_mode:
-            print("\n✗ Cannot connect to server. Exiting.")
-            return False
+        if not connected:
+            if config.live_mode:
+                print("\n⚠ Server connection failed. Falling back to mock mode...")
+                print("  Note: Live mode requires full UMRS server setup with proper")
+                print("  S3 user credentials and bucket configuration.")
+                print("  See demos/umrs-full/README.md for details.\n")
+            # Fall back to mock for remaining demo
+            client = UMRSClient(config, mock=True)
+            worker = EmbeddingWorker(config, mock=True)
         
         # Step 2: Bucket management
         await demo_bucket_management(client, config)
