@@ -4,7 +4,7 @@ class TaskCmd:
     WAIT_OUTPUT = "WAIT_OUTPUT"
     RECOMPUTE = "RECOMPUTE"
     UPDATE = "UPDATE"
-    CHECK = "CHECk"
+    CHECK = "CHECK"
     RELOAD = "RELOAD"
     FILE = "FILE"
     HAND_CHECK = "HAND_CHECK"
@@ -30,3 +30,12 @@ class TaskCmd:
             cls.RELOAD.lower(),
             "all"
         )
+    
+class TaskStatus:
+    SUBMITTED = "Submitted"
+    RUNNING = "Running"
+    COMPLETED = "Completed"
+    NO_SUCH_BUCKET = "No Such Bucket"
+    UNKNOWN = "Unknown"
+    ABORTED = "Aborted"
+    OVERRIDDEN = "Overridden"
