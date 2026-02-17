@@ -3,14 +3,18 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
+# Build argument to select requirements file (default: requirements.txt, use requirements-ci.txt for CI)
+ARG REQUIREMENTS_FILE=requirements.txt
+
 # Install system dependencies (if needed)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY ./src/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir -r /app/requirements.txt && \
-    python -m spacy download en_core_web_sm
+# Copy both requirements files (ci version may not exist locally)
+COPY ./src/requirements*.txt /app/
+RUN pip install --no-cache-dir -r /app/${REQUIREMENTS_FILE} && \
+    (python -c "import spacy" && python -m spacy download en_core_web_sm || echo "spacy not installed, skipping model download")
 
 # Install MinIO Client (mc) for user/bucket management used by minio.py
 RUN curl -sSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc \

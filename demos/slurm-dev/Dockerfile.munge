@@ -1,0 +1,31 @@
+# =============================================================================
+# Munge Authentication Daemon
+# =============================================================================
+# Munge provides authentication between Slurm components.
+# This container generates and shares the munge key.
+#
+# The key is stored in /etc/munge and shared via Docker volume.
+# =============================================================================
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    munge \
+    libmunge-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create munge directories
+RUN mkdir -p /etc/munge /var/log/munge /run/munge \
+    && chown -R munge:munge /etc/munge /var/log/munge /run/munge
+
+# Generate munge key if not exists
+COPY entrypoint-munge.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+USER munge
+WORKDIR /run/munge
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["munged", "-F"]
