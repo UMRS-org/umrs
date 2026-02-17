@@ -43,7 +43,7 @@ from typing import Literal
 @dataclass
 class ServerCfg:
     """
-    All information related to server configuration
+    All inforations realted to server configuration
     """
     user_config_map: dict = field(default_factory=dict)
     buckets_cfg: "BucketsCfg" = field(default_factory=lambda: BucketsCfg())
@@ -151,7 +151,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
                 assert modality["model"]["return_type"] is not None, f"return_type must be set in 'model' for modality '{modality}' of {fullname} ({username})"
                 output_path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
                 bucket_list.append(output_path_to_bucket)
-
+                    
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
     s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
@@ -162,10 +162,10 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
 def configure_user(user_cfg, server_cfg: ServerCfg):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
-
+   
     server_cfg.user_config_map[username] = user_cfg['config_file_path']
     buckets_cfg = server_cfg.buckets_cfg
-
+    
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
@@ -195,7 +195,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             if model.return_type == "file":
                 assert need_output_bucket
                 output_path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location, output=True)
-            else:
+            else: 
                 output_path_to_bucket = None
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
@@ -203,8 +203,8 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             num_objects = data_base.count_s3_objects(table_name)
             # in case of race condition. In practice we certainly do not want several procesing on the same bucket happening in parallel
             rlock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
-            bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name,
-                                       model, store_embeddings_flag, modality_name, s3_connection, metadata,
+            bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name, 
+                                       model, store_embeddings_flag, modality_name, s3_connection, metadata, 
                                        xp_name, num_objects, output_path_to_bucket, rlock)
             buckets_cfg.store(path_to_bucket, bucket_entry)
             print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
@@ -388,7 +388,7 @@ def _handle_maintenance_command(active_threads, cmd, client_id, buckets_cfg, dev
                                 configure_file, user_config_map, key, on_finish=None):
     
     # print(f"handle {cmd=} {client_id=}")
-
+    
     if cmd == TaskCmd.RECOMPUTE:
         return active_threads.launch_recompute_all_objects(client_id, buckets_cfg, device, embedding_backend, key, log_output=ENABLE_PRETTY_PRINT, on_finish=on_finish)
     elif cmd == TaskCmd.UPDATE:
@@ -409,7 +409,7 @@ def filter_outcome(active_threads, outcome, buckets_cfg, key):
     # For each user in the configuration, store its relevant data 
     # to be later visible via STATUS
     users = {entry.s3_username for entry in buckets_cfg.values()}
-    for user in users:
+    for user in users: 
         filtered_outcome = _filter_outcome_for_client(key, outcome, user, buckets_cfg)
         active_threads.record_status(user, key, filtered_outcome)
 
@@ -428,7 +428,7 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
     For reload: build a per-user configuration summary from the current buckets_cfg.
     """
 
-
+    
     try:
         if cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
@@ -519,7 +519,7 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
         print("\n######################\nReloading configuration...\n######################\n")
     try:
         new_admin_s3_cfg, new_users, _ = load_server_cfg_file(configure_file)
-
+    
         for entry in buckets_cfg.values():
             try:
                 conn = entry.s3_connection
@@ -534,7 +534,7 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
         new_server_cfg = ServerCfg()
         for u in new_users:
             configure_user(u, new_server_cfg)
-
+     
         buckets_cfg.replace_cfg(new_server_cfg.buckets_cfg)
         user_config_map.clear()
         user_config_map.update(new_server_cfg.user_config_map)
@@ -800,7 +800,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
 
                 path_to_bucket, entry = buckets_cfg.find_by_output_path(output_path_to_bucket)
-                if entry is None:
+                if entry is None: 
                     msg = "NO_SUCH_BUCKET"
                     control_mq.send_string(msg, zmq_sender_id)
                     task_manager.tasks_status.update_status(task_id, TaskStatus.NO_SUCH_BUCKET)
@@ -929,7 +929,7 @@ def main():
 
     global ENABLE_PRETTY_PRINT
     ENABLE_PRETTY_PRINT = args.pretty_print
-
+        
     status_store = diskcache.Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
     thread_dict = diskcache.Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
     task_manager = TaskManager(status_store, thread_dict, f"{get_default_db_subdir()}/tasks.db")

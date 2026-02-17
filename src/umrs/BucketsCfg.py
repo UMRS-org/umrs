@@ -2,6 +2,7 @@ from dataclasses import dataclass, field
 from threading import RLock
 from typing import Any, Dict, Optional, Tuple, Union, TYPE_CHECKING
 from umrs.s3 import count_objects_in_bucket
+from typing import Union
 
 if TYPE_CHECKING:
     from umrs.sql import DataBase
@@ -101,7 +102,7 @@ class BucketsCfg:
             if entry.output_path_to_bucket == output_path:
                 return path, entry
         return None, None
-
+    
     def update_num_objects(self, path_to_bucket: str):
         """Update the num_objects field for a given bucket entry."""
         entry = self.get(path_to_bucket)
@@ -110,10 +111,10 @@ class BucketsCfg:
 
         data_base = entry.data_base
         table_name = entry.table_name
-        # num_objects = count_objects_in_bucket(s3_connection, path_to_bucket)
+        # num_objects = count_objects_in_bucket(s3_connection, path_to_bucket)  
         num_objects = data_base.count_s3_objects(table_name)
         entry.num_objects = num_objects
-
+    
     def build_dict_for_user(self, s3_username: str) -> dict[str, dict[str, Any]]:
         """
         Builds a dictionary for all entries matching the given s3_username.
@@ -126,15 +127,15 @@ class BucketsCfg:
         for path, entry in self._store.items():
             if entry.s3_username == s3_username:
                 # Convert dataclass to dictionary
-                result[path] = {field.name: getattr(entry, field.name)
+                result[path] = {field.name: getattr(entry, field.name) 
                                 for field in entry.__dataclass_fields__.values()}
         return result
 
     def replace_cfg(self, other: "BucketsCfg"):
-        """Replace current store with the contents of another BucketsCfg."""
+        """Replace current store with the contents of another BucketStore."""
         if not isinstance(other, BucketsCfg):
-            raise TypeError("other must be a BucketsCfg")
-
+            raise TypeError("other must be a BucketCfg")
+        
         if type(self) is not type(other):
             raise TypeError(
                 f"Cannot replace {type(self).__name__} "
@@ -145,15 +146,15 @@ class BucketsCfg:
     def items(self):
         """Allow iteration like a dict: for path, entry in bucket_cfg.items()"""
         return self._store.items()
-
+    
     def values(self):
         """Allow iteration over entries only."""
         return self._store.values()
-
+    
     def keys(self):
         """Allow iteration over keys only."""
         return self._store.keys()
-
+    
     def clear(self):
         """Remove all entries from the store."""
         self._store.clear()
