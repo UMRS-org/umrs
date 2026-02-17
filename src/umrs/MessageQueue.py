@@ -1,6 +1,6 @@
 import os
 import tempfile
-import json                                             
+import json
 from umrs.TaskCmdStatus import TaskCmd
 try:
     import zmq
@@ -22,7 +22,7 @@ class MessageQueue:
             port (int): Port number.
             target_nb_messages (int): Max number of messages in queue (for POSIX/SYSV).
             target_message_size (int): Max size per message (for POSIX/SYSV).
-            status_store: a dictionnary to store event related to task in server. 
+            status_store: a dictionnary to store event related to task in server.
                           Shared with UMRSTasks (ZeroMQ reads theis event while UMRSTasks writes it)
         """
         self.role = role.lower()
@@ -43,7 +43,8 @@ class MessageQueue:
 
         # Initialize the selected queue type
         if self.type == "control":
-            self.port = BASE_PORT
+            # Use provided port (allows non-standard ports for Docker/HPC)
+            self.port = port
             self._initialize_control_queue()
         elif self.type == "data":
             if port == BASE_PORT:
@@ -94,13 +95,15 @@ class MessageQueue:
             # ---------- CONTROL PLANE ----------
             if self.type == "control":
                 if self.role == "server":
-                    # ROUTER socket
+                    # ROUTER socket - always send [client_id][empty][payload]
+                    # This format works for both REQ and DEALER clients
                     if client_id is None:
                         raise RuntimeError(
                             "Server ROUTER socket requires client_id to send a message"
                         )
                     self.socket.send_multipart([
                         client_id,
+                        b"",  # Empty delimiter for REQ compatibility
                         string.encode("utf-8")
                     ])
                 else:
@@ -123,10 +126,10 @@ class MessageQueue:
 
         except zmq.ZMQError as e:
             raise RuntimeError(f"ZMQ error while sending: {e}")
-        
+
         except Exception as e:
             raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}")
-        
+
     def recv_string(self):
         """
         Receive a string from the socket.
@@ -138,12 +141,35 @@ class MessageQueue:
         """
         try:
             if self.type == "control" and self.role == "server":
-                # ROUTER receives: [client_id][payload]
-                client_id, msg = self.socket.recv_multipart()
+                # ROUTER receives: [client_id][empty_delimiter][payload] from REQ
+                # or [client_id][payload] from DEALER
+                frames = self.socket.recv_multipart()
+                if len(frames) == 3:
+                    # REQ socket: [client_id][empty][payload]
+                    client_id, _empty, msg = frames
+                elif len(frames) == 2:
+                    # DEALER socket: [client_id][payload]
+                    client_id, msg = frames
+                else:
+                    raise ValueError(f"Unexpected frame count: {len(frames)}")
                 return client_id, msg.decode()
 
+            elif self.type == "control" and self.role == "client":
+                # DEALER receives: [empty][payload] or [payload]
+                # when ROUTER sends with empty delimiter
+                frames = self.socket.recv_multipart()
+                if len(frames) == 2:
+                    # [empty][payload] format
+                    _empty, msg = frames
+                elif len(frames) == 1:
+                    # [payload] format
+                    msg = frames[0]
+                else:
+                    raise ValueError(f"Unexpected frame count: {len(frames)}")
+                return None, msg.decode()
+
             else:
-                # DEALER or PULL: single frame
+                # PULL socket: single frame
                 msg = self.socket.recv_string()
                 return None, msg
 
@@ -155,7 +181,7 @@ class MessageQueue:
         self.socket.SNDTIMEO = send_timeout_ms
 
 
-    
+
     def send_file(self, send_file_path, chunk_size=4096):
         if self.role != 'client' or self.type != 'data':
             raise PermissionError("Sending file can only be done by the client using the data queue")
@@ -477,16 +503,16 @@ class MessageQueue:
             raise RuntimeError("Timeout waiting for server response in request_status")
 
         return reply
-    
+
     def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):
         if self.role != "client":
             raise PermissionError("Only client can call 'request_status'")
-    
+
 
         timeout_ms = 10000*(timeout*2)
-       
+
         self.set_timeouts(timeout_ms,self.timeout)
-        
+
 
         safe_client_id = (client_id or "").replace(":", "_")
         safe_args = f"{full_bucket_name};{timeout}".replace(":", "_")
@@ -498,9 +524,9 @@ class MessageQueue:
         except zmq.Again:
             raise RuntimeError("Timeout waiting for server response in request_status")
 
-        finally: 
+        finally:
             self.set_timeouts(self.timeout,self.timeout)
-        
+
         return reply
 
 
