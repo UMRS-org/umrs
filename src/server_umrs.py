@@ -729,21 +729,22 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                 
                     
         if exit_status != TaskStatus.ERROR:
-            if store_embeddings_flag:
-                print(f"\t--> Storing to data base in {table_name}")
-                embedding_backend.compute_and_store(
-                    path_to_bucket,
-                    s3_keys,
-                    data_base,
-                    table_name,
-                    model,
-                    device,
-                    modality_name,
-                    s3_connection,
-                    output_bucket
-                )
-            else:
-                print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
+            with reentrant_lock:
+                if store_embeddings_flag:
+                    print(f"\t--> Storing to data base in {table_name}")
+                    embedding_backend.compute_and_store(
+                        path_to_bucket,
+                        s3_keys,
+                        data_base,
+                        table_name,
+                        model,
+                        device,
+                        modality_name,
+                        s3_connection,
+                        output_bucket
+                    )
+                else:
+                    print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
         buckets_cfg.update_num_objects(path_to_bucket)
 
     if update_when_done:
