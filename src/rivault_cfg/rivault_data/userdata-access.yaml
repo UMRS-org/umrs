@@ -1,0 +1,115 @@
+name: exit
+
+services:
+  nginx:
+    profile: [ harness ]
+    image: docker.io/nginx:${NGINX_DOCKER_TAG:-stable-alpine-slim}
+    networks:
+      genai-public-net: {}
+      genai-private-net:
+        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${NGINX_OUT_IP4:-252}
+    expose:
+      - ${UMRS_S3_BUCKET_PORT:-9000}
+    dns:
+      - ${PRIV_IP1TO3:-10.0.0}.${COREDNS_IP4:-253}
+    extra_hosts:
+      - coredns:${PRIV_IP1TO3:-10.0.0}.${COREDNS_IP4:-253}
+    volumes:
+      - type: bind
+        source: ./nginx_fs/out-conf.d/
+        target: /etc/nginx/conf.d/
+        read_only: true
+        bind: { selinux: "Z" }
+      - type: bind
+        source: ./nginx_fs/out-nginx.conf.${UUID:?}
+        target: /etc/nginx/nginx.conf
+        read_only: true
+        bind: { selinux: "Z" }
+    depends_on:
+      - coredns
+    environment:
+      TZ: ${GENAI_TZ:-Asia/Tokyo}
+      CUDA_VISIBLE_DEVICES: ""
+      HIP_VISIBLE_DEVICES: ""
+    restart: unless-stopped
+    pull_policy: always
+    cap_drop: [ ALL ]
+    cap_add: [ sys_nice, chown, dac_override, setgid, setuid ]  #net_bind_service
+    deploy:
+      mode: replicated
+      replicas: ${NGINX_REPLICAS:-1}
+      endpoint_mode: vip
+##      resources:
+##        limits:
+##          cpus: ${NGINX_CPU_LIMIT:-1}
+##          memory: ${NGINX_MEM_LIMIT:-1}G
+##        reservations:
+##          cpus: 0.1
+##          memory: 128M
+
+  coredns:
+    profile: [ harness ]
+    image: docker.io/coredns/coredns:${COREDNS_DOCKER_TAG:-latest}
+    networks:
+      genai-public-net: {}
+      genai-private-net:
+        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${COREDNS_IP4:-253}
+    expose:
+      - 53/udp #DNS service
+    volumes:
+      - type: bind
+        source: ./coredns_fs/coredns.conf.${UUID:?}
+        target: /etc/coredns/corefile
+        read_only: true
+        bind: { selinux: "Z" }
+    user: "0:0"
+    command: -conf /etc/coredns/corefile
+    environment:
+      TZ: ${GENAI_TZ:-Asia/Tokyo}
+      CUDA_VISIBLE_DEVICES: ""
+      HIP_VISIBLE_DEVICES: ""
+    restart: unless-stopped
+    pull_policy: always
+    cap_drop: [ ALL ]
+    cap_add: [ sys_nice, net_bind_service ]
+    deploy:
+      mode: replicated
+      replicas: ${COREDNS_REPLICAS:-1}
+      endpoint_mode: vip
+##      resources:
+##        limits:
+##          cpus: ${COREDNS_CPU_LIMIT:-1}
+##          memory: ${COREDNS_MEM_LIMIT:-1}G
+##        reservations:
+##          cpus: 0.1
+##          memory: 128M
+
+##  curl:
+##    image: docker.io/curlimages/curl:latest
+##    entrypoint: ["sleep", "infinity"]
+##    networks:
+##      genai-private-net: {}
+##    extra_hosts:
+##      - ${UMRS_S3_BUCKET_HOST:?}:${PRIV_IP1TO3:-10.0.0}.${NGINX_OUT_IP4:-252}
+##    environment:
+##      TZ: ${GENAI_TZ:-Asia/Tokyo}
+##      CUDA_VISIBLE_DEVICES: ""
+##      HIP_VISIBLE_DEVICES: ""
+
+##  nmap:
+##    image: docker.io/securecodebox/nmap
+##    entrypoint: ["sleep", "infinity"]
+##    networks:
+##      genai-private-net: {}
+##    environment:
+##      TZ: ${GENAI_TZ:-Asia/Tokyo}
+##      CUDA_VISIBLE_DEVICES: ""
+##      HIP_VISIBLE_DEVICES: ""
+
+networks:
+  genai-public-net:
+    name: "podman"  # Note: attach to podman's default "public" network to get out
+    external: true
+  genai-private-net:
+    name: "genai-private-net"
+    external: true

@@ -8,6 +8,7 @@ UMRS_CFG_ENV_VAR_NAME = "UMRS_CONFIG"
 DEFAULT_JSON_SERVER_FILE ="conf_umrs.json"
 DEFAULT_DOCKER_S3CFG = "/app/docker/s3cfg"
 DEFAULT_DB_SUBDIR = f"{DEFAULT_UMRS_CFG_DIR}/tasks_database"
+DEFAULT_RIVAULT_SLURM_SCRIPT = f"{DEFAULT_UMRS_CFG_DIR}/rivault_data/serve-model.slurm"
 
 def get_default_umrs_cfg_dir():
     return DEFAULT_UMRS_CFG_DIR
@@ -29,3 +30,6 @@ def get_default_db_subdir():
 
 def get_default_docker_s3cfg():
     return DEFAULT_DOCKER_S3CFG
+
+def get_rivault_slurm_script():
+    return DEFAULT_RIVAULT_SLURM_SCRIPT
