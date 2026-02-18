@@ -745,7 +745,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                     )
                 else:
                     print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
-        buckets_cfg.update_num_objects(path_to_bucket)
+            buckets_cfg.update_num_objects(path_to_bucket)
 
     if update_when_done:
         active_threads.update_status_to_done()
