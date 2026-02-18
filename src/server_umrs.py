@@ -711,6 +711,8 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
 
     active_threads.update_thread_dict(buckets_cfg, keys_per_bucket, key)
 
+    
+    exit_status = TaskStatus.COMPLETED
     for path_to_bucket in keys_per_bucket.keys():
         selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "s3_connection", "output_path_to_bucket", "reentrant_lock"]
         user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket, filter=selected_fields)
@@ -718,7 +720,6 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
         
-        exit_status = TaskStatus.COMPLETED
         if model.type == "rivault":
             from umrs.rivault import launch_rivault_model
             try: 
