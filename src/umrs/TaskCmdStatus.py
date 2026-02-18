@@ -39,3 +39,4 @@ class TaskStatus:
     UNKNOWN = "Unknown"
     ABORTED = "Aborted"
     OVERRIDDEN = "Overridden"
+    ERROR = "Error"

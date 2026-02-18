@@ -17,19 +17,19 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 import threading
 from umrs.s3 import *
-from umrs.sql import create_db_user, create_db, configure_table, check_S3_object_status_in_db
+from umrs.sql import create_db_user, create_db, configure_table, check_S3_object_status_in_db, create_db_name
 from umrs.models_loading import load_model
 from umrs.MessageQueue import MessageQueue
 from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_thread_status
 from umrs.modality import check_or_quit
 
 from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
-from umrs.config import *
 from umrs.TaskManager import TaskManager
 from umrs.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.embeddings import compute_and_store_embedding
 from umrs.embedding_backend import LocalEmbeddingBackend, create_embedding_backend_from_config
 from umrs.cache_paths import find_model_cache
+from umrs.config import *
 
 _status_store_global = None
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
@@ -466,12 +466,27 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
 
 
 # --------------------------- Boot and hot-reload ----------------------------
+def check_duplicated_database(users):
+    databases_name_dict = {}
+    for user in users:
+        username = user["username"]
+        for xp in user["experiences"]:
+            sql_username = xp["sql_username"]
+            xp_name = xp["xp_name"]
+            db_name = create_db_name(sql_username, xp_name)
+
+            if db_name in databases_name_dict:
+                sys.exit(f"\t❌ Error: duplicated database '{db_name}' for users '{username}' and '{databases_name_dict[db_name]}'\n\tChange xp_name or sql_username in json file.\n\tExiting...")
+
+            databases_name_dict[db_name] = username
+
 
 def perform_initial_config(configure_file, status_store):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
     admin_s3_configuration_file, users, server_cfg = load_server_cfg_file(configure_file)
+    check_duplicated_database(users)
     print("Configuration loaded successfully.")
 
     # Get the directory containing configure_file
@@ -519,7 +534,7 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
         print("\n######################\nReloading configuration...\n######################\n")
     try:
         new_admin_s3_cfg, new_users, _ = load_server_cfg_file(configure_file)
-    
+        check_duplicated_database(new_users)
         for entry in buckets_cfg.values():
             try:
                 conn = entry.s3_connection
@@ -702,8 +717,18 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
      
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
-
-        with reentrant_lock:
+        
+        exit_status = TaskStatus.COMPLETED
+        if model.type == "rivault":
+            from umrs.rivault import launch_rivault_model
+            try: 
+                model = launch_rivault_model(model.model)
+            except Exception as e:
+                print(f"Error creating the RiVault model: {e}")
+                exit_status = TaskStatus.ERROR
+                
+                    
+        if exit_status != TaskStatus.ERROR:
             if store_embeddings_flag:
                 print(f"\t--> Storing to data base in {table_name}")
                 embedding_backend.compute_and_store(
@@ -719,16 +744,16 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                 )
             else:
                 print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
-            buckets_cfg.update_num_objects(path_to_bucket)
+        buckets_cfg.update_num_objects(path_to_bucket)
 
     if update_when_done:
         active_threads.update_status_to_done()
         active_threads.record_status_for_users_by_key(users, key)
         active_threads.remove_from_running_list()
     if on_finish:
-        on_finish(TaskStatus.COMPLETED)
+        on_finish(exit_status)
 
-    print(f"\t--> Processing {nb_objects} file(s) done!")
+    print(f"\t--> Processing {nb_objects} file(s) done with status: {exit_status}!")
     with active_threads.lock:
         pretty_print_thread_status(active_threads.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
