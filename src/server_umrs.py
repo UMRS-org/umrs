@@ -719,7 +719,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
      
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
-        
+
         if model.type == "rivault":
             from umrs.rivault import launch_rivault_model
             try: 
