@@ -1,4 +1,5 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
+
 
 import argparse
 import os
@@ -696,7 +697,9 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
     return True, username, dest_path
 
 
-
+#----------------------------
+# Process S3 objects
+#----------------------------
 def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embedding_backend, key, update_when_done = True, on_finish=None):
     nb_objects = len(s3_objects)
     keys_per_bucket = defaultdict(list)
@@ -723,7 +726,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         if model.type == "rivault":
             from umrs.rivault import launch_rivault_model
             try: 
-                model = launch_rivault_model(model.model)
+                model = launch_rivault_model(model.model.copy())
             except Exception as e:
                 print(f"Error creating the RiVault model: {e}")
                 exit_status = TaskStatus.ERROR
