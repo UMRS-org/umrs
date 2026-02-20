@@ -105,10 +105,16 @@ def connect_to_s3(config_file):
     Returns:
         boto3.client: Configured S3 client.
     """
+
+    
     config = {}
 
     config_path = os.path.expanduser(config_file)
 
+    if not os.path.isfile(config_path):
+        print(f"S3 Config file '{config_file}' not found")
+        sys.exit(1)
+    
     # Initialize parser
     config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
     config.read(config_path)
