@@ -1,214 +1,216 @@
-# Slurm Development Environment
+# Slurm Development Environment — E2E Demo
 
-A Docker/Podman Compose setup for running a real Slurm cluster on a single workstation.
+A Podman Compose setup for running a real Slurm cluster on a single workstation.
 UMRS loads an embedding model running in Rivault through the OpenAI API.
 Rivault is launched as podman containers on the Slurm compute node (podman-in-podman).
+An always-on LLM service (vLLM + LiteLLM + OpenWebUI) is available for RAG chat.
 
 ## Architecture
 
 ```
                     slurm-net (172.28.0.0/16)
-  ┌─────────────────────────────────────────────────────────────┐
-  │                                                             │
-  │  ┌─────────────┐         ┌────────────────────────────────┐ │
-  │  │  ai-login    │  sbatch │  compute-01 (privileged)      │ │
-  │  │  slurmctld   │───────>│  slurmd                        │ │
-  │  │  UMRS server │        │  ┌──────────────────────────┐  │ │
-  │  │              │ :11434 │  │ podman (Rivault stack)   │  │ │
-  │  │  rivault://  │<───────│  │ NGINX→LiteLLM→vLLM      │  │ │
-  │  │  openai API  │  SSH   │  │ ll-postgres, mcpo, mcp   │  │ │
-  │  └─────────────┘ tunnel  │  └──────────────────────────┘  │ │
-  │         │                └────────────────────────────────┘ │
-  │  ┌──────┴──────┐  ┌──────┐  ┌───────┐                     │
-  │  │ postgres     │  │ minio│  │ munge │                     │
-  │  │ pgvector     │  │ S3   │  │ auth  │                     │
-  │  └─────────────┘  └──────┘  └───────┘                     │
-  └─────────────────────────────────────────────────────────────┘
+  ┌─────────────────────────────────────────────────────────────────┐
+  │                                                                 │
+  │  ┌─────────────┐         ┌────────────────────────────────────┐ │
+  │  │  ai-login    │  sbatch │  compute-01 (privileged)          │ │
+  │  │  slurmctld   │───────>│  slurmd                            │ │
+  │  │  UMRS server │        │  ┌──────────────────────────────┐  │ │
+  │  │              │ :11434 │  │ podman (Rivault stack)       │  │ │
+  │  │  rivault://  │<───────│  │ NGINX → LiteLLM → vLLM      │  │ │
+  │  │  openai API  │  SSH   │  │ ll-postgres, mcpo, mcp       │  │ │
+  │  └─────────────┘ tunnel  │  └──────────────────────────────┘  │ │
+  │         │                └────────────────────────────────────┘ │
+  │  ┌──────┴──────┐  ┌──────┐  ┌───────┐                         │
+  │  │ postgres     │  │ minio│  │ munge │                         │
+  │  │ pgvector     │  │ S3   │  │ auth  │                         │
+  │  └─────────────┘  └──────┘  └───────┘                         │
+  │                                                                 │
+  │  ┌──────────────────────────────────────────┐  (profile: llm)  │
+  │  │  Always-On LLM                           │                  │
+  │  │  llm-vllm → llm-litellm → OpenWebUI     │                  │
+  │  │  Port 14000 (API)  Port 13000 (WebUI)    │                  │
+  │  └──────────────────────────────────────────┘                  │
+  └─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Prerequisites
 
-- Docker/Podman and Docker Compose / podman-compose
+- `podman` and `podman-compose` (`pip install podman-compose`)
 - 8GB+ RAM available
-- (Optional) NVIDIA GPU + Container Toolkit for GPU support
+- NVIDIA GPU + nvidia-container-toolkit for GPU support
+- Model weights at `MODEL_PATH` (default: `./rivault/models`)
 
-## Quick Start
+## Quick Start — Full E2E Demo
 
 ```bash
-# 1. Configure environment
-cp env.template .env
-# Edit .env to set MODEL_PATH to your local models directory
+cd demos/slurm-dev
 
-# 2. Start the cluster (podman-compose)
-podman-compose up -d
-
-# 3. Launch Rivault on Slurm + start UMRS (submit Slurm job)
-podman exec ai-login sbatch /etc/slurm/mini-rivault-job.sh
-
-# 4. Check status
-podman-compose ps
+# Run the complete demo (uploads data, embeds, searches, starts LLM + OpenWebUI)
+bash scripts/run_e2e_demo.sh
 ```
 
-## Components
+## Manual Step-by-Step
+
+```bash
+cd demos/slurm-dev
+
+# 1. Start core Slurm cluster
+podman-compose up -d
+
+# 2. Check Slurm status
+podman exec ai-login sinfo
+
+# 3. Upload test data to MinIO
+podman exec ai-login bash /opt/scripts/setup_demo_data.sh
+
+# 4. Start always-on LLM (vLLM + LiteLLM + OpenWebUI)
+#    NOTE: Stop any Slurm embedding jobs first (single GPU)
+podman exec ai-login scancel --all
+podman-compose --profile llm up -d
+
+# 5. Open the chat UI
+#    http://localhost:13000
+```
+
+## Services
+
+### Core Services (always started)
 
 | Service | Description | Port |
 |---------|-------------|------|
-| ai-login | Slurm controller + UMRS server | 6817 |
-| compute-01 | Compute node (runs Rivault via podman) | SSH: 2222, LiteLLM: 11434 |
-| munge | Authentication | - |
+| ai-login | Slurm controller + UMRS server | 6817, 5555 (ZMQ) |
+| compute-01 | Compute node (runs Rivault via podman) | SSH: 2222 |
+| munge | MUNGE authentication | - |
 | postgres | pgvector database | 15432 |
-| minio | S3 storage | 19000, 19001 |
-| umrs-client | Lightweight client/test runner for UMRS API | - |
+| minio | S3-compatible storage | 19000 (API), 19001 (Console) |
+| umrs-client | Test client for UMRS API | - |
 
-## Shell Commands
+### Always-On LLM Services (profile: `llm`)
 
-```bash
-podman-compose up -d      # Start Slurm cluster
-podman exec ai-login sbatch /etc/slurm/mini-rivault-job.sh         # Launch Rivault + UMRS via Slurm
-podman-compose ps          # Show cluster status
-podman exec ai-login sbatch /etc/slurm/test-job.sh                # Submit a test job
-podman-compose down -v     # Stop cluster and remove volumes
-podman-compose -f demos/slurm-dev/docker-compose.yaml build umrs-client  # Build the umrs-client image
-podman-compose -f demos/slurm-dev/docker-compose.yaml up -d umrs-client # Start only the umrs-client service
-podman logs --follow umrs-client                                              # Tail umrs-client logs
-```
+| Service | Description | Port |
+|---------|-------------|------|
+| llm-vllm | vLLM inference engine (GPU) | 8000 (internal) |
+| llm-litellm | LiteLLM OpenAI-compatible proxy | 14000 |
+| llm-postgres | Ephemeral LiteLLM state store | - |
+| open-webui | Chat interface | 13000 |
 
-## Direct Slurm Commands
+Start with: `podman-compose --profile llm up -d`
 
-```bash
-# Show nodes
-podman exec ai-login sinfo
+## GPU Sharing
 
-# Show job queue
-podman exec ai-login squeue
+The NVIDIA GB10 does not support MIG. The Slurm-launched Rivault embedding
+model and the always-on chat LLM both need the GPU. Run them sequentially:
 
-# Submit Rivault job manually
-podman exec ai-login sbatch /etc/slurm/mini-rivault-job.sh
+1. **Embedding phase**: Slurm job runs vLLM for embeddings on the GPU
+2. **Cancel Slurm job**: `podman exec ai-login scancel --all`
+3. **Chat phase**: Start always-on LLM: `podman-compose --profile llm up -d`
 
-# Cancel a job
-podman exec ai-login scancel <job_id>
+## Demo Scripts
 
-# View job output
-podman exec ai-login cat /var/run/rivault/rivault-job-<job_id>.json
+| Script | Description | Run from |
+|--------|-------------|----------|
+| `scripts/run_e2e_demo.sh` | Complete E2E orchestration | Host |
+| `scripts/setup_demo_data.sh` | Create MinIO buckets, upload test data | ai-login |
+| `scripts/demo_text_rag.py` | Text RAG: upload, embed, search, QA | umrs-client |
+| `scripts/demo_image_rag.py` | Image RAG: CLIP embeddings + SAM3 | umrs-client |
 
-# Check UMRS logs
-podman exec ai-login tail -f /var/log/umrs.log
+## Test Data
 
-# Check Rivault endpoint from compute node
-podman exec compute-01 curl -s http://localhost:11434/v1/models
-```
+- **Text**: 5 science documents in `test_data/text/` (seismic waves, ML geophysics, HPC, RiVault, numerical methods)
+- **Images**: Cat, Dog, Eagle images from `data/img/` (mounted into containers)
 
 ## Configuration
 
-### UMRS Config Files
+### Key Config Files
 
-The following config files are mounted into ai-login at `~/.config/umrs/`:
-
-- `conf_umrs_rivault_openai.json` - Server config (from `src/umrs_cfg_example/`)
-- `users/rivault_open_ai.json` - Rivault user config with `rivault://openai://` model type
-- `users/openai_api.json` - Direct OpenAI user config
+| File | Purpose |
+|------|---------|
+| `conf_umrs.json` | UMRS server config (points to user config) |
+| `user_files/user_rivault.json` | User config: text (Rivault embedding) + image (CLIP) modalities |
+| `llm-litellm-config.yaml` | LiteLLM config for always-on LLM |
+| `.env` | All environment variables |
+| `s3cfg` | MinIO S3 credentials |
 
 ### Model Path
 
-Set `MODEL_PATH` in `.env` to point to your local HuggingFace model cache.
+Set `MODEL_PATH` in `.env` to your local model weights directory.
 Models are mounted: host → compute-01:/models → vLLM container.
 
-### Adding GPU Support
+For the always-on LLM, set `LLM_MODEL_PATH` in `.env`.
 
-1. Edit `slurm.conf` to uncomment GRES lines:
-   ```
-   GresTypes=gpu
-   NodeName=compute-01 Gres=gpu:1
-   ```
+## Slurm Commands
 
-2. Edit `docker-compose.yaml` to add GPU resources to compute-01
+```bash
+podman exec ai-login sinfo              # Show nodes
+podman exec ai-login squeue             # Show job queue
+podman exec ai-login sbatch /root/.config/umrs/rivault_data/serve-model.slurm  # Submit Rivault job
+podman exec ai-login scancel <job_id>   # Cancel a job
+podman exec ai-login cat /var/run/rivault/rivault-job-<job_id>.json  # Job info
+```
 
 ## Troubleshooting
 
 ### "Node is down"
-
 ```bash
-docker exec ai-login scontrol update nodename=compute-01 state=resume
+podman exec ai-login scontrol update nodename=compute-01 state=resume
 ```
 
 ### "Munge authentication failed"
-
 ```bash
 podman-compose down -v
 podman-compose up -d
 ```
 
 ### Rivault containers not starting
-
-Check podman logs inside compute-01:
 ```bash
 podman exec compute-01 podman ps -a
 podman exec compute-01 podman logs <container_id>
 ```
 
-### UMRS can't connect to model
-
-Check SSH tunnel and Rivault health:
+### UMRS server not running
 ```bash
-podman exec ai-login tail -f /var/log/umrs.log
-podman exec compute-01 curl -s http://localhost:11434/v1/models
+podman exec ai-login cat /var/log/umrs-server.log
+```
+
+### vLLM not loading model
+```bash
+podman logs llm-vllm
+# Ensure MODEL_PATH / LLM_MODEL_PATH points to valid model weights
 ```
 
 ## File Structure
 
 ```
 slurm-dev/
-├── docker-compose.yaml      # Main compose file
-├── slurm.conf               # Slurm configuration
-├── mini-rivault-job.sh      # Slurm job: launches Rivault via podman-compose
-├── s3cfg                    # MinIO S3 config for UMRS
-├── env.template             # Environment template
-├── (setup.sh removed)       # Use podman-compose commands instead
-├── Dockerfile.munge         # Munge authentication container
-├── Dockerfile.ai-login      # Controller + UMRS + SSH container
-├── Dockerfile.compute       # Compute node (podman-in-podman) container
-├── entrypoint-munge.sh      # Munge entrypoint
-├── entrypoint-ai-login.sh   # Controller entrypoint
-└── entrypoint-compute.sh    # Compute entrypoint
+├── docker-compose.yaml        # Main compose file (core + LLM profile)
+├── conf_umrs.json             # UMRS server configuration
+├── llm-litellm-config.yaml    # LiteLLM config for always-on LLM
+├── slurm.conf                 # Slurm cluster configuration
+├── gres.conf                  # GPU resource configuration
+├── mini-rivault-job.sh        # Slurm job: launches Rivault stack
+├── .env                       # Environment variables
+├── s3cfg                      # MinIO S3 credentials
+├── Dockerfile.ai-login        # Controller + UMRS container
+├── Dockerfile.compute         # Compute node (podman-in-podman)
+├── Dockerfile.munge           # Munge authentication
+├── Dockerfile.umrs-client     # Test client container
+├── entrypoint-ai-login.sh     # Controller entrypoint
+├── entrypoint-compute.sh      # Compute entrypoint
+├── entrypoint-munge.sh        # Munge entrypoint
+├── user_files/
+│   └── user_rivault.json      # User config (text + image modalities)
+├── test_data/
+│   └── text/                  # Science text documents for RAG
+├── scripts/
+│   ├── run_e2e_demo.sh        # Full E2E demo orchestration
+│   ├── setup_demo_data.sh     # MinIO bucket/data setup
+│   ├── demo_text_rag.py       # Text RAG demo
+│   └── demo_image_rag.py      # Image RAG demo (CLIP + SAM3)
+└── rivault/                   # Rivault inner stack (podman-in-podman)
+    ├── serve-model.slurm      # Launch script
+    ├── serve-model.yaml       # Rivault compose (NGINX, LiteLLM, vLLM, MCP)
+    ├── litellm_fs/            # LiteLLM config
+    ├── mcpo_fs/               # MCP server config
+    ├── nginx_fs/              # NGINX proxy config
+    └── models/                # Model weights cache
 ```
-
-## Quick Local Demo (UMRS server + client)
-
-Use this when the Slurm cluster and Rivault have been launched with `./setup.sh start` and `./setup.sh rivault`.
-
-1. Copy example server config into your UMRS config dir (or pass it with `-c`):
-
-```bash
-mkdir -p ~/.config/umrs/users
-cp src/umrs_cfg_example/umrs/conf_umrs_rivault_openai.json ~/.config/umrs/conf_umrs.json
-cp demos/slurm-dev/user_files/user_rivault.json ~/.config/umrs/users/
-cp docker/s3cfg_user1 ~/.s3cfg_user1
-```
-
-2. Start the UMRS server locally (it will connect to the running cluster services):
-
-```bash
-python3 src/server_umrs.py -c ~/.config/umrs/conf_umrs.json
-```
-
-3. In another terminal, upload a small test file using the client (this will push the file to MinIO and notify the server):
-
-```bash
-# create a tiny test file
-echo "hello rivault" > /tmp/rivault_test.txt
-
-# use the client config (the client default is ./conf_umrs.json; pass -c to point to your config)
-python3 src/client_umrs.py upload_file /tmp/rivault_test.txt bucket-vLLM rivault_user -c ~/.config/umrs/users/user_rivault.json --server-ip 127.0.0.1
-```
-
-4. Watch the server logs for the Slurm submission and Rivault launch steps. The server will submit a Slurm job, wait for the compute node, create an SSH tunnel and then call the OpenAI-compatible endpoint to compute embeddings.
-
-```bash
-# in the server terminal (or if running inside ai-login container)
-tail -f /var/log/umrs.log
-```
-
-Notes:
-- If ports (MinIO:19000, Slurm:6817, LiteLLM:11434) are in use locally, stop the conflicting containers/processes or adjust port mappings in `docker-compose.yaml` before starting the cluster.
-- If Rivault is not reachable, confirm the Slurm job ran on `compute-01` and that `podman` services inside the compute node are up.
-

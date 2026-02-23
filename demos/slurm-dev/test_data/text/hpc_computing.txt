@@ -1,0 +1,15 @@
+High-Performance Computing for Scientific Simulations
+
+High-performance computing (HPC) enables large-scale scientific simulations that would be impossible on standard workstations. Modern supercomputers combine thousands of processors, massive memory systems, and high-bandwidth interconnects to solve computationally intensive problems in physics, chemistry, biology, and earth sciences.
+
+GPU acceleration has revolutionized scientific computing. NVIDIA CUDA and AMD ROCm provide programming frameworks for exploiting the massive parallelism of graphics processing units. A single modern GPU can deliver tens of teraflops of floating-point performance, making them ideal for matrix operations, finite-element solvers, and neural network training. The latest GPU architectures, including NVIDIA Blackwell and AMD Instinct, push the boundaries further with hardware support for mixed-precision arithmetic and specialized tensor cores.
+
+The Slurm Workload Manager is the dominant job scheduler in HPC environments. It allocates compute resources, manages job queues with priority scheduling, and enforces fair-share policies among users. Slurm supports GPU-aware scheduling through GRES (Generic RESource) configuration, allowing jobs to request specific GPU types and quantities. Job arrays, dependencies, and preemption enable complex workflow orchestration.
+
+Containerization ensures reproducibility in HPC. Singularity (now Apptainer) was designed specifically for multi-tenant HPC systems, running containers without requiring root privileges. Podman provides a Docker-compatible interface with rootless operation and better security isolation. Container images can encapsulate entire software stacks, including GPU drivers and scientific libraries, ensuring consistent execution across different clusters.
+
+MPI (Message Passing Interface) remains the standard for distributed-memory parallel computing. Implementations such as OpenMPI and MPICH support collective communication patterns including broadcast, gather, scatter, and all-reduce operations. Modern MPI implementations leverage RDMA (Remote Direct Memory Access) over InfiniBand or RoCE networks for low-latency, high-bandwidth communication.
+
+Parallel file systems like Lustre and GPFS provide the I/O bandwidth needed for large-scale simulations. Data-intensive applications such as seismic processing and climate modeling generate petabytes of output that must be written and read efficiently. Burst buffers and solid-state storage tiers help bridge the gap between compute speed and storage bandwidth.
+
+Workflow management tools such as Nextflow, Snakemake, and Dask enable scientists to express complex computational pipelines that span multiple HPC jobs, handle data dependencies, and provide provenance tracking for reproducible research.

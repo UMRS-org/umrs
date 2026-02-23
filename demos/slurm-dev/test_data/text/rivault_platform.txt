@@ -1,0 +1,15 @@
+RiVault: AI-for-Science Platform on HPC Infrastructure
+
+RiVault is an AI-for-Science platform designed to bring large language model (LLM) capabilities to high-performance computing environments. It provides on-demand LLM inference with the vLLM backend, proxied through LiteLLM for OpenAI API compatibility, enabling researchers to interact with AI models using familiar interfaces.
+
+The platform architecture follows a security-first design. Models are pre-staged on the HPC filesystem, eliminating the need for runtime downloads. Network access is controlled through CoreDNS whitelisting and an EgressGuard proxy that monitors and filters outbound traffic. All communication between components traverses a private container network with no direct internet access from the inference engine.
+
+UMRS (User Model Research System) provides the data management layer. It handles multi-modal data ingestion from S3-compatible storage, computes embeddings using configurable models (SentenceTransformers, CLIP, or remote vLLM endpoints), and stores vector representations in PostgreSQL with the pgvector extension. This enables semantic search and retrieval-augmented generation (RAG) over user datasets.
+
+The orchestration system supports multiple backends. On HPC clusters, Slurm scheduling provisions compute nodes with GPU resources, launches containerized inference stacks, and establishes SSH tunnels for secure communication. A Kubernetes backend is also available for cloud-native deployments. The hybrid scheduler can translate Kubernetes manifests into Slurm job specifications for environments transitioning between paradigms.
+
+Model Context Protocol (MCP) servers extend the LLM's capabilities with tool calling. Built-in MCP servers include time queries, image segmentation via SAM3, and custom user-defined tools. The MCPO gateway aggregates multiple MCP servers behind a single endpoint, and LiteLLM routes tool calls to the appropriate server transparently.
+
+The RAG pipeline implements hybrid search combining BM25 keyword matching with pgvector semantic similarity, fused through reciprocal rank fusion (RRF). Query rewriting by the LLM generates focused sub-queries for improved retrieval. Cross-encoder reranking refines the final result set before context assembly, which manages token budgets and deduplicates overlapping chunks.
+
+OpenWebUI provides an interactive chat interface for end users. It connects to LiteLLM's OpenAI-compatible API, supporting multi-turn conversations, file uploads, and tool-augmented responses. Researchers can ask questions over their domain-specific datasets without writing code.

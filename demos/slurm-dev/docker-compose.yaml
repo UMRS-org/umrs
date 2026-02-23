@@ -2,9 +2,12 @@
 # Slurm Development Environment for E2E Demo
 # =============================================================================
 #
-# Creates a real Slurm cluster in Docker for local development/testing.
+# Creates a real Slurm cluster for local development/testing.
 # Rivault (vLLM + LiteLLM + supporting services) runs INSIDE compute-01
 # via podman-in-podman, launched by a Slurm job.
+#
+# An always-on LLM service (vLLM + LiteLLM + OpenWebUI) is available via
+# the "llm" profile for RAG chat and interactive use.
 #
 # Architecture:
 #   ┌─────────────────┐    ┌─────────────────────────────────┐
@@ -17,26 +20,28 @@
 #           │              └─────────────────────────────────┘
 #           └───────┬───────────────┘
 #                   ▼
-#           ┌───────────────┐
-#           │  munge        │ (shared authentication)
-#           └───────────────┘
+#           ┌───────────────┐   ┌──────────────────────────────┐
+#           │  munge        │   │  Always-on LLM (profile:llm) │
+#           └───────────────┘   │  vLLM → LiteLLM → OpenWebUI  │
+#                               │  Port 13000 (WebUI)          │
+#                               │  Port 14000 (LiteLLM API)    │
+#                               └──────────────────────────────┘
 #
 # Usage:
-#   # Start Slurm cluster
-#   docker compose -f demos/slurm-dev/docker-compose.yaml up -d
+#   # Start Slurm cluster (core services)
+#   podman-compose -f demos/slurm-dev/docker-compose.yaml up -d
 #
 #   # Check status
-#   docker exec slurmctld sinfo
+#   podman exec ai-login sinfo
 #
-#   # Submit a test job
-#   docker exec slurmctld sbatch /etc/slurm/test-job.sh
+#   # Setup demo data
+#   podman exec ai-login bash /opt/scripts/setup_demo_data.sh
 #
-#   # Run E2E demo in live mode
-#   python demos/e2e_rivault_slurm_rag.py --live \
-#       --model-path /path/to/model
+#   # Start always-on LLM (after Slurm embedding job finishes)
+#   podman-compose -f demos/slurm-dev/docker-compose.yaml --profile llm up -d
 #
 #   # Stop
-#   docker compose -f demos/slurm-dev/docker-compose.yaml down
+#   podman-compose -f demos/slurm-dev/docker-compose.yaml down
 #
 # =============================================================================
 
@@ -67,17 +72,19 @@ services:
       - slurm-spool:/var/spool/slurmctld
       - job-info:/var/run/rivault
       - ./slurm.conf:/etc/slurm/slurm.conf:ro
-      - ./mini-rivault-job.sh:/etc/slurm/mini-rivault-job.sh:ro
       # Mount local repository UMRS source for controller to run the server
       - ../../src:/opt/umrs:ro
-      # UMRS configuration files
-      #- ../../src/umrs_cfg_example/umrs/conf_umrs_rivault_openai.json:/root/.config/umrs/conf_umrs_rivault_openai.json:ro
-      #- ../../src/umrs_cfg_example/umrs/users/rivault_open_ai.json:/root/.config/umrs/users/rivault_open_ai.json:ro
-      #- ../../src/umrs_cfg_example/umrs/users/openai_api.json:/root/.config/umrs/users/openai_api.json:ro
+      # UMRS server configuration (referenced by entrypoint-ai-login.sh)
+      - ./conf_umrs.json:/root/conf_umrs.json:ro
+      # UMRS user configuration files
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
       - ./s3cfg:/root/.s3cfg:ro
       # Rivault Slurm script (referenced by rivault.py at ~/.config/umrs/rivault_data/)
       - ./mini-rivault-job.sh:/root/.config/umrs/rivault_data/serve-model.slurm:ro
+      # Demo test data and scripts
+      - ./test_data:/opt/test_data:ro
+      - ../../data/img:/opt/test_data/images:ro
+      - ./scripts:/opt/scripts:ro
     env_file:
       - .env
     environment:
@@ -276,6 +283,13 @@ services:
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+    volumes:
+      - ../../src:/opt/umrs:ro
+      - ./test_data:/opt/test_data:ro
+      - ../../data/img:/opt/test_data/images:ro
+      - ./scripts:/opt/scripts:ro
+      - ./conf_umrs.json:/opt/umrs/conf_umrs.json:ro
+      - ./s3cfg:/root/.s3cfg:ro
     command: ["tail", "-f", "/dev/null"]
 
     depends_on:
@@ -285,6 +299,109 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+
+  # =============================================================================
+  # Always-On LLM Service (vLLM + LiteLLM + OpenWebUI)
+  # =============================================================================
+  # Activated with: podman-compose --profile llm up -d
+  # Provides a persistent chat/completion endpoint SEPARATE from the
+  # Slurm-launched Rivault embedding model. Since the GB10 GPU does not
+  # support MIG, run this AFTER stopping the Slurm embedding job.
+  # =============================================================================
+
+  llm-vllm:
+    profiles: ["llm"]
+    image: docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-latest}
+    container_name: llm-vllm
+    hostname: llm-vllm
+    networks:
+      slurm-net:
+        aliases:
+          - llm-vllm
+    volumes:
+      - ${LLM_MODEL_PATH:-./rivault/models}:/root/.cache/huggingface:ro
+    environment:
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      VLLM_API_KEY: sk-llm-always-on
+    command: >-
+      ${LLM_VLLM_MODEL:---model /root/.cache/huggingface}
+      --served-model-name qwen-chat
+      --api-key sk-llm-always-on
+      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.85}
+      --enforce-eager
+    devices:
+      - /dev/nvidia0:/dev/nvidia0
+      - /dev/nvidiactl:/dev/nvidiactl
+      - /dev/nvidia-uvm:/dev/nvidia-uvm
+      - /dev/nvidia-modeset:/dev/nvidia-modeset
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 120s
+
+  llm-litellm:
+    profiles: ["llm"]
+    image: ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}
+    container_name: llm-litellm
+    hostname: llm-litellm
+    networks:
+      slurm-net:
+        aliases:
+          - llm-litellm
+    ports:
+      - "14000:4000"    # LiteLLM OpenAI-compatible API
+    volumes:
+      - ./llm-litellm-config.yaml:/config.yaml:ro
+    environment:
+      LITELLM_MASTER_KEY: ${LLM_LITELLM_MASTER_KEY:-sk-llm-demo}
+      LITELLM_SALT_KEY: ${LLM_LITELLM_SALT_KEY:-llm-salt-key-demo}
+      DATABASE_URL: postgresql://postgres:litellm@llm-postgres:5432/litellm
+    command: --port 4000 --config /config.yaml
+    depends_on:
+      llm-vllm:
+        condition: service_healthy
+      llm-postgres:
+        condition: service_started
+
+  llm-postgres:
+    profiles: ["llm"]
+    image: docker.io/postgres:17
+    container_name: llm-postgres
+    hostname: llm-postgres
+    networks:
+      slurm-net:
+        aliases:
+          - llm-postgres
+    tmpfs:
+      - /var/run/postgresql
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: litellm
+      POSTGRES_DB: litellm
+
+  open-webui:
+    profiles: ["llm"]
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    hostname: open-webui
+    networks:
+      slurm-net:
+        aliases:
+          - open-webui
+    ports:
+      - "13000:8080"    # OpenWebUI chat interface
+    environment:
+      OPENAI_API_BASE_URL: http://llm-litellm:4000/v1
+      OPENAI_API_KEY: ${LLM_LITELLM_MASTER_KEY:-sk-llm-demo}
+      WEBUI_AUTH: "False"
+    volumes:
+      - open-webui-data:/app/backend/data
+    depends_on:
+      - llm-litellm
 
 networks:
   slurm-net:
@@ -301,3 +418,4 @@ volumes:
   job-info:
   pg-data:
   minio-data:
+  open-webui-data:

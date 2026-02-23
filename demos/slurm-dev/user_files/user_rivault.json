@@ -24,6 +24,26 @@
             "table_name": "rivault_text",
             "meta_data": [ { "name": "source", "type": "TEXT" } ]
           }
+        },
+        {
+          "modality_name": "image",
+          "s3": {
+            "bucket_alias": "rivault-image-bucket",
+            "data": { "type": "file", "mime_type": "image/jpeg" }
+          },
+          "model": {
+            "model_name": "clip-ViT-B-32",
+            "vector_size": "512",
+            "model_type": "SentenceTransformer"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "rivault_image",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" },
+              { "name": "description", "type": "TEXT" }
+            ]
+          }
         }
       ]
     }
