@@ -82,7 +82,7 @@
             "data": { "type": "file", "mime_type": "image/jpeg" }
           },
           "model": {
-            "model_name": "clip-ViT-B-32",
+            "model_name": "openai/clip-vit-base-patch32",
             "vector_size": "512",
             "model_type": "SentenceTransformer"
           },

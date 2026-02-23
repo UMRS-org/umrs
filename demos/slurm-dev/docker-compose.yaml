@@ -73,9 +73,9 @@ services:
       - job-info:/var/run/rivault
       - ./slurm.conf:/etc/slurm/slurm.conf:ro
       # Mount local repository UMRS source for controller to run the server
-      - ../../src:/opt/umrs:ro
+      - ../../src:/opt/umrs:rw
       # UMRS server configuration (referenced by entrypoint-ai-login.sh)
-      - ./conf_umrs.json:/root/conf_umrs.json:ro
+      - ./conf_umrs.json:/root/conf_umrs.json:rw
       # UMRS user configuration files
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
       - ./s3cfg:/root/.s3cfg:ro
@@ -85,6 +85,7 @@ services:
       - ./test_data:/opt/test_data:ro
       - ../../data/img:/opt/test_data/images:ro
       - ./scripts:/opt/scripts:ro
+      - ${MODEL_PATH:-./rivault/models}:/shared/models:ro
     env_file:
       - .env
     environment:
@@ -96,6 +97,10 @@ services:
       # UMRS configuration
       - DB_HOST=${DB_HOST:-postgres}
       - DB_SUPERUSER_PASSWORD=${DB_SUPERUSER_PASSWORD:-}
+      # Map Postgres admin creds into UMRS expected vars so the server can
+      # create databases and users even when POSTGRES_USER is not 'postgres'.
+      - DB_SUPERUSER=${POSTGRES_USER:-umrs}
+      - DB_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-umrs_dev}
       - DB_USER_PASSWORD=${DB_USER_PASSWORD:-umrs_dev}
       - UMRS_SERVER_HOST=${UMRS_SERVER_HOST:-umrs-server}
       # Ensure HF and SentenceTransformers caches go into the shared models
@@ -284,124 +289,133 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
     volumes:
-      - ../../src:/opt/umrs:ro
+      - ../../src:/opt/umrs:rw
       - ./test_data:/opt/test_data:ro
       - ../../data/img:/opt/test_data/images:ro
       - ./scripts:/opt/scripts:ro
-      - ./conf_umrs.json:/opt/umrs/conf_umrs.json:ro
+      # Mount conf outside of the /opt/umrs tree (which is mounted read-only)
+      - ./user_files/user_rivault.json:/root/conf_umrs.json:ro
       - ./s3cfg:/root/.s3cfg:ro
     command: ["tail", "-f", "/dev/null"]
 
     depends_on:
       ai-login:
         condition: service_healthy
-      postgres:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
+      #postgres:
+      #  condition: service_healthy
+      #minio:
+      #  condition: service_healthy
 
   # =============================================================================
   # Always-On LLM Service (vLLM + LiteLLM + OpenWebUI)
-  # =============================================================================
-  # Activated with: podman-compose --profile llm up -d
-  # Provides a persistent chat/completion endpoint SEPARATE from the
-  # Slurm-launched Rivault embedding model. Since the GB10 GPU does not
-  # support MIG, run this AFTER stopping the Slurm embedding job.
-  # =============================================================================
-
-  llm-vllm:
-    profiles: ["llm"]
-    image: docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-latest}
-    container_name: llm-vllm
-    hostname: llm-vllm
-    networks:
-      slurm-net:
-        aliases:
-          - llm-vllm
-    volumes:
-      - ${LLM_MODEL_PATH:-./rivault/models}:/root/.cache/huggingface:ro
-    environment:
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_OFFLINE: "1"
-      VLLM_NO_USAGE_STATS: "1"
-      VLLM_API_KEY: sk-llm-always-on
-    command: >-
-      ${LLM_VLLM_MODEL:---model /root/.cache/huggingface}
-      --served-model-name qwen-chat
-      --api-key sk-llm-always-on
-      --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.85}
-      --enforce-eager
-    devices:
-      - /dev/nvidia0:/dev/nvidia0
-      - /dev/nvidiactl:/dev/nvidiactl
-      - /dev/nvidia-uvm:/dev/nvidia-uvm
-      - /dev/nvidia-modeset:/dev/nvidia-modeset
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 10
-      start_period: 120s
-
-  llm-litellm:
-    profiles: ["llm"]
-    image: ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}
-    container_name: llm-litellm
-    hostname: llm-litellm
-    networks:
-      slurm-net:
-        aliases:
-          - llm-litellm
-    ports:
-      - "14000:4000"    # LiteLLM OpenAI-compatible API
-    volumes:
-      - ./llm-litellm-config.yaml:/config.yaml:ro
-    environment:
-      LITELLM_MASTER_KEY: ${LLM_LITELLM_MASTER_KEY:-sk-llm-demo}
-      LITELLM_SALT_KEY: ${LLM_LITELLM_SALT_KEY:-llm-salt-key-demo}
-      DATABASE_URL: postgresql://postgres:litellm@llm-postgres:5432/litellm
-    command: --port 4000 --config /config.yaml
-    depends_on:
-      llm-vllm:
-        condition: service_healthy
-      llm-postgres:
-        condition: service_started
-
-  llm-postgres:
-    profiles: ["llm"]
-    image: docker.io/postgres:17
-    container_name: llm-postgres
-    hostname: llm-postgres
-    networks:
-      slurm-net:
-        aliases:
-          - llm-postgres
-    tmpfs:
-      - /var/run/postgresql
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: litellm
-      POSTGRES_DB: litellm
-
-  open-webui:
-    profiles: ["llm"]
-    image: ghcr.io/open-webui/open-webui:main
-    container_name: open-webui
-    hostname: open-webui
-    networks:
-      slurm-net:
-        aliases:
-          - open-webui
-    ports:
-      - "13000:8080"    # OpenWebUI chat interface
-    environment:
-      OPENAI_API_BASE_URL: http://llm-litellm:4000/v1
-      OPENAI_API_KEY: ${LLM_LITELLM_MASTER_KEY:-sk-llm-demo}
-      WEBUI_AUTH: "False"
-    volumes:
-      - open-webui-data:/app/backend/data
-    depends_on:
-      - llm-litellm
+  # -----------------------------------------------------------------------------
+  # The following services provide an always-on LLM stack under the "llm"
+  # profile. They are commented out below in favor of using the Rivault demo
+  # compose + override files. If you prefer to run the local always-on stack
+  # uncomment the block and use `podman-compose --profile llm up -d`.
+  #
+  # Alternative (recommended): use the Rivault demo compose files which include
+  # appropriate runtime overrides for NVIDIA devices.
+  #   - demos/slurm-dev/rivault/serve-model.yaml (or demo-llm.yaml)
+  #   - demos/slurm-dev/rivault/x_nvidia-override.yaml
+  # Example:
+  #   podman-compose -f demos/slurm-dev/rivault/serve-model.yaml -f demos/slurm-dev/rivault/x_nvidia-override.yaml up -d
+  #
+  # Below: commented original always-on LLM service definition (kept for reference).
+  #
+  # llm-vllm:
+  #   profiles: ["llm"]
+  #   image: docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-latest}
+  #   container_name: llm-vllm
+  #   hostname: llm-vllm
+  #   networks:
+  #     slurm-net:
+  #       aliases:
+  #         - llm-vllm
+  #   volumes:
+  #     - ${LLM_MODEL_PATH:-./rivault/models}:/root/.cache/huggingface:ro
+  #   environment:
+  #     TRANSFORMERS_OFFLINE: "1"
+  #     HF_HUB_OFFLINE: "1"
+  #     VLLM_NO_USAGE_STATS: "1"
+  #     VLLM_API_KEY: sk-llm-always-on
+  #   command: >-
+  #     ${LLM_VLLM_MODEL:---model /root/.cache/huggingface}
+  #     --served-model-name qwen-chat
+  #     --api-key sk-llm-always-on
+  #     --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.85}
+  #     --enforce-eager
+  #   devices:
+  #     - /dev/nvidia0:/dev/nvidia0
+  #     - /dev/nvidiactl:/dev/nvidiactl
+  #     - /dev/nvidia-uvm:/dev/nvidia-uvm
+  #     - /dev/nvidia-modeset:/dev/nvidia-modeset
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models || exit 1"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 10
+  #     start_period: 120s
+  #
+  # llm-litellm:
+  #   profiles: ["llm"]
+  #   image: ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}
+  #   container_name: llm-litellm
+  #   hostname: llm-litellm
+  #   networks:
+  #     slurm-net:
+  #       aliases:
+  #         - llm-litellm
+  #   ports:
+  #     - "14000:4000"    # LiteLLM OpenAI-compatible API
+  #   volumes:
+  #     - ./llm-litellm-config.yaml:/config.yaml:ro
+  #   environment:
+  #     LITELLM_MASTER_KEY: ${LLM_LITELLM_MASTER_KEY:-sk-llm-demo}
+  #     LITELLM_SALT_KEY: ${LLM_LITELLM_SALT_KEY:-llm-salt-key-demo}
+  #     DATABASE_URL: postgresql://postgres:litellm@llm-postgres:5432/litellm
+  #   command: --port 4000 --config /config.yaml
+  #   depends_on:
+  #     llm-vllm:
+  #       condition: service_healthy
+  #     llm-postgres:
+  #       condition: service_started
+  #
+  # llm-postgres:
+  #   profiles: ["llm"]
+  #   image: docker.io/postgres:17
+  #   container_name: llm-postgres
+  #   hostname: llm-postgres
+  #   networks:
+  #     slurm-net:
+  #       aliases:
+  #         - llm-postgres
+  #   tmpfs:
+  #     - /var/run/postgresql
+  #   environment:
+  #     POSTGRES_USER: postgres
+  #     POSTGRES_PASSWORD: litellm
+  #     POSTGRES_DB: litellm
+  #
+  # open-webui:
+  #   profiles: ["llm"]
+  #   image: ghcr.io/open-webui/open-webui:main
+  #   container_name: open-webui
+  #   hostname: open-webui
+  #   networks:
+  #     slurm-net:
+  #       aliases:
+  #         - open-webui
+  #   ports:
+  #     - "13000:8080"    # OpenWebUI chat interface
+  #   environment:
+  #     OPENAI_API_BASE_URL: http://llm-litellm:4000/v1
+  #     OPENAI_API_KEY: ${LLM_LITELLM_MASTER_KEY:-sk-llm-demo}
+  #     WEBUI_AUTH: "False"
+  #   volumes:
+  #     - open-webui-data:/app/backend/data
+  #   depends_on:
+  #     - llm-litellm
 
 networks:
   slurm-net:

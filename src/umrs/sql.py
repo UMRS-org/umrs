@@ -49,7 +49,7 @@ class DataBase:
         else:
             print(f"Column '{column_name}' not found in table '{table_name}'.")
             return None
-        
+
     def table_exists(self, conn, table_name: str) -> bool:
         with conn.cursor() as cur:
             cur.execute("""
@@ -61,8 +61,8 @@ class DataBase:
                 );
             """, (table_name,))
             return cur.fetchone()[0]
-        
-    
+
+
     def wait_for_table_update(self, table_name, timeout=None):
         import select
         """
@@ -98,13 +98,13 @@ class DataBase:
             conn.poll()
             notify = conn.notifies.pop(0)
             conn.notifies.clear()
-            
+
             return notify.payload
 
         finally:
-           
+
             self.db_pool.putconn(conn)
-            
+
     def count_s3_objects(self, table_name: str) -> int:
         """
         Count the number of unique S3 objects stored in the given table.
@@ -151,18 +151,18 @@ def wait_table_modification_on_db(active_threads, user, key, data_base, table_na
         raise RuntimeError(
             f"Error while waiting for table '{table_name}' update: {e}"
         ) from e
-    
-    if res is None : 
+
+    if res is None :
         msg = "TIMEOUT"
-    else : 
-        msg = res 
-    
+    else :
+        msg = res
+
     control_mq.send_string(msg, zmq_sender_id)
 
     active_threads.update_status_to_done()
     # print(f"wait is done for {user=}")
     active_threads.record_status_for_users_by_key([user], key)
-    active_threads.remove_from_running_list()        
+    active_threads.remove_from_running_list()
 
     # execute callback to update task status to completed
     if on_finish:
@@ -191,9 +191,11 @@ def db_user_exists(conn, username):
 def create_db_user(username):
     # Database credentials
     DB_HOST = os.environ.get("DB_HOST", "localhost")
-    DB_PORT = "5432"
-    DB_SUPERUSER = "postgres"  # Use a superuser or admin account
-    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", "postgres")
+    DB_PORT = os.environ.get("DB_PORT", "5432")
+    # Allow overriding superuser via env (`DB_SUPERUSER`) or fall back to
+    # the postgres service user (`POSTGRES_USER`) and finally `postgres`.
+    DB_SUPERUSER = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
 
     conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
     conn.autocommit = True  # Enable auto-commit mode
@@ -223,9 +225,9 @@ def create_db(sql_username, xp_name):
     print(f"\t\t-->  Configuring database '{db_name}'...")
     # Database credentials
     DB_HOST = os.environ.get("DB_HOST", "localhost")
-    DB_PORT = "5432"
-    DB_SUPERUSER = "postgres"  # Use a superuser or admin account
-    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", "postgres")
+    DB_PORT = os.environ.get("DB_PORT", "5432")
+    DB_SUPERUSER = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
     DB_NAME = db_name  # Replace with the target database
     DB_USER = sql_username  # Replace with the target user
 
@@ -461,7 +463,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         else:
             sys.exit(f"Do not know how to manage return type '{model.return_type}' in cfg file")
 
-        
+
 
     else:
         # Validate existing table schema
@@ -586,12 +588,12 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         # Finish the query by returning the ID of the inserted or updated row
         query += " RETURNING id;"
 
-    
+
 
         # Execute the query with the prepared values
         cur.execute(query, values)
 
-    
+
         # Fetch the inserted/updated ID
         inserted_id = cur.fetchone()[0]  # Fetch the first column of the result
 
@@ -630,7 +632,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
                 print(f"\t--> metadata have been added/updated'")
             if saved_s3_object:
                   print(f"\t--> Output saved in {saved_s3_object}'")
-          
+
 
 
     except Exception as e:
@@ -759,7 +761,7 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         db_pool.putconn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, buckets_cfg: BucketsCfg):
-    
+
     selected_fields = ["data_base", "table_name"]
     data_base, table_name  = buckets_cfg.get(path_to_bucket, filter=selected_fields)
     status = []

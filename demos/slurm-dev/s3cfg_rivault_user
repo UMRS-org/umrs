@@ -1,0 +1,8 @@
+[default]
+host_base = minio:9000
+host_bucket = minio:9000/%(bucket)s
+use_https = False
+check_ssl_certificate = False
+access_key = rivault_user
+secret_key = CHANGE_ME
+bucket_location = us-east-1

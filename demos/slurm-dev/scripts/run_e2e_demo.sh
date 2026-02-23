@@ -106,7 +106,7 @@ echo "Phase 3: Running text RAG demo..."
 echo "------------------------------------------------------------"
 echo "  (This triggers: sbatch -> Rivault -> vLLM -> embeddings -> pgvector)"
 
-podman exec umrs-client python3 /opt/scripts/demo_text_rag.py \
+podman exec umrs-client python3 /opt/scripts/demo_text_rag.py -c /root/conf_umrs.json \
     --server-ip ai-login \
     --rag-url http://ai-login:8081 || {
     echo "  WARNING: Text RAG demo encountered errors."
@@ -137,10 +137,13 @@ fi
 # Phase 5: Start always-on LLM
 # =============================================================================
 echo ""
-echo "Phase 5: Starting always-on LLM (vLLM + LiteLLM + OpenWebUI)..."
+echo "Phase 5: Starting always-on LLM (vLLM + LiteLLM + OpenWebUI) using Rivault demo compose..."
 echo "------------------------------------------------------------"
 
-$COMPOSE -f "$COMPOSE_FILE" --profile llm up -d
+# Use the Rivault demo compose + NVIDIA override so device and runtime
+# settings match the Rivault examples. These files live under the `rivault`
+# directory next to this script.
+$COMPOSE -f "$COMPOSE_FILE" -f rivault/demo-llm.yaml -f rivault/x_nvidia-override.yaml --profile llm up -d
 
 echo "  Waiting for vLLM to load model (this may take a few minutes)..."
 for i in $(seq 1 60); do
@@ -162,7 +165,7 @@ echo ""
 echo "Phase 6: Running image RAG demo..."
 echo "------------------------------------------------------------"
 
-podman exec umrs-client python3 /opt/scripts/demo_image_rag.py \
+podman exec umrs-client python3 /opt/scripts/demo_image_rag.py -c /root/conf_umrs.json \
     --server-ip ai-login \
     --rag-url http://ai-login:8081 \
     --llm-url http://llm-litellm:4000 \

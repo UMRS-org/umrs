@@ -61,13 +61,13 @@ podman-compose up -d
 podman exec ai-login sinfo
 
 # 3. Upload test data to MinIO
-podman exec ai-login bash /opt/scripts/setup_demo_data.sh
+podman exec umrs-client bash /opt/scripts/setup_demo_data.sh
 
 # 4. Start always-on LLM (vLLM + LiteLLM + OpenWebUI)
 #    NOTE: Stop any Slurm embedding jobs first (single GPU)
 podman exec ai-login scancel --all
-podman-compose --profile llm up -d
-
+#podman-compose --profile llm up -d
+podman-compose -f "$COMPOSE_FILE" -f rivault/demo-llm.yaml -f rivault/x_nvidia-override.yaml --profile llm up -d
 # 5. Open the chat UI
 #    http://localhost:13000
 ```
@@ -209,6 +209,8 @@ slurm-dev/
 └── rivault/                   # Rivault inner stack (podman-in-podman)
     ├── serve-model.slurm      # Launch script
     ├── serve-model.yaml       # Rivault compose (NGINX, LiteLLM, vLLM, MCP)
+    ├── demo-llm.yaml          # Rivault LLM compose (recommended)
+    ├── x_nvidia-override.yaml  # NVIDIA runtime/device overrides
     ├── litellm_fs/            # LiteLLM config
     ├── mcpo_fs/               # MCP server config
     ├── nginx_fs/              # NGINX proxy config

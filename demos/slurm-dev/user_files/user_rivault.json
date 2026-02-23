@@ -1,51 +1,42 @@
 {
   "username": "rivault_user",
   "fullname": "Rivault Demo User",
-  "s3_configuration_file": "~/.s3cfg_user1",
+  "s3_configuration_file": "~/.s3cfg_rivault_user",
   "experiences": [
     {
-      "xp_name": "Rivault Embedding XP",
-      "sql_username": "rivault_usr",
+      "xp_name": "Text_Rivault",
+      "sql_username": "rivault_user",
       "modalities": [
         {
           "modality_name": "text",
           "s3": {
-            "bucket_alias": "rivault-demo-bucket",
-            "data": { "type": "file", "mime_type": "text/plain" }
+            "bucket_alias": "bucket-vLLM",
+             "data": {
+              "type": "inline",
+              "mime_type": "text/plain"
+            },
+            "need_output_bucket": false
           },
           "model": {
-            "model_name": "rivault-demo-model",
-            "vector_size": "1536",
-            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
-            "description": "Launches a Rivault-served OpenAI-compatible embedding endpoint via Slurm"
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "rivault://openai://http://localhost:8001/v1",
+            "spacy_model": "en_core_web_sm",
+            "return_type": null
           },
           "sql": {
             "store_embeddings": "yes",
-            "table_name": "rivault_text",
-            "meta_data": [ { "name": "source", "type": "TEXT" } ]
-          }
-        },
-        {
-          "modality_name": "image",
-          "s3": {
-            "bucket_alias": "rivault-image-bucket",
-            "data": { "type": "file", "mime_type": "image/jpeg" }
-          },
-          "model": {
-            "model_name": "clip-ViT-B-32",
-            "vector_size": "512",
-            "model_type": "SentenceTransformer"
-          },
-          "sql": {
-            "store_embeddings": "yes",
-            "table_name": "rivault_image",
+            "table_name": "text",
             "meta_data": [
-              { "name": "keywords", "type": "TEXT" },
-              { "name": "description", "type": "TEXT" }
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
             ]
           }
         }
       ]
+
     }
   ]
 }

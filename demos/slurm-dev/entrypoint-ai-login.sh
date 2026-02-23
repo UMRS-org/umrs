@@ -62,6 +62,14 @@ chown -R slurm:slurm /var/spool/slurmctld
 mkdir -p /var/run/rivault
 chmod 777 /var/run/rivault
 
+# DEMO model pre-downloads
+## use scripts/download_rivault_models.sh to pre-download models into the shared rivault/models directory
+#hf download openai/clip-vit-base-patch32 #\
+#--local-dir clip-vit-base-patch32
+#hf download intfloat/e5-base-v2 #\
+#--local-dir e5-base-v2
+
+
 # If UMRS source is mounted, install requirements and prepare the server.
 # Note: UMRS is NOT started automatically because the Rivault stack must be
 # running first (the rivault:// model type triggers Slurm job submission).
@@ -81,13 +89,69 @@ if [[ -d /opt/umrs ]]; then
         echo "Starting UMRS server in the background..."
         # Note: In production, the server would be started separately from the controller (e.g. in a separate container or process) and the worker would communicate with it via the network. Here
         # we start it in the controller for simplicity, and the worker can access it via localhost.
-        python3 /opt/umrs/server_umrs.py -c /root/conf_umrs.json &>/var/log/umrs-server.log &
-        echo "UMRS server started. Logs: /var/log/umrs-server.log"
+        # Before starting, ensure any spaCy models referenced by the user config are available.
+        USER_CFG="/root/.config/umrs/users/user_rivault.json"
+        if [[ -f "$USER_CFG" ]]; then
+            echo "Checking for spaCy models referenced in $USER_CFG"
+            mapfile -t _SPACY_MODELS < <(python3 - <<PY
+import json,sys
+try:
+    j=json.load(open('$USER_CFG'))
+except Exception:
+    sys.exit(0)
+models=set()
+def walk(o):
+    if isinstance(o,dict):
+        for k,v in o.items():
+            if k=='spacy_model' and isinstance(v,str):
+                models.add(v)
+            else:
+                walk(v)
+    elif isinstance(o,list):
+        for i in o:
+            walk(i)
+walk(j)
+print('\n'.join(sorted(models)))
+PY
+)
+            for sm in "${_SPACY_MODELS[@]:-}"; do
+                if [[ -z "$sm" ]]; then
+                    continue
+                fi
+                echo "Ensuring spaCy model: $sm"
+                if python3 -c "import spacy; spacy.load('$sm')" >/dev/null 2>&1; then
+                    echo "  -> $sm already available"
+                    continue
+                fi
+                # Try to install spacy package if missing
+                if ! python3 -c 'import spacy' >/dev/null 2>&1; then
+                    echo "Installing spaCy runtime via pip"
+                    pip3 install -U spacy || true
+                fi
+                echo "Downloading spaCy model $sm"
+                python3 -m spacy download "$sm" || echo "Warning: failed to download spaCy model $sm"
+            done
+        fi
+
+        #python3 /opt/umrs/server_umrs.py -c /root/conf_umrs.json &>/var/log/umrs-server.log &
+        #echo "UMRS server started. Logs: /var/log/umrs-server.log"
 
     else
         echo "pip3 not available; cannot install UMRS requirements."
     fi
 fi
 
-echo "Starting slurmctld..."
-exec "$@"
+echo "Starting slurmctld in background..."
+# If slurmctl command available, use it; otherwise fall back to any provided CMD/args
+if command -v slurmctld >/dev/null 2>&1; then
+    slurmctld &
+else
+    if [ "$#" -gt 0 ]; then
+        "$@" &
+    else
+        echo "Warning: no slurmctld command found and no CMD provided; continuing"
+    fi
+fi
+
+echo "Starting UMRS server in foreground (this is the container's main process)"
+exec python3 /opt/umrs/server_umrs.py -c /root/conf_umrs.json

@@ -1,0 +1,59 @@
+{
+  "username": "rivault_user",
+  "fullname": "Rivault Demo User",
+  "s3_configuration_file": "~/.s3cfg_rivault_user",
+  "experiences": [
+    {
+      "xp_name": "rivault-multimodal-xp-cheap",
+      "sql_username": "rivault_user",
+      "modalities": [
+        {
+          "modality_name": "text",
+          "s3": {
+            "bucket_alias": "rivault-demo-bucket",
+            "data": { "type": "file", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "clip-vit-base-patch32",
+            "vector_size": "512",
+            "model_type": "rivault://openai://http://localhost:8001/v1",
+            "return_type": null
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "rivault_multimodal",
+            "meta_data": [
+              { "name": "source", "type": "TEXT" },
+              { "name": "modality", "type": "TEXT" },
+              { "name": "keywords", "type": "TEXT" },
+              { "name": "description", "type": "TEXT" }
+            ]
+          }
+        },
+        {
+          "modality_name": "image",
+          "s3": {
+            "bucket_alias": "rivault-image-bucket",
+            "data": { "type": "file", "mime_type": "image/jpeg" }
+          },
+          "model": {
+            "model_name": "clip-vit-base-patch32",
+            "vector_size": "512",
+            "model_type": "rivault://openai://http://localhost:8001/v1",
+            "return_type": null
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "rivault_multimodal",
+            "meta_data": [
+              { "name": "source", "type": "TEXT" },
+              { "name": "modality", "type": "TEXT" },
+              { "name": "keywords", "type": "TEXT" },
+              { "name": "description", "type": "TEXT" }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
