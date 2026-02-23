@@ -14,4 +14,4 @@
 *.pt
 models/
 */models/
-demos/slurm-dev/rivault/model/*.safetensors
+demos/slurm-dev/rivault/models/*.safetensors
