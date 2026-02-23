@@ -4,3 +4,13 @@
 
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
+
+# Ignore model binaries and large model caches
+/data/models/
+/docker/data/models/
+*.safetensors
+*.pth
+*.pth.tar
+*.pt
+models/
+*/models/
