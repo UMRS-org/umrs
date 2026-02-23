@@ -1,0 +1,41 @@
+{
+  "username": "plafrim",
+  "fullname": "Rivault User on Plafrim",
+  "s3_configuration_file": "~/.s3cfg_plafrim",
+  "experiences": [
+    {
+      "xp_name": "Text_Plafrim",
+      "sql_username": "User3",
+      "modalities": [
+        {
+          "modality_name": "text",
+          "s3": {
+            "bucket_alias": "bucket-vLLM",
+             "data": {
+              "type": "inline",
+              "mime_type": "text/plain"
+            },
+            "need_output_bucket": false
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+              "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "spacy_model": "en_core_web_sm",
+            "return_type": null
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
+            ]
+          }
+        }   
+      ]
+    } 
+  ]
+}

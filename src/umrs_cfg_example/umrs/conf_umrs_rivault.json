@@ -1,0 +1,6 @@
+{
+  "admin_s3_configuration_file": "~/.s3cfg",
+  "users": [
+      "~/.config/umrs/users/plafrim_open_ai.json"
+  ]
+}
