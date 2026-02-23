@@ -1,4 +1,5 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
+
 import os
 import sys
 from umrs.sql import *
@@ -440,7 +441,7 @@ server_notify_result = None
 
 def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=True):
     if not os.path.isfile(file_path):
-        print("Error: file {file_path} is not a valid.")
+        print(f"Error: file {file_path} is not a valid.")
         return None, 0
 
     print(f"Processing file '{file_path}' for modality '{modality}'")
