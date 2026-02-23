@@ -76,30 +76,47 @@ python /home/jeannot/umrs/tests/OpenAI-API/launch_fastapi.py
 
     return output_file, error_file
 
+def _ensure_output_dir():
+    """Create and return the tmp directory for Slurm output files."""
+    cfg_dir = get_default_umrs_cfg_dir()
+    tmp_dir = get_default_tmp_subdir()
+    full_tmp_path = os.path.join(os.path.expanduser(cfg_dir), tmp_dir)
+    os.makedirs(full_tmp_path, exist_ok=True)
+    return full_tmp_path
+
 def get_slurm_node(slurm_script):
     output_file = error_file = None
     if "plafrim" in slurm_script:
         output_file, error_file = create_plafrim_slurm_script(slurm_script)
-    
+
+    # For non-plafrim scripts, set up output/error files so we can
+    # extract the compute node address from the Slurm output.
+    sbatch_extra_args = []
+    if output_file is None:
+        out_dir = _ensure_output_dir()
+        output_file = os.path.join(out_dir, "slurm-%j.out")
+        error_file = os.path.join(out_dir, "slurm-%j.err")
+        sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
+
     # Launch script
     print(f"sbatch {slurm_script}")
-    proc = subprocess.Popen(["sbatch", slurm_script], stdout=subprocess.PIPE)
+    sbatch_cmd = ["sbatch"] + sbatch_extra_args + [slurm_script]
+    proc = subprocess.Popen(sbatch_cmd, stdout=subprocess.PIPE)
 
-    print("Wating for job to start...")
+    print("Waiting for job to start...")
     # Read job SLURM ID
     output, _ = proc.communicate()
     job_id = None
     if output:
         text = output.decode()
-        # sbatch renvoie typiquement "Submitted batch job 12345"
+        # sbatch returns "Submitted batch job 12345"
         if "Submitted batch job" in text:
             job_id = int(text.strip().split()[-1])
             print("Job submitted with ID:", job_id)
             while not is_slurm_job_running(job_id):
                 time.sleep(0.5)
 
-    # change the %j in output_file and error_file by JOB_ID
-    
+    # Replace %j placeholder with actual JOB_ID
     if output_file:
         output_file = output_file.replace("%j", str(job_id))
     if error_file:
@@ -237,15 +254,16 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=60.0, i
         time.sleep(interval)
 
 def launch_rivault_model(model_cfg):
-    # --- 1. get a node form SLURM ---    
+    # --- 1. get a node from SLURM ---
     rivault_slurm_script = get_slurm_script_from_host()
     output_file, error_file, job_id = get_slurm_node(rivault_slurm_script)
 
     print(f"{output_file=} {job_id=}")
-    
-    # --- 2. Load environment variables (from the SLURM env file) ---
-    server_adress=extract_node_address(output_file) if output_file else "localhost"
-    local_port = forward_to_remote(server_adress, 8001) #TODO find 8001 automatically 
+
+    # --- 2. Extract compute node address and create SSH tunnel ---
+    server_adress = extract_node_address(output_file) if output_file else "localhost"
+    remote_port = get_rivault_remote_port()
+    local_port = forward_to_remote(server_adress, remote_port)
     NGINX_PORT = os.getenv("NGINX_LITELLM_DOCKER_PORT")
     MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
     
@@ -265,12 +283,13 @@ def launch_rivault_model(model_cfg):
 
 
 if __name__ == "__main__":
-   # --- 1. get a node form SLURM ---    
+    # --- 1. get a node from SLURM ---
     rivault_slurm_script = get_slurm_script_from_host()
     output_file, error_file, job_id = get_slurm_node(rivault_slurm_script)
     print(f"{output_file=} {job_id=}")
-    server_adress=extract_node_address(output_file)
+    server_adress = extract_node_address(output_file) if output_file else "localhost"
     print(f"{server_adress=}")
-    local_port = forward_to_remote(server_adress, 8001) #TODO find 8001 automatically
+    remote_port = get_rivault_remote_port()
+    local_port = forward_to_remote(server_adress, remote_port)
     print(f"{local_port=}")
     
