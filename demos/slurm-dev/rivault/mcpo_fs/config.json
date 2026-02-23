@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "time": {
+      "type": "streamable-http",
+      "url": "http://mcp-time:8080/mcp"
+    },
+    "vision": {
+      "type": "streamable-http",
+      "url": "http://mcp-vision:8080/mcp",
+      "description": "Vision MCP server for SAM3 image segmentation"
+    }
+  }
+}

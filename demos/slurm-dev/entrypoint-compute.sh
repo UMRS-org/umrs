@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# Slurmd Entrypoint Script
+# Compute (compute-01) Entrypoint Script
 # =============================================================================
 # Waits for munge key, then starts slurmd.
 # =============================================================================
@@ -37,6 +37,23 @@ if ! munge -n > /dev/null 2>&1; then
     exit 1
 fi
 echo "Munge is ready."
+
+# Configure podman storage for nested containers (podman-in-podman)
+if command -v podman >/dev/null 2>&1; then
+    echo "Configuring podman for nested container operation..."
+    mkdir -p "${HOME}/.config/containers/"
+    cat > "${HOME}/.config/containers/storage.conf" << 'STOREOF'
+[storage]
+driver="overlay"
+[storage.options.overlay]
+force_mask="700"
+STOREOF
+
+    echo "Starting podman system service..."
+    podman system service -t 0 &>/var/log/podman-service.log &
+    sleep 1 || true
+    echo "podman service started (if supported). Logs: /var/log/podman-service.log"
+fi
 
 # Ensure state directories exist with correct permissions
 mkdir -p /var/spool/slurmd
