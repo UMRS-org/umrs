@@ -25,7 +25,6 @@
 # Ports exposed on the host:
 #   13000 - OpenWebUI chat interface
 #   14000 - NGINX → LiteLLM OpenAI-compatible API
-#   14100 - RAG service (search + QA)
 # =============================================================================
 
 services:
@@ -184,42 +183,12 @@ services:
     cap_add: [ sys_nice ]
 
   # ---------------------------------------------------------------------------
-  # RAG service (UMRS pgvector retrieval + LLM Q&A)
+  # RAG service
   # ---------------------------------------------------------------------------
-  rag:
-    image: ghcr.io/riken-rccs/umrs-rag:${RAG_DOCKER_TAG:-latest}
-    command: python -m umrs.rag_service --port 8100
-    networks:
-      demo-llm-net:
-        ipv4_address: ${PRIV_IP1TO3:-192.168.5}.${RAG_IP4:-32}
-    extra_hosts:
-      - vllm:${PRIV_IP1TO3:-192.168.5}.${VLLM_IP4:-22}
-    ports:
-      - ${RAG_PORT:-14100}:8100
-    volumes:
-      - type: bind
-        source: ${PROJECT_DATA_PATH:-/tmp/project-data}
-        target: /project
-        read_only: true
-      - type: bind
-        source: ${RAG_INDEX_PATH:-/tmp/rag-index}
-        target: /rag-index
-        read_only: true
-      - type: tmpfs
-        target: /scratch
-    environment:
-      RAG_INDEX_PATH: /rag-index
-      PROJECT_DATA_PATH: /project
-      VLLM_BASE_URL: http://vllm:8000
-      TRANSFORMERS_OFFLINE: "1"
-      HF_HUB_OFFLINE: "1"
-      TZ: ${GENAI_TZ:-Asia/Tokyo}
-      CUDA_VISIBLE_DEVICES: ""
-      HIP_VISIBLE_DEVICES: ""
-    depends_on:
-      - vllm
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice ]
+  # The UMRS RAG service runs on ai-login (inside the Slurm stack) rather than
+  # here, because it needs direct access to the UMRS pgvector database.
+  # Enable it with UMRS_RAG_ENABLE=1 in docker-compose.yaml.
+  # ---------------------------------------------------------------------------
 
   # ---------------------------------------------------------------------------
   # OpenWebUI (chat interface)

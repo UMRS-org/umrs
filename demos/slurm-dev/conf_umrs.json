@@ -1,6 +1,6 @@
 {
   "admin_s3_configuration_file": "~/.s3cfg",
   "users": [
-    "/root/user_files/user_rivault.json"
+    "~/.config/umrs/users/user_rivault.json"
   ]
 }

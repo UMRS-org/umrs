@@ -6,26 +6,30 @@
 # Rivault (vLLM + LiteLLM + supporting services) runs INSIDE compute-01
 # via podman-in-podman, launched by a Slurm job.
 #
-# An always-on LLM service (vLLM + LiteLLM + OpenWebUI) is available via
-# the "llm" profile for RAG chat and interactive use.
+# An always-on LLM service (vLLM + LiteLLM + OpenWebUI) is available as
+# a separate compose project in rivault/demo-llm.yaml.
 #
 # Architecture:
-#   ┌─────────────────┐    ┌─────────────────────────────────┐
-#   │  ai-login       │    │  compute-01 (privileged)        │
-#   │  slurmctld      │───▶│  slurmd                         │
-#   │  UMRS server    │    │  ┌───────────────────────────┐  │
-#   │  Port 6817      │    │  │ podman (Rivault stack)    │  │
-#   │                 │    │  │ NGINX→LiteLLM→vLLM        │  │
-#   └─────────────────┘    │  └───────────────────────────┘  │
-#           │              └─────────────────────────────────┘
-#           └───────┬───────────────┘
+#   ┌─────────────────────┐    ┌─────────────────────────────────┐
+#   │  ai-login            │    │  compute-01 (privileged)        │
+#   │  slurmctld           │───▶│  slurmd                         │
+#   │  UMRS server (:5555) │    │  ┌───────────────────────────┐  │
+#   │  RAG service (:8081) │    │  │ podman (Rivault stack)    │  │
+#   └──────────────────────┘    │  │ NGINX→LiteLLM→vLLM        │  │
+#           │                   │  └───────────────────────────┘  │
+#           └───────┬───────────┘
 #                   ▼
-#           ┌───────────────┐   ┌──────────────────────────────┐
-#           │  munge        │   │  Always-on LLM (profile:llm) │
-#           └───────────────┘   │  vLLM → LiteLLM → OpenWebUI  │
-#                               │  Port 13000 (WebUI)          │
-#                               │  Port 14000 (LiteLLM API)    │
-#                               └──────────────────────────────┘
+#   ┌───────────┐  ┌────────────┐  ┌──────────────┐
+#   │  munge    │  │  postgres  │  │  minio       │
+#   └───────────┘  └────────────┘  └──────────────┘
+#
+#   Separate compose project (rivault/demo-llm.yaml):
+#   ┌──────────────────────────────┐
+#   │  Always-on LLM               │
+#   │  vLLM → LiteLLM → OpenWebUI │
+#   │  Port 13000 (WebUI)         │
+#   │  Port 14000 (LiteLLM API)   │
+#   └──────────────────────────────┘
 #
 # Usage:
 #   # Start Slurm cluster (core services)
@@ -37,8 +41,10 @@
 #   # Setup demo data
 #   podman exec ai-login bash /opt/scripts/setup_demo_data.sh
 #
-#   # Start always-on LLM (after Slurm embedding job finishes)
-#   podman-compose -f demos/slurm-dev/docker-compose.yaml --profile llm up -d
+#   # Start always-on LLM (separate project, after freeing GPU)
+#   cd demos/slurm-dev/rivault
+#   podman network create --internal --disable-dns --subnet 192.168.5.0/24 demo-llm-net
+#   podman-compose --env-file demo-llm.env -f demo-llm.yaml -f x_nvidia-override.yaml up -d
 #
 #   # Stop
 #   podman-compose -f demos/slurm-dev/docker-compose.yaml down
@@ -65,15 +71,15 @@ services:
           - slurm-controller
     ports:
       - "6817:6817"    # Slurm control daemon
-      #- "8000:8000"    # UMRS HTTP API
       - "5555:5555"    # UMRS ZeroMQ control plane
+      - "8081:8081"    # UMRS RAG service (if UMRS_RAG_ENABLE=1)
     volumes:
       - munge-key:/etc/munge:ro
       - slurm-spool:/var/spool/slurmctld
       - job-info:/var/run/rivault
       - ./slurm.conf:/etc/slurm/slurm.conf:ro
       # Mount local repository UMRS source for controller to run the server
-      - ../../src:/opt/umrs:rw
+      - ../../src:/opt/umrs:ro
       # UMRS server configuration (referenced by entrypoint-ai-login.sh)
       - ./conf_umrs.json:/root/conf_umrs.json:rw
       # UMRS user configuration files
@@ -85,7 +91,7 @@ services:
       - ./test_data:/opt/test_data:ro
       - ../../data/img:/opt/test_data/images:ro
       - ./scripts:/opt/scripts:ro
-      - ${MODEL_PATH:-./rivault/models}:/shared/models:ro
+      - ${MODEL_PATH:-./rivault/models}:/shared/models:rw
     env_file:
       - .env
     environment:
@@ -94,11 +100,8 @@ services:
       - RIVAULT_REMOTE_PORT=${RIVAULT_REMOTE_PORT:-11434}
       - NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT:-11434}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-demo-dev}
-      # UMRS configuration
+      # UMRS database configuration
       - DB_HOST=${DB_HOST:-postgres}
-      - DB_SUPERUSER_PASSWORD=${DB_SUPERUSER_PASSWORD:-}
-      # Map Postgres admin creds into UMRS expected vars so the server can
-      # create databases and users even when POSTGRES_USER is not 'postgres'.
       - DB_SUPERUSER=${POSTGRES_USER:-umrs}
       - DB_SUPERUSER_PASSWORD=${POSTGRES_PASSWORD:-umrs_dev}
       - DB_USER_PASSWORD=${DB_USER_PASSWORD:-umrs_dev}
@@ -107,6 +110,10 @@ services:
       # directory so that the worker can reuse downloaded weights.
       - SENTENCE_TRANSFORMERS_HOME=${SENTENCE_TRANSFORMERS_HOME:-/shared/models/sentence_transformers}
       - HF_HOME=${HF_HOME:-/shared/models/hf}
+      # RAG service (started if UMRS_RAG_ENABLE=1)
+      - UMRS_RAG_ENABLE=${UMRS_RAG_ENABLE:-0}
+      - UMRS_RAG_PORT=${UMRS_RAG_PORT:-8081}
+      - VLLM_BASE_URL=${VLLM_BASE_URL:-http://localhost:14000/v1}
     depends_on:
       munge:
         condition: service_healthy
@@ -121,11 +128,11 @@ services:
       #test: ["CMD", "sinfo", "-N"]
       # need to check both slurmctld and UMRS server health; if either is unhealthy, the cluster won't function correctly
       # UMRS serve health check through ZeroMQ control plane; if it responds, the server is healthy
-      test: ["CMD-SHELL", "sinfo -N && echo 'ping' | nc -w 5 localhost 5555"]
+      test: ["CMD-SHELL", "sinfo -N && python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost',5555)); s.close()\""]
       interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
+      timeout: 10s
+      retries: 30
+      start_period: 120s
 
   # =============================================================================
   # Slurm Compute Node (slurmd)
@@ -150,7 +157,6 @@ services:
       - slurm-spool-d:/var/spool/slurmd
       - job-info:/var/run/rivault
       - ./slurm.conf:/etc/slurm/slurm.conf:ro
-      #- ./mini-rivault-job.sh:/etc/slurm/mini-rivault-job.sh:ro
       # Mount model path from host (adjust as needed)
       - ${MODEL_PATH:-/tmp/models}:/models:ro
       # Mount Rivault compose files for podman-in-podman
@@ -289,12 +295,13 @@ services:
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
     volumes:
-      - ../../src:/opt/umrs:rw
+      - ../../src:/opt/umrs:ro
       - ./test_data:/opt/test_data:ro
       - ../../data/img:/opt/test_data/images:ro
       - ./scripts:/opt/scripts:ro
-      # Mount conf outside of the /opt/umrs tree (which is mounted read-only)
-      - ./user_files/user_rivault.json:/root/conf_umrs.json:ro
+      # UMRS configuration files
+      - ./conf_umrs.json:/root/conf_umrs.json:ro
+      - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
       - ./s3cfg:/root/.s3cfg:ro
     command: ["tail", "-f", "/dev/null"]
 
@@ -307,115 +314,13 @@ services:
       #  condition: service_healthy
 
   # =============================================================================
-  # Always-On LLM Service (vLLM + LiteLLM + OpenWebUI)
-  # -----------------------------------------------------------------------------
-  # The following services provide an always-on LLM stack under the "llm"
-  # profile. They are commented out below in favor of using the Rivault demo
-  # compose + override files. If you prefer to run the local always-on stack
-  # uncomment the block and use `podman-compose --profile llm up -d`.
-  #
-  # Alternative (recommended): use the Rivault demo compose files which include
-  # appropriate runtime overrides for NVIDIA devices.
-  #   - demos/slurm-dev/rivault/serve-model.yaml (or demo-llm.yaml)
-  #   - demos/slurm-dev/rivault/x_nvidia-override.yaml
-  # Example:
-  #   podman-compose -f demos/slurm-dev/rivault/serve-model.yaml -f demos/slurm-dev/rivault/x_nvidia-override.yaml up -d
-  #
-  # Below: commented original always-on LLM service definition (kept for reference).
-  #
-  # llm-vllm:
-  #   profiles: ["llm"]
-  #   image: docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-latest}
-  #   container_name: llm-vllm
-  #   hostname: llm-vllm
-  #   networks:
-  #     slurm-net:
-  #       aliases:
-  #         - llm-vllm
-  #   volumes:
-  #     - ${LLM_MODEL_PATH:-./rivault/models}:/root/.cache/huggingface:ro
-  #   environment:
-  #     TRANSFORMERS_OFFLINE: "1"
-  #     HF_HUB_OFFLINE: "1"
-  #     VLLM_NO_USAGE_STATS: "1"
-  #     VLLM_API_KEY: sk-llm-always-on
-  #   command: >-
-  #     ${LLM_VLLM_MODEL:---model /root/.cache/huggingface}
-  #     --served-model-name qwen-chat
-  #     --api-key sk-llm-always-on
-  #     --gpu-memory-utilization ${LLM_GPU_MEM_UTIL:-0.85}
-  #     --enforce-eager
-  #   devices:
-  #     - /dev/nvidia0:/dev/nvidia0
-  #     - /dev/nvidiactl:/dev/nvidiactl
-  #     - /dev/nvidia-uvm:/dev/nvidia-uvm
-  #     - /dev/nvidia-modeset:/dev/nvidia-modeset
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "curl -sf http://localhost:8000/v1/models || exit 1"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 10
-  #     start_period: 120s
-  #
-  # llm-litellm:
-  #   profiles: ["llm"]
-  #   image: ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}
-  #   container_name: llm-litellm
-  #   hostname: llm-litellm
-  #   networks:
-  #     slurm-net:
-  #       aliases:
-  #         - llm-litellm
-  #   ports:
-  #     - "14000:4000"    # LiteLLM OpenAI-compatible API
-  #   volumes:
-  #     - ./llm-litellm-config.yaml:/config.yaml:ro
-  #   environment:
-  #     LITELLM_MASTER_KEY: ${LLM_LITELLM_MASTER_KEY:-sk-llm-demo}
-  #     LITELLM_SALT_KEY: ${LLM_LITELLM_SALT_KEY:-llm-salt-key-demo}
-  #     DATABASE_URL: postgresql://postgres:litellm@llm-postgres:5432/litellm
-  #   command: --port 4000 --config /config.yaml
-  #   depends_on:
-  #     llm-vllm:
-  #       condition: service_healthy
-  #     llm-postgres:
-  #       condition: service_started
-  #
-  # llm-postgres:
-  #   profiles: ["llm"]
-  #   image: docker.io/postgres:17
-  #   container_name: llm-postgres
-  #   hostname: llm-postgres
-  #   networks:
-  #     slurm-net:
-  #       aliases:
-  #         - llm-postgres
-  #   tmpfs:
-  #     - /var/run/postgresql
-  #   environment:
-  #     POSTGRES_USER: postgres
-  #     POSTGRES_PASSWORD: litellm
-  #     POSTGRES_DB: litellm
-  #
-  # open-webui:
-  #   profiles: ["llm"]
-  #   image: ghcr.io/open-webui/open-webui:main
-  #   container_name: open-webui
-  #   hostname: open-webui
-  #   networks:
-  #     slurm-net:
-  #       aliases:
-  #         - open-webui
-  #   ports:
-  #     - "13000:8080"    # OpenWebUI chat interface
-  #   environment:
-  #     OPENAI_API_BASE_URL: http://llm-litellm:4000/v1
-  #     OPENAI_API_KEY: ${LLM_LITELLM_MASTER_KEY:-sk-llm-demo}
-  #     WEBUI_AUTH: "False"
-  #   volumes:
-  #     - open-webui-data:/app/backend/data
-  #   depends_on:
-  #     - llm-litellm
+  # Always-On LLM Service
+  # =============================================================================
+  # Use the Rivault demo compose files which include NVIDIA device overrides:
+  #   cd demos/slurm-dev/rivault
+  #   podman-compose --env-file demo-llm.env \
+  #     -f demo-llm.yaml -f x_nvidia-override.yaml up -d
+  # =============================================================================
 
 networks:
   slurm-net:
@@ -432,4 +337,3 @@ volumes:
   job-info:
   pg-data:
   minio-data:
-  open-webui-data:

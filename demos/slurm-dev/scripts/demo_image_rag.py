@@ -115,7 +115,7 @@ def image_search(rag_url, query, top_k=5):
         "top_k": top_k,
         "modality": "image",
         "bucket_alias": "rivault-image-bucket",
-        "xp_name": "Rivault Embedding XP",
+        "xp_name": "Image_CLIP",
     }
 
     try:

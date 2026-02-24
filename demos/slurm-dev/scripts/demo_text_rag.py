@@ -114,7 +114,7 @@ def rag_search(rag_url, query, top_k=5):
         "top_k": top_k,
         "modality": "text",
         "bucket_alias": "rivault-demo-bucket",
-        "xp_name": "Rivault Embedding XP",
+        "xp_name": "Text_Rivault",
     }
 
     try:
@@ -148,7 +148,7 @@ def rag_qa(rag_url, query, top_k=5):
         "top_k": top_k,
         "modality": "text",
         "bucket_alias": "rivault-demo-bucket",
-        "xp_name": "Rivault Embedding XP",
+        "xp_name": "Text_Rivault",
         "max_context_chunks": 5,
         "enable_query_rewrite": True,
     }

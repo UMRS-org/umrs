@@ -3,7 +3,8 @@
 A Podman Compose setup for running a real Slurm cluster on a single workstation.
 UMRS loads an embedding model running in Rivault through the OpenAI API.
 Rivault is launched as podman containers on the Slurm compute node (podman-in-podman).
-An always-on LLM service (vLLM + LiteLLM + OpenWebUI) is available for RAG chat.
+An always-on LLM service (vLLM + LiteLLM + OpenWebUI) runs as a separate compose
+project for RAG chat and interactive use.
 
 ## Architecture
 
@@ -15,22 +16,23 @@ An always-on LLM service (vLLM + LiteLLM + OpenWebUI) is available for RAG chat.
   │  │  ai-login    │  sbatch │  compute-01 (privileged)          │ │
   │  │  slurmctld   │───────>│  slurmd                            │ │
   │  │  UMRS server │        │  ┌──────────────────────────────┐  │ │
-  │  │              │ :11434 │  │ podman (Rivault stack)       │  │ │
+  │  │  RAG service │ :11434 │  │ podman (Rivault stack)       │  │ │
   │  │  rivault://  │<───────│  │ NGINX → LiteLLM → vLLM      │  │ │
   │  │  openai API  │  SSH   │  │ ll-postgres, mcpo, mcp       │  │ │
   │  └─────────────┘ tunnel  │  └──────────────────────────────┘  │ │
   │         │                └────────────────────────────────────┘ │
-  │  ┌──────┴──────┐  ┌──────┐  ┌───────┐                         │
-  │  │ postgres     │  │ minio│  │ munge │                         │
-  │  │ pgvector     │  │ S3   │  │ auth  │                         │
-  │  └─────────────┘  └──────┘  └───────┘                         │
-  │                                                                 │
-  │  ┌──────────────────────────────────────────┐  (profile: llm)  │
-  │  │  Always-On LLM                           │                  │
-  │  │  llm-vllm → llm-litellm → OpenWebUI     │                  │
-  │  │  Port 14000 (API)  Port 13000 (WebUI)    │                  │
-  │  └──────────────────────────────────────────┘                  │
+  │  ┌──────┴──────┐  ┌──────┐  ┌───────┐  ┌────────────┐        │
+  │  │ postgres     │  │ minio│  │ munge │  │ umrs-client│        │
+  │  │ pgvector     │  │ S3   │  │ auth  │  │            │        │
+  │  └─────────────┘  └──────┘  └───────┘  └────────────┘        │
   └─────────────────────────────────────────────────────────────────┘
+
+           demo-llm-net (192.168.5.0/24) — separate compose project
+  ┌──────────────────────────────────────────┐
+  │  vLLM → LiteLLM → OpenWebUI             │
+  │  NGINX, ll-postgres, mcpo, mcp-time      │
+  │  Port 14000 (API)  Port 13000 (WebUI)    │
+  └──────────────────────────────────────────┘
 ```
 
 ## Prerequisites
@@ -63,38 +65,49 @@ podman exec ai-login sinfo
 # 3. Upload test data to MinIO
 podman exec umrs-client bash /opt/scripts/setup_demo_data.sh
 
-# 4. Start always-on LLM (vLLM + LiteLLM + OpenWebUI)
-#    NOTE: Stop any Slurm embedding jobs first (single GPU)
+# 4. Stop Slurm embedding jobs (free GPU for chat LLM)
 podman exec ai-login scancel --all
-#podman-compose --profile llm up -d
-podman-compose -f "$COMPOSE_FILE" -f rivault/demo-llm.yaml -f rivault/x_nvidia-override.yaml --profile llm up -d
-# 5. Open the chat UI
+
+# 5. Start always-on LLM (separate compose project)
+podman network create --internal --disable-dns --subnet 192.168.5.0/24 demo-llm-net
+cd rivault
+podman-compose --env-file demo-llm.env \
+    -f demo-llm.yaml -f x_nvidia-override.yaml up -d
+
+# 6. Open the chat UI
 #    http://localhost:13000
 ```
 
 ## Services
 
-### Core Services (always started)
+### Core Services (docker-compose.yaml)
 
 | Service | Description | Port |
 |---------|-------------|------|
-| ai-login | Slurm controller + UMRS server | 6817, 5555 (ZMQ) |
+| ai-login | Slurm controller + UMRS server + RAG service | 6817, 5555 (ZMQ), 8081 (RAG) |
 | compute-01 | Compute node (runs Rivault via podman) | SSH: 2222 |
 | munge | MUNGE authentication | - |
 | postgres | pgvector database | 15432 |
 | minio | S3-compatible storage | 19000 (API), 19001 (Console) |
 | umrs-client | Test client for UMRS API | - |
 
-### Always-On LLM Services (profile: `llm`)
+### Always-On LLM (rivault/demo-llm.yaml)
 
 | Service | Description | Port |
 |---------|-------------|------|
-| llm-vllm | vLLM inference engine (GPU) | 8000 (internal) |
-| llm-litellm | LiteLLM OpenAI-compatible proxy | 14000 |
-| llm-postgres | Ephemeral LiteLLM state store | - |
+| vllm | vLLM inference engine (GPU) | - |
+| litellm | LiteLLM OpenAI-compatible proxy | - |
+| nginx | NGINX reverse proxy | 14000 |
+| ll-postgres | Ephemeral LiteLLM state store | - |
+| mcpo / mcp-time | MCP tool servers | - |
 | open-webui | Chat interface | 13000 |
 
-Start with: `podman-compose --profile llm up -d`
+Start with:
+```bash
+cd rivault
+podman-compose --env-file demo-llm.env \
+    -f demo-llm.yaml -f x_nvidia-override.yaml up -d
+```
 
 ## GPU Sharing
 
@@ -103,14 +116,14 @@ model and the always-on chat LLM both need the GPU. Run them sequentially:
 
 1. **Embedding phase**: Slurm job runs vLLM for embeddings on the GPU
 2. **Cancel Slurm job**: `podman exec ai-login scancel --all`
-3. **Chat phase**: Start always-on LLM: `podman-compose --profile llm up -d`
+3. **Chat phase**: Start the always-on LLM compose project
 
 ## Demo Scripts
 
 | Script | Description | Run from |
 |--------|-------------|----------|
 | `scripts/run_e2e_demo.sh` | Complete E2E orchestration | Host |
-| `scripts/setup_demo_data.sh` | Create MinIO buckets, upload test data | ai-login |
+| `scripts/setup_demo_data.sh` | Create MinIO buckets, upload test data | ai-login or umrs-client |
 | `scripts/demo_text_rag.py` | Text RAG: upload, embed, search, QA | umrs-client |
 | `scripts/demo_image_rag.py` | Image RAG: CLIP embeddings + SAM3 | umrs-client |
 
@@ -127,8 +140,9 @@ model and the always-on chat LLM both need the GPU. Run them sequentially:
 |------|---------|
 | `conf_umrs.json` | UMRS server config (points to user config) |
 | `user_files/user_rivault.json` | User config: text (Rivault embedding) + image (CLIP) modalities |
-| `llm-litellm-config.yaml` | LiteLLM config for always-on LLM |
-| `.env` | All environment variables |
+| `rivault/demo-llm.env` | Environment vars for the always-on LLM stack |
+| `rivault/demo-llm.yaml` | Compose file for always-on LLM + OpenWebUI |
+| `.env` | Environment variables for the Slurm stack |
 | `s3cfg` | MinIO S3 credentials |
 
 ### Model Path
@@ -136,7 +150,7 @@ model and the always-on chat LLM both need the GPU. Run them sequentially:
 Set `MODEL_PATH` in `.env` to your local model weights directory.
 Models are mounted: host → compute-01:/models → vLLM container.
 
-For the always-on LLM, set `LLM_MODEL_PATH` in `.env`.
+For the always-on LLM, set `VLLM_PATH_TO_HUGGINGFACE` in `rivault/demo-llm.env`.
 
 ## Slurm Commands
 
@@ -169,22 +183,27 @@ podman exec compute-01 podman logs <container_id>
 
 ### UMRS server not running
 ```bash
-podman exec ai-login cat /var/log/umrs-server.log
+podman logs ai-login
+```
+
+### RAG service not running
+```bash
+podman exec ai-login cat /var/log/umrs-rag.log
 ```
 
 ### vLLM not loading model
 ```bash
-podman logs llm-vllm
-# Ensure MODEL_PATH / LLM_MODEL_PATH points to valid model weights
+# Check logs of the vllm container in the demo-llm project
+podman logs rivault_vllm_1
+# Ensure VLLM_PATH_TO_HUGGINGFACE in rivault/demo-llm.env points to valid model weights
 ```
 
 ## File Structure
 
 ```
 slurm-dev/
-├── docker-compose.yaml        # Main compose file (core + LLM profile)
+├── docker-compose.yaml        # Main compose file (Slurm + UMRS)
 ├── conf_umrs.json             # UMRS server configuration
-├── llm-litellm-config.yaml    # LiteLLM config for always-on LLM
 ├── slurm.conf                 # Slurm cluster configuration
 ├── gres.conf                  # GPU resource configuration
 ├── mini-rivault-job.sh        # Slurm job: launches Rivault stack
@@ -206,11 +225,12 @@ slurm-dev/
 │   ├── setup_demo_data.sh     # MinIO bucket/data setup
 │   ├── demo_text_rag.py       # Text RAG demo
 │   └── demo_image_rag.py      # Image RAG demo (CLIP + SAM3)
-└── rivault/                   # Rivault inner stack (podman-in-podman)
-    ├── serve-model.slurm      # Launch script
-    ├── serve-model.yaml       # Rivault compose (NGINX, LiteLLM, vLLM, MCP)
-    ├── demo-llm.yaml          # Rivault LLM compose (recommended)
-    ├── x_nvidia-override.yaml  # NVIDIA runtime/device overrides
+└── rivault/                   # Rivault / LLM stack files
+    ├── serve-model.slurm      # Launch script (Slurm batch)
+    ├── serve-model.yaml       # Rivault compose (embedding model)
+    ├── demo-llm.yaml          # Always-on LLM compose (chat + OpenWebUI)
+    ├── demo-llm.env           # Environment for demo-llm.yaml
+    ├── x_nvidia-override.yaml # NVIDIA runtime/device overrides
     ├── litellm_fs/            # LiteLLM config
     ├── mcpo_fs/               # MCP server config
     ├── nginx_fs/              # NGINX proxy config

@@ -153,5 +153,20 @@ else
     fi
 fi
 
+# Start RAG service in background if UMRS_RAG_ENABLE is set
+if [[ "${UMRS_RAG_ENABLE:-0}" == "1" ]] && [[ -f /opt/umrs/rag_service.py ]]; then
+    echo "Starting UMRS RAG service in background (port ${UMRS_RAG_PORT:-8081})..."
+    UMRS_CONFIG="${HOME}/.config/umrs" \
+    DB_HOST="${DB_HOST:-postgres}" \
+    DB_PORT="${DB_PORT:-5432}" \
+    DB_SUPERUSER_PASSWORD="${DB_SUPERUSER_PASSWORD:-}" \
+    VLLM_BASE_URL="${VLLM_BASE_URL:-http://localhost:8000/v1}" \
+    python3 -m uvicorn rag_service:app \
+        --host 0.0.0.0 --port "${UMRS_RAG_PORT:-8081}" \
+        --app-dir /opt/umrs \
+        &>/var/log/umrs-rag.log &
+    echo "RAG service PID: $!  Logs: /var/log/umrs-rag.log"
+fi
+
 echo "Starting UMRS server in foreground (this is the container's main process)"
 exec python3 /opt/umrs/server_umrs.py -c /root/conf_umrs.json
