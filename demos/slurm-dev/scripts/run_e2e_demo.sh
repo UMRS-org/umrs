@@ -48,57 +48,35 @@ echo "============================================================"
 # Phase 1: Start core infrastructure
 # =============================================================================
 echo ""
-echo "Phase 1: Starting core services..."
+echo "Phase 1: Starting all services..."
 echo "------------------------------------------------------------"
+echo "  (depends_on healthchecks handle startup ordering automatically)"
 
-$COMPOSE -f "$COMPOSE_FILE" up -d munge postgres minio
-echo "  Waiting for infrastructure services..."
-sleep 5
+$COMPOSE -f "$COMPOSE_FILE" up -d
+echo "  All services started. Waiting for cluster to become ready..."
 
-$COMPOSE -f "$COMPOSE_FILE" up -d ai-login
-echo "  Waiting for Slurm controller + UMRS server..."
-
-# Wait for ai-login healthcheck (slurmctld + UMRS ZeroMQ)
+# Wait for compute node to be idle (implies munge, postgres, minio, ai-login are all healthy)
 for i in $(seq 1 60); do
-    if podman exec ai-login sinfo -N >/dev/null 2>&1 && \
-       echo 'ping' | podman exec -i ai-login nc -w 5 localhost 5555 >/dev/null 2>&1; then
-        echo "  Slurm controller + UMRS server ready."
+    NODE_STATE=$(podman exec ai-login sinfo -N -h -o "%T" 2>/dev/null || echo "unknown")
+    if echo "$NODE_STATE" | grep -q "idle"; then
+        echo "  Cluster ready (compute node idle)."
         break
     fi
     if [ "$i" -eq 60 ]; then
-        echo "  WARNING: Slurm controller or UMRS not ready after 60 attempts."
+        echo "  WARNING: Cluster not fully ready after 60 attempts."
         echo "  Check logs: podman logs ai-login"
     fi
     sleep 5
 done
 
-$COMPOSE -f "$COMPOSE_FILE" up -d compute-01
-echo "  Waiting for compute node..."
-
-for i in $(seq 1 30); do
-    NODE_STATE=$(podman exec ai-login sinfo -N -h -o "%T" 2>/dev/null || echo "unknown")
-    if echo "$NODE_STATE" | grep -q "idle"; then
-        echo "  Compute node ready (idle)."
-        break
-    fi
-    if [ "$i" -eq 30 ]; then
-        echo "  WARNING: Compute node not idle after 30 attempts."
-    fi
-    sleep 5
-done
-
-# Start client container
-$COMPOSE -f "$COMPOSE_FILE" up -d umrs-client
-echo "  UMRS client container started."
-
 # =============================================================================
-# Phase 2: Upload test data
+# Phase 2: Upload test data (via umrs-client)
 # =============================================================================
 echo ""
-echo "Phase 2: Uploading test data to MinIO..."
+echo "Phase 2: Uploading test data via umrs-client..."
 echo "------------------------------------------------------------"
 
-podman exec ai-login bash /opt/scripts/setup_demo_data.sh
+podman exec umrs-client bash /opt/scripts/setup_demo_data.sh
 
 # =============================================================================
 # Phase 3: Text RAG demo (embedding via Slurm -> Rivault -> vLLM)

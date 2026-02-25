@@ -59,9 +59,8 @@ services:
   # =============================================================================
   ai-login:
     build:
-      # Use repo root as build context so Dockerfile can COPY ./src
-      context: ../..
-      dockerfile: demos/slurm-dev/Dockerfile.ai-login
+      context: .
+      dockerfile: Dockerfile.ai-login
     container_name: ai-login
     hostname: ai-login
     networks:
@@ -85,6 +84,7 @@ services:
       # UMRS user configuration files
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
       - ./s3cfg:/root/.s3cfg:ro
+      - ./s3cfg_rivault_user:/root/.s3cfg_rivault_user:ro
       # Rivault Slurm script (referenced by rivault.py at ~/.config/umrs/rivault_data/)
       - ./mini-rivault-job.sh:/root/.config/umrs/rivault_data/serve-model.slurm:ro
       # Demo test data and scripts
@@ -278,9 +278,8 @@ services:
   # =============================================================================
   umrs-client:
     build:
-      # Use repo root as build context so Dockerfile can COPY ./src
-      context: ../..
-      dockerfile: demos/slurm-dev/Dockerfile.umrs-client
+      context: .
+      dockerfile: Dockerfile.umrs-client
     container_name: umrs-client
     networks:
       slurm-net:
@@ -289,6 +288,7 @@ services:
     env_file:
       - .env
     environment:
+      - UMRS_SERVER_HOST=ai-login
       - UMRS_ENDPOINT=${UMRS_ENDPOINT:-http://ai-login:8000}
       - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
@@ -303,6 +303,7 @@ services:
       - ./conf_umrs.json:/root/conf_umrs.json:ro
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
       - ./s3cfg:/root/.s3cfg:ro
+      - ./s3cfg_rivault_user:/root/.s3cfg_rivault_user:ro
     command: ["tail", "-f", "/dev/null"]
 
     depends_on:

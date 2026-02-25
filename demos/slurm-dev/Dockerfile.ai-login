@@ -37,13 +37,9 @@ RUN set -eux; \
         curl -fsSL https://dl.min.io/client/mc/release/${MC_ARCH}/mc -o /usr/local/bin/mc; \
         chmod +x /usr/local/bin/mc || true
 
-# Copy UMRS source and install Python requirements before configuring SSH
-# (placed early so layer caching benefits from unchanged system package layer)
-COPY ./src/requirements.txt /tmp/requirements.txt
-COPY ./src /opt/umrs
-
-# Install Python requirements for UMRS (ignore failures to avoid blocking optional deps)
-RUN pip3 install --no-cache-dir -r /tmp/requirements.txt || true
+# NOTE: UMRS source is bind-mounted at runtime (../../src:/opt/umrs:ro),
+# and Python requirements are installed by entrypoint-ai-login.sh at startup.
+# This avoids rebuilding the image on every source change.
 
 # Configure SSH for localhost tunneling (used by rivault.py forward_to_remote)
 RUN mkdir -p /run/sshd /root/.ssh \
@@ -64,20 +60,20 @@ RUN mkdir -p \
     && chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm
 
 # Copy entrypoint
-COPY demos/slurm-dev/entrypoint-ai-login.sh /entrypoint.sh
+COPY entrypoint-ai-login.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Copy configuration files (Slurm and UMRS)
-COPY demos/slurm-dev/s3cfg /root/.s3cfg
-COPY demos/slurm-dev/s3cfg_rivault_user /root/.s3cfg_rivault_user
-COPY demos/slurm-dev/conf_umrs.json /root/conf_umrs.json
-COPY demos/slurm-dev/user_files /root/user_files
+# NOTE: Configuration files (s3cfg, conf_umrs.json, user_files) are
+# bind-mounted at runtime via docker-compose volumes.
 
 # Set UMRS_CONFIG to point to the directory containing conf_umrs.json (used by server and client)
 ENV UMRS_CONFIG /root/
 
 # Ensure UMRS code is on PYTHONPATH
 ENV PYTHONPATH=/opt/umrs:${PYTHONPATH:-}
+
+# Disable Python output buffering so logs appear in real time
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 6817
 

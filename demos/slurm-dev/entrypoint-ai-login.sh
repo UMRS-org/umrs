@@ -169,4 +169,4 @@ if [[ "${UMRS_RAG_ENABLE:-0}" == "1" ]] && [[ -f /opt/umrs/rag_service.py ]]; th
 fi
 
 echo "Starting UMRS server in foreground (this is the container's main process)"
-exec python3 /opt/umrs/server_umrs.py -c /root/conf_umrs.json
+exec python3 -u /opt/umrs/server_umrs.py -c /root/conf_umrs.json
