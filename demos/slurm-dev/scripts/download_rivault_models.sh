@@ -31,9 +31,24 @@ map_model() {
       echo "sentence-transformers/all-mpnet-base-v2" ;;
     all-MiniLM-L6-v2|all-minilm-l6-v2)
       echo "sentence-transformers/all-MiniLM-L6-v2" ;;
+    sam3|sam2-hiera-small|sam2-hiera)
+      echo "facebook/sam2-hiera-small" ;;
     *)
       # fallback: try prefixing with sentence-transformers
       echo "sentence-transformers/$m" ;;
+  esac
+}
+
+# Helper: map HF repo IDs to local output directory names.
+# SAM3 must land at models/sam3 so the mcp-vision container finds it via
+# VISION_MODEL_PATH (defaults to ./models/sam3 in serve-model.slurm).
+map_outdir() {
+  local repo="$1"
+  case "$repo" in
+    facebook/sam2*)
+      echo "sam3" ;;
+    *)
+      echo "${repo##*/}" ;;
   esac
 }
 
@@ -68,7 +83,7 @@ echo "HF token present: ${HF_TOKEN:+yes}" || true
 if command -v hf >/dev/null 2>&1; then
   echo "Using 'hf' CLI to download models"
   for m in "${MODELS[@]}"; do
-    name="${m##*/}"
+    name="$(map_outdir "$m")"
     outdir="$TARGET_BASE/$name"
     mkdir -p "$outdir"
     echo "Downloading $m -> $outdir"
@@ -88,7 +103,7 @@ PY
 else
   echo "'hf' CLI not found; using python huggingface_hub.snapshot_download"
   for m in "${MODELS[@]}"; do
-    name="${m##*/}"
+    name="$(map_outdir "$m")"
     outdir="$TARGET_BASE/$name"
     mkdir -p "$outdir"
     echo "Downloading $m -> $outdir"

@@ -38,7 +38,7 @@
       ]
     },
     {
-      "xp_name": "Image_CLIP",
+      "xp_name": "SAM3",
       "sql_username": "rivault_user",
       "modalities": [
         {
@@ -52,14 +52,14 @@
             "need_output_bucket": false
           },
           "model": {
-            "model_name": "clip-ViT-B-32",
-            "vector_size": "512",
-            "model_type": "SentenceTransformer",
+            "model_name": "facebook/sam2-hiera-small",
+            "vector_size": "256",
+            "model_type": "rivault://openai://http://localhost:8001/v1",
             "return_type": null
           },
           "sql": {
             "store_embeddings": "yes",
-            "table_name": "rivault_image",
+            "table_name": "sam3_image",
             "meta_data": [
               {
                 "name": "keywords",

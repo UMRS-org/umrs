@@ -20,6 +20,8 @@ cat <<EOF > "./env.${uuid}"
 ###MANDATORY
 VLLM_MODEL=${VLLM_MODEL:-Qwen/Qwen3-0.6B}
 VLLM_PATH_TO_HUGGINGFACE=${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}
+SAM3_MODEL=${SAM3_MODEL:-facebook/sam2-hiera-small}
+VISION_MODEL_PATH=${VISION_MODEL_PATH:-./models/sam3}
 VLLM_TP=${VLLM_TP:-1}						# tensor parallelism
 VLLM_PP=${VLLM_PP:-1}						# pipeline parallelism
 NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}
@@ -76,11 +78,24 @@ fi
 
 which podman-compose >/dev/null 2>&1 || pip3 install podman-compose
 
-## download model example
+## download model example (LLM for vLLM)
 #mkdir -p ./models/vllm/huggingface/modules
 #pip3 install huggingface_hub
 #python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"Qwen/Qwen3-0.6B\", ignore_patterns=[\"metal/*\", \"original/*\"], cache_dir=\"./models/vllm/huggingface/hub\")"
 #ls -la ./models/vllm/huggingface/modules/../hub/
+
+# pre-download SAM3 image embedding model
+_sam3_model=$(/bin/grep '^SAM3_MODEL=' "./env.${uuid}" | /bin/cut -d'=' -f2)
+_vision_path=$(/bin/grep '^VISION_MODEL_PATH=' "./env.${uuid}" | /bin/cut -d'=' -f2)
+if [[ -n "$_sam3_model" && ! -d "${_vision_path}" ]]; then
+	echo "[rivault] Downloading SAM3 model '${_sam3_model}' to '${_vision_path}'..."
+	mkdir -p "${_vision_path}"
+	pip3 install -q huggingface_hub
+	python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"${_sam3_model}\", local_dir=\"${_vision_path}\")"
+	echo "[rivault] SAM3 model download complete."
+else
+	echo "[rivault] SAM3 model already present at '${_vision_path}', skipping download."
+fi
 
 # fix some cgroup stuff
 loginctl enable-linger $(whoami)

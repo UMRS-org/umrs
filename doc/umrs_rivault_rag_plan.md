@@ -1,4 +1,15 @@
 # UMRS × RiVault × internal_genAI – RAG Integration Plan
+# demos/slurm-dev: Integration Alignment
+
+The `demos/slurm-dev` directory is designed as a practical testbed for the UMRS × RiVault × internal_genAI integration. It provides:
+  - Example configuration files (e.g., `conf_umrs.json`, `docker-compose.yaml`) for orchestrating UMRS, RiVault, and related services.
+  - Dockerfiles and entrypoints for launching UMRS server, embedding worker, and RiVault mock/real registry.
+  - Scripts for initializing databases, MinIO, and populating demo data.
+  - Test data and user files for validating end-to-end flows (model registry, embedding, retrieval, RAG API).
+  - A reference for how to wire UMRS to RiVault endpoints and test retrieval via `/rag/search`.
+
+This directory is the recommended starting point for local and CI testing of the integration plan described below.
+
 
 ## 1. Context & Goals
 
@@ -318,23 +329,9 @@ Start with **Option A** (tools), as it:
    - Define a tool that calls `/rag/search`.
    - Ask a question in UI; verify it pulls context from UMRS and answers based on it.
 
-### 6.2 Migration from RiVault Mock
-
-- During transition:
-  - Keep the **mock** available for local dev, but:
-    - Introduce config (env variable / flag) to switch `RIVAULT_ENDPOINT` between:
-      - `rivault-mock` (legacy).
-      - Real RiVault (internal_genAI).
-  - Once the real registry is stable:
-    - Deprecate `rivault-mock` in UMRS compose/K8s manifests.
-
 ---
 
 ## 7. Open Questions / Decisions to Make
-
-1. **Registry Implementation**
-   - Use `rivault_service.py` unchanged inside internal_genAI, or
-   - Align UMRS with an existing RiVault OpenAPI spec if one already exists.
 
 2. **Query Embedding Path**
    - For `/rag/search`, should we:
