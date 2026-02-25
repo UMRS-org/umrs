@@ -81,7 +81,12 @@ services:
       - ../../src:/opt/umrs:ro
       # UMRS server configuration (referenced by entrypoint-ai-login.sh)
       - ./conf_umrs.json:/root/conf_umrs.json:rw
-      # UMRS user configuration files
+      # Shared UMRS config directory (mimics NFS-shared /home on real HPC)
+      # Both ai-login and compute-01 mount this volume so that:
+      #  - ai-login can write the Slurm batch script and set output paths
+      #  - compute-01 can read the script and write Slurm output files
+      - umrs-config:/root/.config/umrs
+      # Overlay bind mounts for specific config files within the shared volume
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
       - ./s3cfg:/root/.s3cfg:ro
       - ./s3cfg_rivault_user:/root/.s3cfg_rivault_user:ro
@@ -157,6 +162,8 @@ services:
       - slurm-spool-d:/var/spool/slurmd
       - job-info:/var/run/rivault
       - ./slurm.conf:/etc/slurm/slurm.conf:ro
+      # Shared UMRS config directory (mimics NFS-shared /home on real HPC)
+      - umrs-config:/root/.config/umrs
       # Mount model path from host (adjust as needed)
       - ${MODEL_PATH:-/tmp/models}:/models:ro
       # Mount Rivault compose files for podman-in-podman
@@ -336,5 +343,6 @@ volumes:
   slurm-spool:
   slurm-spool-d:
   job-info:
+  umrs-config:
   pg-data:
   minio-data:

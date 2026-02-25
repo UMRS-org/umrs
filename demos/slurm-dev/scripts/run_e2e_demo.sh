@@ -7,10 +7,11 @@
 #   Phase 1: Start core Slurm + UMRS infrastructure
 #   Phase 2: Upload test data to MinIO
 #   Phase 3: Run text RAG demo (Slurm embedding job)
-#   Phase 4: Stop Slurm embedding job (free GPU)
-#   Phase 5: Start always-on LLM (vLLM + LiteLLM + OpenWebUI)
-#   Phase 6: Run RAG Q&A with LLM
-#   Phase 7: Summary
+#   Phase 4: Wait for embedding computation to complete
+#   Phase 5: Stop Slurm embedding job (free GPU)
+#   Phase 6: Start always-on LLM (vLLM + LiteLLM + OpenWebUI)
+#   Phase 7: Run RAG Q&A with LLM
+#   Phase 8: Summary
 #
 # Usage:
 #   cd demos/slurm-dev
@@ -37,6 +38,9 @@ else
     echo "Install with: pip install podman-compose"
     exit 1
 fi
+
+# User config file (used by client_umrs.py -c)
+USER_CONF="/root/.config/umrs/users/user_rivault.json"
 
 echo ""
 echo "============================================================"
@@ -87,7 +91,7 @@ echo "------------------------------------------------------------"
 echo "  (This triggers: upload -> UMRS -> sbatch -> Rivault -> vLLM -> embeddings -> pgvector)"
 
 podman exec umrs-client python3 /opt/scripts/demo_text_rag.py \
-    --conf /root/conf_umrs.json \
+    --conf "$USER_CONF" \
     --server-ip ai-login \
     --rag-url http://ai-login:8081 \
     --skip-wait || {
@@ -96,10 +100,52 @@ podman exec umrs-client python3 /opt/scripts/demo_text_rag.py \
 }
 
 # =============================================================================
-# Phase 4: Stop Slurm embedding job (free GPU for always-on LLM)
+# Phase 4: Wait for embedding computation to complete
 # =============================================================================
 echo ""
-echo "Phase 4: Stopping Slurm embedding job to free GPU..."
+echo "Phase 4: Waiting for embedding jobs to complete..."
+echo "------------------------------------------------------------"
+echo "  (Polling task status via umrs-client every 10s, timeout 10 minutes)"
+
+EMBED_TIMEOUT=60  # iterations * 10s = 600s = 10 minutes
+for i in $(seq 1 $EMBED_TIMEOUT); do
+    # Extract only the JSON line (client prints non-JSON status lines to stdout)
+    STATUS_RAW=$(podman exec umrs-client python3 /opt/umrs/client_umrs.py \
+        -c "$USER_CONF" --output json status all 2>/dev/null || echo "")
+    STATUS_JSON=$(echo "$STATUS_RAW" | grep '^{' | tail -1)
+    # Check if any threads are still Running
+    RUNNING=$(echo "$STATUS_JSON" | python3 -c "
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    summaries = data.get('summaries', {})
+    for key, entry in summaries.items():
+        for thread_info in entry.get('data', []):
+            if thread_info.get('status') == 'Running':
+                print(thread_info.get('thread_id', 'unknown'))
+except Exception:
+    pass
+" 2>/dev/null || echo "")
+    if [ -z "$RUNNING" ]; then
+        echo "  All embedding tasks completed."
+        break
+    fi
+    RUNNING_COUNT=$(echo "$RUNNING" | wc -w)
+    if [ "$i" -eq 1 ] || [ $((i % 6)) -eq 0 ]; then
+        echo "  $RUNNING_COUNT task(s) still running (attempt $i/$EMBED_TIMEOUT)..."
+    fi
+    if [ "$i" -eq "$EMBED_TIMEOUT" ]; then
+        echo "  WARNING: Timed out after 10 minutes. $RUNNING_COUNT task(s) still active."
+        echo "  Proceeding to cancel remaining jobs."
+    fi
+    sleep 10
+done
+
+# =============================================================================
+# Phase 5: Stop Slurm embedding job (free GPU for always-on LLM)
+# =============================================================================
+echo ""
+echo "Phase 5: Stopping Slurm embedding job to free GPU..."
 echo "------------------------------------------------------------"
 
 # Cancel any running Slurm jobs
@@ -116,10 +162,10 @@ else
 fi
 
 # =============================================================================
-# Phase 5: Start always-on LLM (separate compose project)
+# Phase 6: Start always-on LLM (separate compose project)
 # =============================================================================
 echo ""
-echo "Phase 5: Starting always-on LLM (vLLM + LiteLLM + OpenWebUI)..."
+echo "Phase 6: Starting always-on LLM (vLLM + LiteLLM + OpenWebUI)..."
 echo "------------------------------------------------------------"
 
 # Create the isolated network for the LLM stack
@@ -146,15 +192,15 @@ for i in $(seq 1 60); do
 done
 
 # =============================================================================
-# Phase 6: RAG QA with always-on LLM
+# Phase 7: RAG QA with always-on LLM
 # =============================================================================
 echo ""
-echo "Phase 6: Testing RAG Q&A with always-on LLM..."
+echo "Phase 7: Testing RAG Q&A with always-on LLM..."
 echo "------------------------------------------------------------"
 
 # The RAG service on ai-login connects to the LLM via host port 14000
 podman exec umrs-client python3 /opt/scripts/demo_text_rag.py \
-    --conf /root/conf_umrs.json \
+    --conf "$USER_CONF" \
     --server-ip ai-login \
     --rag-url http://ai-login:8081 \
     --skip-upload --skip-wait || {
@@ -163,7 +209,7 @@ podman exec umrs-client python3 /opt/scripts/demo_text_rag.py \
 }
 
 # =============================================================================
-# Phase 7: Summary
+# Phase 8: Summary
 # =============================================================================
 echo ""
 echo "============================================================"

@@ -185,7 +185,7 @@ def main():
         help="RAG service base URL (default: http://ai-login:8081)",
     )
     parser.add_argument(
-        "--conf", default="/opt/umrs/conf_umrs.json",
+        "--conf", default="/root/.config/umrs/users/user_rivault.json",
         help="Client config file path",
     )
     parser.add_argument(
