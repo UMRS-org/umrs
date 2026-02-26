@@ -144,6 +144,15 @@ fi
 echo "Starting slurmctld in background..."
 # If slurmctl command available, use it; otherwise fall back to any provided CMD/args
 if command -v slurmctld >/dev/null 2>&1; then
+    # Clean incompatible state files from previous Slurm versions to avoid
+    # "Can not recover last_conf_lite, incompatible version" fatal errors.
+    if [[ -f /var/spool/slurmctld/last_config_lite ]]; then
+        echo "  Clearing stale slurmctld state (version upgrade safe)..."
+        rm -f /var/spool/slurmctld/last_config_lite \
+              /var/spool/slurmctld/last_config_lite.old \
+              /var/spool/slurmctld/clustername
+        chown -R slurm:slurm /var/spool/slurmctld
+    fi
     slurmctld &
 else
     if [ "$#" -gt 0 ]; then

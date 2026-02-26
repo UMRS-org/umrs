@@ -4,7 +4,7 @@
 # =============================================================================
 #
 # Runs the full demo lifecycle:
-#   Phase 1: Start core Slurm + UMRS infrastructure
+#   Phase 1: Start core Slurm + UMRS infrastructure (containers + host slurmd)
 #   Phase 2: Upload test data to MinIO
 #   Phase 3: Run text RAG demo (Slurm embedding job)
 #   Phase 4: Wait for embedding computation to complete
@@ -13,13 +13,21 @@
 #   Phase 7: Run RAG Q&A with LLM
 #   Phase 8: Summary
 #
+# Architecture:
+#   The control plane (slurmctld, UMRS, postgres, minio) runs in containers.
+#   The compute node (slurmd) runs directly on the HOST for native GPU access.
+#   Rivault is launched by Slurm jobs using the host's native podman.
+#
 # Usage:
 #   cd demos/slurm-dev
-#   bash scripts/run_e2e_demo.sh
+#   # Terminal 1: sudo bash scripts/start-host-slurmd.sh
+#   # Terminal 2: bash scripts/run_e2e_demo.sh
 #
 # Prerequisites:
 #   - podman-compose installed
 #   - GPU available (/dev/nvidia0)
+#   - slurmd + munge installed on host (apt-get install -y slurmd munge)
+#   - Host slurmd started via: sudo bash scripts/start-host-slurmd.sh
 #   - Model weights at MODEL_PATH (default: ./rivault/models)
 # =============================================================================
 
@@ -52,23 +60,48 @@ echo "============================================================"
 # Phase 1: Start core infrastructure
 # =============================================================================
 echo ""
-echo "Phase 1: Starting all services..."
+echo "Phase 1: Starting control-plane services..."
 echo "------------------------------------------------------------"
-echo "  (depends_on healthchecks handle startup ordering automatically)"
 
+# Check that host slurmd is running (must be started separately)
+if ! pgrep -f 'slurmd' >/dev/null 2>&1; then
+    echo ""
+    echo "  WARNING: slurmd is not running on the host!"
+    echo "  Start it in another terminal first:"
+    echo "    sudo bash scripts/start-host-slurmd.sh"
+    echo ""
+    echo "  Waiting for host slurmd to appear (timeout: 120s)..."
+    for i in $(seq 1 24); do
+        if pgrep -f 'slurmd' >/dev/null 2>&1; then
+            echo "  slurmd detected."
+            break
+        fi
+        if [ "$i" -eq 24 ]; then
+            echo "  ERROR: slurmd not running after 120s. Aborting."
+            echo "  Run: sudo bash scripts/start-host-slurmd.sh"
+            exit 1
+        fi
+        sleep 5
+    done
+fi
+echo "  Host slurmd is running (PID: $(pgrep -f 'slurmd' | head -1))"
+
+# Start the container control plane (ai-login, munge, postgres, minio, umrs-client)
 $COMPOSE -f "$COMPOSE_FILE" up -d
-echo "  All services started. Waiting for cluster to become ready..."
+echo "  Control-plane containers started. Waiting for cluster to become ready..."
 
-# Wait for compute node to be idle (implies munge, postgres, minio, ai-login are all healthy)
+# Wait for compute node to register and show idle
 for i in $(seq 1 60); do
     NODE_STATE=$(podman exec ai-login sinfo -N -h -o "%T" 2>/dev/null || echo "unknown")
     if echo "$NODE_STATE" | grep -q "idle"; then
-        echo "  Cluster ready (compute node idle)."
+        echo "  Cluster ready (compute-01 idle)."
         break
     fi
     if [ "$i" -eq 60 ]; then
         echo "  WARNING: Cluster not fully ready after 60 attempts."
-        echo "  Check logs: podman logs ai-login"
+        echo "  Check: podman exec ai-login sinfo -N"
+        echo "  Check: podman logs ai-login"
+        echo "  Check: host slurmd logs in /var/log/slurm/slurmd.log"
     fi
     sleep 5
 done

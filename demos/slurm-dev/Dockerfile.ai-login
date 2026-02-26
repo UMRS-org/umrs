@@ -2,11 +2,15 @@
 # AI-LOGIN Controller Dockerfile
 # =============================================================================
 # Runs the Slurm control daemon for job scheduling and hosts UMRS.
+# NOTE: Must use Ubuntu 24.04 so the packaged Slurm (23.11.4) matches
+#       the host's slurmd version — protocol versions must be identical.
 # =============================================================================
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Allow pip to install packages system-wide (PEP 668 / Python 3.12)
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 # Install Slurm, SSH, and dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \

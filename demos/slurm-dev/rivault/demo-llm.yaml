@@ -80,8 +80,8 @@ services:
       DISABLE_ADMIN_UI: "True"
       LITELLM_MODE: "PRODUCTION"
       LITELLM_LOG: "INFO"
-      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY:?}
-      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?}
+      LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-4}
       DATABASE_URL: postgresql://${LITELLM_POSTGRES_USER:-postgres}:${LITELLM_POSTGRES_PASSWORD:-litellm}@ll-postgres:5432/${LITELLM_POSTGRES_DB:-litellm}
       MCPO_API_KEY: sk-15330865-62087191
@@ -121,14 +121,14 @@ services:
         ipv4_address: ${PRIV_IP1TO3:-192.168.5}.${VLLM_IP4:-22}
     volumes:
       - type: bind
-        source: ${VLLM_PATH_TO_HUGGINGFACE:?}/
+        source: ${VLLM_PATH_TO_HUGGINGFACE}/
         target: /root/.cache/huggingface
         read_only: true
       - type: bind
-        source: ${VLLM_PATH_TO_HUGGINGFACE:?}/modules/
+        source: ${VLLM_PATH_TO_HUGGINGFACE}/modules/
         target: /root/.cache/huggingface/modules/
         read_only: false
-    command: ${VLLM_MODEL:?} --served-model-name umrs --api-key sk-02284644-03150002 -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.90} --enforce-eager
+    command: ${VLLM_MODEL} --served-model-name umrs --api-key sk-02284644-03150002 -tp ${VLLM_TP:-1} -pp ${VLLM_PP:-1} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.90} --enforce-eager
     environment:
       TRANSFORMERS_OFFLINE: 1
       HF_HUB_OFFLINE: 1
@@ -203,7 +203,7 @@ services:
       - ${OPENWEBUI_PORT:-13000}:8080
     environment:
       OPENAI_API_BASE_URL: http://litellm:4000/v1
-      OPENAI_API_KEY: ${LITELLM_MASTER_KEY:?}
+      OPENAI_API_KEY: ${LITELLM_MASTER_KEY}
       WEBUI_AUTH: "False"
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
