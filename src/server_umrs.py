@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-
 import argparse
 import os
 import sys
@@ -939,7 +938,6 @@ def check_umrs_config_directory():
 # ---------------------------------- CLI ------------------------------------
 
 def main():
-
     # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()
     if umrs_cfg_dir:

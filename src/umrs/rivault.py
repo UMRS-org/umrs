@@ -1,4 +1,4 @@
-from .models_loading import load_model
+from umrs.models_loading import load_model
 from umrs.config import *
 
 
@@ -7,9 +7,10 @@ import time
 import requests
 import socket
 import os
-import sys
+import diskcache
 from contextlib import redirect_stderr, redirect_stdout
 import io
+import threading
 
 def get_slurm_job_state(job_id):
     result = subprocess.run(
@@ -20,7 +21,8 @@ def get_slurm_job_state(job_id):
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"squeue failed: {result.stderr.strip()}")
+        # No such job or any problem. 
+        return None
 
     state = result.stdout.strip()
 
@@ -50,7 +52,7 @@ def create_plafrim_slurm_script(slurm_script):
 #SBATCH -n 36
 #SBATCH -C bora
 #SBATCH --exclusive
-#SBATCH --time=1:00:00
+#SBATCH --time=0:15:00
 #SBATCH --job-name=vllm_fastapi
 #SBATCH --output={output_file}
 #SBATCH --error={error_file}
@@ -84,43 +86,48 @@ def _ensure_output_dir():
     os.makedirs(full_tmp_path, exist_ok=True)
     return full_tmp_path
 
-def get_slurm_node(slurm_script):
+def get_slurm_node(slurm_script, job_id_to_use=None):
     output_file = error_file = None
     if "plafrim" in slurm_script:
-        output_file, error_file = create_plafrim_slurm_script(slurm_script)
+        create_plafrim_slurm_script(slurm_script)
 
-    # For non-plafrim scripts, set up output/error files so we can
-    # extract the compute node address from the Slurm output.
-    sbatch_extra_args = []
-    if output_file is None:
-        out_dir = _ensure_output_dir()
-        output_file = os.path.join(out_dir, "slurm-%j.out")
-        error_file = os.path.join(out_dir, "slurm-%j.err")
-        sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
+    out_dir = _ensure_output_dir()
+    output_file = os.path.join(out_dir, "slurm-%j.out") # Will be insterted in the script if there is no --output line with %j placeholder
+    error_file = os.path.join(out_dir, "slurm-%j.err") # Will be insterted in the script if there is no --error line with %j placeholder
+    # output_file, error_file = extract_files_from_slurm_script(slurm_script, default_output=default_output_file, default_error=default_error_file)
+    
+    sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
 
-    # Launch script
-    print(f"sbatch {slurm_script}")
-    sbatch_cmd = ["sbatch"] + sbatch_extra_args + [slurm_script]
-    proc = subprocess.Popen(sbatch_cmd, stdout=subprocess.PIPE)
+    # If we already have a job_id, we only need the output and error file paths. No need to call SLURM.
+    if job_id_to_use is not None:
+        job_id = job_id_to_use
+    else :
+        # Launch script
+        sbatch_cmd = ["sbatch"] + sbatch_extra_args + [slurm_script]
+        print(f"{sbatch_cmd}")
 
-    print("Waiting for job to start...")
-    # Read job SLURM ID
-    output, _ = proc.communicate()
-    job_id = None
-    if output:
-        text = output.decode()
-        # sbatch returns "Submitted batch job 12345"
-        if "Submitted batch job" in text:
-            job_id = int(text.strip().split()[-1])
-            print("Job submitted with ID:", job_id)
-            while not is_slurm_job_running(job_id):
-                time.sleep(0.5)
+        proc = subprocess.Popen(sbatch_cmd, stdout=subprocess.PIPE)
+
+        print("Waiting for job to start...")
+        # Read job SLURM ID
+        output, _ = proc.communicate()
+        job_id = None
+        if output:
+            text = output.decode()
+            # sbatch returns "Submitted batch job 12345"
+            if "Submitted batch job" in text:
+                job_id = int(text.strip().split()[-1])
+                print("Job submitted with ID:", job_id)
+                while not is_slurm_job_running(job_id):
+                    time.sleep(0.5)
 
     # Replace %j placeholder with actual JOB_ID
     if output_file:
         output_file = output_file.replace("%j", str(job_id))
     if error_file:
         error_file = error_file.replace("%j", str(job_id))
+
+    print(f"Job {job_id} is running. Output will be in {output_file} and {error_file}")
 
     return output_file, error_file, job_id
 
@@ -164,24 +171,30 @@ def extract_node_address(slurm_output_file):
                     return line.split(":", 1)[1].strip()
         time.sleep(0.5)
 
+
 def wait_for_local_port(port, host="127.0.0.1", timeout=5.0):
     """Wait until a local TCP port is open."""
-    start = time.time()
-    while True:
-        try:
-            with socket.create_connection((host, port), timeout=0.5):
-                return True
-        except OSError:
-            time.sleep(0.1)
-            if time.time() - start > timeout:
-                raise TimeoutError(f"Port {port} on {host} did not open in {timeout}s")
+    f = io.StringIO()
+    with redirect_stdout(f), redirect_stderr(f):
+        start = time.time()
+        while True:
+            try:
+                with socket.create_connection((host, port), timeout=0.5):
+                    return True
+            except OSError:
+                time.sleep(0.1)
+                if time.time() - start > timeout:
+                    raise TimeoutError(f"Port {port} on {host} did not open in {timeout}s")
 
-def forward_to_remote(remote_host: str, remote_port: int = 8001) -> int:
+def ssh_tunnel_forward_to_remote(remote_host: str, remote_port: int = 8001) -> tuple[int, threading.Thread, subprocess.Popen]:
     """
     Find a free local port and forward it via SSH to remote_host:remote_port.
-    
+
     Returns:
-        The local port number you can use to access remote_host:remote_port
+        tuple containing:
+        - local port number (int) you can use to access remote_host:remote_port
+        - the Thread managing the SSH tunnel
+        - the subprocess.Popen object for the SSH process
     """
     # 1. Find a free local port
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -189,29 +202,34 @@ def forward_to_remote(remote_host: str, remote_port: int = 8001) -> int:
     local_port = s.getsockname()[1]
     s.close()
 
-    # 2. Build the SSH command
+    # 2. Build the SSH command (blocking, attached to its thread)
     # -f: go to background
     # -N: no command
     # -L: local forward
     ssh_cmd = [
         "ssh",
-        "-f",              # run in background
         "-N",              # do not execute remote command
         "-L", f"{local_port}:{remote_host}:{remote_port}",
         "localhost"
     ]
 
-    # 3. Launch SSH
-    try:
-        subprocess.run(ssh_cmd, check=True)
-        print(f"Forwarding localhost:{local_port} -> {remote_host}:{remote_port}")
-    except subprocess.CalledProcessError as e:
-        raise RuntimeError(f"Failed to create SSH tunnel: {e}")
+     # 3. Function to run SSH as subprocess
+    def run_ssh():
+        nonlocal ssh_proc
+        ssh_proc = subprocess.Popen(
+            ssh_cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        ssh_proc.wait()
 
+    ssh_proc = None
+    thread = threading.Thread(target=run_ssh, daemon=True)
+    thread.start()
 
     wait_for_local_port(local_port)
     print(f"port {local_port} ready...")
-    return local_port
+    return local_port, thread, ssh_proc
 
 
 def silent_requests_get(url, timeout=1.0):
@@ -253,36 +271,85 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=60.0, i
         
         time.sleep(interval)
 
+
+
+# persistent in-memory cache (can persist to disk if needed later, e.g. after crash)
+jobid_cache = diskcache.Cache(f"{get_default_tmp_subdir()}/job_id_store", size_limit = 10*1024*1024)
+
+# Ephemeral in-memory cache for models
+model_cache = {}
+
 def launch_rivault_model(model_cfg):
-    # --- 1. get a node from SLURM ---
+    model_type_key = model_cfg["model_type"]
+    # --- 0. Check cache ---
+    job_id = jobid_cache.get(model_type_key, None)
+    if job_id is not None:
+        if is_slurm_job_running(job_id):
+            # job is running. Is the model in memory? 
+            if model_type_key in model_cache:
+                model, _, _ = model_cache[model_type_key]
+                print("===> Found a running job and a loaded model in cache. Reusing it.")
+                return model
+            else:
+                print("===> Found a running job in cache but no in memory model. This can happen if the server has restarted. Will try to load it again.")
+        else:
+            # Job not runnning
+            print("===> Found a job_id in cache but the job is not running. Cleaning up cache and launching a new job.")
+            jobid_cache.pop(model_type_key, None)
+            if model_type_key in model_cache:
+                _, thread_tunnel, proc_tunnel = model_cache.pop(model_type_key)
+                # Terminate the SSH subprocess
+                proc_tunnel.terminate()   # sends SIGTERM
+                proc_tunnel.wait()        # wait for it to exit
+
+                # Thread will exit automatically once the subprocess ends
+                thread_tunnel.join()      # wait for thread to finish cleanly
+
+            job_id = None
+                
+    # --- 1. get a node form SLURM ---    
     rivault_slurm_script = get_slurm_script_from_host()
-    output_file, error_file, job_id = get_slurm_node(rivault_slurm_script)
+    output_file, error_file, job_id = get_slurm_node(rivault_slurm_script, job_id_to_use=job_id)
 
     print(f"{output_file=} {job_id=}")
 
     # --- 2. Extract compute node address and create SSH tunnel ---
-    server_adress = extract_node_address(output_file) if output_file else "localhost"
+    server_address = extract_node_address(output_file) if output_file else "localhost"
     remote_port = get_rivault_remote_port()
-    local_port = forward_to_remote(server_adress, remote_port)
+    if remote_port < 0:
+        remote_port = model_cfg.get("server_port", None)
+        if remote_port is None:
+            raise ValueError("Remote port for RivaULT not specified. Please set the RIVAULT_REMOTE_PORT environment variable or specify 'server_port' in the model configuration.")
+    local_port, thread_tunnel, proc_tunnel = ssh_tunnel_forward_to_remote(server_address, remote_port)
     NGINX_PORT = os.getenv("NGINX_LITELLM_DOCKER_PORT")
     MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
     
     # model_type = "https:.....:{NGINX_PORT}"
 
      # --- 3. Build the OpenAI-compatible model ---
-    if model_cfg["model_type"].startswith("openai://"):
-         # replace a placeholder {NGINX_PORT} with the actual value
-         model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(NGINX_PORT))
-         # if you also want to replace a placeholder {local_port} with a variable 'local_port'
-         model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
-         wait_for_model(model_cfg["model_type"], model_cfg["model_name"])
-         print(f"Configuring: {model_cfg['model_type']}...")
-         return load_model(model_cfg, "")
+    if model_cfg["model_type"].startswith(("openai://","bentoml://")):
+        # replace a placeholder {NGINX_PORT} with the actual value
+        model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(NGINX_PORT))
+        # if you also want to replace a placeholder {local_port} with a variable 'local_port'
+        model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
+        wait_for_model(model_cfg["model_type"], model_cfg["model_name"])
+        print(f"Configuring: {model_cfg['model_type']}...")
+        # Load the model
+        model = load_model(model_cfg, "")
+        
+         # --- 4. Cache the loaded model and job_id ---
+        model_cache[model_type_key] = (model,  thread_tunnel, proc_tunnel)
+        jobid_cache[model_type_key] = job_id  # persistant
+        return model
     else:
         raise RuntimeError(f"Do not know what to do with model type {model_cfg['model_type']}")
 
 
 if __name__ == "__main__":
+    output_file, error_file = extract_files_from_slurm_script("~/tmp/myslurm.slurm")
+    print(f"{output_file=} {error_file=}")
+    exit(0)
+
     # --- 1. get a node from SLURM ---
     rivault_slurm_script = get_slurm_script_from_host()
     output_file, error_file, job_id = get_slurm_node(rivault_slurm_script)
