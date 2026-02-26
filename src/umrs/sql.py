@@ -15,6 +15,36 @@ class DataBase:
         self.username = username
         self.tables = dict()
 
+    def put_conn(self, conn, close=False):
+        """
+        Return a connection to the pool. Optionally close it.
+
+        Args:
+            conn: The connection object to return.
+            close (bool): If True, the connection will be closed instead of returned to the pool.
+        """
+        try:
+            self.db_pool.putconn(conn, close=close)
+        except Exception as e:
+            print(f"Error returning connection to pool: {e}")
+
+    def get_conn(self):
+        """
+        Retrieve a live connection from the pool.
+        Raises RuntimeError if it is not possible to obtain a valid connection.
+        """
+        try:
+            conn = self.db_pool.getconn()
+            if conn.closed:
+                # connexion dead → close and get a new one
+                self.db_pool.putconn(conn, close=True)
+                conn = self.db_pool.getconn()
+                if conn.closed:
+                    raise RuntimeError("Unable to get a live connection from the pool")
+            return conn
+        except Exception as e:
+            raise RuntimeError(f"Failed to get connection: {e}")
+
     def add_table(self, table_name, columns):
         """
         Adds a table with its columns and types.
@@ -75,7 +105,7 @@ class DataBase:
         Returns:
             str or None: Notification payload
         """
-        conn = self.db_pool.getconn()
+        conn = self.get_conn()
         try:
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_AUTOCOMMIT)
 
@@ -102,7 +132,6 @@ class DataBase:
             return notify.payload
 
         finally:
-
             self.db_pool.putconn(conn)
 
     def count_s3_objects(self, table_name: str) -> int:
@@ -381,8 +410,8 @@ def enable_table_notifications(conn, table_name: str):
     conn.commit()
 
 def configure_table(data_base, sql_cfg,  modality_name, model):
+    conn = data_base.get_conn()
 
-    db_pool = data_base.db_pool;
     table_name = sql_cfg['table_name'].lower()
     (f"\t\t\t--> Configuring table '{table_name}'...")
     table_columns = [];
@@ -429,7 +458,6 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
 
     metadata = metadata_dict(sql_cfg)
 
-    conn = db_pool.getconn()
     ensure_pgvector_enabled(conn)
     cur = conn.cursor()
 
@@ -499,7 +527,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
 
     # Cleanup
     cur.close()
-    db_pool.putconn(conn)
+    data_base.put_conn(conn)
     return table_name, store_embeddings_flag, metadata
 
 def is_string_type(sql_type):
@@ -512,7 +540,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
     Args:
-        db_pool: Connection pool object
+        data_base: data base object
         embedding: Vector embedding (list of floats)
         table_name: Name of the table to store embeddings
         bucket_name: Name of the S3 bucket
@@ -521,8 +549,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
     date = datetime.today().strftime('%Y-%m-%d')
     time = datetime.now().strftime('%H:%M:%S')
 
-    db_pool = data_base.db_pool
-    conn = db_pool.getconn()
+    conn = data_base.get_conn()
     cur = None
     try:
         cur = conn.cursor()
@@ -650,7 +677,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             except Exception:
                 # Consider logging the exception instead of silent pass
                 print(f"Warning: Failed to close cursor: {e}")
-        db_pool.putconn(conn)
+        data_base.put_conn(conn)
 
 def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_objects, modality_name, checksums, model_name, metadata_list=None):
     """
@@ -711,8 +738,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
         raise ValueError(f"Unsupported modality '{modality_name}' for embedding storage.")
 
 def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
-    db_pool = data_base.db_pool
-    conn = db_pool.getconn()
+    conn = data_base.get_conn()
     cur = None
     try:
         cur = conn.cursor()
@@ -758,7 +784,7 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
                 cur.close()
             except Exception as e:
                 print(f"Warning: failed to close cursor: {e}")
-        db_pool.putconn(conn)
+        data_base.put_conn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, buckets_cfg: BucketsCfg):
 
