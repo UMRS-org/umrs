@@ -251,7 +251,7 @@ def wait_for_local_port(port, host="127.0.0.1", timeout=5.0):
                 if time.time() - start > timeout:
                     raise TimeoutError(f"Port {port} on {host} did not open in {timeout}s")
 
-def forward_to_remote(remote_host: str, remote_port: int = 8001) -> tuple[int, threading.Thread, subprocess.Popen]:
+def ssh_tunnel_forward_to_remote(remote_host: str, remote_port: int = 8001) -> tuple[int, threading.Thread, subprocess.Popen]:
     """
     Find a free local port and forward it via SSH to remote_host:remote_port.
 
@@ -381,7 +381,11 @@ def launch_rivault_model(model_cfg):
     # --- 2. Extract compute node address and create SSH tunnel ---
     server_address = extract_node_address(output_file) if output_file else "localhost"
     remote_port = get_rivault_remote_port()
-    local_port, thread_tunnel, proc_tunnel = forward_to_remote(server_address, remote_port)
+    if remote_port is None:
+        remote_port = model_cfg.get("server_port", None)
+        if remote_port is None:
+            raise ValueError("Remote port for RivaULT not specified. Please set the RIVAULT_REMOTE_PORT environment variable or specify 'server_port' in the model configuration.")
+    local_port, thread_tunnel, proc_tunnel = ssh_tunnel_forward_to_remote(server_address, remote_port)
     NGINX_PORT = os.getenv("NGINX_LITELLM_DOCKER_PORT")
     MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
     
