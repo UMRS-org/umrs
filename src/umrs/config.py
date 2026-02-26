@@ -10,7 +10,7 @@ DEFAULT_DOCKER_S3CFG = "/app/docker/s3cfg"
 DEFAULT_DB_SUBDIR = f"{DEFAULT_UMRS_CFG_DIR}/tasks_database"
 DEFAULT_RIVAULT_SLURM_SCRIPT = f"{DEFAULT_UMRS_CFG_DIR}/rivault_data/serve-model.slurm"
 PLAFRIM_RIVAULT_SLURM_SCRIPT = f"{DEFAULT_UMRS_CFG_DIR}/rivault_data/serve-model-plafrim.slurm"
-RIVAULT_REMOTE_PORT = int(os.environ.get("RIVAULT_REMOTE_PORT", None))
+RIVAULT_REMOTE_PORT = int(os.environ.get("RIVAULT_REMOTE_PORT", -1))
 
 def get_default_umrs_cfg_dir():
     return DEFAULT_UMRS_CFG_DIR

@@ -168,7 +168,7 @@ def get_slurm_node(slurm_script, job_id_to_use=None):
         job_id = job_id_to_use
     else :
         # Launch script
-        sbatch_cmd = ["sbatch"] + sbatch_extra_args + [slurm_script]
+        sbatch_cmd = ["sbatch"] + [slurm_script]
         print(f"{sbatch_cmd}")
 
         proc = subprocess.Popen(sbatch_cmd, stdout=subprocess.PIPE)
@@ -381,7 +381,7 @@ def launch_rivault_model(model_cfg):
     # --- 2. Extract compute node address and create SSH tunnel ---
     server_address = extract_node_address(output_file) if output_file else "localhost"
     remote_port = get_rivault_remote_port()
-    if remote_port is None:
+    if remote_port < 0:
         remote_port = model_cfg.get("server_port", None)
         if remote_port is None:
             raise ValueError("Remote port for RivaULT not specified. Please set the RIVAULT_REMOTE_PORT environment variable or specify 'server_port' in the model configuration.")
