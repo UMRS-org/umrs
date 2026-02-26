@@ -20,7 +20,8 @@
           "model": {
             "model_name": "intfloat/e5-base-v2",
             "vector_size": "768",
-              "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+            "server_port": "8001",
             "spacy_model": "en_core_web_sm",
             "return_type": null
           },

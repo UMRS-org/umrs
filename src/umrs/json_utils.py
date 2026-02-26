@@ -55,6 +55,7 @@ client_schema = {
                     "model_name": { "type": "string" },
                     "vector_size": { "type": "string" },
                     "model_type": { "type": "string" },
+                    "server_port": { "type": "string" },
                     "model_cfg_file" : { "type": "string" },
                     "checkpoint_path": { "type": "string" },
                     "spacy_model": { "type": "string" },
