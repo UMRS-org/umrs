@@ -1,4 +1,4 @@
-from .models_loading import load_model
+from umrs.models_loading import load_model
 from umrs.config import *
 
 
@@ -86,20 +86,83 @@ def _ensure_output_dir():
     os.makedirs(full_tmp_path, exist_ok=True)
     return full_tmp_path
 
+def extract_files_from_slurm_script(slurm_script, default_output="slurm-%j.out", default_error="slurm-%j.err"):
+ 
+    with open(slurm_script, "r") as f:
+        lines = f.readlines()
+
+    # here we want to check if there is a shebang (#!) at the beginning of the script, 
+    # and if so we want to keep it at the top of the script when we modify it to add the output and error file if they are not present. 
+    start_idx = 0
+
+    # Skip leading empty lines and detect shebang
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "":
+            continue
+        if stripped.startswith("#!"):
+            start_idx = i + 1
+        else:
+            # first non-empty line that's not a shebang
+            start_idx = i
+        break
+
+    # check existing SBATCH lines
+    # in new_lines we will keep all the lines except the ones with --output and --error that do not contain %j, 
+    # we will replace them with the correct ones with %j, and if there is no line with --output or --error 
+    # we will add them at start_idx (after the shebang and any initial comments)
+    new_lines = []  # keep shebang if present
+    output_file = error_file = None
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("#SBATCH") and "--output=" in stripped:
+            path = stripped.split("--output=", 1)[1].strip()
+            if "%j" in path:
+                output_file = path
+                new_lines.append(line)  # keep correct line
+            # else: skip line (do not append). We need %j to replace with actual job id later, otherwise we won't be able to monitor the file.
+        elif stripped.startswith("#SBATCH") and "--error=" in stripped:
+            path = stripped.split("--error=", 1)[1].strip()
+            if "%j" in path:
+                error_file = path
+                new_lines.append(line)
+            # else: skip line. We need %j to replace with actual job id later, otherwise we won't be able to monitor the file.
+        else:
+            new_lines.append(line)
+    
+    print(f"{new_lines}")
+
+    # Now create lines to insert if needed with %j placeholder, and insert them after the shebang and any initial comments (after start_idx)
+    insert_lines = []
+    if output_file is None:
+        output_file = default_output
+        insert_lines.append(f"#SBATCH --output={output_file}\n")
+    if error_file is None:
+        error_file = default_error
+        insert_lines.append(f"#SBATCH --error={error_file}\n")
+    
+    print("insert_lines=", insert_lines)
+    # Insert these lines at start_idx (after shebang and any initial comments)
+    final_lines = new_lines[:start_idx] + insert_lines + new_lines[start_idx:]
+    with open(slurm_script, "w") as f:
+        f.writelines(final_lines)
+    
+    return output_file, error_file
+
 def get_slurm_node(slurm_script, job_id_to_use=None):
     output_file = error_file = None
     if "plafrim" in slurm_script:
-        output_file, error_file = create_plafrim_slurm_script(slurm_script)
+        create_plafrim_slurm_script(slurm_script)
 
-    # For non-plafrim scripts, set up output/error files so we can
-    # extract the compute node address from the Slurm output.
-    sbatch_extra_args = []
-    if output_file is None:
-        out_dir = _ensure_output_dir()
-        output_file = os.path.join(out_dir, "slurm-%j.out")
-        error_file = os.path.join(out_dir, "slurm-%j.err")
-        sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
-    
+    # OK now we need to check and extact the output_file and the error_file from the slurm script, so we can monitor them to extract the node address.
+    # we need to ensure they exist in the slurm script, otherwise we won't be able to monitor them. and that they contain %j so we can replace it with the actual job id.
+    # this is exactly what does the following function, it returns the output_file and error_file paths with the %j placeholder, so we can replace it later with the actual job id once we have it.
+    out_dir = _ensure_output_dir()
+    default_output_file = os.path.join(out_dir, "slurm-%j.out") # Will be insterted in the script if there is no --output line with %j placeholder
+    default_error_file = os.path.join(out_dir, "slurm-%j.err") # Will be insterted in the script if there is no --error line with %j placeholder
+    output_file, error_file = extract_files_from_slurm_script(slurm_script, default_output=default_output_file, default_error=default_error_file)
+
     # If we already have a job_id, we only need the output and error file paths. No need to call SLURM.
     if job_id_to_use is not None:
         job_id = job_id_to_use
@@ -325,7 +388,7 @@ def launch_rivault_model(model_cfg):
     # model_type = "https:.....:{NGINX_PORT}"
 
      # --- 3. Build the OpenAI-compatible model ---
-    if model_cfg["model_type"].startswith("openai://"):
+    if model_cfg["model_type"].startswith(("openai://","bentoml://")):
         # replace a placeholder {NGINX_PORT} with the actual value
         model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(NGINX_PORT))
         # if you also want to replace a placeholder {local_port} with a variable 'local_port'
@@ -344,6 +407,10 @@ def launch_rivault_model(model_cfg):
 
 
 if __name__ == "__main__":
+    output_file, error_file = extract_files_from_slurm_script("~/tmp/myslurm.slurm")
+    print(f"{output_file=} {error_file=}")
+    exit(0)
+
     # --- 1. get a node from SLURM ---
     rivault_slurm_script = get_slurm_script_from_host()
     output_file, error_file, job_id = get_slurm_node(rivault_slurm_script)
