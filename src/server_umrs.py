@@ -938,12 +938,6 @@ def check_umrs_config_directory():
 # ---------------------------------- CLI ------------------------------------
 
 def main():
-
-    from umrs.rivault import extract_files_from_slurm_script
-    output_file, error_file = extract_files_from_slurm_script("/home/jeannot/tmp/myslurm.slurm",default_error="/home/jeannot/tmp/myslurm-%j.err", default_output="/home/jeannot/tmp/myslurm-%j.out")
-    print(f"{output_file=} {error_file=}")
-    exit(0)
-
     # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()
     if umrs_cfg_dir:
