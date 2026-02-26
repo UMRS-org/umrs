@@ -105,8 +105,9 @@ def get_slurm_node(slurm_script, job_id_to_use=None):
         job_id = job_id_to_use
     else :
         # Launch script
-        print(f"sbatch {slurm_script}")
         sbatch_cmd = ["sbatch"] + sbatch_extra_args + [slurm_script]
+        print(f"{sbatch_cmd}")
+
         proc = subprocess.Popen(sbatch_cmd, stdout=subprocess.PIPE)
 
         print("Waiting for job to start...")
@@ -127,6 +128,8 @@ def get_slurm_node(slurm_script, job_id_to_use=None):
         output_file = output_file.replace("%j", str(job_id))
     if error_file:
         error_file = error_file.replace("%j", str(job_id))
+
+    print(f"Job {job_id} is running. Output will be in {output_file} and {error_file}")
 
     return output_file, error_file, job_id
 
@@ -315,7 +318,7 @@ def launch_rivault_model(model_cfg):
     # --- 2. Extract compute node address and create SSH tunnel ---
     server_address = extract_node_address(output_file) if output_file else "localhost"
     remote_port = get_rivault_remote_port()
-    local_port = forward_to_remote(server_address, remote_port)
+    local_port, thread_tunnel, proc_tunnel = forward_to_remote(server_address, remote_port)
     NGINX_PORT = os.getenv("NGINX_LITELLM_DOCKER_PORT")
     MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
     
