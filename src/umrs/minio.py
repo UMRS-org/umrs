@@ -10,7 +10,7 @@ from umrs.utils import normalize_json
 
 def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     """
-    Ensure the mc alias exists. If not, create it.
+    Ensure the mc alias exists. If not, create it. 
     
     Args:
         alias (str): Alias name (e.g., 'myminio')
@@ -58,10 +58,10 @@ def minio_create_user_with_policy(user, password, target, policy_name):
     Creates a MinIO user (if not present) and attaches a policy.
     
     Args:
-        user (str): Username (access key)
-        password (str): User's password (secret key)
+        user (str): username (access key)
+        password (str): user's password (secret key)
         target (str): mc alias for MinIO server
-        policy_name (str): Policy to attach (must already exist)
+        policy_name (str): policy to attach (must already exist)
     """
 
     # First, ensure the user exists and the password matches the provided one
