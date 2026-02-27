@@ -12,6 +12,14 @@ from contextlib import redirect_stderr, redirect_stdout
 import io
 import threading
 
+
+# persistent in-memory cache (can persist to disk if needed later, e.g. after crash)
+jobid_cache = diskcache.Cache(f"{get_default_tmp_subdir()}/job_id_store", size_limit = 10*1024*1024)
+
+# Ephemeral in-memory cache for models
+model_cache = {}
+
+
 def get_slurm_job_state(job_id):
     result = subprocess.run(
         ["squeue", "-h", "-j", str(job_id), "-o", "%T"],
@@ -32,10 +40,16 @@ def get_slurm_job_state(job_id):
 
     return state
 
-def is_slurm_job_running(job_id):
-    state = get_slurm_job_state(job_id)
-    return state == "RUNNING"
+def wait_for_running(job_id):
+    while True:
+        state = get_slurm_job_state(job_id)
+        if state is "RUNNING":
+            return True
+        elif state != "PENDING":
+            return False
+        time.sleep(0.5)
 
+        
 def create_plafrim_slurm_script(slurm_script):
     tmp_dir = get_default_tmp_subdir()
     full_tmp_path = os.path.abspath(os.path.expanduser(tmp_dir))
@@ -86,7 +100,7 @@ def _ensure_output_dir():
     os.makedirs(full_tmp_path, exist_ok=True)
     return full_tmp_path
 
-def get_slurm_node(slurm_script, job_id_to_use=None):
+def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None):
     output_file = error_file = None
     if "plafrim" in slurm_script:
         create_plafrim_slurm_script(slurm_script)
@@ -118,9 +132,9 @@ def get_slurm_node(slurm_script, job_id_to_use=None):
             if "Submitted batch job" in text:
                 job_id = int(text.strip().split()[-1])
                 print("Job submitted with ID:", job_id)
-                while not is_slurm_job_running(job_id):
-                    time.sleep(0.5)
-
+                jobid_cache[model_type_key] = job_id  # persistant
+                if not wait_for_running(job_id):
+                    raise ValueError(f"Job {job_id} did not start running. Current state: {get_slurm_job_state(job_id)}")
     # Replace %j placeholder with actual JOB_ID
     if output_file:
         output_file = output_file.replace("%j", str(job_id))
@@ -273,18 +287,13 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=60.0, i
 
 
 
-# persistent in-memory cache (can persist to disk if needed later, e.g. after crash)
-jobid_cache = diskcache.Cache(f"{get_default_tmp_subdir()}/job_id_store", size_limit = 10*1024*1024)
-
-# Ephemeral in-memory cache for models
-model_cache = {}
-
 def launch_rivault_model(model_cfg):
-    model_type_key = model_cfg["model_type"]
+    model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"]
     # --- 0. Check cache ---
     job_id = jobid_cache.get(model_type_key, None)
     if job_id is not None:
-        if is_slurm_job_running(job_id):
+        print(f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running...")
+        if wait_for_running(job_id):
             # job is running. Is the model in memory? 
             if model_type_key in model_cache:
                 model, _, _ = model_cache[model_type_key]
@@ -309,7 +318,7 @@ def launch_rivault_model(model_cfg):
                 
     # --- 1. get a node form SLURM ---    
     rivault_slurm_script = get_slurm_script_from_host()
-    output_file, error_file, job_id = get_slurm_node(rivault_slurm_script, job_id_to_use=job_id)
+    output_file, error_file, job_id = get_slurm_node(rivault_slurm_script, model_type_key, job_id_to_use=job_id)
 
     print(f"{output_file=} {job_id=}")
 
