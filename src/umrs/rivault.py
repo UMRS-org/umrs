@@ -12,6 +12,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import io
 import threading
 
+
 def get_slurm_job_state(job_id):
     result = subprocess.run(
         ["squeue", "-h", "-j", str(job_id), "-o", "%T"],

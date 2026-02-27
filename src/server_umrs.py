@@ -34,6 +34,7 @@ from umrs.config import *
 _status_store_global = None
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
 
+rivault_lock = threading.Lock()
 
 # ---------------------- Server configuration class ----------------------
 from dataclasses import dataclass, field
@@ -742,7 +743,9 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
             try: 
                 if update_status_callback:
                     update_status_callback(TaskStatus.INITIALIZING)
-                model = launch_rivault_model(model.model.copy())
+                # launch_rivault_model is not reentrant, so we use a lock to ensure only one thread is running it at a time
+                with rivault_lock:
+                    model = launch_rivault_model(model.model.copy())
             except Exception as e:
                 print(f"Error creating the RiVault model: {e}")
                 exit_status = TaskStatus.ERROR
