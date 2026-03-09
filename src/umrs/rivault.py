@@ -56,7 +56,7 @@ def wait_for_running(job_id, timeout=300):
             return False
         time.sleep(0.5)
 
-        
+
 def create_plafrim_slurm_script(slurm_script):
     tmp_dir = get_default_tmp_subdir()
     full_tmp_path = os.path.abspath(os.path.expanduser(tmp_dir))
