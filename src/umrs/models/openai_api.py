@@ -1,13 +1,14 @@
 from openai import OpenAI, OpenAIError
 from typing import Optional
+import hashlib
 import httpx
 from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
 
 _clients = {}
 
 def get_client(url, model_name, api_key=None):
-    global _client
-    key = (url, model_name)
+    api_key_hash = hashlib.sha256(api_key.encode()).hexdigest() if api_key else None
+    key = (url, model_name, api_key_hash)
 
     client = _clients.get(key)
     if client is None:
@@ -49,7 +50,7 @@ def is_server_alive(
     except httpx.HTTPError:
         return False
 
-def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0, api_key: Optional[str] = None) -> int:
+def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0, api_key: Optional[str] = None) -> Optional[int]:
     """
     Query a vLLM OpenAI-compatible server to get the max token length
     supported by a given model.
@@ -139,10 +140,10 @@ def make_openai_compute_embeddings(url, model_name, api_key=None):
         if not response.data:
             raise RuntimeError("Empty embedding response from server")
 
-        if len(response.data) != len(texts):
+        if len(response.data) != len(flat_texts):
             raise RuntimeError(
                 f"Embedding count mismatch: got {len(response.data)}, "
-                f"expected {len(texts)}"
+                f"expected {len(flat_texts)}"
             )
 
 

@@ -35,4 +35,4 @@ chown munge:munge /run/munge /var/log/munge
 chmod 755 /run/munge
 
 echo "Starting munged as munge user..."
-exec su -s /bin/bash munge -c "exec $*"
+exec runuser -s /bin/bash munge -- "$@"
