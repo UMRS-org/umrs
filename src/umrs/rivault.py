@@ -41,7 +41,8 @@ def get_slurm_job_state(job_id):
 def wait_for_running(job_id):
     while True:
         state = get_slurm_job_state(job_id)
-        if state is "RUNNING":
+        print(f"{job_id} - {state=}")
+        if state == "RUNNING":
             return True
         elif state != "PENDING":
             return False
