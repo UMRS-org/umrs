@@ -177,8 +177,35 @@ fi
 
 # ---- Step 7: Stop any existing munged/slurmd ----
 echo "[7/8] Stopping any existing munge/slurmd processes..."
-systemctl stop munge 2>/dev/null || killall munged 2>/dev/null || true
-systemctl stop slurmd 2>/dev/null || killall slurmd 2>/dev/null || true
+if systemctl stop munge 2>/dev/null; then
+    echo "  Stopped munge via systemctl."
+else
+    # Kill only the host munged by PID (avoids killing munged inside containers)
+    MUNGE_PIDFILE="${MUNGE_PIDFILE:-/var/run/munge/munged.pid}"
+    if [[ -f "$MUNGE_PIDFILE" ]]; then
+        MUNGE_PID=$(cat "$MUNGE_PIDFILE")
+        if [[ -n "$MUNGE_PID" ]] && kill -0 "$MUNGE_PID" 2>/dev/null; then
+            kill "$MUNGE_PID" 2>/dev/null || true
+            echo "  Stopped munged (PID $MUNGE_PID) via pidfile."
+        fi
+    else
+        # Fallback: find host munged by executable path to avoid hitting containers
+        mapfile -t HOST_MUNGE_PIDS < <(pgrep -x munged 2>/dev/null || true)
+        if [[ ${#HOST_MUNGE_PIDS[@]} -gt 0 ]]; then
+            kill "${HOST_MUNGE_PIDS[@]}" 2>/dev/null || true
+            echo "  Stopped munged (PIDs ${HOST_MUNGE_PIDS[*]}) via pgrep."
+        fi
+    fi
+fi
+if systemctl stop slurmd 2>/dev/null; then
+    echo "  Stopped slurmd via systemctl."
+else
+    mapfile -t HOST_SLURMD_PIDS < <(pgrep -x slurmd 2>/dev/null || true)
+    if [[ ${#HOST_SLURMD_PIDS[@]} -gt 0 ]]; then
+        kill "${HOST_SLURMD_PIDS[@]}" 2>/dev/null || true
+        echo "  Stopped slurmd (PIDs ${HOST_SLURMD_PIDS[*]}) via pgrep."
+    fi
+fi
 sleep 1
 
 # ---- Step 8: Start munged and slurmd ----
