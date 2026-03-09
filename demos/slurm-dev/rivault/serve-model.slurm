@@ -120,10 +120,14 @@ if podman network exists genai-private-net 2>/dev/null; then
 fi
 
 # Create a fresh genai-private-net, trying candidate subnets until one works
+# NOTE: do NOT use --internal here; rootful podman's conmon port-forwarder
+# cannot relay data across an internal bridge (TCP connects but hangs).
+# The published port (NGINX_LITELLM_DOCKER_PORT) must be reachable from the
+# host so the SSH tunnel from the control-plane container can reach it.
 _net_created=0
 for IP1TO3 in '192.168.4' '172.16.4' '10.0.4'; do
 	# Note: --disable-dns needed because infra lacks dns, but we need fixed ips
-	if podman network create --internal --disable-dns --subnet "${IP1TO3}.0/24" genai-private-net 2>/dev/null; then
+	if podman network create --disable-dns --subnet "${IP1TO3}.0/24" genai-private-net 2>/dev/null; then
 		_net_created=1
 		break
 	fi

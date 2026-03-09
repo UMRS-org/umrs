@@ -42,6 +42,8 @@ SLURM_CONF_SRC="$DEMO_DIR/slurm.conf"
 SLURM_CONF_DST="/etc/slurm/slurm.conf"
 GRES_CONF_SRC="$DEMO_DIR/gres.conf"
 GRES_CONF_DST="/etc/slurm/gres.conf"
+CGROUP_CONF_SRC="$DEMO_DIR/cgroup.conf"
+CGROUP_CONF_DST="/etc/slurm/cgroup.conf"
 
 # The node name that slurmd registers as (must match NodeName in slurm.conf)
 SLURM_NODE_NAME="${SLURM_NODE_NAME:-compute-01}"
@@ -105,6 +107,11 @@ echo "  Copied slurm.conf to $SLURM_CONF_DST (patched SlurmctldHost with 127.0.0
 if [[ -f "$GRES_CONF_SRC" ]]; then
     cp "$GRES_CONF_SRC" "$GRES_CONF_DST"
     echo "  Copied gres.conf to $GRES_CONF_DST"
+fi
+
+if [[ -f "$CGROUP_CONF_SRC" ]]; then
+    cp "$CGROUP_CONF_SRC" "$CGROUP_CONF_DST"
+    echo "  Copied cgroup.conf to $CGROUP_CONF_DST"
 fi
 
 # ---- Step 3: Clean stale /etc/hosts entries ----
@@ -249,6 +256,19 @@ export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-$RIVAULT_DIR/models
 export NGINX_LITELLM_DOCKER_PORT="${NGINX_LITELLM_DOCKER_PORT:-11434}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-sk-demo-dev}"
 
-exec slurmd -D -N "$SLURM_NODE_NAME" \
-    -f "$SLURM_CONF_DST" \
-    -vv
+if [[ "${1:-}" == "--bg" ]]; then
+    echo "  Starting slurmd in BACKGROUND mode..."
+    slurmd -N "$SLURM_NODE_NAME" -f "$SLURM_CONF_DST" -vv
+    sleep 2
+    if pgrep -x slurmd >/dev/null; then
+        echo "  slurmd is running (PID $(pgrep -x slurmd))."
+        echo "  Log: /var/log/slurm/slurmd.log"
+    else
+        echo "  ERROR: slurmd failed to start. Check /var/log/slurm/slurmd.log"
+        exit 1
+    fi
+else
+    exec slurmd -D -N "$SLURM_NODE_NAME" \
+        -f "$SLURM_CONF_DST" \
+        -vv
+fi

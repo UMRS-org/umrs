@@ -303,12 +303,13 @@ phase3_wait_for_embeddings() {
     local attempts=60
     local i
     for i in $(seq 1 "$attempts"); do
-        local status_raw status_json running_count
+        local status_raw status_json task_state
         status_raw="$(podman exec "$UMRS_CLIENT_CONTAINER" python3 /opt/umrs/client_umrs.py -c "$USER_CONF" --output json status all 2>/dev/null || true)"
         status_json="$(echo "$status_raw" | grep '^{' | tail -n 1 || true)"
 
         if [[ -n "$status_json" ]]; then
-            running_count="$(echo "$status_json" | python3 -c '
+            # Parse task states: returns "running N", "error N", or "done"
+            task_state="$(echo "$status_json" | python3 -c '
 import json
 import sys
 
@@ -328,19 +329,45 @@ def get_threads(payload):
 
 payload = json.load(sys.stdin)
 running = 0
+errors = 0
 for t in get_threads(payload):
-    if str(t.get("status", "")).lower() == "running":
+    s = str(t.get("status", "")).lower()
+    if s == "running":
         running += 1
-print(running)
-' 2>/dev/null || echo 0)"
+    elif s == "error":
+        errors += 1
 
-            if [[ "$running_count" == "0" ]]; then
-                log "All embedding tasks completed"
-                return 0
-            fi
-            if [[ "$i" -eq 1 || $((i % 6)) -eq 0 ]]; then
-                log "Embedding tasks still running: $running_count (attempt $i/$attempts)"
-            fi
+if running > 0:
+    print(f"running {running}")
+elif errors > 0:
+    print(f"error {errors}")
+else:
+    print("done")
+' 2>/dev/null || echo 'unknown')"
+
+            case "$task_state" in
+                done)
+                    log "All embedding tasks completed successfully"
+                    return 0
+                    ;;
+                error*)
+                    local err_count="${task_state#error }"
+                    warn "$err_count task(s) ended with Error status!"
+                    warn "Check server logs: podman logs $AI_LOGIN_CONTAINER"
+                    return 1
+                    ;;
+                running*)
+                    local run_count="${task_state#running }"
+                    if [[ "$i" -eq 1 || $((i % 6)) -eq 0 ]]; then
+                        log "Embedding tasks still running: $run_count (attempt $i/$attempts)"
+                    fi
+                    ;;
+                *)
+                    if [[ "$i" -eq 1 || $((i % 6)) -eq 0 ]]; then
+                        warn "Unknown task state: $task_state (attempt $i/$attempts)"
+                    fi
+                    ;;
+            esac
         else
             if [[ "$i" -eq 1 || $((i % 6)) -eq 0 ]]; then
                 warn "Could not parse status JSON yet (attempt $i/$attempts)"
@@ -351,6 +378,100 @@ print(running)
     done
 
     die "Embedding wait timed out after $((attempts * 10))s. Check logs: podman logs $AI_LOGIN_CONTAINER"
+}
+
+phase3b_verify_embeddings_in_db() {
+    echo
+    log "Phase 3b: Verifying embeddings in pgvector database"
+
+    # Query all user databases (excluding system DBs) for embedding tables
+    local user_dbs
+    user_dbs="$(podman exec "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d postgres -tAc \
+        "SELECT datname FROM pg_database WHERE datname NOT IN ('postgres','template0','template1','umrs');" 2>/dev/null || true)"
+
+    if [[ -z "$user_dbs" ]]; then
+        warn "No user databases found in pgvector"
+        return 1
+    fi
+
+    local total_embeddings=0
+    local total_nulls=0
+    local tables_checked=0
+    local has_problems=0
+
+    for db in $user_dbs; do
+        log "  Database: $db"
+
+        # Find all tables that have an 'embedding' column
+        local tables_with_emb
+        tables_with_emb="$(podman exec "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d "$db" -tAc \
+            "SELECT table_name FROM information_schema.columns WHERE column_name='embedding' AND table_schema='public';" 2>/dev/null || true)"
+
+        if [[ -z "$tables_with_emb" ]]; then
+            warn "    No tables with 'embedding' column found"
+            has_problems=1
+            continue
+        fi
+
+        for tbl in $tables_with_emb; do
+            tables_checked=$((tables_checked + 1))
+
+            # Count total rows
+            local row_count
+            row_count="$(podman exec "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d "$db" -tAc \
+                "SELECT count(*) FROM \"$tbl\";" 2>/dev/null || echo 0)"
+            row_count="$(echo "$row_count" | tr -d ' ')"
+
+            # Count rows with non-null embeddings
+            local emb_count
+            emb_count="$(podman exec "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d "$db" -tAc \
+                "SELECT count(*) FROM \"$tbl\" WHERE embedding IS NOT NULL;" 2>/dev/null || echo 0)"
+            emb_count="$(echo "$emb_count" | tr -d ' ')"
+
+            # Count rows with null embeddings
+            local null_count
+            null_count="$(podman exec "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d "$db" -tAc \
+                "SELECT count(*) FROM \"$tbl\" WHERE embedding IS NULL;" 2>/dev/null || echo 0)"
+            null_count="$(echo "$null_count" | tr -d ' ')"
+
+            # Get embedding vector dimension
+            local emb_dim
+            emb_dim="$(podman exec "$PG_CONTAINER" psql -U "$PG_SUPERUSER" -d "$db" -tAc \
+                "SELECT atttypmod FROM pg_attribute WHERE attrelid='public.\"$tbl\"'::regclass AND attname='embedding';" 2>/dev/null || echo '?')"
+            emb_dim="$(echo "$emb_dim" | tr -d ' ')"
+
+            total_embeddings=$((total_embeddings + emb_count))
+            total_nulls=$((total_nulls + null_count))
+
+            if [[ "$row_count" -eq 0 ]]; then
+                warn "    $tbl: 0 rows (EMPTY — no embeddings computed!)"
+                has_problems=1
+            elif [[ "$null_count" -gt 0 ]]; then
+                warn "    $tbl: $row_count rows, $emb_count with embeddings (dim=$emb_dim), $null_count NULL embeddings"
+                has_problems=1
+            else
+                log "    $tbl: $row_count rows, all with embeddings (dim=$emb_dim) ✓"
+            fi
+        done
+    done
+
+    echo
+    log "  Summary: $tables_checked table(s) checked, $total_embeddings embedding(s) computed, $total_nulls NULL embedding(s)"
+
+    if [[ "$total_embeddings" -eq 0 ]]; then
+        warn "NO EMBEDDINGS FOUND in the database!"
+        warn "The embedding pipeline did not produce any results."
+        warn "Check: podman logs $AI_LOGIN_CONTAINER | tail -50"
+        return 1
+    fi
+
+    if [[ "$has_problems" -ne 0 ]]; then
+        warn "Some issues detected (see above)"
+        return 1
+    fi
+
+    log "All embeddings verified successfully"
+    return 0
 }
 
 phase4_summary() {
@@ -382,7 +503,12 @@ main() {
     phase1_start_control_plane
     phase1b_prepare_embedding_model
     phase2_upload_data
-    phase3_wait_for_embeddings
+    phase3_wait_for_embeddings || {
+        warn "Phase 3 detected errors — continuing to DB check for diagnostics"
+    }
+    phase3b_verify_embeddings_in_db || {
+        warn "Phase 3b: Embedding verification FAILED"
+    }
     phase4_summary
 }
 

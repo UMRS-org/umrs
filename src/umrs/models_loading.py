@@ -89,11 +89,16 @@ def load_model(model_cfg, modality):
         # Extract optional API key (set by rivault launch flow for LiteLLM auth)
         api_key = model_cfg.get("api_key")
 
-        # Query the vLLM server to discover the maximum supported token length for this model
-        max_tokens = get_max_tokens_from_vllm(model_url, model_name, api_key=api_key)
-
-        # Load the tokenizer corresponding to the embedding model to perform local chunking when necessary
+        # Load the tokenizer first so we have its max_length as fallback
         tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        # Query the vLLM server to discover the maximum supported token length for this model.
+        # LiteLLM proxy responses lack vLLM-specific fields, so fall back to
+        # the tokenizer's model_max_length when no field is exposed.
+        max_tokens = get_max_tokens_from_vllm(model_url, model_name, api_key=api_key)
+        if max_tokens is None:
+            max_tokens = getattr(tokenizer, 'model_max_length', 512)
+            print(f"[INFO] vLLM max_token field not exposed (LiteLLM proxy?); using tokenizer max_length={max_tokens}")
 
         # Fail fast if the OpenAI-compatible (vLLM) server is not reachable
         if not is_server_alive(model_url, api_key=api_key):
