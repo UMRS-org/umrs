@@ -38,12 +38,21 @@ def get_slurm_job_state(job_id):
 
     return state
 
-def wait_for_running(job_id):
+def is_slurm_job_running(job_id):
+    """Check if a Slurm job is currently in RUNNING state."""
+    state = get_slurm_job_state(job_id)
+    return state == "RUNNING"
+
+def wait_for_running(job_id, timeout=300):
+    """Wait until a Slurm job reaches RUNNING state, with timeout."""
+    start = time.time()
     while True:
         state = get_slurm_job_state(job_id)
-        if state is "RUNNING":
+        if state == "RUNNING":
             return True
-        elif state != "PENDING":
+        if state is None or state not in ("PENDING", "CONFIGURING"):
+            return False
+        if time.time() - start > timeout:
             return False
         time.sleep(0.5)
 
@@ -130,23 +139,9 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None):
             if "Submitted batch job" in text:
                 job_id = int(text.strip().split()[-1])
                 print("Job submitted with ID:", job_id)
-                _wait_timeout = 300  # seconds
-                _wait_start = time.time()
-                while True:
-                    state = get_slurm_job_state(job_id)
-                    if state == "RUNNING":
-                        break
-                    if state is None:
-                        raise RuntimeError(
-                            f"Slurm job {job_id} is no longer in the queue "
-                            "(it may have failed or been cancelled before reaching RUNNING state)"
-                        )
-                    if time.time() - _wait_start > _wait_timeout:
-                        raise RuntimeError(
-                            f"Slurm job {job_id} did not reach RUNNING state "
-                            f"within {_wait_timeout}s (current state: {state})"
-                        )
-                    time.sleep(0.5)
+                jobid_cache[model_type_key] = job_id  # persist immediately
+                if not wait_for_running(job_id):
+                    raise ValueError(f"Job {job_id} did not start running. Current state: {get_slurm_job_state(job_id)}")
 
     # Replace %j placeholder with actual JOB_ID
     if output_file:
@@ -309,27 +304,13 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=300.0, 
         time.sleep(interval)
 
 
-
-# persistent in-memory cache (can persist to disk if needed later, e.g. after crash)
-jobid_cache = diskcache.Cache(f"{get_default_tmp_subdir()}/job_id_store", size_limit = 10*1024*1024)
-
-# Ephemeral in-memory cache for models
-model_cache = {}
-
-# Serialise concurrent calls to prevent duplicate Slurm job submissions
-_launch_lock = threading.Lock()
-
 def launch_rivault_model(model_cfg):
-    with _launch_lock:
-        return _launch_rivault_model_locked(model_cfg)
-
-
-def _launch_rivault_model_locked(model_cfg):
-    model_type_key = model_cfg["model_type"]
+    model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"]
     # --- 0. Check cache ---
     job_id = jobid_cache.get(model_type_key, None)
     if job_id is not None:
-        if is_slurm_job_running(job_id):
+        print(f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running...")
+        if wait_for_running(job_id):
             # job is running. Is the model in memory?
             if model_type_key in model_cache:
                 model, _, _ = model_cache[model_type_key]

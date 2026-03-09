@@ -79,9 +79,9 @@ def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0, ap
             if "max_position_embeddings" in model:
                 return int(model["max_position_embeddings"])
 
-            raise RuntimeError(
-                f"Model {model_name} found, but no max token field exposed"
-            )
+            # LiteLLM proxy responses lack vLLM-specific fields;
+            # return None so the caller can fall back to tokenizer metadata.
+            return None
 
     raise RuntimeError(f"Model {model_name} not found on vLLM server")
 
