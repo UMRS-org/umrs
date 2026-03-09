@@ -1,11 +1,11 @@
 from openai import OpenAI, OpenAIError
 from typing import Optional
 import httpx
-from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict
+from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
 
 _clients = {}
 
-def get_client(url, model_name):
+def get_client(url, model_name, api_key=None):
     global _client
     key = (url, model_name)
 
@@ -13,7 +13,7 @@ def get_client(url, model_name):
     if client is None:
         client = OpenAI(
             base_url=url,
-            api_key="EMPTY",
+            api_key=api_key or "EMPTY",
         )
         _clients[key] = client
 
@@ -49,16 +49,20 @@ def is_server_alive(
     except httpx.HTTPError:
         return False
 
-def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0) -> int:
+def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0, api_key: Optional[str] = None) -> int:
     """
     Query a vLLM OpenAI-compatible server to get the max token length
     supported by a given model.
     """
     models_url = url.rstrip("/") + "/models"
 
+    headers = {}
+    if api_key is not None:
+        headers["Authorization"] = f"Bearer {api_key}"
+
     try:
         with httpx.Client(timeout=timeout) as client:
-            resp = client.get(models_url)
+            resp = client.get(models_url, headers=headers)
             resp.raise_for_status()
     except httpx.HTTPError as e:
         raise RuntimeError(f"Failed to query models endpoint at {models_url}") from e
@@ -81,7 +85,7 @@ def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0) ->
 
     raise RuntimeError(f"Model {model_name} not found on vLLM server")
 
-def make_openai_compute_embeddings(url, model_name):
+def make_openai_compute_embeddings(url, model_name, api_key=None):
     """
     Factory that builds a `compute_embeddings` method backed by an
     OpenAI-compatible embedding API (e.g. vLLM).
@@ -113,10 +117,11 @@ def make_openai_compute_embeddings(url, model_name):
         that returns embeddings aligned with the original input structure
     """
     def _compute_embeddings_openai_api(self, texts):
-        client = get_client(url, model_name)
+        client = get_client(url, model_name, api_key=api_key)
 
         try:
             flat_texts, chunks_dict = flatten_text_chunks(texts, self.nlp, tokenizer=self.tokenizer, max_tokens=self.max_tokens)
+            flat_texts = add_document_prefix(flat_texts, model_name)
             response = client.embeddings.create(
                 model=model_name,
                 input=flat_texts,
@@ -130,7 +135,7 @@ def make_openai_compute_embeddings(url, model_name):
             raise RuntimeError(
                 f"HTTP error while contacting vLLM server at {url}"
             ) from e
-        
+
         if not response.data:
             raise RuntimeError("Empty embedding response from server")
 
@@ -139,10 +144,10 @@ def make_openai_compute_embeddings(url, model_name):
                 f"Embedding count mismatch: got {len(response.data)}, "
                 f"expected {len(texts)}"
             )
-        
-       
+
+
         embeddings = [d.embedding for d in response.data]
         result = add_embeddings_to_chunks_dict(embeddings, chunks_dict)
         return result
-    
+
     return _compute_embeddings_openai_api

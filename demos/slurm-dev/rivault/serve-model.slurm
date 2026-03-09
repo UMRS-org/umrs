@@ -6,8 +6,8 @@ cat <<EOF > "${HOME}/.config/containers/storage.conf"
 [storage]
 driver="overlay"
 runroot = "${XDG_RUNTIME_DIR}/containers/storage"
-rootless_storage_path="${XDG_RUNTIME_DIR}/containers/storage"
-graphroot = "${XDG_RUNTIME_DIR}/containers/storage"     # Note: this shoud be in "${HOME}/.local/share/containers/storage" but NFS prevents it -> now pull every time
+rootless_storage_path="/var/tmp/podman_${USER}/storage"
+graphroot = "/var/tmp/podman_${USER}/storage"           # Note: local non-NFS path so overlay works and images persist across jobs
 [storage.options]
 mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
@@ -70,13 +70,15 @@ VLLM_RCCL_MEM_LIMIT=8G
 EOF
 
 GPUoverride=()
-if /bin/rocm-smi -i | /bin/grep -qi '^GPU\[0\]' ; then
-	GPUoverride+=("--file" "./x_rocm-override.yaml")
-elif /bin/nvidia-smi --list-gpus | /bin/grep -qi '^GPU 0:' ; then
+if /bin/nvidia-smi --list-gpus | /bin/grep -qi '^GPU 0:' ; then
 	GPUoverride+=("--file" "./x_nvidia-override.yaml")
+elif /bin/rocm-smi -i | /bin/grep -qi '^GPU\[0\]' ; then
+	GPUoverride+=("--file" "./x_rocm-override.yaml")
 fi
 
-which podman-compose >/dev/null 2>&1 || pip3 install podman-compose
+if ! command -v podman-compose >/dev/null 2>&1; then
+	pip3 install --quiet 'podman-compose>=1.2.0'
+fi
 
 ## download model example (LLM for vLLM)
 #mkdir -p ./models/vllm/huggingface/modules
@@ -85,26 +87,52 @@ which podman-compose >/dev/null 2>&1 || pip3 install podman-compose
 #ls -la ./models/vllm/huggingface/modules/../hub/
 
 # pre-download SAM3 image embedding model
-_sam3_model=$(/bin/grep '^SAM3_MODEL=' "./env.${uuid}" | /bin/cut -d'=' -f2)
-_vision_path=$(/bin/grep '^VISION_MODEL_PATH=' "./env.${uuid}" | /bin/cut -d'=' -f2)
-if [[ -n "$_sam3_model" && ! -d "${_vision_path}" ]]; then
-	echo "[rivault] Downloading SAM3 model '${_sam3_model}' to '${_vision_path}'..."
-	mkdir -p "${_vision_path}"
-	pip3 install -q huggingface_hub
-	python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"${_sam3_model}\", local_dir=\"${_vision_path}\")"
-	echo "[rivault] SAM3 model download complete."
-else
-	echo "[rivault] SAM3 model already present at '${_vision_path}', skipping download."
-fi
+########_sam3_model=$(/bin/grep '^SAM3_MODEL=' "./env.${uuid}" | /bin/cut -d'=' -f2)
+########_vision_path=$(/bin/grep '^VISION_MODEL_PATH=' "./env.${uuid}" | /bin/cut -d'=' -f2)
+########if [[ -n "$_sam3_model" && ! -d "${_vision_path}" ]]; then
+########	echo "[rivault] Downloading SAM3 model '${_sam3_model}' to '${_vision_path}'..."
+########	mkdir -p "${_vision_path}"
+########	pip3 install -q huggingface_hub
+########	python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"${_sam3_model}\", local_dir=\"${_vision_path}\")"
+########	echo "[rivault] SAM3 model download complete."
+########else
+########	echo "[rivault] SAM3 model already present at '${_vision_path}', skipping download."
+########fi
 
 # fix some cgroup stuff
 loginctl enable-linger $(whoami)
 
 # start
+# Tear down any leftovers from previous jobs: remove all containers that are
+# still connected to genai-private-net (handles unnamed/bracketed-name podman
+# quirks), then remove the network itself so IPAM starts from a clean slate.
+podman ps -qa --filter network=genai-private-net --format '{{.ID}}' 2>/dev/null | \
+	xargs -r podman rm -f 2>/dev/null || true
+podman ps -qa --filter 'name=rivault_' --format '{{.ID}}' 2>/dev/null | \
+	xargs -r podman rm -f 2>/dev/null || true
+podman network rm -f genai-private-net 2>/dev/null || true
+
+# Verify the network is actually gone (belt-and-suspenders)
+if podman network exists genai-private-net 2>/dev/null; then
+	echo "[rivault] WARN: genai-private-net still exists after rm; force-removing lingering containers..."
+	podman ps -aq --filter network=genai-private-net 2>/dev/null | xargs -r podman rm -f 2>/dev/null || true
+	podman network rm -f genai-private-net || { echo "[rivault] ERROR: cannot remove genai-private-net"; exit 1; }
+fi
+
+# Create a fresh genai-private-net, trying candidate subnets until one works
+_net_created=0
 for IP1TO3 in '192.168.4' '172.16.4' '10.0.4'; do
-	# Note: --disable-dns needed because ops retards, but now we need fixed ips
-	podman network create --internal --disable-dns --subnet "${IP1TO3}.0/24" genai-private-net && break
+	# Note: --disable-dns needed because infra lacks dns, but we need fixed ips
+	if podman network create --internal --disable-dns --subnet "${IP1TO3}.0/24" genai-private-net 2>/dev/null; then
+		_net_created=1
+		break
+	fi
 done
+if [ "$_net_created" -ne 1 ]; then
+	echo "[rivault] ERROR: failed to create genai-private-net with any candidate subnet"
+	exit 1
+fi
+echo "[rivault] genai-private-net created with subnet ${IP1TO3}.0/24"
 sed -i  -e "s@^\(PRIV_IP1TO3=\).*@\1${IP1TO3}@g" \
 	-e "s@^\(UUID=\).*@\1${uuid}@g" \
 	"./env.${uuid}"
@@ -114,19 +142,41 @@ sed	-e "s@UMRS_S3_BUCKET_PORT@$(/bin/grep '^UMRS_S3_BUCKET_PORT=' "./env.${uuid}
 sed     -e "s@UMRS_S3_BUCKET_HOST@$(/bin/grep '^UMRS_S3_BUCKET_HOST=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	-e "s@CONTAINER_RUNTIME_DNS@$(/bin/grep '^CONTAINER_RUNTIME_DNS=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	"./coredns_fs/coredns.conf" > "./coredns_fs/coredns.conf.${uuid}"
+sed	-e "s@VLLM_MODEL_PLACEHOLDER@$(/bin/grep '^VLLM_MODEL=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
+	"./litellm_fs/config.yaml" > "./litellm_fs/config.yaml.${uuid}"
 
-podman compose --env-file "./env.${uuid}" \
+podman-compose --env-file "./env.${uuid}" \
                --file "./serve-model.yaml" ${GPUoverride[@]} \
+               --profile harness --profile vllm \
                up \
 	       --remove-orphans --detach
 
-podman compose --env-file "./env.${uuid}" \
+podman-compose --env-file "./env.${uuid}" \
                --file "./userdata-access.yaml" \
+               --profile harness \
                up \
 	       --remove-orphans --detach
 
 ip a
-sleep infinity
+
+# Keep job alive while containers are running; exit on idle timeout (safety net).
+# UMRS server will also call `scancel` once all embedding threads are done, which
+# stops the containers and causes this loop to exit cleanly.
+RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-7200}   # default 2 h; override via sbatch --export
+INTERVAL=30
+ELAPSED=0
+echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOUT}s)..."
+while [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
+    RUNNING=$(podman ps -q --filter "network=genai-private-net" 2>/dev/null | wc -l)
+    if [ "$RUNNING" -eq 0 ]; then
+        echo "[rivault] All containers stopped. Exiting."
+        break
+    fi
+    sleep "$INTERVAL"
+    ELAPSED=$(( ELAPSED + INTERVAL ))
+done
+[ "$ELAPSED" -ge "$RIVAULT_JOB_TIMEOUT" ] && \
+    echo "[rivault] Timeout ${RIVAULT_JOB_TIMEOUT}s reached. Exiting."
 
 # test
 #curl -H "Authorization: Bearer $(/bin/grep '^LITELLM_MASTER_KEY=' "./env.${uuid}" |/bin/cut -d'=' -f2)" \
@@ -134,11 +184,11 @@ sleep infinity
 #podman exec -it $(podman ps -a|/bin/grep vllm|cut -d' ' -f1) curl -v httpforever.com:9000	#XXX: need 'http://$host:80' in out-nginx.conf
 
 # stop
-#podman compose --env-file "./env.${uuid}" \
+#podman-compose --env-file "./env.${uuid}" \
 #               --file "./userdata-access.yaml" down
-#podman compose --env-file "./env.${uuid}" \
+#podman-compose --env-file "./env.${uuid}" \
 #               --file "./serve-model.yaml" ${GPUoverride[@]} down
 #
 #podman network rm -f genai-private-net
 #
-#rm -f "./env.${uuid}" "./nginx_fs/out-nginx.conf.${uuid}" "./coredns_fs/coredns.conf.${uuid}"
+#rm -f "./env.${uuid}" "./nginx_fs/out-nginx.conf.${uuid}" "./coredns_fs/coredns.conf.${uuid}" "./litellm_fs/config.yaml.${uuid}"

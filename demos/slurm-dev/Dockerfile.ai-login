@@ -29,6 +29,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir podman-compose || true \
     && rm -rf /var/lib/apt/lists/*
 
+# Install UMRS Python requirements at build time (avoids re-installing every startup).
+# The file is kept so the entrypoint can detect when the bind-mounted source has
+# newer requirements and only re-install in that case.
+COPY src/requirements.txt /opt/umrs-requirements.txt
+RUN pip3 install --no-cache-dir -r /opt/umrs-requirements.txt
+RUN python3 -m spacy download en_core_web_sm || true
+
 # Install MinIO client (mc) for bucket/user management; pick correct arch
 RUN set -eux; \
         ARCH=$(uname -m); \
@@ -41,8 +48,7 @@ RUN set -eux; \
         curl -fsSL https://dl.min.io/client/mc/release/${MC_ARCH}/mc -o /usr/local/bin/mc; \
         chmod +x /usr/local/bin/mc || true
 
-# NOTE: UMRS source is bind-mounted at runtime (../../src:/opt/umrs:ro),
-# and Python requirements are installed by entrypoint-ai-login.sh at startup.
+# NOTE: UMRS source is bind-mounted at runtime (../../src:/opt/umrs:ro).
 # This avoids rebuilding the image on every source change.
 
 # Configure SSH for localhost tunneling (used by rivault.py forward_to_remote)
@@ -64,7 +70,7 @@ RUN mkdir -p \
     && chown -R slurm:slurm /var/spool/slurmctld /var/log/slurm
 
 # Copy entrypoint
-COPY entrypoint-ai-login.sh /entrypoint.sh
+COPY demos/slurm-dev/entrypoint-ai-login.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # NOTE: Configuration files (s3cfg, conf_umrs.json, user_files) are

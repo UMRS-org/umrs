@@ -52,7 +52,7 @@ services:
     user: "0:0"   # Note: container runs in nobody mode, mountpoint belongs to root -> mismatch
     volumes:
       - type: bind
-        source: ./litellm_fs/config.yaml
+        source: ./litellm_fs/config.yaml.${UUID:?}
         target: /config.yaml
         read_only: true
         bind: { selinux: "Z" }
@@ -153,7 +153,7 @@ services:
         source: ${VLLM_PATH_TO_HUGGINGFACE:?}/modules/
         target: /root/.cache/huggingface/modules/
         read_only: false
-    command: ${VLLM_MODEL:?} --served-model-name umrs --api-key sk-02284644-03150002 -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95} --async-scheduling --enforce-eager
+    command: ${VLLM_MODEL:?} --served-model-name ${VLLM_MODEL:?} --api-key sk-02284644-03150002 -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95} --enforce-eager
     environment:
       ##TORCH_USE_RTLD_GLOBAL: 1
       ##VLLM_USE_TRTLLM_ATTENTION: 1

@@ -1,4 +1,8 @@
-# UMRS Full Stack Demo
+# UMRS Full Stack Demo (Archived)
+
+> **Note:** This is an archived Docker-based demo. For the current active
+> development environment with Slurm + Rivault, see
+> [`../../slurm-dev/`](../slurm-dev/README.md).
 
 Comprehensive end-to-end demonstration of all UMRS components and functionality.
 
@@ -305,7 +309,6 @@ docker compose exec postgres psql -U postgres -d umrs_demo -c "SELECT * FROM pg_
 
 ## Related Documentation
 
-- [UMRS Main Documentation](../../Readme.md)
-- [E2E RiVault/Slurm Demo](../e2e_rivault_slurm_rag.py)
-- [Slurm Development Environment](../slurm-dev/)
-- [Mini-RiVault](../../rivault/MINI-RIVAULT.md)
+- [UMRS Main Documentation](../../../Readme.md)
+- [Active Slurm-Dev Environment](../../slurm-dev/README.md)
+- [Mini-RiVault](../../slurm-dev/rivault/README.md)

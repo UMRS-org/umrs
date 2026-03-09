@@ -20,7 +20,7 @@
           "model": {
             "model_name": "intfloat/e5-base-v2",
             "vector_size": "768",
-            "model_type": "rivault://openai://http://localhost:8001/v1",
+            "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
             "spacy_model": "en_core_web_sm",
             "return_type": null
           },
@@ -30,43 +30,6 @@
             "meta_data": [
               {
                 "name": "keywords",
-                "type": "TEXT"
-              }
-            ]
-          }
-        }
-      ]
-    },
-    {
-      "xp_name": "SAM3",
-      "sql_username": "rivault_user",
-      "modalities": [
-        {
-          "modality_name": "image",
-          "s3": {
-            "bucket_alias": "rivault-image-bucket",
-            "data": {
-              "type": "file",
-              "mime_type": "image/jpeg"
-            },
-            "need_output_bucket": false
-          },
-          "model": {
-            "model_name": "facebook/sam2-hiera-small",
-            "vector_size": "256",
-            "model_type": "rivault://openai://http://localhost:8001/v1",
-            "return_type": null
-          },
-          "sql": {
-            "store_embeddings": "yes",
-            "table_name": "sam3_image",
-            "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              },
-              {
-                "name": "description",
                 "type": "TEXT"
               }
             ]

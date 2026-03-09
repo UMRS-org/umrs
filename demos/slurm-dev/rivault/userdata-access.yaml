@@ -2,7 +2,7 @@ name: exit
 
 services:
   nginx:
-    profile: [ harness ]
+    profiles: [ harness ]
     image: docker.io/nginx:${NGINX_DOCKER_TAG:-stable-alpine-slim}
     networks:
       genai-public-net: {}
@@ -32,7 +32,7 @@ services:
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
     restart: unless-stopped
-    pull_policy: always
+    pull_policy: missing
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, chown, dac_override, setgid, setuid ]  #net_bind_service
     deploy:
@@ -48,7 +48,7 @@ services:
 ##          memory: 128M
 
   coredns:
-    profile: [ harness ]
+    profiles: [ harness ]
     image: docker.io/coredns/coredns:${COREDNS_DOCKER_TAG:-latest}
     networks:
       genai-public-net: {}
@@ -69,7 +69,7 @@ services:
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
     restart: unless-stopped
-    pull_policy: always
+    pull_policy: missing
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, net_bind_service ]
     deploy:

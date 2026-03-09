@@ -56,6 +56,9 @@ cd demos/slurm-dev
 podman-compose up -d
 
 # 2. Start host slurmd (in another terminal)
+#    On cgroup v2 systems, use the systemd service for proper delegation:
+#      sudo bash scripts/setup-slurmd-systemd.sh
+#    Or the manual script:
 sudo bash scripts/start-host-slurmd.sh
 
 # 3. Run the complete demo
@@ -83,7 +86,9 @@ podman exec umrs-client bash /opt/scripts/setup_demo_data.sh
 podman exec ai-login scancel --all
 
 # 6. Start always-on LLM (separate compose project)
-podman network create --internal --disable-dns --subnet 192.168.5.0/24 demo-llm-net
+#    NOTE: Do NOT use --internal — it blocks host→container data relay through
+#    podman's conmon port forwarder (TCP connects but data hangs).
+podman network create --disable-dns --subnet 192.168.5.0/24 demo-llm-net
 cd rivault
 podman-compose --env-file demo-llm.env \
     -f demo-llm.yaml -f x_nvidia-override.yaml up -d
@@ -142,10 +147,11 @@ model and the always-on chat LLM both need the GPU. Run them sequentially:
 
 | Script | Description | Run from |
 |--------|-------------|----------|
-| `scripts/run_e2e_demo.sh` | Complete E2E orchestration | Host |
+| `scripts/run_e2e_demo.sh` | Complete E2E orchestration (includes DB embedding verification) | Host |
 | `scripts/setup_demo_data.sh` | Create MinIO buckets, upload test data | ai-login or umrs-client |
 | `scripts/demo_text_rag.py` | Text RAG: upload, embed, search, QA | umrs-client |
 | `scripts/demo_image_rag.py` | Image RAG: CLIP embeddings + SAM3 | umrs-client |
+| `scripts/setup-slurmd-systemd.sh` | Setup slurmd via systemd (cgroup v2) | Host (sudo) |
 
 ## Test Data
 
@@ -236,6 +242,27 @@ podman logs rivault_vllm_1
 # Ensure VLLM_PATH_TO_HUGGINGFACE in rivault/demo-llm.env points to valid model weights
 ```
 
+### Cgroup v2: slurmd fails to create scope
+On cgroup v2 systems, slurmd needs systemd's `Delegate=yes` to create job scopes.
+Use the systemd service instead of the manual start script:
+```bash
+sudo bash scripts/setup-slurmd-systemd.sh
+```
+This installs a systemd unit with proper delegation. The standalone `start-host-slurmd.sh`
+still works but requires `cgroup.conf` with all constraints disabled (included in this directory).
+
+### LiteLLM Prisma tables missing (arm64)
+On arm64 hosts, the LiteLLM container may lack `schema-engine-linux-arm64-openssl-3.0.x`,
+causing `prisma migrate deploy` to fail silently. LiteLLM still serves requests thanks to
+`allow_requests_on_db_unavailable: True` in its config, but spend tracking won't work.
+No workaround needed for embedding use cases.
+
+### Network `--internal` blocks port forwarding
+Never use `--internal` when creating podman networks that need host access. Podman's
+conmon port-forwarder will accept TCP connections but data won't flow through an internal
+bridge (no host-facing gateway). This applies to both `genai-private-net` (Rivault) and
+`demo-llm-net` (always-on LLM).
+
 ## File Structure
 
 ```
@@ -244,6 +271,7 @@ slurm-dev/
 ├── conf_umrs.json             # UMRS server configuration
 ├── slurm.conf                 # Slurm cluster configuration
 ├── gres.conf                  # GPU resource configuration
+├── cgroup.conf                # Cgroup v2 configuration (all constraints disabled)
 ├── mini-rivault-job.sh        # Slurm job: launches Rivault stack on host
 ├── .env                       # Environment variables
 ├── s3cfg                      # MinIO S3 credentials
@@ -260,6 +288,7 @@ slurm-dev/
 │   └── text/                  # Science text documents for RAG
 ├── scripts/
 │   ├── start-host-slurmd.sh   # Start slurmd + munged on host
+│   ├── setup-slurmd-systemd.sh # Setup slurmd via systemd (cgroup v2)
 │   ├── run_e2e_demo.sh        # Full E2E demo orchestration
 │   ├── setup_demo_data.sh     # MinIO bucket/data setup
 │   ├── demo_text_rag.py       # Text RAG demo

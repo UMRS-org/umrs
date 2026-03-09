@@ -1,15 +1,17 @@
 # Mini-RiVault
 
-**vLLM + LiteLLM inference runtime** for the AI-for-Science Platform.
+**vLLM + LiteLLM + NGINX inference runtime** for the AI-for-Science Platform.
 
 ## Overview
 
-Mini-RiVault is a self-contained inference container that runs:
-- **vLLM** — High-performance LLM inference engine (:8000)
+Mini-RiVault is a self-contained inference stack that runs:
+- **vLLM** — High-performance LLM/embedding inference engine (:8000)
 - **LiteLLM** — OpenAI-compatible API routing layer (:11434)
+- **NGINX** — Reverse proxy and TLS termination (published port)
 
 Each Slurm job or Kubernetes pod runs its own Mini-RiVault instance with
-pre-staged model weights.
+pre-staged model weights. UMRS discovers the endpoint via Slurm job info
+and opens an SSH tunnel for remote access.
 
 ## Architecture
 
@@ -118,6 +120,12 @@ model_list:
 2. **Offline mode** — Set `TRANSFORMERS_OFFLINE=1` to fail fast on network access
 3. **Static model name** — Always use `rivault-gpt-oss-static` for consistency
 4. **Gateway access only** — Users access via Platform Gateway, never directly
+5. **No `--internal` networks** — Podman networks must NOT use `--internal` or host→container data relay will hang
+
+## Known Issues
+
+- **arm64 (NVIDIA GB10)**: LiteLLM container lacks `schema-engine-linux-arm64-openssl-3.0.x`, so Prisma migrations fail silently. LiteLLM still works for inference thanks to `allow_requests_on_db_unavailable: True`.
+- **LiteLLM strips vLLM fields**: `/v1/models` responses via LiteLLM proxy lack `max_model_len` and `context_length` fields. UMRS falls back to `tokenizer.model_max_length`.
 
 ## See Also
 

@@ -749,6 +749,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
             except Exception as e:
                 print(f"Error creating the RiVault model: {e}")
                 exit_status = TaskStatus.ERROR
+                continue
 
 
 

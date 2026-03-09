@@ -77,7 +77,7 @@ if ! command -v munged >/dev/null 2>&1; then
 fi
 
 # ---- Step 1: Copy munge key from container-shared directory ----
-echo "[1/7] Setting up munge key..."
+echo "[1/8] Setting up munge key..."
 if [[ ! -f "$MUNGE_KEY_SRC" ]]; then
     echo "  ERROR: Munge key not found at $MUNGE_KEY_SRC"
     echo "  Make sure the control plane is started: podman-compose up -d"
@@ -92,7 +92,7 @@ chmod 400 "$MUNGE_KEY_DST"
 echo "  Munge key installed at $MUNGE_KEY_DST"
 
 # ---- Step 2: Copy slurm.conf and gres.conf ----
-echo "[2/7] Installing Slurm configuration..."
+echo "[2/8] Installing Slurm configuration..."
 mkdir -p /etc/slurm
 cp "$SLURM_CONF_SRC" "$SLURM_CONF_DST"
 # Patch the host copy so slurmd connects to slurmctld via 127.0.0.1 (the
@@ -108,7 +108,7 @@ if [[ -f "$GRES_CONF_SRC" ]]; then
 fi
 
 # ---- Step 3: Clean stale /etc/hosts entries ----
-echo "[3/7] Cleaning hostname resolution..."
+echo "[3/8] Cleaning hostname resolution..."
 # Remove any old "ai-login" entries that were previously added to /etc/hosts.
 # Podman rootless containers inherit the host's /etc/hosts, so if "ai-login"
 # maps to 127.0.0.1 here, all containers will resolve it to loopback instead
@@ -121,7 +121,7 @@ else
 fi
 
 # ---- Step 4: Create required directories ----
-echo "[4/8] Creating directories..."
+echo "[4/8] Creating required directories..."
 mkdir -p /var/spool/slurmd
 mkdir -p /var/log/slurm
 mkdir -p "$JOB_INFO_DIR"
@@ -129,7 +129,7 @@ chown slurm:slurm /var/spool/slurmd /var/log/slurm 2>/dev/null || true
 chmod 755 "$JOB_INFO_DIR"
 echo "  /var/spool/slurmd, /var/log/slurm, $JOB_INFO_DIR"
 
-# ---- Step 4b: Symlink UMRS config dir for Slurm output files ----
+# ---- Step 5: Symlink UMRS config dir for Slurm output files ----
 # slurmctld (in ai-login) passes --output=/root/.config/umrs/tmp/slurm-%j.out
 # to sbatch.  The container maps /root/.config/umrs → ./umrs-config via a
 # bind mount.  slurmd on the host needs to write output files to the same
@@ -153,7 +153,7 @@ else
 fi
 
 # ---- Step 5: Generate CDI spec for NVIDIA GPU (if nvidia-ctk available) ----
-echo "[5/8] Checking NVIDIA CDI configuration..."
+echo "[6/8] Checking NVIDIA CDI configuration..."
 if command -v nvidia-ctk >/dev/null 2>&1; then
     if [[ ! -f /etc/cdi/nvidia.yaml ]]; then
         echo "  Generating CDI spec..."
@@ -168,14 +168,14 @@ else
     echo "  Install: https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html"
 fi
 
-# ---- Step 6: Stop any existing munged/slurmd ----
-echo "[6/8] Stopping any existing munge/slurmd processes..."
+# ---- Step 7: Stop any existing munged/slurmd ----
+echo "[7/8] Stopping any existing munge/slurmd processes..."
 systemctl stop munge 2>/dev/null || killall munged 2>/dev/null || true
 systemctl stop slurmd 2>/dev/null || killall slurmd 2>/dev/null || true
 sleep 1
 
-# ---- Step 7: Start munged and slurmd ----
-echo "[7/8] Starting munged and slurmd..."
+# ---- Step 8: Start munged and slurmd ----
+echo "[8/8] Starting munged and slurmd..."
 
 # Start munged
 mkdir -p /run/munge
@@ -201,11 +201,11 @@ echo "  Starting slurmd as '$SLURM_NODE_NAME' (foreground)..."
 echo "  Press Ctrl-C to stop."
 echo ""
 
-# ---- Step 8: Create /opt/rivault symlink ----
-# The Slurm job script (mini-rivault-job.sh) defaults to RIVAULT_DIR=/opt/rivault.
+# ---- Create /opt/rivault symlink ----
+# The Slurm job script defaults to RIVAULT_DIR=/opt/rivault.
 # Since batch jobs don't inherit slurmd's environment, we create a symlink so
 # the default path works on the host.
-echo "[8/8] Setting up /opt/rivault symlink..."
+echo "  Setting up /opt/rivault symlink..."
 if [[ -L /opt/rivault ]]; then
     echo "  /opt/rivault already symlinked → $(readlink /opt/rivault)"
 elif [[ -d /opt/rivault ]]; then
@@ -215,9 +215,39 @@ else
     echo "  Symlinked /opt/rivault → $RIVAULT_DIR"
 fi
 
+# ---- Install podman-compose (needed by serve-model.slurm) ----
+if ! command -v podman-compose >/dev/null 2>&1; then
+    echo "  Installing podman-compose..."
+    pip3 install --quiet 'podman-compose>=1.2.0'
+else
+    echo "  podman-compose already installed."
+fi
+
+# ---- Authorize ai-login's SSH key for root on this host ----
+# rivault.py creates an SSH tunnel by SSH-ing directly from ai-login into the
+# compute node (this host) to forward ai-login:LOCAL_PORT → 127.0.0.1:11434
+# (rootless podman only binds published ports on 127.0.0.1, not 0.0.0.0).
+# The ai-login container's root SSH public key must be in /root/.ssh/authorized_keys.
+AI_LOGIN_PUBKEY=$(podman exec ai-login cat /root/.ssh/id_ed25519.pub 2>/dev/null)
+if [[ -n "$AI_LOGIN_PUBKEY" ]]; then
+    mkdir -p /root/.ssh
+    chmod 700 /root/.ssh
+    if ! grep -qF "$AI_LOGIN_PUBKEY" /root/.ssh/authorized_keys 2>/dev/null; then
+        echo "$AI_LOGIN_PUBKEY" >> /root/.ssh/authorized_keys
+        chmod 600 /root/.ssh/authorized_keys
+        echo "  Authorized ai-login's SSH public key for root on this host."
+    else
+        echo "  ai-login's SSH public key already in /root/.ssh/authorized_keys."
+    fi
+else
+    echo "  WARNING: Could not read ai-login's SSH public key (container not running?)."
+fi
+
 export RIVAULT_DIR
 export JOB_INFO_DIR
 export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-$RIVAULT_DIR/models/vllm/huggingface}"
+export NGINX_LITELLM_DOCKER_PORT="${NGINX_LITELLM_DOCKER_PORT:-11434}"
+export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-sk-demo-dev}"
 
 exec slurmd -D -N "$SLURM_NODE_NAME" \
     -f "$SLURM_CONF_DST" \

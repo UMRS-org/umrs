@@ -1,5 +1,5 @@
 import torch
-from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict
+from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
 from sentence_transformers import SentenceTransformer
 
 ################################ Sentence Transformers ###########################
@@ -18,6 +18,7 @@ def load_sentence_transformers_model(model_name):
 #  Compute Embeddings for Text
 def compute_embeddings_text(self, texts):
     flat_texts, chunks_dict = flatten_text_chunks(texts, self.nlp, tokenizer=self.tokenizer, max_tokens=self.max_tokens)
+    flat_texts = add_document_prefix(flat_texts, self.model_name)
     embeddings = self.model.encode(flat_texts, convert_to_tensor=(self.device == "cuda"))
     embeddings = embeddings.cpu().tolist() if self.device == "cuda" else embeddings
     return add_embeddings_to_chunks_dict(embeddings, chunks_dict)

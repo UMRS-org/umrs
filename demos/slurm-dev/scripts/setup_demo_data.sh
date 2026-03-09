@@ -12,10 +12,8 @@ set -e
 
 S3CFG="/root/.s3cfg"
 TEXT_DATA_DIR="/opt/test_data/text"
-IMAGE_DATA_DIR="/opt/test_data/images"
 
 TEXT_BUCKET="rivault-demo-bucket"
-IMAGE_BUCKET="rivault-image-bucket"
 
 # Path to client script (mounted from repo)
 CLIENT="/opt/umrs/client_umrs.py"
@@ -53,27 +51,11 @@ else
     echo "  WARNING: ${TEXT_DATA_DIR} not found, skipping text upload."
 fi
 
-# --- Upload image files using client_umrs upload_dir ---
-echo ""
-echo "Uploading image files via client_umrs to bucket: ${IMAGE_BUCKET}"
-if [ -d "$IMAGE_DATA_DIR" ]; then
-    python3 "$CLIENT" -c "$USER_CONF" upload_dir "$IMAGE_DATA_DIR" "$IMAGE_BUCKET" rivault_user || {
-        echo "  WARNING: client_umrs upload_dir for images failed."
-    }
-else
-    echo "  WARNING: ${IMAGE_DATA_DIR} not found, skipping image upload."
-fi
-
 # --- Verify ---
 echo ""
 echo "============================================"
 echo "  Verification"
 echo "============================================"
-
-echo ""
-echo ""
-echo "Triggering embedding computation (server-side update)..."
-python3 "$CLIENT" -c "$USER_CONF" update || echo "  WARNING: embedding update command failed"
 
 echo ""
 echo "Fetching status summary..."

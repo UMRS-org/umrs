@@ -1,10 +1,10 @@
 
 import spacy
-import torch 
+import torch
 
 from typing import Optional
 
-        
+
 
 
 class EmbeddingModel:
@@ -42,7 +42,7 @@ def load_model(model_cfg, modality):
     vector_size = model_cfg["vector_size"]
     model_type = model_cfg["model_type"]
     return_type  = model_cfg["return_type"]
-    
+
     tokenizer = None
     max_tokens = None
     spacy_model = model_cfg.get("spacy_model", None)
@@ -51,7 +51,7 @@ def load_model(model_cfg, modality):
 
 
     if model_type == "SentenceTransformer":
-        from .models.sentence_transformers import load_sentence_transformers_model, sentence_transformers 
+        from .models.sentence_transformers import load_sentence_transformers_model, sentence_transformers
         model = load_sentence_transformers_model(model_name)
         type = "loaded"
         tokenizer = model._first_module().tokenizer
@@ -86,14 +86,17 @@ def load_model(model_cfg, modality):
         # Extract the actual server URL from the openai:// pseudo-scheme
         model_url = model_type[len("openai://"):]
 
+        # Extract optional API key (set by rivault launch flow for LiteLLM auth)
+        api_key = model_cfg.get("api_key")
+
         # Query the vLLM server to discover the maximum supported token length for this model
-        max_tokens = get_max_tokens_from_vllm(model_url, model_name)
+        max_tokens = get_max_tokens_from_vllm(model_url, model_name, api_key=api_key)
 
         # Load the tokenizer corresponding to the embedding model to perform local chunking when necessary
         tokenizer = AutoTokenizer.from_pretrained(model_name)
 
         # Fail fast if the OpenAI-compatible (vLLM) server is not reachable
-        if not is_server_alive(model_url):
+        if not is_server_alive(model_url, api_key=api_key):
             raise RuntimeError(
                 f"Cannot reach OpenAI-compatible server at {model_url}.\n"
                 "Check that it is running and reachable from UMRS server."
@@ -103,7 +106,7 @@ def load_model(model_cfg, modality):
         model = None
         type = "openai"
         # Build a closure that captures (url, model_name) and exposes a uniform compute_embeddings API
-        compute_embeddings_func = make_openai_compute_embeddings(model_url, model_name)
+        compute_embeddings_func = make_openai_compute_embeddings(model_url, model_name, api_key=api_key)
 
         # Declare that this embedding model expects raw text as input
         input_type = "text"
@@ -113,7 +116,7 @@ def load_model(model_cfg, modality):
         type = "rivault"
         input_type=None
         compute_embeddings_func=None
-      
+
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 

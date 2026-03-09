@@ -6,7 +6,7 @@ import os
 from tabulate import tabulate
 from umrs.TaskCmdStatus import TaskCmd, TaskStatus
 import textwrap
-    
+
 
 class UMRSTask:
     def __init__(self, db_path: str = "tasks.db"):
@@ -25,7 +25,7 @@ class UMRSTask:
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 client_id TEXT,
-                cmd TEXT,            
+                cmd TEXT,
                 payload TEXT,
                 status TEXT,
                 submitted_at TEXT,
@@ -43,7 +43,7 @@ class UMRSTask:
         - If mark_override=True:
             * Earlier incomplete tasks that were later not completed are marked as OVERRIDDEN.
             * Completed tasks remain as COMPLETED.
-        
+
         Returns:
         dict with key = (client_id, cmd, payload) and value = status (or task dict)
         """
@@ -52,7 +52,7 @@ class UMRSTask:
         rows = cursor.fetchall()
 
         seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
-        
+
         for row in rows:
             task_id, client_id, cmd, payload, status, submitted_at = row
             key = (client_id, cmd, payload)
@@ -76,7 +76,7 @@ class UMRSTask:
                                 "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
                                 (TaskStatus.OVERRIDDEN, datetime.utcnow().isoformat(), task_id)
                             )
-    
+
 
         # Return dict of unique tasks not completed
         result = {
@@ -133,7 +133,7 @@ class UMRSTask:
         if print_output:
             print(message)
         return message
-   
+
     def create_task(self, cmd, full_payload):
         if cmd == TaskCmd.PROCESS_OBJECTS:
             client_id, s3_objects = full_payload
@@ -163,7 +163,22 @@ class UMRSTask:
 
 
     def add_task(self, client_id: str, cmd: str, payload: str, status: str) -> int:
-        """Insert a task in the DB and return its integer ID."""
+        """Insert a task in the DB and return its integer ID.
+
+        Deduplicates: if an identical (client_id, cmd, payload) task already
+        exists with an active status (Submitted or Running), returns the
+        existing task_id instead of creating a duplicate row.
+        """
+        active_statuses = (TaskStatus.SUBMITTED, TaskStatus.RUNNING)
+        cur = self.conn.execute(
+            "SELECT id FROM tasks WHERE client_id = ? AND cmd = ? AND payload = ? AND status IN (?, ?)",
+            (client_id, cmd, payload, *active_statuses),
+        )
+        row = cur.fetchone()
+        if row is not None:
+            print(f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})")
+            return row[0]
+
         now = datetime.utcnow().isoformat()
         with self.conn:
             cur = self.conn.execute(

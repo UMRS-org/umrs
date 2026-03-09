@@ -1,8 +1,8 @@
 # Docker Setup Guide
 
-This directory contains Docker-related files for setting up the environment for the Infinia Demo project.
+This directory contains Docker-related files for deploying UMRS (Unified Multimodal Retrieval System) as a standalone stack.
 
-> **Note:** The `docker` directory is located at the root of the project (not inside `Infinia_demo`). All Docker-related commands and file references below assume you are using the root-level `docker` directory.
+> **Note:** All Docker-related commands and file references below assume you are at the repository root. Docker files live under the `docker/` directory.
 
 ## Prerequisites
 - [Docker](https://docs.docker.com/get-docker/) installed
@@ -12,52 +12,73 @@ This directory contains Docker-related files for setting up the environment for 
 
 1. **Build and start all services:**
    ```bash
-   docker-compose up --build
+   docker compose -f docker/docker-compose.yml up -d --build
    ```
-   This will build the images (if needed) and start the containers as defined in `docker/docker-compose.yml`.
+   This builds the images and starts the containers: UMRS server, PostgreSQL+pgvector, and MinIO.
 
-2. **Stop all services:**
+2. **Watch the server logs:**
    ```bash
-   docker-compose down
+   docker logs -f umrs-server
+   ```
+
+3. **Stop all services:**
+   ```bash
+   docker compose -f docker/docker-compose.yml down
    ```
 
 ## Quick Demo
 
-After starting the services, you can run a simple demo command to add a text entry:
+After starting the services, test with the client:
 
 ```bash
-docker exec -it umrs-server python src/client_umrs.py "I eat apple at breakfast" ej-bucket-2
+# Ping the server
+docker exec -it umrs-server python src/client_umrs.py ping
+
+# List buckets
+docker exec -it umrs-server python src/client_umrs.py --conf /root/conf_umrs.json list_buckets user1
+
+# Upload inline text
+docker exec -it umrs-server python src/client_umrs.py \
+   --conf /root/conf_umrs.json \
+   upload_text "I eat apple at breakfast" bucket-2 user1 --meta keywords:fruit
 ```
 
-This will insert a sample text into the database using the running container.
+## Services
 
-## Mounting a Directory or File for Processing
+| Service | Port | Description |
+|---------|------|-------------|
+| `umrs-server` | 5555 (ZMQ) | UMRS server with ZeroMQ control plane |
+| `postgres` | 5432 | PostgreSQL with pgvector extension |
+| `minio` | 9000 (API), 9001 (Console) | S3-compatible object storage |
+| `umrs-api-test` | - | Optional: scripted API tests |
 
-To process a local file or directory (e.g., images or text files) with the demo command, you need to mount it into the container using the `-v` (volume) option with Docker. For example:
+## Mounting Local Files
+
+To process a local file or directory, mount it into the container:
 
 ```bash
 docker run --rm \
   -v /path/to/local/data:/data \
-  -v $(pwd)/s3cfg:/root/.s3cfg:ro \
+  -v $(pwd)/docker/s3cfg:/root/.s3cfg:ro \
   --network=host \
   -it umrs-server python src/client_umrs.py /data/apple.txt ej-bucket-2
 ```
 
-- Replace `/path/to/local/data` with the absolute path to your local directory or file.
-- `/data` is the path inside the container where your files will be accessible.
-- The `-v $(pwd)/s3cfg:/root/.s3cfg:ro` option mounts your local `s3cfg` file into the container at `/root/.s3cfg` (read-only), just like in docker-compose.
-- You can then reference `/data/yourfile.txt` in your command inside the container.
-
-
 ## Files
-- `docker/docker-compose.yml`: Main Docker Compose configuration.
-- `docker/Dockerfile`: Main application Dockerfile.
-- `docker/Dockerfile.pgvector`: Dockerfile for PostgreSQL with pgvector extension.
-- `docker/Dockerfile.redsql`: Dockerfile for RedSQL (if used).
-- `docker/init_pgvector.sql`: SQL script to initialize pgvector extension.
-- `docker/conf_umrs.json`: Example configuration file.
-- `docker/s3cfg`: S3 configuration file for MinIO or AWS S3.
+
+| File | Description |
+|------|-------------|
+| `docker-compose.yml` | Main Docker Compose configuration |
+| `Dockerfile` | Main application Dockerfile |
+| `init_pgvector.sql` | SQL script to initialize pgvector extension |
+| `conf_umrs.json` | Example UMRS server configuration |
+| `s3cfg` | S3 admin credentials for MinIO |
+| `s3cfg_user1`, `s3cfg_user2` | Per-user S3 credentials |
+| `env.default` | Default environment variables |
+| `user_files/` | Per-user JSON configuration files |
 
 ## Notes
-- You may need to adjust environment variables in the `docker/docker-compose.yml` or configuration files to match your setup.
-- For more details, see the main project documentation or contact the project maintainer.
+- Environment variables are configured in `docker-compose.yml` and `env.default`
+- The server mounts `s3cfg` as `~/.s3cfg` inside the container for admin S3 access
+- User config files from `user_files/` are copied into the image at build time
+- For detailed architecture and implementation, see `doc/umrs_overview.md`

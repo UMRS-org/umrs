@@ -1,6 +1,6 @@
 services:
   nginx:
-    profile: [ harness ]
+    profiles: [ harness ]
     image: docker.io/nginx:${NGINX_DOCKER_TAG:-stable-alpine-slim}
     networks:
       genai-private-net: {}
@@ -39,7 +39,7 @@ services:
       #    memory: "128M"
 
   litellm:
-    profile: [ harness ]
+    profiles: [ harness ]
     image: ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}
     command: --port 4000 --config /config.yaml
     networks:
@@ -52,7 +52,7 @@ services:
     user: "0:0"   # Note: container runs in nobody mode, mountpoint belongs to root -> mismatch
     volumes:
       - type: bind
-        source: ./litellm_fs/config.yaml
+        source: ./litellm_fs/config.yaml.${UUID:?}
         target: /config.yaml
         read_only: true
         bind: { selinux: "Z" }
@@ -99,7 +99,7 @@ services:
 ##          memory: "128M"
 
   ll-postgres:
-    profile: [ harness ]
+    profiles: [ harness ]
     image: docker.io/postgres:${POSTGRES_VERSION:-17}
     networks:
       genai-private-net:
@@ -137,7 +137,7 @@ services:
 ##          memory: "128M"
 
   vllm:
-    profile: [ vllm ]
+    profiles: [ vllm ]
     image: docker.io/vllm/vllm-openai:${VLLM_DOCKER_TAG:-nightly}
     networks:
       genai-private-net:
@@ -153,7 +153,7 @@ services:
         source: ${VLLM_PATH_TO_HUGGINGFACE:?}/modules/
         target: /root/.cache/huggingface/modules/
         read_only: false
-    command: ${VLLM_MODEL:?} --served-model-name umrs --api-key sk-02284644-03150002 -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95} --async-scheduling --enforce-eager
+    command: ${VLLM_MODEL:?} --served-model-name ${VLLM_MODEL:?} --api-key sk-02284644-03150002 -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95} --enforce-eager
     environment:
       ##TORCH_USE_RTLD_GLOBAL: 1
       ##VLLM_USE_TRTLLM_ATTENTION: 1
@@ -189,7 +189,7 @@ services:
 ##          memory: "128M"
 
   mcpo:
-    profile: [ harness ]
+    profiles: [ harness ]
     image: ghcr.io/open-webui/mcpo:${MCPO_DOCKER_TAG:-main}
     command: --port 8000 --api-key sk-15330865-62087191 --hot-reload --config /tmp/config.json
     networks:
@@ -220,7 +220,7 @@ services:
 ##          memory: "128M"
 
   mcp-time:
-    profile: [ harness ]
+    profiles: [ harness ]
     image: docker.io/theo01/mcp-time:${MCP_TIME_DOCKER_TAG:-latest}
     command: --transport stream --address "http://0.0.0.0:8080/mcp"
     networks:
@@ -243,7 +243,7 @@ services:
 
   # Vision MCP server wrapping SAM3 for image segmentation
   mcp-vision:
-    profile: [ vision ]
+    profiles: [ vision ]
     image: ghcr.io/riken-rccs/aisci-mcp:${MCP_VISION_DOCKER_TAG:-latest}
     command: python -m aisci_mcp.servers.vision
     networks:
@@ -282,7 +282,7 @@ services:
   # EgressGuard: Controlled egress proxy for MCP servers
   # Only enabled for project/user tier instances that need external access
   egress-guard:
-    profile: [ egress ]
+    profiles: [ egress ]
     image: ghcr.io/riken-rccs/egress-guard:${EGRESS_GUARD_DOCKER_TAG:-latest}
     command: --port ${EGRESS_PROXY_PORT:-8888}
     networks:
@@ -317,7 +317,7 @@ services:
   # Custom MCP server runner (for user-mounted MCP servers)
   # Mount point: /mcp-servers/<name>/ with config.json
   mcp-custom:
-    profile: [ custom-mcp ]
+    profiles: [ custom-mcp ]
     image: ghcr.io/riken-rccs/aisci-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}
     command: python -m aisci_mcp.runners.custom_mcp --config-dir /mcp-servers
     networks:
@@ -356,7 +356,7 @@ services:
   # RAG service (inside mini-rivault for security compliance)
   # Mount point: /project/ for data, /rag-index/ for pre-built index
   rag:
-    profile: [ rag ]
+    profiles: [ rag ]
     image: ghcr.io/riken-rccs/umrs-rag:${RAG_DOCKER_TAG:-latest}
     command: python -m umrs.rag_service --port 8100
     networks:
