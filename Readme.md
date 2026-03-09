@@ -85,7 +85,7 @@ See `demos/slurm-dev/README.md` for the full guide.
 
 Deploy UMRS on a multi-node HPC cluster with Slurm scheduling and real GPU inference via Rivault.
 
-See `src/rivault_cfg/rivault_data/README.md` and `doc/umrs_rivault_rag_plan.md`.
+See `doc/umrs_rivault_rag_plan.md` and `demos/slurm-dev/README.md`.
 
 ## Repository Structure
 
