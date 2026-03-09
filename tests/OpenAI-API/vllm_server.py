@@ -86,22 +86,22 @@ def launch_vllm_server(
     for k, v in cfg.items():
         print(f"{k}: {v}")
     print("==========================")
-
+    # /hub/models--intfloat--e5-base-v2/snapshots/f52bf8ec8c7124536f0efb74aca902b2995e5bcd/
     cmd = [
         sys.executable,
         "-m",
         "vllm.entrypoints.openai.api_server",
-        "--model",
-        model_name,
-        "--runner",
-        runner, 
-        "--convert",
-        convert,
-        "--host",
-        host,
-        "--port",
-        str(port)
+        "--model", "/Users/ejeannot/.cache/huggingface/hub/models--intfloat--e5-base-v2/snapshots/f52bf8ec8c7124536f0efb74aca902b2995e5bcd",
+        "--runner", runner,
+        "--convert", convert,
+        "--host", host,
+        "--port", str(port),
+        "--distributed-executor-backend", "None", # désactiver TCPStore / multi-node
     ]
+
+    cmd += ["--tensor-parallel-size", "1", "--pipeline-parallel-size", "1", "--data-parallel-size", "1"]
+    
+    # Pour le mode embedding / pooling, pas besoin de max-model-len ni max-num-batched-tokens
     is_embedding = (convert == "embed") or (runner == "pooling")
     if not is_embedding:
         cmd += [
@@ -110,13 +110,12 @@ def launch_vllm_server(
             "--max-num-batched-tokens",
             str(cfg["max_num_batched_tokens"]),
         ]
-        
-    # if cfg["device"] == "cpu":
-    #     cmd.append("--device=cpu")
 
     print("\nLaunching vLLM server:")
     print(" ".join(cmd))
     print()
+
+
 
     subprocess.run(cmd, check=True)
 

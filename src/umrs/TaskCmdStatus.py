@@ -38,5 +38,9 @@ class TaskStatus:
     NO_SUCH_BUCKET = "No Such Bucket"
     UNKNOWN = "Unknown"
     ABORTED = "Aborted"
+    FAILED = "Failed"
     OVERRIDDEN = "Overridden"
     ERROR = "Error"
+    LAUNCHED = "Launched"
+    INITIALIZING = "Initializing"
+    

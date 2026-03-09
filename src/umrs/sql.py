@@ -167,9 +167,12 @@ class DataBase:
         finally:
             self.db_pool.putconn(conn)
 
-def wait_table_modification_on_db(active_threads, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id, on_finish=None):
+def wait_table_modification_on_db(active_threads, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id, update_status_callback=None):
     from server_umrs import ENABLE_PRETTY_PRINT
     from umrs.pretty_print import pretty_print_thread_status
+
+    if update_status_callback:
+        update_status_callback(TaskStatus.RUNNING)
 
     try:
         res = data_base.wait_for_table_update(
@@ -194,8 +197,8 @@ def wait_table_modification_on_db(active_threads, user, key, data_base, table_na
     active_threads.remove_from_running_list()
 
     # execute callback to update task status to completed
-    if on_finish:
-        on_finish(TaskStatus.COMPLETED)
+    if update_status_callback:
+        update_status_callback(TaskStatus.COMPLETED)
 
     with active_threads.lock:
         pretty_print_thread_status(active_threads.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)

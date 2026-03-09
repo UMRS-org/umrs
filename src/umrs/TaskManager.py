@@ -12,14 +12,12 @@ class TaskManager:
         self.thread_to_task = {}    # thread_ident -> UMRSTask_id
         self.lock = threading.Lock()
 
-    def associate_thread_with_task(self, thread_ident, task_id, status=None):
+    def associate_thread_with_task(self, thread_ident, task_id):
         """Associate a thread with a task """
         with self.lock:
             self.task_to_thread[task_id] = thread_ident
             self.thread_to_task[thread_ident] = task_id
-            if status is not None:
-                self.tasks_status.update_status(task_id, status)
-
+           
     def get_thread_from_task(self, task_id):
         """Return the thread ID handling this task."""
         with self.lock:
