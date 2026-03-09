@@ -34,6 +34,7 @@ from umrs.config import *
 _status_store_global = None
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
 
+rivault_lock = threading.Lock()
 
 # ---------------------- Server configuration class ----------------------
 from dataclasses import dataclass, field
@@ -158,6 +159,12 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list)
     s3_connection.close()
 
+def is_client_configured(client_id, server_cfg):
+    """Check if client_id is present in server configuration."""
+    for  entry in server_cfg.buckets_cfg.values():
+        if entry.s3_username == client_id:
+            return True
+    return False
 
 def configure_user(user_cfg, server_cfg: ServerCfg):
     fullname = user_cfg["fullname"]
@@ -215,10 +222,13 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
 
 # --------------------------- Maintenance commands ---------------------------
 
-def recompute_all_objects(active_threads, username, buckets_cfg, device, embedding_backend, key, log_output=True, on_finish=None):
+def recompute_all_objects(active_threads, username, buckets_cfg, device, embedding_backend, key, log_output=True, update_status_callback=None):
 
     if log_output:
         print(f"\n######################\nRecomputing all objects in all buckets\n######################\n")
+
+    if update_status_callback:
+        update_status_callback(TaskStatus.RUNNING)
 
     recompute_dict = {}
 
@@ -258,14 +268,17 @@ def recompute_all_objects(active_threads, username, buckets_cfg, device, embeddi
     outcome = {"summary": summary, "data": recompute_dict}
     filter_outcome(active_threads, outcome, buckets_cfg, key)
     # execute callback to update task status to completed
-    if on_finish:
-        on_finish(TaskStatus.COMPLETED)
+    if update_status_callback:
+        update_status_callback(TaskStatus.COMPLETED)
 
 
 
-def update_objects(active_threads, username, buckets_cfg, device, embedding_backend, key, verbose=False, log_output=True, on_finish=None):
+def update_objects(active_threads, username, buckets_cfg, device, embedding_backend, key, verbose=False, log_output=True, update_status_callback=None):
     if log_output:
         print(f"\n######################\nUpdating missing/mismatched objects in all buckets\n######################\n")
+
+    if update_status_callback:
+        update_status_callback(TaskStatus.RUNNING)
 
     update_dict = {}
 
@@ -316,14 +329,17 @@ def update_objects(active_threads, username, buckets_cfg, device, embedding_back
     filter_outcome(active_threads, outcome, buckets_cfg, key)
 
     # execute callback to update task status to completed
-    if on_finish:
-        on_finish(TaskStatus.COMPLETED)
+    if update_status_callback:
+        update_status_callback(TaskStatus.COMPLETED)
 
 
 
-def check_objects(active_threads, buckets_cfg, key, verbose=False, log_output=True, on_finish=None):
+def check_objects(active_threads, buckets_cfg, key, verbose=False, log_output=True, update_status_callback=None):
     if log_output:
         print(f"\n######################\nChecking all objects in all buckets\n######################\n")
+
+    if update_status_callback:
+        update_status_callback(TaskStatus.RUNNING)
 
     perform_update = False
     check_dict = {}
@@ -380,21 +396,22 @@ def check_objects(active_threads, buckets_cfg, key, verbose=False, log_output=Tr
 
 
     # execute callback to update task status to completed
-    if on_finish:
-        on_finish(TaskStatus.COMPLETED)
+    if update_status_callback:
+        update_status_callback(TaskStatus.COMPLETED)
 
 
 def _handle_maintenance_command(active_threads, cmd, client_id, buckets_cfg, device, embedding_backend,
-                                configure_file, user_config_map, key, on_finish=None):
-
+                                configure_file, user_config_map, key, update_status_callback=None):
+    
     # print(f"handle {cmd=} {client_id=}")
 
     if cmd == TaskCmd.RECOMPUTE:
-        return active_threads.launch_recompute_all_objects(client_id, buckets_cfg, device, embedding_backend, key, log_output=ENABLE_PRETTY_PRINT, on_finish=on_finish)
+        return active_threads.launch_recompute_all_objects(client_id, buckets_cfg, device, embedding_backend, key, log_output=ENABLE_PRETTY_PRINT, update_status_callback=update_status_callback)
+
     elif cmd == TaskCmd.UPDATE:
-        return active_threads.launch_update_objects(client_id, buckets_cfg, device, embedding_backend, key, verbose=False, log_output=ENABLE_PRETTY_PRINT, on_finish=on_finish)
+        return active_threads.launch_update_objects(client_id, buckets_cfg, device, embedding_backend, key, verbose=False, log_output=ENABLE_PRETTY_PRINT, update_status_callback=update_status_callback)
     elif cmd == TaskCmd.CHECK:
-        return active_threads.launch_check_objects(buckets_cfg, key, verbose=False, log_output=ENABLE_PRETTY_PRINT, on_finish=on_finish)
+        return active_threads.launch_check_objects(buckets_cfg, key, verbose=False, log_output=ENABLE_PRETTY_PRINT, update_status_callback=update_status_callback)
     elif cmd == TaskCmd.RELOAD:
         outcome = reload_configuration(configure_file, buckets_cfg, user_config_map, log_output=ENABLE_PRETTY_PRINT)
         filter_outcome(active_threads, outcome, buckets_cfg, key)
@@ -699,7 +716,7 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
 #----------------------------
 # Process S3 objects
 #----------------------------
-def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embedding_backend, key, update_when_done = True, on_finish=None):
+def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embedding_backend, key, update_when_done = True, update_status_callback=None):
     nb_objects = len(s3_objects)
     keys_per_bucket = defaultdict(list)
     users = []
@@ -723,8 +740,12 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         s3_keys = keys_per_bucket[path_to_bucket]
         if model.type == "rivault":
             from umrs.rivault import launch_rivault_model
-            try:
-                model = launch_rivault_model(model.model.copy())
+            try: 
+                if update_status_callback:
+                    update_status_callback(TaskStatus.INITIALIZING)
+                # launch_rivault_model is not reentrant, so we use a lock to ensure only one thread is running it at a time
+                with rivault_lock:
+                    model = launch_rivault_model(model.model.copy())
             except Exception as e:
                 print(f"Error creating the RiVault model: {e}")
                 exit_status = TaskStatus.ERROR
@@ -734,6 +755,8 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         with reentrant_lock:
             if store_embeddings_flag:
                 if exit_status != TaskStatus.ERROR:
+                    if update_status_callback:
+                        update_status_callback(TaskStatus.RUNNING)
                     print(f"\t--> Storing to data base in {table_name}")
                     embedding_backend.compute_and_store(
                         path_to_bucket,
@@ -754,8 +777,8 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         active_threads.update_status_to_done()
         active_threads.record_status_for_users_by_key(users, key)
         active_threads.remove_from_running_list()
-    if on_finish:
-        on_finish(exit_status)
+    if update_status_callback:
+        update_status_callback(exit_status)
 
     print(f"\t--> Processing {nb_objects} file(s) done with status: {exit_status}!")
     with active_threads.lock:
@@ -765,7 +788,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
 ##################################################################################
 #########################        Main server loop        #########################
 ##################################################################################
-def make_task_finished_callback(task_manager, task_id):
+def make_update_status_callback(task_manager, task_id):
     """
     Return a callback function that updates the task status for the given task_id.
     The returned function accepts a `status` argument when called.
@@ -793,15 +816,16 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
             task_id = task_manager.tasks_status.create_task(cmd, payload)
 
             # create a callback with task_id embedded
-            on_finish = make_task_finished_callback(task_manager, task_id)
+            update_status_func = make_update_status_callback(task_manager, task_id)
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 client_id, s3_objects = payload
                 thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
                                                                              buckets_cfg, device, embedding_backend,
                                                                              cmd.lower(),
-                                                                             on_finish=on_finish)
-                task_manager.associate_thread_with_task(thread_ident, task_id, status=TaskStatus.RUNNING)
+                                                                             update_status_callback=update_status_func)
+                task_manager.associate_thread_with_task(thread_ident, task_id)
+
             elif cmd == TaskCmd.FILE:
                 if payload:
                     client_id, files = payload if isinstance(payload, tuple) else (None, payload)
@@ -814,16 +838,16 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                             print(f"Note: file '{file}' not recognized as valid user config or identity mismatch; left in place.")
                 else:
                     print("Warning: FILE command received with no payload")
-                task_manager.tasks_status.update_status(task_id, TaskStatus.COMPLETED)
+                update_status_func(TaskStatus.COMPLETED)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
                 client_id = payload
                 thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
                                                             device, embedding_backend, configure_file, user_config_map, cmd.lower(),
-                                                            on_finish=on_finish)
+                                                            update_status_callback=update_status_func)
                 if thread_ident is None:
-                    task_manager.tasks_status.update_status(task_id, TaskStatus.COMPLETED)
-                else:
-                    task_manager.associate_thread_with_task(thread_ident, task_id, status=TaskStatus.RUNNING)
+                    update_status_func(TaskStatus.COMPLETED)
+                else: 
+                    task_manager.associate_thread_with_task(thread_ident, task_id)
 
             elif cmd == TaskCmd.WAIT_OUTPUT : # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
                 client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
@@ -832,13 +856,13 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 if entry is None:
                     msg = "NO_SUCH_BUCKET"
                     control_mq.send_string(msg, zmq_sender_id)
-                    task_manager.tasks_status.update_status(task_id, TaskStatus.NO_SUCH_BUCKET)
+                    update_status_func(TaskStatus.NO_SUCH_BUCKET)
                 else:
                     thread_ident = task_manager.active_threads.launch_wait_table_modification_on_db(path_to_bucket, buckets_cfg, client_id,
                                                                       entry.data_base, entry.table_name,
                                                                      timeout, control_mq, zmq_sender_id, cmd.lower(),
-                                                                     on_finish=on_finish)
-                    task_manager.associate_thread_with_task(thread_ident, task_id, status=TaskStatus.RUNNING)
+                                                                     update_status_callback=update_status_func)
+                    task_manager.associate_thread_with_task(thread_ident, task_id)
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
                 task_manager.tasks_status.update_status(task_id, TaskStatus.UNKNOWN)
@@ -878,27 +902,33 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
             client_id, cmd, payload = command
             task_id = int(info["id"])
             status = info["status"]
+
             print(f"==> Recovering {cmd} for {client_id} with status: {status}")
 
             # create a callback with task_id embedded
-            on_finish = make_task_finished_callback(task_manager, task_id)
+            update_status_func = make_update_status_callback(task_manager, task_id)
+
+            if not is_client_configured(client_id, server_cfg):
+                print(f"Client {client_id} is not configured. Skipping recovery.")
+                update_status_func(TaskStatus.ERROR)
+                continue
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 s3_objects = json.loads(payload)
                 thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
                                                                              buckets_cfg, device, embedding_backend,
                                                                              cmd.lower(),
-                                                                             on_finish=on_finish)
-                task_manager.associate_thread_with_task(thread_ident, task_id, status=TaskStatus.RUNNING)
+                                                                             update_status_callback=update_status_func)
+                task_manager.associate_thread_with_task(thread_ident, task_id)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK):
                 user_config_map = server_cfg.user_config_map
                 thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
                                                             device, embedding_backend, configure_file, user_config_map, cmd.lower(),
-                                                            on_finish=on_finish)
+                                                            update_status_callback=update_status_func)
                 if thread_ident is None:
-                    task_manager.tasks_status.update_status(task_id, TaskStatus.COMPLETED)
-                else:
-                    task_manager.associate_thread_with_task(thread_ident, task_id, status=TaskStatus.RUNNING)
+                    update_status_func(TaskStatus.COMPLETED)
+                else: 
+                    task_manager.associate_thread_with_task(thread_ident, task_id)
 
             elif cmd == TaskCmd.FILE:
                 user_config_map = server_cfg.user_config_map
@@ -917,8 +947,8 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
                     else:
                         print(f"Note: file '{file}' was not recognized as a valid user config or there was an identity mismatch; left in place.")
 
-                task_manager.tasks_status.update_status(task_id, TaskStatus.COMPLETED)
-            else:
+                update_status_func(TaskStatus.COMPLETED)
+            else: 
                 print("\tNothing to do for command of type {cmd}")
 
 def check_umrs_config_directory():
