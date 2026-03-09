@@ -275,24 +275,30 @@ def create_db(sql_username, xp_name):
     if exists:
         print(f"\t\t-->  Database '{db_name}' already exists.")
     else:
-        # Create the database if it does not exist
-        cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};" ).format(
-            sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
-        ))
-        print(f"\t\t-->  Database '{db_name}' created successfully.")
-
-        # Connect to the new database as superuser and create the extension
-        conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
-        conn_new.autocommit = True
-        cur_new = conn_new.cursor()
+        # Create the database if it does not exist.
+        # In concurrent startup/reload flows another process can create it
+        # between the SELECT above and CREATE DATABASE below.
         try:
-            cur_new.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            print(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
-        except Exception as e:
-            print(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
-        finally:
-            cur_new.close()
-            conn_new.close()
+            cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
+                sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
+            ))
+            print(f"\t\t-->  Database '{db_name}' created successfully.")
+        except (psycopg2.errors.DuplicateDatabase, psycopg2.errors.UniqueViolation):
+            # Treat as success: DB was created by another concurrent path.
+            print(f"\t\t-->  Database '{db_name}' already exists (race detected).")
+
+    # Always ensure pgvector extension exists in target DB.
+    conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+    conn_new.autocommit = True
+    cur_new = conn_new.cursor()
+    try:
+        cur_new.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        print(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
+    except Exception as e:
+        print(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
+    finally:
+        cur_new.close()
+        conn_new.close()
     # Clean up and then create a pool to the target DB as the application user
     cur.close()
     conn.close()
@@ -474,10 +480,16 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         create_query = sql.SQL("CREATE TABLE {} ({});").format(
             sql.Identifier(table_name), sql.SQL(column_defs)
         )
-        cur.execute(create_query)
-        conn.commit()
-        print(f"\t\t\t--> Table '{table_name}' created successfully.")
-        # Create helpful indexes
+        try:
+            cur.execute(create_query)
+            conn.commit()
+            print(f"\t\t\t--> Table '{table_name}' created successfully.")
+        except (psycopg2.errors.UniqueViolation, psycopg2.errors.DuplicateTable):
+            # Sequence or table already exists (leftover from partial creation or race)
+            conn.rollback()
+            print(f"\t\t\t--> Table '{table_name}' already exists (concurrent creation).")
+            table_exists = True
+        # Create helpful indexes (IF NOT EXISTS is idempotent; safe after race too)
         try:
             cur.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (s3_object);").format(
                 sql.Identifier(f"idx_{table_name}_s3_object"), sql.Identifier(table_name)))
@@ -485,6 +497,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
                 sql.Identifier(f"idx_{table_name}_checksum"), sql.Identifier(table_name)))
             conn.commit()
         except Exception as e:
+            conn.rollback()
             print(f"\t\t\t--> Warning: failed creating indexes on '{table_name}': {e}")
 
     # enble notification for table that generate something so the server can listen to such notifications

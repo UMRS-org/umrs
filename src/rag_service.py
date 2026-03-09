@@ -11,6 +11,8 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_openai import ChatOpenAI
 
+from umrs.utils import add_query_prefix, add_document_prefix
+
 from umrs.config import (
     get_default_json_server_file,
     get_default_umrs_cfg_dir,
@@ -329,6 +331,41 @@ class UMRSPgVectorRetriever(BaseRetriever):
 app = FastAPI(title="UMRS RAG Service", version="0.1.0")
 
 
+class PrefixedSentenceTransformerEmbeddings(SentenceTransformerEmbeddings):
+    """SentenceTransformerEmbeddings with automatic E5 query/document prefixes.
+
+    E5 models require 'query: ' prefix for search queries and 'passage: '
+    prefix for documents.  This wrapper applies the correct prefix
+    transparently based on the model name.
+    """
+
+    def embed_query(self, text: str) -> List[float]:
+        text = add_query_prefix(text, self.model_name)
+        return super().embed_query(text)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        texts = add_document_prefix(texts, self.model_name)
+        return super().embed_documents(texts)
+
+
+def _detect_embedding_model_from_config(
+    db_model_store: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    """Extract the embedding model name from the first text-modality entry."""
+    for entry in db_model_store.values():
+        if entry.get("modality_name") == "text" and entry.get("store_embeddings_flag"):
+            model = entry.get("model")
+            if model is None:
+                continue
+            # EmbeddingModel object (from load_model)
+            if hasattr(model, "model_name"):
+                return model.model_name
+            # Raw config dict (fallback)
+            if isinstance(model, dict) and "model_name" in model:
+                return model["model_name"]
+    return None
+
+
 DB_MODEL_STORE: Dict[str, Dict[str, Any]] = {}
 EMBEDDINGS: Optional[SentenceTransformerEmbeddings] = None
 LLM: Optional[ChatOpenAI] = None
@@ -349,13 +386,13 @@ def startup_event() -> None:
             "with store_embeddings = 'yes'."
         )
 
-    model_name = os.getenv(
-        "UMRS_RAG_EMBEDDING_MODEL",
-        # Default to a commonly used sentence-transformer; this should match
-        # the model used for ingestion when possible.
-        "sentence-transformers/all-MiniLM-L6-v2",
-    )
-    EMBEDDINGS = SentenceTransformerEmbeddings(model_name=model_name)
+    model_name = os.getenv("UMRS_RAG_EMBEDDING_MODEL")
+    if not model_name:
+        # Auto-detect from the user config (matches the model used for ingestion)
+        model_name = _detect_embedding_model_from_config(DB_MODEL_STORE)
+    if not model_name:
+        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDINGS = PrefixedSentenceTransformerEmbeddings(model_name=model_name)
 
     # Configure LLM client against OpenAI-compatible vLLM endpoint
     vllm_base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")

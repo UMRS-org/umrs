@@ -27,7 +27,7 @@ def get_slurm_job_state(job_id):
     )
 
     if result.returncode != 0:
-        # No such job or any problem. 
+        # No such job or any problem.
         return None
 
     state = result.stdout.strip()
@@ -58,7 +58,7 @@ def create_plafrim_slurm_script(slurm_script):
 
     output_file = os.path.join(full_tmp_path, "slurm-%j.out")
     error_file  = os.path.join(full_tmp_path, "slurm-%j.err")
-    
+
     script_content=f'''#!/bin/bash
 #SBATCH -N 1
 #SBATCH -n 36
@@ -107,7 +107,7 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None):
     output_file = os.path.join(out_dir, "slurm-%j.out") # Will be insterted in the script if there is no --output line with %j placeholder
     error_file = os.path.join(out_dir, "slurm-%j.err") # Will be insterted in the script if there is no --error line with %j placeholder
     # output_file, error_file = extract_files_from_slurm_script(slurm_script, default_output=default_output_file, default_error=default_error_file)
-    
+
     sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
 
     # If we already have a job_id, we only need the output and error file paths. No need to call SLURM.
@@ -130,9 +130,24 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None):
             if "Submitted batch job" in text:
                 job_id = int(text.strip().split()[-1])
                 print("Job submitted with ID:", job_id)
-                jobid_cache[model_type_key] = job_id  # persistant
-                if not wait_for_running(job_id):
-                    raise ValueError(f"Job {job_id} did not start running. Current state: {get_slurm_job_state(job_id)}")
+                _wait_timeout = 300  # seconds
+                _wait_start = time.time()
+                while True:
+                    state = get_slurm_job_state(job_id)
+                    if state == "RUNNING":
+                        break
+                    if state is None:
+                        raise RuntimeError(
+                            f"Slurm job {job_id} is no longer in the queue "
+                            "(it may have failed or been cancelled before reaching RUNNING state)"
+                        )
+                    if time.time() - _wait_start > _wait_timeout:
+                        raise RuntimeError(
+                            f"Slurm job {job_id} did not reach RUNNING state "
+                            f"within {_wait_timeout}s (current state: {state})"
+                        )
+                    time.sleep(0.5)
+
     # Replace %j placeholder with actual JOB_ID
     if output_file:
         output_file = output_file.replace("%j", str(job_id))
@@ -149,31 +164,35 @@ def get_slurm_script_from_host():
 
     # Get the full domain name
     fqdn = socket.getfqdn()
-    
+
     return get_rivault_slurm_script(fqdn)
 
-def extract_node_address(slurm_output_file):
+def extract_node_address(slurm_output_file, timeout=300):
     """
     Extract the fully qualified node name from a SLURM output file.
-    
+
     Args:
         slurm_output_file (str): Path to the SLURM output file.
-    
+        timeout (float): Maximum time to wait in seconds.
+
     Returns:
         str or None: Fully qualified node name, e.g. 'bora007.plafrim.cluster'.
     """
     print(f"Checking {slurm_output_file}...")
+    start = time.time()
     # Wait until the file exists
     i = 0
     while not os.path.exists(slurm_output_file):
         if i % 100 == 0:
             print(f"{slurm_output_file=} not found, waiting...")
         i += 1
+        if time.time() - start > timeout:
+            raise TimeoutError(f"Slurm output file {slurm_output_file} was not created within {timeout}s")
         time.sleep(0.5)
 
 
     print(f"{slurm_output_file} ready")
-    while True: 
+    while True:
         with open(slurm_output_file, "r") as f:
             for line in f:
                 line = line.strip()
@@ -181,6 +200,8 @@ def extract_node_address(slurm_output_file):
                 if line.startswith("Fully qualified name:"):
                     # Split by ":" and remove spaces
                     return line.split(":", 1)[1].strip()
+        if time.time() - start > timeout:
+            raise TimeoutError(f"Could not find 'Fully qualified name:' in {slurm_output_file} within {timeout}s")
         time.sleep(0.5)
 
 
@@ -244,31 +265,35 @@ def ssh_tunnel_forward_to_remote(remote_host: str, remote_port: int = 8001) -> t
     return local_port, thread, ssh_proc
 
 
-def silent_requests_get(url, timeout=1.0):
+def silent_requests_get(url, timeout=1.0, headers=None):
     f = io.StringIO()
     try:
         with redirect_stdout(f), redirect_stderr(f):
-            resp = requests.get(url, timeout=timeout)
+            resp = requests.get(url, timeout=timeout, headers=headers)
             return resp
     except requests.RequestException:
         return None
 
-def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=60.0, interval=0.2):
+def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=300.0, interval=0.2, api_key=None):
     """
     Wait until the OpenAI-compatible server is up and the specified model is available.
-    
+
     openai_url: e.g., "openai://http://localhost:56126/v1"
     model_name: name of the model to check
     timeout: maximum time to wait in seconds
     interval: delay between checks
+    api_key: optional API key for authenticated endpoints (e.g. LiteLLM master key)
     """
     start = time.time()
     model_url = openai_url[len("openai://"):] +  "/models"
-    
+
     print(f"Checking model on {model_url=}...")
     while True:
         try:
-            resp = silent_requests_get(model_url, timeout=1.0)
+            headers = {}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            resp = silent_requests_get(model_url, timeout=1.0, headers=headers)
             # print(f"{resp=}")
             if resp is not None and resp.status_code == 200:
                 data = resp.json().get("data", [])
@@ -276,23 +301,36 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=60.0, i
                     return True
         except requests.RequestException as e:
             # print(f"{type(e).__name__}: {e}")
-            pass 
+            pass
 
         if time.time() - start > timeout:
             raise TimeoutError(f"Model {model_name} not available at {model_url} after {timeout}s")
-        
+
         time.sleep(interval)
 
 
 
+# persistent in-memory cache (can persist to disk if needed later, e.g. after crash)
+jobid_cache = diskcache.Cache(f"{get_default_tmp_subdir()}/job_id_store", size_limit = 10*1024*1024)
+
+# Ephemeral in-memory cache for models
+model_cache = {}
+
+# Serialise concurrent calls to prevent duplicate Slurm job submissions
+_launch_lock = threading.Lock()
+
 def launch_rivault_model(model_cfg):
-    model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"]
+    with _launch_lock:
+        return _launch_rivault_model_locked(model_cfg)
+
+
+def _launch_rivault_model_locked(model_cfg):
+    model_type_key = model_cfg["model_type"]
     # --- 0. Check cache ---
     job_id = jobid_cache.get(model_type_key, None)
     if job_id is not None:
-        print(f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running...")
-        if wait_for_running(job_id):
-            # job is running. Is the model in memory? 
+        if is_slurm_job_running(job_id):
+            # job is running. Is the model in memory?
             if model_type_key in model_cache:
                 model, _, _ = model_cache[model_type_key]
                 print("===> Found a running job and a loaded model in cache. Reusing it.")
@@ -313,8 +351,8 @@ def launch_rivault_model(model_cfg):
                 thread_tunnel.join()      # wait for thread to finish cleanly
 
             job_id = None
-                
-    # --- 1. get a node form SLURM ---    
+
+    # --- 1. get a node form SLURM ---
     rivault_slurm_script = get_slurm_script_from_host()
     output_file, error_file, job_id = get_slurm_node(rivault_slurm_script, model_type_key, job_id_to_use=job_id)
 
@@ -330,7 +368,7 @@ def launch_rivault_model(model_cfg):
     local_port, thread_tunnel, proc_tunnel = ssh_tunnel_forward_to_remote(server_address, remote_port)
     NGINX_PORT = os.getenv("NGINX_LITELLM_DOCKER_PORT")
     MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
-    
+
     # model_type = "https:.....:{NGINX_PORT}"
 
      # --- 3. Build the OpenAI-compatible model ---
@@ -339,11 +377,13 @@ def launch_rivault_model(model_cfg):
         model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(NGINX_PORT))
         # if you also want to replace a placeholder {local_port} with a variable 'local_port'
         model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
-        wait_for_model(model_cfg["model_type"], model_cfg["model_name"])
+        wait_for_model(model_cfg["model_type"], model_cfg["model_name"], api_key=MASTER_KEY)
         print(f"Configuring: {model_cfg['model_type']}...")
+        # Store the API key in model_cfg so load_model can forward it
+        model_cfg["api_key"] = MASTER_KEY
         # Load the model
         model = load_model(model_cfg, "")
-        
+
          # --- 4. Cache the loaded model and job_id ---
         model_cache[model_type_key] = (model,  thread_tunnel, proc_tunnel)
         jobid_cache[model_type_key] = job_id  # persistant
@@ -366,4 +406,4 @@ if __name__ == "__main__":
     remote_port = get_rivault_remote_port()
     local_port = forward_to_remote(server_adress, remote_port)
     print(f"{local_port=}")
-    
+

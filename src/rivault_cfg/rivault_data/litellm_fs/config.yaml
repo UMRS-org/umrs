@@ -1,8 +1,8 @@
 # more here https://docs.litellm.ai/docs/proxy/config_settings
 model_list:
-  - model_name: umrs
+  - model_name: VLLM_MODEL_PLACEHOLDER
     litellm_params:
-      model: hosted_vllm/umrs
+      model: hosted_vllm/VLLM_MODEL_PLACEHOLDER
       api_key: sk-124781258123
       api_base: http://vllm:8000/v1
       keep_alive: 60m
