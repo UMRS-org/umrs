@@ -108,7 +108,7 @@ class UMRSTask:
                     """,
                     (TaskStatus.ABORTED, now, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN, TaskStatus.NO_SUCH_BUCKET)
                 )
- 
+
     def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True):
         """
         Pretty-print tasks from the database.
@@ -246,7 +246,7 @@ class UMRSTask:
 
         # Print tasks
         self.pretty_print_tasks()
-    
+
     def get_tasks(
         self,
         status: Optional[str] = None,
