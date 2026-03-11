@@ -424,11 +424,11 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     table_columns.append(column)
     column = {"name": "checksum", "type": "TEXT"}
     table_columns.append(column)
-    store_embeddings_flag = False
     column = {"name": "date", "type": "DATE"}
     table_columns.append(column)
     column = {"name": "time", "type": "TIME"}
     table_columns.append(column)
+    store_embeddings_flag = False
     if sql_cfg["store_embeddings"] == "yes":
         store_embeddings_flag = True
         vector_size = model.embedding_vector_size

@@ -7,8 +7,8 @@ from typing import Optional
         
 
 
-class EmbeddingModel:
-    def __init__(self, model_name: str, type: str, return_type: str, embedding_vector_size: int, max_tokens: Optional[int], model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
+class UmrsModel:
+    def __init__(self, model_name: str, type: str, return_type: str, embedding_vector_size: int, max_tokens: Optional[int], model, input_type: str, compute_func, modality, spacy_model, tokenizer):
         self.model_name = model_name
         self.type = type
         self.return_type = return_type
@@ -21,10 +21,10 @@ class EmbeddingModel:
         self.tokenizer = tokenizer
         if self.model and hasattr(self.model, "to"):
             self.model.to(self.device)
-        if compute_embeddings:
-            self.compute_embeddings = compute_embeddings.__get__(self)  # Bind the method to the instance
+        if compute_func:
+            self.compute = compute_func.__get__(self)  # Bind the method to the instance
         else:
-            self.compute_embeddings = None
+            self.compute = None
         if spacy_model:
             self.nlp = spacy.load(spacy_model, disable=["ner", "tagger", "parser"])
             self.nlp.add_pipe("sentencizer")  # simple sentence seperator
@@ -46,6 +46,7 @@ def load_model(model_cfg, modality):
     tokenizer = None
     max_tokens = None
     spacy_model = model_cfg.get("spacy_model", None)
+    model_mode = model_cfg.get("model_mode", None)
     cfg_file = model_cfg.get("model_cfg_file", None)
     checkpoint_path = model_cfg.get("checkpoint_path", None)
 
@@ -56,25 +57,25 @@ def load_model(model_cfg, modality):
         type = "loaded"
         tokenizer = model._first_module().tokenizer
         max_tokens = getattr(tokenizer, "model_max_length", None)
-        compute_embeddings_func, input_type = sentence_transformers(modality);
+        compute_func, input_type = sentence_transformers(modality);
     elif model_type == "Resnet-50":
         from .models.resnet_50 import load_resnet50, compute_embeddings_resnet_50
         model = load_resnet50(checkpoint_path)
         type = "loaded"
-        compute_embeddings_func = compute_embeddings_resnet_50
+        compute_func = compute_embeddings_resnet_50
         input_type = "image"
     elif model_type == "TransformerEncoder":
         from .models.transformer_encoder import load_transformer_encoder, compute_embeddings_transformer_encoder
         model, tokenizer = load_transformer_encoder(model_name)
         type = "loaded"
         max_tokens = tokenizer.model_max_length
-        compute_embeddings_func = compute_embeddings_transformer_encoder
+        compute_func = compute_embeddings_transformer_encoder
         input_type = "text"
     elif model_type == "MAE" :
         from .models.masked_autoencoder import load_masked_autoencoder, compute_embeddings_masked_autoencoder
         model = load_masked_autoencoder(cfg_file, checkpoint_path)
         type = "loaded"
-        compute_embeddings_func = compute_embeddings_masked_autoencoder
+        compute_func = compute_embeddings_masked_autoencoder
         input_type = "raw_image"
     elif model_type.startswith("openai://"):
         # Import OpenAI-compatible embedding utilities and vLLM liveness / capability checks
@@ -103,7 +104,7 @@ def load_model(model_cfg, modality):
         model = None
         type = "openai"
         # Build a closure that captures (url, model_name) and exposes a uniform compute_embeddings API
-        compute_embeddings_func = make_openai_compute_embeddings(model_url, model_name)
+        compute_func = make_openai_compute_embeddings(model_url, model_name)
 
         # Declare that this embedding model expects raw text as input
         input_type = "text"
@@ -112,12 +113,12 @@ def load_model(model_cfg, modality):
         model["model_type"] = model_type[len("rivault://"):]
         type = "rivault"
         input_type=None
-        compute_embeddings_func=None
+        compute_func=None
       
     else:
         raise ValueError(f"Unsupported model type: {model_type}")
 
 
     # Create and return the EmbeddingModel object
-    return EmbeddingModel(model_name, type, return_type, vector_size, max_tokens, model, input_type, compute_embeddings_func, modality, spacy_model, tokenizer)
+    return UmrsModel(model_name, type, return_type, vector_size, max_tokens, model, input_type, compute_func, modality, spacy_model, tokenizer)
 

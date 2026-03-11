@@ -4,7 +4,13 @@ from sentence_transformers import SentenceTransformer
 
 ################################ Sentence Transformers ###########################
 #  Sentence Transformer Loader
+_model_cache = {}
+
 def load_sentence_transformers_model(model_name):
+    if model_name in _model_cache:
+        print(f"\t\t\t--> Model '{model_name}' already loaded...")
+        return _model_cache[model_name]
+
     print(f"\t\t\t--> Loading model '{model_name}'...")
     try :
         model = SentenceTransformer(model_name, local_files_only=True)
@@ -12,6 +18,8 @@ def load_sentence_transformers_model(model_name):
         print("\t\t\t--> Local cache not available or incomplete. Downloading from Hugging Face...")
         model = SentenceTransformer(model_name)
         print("\t\t\t--> Downloaded and cached model.")
+    
+    _model_cache[model_name] = model
     return model;
 
 
