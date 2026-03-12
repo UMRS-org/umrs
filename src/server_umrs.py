@@ -248,7 +248,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             # Best-effort upload of model weights to RiVault so that
             # compute workers can later stream them from there.
             try:
-                _upload_weights_to_rivault(model_cfg.get("model_name"), os.path.dirname(user_conf_file))
+                _upload_weights_to_rivault(model_cfg.get("model_name"), os.path.dirname(user_cfg['config_file_path']))
             except Exception:
                 # Never fail user configuration because of RiVault upload issues
                 pass
@@ -731,7 +731,7 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
 
     if not dest_path:
         # Destination path (canonical)
-        umrs_dir = os.path.dir(configure_file)
+        umrs_dir = os.path.dirname(configure_file)
         user_dir = os.path.join(umrs_dir, get_users_default_cfg_subdir())
         try:
             os.makedirs(user_dir, exist_ok=True)

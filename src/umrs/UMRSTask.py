@@ -53,9 +53,10 @@ class UMRSTask:
         dict with key = (client_id, cmd, payload) and value = status (or task dict)
         """
         (verbose and traceback.print_stack())
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
-        rows = cursor.fetchall()
+        with self.conn_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
+            rows = cursor.fetchall()
 
         seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
 

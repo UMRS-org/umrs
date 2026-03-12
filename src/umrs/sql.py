@@ -690,9 +690,8 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         if cur is not None:
             try:
                 cur.close()
-            except Exception:
-                # Consider logging the exception instead of silent pass
-                print(f"Warning: Failed to close cursor: {e}")
+            except Exception as close_err:
+                print(f"Warning: Failed to close cursor: {close_err}")
         data_base.put_conn(conn)
 
 def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_objects, modality_name, checksums, model_name, metadata_list=None):
@@ -798,8 +797,8 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         if cur is not None:
             try:
                 cur.close()
-            except Exception as e:
-                print(f"Warning: failed to close cursor: {e}")
+            except Exception as close_err:
+                print(f"Warning: failed to close cursor: {close_err}")
         data_base.put_conn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, buckets_cfg: BucketsCfg):
