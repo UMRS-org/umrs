@@ -6,6 +6,12 @@ __pycache__/
 #Ignore vscode AI rules
 .github/instructions/codacy.instructions.md
 
+# Ignore runtime-generated UUID-suffixed config artifacts
+src/umrs/rivault/nginx_fs/out-nginx.conf.*-*-*-*-*
+src/umrs/rivault/coredns_fs/coredns.conf.*-*-*-*-*
+src/umrs/rivault/litellm_fs/config.yaml.*-*-*-*-*
+src/umrs/rivault/env.*-*-*-*-*
+
 # Ignore model binaries and large model caches
 /data/models/
 /docker/data/models/
