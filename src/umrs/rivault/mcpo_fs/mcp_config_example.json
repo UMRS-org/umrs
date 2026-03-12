@@ -1,0 +1,29 @@
+{
+  "name": "example-mcp-server",
+  "version": "1.0.0",
+  "description": "Example custom MCP server configuration",
+  "capabilities": {
+    "tools": [
+      "example_tool_1",
+      "example_tool_2"
+    ],
+    "resources": [
+      "database://mydb/*",
+      "file://project/*"
+    ],
+    "egress": {
+      "domains": [
+        "api.example.com",
+        "*.github.com"
+      ],
+      "protocols": ["https"]
+    }
+  },
+  "entry_point": "python server.py",
+  "sandbox": {
+    "network": "egress_guard",
+    "filesystem": "read_only",
+    "max_memory_mb": 512,
+    "max_cpu_percent": 50
+  }
+}

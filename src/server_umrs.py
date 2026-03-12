@@ -166,6 +166,59 @@ def is_client_configured(client_id, server_cfg):
             return True
     return False
 
+
+def reconcile_status_on_startup(active_threads, buckets_cfg):
+    """Write an initial PROCESS_OBJECTS status entry for each user based on pgvector counts.
+
+    After a server restart the in-memory status_store is empty, so ``status all``
+    returns "No status entries".  This function populates it with a synthetic
+    summary built from the already-accurate ``num_objects`` values that
+    ``configure_user`` read from pgvector at startup time.
+    """
+    from umrs.TaskCmdStatus import TaskCmd
+    from datetime import datetime
+
+    # Group bucket entries by s3_username
+    user_entries: dict[str, list[tuple[str, ServerBucketEntry]]] = {}
+    for path_to_bucket, entry in buckets_cfg.items():
+        user_entries.setdefault(entry.s3_username, []).append((path_to_bucket, entry))
+
+    for username, entries in user_entries.items():
+        # Build a synthetic 'thread status' dict that pretty_print_thread_status can render
+        synthetic_thread_status = {}
+        works = []
+        for path_to_bucket, entry in entries:
+            works.append({
+                "user": entry.s3_username,
+                "data_base": entry.db_name,
+                "table_name": entry.table_name,
+                "modality_name": entry.modality_name,
+                "bucket": path_to_bucket,
+                "work_type": TaskCmd.PROCESS_OBJECTS.lower(),
+                "nb_objects": entry.num_objects,
+            })
+        if not works:
+            continue
+        synthetic_thread_status["startup"] = {
+            "thread_id": -1,  # sentinel: not a real thread
+            "status": "Done" if any(w["nb_objects"] > 0 for w in works) else "Idle",
+            "work": works,
+        }
+        summary = pretty_print_thread_status(synthetic_thread_status, running_only=False, print_output=False)
+        json_safe = active_threads._json_safe_thread_status(synthetic_thread_status)
+        active_threads.record_status(
+            username,
+            TaskCmd.PROCESS_OBJECTS.lower(),
+            {"summary": summary, "data": json_safe},
+        )
+        # Also write the uppercase key used by the server event loop
+        active_threads.record_status(
+            username,
+            TaskCmd.PROCESS_OBJECTS,
+            {"summary": summary, "data": json_safe},
+        )
+    print("Status store reconciled with pgvector counts.")
+
 def configure_user(user_cfg, server_cfg: ServerCfg):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
@@ -308,7 +361,7 @@ def update_objects(active_threads, username, buckets_cfg, device, embedding_back
             update_dict[path_to_bucket] = {
                 "bucket_alias": entry.bucket_alias,
                 "duration": duration,
-                "nb_objects": f"{len(to_update_objects)}/{len(s3_objects)}",
+                "nb_objects": f"{len(s3_objects) - len(to_update_objects)}/{len(s3_objects)}",
                 "modality_name": entry.modality_name,
                 "s3_username": entry.s3_username,
                 "total_size_MB": round(total_size / (1024**2), 3),
@@ -402,7 +455,7 @@ def check_objects(active_threads, buckets_cfg, key, verbose=False, log_output=Tr
 
 def _handle_maintenance_command(active_threads, cmd, client_id, buckets_cfg, device, embedding_backend,
                                 configure_file, user_config_map, key, update_status_callback=None):
-    
+
     # print(f"handle {cmd=} {client_id=}")
 
     if cmd == TaskCmd.RECOMPUTE:
@@ -739,8 +792,8 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
         if model.type == "rivault":
-            from umrs.rivault import launch_rivault_model
-            try: 
+            from umrs.rivault_launcher import launch_rivault_model
+            try:
                 if update_status_callback:
                     update_status_callback(TaskStatus.INITIALIZING)
                 # launch_rivault_model is not reentrant, so we use a lock to ensure only one thread is running it at a time
@@ -759,17 +812,21 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                     if update_status_callback:
                         update_status_callback(TaskStatus.RUNNING)
                     print(f"\t--> Storing to data base in {table_name}")
-                    embedding_backend.compute_and_store(
-                        path_to_bucket,
-                        s3_keys,
-                        data_base,
-                        table_name,
-                        model,
-                        device,
-                        modality_name,
-                        s3_connection,
-                        output_bucket
-                    )
+                    try:
+                        embedding_backend.compute_and_store(
+                            path_to_bucket,
+                            s3_keys,
+                            data_base,
+                            table_name,
+                            model,
+                            device,
+                            modality_name,
+                            s3_connection,
+                            output_bucket
+                        )
+                    except Exception as e:
+                        print(f"Error computing/storing embeddings for bucket '{path_to_bucket}': {e}")
+                        exit_status = TaskStatus.ERROR
             else:
                 print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
             buckets_cfg.update_num_objects(path_to_bucket)
@@ -847,7 +904,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                                                             update_status_callback=update_status_func)
                 if thread_ident is None:
                     update_status_func(TaskStatus.COMPLETED)
-                else: 
+                else:
                     task_manager.associate_thread_with_task(thread_ident, task_id)
 
             elif cmd == TaskCmd.WAIT_OUTPUT : # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
@@ -928,7 +985,7 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
                                                             update_status_callback=update_status_func)
                 if thread_ident is None:
                     update_status_func(TaskStatus.COMPLETED)
-                else: 
+                else:
                     task_manager.associate_thread_with_task(thread_ident, task_id)
 
             elif cmd == TaskCmd.FILE:
@@ -949,7 +1006,7 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
                         print(f"Note: file '{file}' was not recognized as a valid user config or there was an identity mismatch; left in place.")
 
                 update_status_func(TaskStatus.COMPLETED)
-            else: 
+            else:
                 print("\tNothing to do for command of type {cmd}")
 
 def check_umrs_config_directory():
@@ -1002,6 +1059,8 @@ def main():
     control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store)
 
     print("Initial configuration done.")
+    reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
+
     handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
 
     print("Entering main server event loop.")
