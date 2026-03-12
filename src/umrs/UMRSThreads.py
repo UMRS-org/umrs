@@ -193,11 +193,12 @@ class UMRSThreads:
         if thread_ident == "self" : #we are inside a thread thread, we need to get its ident 
             current_thread = threading.current_thread()
             thread_ident = current_thread.ident
-        self.thread_dict[thread_ident] = {
-            "thread_id" : thread_id,
-            "work": array_of_works,
-            "status": ThreadStatus.RUNNING,
-        }
+        with self.lock:
+            self.thread_dict[thread_ident] = {
+                "thread_id" : thread_id,
+                "work": array_of_works,
+                "status": ThreadStatus.RUNNING,
+            }
 
         # print(f"{thread_ident=}\n\t{thread_id=}\n\t{ThreadStatus.RUNNING}" )
         self.record_status_for_users_by_key([user], key)
