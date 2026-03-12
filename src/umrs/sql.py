@@ -118,7 +118,7 @@ class DataBase:
             channel = f"{table_name}_update"
 
             with conn.cursor() as cur:
-                cur.execute(f"LISTEN {channel};")
+                cur.execute(sql.SQL("LISTEN {};").format(sql.Identifier(channel)))
 
             # 2️⃣ Block until notification
 
@@ -156,11 +156,11 @@ class DataBase:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"""
+                    sql.SQL("""
                     SELECT COUNT(DISTINCT s3_object)
-                    FROM {table_name}
+                    FROM {}
                     WHERE s3_object IS NOT NULL;
-                    """
+                    """).format(sql.Identifier(table_name))
                 )
                 return cur.fetchone()[0]
 
@@ -393,28 +393,42 @@ def enable_table_notifications(conn, table_name: str):
 
     with conn.cursor() as cur:
         # 1️⃣ Create trigger function
-        cur.execute(f"""
-        CREATE OR REPLACE FUNCTION {func_name}()
-        RETURNS trigger AS $$
-        BEGIN
-            PERFORM pg_notify('{channel}', TG_OP);
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-        """)
+        cur.execute(
+            sql.SQL("""
+            CREATE OR REPLACE FUNCTION {}()
+            RETURNS trigger AS $$
+            BEGIN
+                PERFORM pg_notify({}, TG_OP);
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """).format(
+                sql.Identifier(func_name),
+                sql.Literal(channel)
+            )
+        )
 
         # 2️⃣ Drop trigger if exists (idempotent)
-        cur.execute(f"""
-        DROP TRIGGER IF EXISTS {trigger_name} ON {table_name};
-        """)
+        cur.execute(
+            sql.SQL("DROP TRIGGER IF EXISTS {} ON {};").format(
+                sql.Identifier(trigger_name),
+                sql.Identifier(table_name)
+            )
+        )
 
         # 3️⃣ Create trigger
-        cur.execute(f"""
-        CREATE TRIGGER {trigger_name}
-        AFTER INSERT OR UPDATE OR DELETE ON {table_name}
-        FOR EACH STATEMENT
-        EXECUTE FUNCTION {func_name}();
-        """)
+        cur.execute(
+            sql.SQL("""
+            CREATE TRIGGER {}
+            AFTER INSERT OR UPDATE OR DELETE ON {}
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION {}();
+            """).format(
+                sql.Identifier(trigger_name),
+                sql.Identifier(table_name),
+                sql.Identifier(func_name)
+            )
+        )
 
     conn.commit()
 
@@ -577,8 +591,9 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
         # INSERT and UPDATE if s3_object already exists
         # Start building the INSERT query dynamically for the given table
+        safe_table = sql.Identifier(table_name).as_string(conn)
         query = f"""
-        INSERT INTO {table_name} (
+        INSERT INTO {safe_table} (
             s3_object, embedding, date, time, checksum, model
         """
         # Initialize the list of values corresponding to the columns

@@ -4,6 +4,7 @@ from umrs.config import *
 
 import subprocess
 import time
+import re
 import requests
 import socket
 import os
@@ -133,15 +134,24 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None):
         # Read job SLURM ID
         output, _ = proc.communicate()
         job_id = None
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"sbatch failed with return code {proc.returncode}: "
+                f"{output.decode() if output else '(no output)'}")
         if output:
             text = output.decode()
             # sbatch returns "Submitted batch job 12345"
-            if "Submitted batch job" in text:
-                job_id = int(text.strip().split()[-1])
+            match = re.search(r'Submitted batch job (\d+)', text)
+            if match:
+                job_id = int(match.group(1))
                 print("Job submitted with ID:", job_id)
                 jobid_cache[model_type_key] = job_id  # persist immediately
                 if not wait_for_running(job_id):
                     raise ValueError(f"Job {job_id} did not start running. Current state: {get_slurm_job_state(job_id)}")
+        if job_id is None:
+            raise ValueError(
+                f"Could not parse job ID from sbatch output: "
+                f"{output.decode() if output else '(no output)'}")
 
     # Replace %j placeholder with actual JOB_ID
     if output_file:
