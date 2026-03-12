@@ -72,7 +72,8 @@ services:
       #LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?}
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-8}
       DATABASE_URL: postgresql://${LITELLM_POSTGRES_USER:-postgres}:${LITELLM_POSTGRES_PASSWORD:-litellm}@ll-postgres:5432/${LITELLM_POSTGRES_DB:-litellm} #XXX: see details https://docs.litellm.ai/docs/proxy/deploy#deploy-with-database to get Virtual Keys working
-      MCPO_API_KEY: sk-15330865-62087191
+      MCPO_API_KEY: ${MCPO_API_KEY:?}
+      VLLM_API_KEY: ${VLLM_API_KEY:?}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
@@ -153,7 +154,7 @@ services:
         source: ${VLLM_PATH_TO_HUGGINGFACE:?}/modules/
         target: /root/.cache/huggingface/modules/
         read_only: false
-    command: ${VLLM_MODEL:?} --served-model-name ${VLLM_MODEL:?} --api-key sk-02284644-03150002 -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95} --enforce-eager
+    command: ${VLLM_MODEL:?} --served-model-name ${VLLM_MODEL:?} --api-key ${VLLM_API_KEY:?} -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95} --enforce-eager
     environment:
       ##TORCH_USE_RTLD_GLOBAL: 1
       ##VLLM_USE_TRTLLM_ATTENTION: 1
@@ -165,7 +166,7 @@ services:
       TRANSFORMERS_OFFLINE: 1
       HF_HUB_OFFLINE: 1
       VLLM_NO_USAGE_STATS: 1
-      VLLM_API_KEY: sk-02284644-03150002
+      VLLM_API_KEY: ${VLLM_API_KEY:?}
       VLLM_CPU_KVCACHE_SPACE: ${VLLM_CPU_KVCACHE_SPACE:-8}
       #VLLM_LOGGING_LEVEL: DEBUG
       #LLM_TRACE_FUNCTION: 1
@@ -191,7 +192,7 @@ services:
   mcpo:
     profiles: [ harness ]
     image: ghcr.io/open-webui/mcpo:${MCPO_DOCKER_TAG:-main}
-    command: --port 8000 --api-key sk-15330865-62087191 --hot-reload --config /tmp/config.json
+    command: --port 8000 --api-key ${MCPO_API_KEY:?} --hot-reload --config /tmp/config.json
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${MCPO_IP4:-23}
