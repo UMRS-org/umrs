@@ -7,7 +7,7 @@
 # services) via the host's native podman-compose — no nested containers.
 #
 # It outputs the FQDN header that UMRS's extract_node_address() expects,
-# then delegates to the actual serve-model.slurm from demos/rivault/.
+# then delegates to the actual serve-model.slurm from src/umrs/rivault/.
 #
 # Environment variables (set by start-host-slurmd.sh or caller):
 #   RIVAULT_DIR      – path to rivault/ directory (default: /opt/rivault)

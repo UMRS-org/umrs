@@ -99,7 +99,8 @@ def pretty_print_user_cfg(cfg_dict, print_output=True):
     return message
 
 def pretty_print_recompute(recompute_dict, update=False, print_output=True):
-    df = pd.DataFrame(columns=["Bucket alias", "S3 user",  "Bucket path", "Modality", "Model", "Objects", "Size (MB)", "Duration (s)"])
+    objects_col = "Synced/Total" if update else "Objects"
+    df = pd.DataFrame(columns=["Bucket alias", "S3 user",  "Bucket path", "Modality", "Model", objects_col, "Size (MB)", "Duration (s)"])
 
     for path_to_bucket, entry in recompute_dict.items():
         bucket_alias = entry["bucket_alias"]
@@ -164,7 +165,7 @@ def pretty_print_check(check_dict, print_output=True):
             nb_error
         ]
 
-    
+
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 

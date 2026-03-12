@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Downloads a set of HF models into the local rivault/models directory.
+# Downloads a set of HF models into the rivault/models directory.
 # Usage:
 #   ./download_rivault_models.sh                # download defaults
 #   ./download_rivault_models.sh repo/id other/repo
@@ -11,7 +11,7 @@ set -euo pipefail
 # environment for authenticated, higher-rate downloads.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_BASE="$SCRIPT_DIR/../rivault/models"
+TARGET_BASE="$SCRIPT_DIR/../../src/umrs/rivault/models"
 mkdir -p "$TARGET_BASE"
 
 

@@ -84,7 +84,7 @@ services:
       - ./test_data:/opt/test_data:ro
       - ../../data/img:/opt/test_data/images:ro
       - ./scripts:/opt/scripts:ro
-      - ${MODEL_PATH:-./rivault/models}:/shared/models:rw
+      - ${MODEL_PATH:-../../src/umrs/rivault/models}:/shared/models:rw
     env_file:
       - .env
     environment:

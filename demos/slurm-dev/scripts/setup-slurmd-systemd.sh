@@ -15,7 +15,8 @@ if [[ -f "$DEMO_DIR/.env" ]]; then
 fi
 
 SLURM_NODE_NAME="${SLURM_NODE_NAME:-compute-01}"
-RIVAULT_DIR="${RIVAULT_DIR:-$DEMO_DIR/rivault}"
+# Rivault scripts moved from demos/slurm-dev/rivault/ to src/umrs/rivault/
+RIVAULT_DIR="${RIVAULT_DIR:-$DEMO_DIR/../../src/umrs/rivault}"
 JOB_INFO_DIR="${JOB_INFO_DIR:-$DEMO_DIR/job-info}"
 
 if [[ $EUID -ne 0 ]]; then echo "ERROR: run with sudo"; exit 1; fi
@@ -98,7 +99,8 @@ fi
 # ---- 7. /opt/rivault symlink ----
 echo "[7/9] /opt/rivault symlink..."
 if [[ -L /opt/rivault ]]; then
-    echo "  Already: /opt/rivault → $(readlink /opt/rivault)"
+    ln -sfn "$RIVAULT_DIR" /opt/rivault
+    echo "  Updated: /opt/rivault → $RIVAULT_DIR"
 elif [[ ! -d /opt/rivault ]]; then
     ln -sf "$RIVAULT_DIR" /opt/rivault
     echo "  Created"

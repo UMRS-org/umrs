@@ -49,7 +49,8 @@ CGROUP_CONF_DST="/etc/slurm/cgroup.conf"
 SLURM_NODE_NAME="${SLURM_NODE_NAME:-compute-01}"
 
 # Rivault directory (used by mini-rivault-job.sh / serve-model.slurm)
-RIVAULT_DIR="${RIVAULT_DIR:-$DEMO_DIR/rivault}"
+# Rivault scripts moved from demos/slurm-dev/rivault/ to src/umrs/rivault/
+RIVAULT_DIR="${RIVAULT_DIR:-$DEMO_DIR/../../src/umrs/rivault}"
 
 # Job info directory (shared with ai-login container via ./job-info mount)
 JOB_INFO_DIR="${JOB_INFO_DIR:-$DEMO_DIR/job-info}"
@@ -239,14 +240,13 @@ echo ""
 # The Slurm job script defaults to RIVAULT_DIR=/opt/rivault.
 # Since batch jobs don't inherit slurmd's environment, we create a symlink so
 # the default path works on the host.
+# Always force-update the symlink to handle stale targets from prior runs.
 echo "  Setting up /opt/rivault symlink..."
-if [[ -L /opt/rivault ]]; then
-    echo "  /opt/rivault already symlinked → $(readlink /opt/rivault)"
-elif [[ -d /opt/rivault ]]; then
-    echo "  /opt/rivault already exists as a directory"
-else
-    ln -sf "$RIVAULT_DIR" /opt/rivault
+if [[ -L /opt/rivault ]] || [[ ! -e /opt/rivault ]]; then
+    ln -sfn "$RIVAULT_DIR" /opt/rivault
     echo "  Symlinked /opt/rivault → $RIVAULT_DIR"
+elif [[ -d /opt/rivault ]]; then
+    echo "  /opt/rivault already exists as a directory (not a symlink), skipping"
 fi
 
 # ---- Install podman-compose (needed by serve-model.slurm) ----
@@ -282,6 +282,8 @@ export JOB_INFO_DIR
 export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-$RIVAULT_DIR/models/vllm/huggingface}"
 export NGINX_LITELLM_DOCKER_PORT="${NGINX_LITELLM_DOCKER_PORT:-11434}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-sk-demo-dev}"
+export VLLM_DOCKER_TAG="${VLLM_DOCKER_TAG:-nightly}"
+export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.95}"
 
 if [[ "${1:-}" == "--bg" ]]; then
     echo "  Starting slurmd in BACKGROUND mode..."

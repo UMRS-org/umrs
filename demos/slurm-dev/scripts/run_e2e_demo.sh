@@ -14,8 +14,8 @@
 #
 # The always-on LLM stack (demo-llm.yaml) is NOT started by this script.
 # Launch it separately if you need RAG Q&A:
-#   podman-compose --env-file rivault/demo-llm.env \
-#       -f rivault/demo-llm.yaml -f rivault/x_nvidia-override.yaml up -d
+#   podman-compose --env-file ../../src/umrs/rivault/demo-llm.env \
+#       -f ../../src/umrs/rivault/demo-llm.yaml -f ../../src/umrs/rivault/x_nvidia-override.yaml up -d
 # =============================================================================
 
 set -Eeuo pipefail
@@ -217,10 +217,32 @@ phase1_start_control_plane() {
         die "umrs-client did not reach running state"
     }
 
-    wait_for_condition 60 5 "Slurm node registration" "podman exec $AI_LOGIN_CONTAINER sinfo -N -h -o '%N %T' | grep -Eq '^compute-01 (idle|mix|alloc)'" || {
-        warn "compute-01 not reported as idle/mix/alloc in time"
-        warn "Check: podman exec $AI_LOGIN_CONTAINER sinfo -N"
+    # Wait for compute-01 to appear in sinfo (any state means slurmd registered)
+    wait_for_condition 60 5 "Slurm node registration" "podman exec $AI_LOGIN_CONTAINER sinfo -N -h -o '%N %T' | grep -q '^compute-01'" || {
+        die "compute-01 never appeared in sinfo. Check slurmd logs on host and slurmctld logs: podman logs $AI_LOGIN_CONTAINER"
     }
+
+    # If the node is drained/down (stale state from slurmctld spool volume),
+    # automatically resume it. ReturnToService=2 only handles DOWN, not DRAIN.
+    local node_state
+    node_state="$(podman exec "$AI_LOGIN_CONTAINER" sinfo -N -h -o '%T' -n compute-01 | head -n 1 | tr -d '* ')"
+    case "$node_state" in
+        idle|mixed|allocated)
+            log "compute-01 state: $node_state (OK)"
+            ;;
+        *)
+            warn "compute-01 state: $node_state — resuming node"
+            podman exec "$AI_LOGIN_CONTAINER" scontrol update NodeName=compute-01 State=RESUME Reason="auto-resumed by run_e2e_demo"
+            sleep 2
+            node_state="$(podman exec "$AI_LOGIN_CONTAINER" sinfo -N -h -o '%T' -n compute-01 | head -n 1 | tr -d '* ')"
+            if [[ "$node_state" =~ ^(idle|mixed|allocated)$ ]]; then
+                log "compute-01 resumed successfully: $node_state"
+            else
+                warn "compute-01 still not idle after resume: $node_state"
+                warn "Check: podman exec $AI_LOGIN_CONTAINER scontrol show node compute-01"
+            fi
+            ;;
+    esac
 }
 
 phase1b_prepare_embedding_model() {
@@ -493,8 +515,8 @@ phase4_summary() {
     echo "  ${COMPOSE_CMD[*]} -f $COMPOSE_FILE down"
     echo
     echo "To also start the LLM stack for RAG Q&A (separate GPU):"
-    echo "  cd $DEMO_DIR && podman-compose --env-file rivault/demo-llm.env \\"
-    echo "      -f rivault/demo-llm.yaml -f rivault/x_nvidia-override.yaml up -d"
+    echo "  cd $DEMO_DIR && podman-compose --env-file ../../src/umrs/rivault/demo-llm.env \\"
+    echo "      -f ../../src/umrs/rivault/demo-llm.yaml -f ../../src/umrs/rivault/x_nvidia-override.yaml up -d"
 }
 
 main() {
