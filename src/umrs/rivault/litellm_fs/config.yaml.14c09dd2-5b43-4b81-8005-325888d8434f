@@ -3,7 +3,7 @@ model_list:
   - model_name: intfloat/e5-base-v2
     litellm_params:
       model: hosted_vllm/intfloat/e5-base-v2
-      api_key: sk-02284644-03150002  # Must match VLLM_API_KEY in serve-model.yaml
+      api_key: os.environ/VLLM_API_KEY  # Must match VLLM_API_KEY in serve-model.yaml
       api_base: http://vllm:8000/v1
       keep_alive: 60m
 
