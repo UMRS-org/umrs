@@ -38,7 +38,7 @@ class UMRSTask:
             )
             """)
 
-    def list_incomplete_tasks(self, mark_override=False):
+    def list_incomplete_tasks(self, mark_override=False, verbose=False):
         """
         List unique tasks that are not completed, deduplicated by (client_id, cmd, payload).
 
@@ -52,7 +52,8 @@ class UMRSTask:
         Returns:
         dict with key = (client_id, cmd, payload) and value = status (or task dict)
         """
-        (verbose and traceback.print_stack())
+        if verbose:
+            traceback.print_stack()
         with self.conn_lock:
             cursor = self.conn.cursor()
             cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
@@ -96,7 +97,6 @@ class UMRSTask:
 
     def mark_running_tasks_aborted(self):
         """Set all tasks to 'Aborted' except those already in terminal states (COMPLETED, OVERRIDDEN, NO_SUCH_BUCKET); used for restart/recovery."""
-        (verbose and traceback.print_stack())
         with self.conn_lock:
             now = datetime.utcnow().isoformat()
             with self.conn:
@@ -109,12 +109,13 @@ class UMRSTask:
                     (TaskStatus.ABORTED, now, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN, TaskStatus.NO_SUCH_BUCKET)
                 )
 
-    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True):
+    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True, verbose=False):
         """
         Pretty-print tasks from the database.
         Can filter by status or client_id.
         """
-        (verbose and traceback.print_stack())
+        if verbose:
+            traceback.print_stack()
         query = "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at FROM tasks WHERE 1=1"
         params = []
 
@@ -149,8 +150,9 @@ class UMRSTask:
             print(message)
         return message
 
-    def create_task(self, cmd, full_payload):
-        (verbose and traceback.print_stack())
+    def create_task(self, cmd, full_payload, verbose=False):
+        if verbose:
+            traceback.print_stack()
         if cmd == TaskCmd.PROCESS_OBJECTS:
             client_id, s3_objects = full_payload
             str_payload = json.dumps(s3_objects)
@@ -250,7 +252,8 @@ class UMRSTask:
     def get_tasks(
         self,
         status: Optional[str] = None,
-        client_id: Optional[str] = None
+        client_id: Optional[str] = None,
+        verbose: bool = False
     ) -> List[dict]:
 
         query = """
@@ -258,7 +261,8 @@ class UMRSTask:
         FROM tasks
         WHERE 1=1
         """
-        (verbose and traceback.print_stack())
+        if verbose:
+            traceback.print_stack()
         params = []
 
         if status:
@@ -285,6 +289,7 @@ class UMRSTask:
             for r in rows
         ]
 
-    def close(self):
-        (verbose and traceback.print_stack())
+    def close(self, verbose=False):
+        if verbose:
+            traceback.print_stack()
         self.conn.close()
