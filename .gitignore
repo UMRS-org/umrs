@@ -16,3 +16,6 @@ __pycache__/
 models/
 */models/
 demos/slurm-dev/rivault/models/*.safetensors
+
+# Ignore generated coredns config files (UUID-suffixed runtime artifacts)
+src/umrs/rivault/coredns_fs/coredns.conf.*
