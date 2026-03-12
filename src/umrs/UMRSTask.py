@@ -9,7 +9,6 @@ import textwrap
 import threading
 import time
 import traceback
-verbose = False
 
 
 class UMRSTask:
