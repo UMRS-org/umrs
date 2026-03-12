@@ -85,6 +85,7 @@ services:
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-4}
       DATABASE_URL: postgresql://${LITELLM_POSTGRES_USER:-postgres}:${LITELLM_POSTGRES_PASSWORD:-litellm}@ll-postgres:5432/${LITELLM_POSTGRES_DB:-litellm}
       MCPO_API_KEY: ${MCPO_API_KEY}
+      VLLM_API_KEY: ${VLLM_API_KEY}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
@@ -128,7 +129,19 @@ services:
         source: ${VLLM_PATH_TO_HUGGINGFACE}/modules/
         target: /root/.cache/huggingface/modules/
         read_only: false
-    command: ${VLLM_MODEL} --served-model-name umrs --api-key ${VLLM_API_KEY} -tp ${VLLM_TP:-1} -pp ${VLLM_PP:-1} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.90} --enforce-eager
+    command:
+      - ${VLLM_MODEL}
+      - --served-model-name
+      - umrs
+      - --api-key
+      - ${VLLM_API_KEY:?VLLM_API_KEY must be set}
+      - -tp
+      - ${VLLM_TP:-1}
+      - -pp
+      - ${VLLM_PP:-1}
+      - --gpu-memory-utilization
+      - ${VLLM_GPU_MEM_UTIL:-0.90}
+      - --enforce-eager
     environment:
       TRANSFORMERS_OFFLINE: 1
       HF_HUB_OFFLINE: 1
@@ -146,7 +159,7 @@ services:
   # ---------------------------------------------------------------------------
   mcpo:
     image: ghcr.io/open-webui/mcpo:${MCPO_DOCKER_TAG:-main}
-    command: --port 8000 --api-key ${MCPO_API_KEY} --hot-reload --config /tmp/config.json
+    command: ["--port", "8000", "--api-key", "${MCPO_API_KEY:?MCPO_API_KEY must be set}", "--hot-reload", "--config", "/tmp/config.json"]
     networks:
       demo-llm-net:
         ipv4_address: ${PRIV_IP1TO3:-192.168.5}.${MCPO_IP4:-23}

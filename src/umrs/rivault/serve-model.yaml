@@ -73,6 +73,7 @@ services:
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-8}
       DATABASE_URL: postgresql://${LITELLM_POSTGRES_USER:-postgres}:${LITELLM_POSTGRES_PASSWORD:-litellm}@ll-postgres:5432/${LITELLM_POSTGRES_DB:-litellm} #XXX: see details https://docs.litellm.ai/docs/proxy/deploy#deploy-with-database to get Virtual Keys working
       MCPO_API_KEY: ${MCPO_API_KEY:?}
+      VLLM_API_KEY: ${VLLM_API_KEY:?}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
