@@ -21,21 +21,21 @@ UMRS watches S3 buckets for new objects (text, images, text files), computes emb
 
 ```
                       ┌──────────────────────────────────┐
-                      │          UMRS Client              │
-                      │  upload, ping, status, search...  │
+                      │          UMRS Client             │
+                      │  upload, ping, status, search... │
                       └──────────┬───────────────────────┘
                                  │ ZeroMQ
                                  ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                          UMRS Server                                │
+┌────────────────────────────────────────────────────────────────────┐
+│                          UMRS Server                               │
 │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌────────────────────┐  │
 │  │ ZMQ Ctrl │  │ S3 Mgr   │  │ DB Mgr   │  │ Model Loader       │  │
 │  │ (REP)    │  │ (boto3)  │  │ (psycopg)│  │ ST/OpenAI/Rivault  │  │
 │  └──────────┘  └──────────┘  └──────────┘  └────────────────────┘  │
-│        │             │             │                │               │
-│        │             ▼             ▼                ▼               │
+│        │             │             │                │              │
+│        │             ▼             ▼                ▼              │
 │        │      ┌──────────┐  ┌──────────┐  ┌────────────────────┐   │
-│        │      │  MinIO   │  │ Postgres │  │ vLLM / LiteLLM    │   │
+│        │      │  MinIO   │  │ Postgres │  │ vLLM / LiteLLM     │   │
 │        │      │  (S3)    │  │ pgvector │  │ (via Rivault/HPC)  │   │
 │        │      └──────────┘  └──────────┘  └────────────────────┘   │
 └────────┼───────────────────────────────────────────────────────────┘
@@ -44,7 +44,7 @@ UMRS watches S3 buckets for new objects (text, images, text files), computes emb
          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  HPC / Slurm Cluster                                                │
-│  sbatch → vLLM + LiteLLM + NGINX → SSH tunnel back to UMRS         │
+│  sbatch → vLLM + LiteLLM + NGINX → SSH tunnel back to UMRS          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
