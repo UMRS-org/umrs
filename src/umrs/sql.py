@@ -713,7 +713,7 @@ def store_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s
     if metadata_list is None:
         metadata_list = [{} for _ in s3_keys]
 
-    if modality_name in ("image", "tomography"):
+    if modality_name in ("image", "tomography_embedding", "tomography_reconstruction", "tomography_mae_reconstruction", "tomography_features_extraction"):
         # One embedding per image file
         for embedding, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
             # print(f"storing embedding for {s3_key}... ")
