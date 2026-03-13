@@ -446,7 +446,7 @@ def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, met
 
     print(f"Processing file '{file_path}' for modality '{modality}'")
 
-    if modality in ["image" , "tomography"]: # send an image
+    if modality in ["image" , "tomography_embedding", "tomography_reconstruction", "tomography_mae_reconstruction", "tomography_features_extraction"]: # send an image
         if os.path.isfile(file_path):
             s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check = (modality!="tomography"))
             if s3_key and notify_server:

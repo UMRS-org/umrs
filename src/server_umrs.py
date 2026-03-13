@@ -761,8 +761,9 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         
         with reentrant_lock:
             if exit_status != TaskStatus.ERROR:
+                exit_status = TaskStatus.RUNNING
                 if update_status_callback:
-                    update_status_callback(TaskStatus.RUNNING)
+                    update_status_callback(exit_status)
                 print(f"\t--> Storing to data base in {table_name}")
                 embedding_backend.compute_and_store(
                     path_to_bucket,
@@ -775,6 +776,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                     s3_connection,
                     output_bucket
                 )
+                exit_status = TaskStatus.COMPLETED
                 buckets_cfg.update_num_objects(path_to_bucket)
 
     if update_when_done:

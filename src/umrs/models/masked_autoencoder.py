@@ -2,6 +2,7 @@ import sys, os
 import yaml
 import torch
 from torch.utils.data import DataLoader
+from torch.amp import autocast
 import torchvision.transforms as transforms
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
@@ -9,6 +10,12 @@ from umrs.s3 import s3_key_exists, save_tiff_image_to_s3
 from transformers.utils import logging
 
 from .hmae_model import create_model
+import cv2
+import io 
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from .engine.hmae import HierarchicalMaskedAutoEncoder
 
 _model_cache = {}
 
@@ -95,7 +102,7 @@ def preprocess_image(s3, bucket, s3_key, img_size=1024, in_channels=1, fixed_len
 
     # Edge detection for quadtree
     if in_channels == 1:
-        gray = full_imageK
+        gray = full_image
     else:
         gray = cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
 
@@ -281,7 +288,7 @@ def visualize_reconstruction(data, pred, s3, output_bucket, s3_key, config, mask
 
     # Upload to S3
     s3.upload_fileobj(buf, output_bucket, s3_key)
-    logger.info(f"Saved visualization to S3: s3://{output_bucket}/{s3_key}")
+    #logger.info(f"Saved visualization to S3: s3://{output_bucket}/{s3_key}")
 
 
 def process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bucket, mode, config):
@@ -300,7 +307,7 @@ def process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bu
     checksums = []
     metadata_list = []
     for idx, s3_key in enumerate(filtered_keys):
-        logger.info(f"[{idx+1}/{len(image_paths)}] {s3_key}")
+        # logger.info(f"[{idx+1}/{len(image_paths)}] {s3_key}")
 
         data, checksum, metadata = preprocess_image(
             s3,
@@ -324,7 +331,7 @@ def process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bu
 
         elif mode == "mae":
             pred, mask, loss = infer_mae(model, data, device, config, use_bf16)
-            logger.info(f"  MAE loss: {loss:.6f}")
+            # logger.info(f"  MAE loss: {loss:.6f}")
             saved_key= f"{base}_mae.png"
             visualize_reconstruction(data, pred, s3, output_bucket, saved_key, config, mask=mask, loss=loss)
             embedding = None
@@ -333,38 +340,30 @@ def process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bu
             features = infer_features(model, data, device, config, use_bf16)
             cls_token = features[:, 0, :]
             patch_tokens = features[:, 1:, :]
-            logger.info(f"  CLS token: {cls_token.shape}, Patch tokens: {patch_tokens.shape}")
-            saved_key= f"{base}_features.png"
+            # logger.info(f"  CLS token: {cls_token.shape}, Patch tokens: {patch_tokens.shape}")
+            saved_key= f"{base}_features.pt"
             buffer = io.BytesIO()
             torch.save({"cls": cls_token, "patches": patch_tokens, "coords": data["coords"]}, buffer)
             buffer.seek(0)  # important: reset pointer to start
-            s3_client.put_object(
+            s3.put_object(
                 Bucket=output_bucket,
                 Key=saved_key,
                 Body=buffer.getvalue()
             )
-            logger.info(f"  Saved features: {feat_path}")
+            # logger.info(f"  Saved features: {feat_path}")
             embedding = cls_token
         else:
-            logger.error(f"Unknown mode: {mode}")
+            # logger.error(f"Unknown mode: {mode}")
             return
         
         saved_path = output_bucket+"/"+saved_key
         saved_keys.append(saved_path)
+
         
         cls_embeddings.append(embedding)
 
-    return cls_embeddings, checksums, metadata, saved_keys
+    return cls_embeddings, checksums, metadata_list, saved_keys
 
-
-def make_update_status_callback(task_manager, task_id):
-    """
-    Return a callback function that updates the task status for the given task_id.
-    The returned function accepts a `status` argument when called.
-    """
-    def callback(status):
-        task_manager.tasks_status.update_status(task_id, status)
-    return callback
 
 def infer_masked_autoencoder(modality, cfg_file):
     with open(cfg_file, "r") as f:
@@ -379,7 +378,7 @@ def infer_masked_autoencoder(modality, cfg_file):
     mode = mode_map[modality]
 
     def func(self, s3, s3_keys, path_to_bucket, output_bucket):
-        process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bucket, mode, config)
+        return process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bucket, mode, config)
     return func
 
     
