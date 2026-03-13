@@ -509,6 +509,13 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
                 sql.Identifier(f"idx_{table_name}_s3_object"), sql.Identifier(table_name)))
             cur.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (checksum);").format(
                 sql.Identifier(f"idx_{table_name}_checksum"), sql.Identifier(table_name)))
+            if store_embeddings_flag:
+                cur.execute(sql.SQL(
+                    "CREATE INDEX IF NOT EXISTS {} ON {} USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);"
+                ).format(
+                    sql.Identifier(f"idx_{table_name}_embedding_hnsw"),
+                    sql.Identifier(table_name),
+                ))
             conn.commit()
         except Exception as e:
             conn.rollback()
@@ -547,6 +554,25 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
                 sys.exit(f"Error: SQL configuration mismatch!\nExpected vector size {expected_size} per model, found {table_vector_size} in database for table '{table_name}'.")
             msg_size = expected_size if expected_size is not None else table_vector_size
             print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embedding vector size: {msg_size}")
+            # Ensure HNSW index exists (handles upgrades of existing deployments)
+            hnsw_idx_name = f"idx_{table_name}_embedding_hnsw"
+            cur.execute(
+                "SELECT 1 FROM pg_indexes WHERE tablename = %s AND indexname = %s;",
+                (table_name, hnsw_idx_name),
+            )
+            if cur.fetchone() is None:
+                try:
+                    cur.execute(sql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {} ON {} USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);"
+                    ).format(
+                        sql.Identifier(hnsw_idx_name),
+                        sql.Identifier(table_name),
+                    ))
+                    conn.commit()
+                    print(f"\t\t\t--> Created HNSW index '{hnsw_idx_name}' on '{table_name}'.")
+                except Exception as e:
+                    conn.rollback()
+                    print(f"\t\t\t--> Warning: failed creating HNSW index on '{table_name}': {e}")
         else:
             print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embeddings not stored.")
 
