@@ -7,10 +7,12 @@
 #   Phase 0  – Cleanup (Slurm jobs, Rivault containers, task/status DBs,
 #              embedding tables, stale Slurm output files)
 #   Phase 1  – Start control-plane services
-#   Phase 1b – Prepare embedding model on shared volume
-#   Phase 2  – Upload demo data
-#   Phase 3  – Wait for embeddings to finish
-#   Phase 4  – Summary
+#   Phase 2  – Prepare embedding model on shared volume
+#   Phase 3  – Upload demo data
+#   Phase 4  – Wait for embeddings to finish
+#   Phase 5  – Verify embeddings in pgvector
+#   Phase 6  – RAG semantic search demo (no LLM needed)
+#   Phase 7  – Summary
 #
 # The always-on LLM stack (demo-llm.yaml) is NOT started by this script.
 # Launch it separately if you need RAG Q&A:
@@ -245,9 +247,9 @@ phase1_start_control_plane() {
     esac
 }
 
-phase1b_prepare_embedding_model() {
+phase2_prepare_embedding_model() {
     echo
-    log "Phase 1b: Preparing embedding model on ai-login (shared volume)"
+    log "Phase 2: Preparing embedding model on ai-login (shared volume)"
 
     # Download the embedding model into the shared volume so that:
     #   - vLLM (launched by Slurm) can serve it from /shared/models/hub/
@@ -309,16 +311,16 @@ PYEOF
     log "Embedding model ready on shared volume"
 }
 
-phase2_upload_data() {
+phase3_upload_data() {
     echo
-    log "Phase 2: Uploading demo data"
+    log "Phase 3: Uploading demo data"
     log ">>> podman exec $UMRS_CLIENT_CONTAINER bash /opt/scripts/setup_demo_data.sh"
     podman exec "$UMRS_CLIENT_CONTAINER" bash /opt/scripts/setup_demo_data.sh
 }
 
-phase3_wait_for_embeddings() {
+phase4_wait_for_embeddings() {
     echo
-    log "Phase 3: Waiting for embedding tasks to finish (timeout: 10 minutes)"
+    log "Phase 4: Waiting for embedding tasks to finish (timeout: 10 minutes)"
 
     log ">>> podman exec $UMRS_CLIENT_CONTAINER python3 /opt/umrs/client_umrs.py -c $USER_CONF --output json status all"
 
@@ -402,9 +404,9 @@ else:
     die "Embedding wait timed out after $((attempts * 10))s. Check logs: podman logs $AI_LOGIN_CONTAINER"
 }
 
-phase3b_verify_embeddings_in_db() {
+phase5_verify_embeddings_in_db() {
     echo
-    log "Phase 3b: Verifying embeddings in pgvector database"
+    log "Phase 5: Verifying embeddings in pgvector database"
 
     # Query all user databases (excluding system DBs) for embedding tables
     local user_dbs
@@ -496,9 +498,120 @@ phase3b_verify_embeddings_in_db() {
     return 0
 }
 
-phase4_summary() {
+phase6_rag_search_demo() {
     echo
-    log "Phase 4: E2E embedding demo complete"
+    log "Phase 6: Running RAG semantic search demo"
+
+    # The RAG service runs inside ai-login on port 8081.
+    # We call /rag/search which only needs embeddings (no LLM required).
+    local rag_url="http://localhost:8081/rag/search"
+
+    # Wait for the RAG service to be responsive
+    wait_for_condition 20 3 "RAG service" \
+        "podman exec $AI_LOGIN_CONTAINER curl -sf http://localhost:8081/docs >/dev/null 2>&1" || {
+        warn "RAG service not responding on port 8081 — skipping demo"
+        return 1
+    }
+
+    # Python helper for pretty-printing RAG results (uses %-formatting to avoid
+    # f-string escaping issues inside bash single-quoted strings)
+    local pretty_print_py='
+import json, sys, textwrap
+try:
+    data = json.load(sys.stdin)
+    results = data.get("results", [])
+    if not results:
+        print("    (no results)")
+        sys.exit(0)
+    for i, r in enumerate(results, 1):
+        score = r.get("score", 0)
+        content = r.get("content", "")[:200]
+        meta = r.get("metadata", {})
+        # Build score detail string
+        parts = []
+        hs = meta.get("hybrid_score")
+        bs = meta.get("bm25_score")
+        vs = meta.get("vector_score")
+        rs = meta.get("rerank_score")
+        if hs is not None: parts.append("hybrid=%.4f" % hs)
+        if bs is not None: parts.append("bm25=%.4f" % bs)
+        if vs is not None: parts.append("vec=%.4f" % vs)
+        if rs is not None: parts.append("rerank=%.4f" % rs)
+        detail = "  (%s)" % ", ".join(parts) if parts else ""
+        # Header
+        print("    #%d  score=%.4f%s" % (i, score, detail))
+        # Content (wrapped)
+        for line in textwrap.wrap(content, width=76):
+            print("        %s" % line)
+        if i < len(results):
+            print()
+except Exception as e:
+    print("    (parse error: %s)" % e)
+    sys.exit(1)
+'
+
+    local demo_query="What machine learning methods are used for fault detection in seismic data?"
+
+    # --- 6a. Vector search (default, cosine similarity via pgvector HNSW) ---
+    echo
+    log "  [6a] Vector search (default cosine)"
+    log "  Query: \"$demo_query\""
+    local response
+    response="$(podman exec "$AI_LOGIN_CONTAINER" curl -sf -X POST "$rag_url" \
+        -H 'Content-Type: application/json' \
+        -d "$(printf '{"query": "%s", "top_k": 3}' "$demo_query")" 2>&1)" || {
+        warn "  Vector search request failed"
+    }
+    echo "$response" | python3 -c "$pretty_print_py" 2>/dev/null || echo "    $response"
+
+    # --- 6b. Hybrid search (BM25 + vector with Reciprocal Rank Fusion) ---
+    echo
+    log "  [6b] Hybrid search (BM25 + vector RRF)"
+    log "  Query: \"$demo_query\""
+    response="$(podman exec "$AI_LOGIN_CONTAINER" curl -sf -X POST "$rag_url" \
+        -H 'Content-Type: application/json' \
+        -d "$(printf '{"query": "%s", "top_k": 3, "search_method": "hybrid"}' "$demo_query")" 2>&1)" || {
+        warn "  Hybrid search request failed"
+    }
+    echo "$response" | python3 -c "$pretty_print_py" 2>/dev/null || echo "    $response"
+
+    # --- 6c. Vector search with cross-encoder reranking ---
+    echo
+    log "  [6c] Vector search + cross-encoder reranking"
+    log "  Query: \"$demo_query\""
+    response="$(podman exec "$AI_LOGIN_CONTAINER" curl -sf -X POST "$rag_url" \
+        -H 'Content-Type: application/json' \
+        -d "$(printf '{"query": "%s", "top_k": 3, "enable_reranking": true}' "$demo_query")" 2>&1)" || {
+        warn "  Reranking search request failed"
+    }
+    echo "$response" | python3 -c "$pretty_print_py" 2>/dev/null || echo "    $response"
+
+    # --- 6d. Additional queries (vector-only, quick sanity check) ---
+    local extra_queries=(
+        "How do seismic P-waves and S-waves differ?"
+        "What is RiVault and how does it use vLLM?"
+    )
+    echo
+    log "  [6d] Additional vector search queries"
+    for query in "${extra_queries[@]}"; do
+        echo
+        log "  Query: \"$query\""
+        response="$(podman exec "$AI_LOGIN_CONTAINER" curl -sf -X POST "$rag_url" \
+            -H 'Content-Type: application/json' \
+            -d "$(printf '{"query": "%s", "top_k": 3}' "$query")" 2>&1)" || {
+            warn "  RAG search request failed"
+            continue
+        }
+        echo "$response" | python3 -c "$pretty_print_py" 2>/dev/null || echo "    $response"
+    done
+
+    echo
+    log "RAG search demo complete (vector / hybrid / reranking)"
+}
+
+phase7_summary() {
+    echo
+    log "Phase 7: E2E embedding demo complete"
     echo
     echo "Services running:"
     echo "  UMRS ZMQ server:   localhost:5555"
@@ -523,15 +636,18 @@ main() {
     preflight_checks
     phase0_cleanup
     phase1_start_control_plane
-    phase1b_prepare_embedding_model
-    phase2_upload_data
-    phase3_wait_for_embeddings || {
-        warn "Phase 3 detected errors — continuing to DB check for diagnostics"
+    phase2_prepare_embedding_model
+    phase3_upload_data
+    phase4_wait_for_embeddings || {
+        warn "Phase 4 detected errors — continuing to DB check for diagnostics"
     }
-    phase3b_verify_embeddings_in_db || {
-        warn "Phase 3b: Embedding verification FAILED"
+    phase5_verify_embeddings_in_db || {
+        warn "Phase 5: Embedding verification FAILED"
     }
-    phase4_summary
+    phase6_rag_search_demo || {
+        warn "Phase 6: RAG search demo had issues"
+    }
+    phase7_summary
 }
 
 main "$@"
