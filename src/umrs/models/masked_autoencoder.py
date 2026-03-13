@@ -6,7 +6,428 @@ import torchvision.transforms as transforms
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
 from umrs.s3 import s3_key_exists, save_tiff_image_to_s3
+from transformers.utils import logging
 
+from .hmae_model import create_model
+
+_model_cache = {}
+
+def load_model(config, device):
+    """Load HMAE model from checkpoint."""
+    model_cfg = config["model"]
+    model = create_model(
+        model_type=model_cfg["model_type"],
+        img_size=model_cfg["img_size"],
+        patch_size=model_cfg["patch_size"],
+        in_channels=model_cfg.get("in_channels", 1),
+        mask_ratio=model_cfg.get("mask_ratio", 0.5),
+        norm_pix_loss=model_cfg.get("norm_pix_loss", True),
+    )
+
+    ckpt_path = config["inference"]["checkpoint_path"]
+    if os.path.exists(ckpt_path):
+        checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+        state_dict = checkpoint.get("model_state_dict", checkpoint)
+        # Handle compiled model keys (remove _orig_mod. prefix)
+        cleaned = {}
+        for k, v in state_dict.items():
+            new_key = k.replace("_orig_mod.", "")
+            cleaned[new_key] = v
+        model.load_state_dict(cleaned, strict=False)
+        epoch = checkpoint.get("epoch", "unknown")
+    else:
+        raise ValueError (f"Error: {ckpt_path} does not exists")
+
+    model = model.to(device).eval()
+    return model
+
+
+def load_masked_autoencoder_infer(cfg_file, checkpoint_path, model_name):
+    model_key = cfg_file+checkpoint_path+model_name #config and weights and name
+    if model_key in _model_cache:
+        print(f"\t\t\t--> Model '{model_name}' already loaded...")
+        return _model_cache[model_key]
+
+    logging.set_verbosity_error()  # avoid verbose warning
+    print(f"\t\t\t--> Loading model '{model_name}'...")
+
+    with open(cfg_file, "r") as f:
+        config = yaml.safe_load(f)
+
+
+    config["inference"]["checkpoint_path"] = checkpoint_path
+    device_str = config["inference"].get("device", "cuda")
+    if device_str == "cuda" and not torch.cuda.is_available():
+        device_str = "mps" if torch.backends.mps.is_available() else "cpu"
+    device = torch.device(device_str)
+  
+   
+    model = load_model(config, device)
+    _model_cache[model_key] = (model, device)
+    return model, device
+
+
+
+def preprocess_image(s3, bucket, s3_key, img_size=1024, in_channels=1, fixed_length=1024, patch_size=32):
+    """Load and preprocess a single image through the HMAE quadtree engine."""
+
+    obj = s3.get_object(Bucket=bucket, Key=s3_key)
+    
+    # Extract metadata and checksum
+    checksum = obj['ETag'].strip('"')  # ETag is often quoted
+    metadata = obj.get("Metadata", {})   # User metadata dictionary
+       
+
+    image_bytes = obj["Body"].read()
+
+    image_array = np.frombuffer(image_bytes, np.uint8)
+
+    if in_channels == 1:
+        full_image = cv2.imdecode(image_array, cv2.IMREAD_GRAYSCALE)
+    else:
+        full_image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+
+    if full_image is None:
+        raise FileNotFoundError(f"Cannot read image: {image_path}")
+
+    if full_image.shape[0] != img_size or full_image.shape[1] != img_size:
+        full_image = cv2.resize(full_image, (img_size, img_size))
+
+    # Edge detection for quadtree
+    if in_channels == 1:
+        gray = full_imageK
+    else:
+        gray = cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
+
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 100)
+
+    # Quadtree decomposition
+    engine = HierarchicalMaskedAutoEncoder(fixed_length=fixed_length, patch_size=patch_size)
+    if in_channels == 1:
+        img_np = full_image[..., np.newaxis]
+    else:
+        img_np = full_image
+
+    patches, coords, depths = engine.process_single(img_np, edges)
+
+    # Store original for visualization
+    if in_channels == 1:
+        original = torch.from_numpy(full_image).float().unsqueeze(0) / 255.0
+    else:
+        original = torch.from_numpy(cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB)).float().permute(2, 0, 1) / 255.0
+
+    return {
+        "patches": patches.unsqueeze(0),       # [1, L, C, P, P]
+        "coords": coords.unsqueeze(0),         # [1, L, 4]
+        "depths": depths.unsqueeze(0),          # [1, L]
+        "original_image": original.unsqueeze(0),  # [1, C, H, W]
+    }, checksum, metadata
+
+
+
+
+@torch.no_grad()
+def infer_reconstruct(model, data, device, config, use_bf16=True):
+    """Run full reconstruction (encode all, decode all)."""
+    patches = data["patches"].to(device)
+    coords = data["coords"].to(device)
+    depths = data["depths"].to(device)
+
+    dtype = torch.bfloat16 if use_bf16 else torch.float32
+    with autocast(device_type=device.type, dtype=dtype, enabled=(device.type != "cpu" or not use_bf16)):
+        pred = model.reconstruct(patches, coords, depths)
+
+    return pred.float().cpu()
+
+
+@torch.no_grad()
+def infer_mae(model, data, device, config, use_bf16=True):
+    """Run MAE-style inference with masking (for visualizing reconstruction quality)."""
+    patches = data["patches"].to(device)
+    coords = data["coords"].to(device)
+    depths = data["depths"].to(device)
+
+    dtype = torch.bfloat16 if use_bf16 else torch.float32
+    with autocast(device_type=device.type, dtype=dtype, enabled=(device.type != "cpu" or not use_bf16)):
+        loss, pred, mask = model(patches, coords, depths)
+
+    return pred.float().cpu(), mask.float().cpu(), loss.item()
+
+
+@torch.no_grad()
+def infer_features(model, data, device, config, use_bf16=True):
+    """Extract encoder features (CLS + patch tokens)."""
+    patches = data["patches"].to(device)
+    coords = data["coords"].to(device)
+    depths = data["depths"].to(device)
+
+    dtype = torch.bfloat16 if use_bf16 else torch.float32
+    with autocast(device_type=device.type, dtype=dtype, enabled=(device.type != "cpu" or not use_bf16)):
+        features = model.encode(patches, coords, depths)
+
+    return features.float().cpu()
+
+
+def visualize_reconstruction(data, pred, s3, output_bucket, s3_key, config, mask=None, loss=None):
+    """Render original, quadtree grid, and reconstruction side by side."""
+    img_size = config["model"]["img_size"]
+    norm_pix_loss = config["model"].get("norm_pix_loss", True)
+    in_channels = config["model"].get("in_channels", 1)
+    patch_size = config["model"]["patch_size"]
+
+    target_patches = data["patches"][0].cpu().float()   # [L, C, P, P]
+    coords = data["coords"][0].cpu().numpy().astype(int)  # [L, 4]
+    recon_flat = pred[0].cpu().float()                   # [L, patch_dim]
+
+    if in_channels == 1:
+        canvas_orig = np.zeros((img_size, img_size), dtype=np.float32)
+        canvas_recon = np.zeros((img_size, img_size), dtype=np.float32)
+        canvas_qdt = np.zeros((img_size, img_size), dtype=np.float32)
+        cmap = "gray"
+    else:
+        canvas_orig = np.zeros((img_size, img_size, 3), dtype=np.float32)
+        canvas_recon = np.zeros((img_size, img_size, 3), dtype=np.float32)
+        canvas_qdt = np.zeros((img_size, img_size, 3), dtype=np.float32)
+        cmap = None
+
+    mask_np = mask[0].cpu().numpy() if mask is not None else None
+    L = target_patches.shape[0]
+
+    for i in range(L):
+        x1, x2, y1, y2 = coords[i]
+        w, h = x2 - x1, y2 - y1
+        if w <= 0 or h <= 0:
+            continue
+
+        # Original patch
+        t_patch = target_patches[i].permute(1, 2, 0).numpy()
+        if in_channels == 1:
+            t_patch = t_patch.squeeze()
+        resized_t = cv2.resize(t_patch, (w, h), interpolation=cv2.INTER_NEAREST)
+
+        is_masked = mask_np is not None and mask_np[i] == 1
+
+        if in_channels == 1:
+            canvas_orig[y1:y2, x1:x2] = resized_t
+            if is_masked:
+                canvas_qdt[y1:y2, x1:x2] = 0.3  # masked region shown as dark gray
+            else:
+                canvas_qdt[y1:y2, x1:x2] = resized_t
+            cv2.rectangle(canvas_qdt, (x1, y1), (x2, y2), 1.0, 1)
+        else:
+            canvas_orig[y1:y2, x1:x2] = resized_t
+            if is_masked:
+                canvas_qdt[y1:y2, x1:x2] = 0.3
+            else:
+                canvas_qdt[y1:y2, x1:x2] = resized_t
+            cv2.rectangle(canvas_qdt, (x1, y1), (x2, y2), (1.0, 1.0, 1.0), 1)
+
+        # Reconstruction
+        show_recon = True
+        if mask_np is not None and mask_np[i] == 0:
+            # Visible patch - show original
+            if in_channels == 1:
+                canvas_recon[y1:y2, x1:x2] = resized_t
+            else:
+                canvas_recon[y1:y2, x1:x2] = resized_t
+            show_recon = False
+
+        if show_recon:
+            r_patch = recon_flat[i].view(in_channels, patch_size, patch_size).permute(1, 2, 0).numpy()
+            if in_channels == 1:
+                r_patch = r_patch.squeeze()
+
+            if norm_pix_loss:
+                if in_channels == 1:
+                    mean, std = t_patch.mean(), t_patch.std()
+                else:
+                    mean = t_patch.mean(axis=(0, 1))
+                    std = t_patch.std(axis=(0, 1))
+                r_patch = r_patch * (std + 1e-6) + mean
+
+            r_patch = np.clip(r_patch, 0, 1)
+            resized_r = cv2.resize(r_patch, (w, h), interpolation=cv2.INTER_NEAREST)
+            if in_channels == 1:
+                canvas_recon[y1:y2, x1:x2] = resized_r
+            else:
+                canvas_recon[y1:y2, x1:x2] = resized_r
+
+    # Plot
+    ncols = 3
+    titles = ["Original", "Quadtree Grid", "Reconstruction"]
+    canvases = [canvas_orig, canvas_qdt, canvas_recon]
+
+    fig, axes = plt.subplots(1, ncols, figsize=(8 * ncols, 8))
+    title_str = "HMAE Inference"
+    if loss is not None:
+        title_str += f" | Loss: {loss:.6f}"
+    fig.suptitle(title_str, fontsize=14)
+
+    for ax, canvas, title in zip(axes, canvases, titles):
+        if in_channels == 1:
+            ax.imshow(canvas, cmap="gray", vmin=0, vmax=1)
+        else:
+            ax.imshow(canvas)
+        ax.set_title(title)
+        ax.axis("off")
+
+    plt.tight_layout()
+    # Save figure to a BytesIO buffer instead of local disk
+    buf = io.BytesIO()
+    plt.savefig(buf, format="png", dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    buf.seek(0)
+
+    # Upload to S3
+    s3.upload_fileobj(buf, output_bucket, s3_key)
+    logger.info(f"Saved visualization to S3: s3://{output_bucket}/{s3_key}")
+
+
+def process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bucket, mode, config):
+    model_cfg = config["model"]
+    exts = config["input"].get("img_extensions", [".png", ".jpg"])
+    model = self.model
+    device = self.device
+    use_bf16 = config["inference"].get("use_bf16", True)
+    if device.type == "cpu":
+        use_bf16 = False
+ 
+    filtered_keys = [k for k in s3_keys if any(k.endswith(ext) for ext in exts)]
+     
+    saved_keys = []
+    cls_embeddings = []
+    checksums = []
+    metadata_list = []
+    for idx, s3_key in enumerate(filtered_keys):
+        logger.info(f"[{idx+1}/{len(image_paths)}] {s3_key}")
+
+        data, checksum, metadata = preprocess_image(
+            s3,
+            path_to_bucket,
+            s3_key,
+            img_size=model_cfg["img_size"],
+            in_channels=model_cfg.get("in_channels", 1),
+            fixed_length=model_cfg.get("fixed_length", 1024),
+            patch_size=model_cfg["patch_size"],
+        )
+        checksums.append(checksum)
+        metadata_list.append(metadata)
+
+        base = os.path.splitext(s3_keys[idx])[0]
+
+        if mode == "reconstruct":
+            pred = infer_reconstruct(model, data, device, config, use_bf16)
+            saved_key= f"{base}_recon.png"
+            visualize_reconstruction(data, pred, s3, output_bucket, saved_key, config)
+            embedding = None
+
+        elif mode == "mae":
+            pred, mask, loss = infer_mae(model, data, device, config, use_bf16)
+            logger.info(f"  MAE loss: {loss:.6f}")
+            saved_key= f"{base}_mae.png"
+            visualize_reconstruction(data, pred, s3, output_bucket, saved_key, config, mask=mask, loss=loss)
+            embedding = None
+
+        elif mode == "features":
+            features = infer_features(model, data, device, config, use_bf16)
+            cls_token = features[:, 0, :]
+            patch_tokens = features[:, 1:, :]
+            logger.info(f"  CLS token: {cls_token.shape}, Patch tokens: {patch_tokens.shape}")
+            saved_key= f"{base}_features.png"
+            buffer = io.BytesIO()
+            torch.save({"cls": cls_token, "patches": patch_tokens, "coords": data["coords"]}, buffer)
+            buffer.seek(0)  # important: reset pointer to start
+            s3_client.put_object(
+                Bucket=output_bucket,
+                Key=saved_key,
+                Body=buffer.getvalue()
+            )
+            logger.info(f"  Saved features: {feat_path}")
+            embedding = cls_token
+        else:
+            logger.error(f"Unknown mode: {mode}")
+            return
+        
+        saved_path = output_bucket+"/"+saved_key
+        saved_keys.append(saved_path)
+        
+        cls_embeddings.append(embedding)
+
+    return cls_embeddings, checksums, metadata, saved_keys
+
+
+def make_update_status_callback(task_manager, task_id):
+    """
+    Return a callback function that updates the task status for the given task_id.
+    The returned function accepts a `status` argument when called.
+    """
+    def callback(status):
+        task_manager.tasks_status.update_status(task_id, status)
+    return callback
+
+def infer_masked_autoencoder(modality, cfg_file):
+    with open(cfg_file, "r") as f:
+        config = yaml.safe_load(f)
+
+    mode_map = {
+        "tomography_reconstruction": "reconstruct",
+        "tomography_mae_reconstruction": "mae",
+        "tomography_features_extraction": "features",
+    }
+
+    mode = mode_map[modality]
+
+    def func(self, s3, s3_keys, path_to_bucket, output_bucket):
+        process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bucket, mode, config)
+    return func
+
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+############################### OLD Stuff ###################################
 ################################ Masked Autoencoder(  ###########################
 def load_masked_autoencoder(config_path, checkpoint_path):
     """

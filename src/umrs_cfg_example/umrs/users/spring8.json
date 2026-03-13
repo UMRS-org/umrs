@@ -8,7 +8,7 @@
       "sql_username": "spring8",
       "modalities": [
         {
-          "modality_name": "tomography",
+          "modality_name": "tomography_embedding",
           "s3": {
             "bucket_alias": "bucket-tomography",
             "data": {
@@ -28,6 +28,90 @@
           "sql": {
             "store_embeddings": "yes",
             "table_name": "cls",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
+            ]
+          }
+        },{
+          "modality_name": "tomography_reconstruction",
+          "s3": {
+            "bucket_alias": "bucket-reconstrcution",
+            "data": {
+              "type": "file",
+              "mime_type": "image/raw"
+            },
+            "need_output_bucket": true
+          },
+          "model": {
+            "model_name": "Hierarchical Masked Autoencoder",
+            "vector_size": "768",
+            "model_type": "HMAE",
+            "model_cfg_file": "../data/models/hmae/infer_hmae_vit_b.yaml",
+            "checkpoint_path": "../data/models/hmae/latest_checkpoint.pth",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "cls_reconstrcution",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
+            ]
+          }
+        },{
+          "modality_name": "tomography_mae_reconstruction",
+          "s3": {
+            "bucket_alias": "bucket-mae",
+            "data": {
+              "type": "file",
+              "mime_type": "image/raw"
+            },
+            "need_output_bucket": true
+          },
+          "model": {
+            "model_name": "Hierarchical Masked Autoencoder",
+            "vector_size": "768",
+            "model_type": "HMAE",
+            "model_cfg_file": "../data/models/hmae/infer_hmae_vit_b.yaml",
+            "checkpoint_path": "../data/models/hmae/latest_checkpoint.pth",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "cls_mae_reconstruction",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
+            ]
+          }
+        },{
+          "modality_name": "tomography_features_extraction",
+          "s3": {
+            "bucket_alias": "bucket-features",
+            "data": {
+              "type": "file",
+              "mime_type": "image/raw"
+            },
+            "need_output_bucket": true
+          },
+          "model": {
+            "model_name": "Hierarchical Masked Autoencoder",
+            "vector_size": "768",
+            "model_type": "HMAE",
+            "model_cfg_file": "../data/models/hmae/infer_hmae_vit_b.yaml",
+            "checkpoint_path": "../data/models/hmae/latest_checkpoint.pth",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "cls_features",
             "meta_data": [
               {
                 "name": "keywords",

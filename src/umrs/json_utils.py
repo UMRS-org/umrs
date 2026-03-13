@@ -3,6 +3,7 @@ import json
 import os
 
 from jsonschema import validate, ValidationError
+from umrs.modality import VALID_MODALITIES
 client_schema = {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
@@ -27,7 +28,7 @@ client_schema = {
               "properties": {
                 "modality_name": {
                   "type": "string",
-                  "enum": ["image", "text", "text file", 'tomography']
+                  "enum": VALID_MODALITIES
                 },
                 "s3": {
                   "type": "object",

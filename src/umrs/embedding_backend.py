@@ -6,7 +6,7 @@ import zmq
 import numpy as np
 
 from umrs.embeddings import compute_and_store_embedding
-from umrs.sql import store_embeddings_in_db
+from umrs.sql import store_in_db
 
 # avoid circular import
 from typing import TYPE_CHECKING
@@ -38,7 +38,7 @@ class LocalEmbeddingBackend(EmbeddingBackend):
     """Local backend that uses the existing in-process implementation.
 
     This preserves current behavior by delegating directly to
-    `compute_and_store_embedding`.
+    `compute_and_store_embedding` or 'compute_and_return_file'
     """
 
     def compute_and_store(
@@ -64,6 +64,7 @@ class LocalEmbeddingBackend(EmbeddingBackend):
             s3_connection,
             output_bucket,
         )
+
 
 
 

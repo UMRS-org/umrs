@@ -11,7 +11,7 @@ import ast  # To safely convert strings to lists
 
 from umrs.s3 import load_data_from_s3
 from umrs.utils import zero_out_embeddings_for_empty_objects
-from umrs.sql import store_embeddings_in_db
+from umrs.sql import store_in_db
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
@@ -29,7 +29,7 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     assert(len(embeddings) == len(checksums))
     assert(len(embeddings) == len(metadata))
 
-    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, saved_s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
+    store_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, saved_s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
 
 

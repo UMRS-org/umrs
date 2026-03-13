@@ -178,6 +178,8 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
     s3_connection, bucket_location = connect_to_s3(user_s3_configuration_file)
 
+    table_names = set()
+
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
         print(f"\t==> Experience: {xp_name}")
@@ -191,7 +193,9 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             need_output_bucket = modality["s3"].get("need_output_bucket", False)
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
             model_cfg = modality['model']
+            return_type = model_cfg['return_type']
             model = load_model(model_cfg, modality_name)
+            assert(model.return_type == return_type)
             # Best-effort upload of model weights to RiVault so that
             # compute workers can later stream them from there.
             try:
@@ -199,22 +203,25 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             except Exception:
                 # Never fail user configuration because of RiVault upload issues
                 pass
-            if model.return_type == "file":
+            if return_type == "file":
                 assert need_output_bucket
                 output_path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location, output=True)
             else: 
                 output_path_to_bucket = None
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
+            if table_name in table_names:
+                sys.exit(f"Error: duplicate table name '{table_name}' in database '{db_name}'\nCheck configuration file of user: '{fullname}' with username: '{username} in '{user_cfg['config_file_path']}'\nExiting...")
+            table_names.add(table_name)
             # num_objects =  count_objects_in_bucket(s3_connection, path_to_bucket)
             num_objects = data_base.count_s3_objects(table_name)
             # in case of race condition. In practice we certainly do not want several procesing on the same bucket happening in parallel
             rlock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
             bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name, 
                                        model, store_embeddings_flag, modality_name, s3_connection, metadata, 
-                                       xp_name, num_objects, output_path_to_bucket, rlock)
+                                       xp_name, num_objects, return_type, output_path_to_bucket, rlock)
             buckets_cfg.store(path_to_bucket, bucket_entry)
-            print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
+            print(f"\t\t\t==> Bucket alias: {bucket_alias} ({num_objects} objects)")
 
 
 
@@ -733,8 +740,8 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
     
     exit_status = TaskStatus.COMPLETED
     for path_to_bucket in keys_per_bucket.keys():
-        selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "s3_connection", "output_path_to_bucket", "reentrant_lock"]
-        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket, filter=selected_fields)
+        selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "s3_connection", "output_path_to_bucket", "reentrant_lock" , "return_type"]
+        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock, return_type = buckets_cfg.get(path_to_bucket, filter=selected_fields)
      
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
@@ -753,25 +760,22 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                     
         
         with reentrant_lock:
-            if store_embeddings_flag:
-                if exit_status != TaskStatus.ERROR:
-                    if update_status_callback:
-                        update_status_callback(TaskStatus.RUNNING)
-                    print(f"\t--> Storing to data base in {table_name}")
-                    embedding_backend.compute_and_store(
-                        path_to_bucket,
-                        s3_keys,
-                        data_base,
-                        table_name,
-                        model,
-                        device,
-                        modality_name,
-                        s3_connection,
-                        output_bucket
-                    )
-            else:
-                print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
-            buckets_cfg.update_num_objects(path_to_bucket)
+            if exit_status != TaskStatus.ERROR:
+                if update_status_callback:
+                    update_status_callback(TaskStatus.RUNNING)
+                print(f"\t--> Storing to data base in {table_name}")
+                embedding_backend.compute_and_store(
+                    path_to_bucket,
+                    s3_keys,
+                    data_base,
+                    table_name,
+                    model,
+                    device,
+                    modality_name,
+                    s3_connection,
+                    output_bucket
+                )
+                buckets_cfg.update_num_objects(path_to_bucket)
 
     if update_when_done:
         active_threads.update_status_to_done()

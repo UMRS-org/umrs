@@ -538,17 +538,19 @@ def is_string_type(sql_type):
     string_types = {"CHAR", "VARCHAR", "TEXT", "CLOB", "NVARCHAR", "NCHAR"}
     return sql_type.upper() in string_types
 
-def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_key, saved_s3_object=None, checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = None, silent = False):
+def store_one_entry_in_db(data_base, embedding, table_name, bucket_name, s3_key, saved_s3_object=None, checksum=None, content = None, start = None, end = None, md5 = None, model_name=None, metadata = None, silent = False):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
     Args:
         data_base: data base object
-        embedding: Vector embedding (list of floats)
+        embedding: Vector embedding (list of floats) or None if no embedding computed
         table_name: Name of the table to store embeddings
         bucket_name: Name of the S3 bucket
         s3_key: S3 object key
     """
+
+    
     date = datetime.today().strftime('%Y-%m-%d')
     time = datetime.now().strftime('%H:%M:%S')
 
@@ -557,22 +559,32 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
     try:
         cur = conn.cursor()
 
-        # Ensure embedding is a list before inserting
-        embedding = embedding.tolist() if hasattr(embedding, "tolist") else embedding
-
         s3_object = f"{bucket_name}/{s3_key}"  # Full S3 path
+
+        save_embedding = data_base.has_column(table_name, "embedding")
+        save_content = data_base.has_column(table_name, "_content")
 
         # INSERT and UPDATE if s3_object already exists
         # Start building the INSERT query dynamically for the given table
         query = f"""
         INSERT INTO {table_name} (
-            s3_object, embedding, date, time, checksum, model
+            s3_object, date, time, checksum, model
         """
         # Initialize the list of values corresponding to the columns
-        values = [s3_object, embedding, date, time, checksum, model_name]
+        values = [s3_object, date, time, checksum, model_name]
+
+        if save_embedding:
+            # Ensure embedding is a list before inserting
+            embedding = embedding.tolist() if hasattr(embedding, "tolist") else embedding
+            query += ", embedding"
+            # Add the corresponding values for these columns
+            values.extend([embedding])
+        else :
+            if embedding is not None:
+                raise ValueError(f"Embdding is not None for {table_name} while there is no embedding column n this table ({data_base.db_name=} {data_base.username=})")
 
         # If the table has the "_content" column, add related columns to the query
-        if data_base.has_column(table_name, "_content"):
+        if save_content:
             query += ", _content, chunk_start, chunk_end, chunk_md5"
                         # Add the corresponding values for these columns
             values.extend([content, start, end, md5])
@@ -586,7 +598,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         query += ") VALUES ({})".format(", ".join(["%s"] * len(values)))
 
         # Determine the ON CONFLICT clause depending on whether the "_content" column exists
-        if data_base.has_column(table_name, "_content"):
+        if save_content:
             # Use a compound unique key for conflicts when storing chunked content
             query += " ON CONFLICT (s3_object, chunk_start) DO UPDATE SET"
         else:
@@ -595,15 +607,20 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
         # Specify the columns to update in case of conflict (always update these)
         query += """
-            embedding = EXCLUDED.embedding,
             date = EXCLUDED.date,
             time = EXCLUDED.time,
             checksum = EXCLUDED.checksum,
             model = EXCLUDED.model
         """
 
+        # If the "embedding" column exists, also update teh embedding field
+        if save_embedding:
+            query += """,
+                embedding = EXCLUDED.embedding
+            """
+
         # If the "_content" column exists, also update all content-related fields
-        if data_base.has_column(table_name, "_content"):
+        if save_content:
             query += """,
             _content = EXCLUDED._content,
             chunk_start = EXCLUDED.chunk_start,
@@ -617,8 +634,6 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
         # Finish the query by returning the ID of the inserted or updated row
         query += " RETURNING id;"
-
-
 
         # Execute the query with the prepared values
         cur.execute(query, values)
@@ -657,7 +672,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         conn.commit()
 
         if not silent :
-            print(f"\t--> Stored/Updated embedding in '{table_name}' for '{s3_object}'")
+            print(f"\t--> Stored/Updated entry in '{table_name}' for '{s3_object}'")
             if metadata:
                 print(f"\t--> metadata have been added/updated'")
             if saved_s3_object:
@@ -671,7 +686,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
                 conn.rollback()
         except Exception as rollback_exc:
             print(f"\t--> Error during rollback: {rollback_exc}")
-        print(f"\t--> Error storing embedding for query: {e}")
+        print(f"\t--> Error storing entry for query: {e}")
 
     finally:
         if cur is not None:
@@ -682,7 +697,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
                 print(f"Warning: Failed to close cursor: {e}")
         data_base.put_conn(conn)
 
-def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_objects, modality_name, checksums, model_name, metadata_list=None):
+def store_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_objects, modality_name, checksums, model_name, metadata_list=None):
     """
     Store embeddings in the database depending on the data modality.
 
@@ -702,7 +717,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
         # One embedding per image file
         for embedding, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
             # print(f"storing embedding for {s3_key}... ")
-            store_one_embedding_in_db(
+            store_one_entry_in_db(
                 data_base,
                 embedding=embedding,
                 table_name=table_name,
@@ -721,7 +736,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
         for chunked_embeddings, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
             sorted_chunks = sorted(chunked_embeddings, key=lambda chunk: chunk["start"])
             for chunk in sorted_chunks:
-                store_one_embedding_in_db(
+                store_one_entry_in_db(
                     data_base,
                     embedding=chunk["embedding"],
                     table_name=table_name,

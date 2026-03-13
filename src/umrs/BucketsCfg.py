@@ -27,6 +27,7 @@ class ServerBucketEntry:
     metadata: Dict
     xp_name: str
     num_objects: int
+    return_type: str
     output_path_to_bucket: Optional[str] = None
     reentrant_lock: RLock = field(default_factory=RLock)  # Thread-safe lock for this entry
 
