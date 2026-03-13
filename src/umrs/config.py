@@ -8,7 +8,14 @@ UMRS_CFG_ENV_VAR_NAME = "UMRS_CONFIG"
 DEFAULT_JSON_SERVER_FILE ="conf_umrs.json"
 DEFAULT_DOCKER_S3CFG = "/app/docker/s3cfg"
 DEFAULT_DB_SUBDIR = f"{DEFAULT_UMRS_CFG_DIR}/tasks_database"
-DEFAULT_RIVAULT_SLURM_SCRIPT = f"{DEFAULT_UMRS_CFG_DIR}/rivault_data/serve-model.slurm"
+# The rivault runtime scripts now live in src/umrs/rivault/.
+# sbatch passes this path to slurmd on the HOST, so it must be a path that
+# exists on the compute node.  The host setup scripts (start-host-slurmd.sh /
+# setup-slurmd-systemd.sh) create a symlink /opt/rivault → src/umrs/rivault/.
+# mini-rivault-job.sh is the Slurm wrapper that outputs the FQDN header
+# (needed by extract_node_address) before delegating to serve-model.slurm.
+# Override with $RIVAULT_SLURM_SCRIPT if your host uses a different path.
+DEFAULT_RIVAULT_SLURM_SCRIPT = "/opt/rivault/mini-rivault-job.sh"
 PLAFRIM_RIVAULT_SLURM_SCRIPT = f"{DEFAULT_UMRS_CFG_DIR}/rivault_data/serve-model-plafrim.slurm"
 RIVAULT_REMOTE_PORT = int(os.environ.get("RIVAULT_REMOTE_PORT", -1))
 

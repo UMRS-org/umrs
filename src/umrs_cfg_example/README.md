@@ -1,4 +1,6 @@
-# Deploying configuration file
+# UMRS Configuration Examples
+
+## Deploying configuration file
 `./deploy_cfg.sh` to deploy example configuration files to `~/.config/umrs`: 
 
 The directory is as follow: 
@@ -30,5 +32,9 @@ The root folder `umrs/` mainly contains JSON configuration files and two directo
   - Contains user profiles or personalized configurations.
   - `spring8.json`: particular configuration for the Spring-8 user (with MAE model).
   - `user1.json` and `user2.json`: profiles and specific configurations for different users.
-    
+
+## See Also
+
+- [UMRS Overview](../../doc/umrs_overview.md) — Full description of the configuration model
+- [Multi-User Guide](../../doc/multi_users.md) — How to configure multiple users
 

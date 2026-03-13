@@ -8,9 +8,7 @@ from umrs.TaskCmdStatus import TaskCmd, TaskStatus
 import textwrap
 import threading
 import time
-verbose = False
-if verbose:
-    import traceback
+import traceback
 
 
 class UMRSTask:
@@ -32,7 +30,7 @@ class UMRSTask:
             CREATE TABLE IF NOT EXISTS tasks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 client_id TEXT,
-                cmd TEXT,            
+                cmd TEXT,
                 payload TEXT,
                 status TEXT,
                 submitted_at TEXT,
@@ -40,7 +38,7 @@ class UMRSTask:
             )
             """)
 
-    def list_incomplete_tasks(self, mark_override=False):
+    def list_incomplete_tasks(self, mark_override=False, verbose=False):
         """
         List unique tasks that are not completed, deduplicated by (client_id, cmd, payload).
 
@@ -50,17 +48,19 @@ class UMRSTask:
         - If mark_override=True:
             * Earlier incomplete tasks that were later not completed are marked as OVERRIDDEN.
             * Completed tasks remain as COMPLETED.
-        
+
         Returns:
         dict with key = (client_id, cmd, payload) and value = status (or task dict)
         """
-        (verbose and traceback.print_stack())
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
-        rows = cursor.fetchall()
+        if verbose:
+            traceback.print_stack()
+        with self.conn_lock:
+            cursor = self.conn.cursor()
+            cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
+            rows = cursor.fetchall()
 
         seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
-        
+
         for row in rows:
             task_id, client_id, cmd, payload, status, submitted_at = row
             key = (client_id, cmd, payload)
@@ -85,7 +85,7 @@ class UMRSTask:
                                     "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
                                     (TaskStatus.OVERRIDDEN, datetime.utcnow().isoformat(), task_id)
                                 )
-        
+
 
         # Return dict of unique tasks not completed
         result = {
@@ -97,7 +97,6 @@ class UMRSTask:
 
     def mark_running_tasks_aborted(self):
         """Set all tasks to 'Aborted' except those already in terminal states (COMPLETED, OVERRIDDEN, NO_SUCH_BUCKET); used for restart/recovery."""
-        (verbose and traceback.print_stack())
         with self.conn_lock:
             now = datetime.utcnow().isoformat()
             with self.conn:
@@ -109,13 +108,14 @@ class UMRSTask:
                     """,
                     (TaskStatus.ABORTED, now, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN, TaskStatus.NO_SUCH_BUCKET)
                 )
- 
-    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True):
+
+    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True, verbose=False):
         """
         Pretty-print tasks from the database.
         Can filter by status or client_id.
         """
-        (verbose and traceback.print_stack())
+        if verbose:
+            traceback.print_stack()
         query = "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at FROM tasks WHERE 1=1"
         params = []
 
@@ -149,9 +149,10 @@ class UMRSTask:
         if print_output:
             print(message)
         return message
-   
-    def create_task(self, cmd, full_payload):
-        (verbose and traceback.print_stack())
+
+    def create_task(self, cmd, full_payload, verbose=False):
+        if verbose:
+            traceback.print_stack()
         if cmd == TaskCmd.PROCESS_OBJECTS:
             client_id, s3_objects = full_payload
             str_payload = json.dumps(s3_objects)
@@ -180,11 +181,25 @@ class UMRSTask:
 
 
     def add_task(self, client_id: str, cmd: str, payload: str, status: str) -> int:
-        """Insert a task in the DB and return its integer ID."""
-        (verbose and traceback.print_stack())
+        """Insert a task in the DB and return its integer ID.
+
+        Deduplicates: if an identical (client_id, cmd, payload) task already
+        exists with an active status (Submitted or Running), returns the
+        existing task_id instead of creating a duplicate row.
+        """
         for attempt in range(1, self.max_attempts + 1):
             try:
                 with self.conn_lock:
+                    active_statuses = (TaskStatus.SUBMITTED, TaskStatus.RUNNING)
+                    cur = self.conn.execute(
+                        "SELECT id FROM tasks WHERE client_id = ? AND cmd = ? AND payload = ? AND status IN (?, ?)",
+                        (client_id, cmd, payload, *active_statuses),
+                    )
+                    row = cur.fetchone()
+                    if row is not None:
+                        print(f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})")
+                        return row[0]
+
                     now = datetime.utcnow().isoformat()
                     with self.conn:
                         cur = self.conn.execute(
@@ -196,15 +211,12 @@ class UMRSTask:
                 break
             except sqlite3.Error as e:
                 if attempt < self.max_attempts:
-                    # first failures sleep and retry
                     time.sleep(0.5)
                 else:
-                    # last failure Print and raise error properly
-                    print(f"Erreur SQLite critique lors de la mise à jour de la tâche {task_id}:")
-                    print(f"  {type(e).__name__}: {e}")
+                    print(f"SQLite error in add_task: {type(e).__name__}: {e}")
                     traceback.print_exc()
                     raise
-                        
+
         return cur.lastrowid
 
     def update_status(self, task_id: int, new_status: str, verbose=False):
@@ -236,11 +248,12 @@ class UMRSTask:
 
         # Print tasks
         self.pretty_print_tasks()
-    
+
     def get_tasks(
         self,
         status: Optional[str] = None,
-        client_id: Optional[str] = None
+        client_id: Optional[str] = None,
+        verbose: bool = False
     ) -> List[dict]:
 
         query = """
@@ -248,7 +261,8 @@ class UMRSTask:
         FROM tasks
         WHERE 1=1
         """
-        (verbose and traceback.print_stack())
+        if verbose:
+            traceback.print_stack()
         params = []
 
         if status:
@@ -275,6 +289,7 @@ class UMRSTask:
             for r in rows
         ]
 
-    def close(self):
-        (verbose and traceback.print_stack())
+    def close(self, verbose=False):
+        if verbose:
+            traceback.print_stack()
         self.conn.close()

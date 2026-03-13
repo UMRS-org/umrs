@@ -314,7 +314,12 @@ class MessageQueue:
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 return cmd, client_id
             else:
-                raise RuntimeError(f"Unknown command: {cmd}")
+                print(f"WARNING: Ignoring unknown command from unexpected client: {cmd[:80]}")
+                try:
+                    self.send_string("CMD_ERROR", zmq_sender_id)
+                except RuntimeError:
+                    pass
+                continue
 
     def wait_for_s3_events(self, nb_objects, debug=False):
         """Block until new messages arrive, then read all available messages."""

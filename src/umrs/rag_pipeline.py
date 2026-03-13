@@ -11,7 +11,6 @@ Provides:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 from dataclasses import dataclass, field
@@ -205,11 +204,10 @@ class HybridSearcher:
         """Calculate Reciprocal Rank Fusion score."""
         return 1.0 / (self.rrf_k + rank)
 
-    async def search(
+    def search(
         self,
         query: str,
-        query_embedding: list[float],
-        documents: list[tuple[str, str, list[float]]],
+        documents: list[tuple[str, str, float]],
         top_k: int = 10,
     ) -> list[SearchResult]:
         """
@@ -217,8 +215,8 @@ class HybridSearcher:
 
         Args:
             query: Search query text
-            query_embedding: Query vector embedding
-            documents: List of (doc_id, text, embedding) tuples
+            documents: List of (doc_id, text, vector_score) tuples.
+                       vector_score is a pre-computed cosine similarity in [0, 1].
             top_k: Number of results to return
 
         Returns:
@@ -232,17 +230,8 @@ class HybridSearcher:
         bm25_results = self.bm25.score(query, top_k=top_k * 2)
         bm25_ranks = {doc_id: rank for rank, (doc_id, _) in enumerate(bm25_results)}
 
-        # Calculate vector similarity scores
-        query_vec = np.array(query_embedding)
-        vector_scores = []
-
-        for doc_id, text, embedding in documents:
-            doc_vec = np.array(embedding)
-            # Cosine similarity
-            similarity = np.dot(query_vec, doc_vec) / (
-                np.linalg.norm(query_vec) * np.linalg.norm(doc_vec) + 1e-8
-            )
-            vector_scores.append((doc_id, text, similarity))
+        # Use pre-computed vector similarity scores
+        vector_scores = [(doc_id, text, score) for doc_id, text, score in documents]
 
         # Sort by vector similarity
         vector_scores.sort(key=lambda x: x[2], reverse=True)
@@ -338,7 +327,7 @@ class CrossEncoderReranker:
             except Exception as e:
                 logger.error(f"Failed to load cross-encoder: {e}")
 
-    async def rerank(
+    def rerank(
         self,
         query: str,
         results: list[SearchResult],
@@ -521,7 +510,7 @@ Sources: {sources}"""
         """Estimate token count from text length."""
         return int(len(text) / self.chars_per_token)
 
-    async def assemble(
+    def assemble(
         self,
         query: str,
         results: list[SearchResult],
@@ -637,11 +626,10 @@ class RAGPipeline:
         self.context_assembler = context_assembler or ContextAssembler()
         self.gateway_url = gateway_url
 
-    async def query(
+    def query(
         self,
         query: str,
-        query_embedding: list[float],
-        documents: list[tuple[str, str, list[float]]],
+        documents: list[tuple[str, str, float]],
         top_k: int = 5,
         rerank: bool = True,
         metadata: Optional[dict[str, Any]] = None,
@@ -651,8 +639,7 @@ class RAGPipeline:
 
         Args:
             query: User query
-            query_embedding: Query vector embedding
-            documents: Corpus documents (doc_id, text, embedding)
+            documents: Corpus documents (doc_id, text, vector_score)
             top_k: Number of chunks for context
             rerank: Whether to apply reranking
             metadata: Additional metadata to include
@@ -661,16 +648,15 @@ class RAGPipeline:
             Assembled RAG context
         """
         # Step 1: Hybrid search
-        search_results = await self.hybrid_searcher.search(
+        search_results = self.hybrid_searcher.search(
             query=query,
-            query_embedding=query_embedding,
             documents=documents,
             top_k=top_k * 2 if rerank else top_k,
         )
 
         # Step 2: Rerank (optional)
         if rerank and search_results:
-            search_results = await self.reranker.rerank(
+            search_results = self.reranker.rerank(
                 query=query,
                 results=search_results,
                 top_k=top_k,
@@ -684,7 +670,7 @@ class RAGPipeline:
                 result.metadata.update(metadata)
 
         # Step 3: Assemble context
-        context = await self.context_assembler.assemble(
+        context = self.context_assembler.assemble(
             query=query,
             results=search_results,
         )
