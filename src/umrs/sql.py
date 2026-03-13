@@ -118,7 +118,7 @@ class DataBase:
             channel = f"{table_name}_update"
 
             with conn.cursor() as cur:
-                cur.execute(f"LISTEN {channel};")
+                cur.execute(sql.SQL("LISTEN {};").format(sql.Identifier(channel)))
 
             # 2️⃣ Block until notification
 
@@ -156,11 +156,11 @@ class DataBase:
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    f"""
+                    sql.SQL("""
                     SELECT COUNT(DISTINCT s3_object)
-                    FROM {table_name}
+                    FROM {}
                     WHERE s3_object IS NOT NULL;
-                    """
+                    """).format(sql.Identifier(table_name))
                 )
                 return cur.fetchone()[0]
 
@@ -275,24 +275,30 @@ def create_db(sql_username, xp_name):
     if exists:
         print(f"\t\t-->  Database '{db_name}' already exists.")
     else:
-        # Create the database if it does not exist
-        cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};" ).format(
-            sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
-        ))
-        print(f"\t\t-->  Database '{db_name}' created successfully.")
-
-        # Connect to the new database as superuser and create the extension
-        conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
-        conn_new.autocommit = True
-        cur_new = conn_new.cursor()
+        # Create the database if it does not exist.
+        # In concurrent startup/reload flows another process can create it
+        # between the SELECT above and CREATE DATABASE below.
         try:
-            cur_new.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-            print(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
-        except Exception as e:
-            print(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
-        finally:
-            cur_new.close()
-            conn_new.close()
+            cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
+                sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
+            ))
+            print(f"\t\t-->  Database '{db_name}' created successfully.")
+        except (psycopg2.errors.DuplicateDatabase, psycopg2.errors.UniqueViolation):
+            # Treat as success: DB was created by another concurrent path.
+            print(f"\t\t-->  Database '{db_name}' already exists (race detected).")
+
+    # Always ensure pgvector extension exists in target DB.
+    conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+    conn_new.autocommit = True
+    cur_new = conn_new.cursor()
+    try:
+        cur_new.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        print(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
+    except Exception as e:
+        print(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
+    finally:
+        cur_new.close()
+        conn_new.close()
     # Clean up and then create a pool to the target DB as the application user
     cur.close()
     conn.close()
@@ -387,28 +393,42 @@ def enable_table_notifications(conn, table_name: str):
 
     with conn.cursor() as cur:
         # 1️⃣ Create trigger function
-        cur.execute(f"""
-        CREATE OR REPLACE FUNCTION {func_name}()
-        RETURNS trigger AS $$
-        BEGIN
-            PERFORM pg_notify('{channel}', TG_OP);
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-        """)
+        cur.execute(
+            sql.SQL("""
+            CREATE OR REPLACE FUNCTION {}()
+            RETURNS trigger AS $$
+            BEGIN
+                PERFORM pg_notify({}, TG_OP);
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            """).format(
+                sql.Identifier(func_name),
+                sql.Literal(channel)
+            )
+        )
 
         # 2️⃣ Drop trigger if exists (idempotent)
-        cur.execute(f"""
-        DROP TRIGGER IF EXISTS {trigger_name} ON {table_name};
-        """)
+        cur.execute(
+            sql.SQL("DROP TRIGGER IF EXISTS {} ON {};").format(
+                sql.Identifier(trigger_name),
+                sql.Identifier(table_name)
+            )
+        )
 
         # 3️⃣ Create trigger
-        cur.execute(f"""
-        CREATE TRIGGER {trigger_name}
-        AFTER INSERT OR UPDATE OR DELETE ON {table_name}
-        FOR EACH STATEMENT
-        EXECUTE FUNCTION {func_name}();
-        """)
+        cur.execute(
+            sql.SQL("""
+            CREATE TRIGGER {}
+            AFTER INSERT OR UPDATE OR DELETE ON {}
+            FOR EACH STATEMENT
+            EXECUTE FUNCTION {}();
+            """).format(
+                sql.Identifier(trigger_name),
+                sql.Identifier(table_name),
+                sql.Identifier(func_name)
+            )
+        )
 
     conn.commit()
 
@@ -474,17 +494,31 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         create_query = sql.SQL("CREATE TABLE {} ({});").format(
             sql.Identifier(table_name), sql.SQL(column_defs)
         )
-        cur.execute(create_query)
-        conn.commit()
-        print(f"\t\t\t--> Table '{table_name}' created successfully.")
-        # Create helpful indexes
+        try:
+            cur.execute(create_query)
+            conn.commit()
+            print(f"\t\t\t--> Table '{table_name}' created successfully.")
+        except (psycopg2.errors.UniqueViolation, psycopg2.errors.DuplicateTable):
+            # Sequence or table already exists (leftover from partial creation or race)
+            conn.rollback()
+            print(f"\t\t\t--> Table '{table_name}' already exists (concurrent creation).")
+            table_exists = True
+        # Create helpful indexes (IF NOT EXISTS is idempotent; safe after race too)
         try:
             cur.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (s3_object);").format(
                 sql.Identifier(f"idx_{table_name}_s3_object"), sql.Identifier(table_name)))
             cur.execute(sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (checksum);").format(
                 sql.Identifier(f"idx_{table_name}_checksum"), sql.Identifier(table_name)))
+            if store_embeddings_flag:
+                cur.execute(sql.SQL(
+                    "CREATE INDEX IF NOT EXISTS {} ON {} USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);"
+                ).format(
+                    sql.Identifier(f"idx_{table_name}_embedding_hnsw"),
+                    sql.Identifier(table_name),
+                ))
             conn.commit()
         except Exception as e:
+            conn.rollback()
             print(f"\t\t\t--> Warning: failed creating indexes on '{table_name}': {e}")
 
     # enble notification for table that generate something so the server can listen to such notifications
@@ -520,6 +554,25 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
                 sys.exit(f"Error: SQL configuration mismatch!\nExpected vector size {expected_size} per model, found {table_vector_size} in database for table '{table_name}'.")
             msg_size = expected_size if expected_size is not None else table_vector_size
             print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embedding vector size: {msg_size}")
+            # Ensure HNSW index exists (handles upgrades of existing deployments)
+            hnsw_idx_name = f"idx_{table_name}_embedding_hnsw"
+            cur.execute(
+                "SELECT 1 FROM pg_indexes WHERE tablename = %s AND indexname = %s;",
+                (table_name, hnsw_idx_name),
+            )
+            if cur.fetchone() is None:
+                try:
+                    cur.execute(sql.SQL(
+                        "CREATE INDEX IF NOT EXISTS {} ON {} USING hnsw (embedding vector_cosine_ops) WITH (m = 16, ef_construction = 64);"
+                    ).format(
+                        sql.Identifier(hnsw_idx_name),
+                        sql.Identifier(table_name),
+                    ))
+                    conn.commit()
+                    print(f"\t\t\t--> Created HNSW index '{hnsw_idx_name}' on '{table_name}'.")
+                except Exception as e:
+                    conn.rollback()
+                    print(f"\t\t\t--> Warning: failed creating HNSW index on '{table_name}': {e}")
         else:
             print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embeddings not stored.")
 
@@ -564,8 +617,9 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
 
         # INSERT and UPDATE if s3_object already exists
         # Start building the INSERT query dynamically for the given table
+        safe_table = sql.Identifier(table_name).as_string(conn)
         query = f"""
-        INSERT INTO {table_name} (
+        INSERT INTO {safe_table} (
             s3_object, embedding, date, time, checksum, model
         """
         # Initialize the list of values corresponding to the columns
@@ -677,9 +731,8 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         if cur is not None:
             try:
                 cur.close()
-            except Exception:
-                # Consider logging the exception instead of silent pass
-                print(f"Warning: Failed to close cursor: {e}")
+            except Exception as close_err:
+                print(f"Warning: Failed to close cursor: {close_err}")
         data_base.put_conn(conn)
 
 def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_objects, modality_name, checksums, model_name, metadata_list=None):
@@ -785,8 +838,8 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
         if cur is not None:
             try:
                 cur.close()
-            except Exception as e:
-                print(f"Warning: failed to close cursor: {e}")
+            except Exception as close_err:
+                print(f"Warning: failed to close cursor: {close_err}")
         data_base.put_conn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, buckets_cfg: BucketsCfg):

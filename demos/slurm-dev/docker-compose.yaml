@@ -2,52 +2,40 @@
 # Slurm Development Environment for E2E Demo
 # =============================================================================
 #
-# Creates a real Slurm cluster for local development/testing.
-# Rivault (vLLM + LiteLLM + supporting services) runs INSIDE compute-01
-# via podman-in-podman, launched by a Slurm job.
-#
-# An always-on LLM service (vLLM + LiteLLM + OpenWebUI) is available as
-# a separate compose project in rivault/demo-llm.yaml.
+# Creates a Slurm cluster for local development/testing.
+# The control plane (slurmctld, UMRS, postgres, minio) runs in containers.
+# The compute node (slurmd) runs directly on the HOST for native GPU access.
+# Rivault (vLLM + LiteLLM + supporting services) is launched by a Slurm job
+# using the host's native podman — no podman-in-podman needed.
 #
 # Architecture:
-#   ┌─────────────────────┐    ┌─────────────────────────────────┐
-#   │  ai-login            │    │  compute-01 (privileged)        │
-#   │  slurmctld           │───▶│  slurmd                         │
-#   │  UMRS server (:5555) │    │  ┌───────────────────────────┐  │
-#   │  RAG service (:8081) │    │  │ podman (Rivault stack)    │  │
-#   └──────────────────────┘    │  │ NGINX→LiteLLM→vLLM        │  │
-#           │                   │  └───────────────────────────┘  │
-#           └───────┬───────────┘
-#                   ▼
-#   ┌───────────┐  ┌────────────┐  ┌──────────────┐
-#   │  munge    │  │  postgres  │  │  minio       │
-#   └───────────┘  └────────────┘  └──────────────┘
+#   Host (bare metal, GPU, native podman)
+#   ├── slurmd (native process, started by scripts/start-host-slurmd.sh)
+#   ├── munged (native process, shares key with container munge)
+#   │
+#   └── podman-compose (this file, control plane)
+#        ├── ai-login (slurmctld + UMRS server)
+#        ├── munge (key generator)
+#        ├── postgres, minio
+#        └── umrs-client
 #
-#   Separate compose project (rivault/demo-llm.yaml):
-#   ┌──────────────────────────────┐
-#   │  Always-on LLM               │
-#   │  vLLM → LiteLLM → OpenWebUI │
-#   │  Port 13000 (WebUI)         │
-#   │  Port 14000 (LiteLLM API)   │
-#   └──────────────────────────────┘
+#   When Slurm job runs on host:
+#   └── podman compose (Rivault stack, native GPU via CDI)
+#        ├── vllm, litellm, nginx, postgres
+#        └── ...
 #
 # Usage:
-#   # Start Slurm cluster (core services)
-#   podman-compose -f demos/slurm-dev/docker-compose.yaml up -d
+#   # 1. Start control plane
+#   podman-compose -f docker-compose.yaml up -d
 #
-#   # Check status
-#   podman exec ai-login sinfo
+#   # 2. Start host slurmd (in another terminal)
+#   sudo bash scripts/start-host-slurmd.sh
 #
-#   # Setup demo data
-#   podman exec ai-login bash /opt/scripts/setup_demo_data.sh
+#   # 3. Check cluster
+#   podman exec ai-login sinfo -N
 #
-#   # Start always-on LLM (separate project, after freeing GPU)
-#   cd demos/slurm-dev/rivault
-#   podman network create --internal --disable-dns --subnet 192.168.5.0/24 demo-llm-net
-#   podman-compose --env-file demo-llm.env -f demo-llm.yaml -f x_nvidia-override.yaml up -d
-#
-#   # Stop
-#   podman-compose -f demos/slurm-dev/docker-compose.yaml down
+#   # 4. Run E2E demo
+#   bash scripts/run_e2e_demo.sh
 #
 # =============================================================================
 
@@ -59,7 +47,6 @@ services:
   # =============================================================================
   ai-login:
     build:
-      # Use repo root as build context so Dockerfile can COPY ./src
       context: ../..
       dockerfile: demos/slurm-dev/Dockerfile.ai-login
     container_name: ai-login
@@ -73,25 +60,31 @@ services:
       - "6817:6817"    # Slurm control daemon
       - "5555:5555"    # UMRS ZeroMQ control plane
       - "8081:8081"    # UMRS RAG service (if UMRS_RAG_ENABLE=1)
+    extra_hosts:
+      # slurmctld must resolve compute-01 → host (slurmd runs on host)
+      - "compute-01:host-gateway"
+      # Map the host's FQDN so SSH tunnels from ai-login can reach host services
+      - "${COMPUTE_HOST_FQDN:-compute-01}:host-gateway"
     volumes:
-      - munge-key:/etc/munge:ro
+      - ./munge-key:/etc/munge:ro
       - slurm-spool:/var/spool/slurmctld
-      - job-info:/var/run/rivault
+      - ./job-info:/var/run/rivault
       - ./slurm.conf:/etc/slurm/slurm.conf:ro
       # Mount local repository UMRS source for controller to run the server
       - ../../src:/opt/umrs:ro
       # UMRS server configuration (referenced by entrypoint-ai-login.sh)
       - ./conf_umrs.json:/root/conf_umrs.json:rw
-      # UMRS user configuration files
+      # Shared UMRS config directory (host directory for sharing with host slurmd)
+      - ./umrs-config:/root/.config/umrs
+      # Overlay bind mounts for specific config files within the shared volume
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
       - ./s3cfg:/root/.s3cfg:ro
-      # Rivault Slurm script (referenced by rivault.py at ~/.config/umrs/rivault_data/)
-      - ./mini-rivault-job.sh:/root/.config/umrs/rivault_data/serve-model.slurm:ro
+      - ./s3cfg_rivault_user:/root/.s3cfg_rivault_user:ro
       # Demo test data and scripts
       - ./test_data:/opt/test_data:ro
       - ../../data/img:/opt/test_data/images:ro
       - ./scripts:/opt/scripts:ro
-      - ${MODEL_PATH:-./rivault/models}:/shared/models:rw
+      - ${MODEL_PATH:-../../src/umrs/rivault/models}:/shared/models:rw
     env_file:
       - .env
     environment:
@@ -121,13 +114,8 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      #umrs-embed-worker:
-      #  condition: service_started
 
     healthcheck:
-      #test: ["CMD", "sinfo", "-N"]
-      # need to check both slurmctld and UMRS server health; if either is unhealthy, the cluster won't function correctly
-      # UMRS serve health check through ZeroMQ control plane; if it responds, the server is healthy
       test: ["CMD-SHELL", "sinfo -N && python3 -c \"import socket; s=socket.socket(); s.settimeout(2); s.connect(('localhost',5555)); s.close()\""]
       interval: 10s
       timeout: 10s
@@ -135,69 +123,8 @@ services:
       start_period: 120s
 
   # =============================================================================
-  # Slurm Compute Node (slurmd)
-  # =============================================================================
-  compute-01:
-    build:
-      context: .
-      dockerfile: Dockerfile.compute
-    container_name: compute-01
-    hostname: compute-01
-    privileged: true          # Required for podman-in-podman
-    networks:
-      slurm-net:
-        aliases:
-          - compute-01
-    ports:
-      - "2222:22"      # SSH for debugging
-      #- "11434:11434"  # NGINX→LiteLLM (Rivault stack)
-      #- "8000:8000"    # vLLM direct access
-    volumes:
-      - munge-key:/etc/munge:ro
-      - slurm-spool-d:/var/spool/slurmd
-      - job-info:/var/run/rivault
-      - ./slurm.conf:/etc/slurm/slurm.conf:ro
-      # Mount model path from host (adjust as needed)
-      - ${MODEL_PATH:-/tmp/models}:/models:ro
-      # Mount Rivault compose files for podman-in-podman
-      - ./rivault:/opt/rivault:rw
-      # GRES config for GPUs
-      - ./gres.conf:/etc/slurm/gres.conf:ro
-    env_file:
-      - .env
-    environment:
-      - SLURM_CONF=/etc/slurm/slurm.conf
-      - SLURMD_OPTIONS=${SLURMD_OPTIONS:--D --conf-server ai-login}
-      # Rivault defaults (used by serve-model.slurm inside the Slurm job)
-      - VLLM_PATH_TO_HUGGINGFACE=${VLLM_PATH_TO_HUGGINGFACE:-/models}
-      - NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT:-11434}
-      - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-demo-dev}
-      # UMRS configuration (for direct access from compute node, e.g. for testing/debugging; in production, the worker handles communication with the server)
-      #- UMRS_S3_BUCKET_HOST=${UMRS_S3_BUCKET_HOST:-minio}
-      - TRANSFORMERS_OFFLINE=${TRANSFORMERS_OFFLINE:-1}
-      - HF_HUB_OFFLINE=${HF_HUB_OFFLINE:-1}
-    # Expose GPU device nodes from host into the compute container.
-    # Adjust device paths to match your host (e.g., /dev/nvidia0).
-    devices:
-      - /dev/nvidia0:/dev/nvidia0
-      - /dev/nvidiactl:/dev/nvidiactl
-      - /dev/nvidia-uvm:/dev/nvidia-uvm
-      - /dev/nvidia-modeset:/dev/nvidia-modeset
-    depends_on:
-      munge:
-        condition: service_healthy
-      ai-login:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "sinfo", "-N"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 30s
-
-  # =============================================================================
   # Munge Authentication Service
-  # Shared between controller and compute nodes
+  # Shared between controller (container) and compute node (host)
   # =============================================================================
   munge:
     build:
@@ -210,7 +137,7 @@ services:
         aliases:
           - munge
     volumes:
-      - munge-key:/etc/munge
+      - ./munge-key:/etc/munge
       - munge-run:/run/munge
     healthcheck:
       test: ["CMD", "munge", "-n"]
@@ -278,7 +205,6 @@ services:
   # =============================================================================
   umrs-client:
     build:
-      # Use repo root as build context so Dockerfile can COPY ./src
       context: ../..
       dockerfile: demos/slurm-dev/Dockerfile.umrs-client
     container_name: umrs-client
@@ -289,7 +215,7 @@ services:
     env_file:
       - .env
     environment:
-      - UMRS_ENDPOINT=${UMRS_ENDPOINT:-http://ai-login:8000}
+      - UMRS_SERVER_HOST=ai-login
       - POSTGRES_HOST=${POSTGRES_HOST:-postgres}
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
@@ -303,24 +229,12 @@ services:
       - ./conf_umrs.json:/root/conf_umrs.json:ro
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
       - ./s3cfg:/root/.s3cfg:ro
+      - ./s3cfg_rivault_user:/root/.s3cfg_rivault_user:ro
     command: ["tail", "-f", "/dev/null"]
 
     depends_on:
       ai-login:
         condition: service_healthy
-      #postgres:
-      #  condition: service_healthy
-      #minio:
-      #  condition: service_healthy
-
-  # =============================================================================
-  # Always-On LLM Service
-  # =============================================================================
-  # Use the Rivault demo compose files which include NVIDIA device overrides:
-  #   cd demos/slurm-dev/rivault
-  #   podman-compose --env-file demo-llm.env \
-  #     -f demo-llm.yaml -f x_nvidia-override.yaml up -d
-  # =============================================================================
 
 networks:
   slurm-net:
@@ -330,10 +244,7 @@ networks:
         - subnet: 172.28.0.0/16
 
 volumes:
-  munge-key:
   munge-run:
   slurm-spool:
-  slurm-spool-d:
-  job-info:
   pg-data:
   minio-data:

@@ -10,7 +10,32 @@ def normalize_json(obj):
         return sorted((normalize_json(x) for x in obj), key=str)
     else:
         return obj
+################################## Embedding model prefixes ##################################
 
+def _needs_instruction_prefix(model_name):
+    """Return True if the model requires instruction prefixes (e.g., E5 family).
+
+    E5 models (intfloat/e5-*, intfloat/multilingual-e5-*) require:
+    - 'passage: ' prefix for documents being embedded
+    - 'query: ' prefix for search queries
+    Without these prefixes, embedding quality degrades significantly.
+    """
+    if model_name is None:
+        return False
+    name = model_name.lower()
+    return "e5-" in name or "/e5-" in name
+
+def add_document_prefix(texts, model_name):
+    """Prepend 'passage: ' to texts if the model requires it (e.g., E5)."""
+    if _needs_instruction_prefix(model_name):
+        return ["passage: " + t for t in texts]
+    return texts
+
+def add_query_prefix(query, model_name):
+    """Prepend 'query: ' to a query string if the model requires it (e.g., E5)."""
+    if _needs_instruction_prefix(model_name):
+        return "query: " + query
+    return query
 ################################## md5 ##################################
 
 def compute_md5(input_string):

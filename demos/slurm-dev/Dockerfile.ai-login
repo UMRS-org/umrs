@@ -2,11 +2,15 @@
 # AI-LOGIN Controller Dockerfile
 # =============================================================================
 # Runs the Slurm control daemon for job scheduling and hosts UMRS.
+# NOTE: Must use Ubuntu 24.04 so the packaged Slurm (23.11.4) matches
+#       the host's slurmd version — protocol versions must be identical.
 # =============================================================================
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
+# Allow pip to install packages system-wide (PEP 668 / Python 3.12)
+ENV PIP_BREAK_SYSTEM_PACKAGES=1
 
 # Install Slurm, SSH, and dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,6 +29,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && pip3 install --no-cache-dir podman-compose || true \
     && rm -rf /var/lib/apt/lists/*
 
+# Install UMRS Python requirements at build time (avoids re-installing every startup).
+# The file is kept so the entrypoint can detect when the bind-mounted source has
+# newer requirements and only re-install in that case.
+COPY src/requirements.txt /opt/umrs-requirements.txt
+RUN pip3 install --no-cache-dir -r /opt/umrs-requirements.txt
+RUN python3 -m spacy download en_core_web_sm || true
+
 # Install MinIO client (mc) for bucket/user management; pick correct arch
 RUN set -eux; \
         ARCH=$(uname -m); \
@@ -37,13 +48,8 @@ RUN set -eux; \
         curl -fsSL https://dl.min.io/client/mc/release/${MC_ARCH}/mc -o /usr/local/bin/mc; \
         chmod +x /usr/local/bin/mc || true
 
-# Copy UMRS source and install Python requirements before configuring SSH
-# (placed early so layer caching benefits from unchanged system package layer)
-COPY ./src/requirements.txt /tmp/requirements.txt
-COPY ./src /opt/umrs
-
-# Install Python requirements for UMRS (ignore failures to avoid blocking optional deps)
-RUN pip3 install --no-cache-dir -r /tmp/requirements.txt || true
+# NOTE: UMRS source is bind-mounted at runtime (../../src:/opt/umrs:ro).
+# This avoids rebuilding the image on every source change.
 
 # Configure SSH for localhost tunneling (used by rivault.py forward_to_remote)
 RUN mkdir -p /run/sshd /root/.ssh \
@@ -67,17 +73,17 @@ RUN mkdir -p \
 COPY demos/slurm-dev/entrypoint-ai-login.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-# Copy configuration files (Slurm and UMRS)
-COPY demos/slurm-dev/s3cfg /root/.s3cfg
-COPY demos/slurm-dev/s3cfg_rivault_user /root/.s3cfg_rivault_user
-COPY demos/slurm-dev/conf_umrs.json /root/conf_umrs.json
-COPY demos/slurm-dev/user_files /root/user_files
+# NOTE: Configuration files (s3cfg, conf_umrs.json, user_files) are
+# bind-mounted at runtime via docker-compose volumes.
 
 # Set UMRS_CONFIG to point to the directory containing conf_umrs.json (used by server and client)
 ENV UMRS_CONFIG /root/
 
 # Ensure UMRS code is on PYTHONPATH
 ENV PYTHONPATH=/opt/umrs:${PYTHONPATH:-}
+
+# Disable Python output buffering so logs appear in real time
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 6817
 

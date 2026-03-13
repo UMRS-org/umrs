@@ -11,6 +11,9 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_openai import ChatOpenAI
 
+from umrs.utils import add_query_prefix, add_document_prefix
+from umrs.rag_pipeline import HybridSearcher, CrossEncoderReranker, SearchResult
+
 from umrs.config import (
     get_default_json_server_file,
     get_default_umrs_cfg_dir,
@@ -19,6 +22,17 @@ from umrs.config import (
 from umrs.json_utils import load_server_cfg_file
 
 import server_umrs
+
+
+def _cosine_score(distance) -> float:
+    """Convert pgvector cosine distance to a similarity score in [0, 1].
+
+    pgvector's ``<=>`` operator returns ``1 - cosine_similarity``, so the
+    range is [0, 2].  We convert back to similarity with a floor of 0.
+    """
+    if distance is None:
+        return 0.0
+    return max(0.0, 1.0 - float(distance))
 
 
 class RAGSearchRequest(BaseModel):
@@ -31,6 +45,17 @@ class RAGSearchRequest(BaseModel):
     )
     xp_name: Optional[str] = Field(
         None, description="Optional experience name to scope the search"
+    )
+    search_method: Optional[str] = Field(
+        "vector",
+        description=(
+            "Search method: 'vector' (default, pure pgvector cosine), "
+            "or 'hybrid' (BM25 + vector with Reciprocal Rank Fusion)."
+        ),
+    )
+    enable_reranking: bool = Field(
+        False,
+        description="If true, apply cross-encoder reranking to improve relevance.",
     )
 
 
@@ -238,7 +263,7 @@ class UMRSPgVectorRetriever(BaseRetriever):
                     SELECT
                         id,
                         s3_object,
-                        embedding <-> %s::vector AS distance,
+                        embedding <=> %s::vector AS distance,
                         _content,
                         chunk_start,
                         chunk_end,
@@ -247,7 +272,7 @@ class UMRSPgVectorRetriever(BaseRetriever):
                         model
                     FROM {table}
                     WHERE embedding IS NOT NULL
-                    ORDER BY embedding <-> %s::vector
+                    ORDER BY embedding <=> %s::vector
                     LIMIT %s;
                     """
                 ).format(table=sql.Identifier(table_name))
@@ -257,7 +282,7 @@ class UMRSPgVectorRetriever(BaseRetriever):
                     SELECT
                         id,
                         s3_object,
-                        embedding <-> %s::vector AS distance,
+                        embedding <=> %s::vector AS distance,
                         NULL AS _content,
                         NULL AS chunk_start,
                         NULL AS chunk_end,
@@ -266,7 +291,7 @@ class UMRSPgVectorRetriever(BaseRetriever):
                         model
                     FROM {table}
                     WHERE embedding IS NOT NULL
-                    ORDER BY embedding <-> %s::vector
+                    ORDER BY embedding <=> %s::vector
                     LIMIT %s;
                     """
                 ).format(table=sql.Identifier(table_name))
@@ -329,14 +354,51 @@ class UMRSPgVectorRetriever(BaseRetriever):
 app = FastAPI(title="UMRS RAG Service", version="0.1.0")
 
 
+class PrefixedSentenceTransformerEmbeddings(SentenceTransformerEmbeddings):
+    """SentenceTransformerEmbeddings with automatic E5 query/document prefixes.
+
+    E5 models require 'query: ' prefix for search queries and 'passage: '
+    prefix for documents.  This wrapper applies the correct prefix
+    transparently based on the model name.
+    """
+
+    def embed_query(self, text: str) -> List[float]:
+        text = add_query_prefix(text, self.model_name)
+        return super().embed_query(text)
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        texts = add_document_prefix(texts, self.model_name)
+        return super().embed_documents(texts)
+
+
+def _detect_embedding_model_from_config(
+    db_model_store: Dict[str, Dict[str, Any]],
+) -> Optional[str]:
+    """Extract the embedding model name from the first text-modality entry."""
+    for entry in db_model_store.values():
+        if entry.get("modality_name") == "text" and entry.get("store_embeddings_flag"):
+            model = entry.get("model")
+            if model is None:
+                continue
+            # EmbeddingModel object (from load_model)
+            if hasattr(model, "model_name"):
+                return model.model_name
+            # Raw config dict (fallback)
+            if isinstance(model, dict) and "model_name" in model:
+                return model["model_name"]
+    return None
+
+
 DB_MODEL_STORE: Dict[str, Dict[str, Any]] = {}
 EMBEDDINGS: Optional[SentenceTransformerEmbeddings] = None
 LLM: Optional[ChatOpenAI] = None
+HYBRID_SEARCHER: Optional[HybridSearcher] = None
+RERANKER: Optional[CrossEncoderReranker] = None
 
 
 @app.on_event("startup")
 def startup_event() -> None:
-    global DB_MODEL_STORE, EMBEDDINGS, LLM
+    global DB_MODEL_STORE, EMBEDDINGS, LLM, HYBRID_SEARCHER, RERANKER
 
     config_path = _resolve_server_config_path()
     cfg_store = _build_cfg_store(config_path)
@@ -349,13 +411,13 @@ def startup_event() -> None:
             "with store_embeddings = 'yes'."
         )
 
-    model_name = os.getenv(
-        "UMRS_RAG_EMBEDDING_MODEL",
-        # Default to a commonly used sentence-transformer; this should match
-        # the model used for ingestion when possible.
-        "sentence-transformers/all-MiniLM-L6-v2",
-    )
-    EMBEDDINGS = SentenceTransformerEmbeddings(model_name=model_name)
+    model_name = os.getenv("UMRS_RAG_EMBEDDING_MODEL")
+    if not model_name:
+        # Auto-detect from the user config (matches the model used for ingestion)
+        model_name = _detect_embedding_model_from_config(DB_MODEL_STORE)
+    if not model_name:
+        model_name = "sentence-transformers/all-MiniLM-L6-v2"
+    EMBEDDINGS = PrefixedSentenceTransformerEmbeddings(model_name=model_name)
 
     # Configure LLM client against OpenAI-compatible vLLM endpoint
     vllm_base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
@@ -372,6 +434,16 @@ def startup_event() -> None:
         temperature=0.1,
     )
 
+    # Hybrid search and cross-encoder reranking (opt-in via request fields)
+    HYBRID_SEARCHER = HybridSearcher()
+    reranker_model = os.getenv(
+        "UMRS_RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+    reranker_device = os.getenv("UMRS_RAG_RERANKER_DEVICE", "cpu")
+    RERANKER = CrossEncoderReranker(
+        model_name=reranker_model, device=reranker_device
+    )
+
 
 @app.post("/rag/search", response_model=RAGSearchResponse)
 def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
@@ -379,6 +451,12 @@ def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
         raise HTTPException(status_code=500, detail="Embeddings backend not initialized")
 
     try:
+        # Fetch more candidates when using hybrid or reranking so the
+        # second-stage ranker has enough material to work with.
+        fetch_k = payload.top_k
+        if payload.search_method == "hybrid" or payload.enable_reranking:
+            fetch_k = payload.top_k * 3
+
         retriever = UMRSPgVectorRetriever(
             db_model_store=DB_MODEL_STORE,
             embeddings=EMBEDDINGS,
@@ -386,7 +464,7 @@ def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
             xp_name=payload.xp_name,
             bucket_alias=payload.bucket_alias,
             modality=payload.modality,
-            top_k=payload.top_k,
+            top_k=fetch_k,
         )
         docs = retriever.get_relevant_documents(payload.query)
     except ValueError as exc:
@@ -395,20 +473,99 @@ def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     results: List[RAGSearchResultItem] = []
-    for doc in docs:
-        meta = dict(doc.metadata)
-        row_id = int(meta.get("id", 0))
-        # Reconstruct score from stored distance where possible
-        distance = meta.get("distance")
-        score = 1.0 / (1.0 + float(distance)) if distance is not None else 0.0
-        results.append(
-            RAGSearchResultItem(
-                id=row_id,
-                score=score,
-                content=doc.page_content,
-                metadata=meta,
-            )
+
+    if payload.search_method == "hybrid" and HYBRID_SEARCHER is not None and docs:
+        # Build candidate tuples for hybrid search.
+        # We use the query embedding that the retriever already computed.
+        query_embedding = EMBEDDINGS.embed_query(payload.query)
+        candidates = [
+            (str(doc.metadata.get("id", i)), doc.page_content, [])
+            for i, doc in enumerate(docs)
+        ]
+        # BM25 + RRF fusion on the retrieved candidate pool
+        hybrid_results = HYBRID_SEARCHER.search(
+            query=payload.query,
+            documents=[
+                (str(doc.metadata.get("id", i)), doc.page_content,
+                 _cosine_score(doc.metadata.get("distance")))
+                for i, doc in enumerate(docs)
+            ],
+            top_k=fetch_k,
         )
+
+        # Optionally rerank
+        if payload.enable_reranking and RERANKER is not None:
+            hybrid_results = RERANKER.rerank(
+                query=payload.query,
+                results=hybrid_results,
+                top_k=payload.top_k,
+            )
+        else:
+            hybrid_results = hybrid_results[: payload.top_k]
+
+        # Map back to response items; use the doc metadata from the original
+        # retrieval for full context.
+        doc_by_id = {str(doc.metadata.get("id", i)): doc for i, doc in enumerate(docs)}
+        for sr in hybrid_results:
+            orig_doc = doc_by_id.get(sr.document_id)
+            meta = dict(orig_doc.metadata) if orig_doc else {}
+            meta["hybrid_score"] = sr.score
+            if sr.bm25_score is not None:
+                meta["bm25_score"] = sr.bm25_score
+            if sr.vector_score is not None:
+                meta["vector_score"] = sr.vector_score
+            if sr.rerank_score is not None:
+                meta["rerank_score"] = sr.rerank_score
+            results.append(
+                RAGSearchResultItem(
+                    id=int(meta.get("id", 0)),
+                    score=sr.rerank_score if sr.rerank_score is not None else sr.score,
+                    content=sr.content,
+                    metadata=meta,
+                )
+            )
+    else:
+        # Pure vector search (default path)
+        if payload.enable_reranking and RERANKER is not None and docs:
+            search_results = [
+                SearchResult(
+                    document_id=str(doc.metadata.get("id", i)),
+                    chunk_id=str(doc.metadata.get("id", i)),
+                    content=doc.page_content,
+                    score=_cosine_score(doc.metadata.get("distance")),
+                    metadata=dict(doc.metadata),
+                )
+                for i, doc in enumerate(docs)
+            ]
+            reranked = RERANKER.rerank(
+                query=payload.query,
+                results=search_results,
+                top_k=payload.top_k,
+            )
+            for sr in reranked:
+                meta = sr.metadata
+                meta["rerank_score"] = sr.rerank_score
+                results.append(
+                    RAGSearchResultItem(
+                        id=int(meta.get("id", 0)),
+                        score=sr.rerank_score if sr.rerank_score is not None else sr.score,
+                        content=sr.content,
+                        metadata=meta,
+                    )
+                )
+        else:
+            for doc in docs[: payload.top_k]:
+                meta = dict(doc.metadata)
+                row_id = int(meta.get("id", 0))
+                score = _cosine_score(meta.get("distance"))
+                results.append(
+                    RAGSearchResultItem(
+                        id=row_id,
+                        score=score,
+                        content=doc.page_content,
+                        metadata=meta,
+                    )
+                )
 
     return RAGSearchResponse(results=results)
 
@@ -432,6 +589,11 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
         raise HTTPException(status_code=500, detail="LLM backend not initialized")
 
     try:
+        # Fetch more candidates when hybrid or reranking is requested
+        fetch_k = payload.top_k
+        if payload.search_method == "hybrid" or payload.enable_reranking:
+            fetch_k = payload.top_k * 3
+
         retriever = UMRSPgVectorRetriever(
             db_model_store=DB_MODEL_STORE,
             embeddings=EMBEDDINGS,
@@ -439,7 +601,7 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
             xp_name=payload.xp_name,
             bucket_alias=payload.bucket_alias,
             modality=payload.modality,
-            top_k=payload.top_k,
+            top_k=fetch_k,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -516,19 +678,12 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
         meta = doc.metadata or {}
         key_parts = [str(meta.get("id")), str(meta.get("chunk_md5"))]
         key = "::".join(key_parts)
-        distance = meta.get("distance")
-        score = 1.0 / (1.0 + float(distance)) if distance is not None else 0.0
+        score = _cosine_score(meta.get("distance"))
         existing = by_key.get(key)
         if existing is None:
             by_key[key] = doc
         else:
-            existing_meta = existing.metadata or {}
-            existing_distance = existing_meta.get("distance")
-            existing_score = (
-                1.0 / (1.0 + float(existing_distance))
-                if existing_distance is not None
-                else 0.0
-            )
+            existing_score = _cosine_score((existing.metadata or {}).get("distance"))
             if score > existing_score:
                 by_key[key] = doc
 
@@ -536,11 +691,55 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
 
     # Sort by score descending and keep the top N
     def _score(doc: Document) -> float:
-        meta = doc.metadata or {}
-        distance = meta.get("distance")
-        return 1.0 / (1.0 + float(distance)) if distance is not None else 0.0
+        return _cosine_score((doc.metadata or {}).get("distance"))
 
     unique_docs.sort(key=_score, reverse=True)
+
+    # Optional: apply hybrid BM25+RRF fusion on the candidate pool
+    if payload.search_method == "hybrid" and HYBRID_SEARCHER is not None and unique_docs:
+        hybrid_results = HYBRID_SEARCHER.search(
+            query=payload.query,
+            documents=[
+                (str(doc.metadata.get("id", i)), doc.page_content,
+                 _cosine_score((doc.metadata or {}).get("distance")))
+                for i, doc in enumerate(unique_docs)
+            ],
+            top_k=len(unique_docs),
+        )
+        # Re-order unique_docs by hybrid score
+        hybrid_order = {sr.document_id: idx for idx, sr in enumerate(hybrid_results)}
+        doc_by_id = {str(doc.metadata.get("id", i)): doc for i, doc in enumerate(unique_docs)}
+        unique_docs = [
+            doc_by_id[sr.document_id]
+            for sr in hybrid_results
+            if sr.document_id in doc_by_id
+        ]
+
+    # Optional: cross-encoder reranking
+    if payload.enable_reranking and RERANKER is not None and unique_docs:
+        search_results = [
+            SearchResult(
+                document_id=str(doc.metadata.get("id", i)),
+                chunk_id=str(doc.metadata.get("id", i)),
+                content=doc.page_content,
+                score=_cosine_score(doc.metadata.get("distance")),
+                metadata=dict(doc.metadata),
+            )
+            for i, doc in enumerate(unique_docs)
+        ]
+        reranked = RERANKER.rerank(
+            query=payload.query,
+            results=search_results,
+            top_k=payload.max_context_chunks,
+        )
+        # Rebuild unique_docs in reranked order
+        doc_by_id = {str(doc.metadata.get("id", i)): doc for i, doc in enumerate(unique_docs)}
+        unique_docs = [
+            doc_by_id[sr.document_id]
+            for sr in reranked
+            if sr.document_id in doc_by_id
+        ]
+
     top_docs = unique_docs[: payload.max_context_chunks]
 
     # Step 4: ask LLM to answer using only retrieved context
@@ -595,8 +794,7 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
     for doc in top_docs:
         meta = dict(doc.metadata or {})
         row_id = int(meta.get("id", 0))
-        distance = meta.get("distance")
-        score = 1.0 / (1.0 + float(distance)) if distance is not None else 0.0
+        score = _cosine_score(meta.get("distance"))
         results.append(
             RAGSearchResultItem(
                 id=row_id,

@@ -152,7 +152,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
                 assert modality["model"]["return_type"] is not None, f"return_type must be set in 'model' for modality '{modality}' of {fullname} ({username})"
                 output_path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
                 bucket_list.append(output_path_to_bucket)
-                    
+
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
     s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
@@ -166,13 +166,66 @@ def is_client_configured(client_id, server_cfg):
             return True
     return False
 
+
+def reconcile_status_on_startup(active_threads, buckets_cfg):
+    """Write an initial PROCESS_OBJECTS status entry for each user based on pgvector counts.
+
+    After a server restart the in-memory status_store is empty, so ``status all``
+    returns "No status entries".  This function populates it with a synthetic
+    summary built from the already-accurate ``num_objects`` values that
+    ``configure_user`` read from pgvector at startup time.
+    """
+    from umrs.TaskCmdStatus import TaskCmd
+    from datetime import datetime
+
+    # Group bucket entries by s3_username
+    user_entries: dict[str, list[tuple[str, ServerBucketEntry]]] = {}
+    for path_to_bucket, entry in buckets_cfg.items():
+        user_entries.setdefault(entry.s3_username, []).append((path_to_bucket, entry))
+
+    for username, entries in user_entries.items():
+        # Build a synthetic 'thread status' dict that pretty_print_thread_status can render
+        synthetic_thread_status = {}
+        works = []
+        for path_to_bucket, entry in entries:
+            works.append({
+                "user": entry.s3_username,
+                "data_base": entry.db_name,
+                "table_name": entry.table_name,
+                "modality_name": entry.modality_name,
+                "bucket": path_to_bucket,
+                "work_type": TaskCmd.PROCESS_OBJECTS.lower(),
+                "nb_objects": entry.num_objects,
+            })
+        if not works:
+            continue
+        synthetic_thread_status["startup"] = {
+            "thread_id": -1,  # sentinel: not a real thread
+            "status": "Done" if any(w["nb_objects"] > 0 for w in works) else "Idle",
+            "work": works,
+        }
+        summary = pretty_print_thread_status(synthetic_thread_status, running_only=False, print_output=False)
+        json_safe = active_threads._json_safe_thread_status(synthetic_thread_status)
+        active_threads.record_status(
+            username,
+            TaskCmd.PROCESS_OBJECTS.lower(),
+            {"summary": summary, "data": json_safe},
+        )
+        # Also write the uppercase key used by the server event loop
+        active_threads.record_status(
+            username,
+            TaskCmd.PROCESS_OBJECTS,
+            {"summary": summary, "data": json_safe},
+        )
+    print("Status store reconciled with pgvector counts.")
+
 def configure_user(user_cfg, server_cfg: ServerCfg):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
-   
+
     server_cfg.user_config_map[username] = user_cfg['config_file_path']
     buckets_cfg = server_cfg.buckets_cfg
-    
+
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
@@ -195,14 +248,14 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             # Best-effort upload of model weights to RiVault so that
             # compute workers can later stream them from there.
             try:
-                _upload_weights_to_rivault(model_cfg.get("model_name"), os.path.dirname(user_conf_file))
+                _upload_weights_to_rivault(model_cfg.get("model_name"), os.path.dirname(user_cfg['config_file_path']))
             except Exception:
                 # Never fail user configuration because of RiVault upload issues
                 pass
             if model.return_type == "file":
                 assert need_output_bucket
                 output_path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location, output=True)
-            else: 
+            else:
                 output_path_to_bucket = None
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
@@ -210,8 +263,8 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             num_objects = data_base.count_s3_objects(table_name)
             # in case of race condition. In practice we certainly do not want several procesing on the same bucket happening in parallel
             rlock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
-            bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name, 
-                                       model, store_embeddings_flag, modality_name, s3_connection, metadata, 
+            bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name,
+                                       model, store_embeddings_flag, modality_name, s3_connection, metadata,
                                        xp_name, num_objects, output_path_to_bucket, rlock)
             buckets_cfg.store(path_to_bucket, bucket_entry)
             print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
@@ -308,7 +361,7 @@ def update_objects(active_threads, username, buckets_cfg, device, embedding_back
             update_dict[path_to_bucket] = {
                 "bucket_alias": entry.bucket_alias,
                 "duration": duration,
-                "nb_objects": f"{len(to_update_objects)}/{len(s3_objects)}",
+                "nb_objects": f"{len(s3_objects) - len(to_update_objects)}/{len(s3_objects)}",
                 "modality_name": entry.modality_name,
                 "s3_username": entry.s3_username,
                 "total_size_MB": round(total_size / (1024**2), 3),
@@ -323,7 +376,7 @@ def update_objects(active_threads, username, buckets_cfg, device, embedding_back
         active_threads.update_status_to_done()
         users = {entry.s3_username for entry in buckets_cfg.values()}
         active_threads.record_status_for_users_by_key(users, key)
-        active_threads.remove_from_running_list()        
+        active_threads.remove_from_running_list()
 
     outcome= {"summary": summary, "data": update_dict}
     filter_outcome(active_threads, outcome, buckets_cfg, key)
@@ -379,7 +432,7 @@ def check_objects(active_threads, buckets_cfg, key, verbose=False, log_output=Tr
 
     if active_threads.is_worker_thread() :
         active_threads.update_status_to_done()
-        active_threads.remove_from_running_list()        
+        active_threads.remove_from_running_list()
 
     summary = pretty_print_check(check_dict, print_output=False)
     if log_output:
@@ -402,9 +455,9 @@ def check_objects(active_threads, buckets_cfg, key, verbose=False, log_output=Tr
 
 def _handle_maintenance_command(active_threads, cmd, client_id, buckets_cfg, device, embedding_backend,
                                 configure_file, user_config_map, key, update_status_callback=None):
-    
+
     # print(f"handle {cmd=} {client_id=}")
-    
+
     if cmd == TaskCmd.RECOMPUTE:
         return active_threads.launch_recompute_all_objects(client_id, buckets_cfg, device, embedding_backend, key, log_output=ENABLE_PRETTY_PRINT, update_status_callback=update_status_callback)
 
@@ -419,14 +472,14 @@ def _handle_maintenance_command(active_threads, cmd, client_id, buckets_cfg, dev
     else:
         print(f"====> Error: unknown command '{cmd}' returned by maintenance handler")
         return None
-   
-    
+
+
 
 def filter_outcome(active_threads, outcome, buckets_cfg, key):
-    # For each user in the configuration, store its relevant data 
+    # For each user in the configuration, store its relevant data
     # to be later visible via STATUS
     users = {entry.s3_username for entry in buckets_cfg.values()}
-    for user in users: 
+    for user in users:
         filtered_outcome = _filter_outcome_for_client(key, outcome, user, buckets_cfg)
         active_threads.record_status(user, key, filtered_outcome)
 
@@ -445,7 +498,7 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
     For reload: build a per-user configuration summary from the current buckets_cfg.
     """
 
-    
+
     try:
         if cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
@@ -566,7 +619,7 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
         new_server_cfg = ServerCfg()
         for u in new_users:
             configure_user(u, new_server_cfg)
-     
+
         buckets_cfg.replace_cfg(new_server_cfg.buckets_cfg)
         user_config_map.clear()
         user_config_map.update(new_server_cfg.user_config_map)
@@ -678,7 +731,7 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
 
     if not dest_path:
         # Destination path (canonical)
-        umrs_dir = os.path.dir(configure_file)
+        umrs_dir = os.path.dirname(configure_file)
         user_dir = os.path.join(umrs_dir, get_users_default_cfg_subdir())
         try:
             os.makedirs(user_dir, exist_ok=True)
@@ -730,17 +783,17 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
 
     active_threads.update_thread_dict(buckets_cfg, keys_per_bucket, key)
 
-    
+
     exit_status = TaskStatus.COMPLETED
     for path_to_bucket in keys_per_bucket.keys():
         selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "s3_connection", "output_path_to_bucket", "reentrant_lock"]
         user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket, filter=selected_fields)
-     
+
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
         if model.type == "rivault":
-            from umrs.rivault import launch_rivault_model
-            try: 
+            from umrs.rivault_launcher import launch_rivault_model
+            try:
                 if update_status_callback:
                     update_status_callback(TaskStatus.INITIALIZING)
                 # launch_rivault_model is not reentrant, so we use a lock to ensure only one thread is running it at a time
@@ -749,26 +802,31 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
             except Exception as e:
                 print(f"Error creating the RiVault model: {e}")
                 exit_status = TaskStatus.ERROR
-                
-                    
-        
+                continue
+
+
+
         with reentrant_lock:
             if store_embeddings_flag:
                 if exit_status != TaskStatus.ERROR:
                     if update_status_callback:
                         update_status_callback(TaskStatus.RUNNING)
                     print(f"\t--> Storing to data base in {table_name}")
-                    embedding_backend.compute_and_store(
-                        path_to_bucket,
-                        s3_keys,
-                        data_base,
-                        table_name,
-                        model,
-                        device,
-                        modality_name,
-                        s3_connection,
-                        output_bucket
-                    )
+                    try:
+                        embedding_backend.compute_and_store(
+                            path_to_bucket,
+                            s3_keys,
+                            data_base,
+                            table_name,
+                            model,
+                            device,
+                            modality_name,
+                            s3_connection,
+                            output_bucket
+                        )
+                    except Exception as e:
+                        print(f"Error computing/storing embeddings for bucket '{path_to_bucket}': {e}")
+                        exit_status = TaskStatus.ERROR
             else:
                 print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
             buckets_cfg.update_num_objects(path_to_bucket)
@@ -812,7 +870,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
             if not result:
                 continue
             cmd, payload = result
-            
+
             task_id = task_manager.tasks_status.create_task(cmd, payload)
 
             # create a callback with task_id embedded
@@ -820,8 +878,8 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 client_id, s3_objects = payload
-                thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects, 
-                                                                             buckets_cfg, device, embedding_backend, 
+                thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
+                                                                             buckets_cfg, device, embedding_backend,
                                                                              cmd.lower(),
                                                                              update_status_callback=update_status_func)
                 task_manager.associate_thread_with_task(thread_ident, task_id)
@@ -841,24 +899,24 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 update_status_func(TaskStatus.COMPLETED)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
                 client_id = payload
-                thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg, 
+                thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
                                                             device, embedding_backend, configure_file, user_config_map, cmd.lower(),
                                                             update_status_callback=update_status_func)
                 if thread_ident is None:
                     update_status_func(TaskStatus.COMPLETED)
-                else: 
+                else:
                     task_manager.associate_thread_with_task(thread_ident, task_id)
 
             elif cmd == TaskCmd.WAIT_OUTPUT : # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
                 client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
 
                 path_to_bucket, entry = buckets_cfg.find_by_output_path(output_path_to_bucket)
-                if entry is None: 
+                if entry is None:
                     msg = "NO_SUCH_BUCKET"
                     control_mq.send_string(msg, zmq_sender_id)
                     update_status_func(TaskStatus.NO_SUCH_BUCKET)
                 else:
-                    thread_ident = task_manager.active_threads.launch_wait_table_modification_on_db(path_to_bucket, buckets_cfg, client_id, 
+                    thread_ident = task_manager.active_threads.launch_wait_table_modification_on_db(path_to_bucket, buckets_cfg, client_id,
                                                                       entry.data_base, entry.table_name,
                                                                      timeout, control_mq, zmq_sender_id, cmd.lower(),
                                                                      update_status_callback=update_status_func)
@@ -869,7 +927,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
             finished_threads_ident_list =  task_manager.active_threads.clean_finished_threads()
             print(f"{finished_threads_ident_list=}")
             task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
-            
+
             # After any event and cleanup, update per-user task status summaries
             try:
                 users = set(entry.s3_username for entry in buckets_cfg.values())
@@ -915,19 +973,19 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 s3_objects = json.loads(payload)
-                thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects, 
-                                                                             buckets_cfg, device, embedding_backend, 
+                thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
+                                                                             buckets_cfg, device, embedding_backend,
                                                                              cmd.lower(),
                                                                              update_status_callback=update_status_func)
                 task_manager.associate_thread_with_task(thread_ident, task_id)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK):
                 user_config_map = server_cfg.user_config_map
-                thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg, 
+                thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
                                                             device, embedding_backend, configure_file, user_config_map, cmd.lower(),
                                                             update_status_callback=update_status_func)
                 if thread_ident is None:
                     update_status_func(TaskStatus.COMPLETED)
-                else: 
+                else:
                     task_manager.associate_thread_with_task(thread_ident, task_id)
 
             elif cmd == TaskCmd.FILE:
@@ -948,7 +1006,7 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
                         print(f"Note: file '{file}' was not recognized as a valid user config or there was an identity mismatch; left in place.")
 
                 update_status_func(TaskStatus.COMPLETED)
-            else: 
+            else:
                 print("\tNothing to do for command of type {cmd}")
 
 def check_umrs_config_directory():
@@ -987,16 +1045,31 @@ def main():
 
     global ENABLE_PRETTY_PRINT
     ENABLE_PRETTY_PRINT = args.pretty_print
-        
-    status_store = diskcache.Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
-    thread_dict = diskcache.Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
-    task_manager = TaskManager(status_store, thread_dict, f"{get_default_db_subdir()}/tasks.db")
-    
 
+    print(f"Starting UMRS server with configuration file: {configure_file}")
+    status_store = diskcache.Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
+
+    print("Initialized status store")
+    thread_dict = diskcache.Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
+
+    print("Initialized thread dictionary")
+    task_manager = TaskManager(status_store, thread_dict, f"{get_default_db_subdir()}/tasks.db")
+
+    print("Performing initial configuration...")
     control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store)
+
+    print("Initial configuration done.")
+    reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
+
     handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
+
+    print("Entering main server event loop.")
     cfg_summary = pretty_print_cfg(server_cfg, print_output=ENABLE_PRETTY_PRINT)
+
+    print(f"Server configuration summary:\n{cfg_summary}")
     task_manager.active_threads.record_status("system", "config", {"summary": cfg_summary})
+
+    print("Server is ready to process tasks.")
     server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file)
 
 

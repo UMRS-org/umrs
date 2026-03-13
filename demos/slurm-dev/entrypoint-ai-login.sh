@@ -70,6 +70,14 @@ chmod 777 /var/run/rivault
 #--local-dir e5-base-v2
 
 
+# Create /opt/rivault symlink so sbatch can find mini-rivault-job.sh.
+# The default RIVAULT_SLURM_SCRIPT points to /opt/rivault/mini-rivault-job.sh;
+# inside this container the rivault scripts live under /opt/umrs/umrs/rivault/.
+if [[ -d /opt/umrs/umrs/rivault ]] && [[ ! -e /opt/rivault ]]; then
+    ln -s /opt/umrs/umrs/rivault /opt/rivault
+    echo "Symlinked /opt/rivault → /opt/umrs/umrs/rivault"
+fi
+
 # If UMRS source is mounted, install requirements and prepare the server.
 # Note: UMRS is NOT started automatically because the Rivault stack must be
 # running first (the rivault:// model type triggers Slurm job submission).
@@ -77,9 +85,17 @@ chmod 777 /var/run/rivault
 if [[ -d /opt/umrs ]]; then
     echo "UMRS sources detected at /opt/umrs"
     if command -v pip3 >/dev/null 2>&1; then
-        echo "Installing UMRS Python requirements (may take a while)..."
-        pip3 install --no-cache-dir -r /opt/umrs/requirements.txt || true
-        echo "UMRS requirements installed. Server will be started shortly."
+        # Requirements are pre-installed at image build time.
+        # Only re-install if the bind-mounted requirements.txt differs from the baked copy.
+        if [[ -f /opt/umrs/requirements.txt ]]; then
+            if diff -q /opt/umrs/requirements.txt /opt/umrs-requirements.txt >/dev/null 2>&1; then
+                echo "Python requirements already installed (matching image build)."
+            else
+                echo "Requirements changed since image build, updating..."
+                pip3 install --no-cache-dir -r /opt/umrs/requirements.txt || true
+                cp /opt/umrs/requirements.txt /opt/umrs-requirements.txt 2>/dev/null || true
+            fi
+        fi
 
         # Ensure UMRS config directory structure exists
         UMRS_CFG_DIR="${HOME}/.config/umrs"
@@ -144,6 +160,15 @@ fi
 echo "Starting slurmctld in background..."
 # If slurmctl command available, use it; otherwise fall back to any provided CMD/args
 if command -v slurmctld >/dev/null 2>&1; then
+    # Clean incompatible state files from previous Slurm versions to avoid
+    # "Can not recover last_conf_lite, incompatible version" fatal errors.
+    if [[ -f /var/spool/slurmctld/last_config_lite ]]; then
+        echo "  Clearing stale slurmctld state (version upgrade safe)..."
+        rm -f /var/spool/slurmctld/last_config_lite \
+              /var/spool/slurmctld/last_config_lite.old \
+              /var/spool/slurmctld/clustername
+        chown -R slurm:slurm /var/spool/slurmctld
+    fi
     slurmctld &
 else
     if [ "$#" -gt 0 ]; then
@@ -156,7 +181,15 @@ fi
 # Start RAG service in background if UMRS_RAG_ENABLE is set
 if [[ "${UMRS_RAG_ENABLE:-0}" == "1" ]] && [[ -f /opt/umrs/rag_service.py ]]; then
     echo "Starting UMRS RAG service in background (port ${UMRS_RAG_PORT:-8081})..."
-    UMRS_CONFIG="${HOME}/.config/umrs" \
+    # Ensure conf_umrs.json is reachable at the UMRS_CONFIG directory.
+    # The compose file mounts it to /root/conf_umrs.json; symlink it into the
+    # config directory so the RAG service can discover it automatically.
+    _rag_cfg_dir="${HOME}/.config/umrs"
+    mkdir -p "${_rag_cfg_dir}"
+    if [[ -f /root/conf_umrs.json && ! -e "${_rag_cfg_dir}/conf_umrs.json" ]]; then
+        ln -s /root/conf_umrs.json "${_rag_cfg_dir}/conf_umrs.json"
+    fi
+    UMRS_CONFIG="${_rag_cfg_dir}" \
     DB_HOST="${DB_HOST:-postgres}" \
     DB_PORT="${DB_PORT:-5432}" \
     DB_SUPERUSER_PASSWORD="${DB_SUPERUSER_PASSWORD:-}" \
@@ -169,4 +202,4 @@ if [[ "${UMRS_RAG_ENABLE:-0}" == "1" ]] && [[ -f /opt/umrs/rag_service.py ]]; th
 fi
 
 echo "Starting UMRS server in foreground (this is the container's main process)"
-exec python3 /opt/umrs/server_umrs.py -c /root/conf_umrs.json
+exec python3 -u /opt/umrs/server_umrs.py -c /root/conf_umrs.json

@@ -7,7 +7,7 @@
 # The key is stored in /etc/munge and shared via Docker volume.
 # =============================================================================
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -24,7 +24,8 @@ RUN mkdir -p /etc/munge /var/log/munge /run/munge \
 COPY entrypoint-munge.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
-USER munge
+# Run entrypoint as root so it can fix permissions on the
+# bind-mounted munge-key directory, then exec munged as munge user.
 WORKDIR /run/munge
 
 ENTRYPOINT ["/entrypoint.sh"]

@@ -1,23 +1,25 @@
 #!/bin/bash
 # =============================================================================
-# Setup Demo Data: Create MinIO buckets and upload test data
+# Setup Demo Data: Upload test data to UMRS via client_umrs.py
 # =============================================================================
-# Run inside ai-login container:
-#   podman exec ai-login bash /opt/scripts/setup_demo_data.sh
+# Run inside umrs-client container:
+#   podman exec umrs-client bash /opt/scripts/setup_demo_data.sh
+#
+# Requires UMRS_SERVER_HOST env var to point to the UMRS server (e.g. ai-login).
 # =============================================================================
 
 set -e
 
 S3CFG="/root/.s3cfg"
 TEXT_DATA_DIR="/opt/test_data/text"
-IMAGE_DATA_DIR="/opt/test_data/images"
 
 TEXT_BUCKET="rivault-demo-bucket"
-IMAGE_BUCKET="rivault-image-bucket"
 
 # Path to client script (mounted from repo)
 CLIENT="/opt/umrs/client_umrs.py"
 CONF="/root/conf_umrs.json"
+USER_CONF="/root/.config/umrs/users/user_rivault.json"
+
 
 echo "============================================"
 echo "  UMRS Demo Data Setup"
@@ -27,7 +29,7 @@ echo "============================================"
 echo ""
 echo "Waiting for UMRS server..."
 for i in $(seq 1 40); do
-    if python3 "$CLIENT" ping -c "$CONF" >/dev/null 2>&1; then
+    if python3 "$CLIENT" -c "$USER_CONF" ping  >/dev/null 2>&1; then
         echo "  UMRS server is reachable."
         break
     fi
@@ -42,22 +44,11 @@ done
 echo ""
 echo "Uploading text files via client_umrs to bucket: ${TEXT_BUCKET}"
 if [ -d "$TEXT_DATA_DIR" ]; then
-    python3 "$CLIENT" upload_dir "$TEXT_DATA_DIR" "$TEXT_BUCKET" rivault_user -c "$CONF" || {
+    python3 "$CLIENT" -c "$USER_CONF" upload_dir "$TEXT_DATA_DIR" "$TEXT_BUCKET" rivault_user || {
         echo "  WARNING: client_umrs upload_dir for text failed."
     }
 else
     echo "  WARNING: ${TEXT_DATA_DIR} not found, skipping text upload."
-fi
-
-# --- Upload image files using client_umrs upload_dir ---
-echo ""
-echo "Uploading image files via client_umrs to bucket: ${IMAGE_BUCKET}"
-if [ -d "$IMAGE_DATA_DIR" ]; then
-    python3 "$CLIENT" upload_dir "$IMAGE_DATA_DIR" "$IMAGE_BUCKET" rivault_user -c "$CONF" || {
-        echo "  WARNING: client_umrs upload_dir for images failed."
-    }
-else
-    echo "  WARNING: ${IMAGE_DATA_DIR} not found, skipping image upload."
 fi
 
 # --- Verify ---
@@ -67,13 +58,8 @@ echo "  Verification"
 echo "============================================"
 
 echo ""
-echo ""
-echo "Triggering embedding computation (server-side update)..."
-python3 "$CLIENT" update -c "$CONF" || echo "  WARNING: embedding update command failed"
-
-echo ""
 echo "Fetching status summary..."
-python3 "$CLIENT" status all -c "$CONF" --output text || echo "  (status retrieval failed)"
+python3 "$CLIENT" -c "$USER_CONF" --output text status all || echo "  (status retrieval failed)"
 
 echo ""
 echo "Demo data setup complete."
