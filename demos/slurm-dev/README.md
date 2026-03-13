@@ -52,6 +52,10 @@ project for RAG chat and interactive use.
 ```bash
 cd demos/slurm-dev
 
+# 0. One-time setup: auto-detect hardware, generate .env + slurm.conf + gres.conf
+bash scripts/init-setup.sh            # interactive
+bash scripts/init-setup.sh --auto     # non-interactive (all defaults)
+
 # 1. Start container control plane
 podman-compose up -d
 
@@ -147,6 +151,7 @@ model and the always-on chat LLM both need the GPU. Run them sequentially:
 
 | Script | Description | Run from |
 |--------|-------------|----------|
+| `scripts/init-setup.sh` | One-time setup: auto-detect hardware, generate configs | Host |
 | `scripts/run_e2e_demo.sh` | Complete E2E orchestration (includes DB embedding verification) | Host |
 | `scripts/setup_demo_data.sh` | Create MinIO buckets, upload test data | ai-login or umrs-client |
 | `scripts/demo_text_rag.py` | Text RAG: upload, embed, search, QA | umrs-client |
@@ -287,6 +292,7 @@ slurm-dev/
 ├── test_data/
 │   └── text/                  # Science text documents for RAG
 ├── scripts/
+│   ├── init-setup.sh          # One-time setup (hardware detect + config gen)
 │   ├── start-host-slurmd.sh   # Start slurmd + munged on host
 │   ├── setup-slurmd-systemd.sh # Setup slurmd via systemd (cgroup v2)
 │   ├── run_e2e_demo.sh        # Full E2E demo orchestration
