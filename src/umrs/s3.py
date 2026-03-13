@@ -62,7 +62,7 @@ def s3_key_exists(s3, bucket_name, key):
 def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list):
 
 
-    server = get_s3_server_name(s3_connection)
+    server_name = get_s3_server_name(s3_connection)
     config = {}
 
     config_path = os.path.expanduser(admin_s3_configuration_file)
@@ -76,6 +76,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
 
     for bucket in bucket_list:
         if not check_bucket_path(s3_connection, bucket, indent=False):
+            print("\t\t\t--> Creating bucket {bucket}")
             s3_connection.create_bucket(
                 Bucket=bucket,
                 CreateBucketConfiguration={
@@ -83,7 +84,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
                 }
             )
 
-    if server == "MinIO":
+    if server_name == "MinIO":
         from umrs.minio import minio_s3_create_user, minio_grant_user_access
         alias = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)            
         if alias:
@@ -91,7 +92,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
                 minio_grant_user_access(username, bucket, alias)
 
     else:
-        sys.exit(f"Do not know how to create user and buckets for server '{server}'") 
+        sys.exit(f"Do not know how to create user and buckets for server '{server_name}'") 
 
 
         
@@ -163,15 +164,16 @@ def make_path_to_bucket_string(xp_name, bucket_alias, username, output=False):
     
 def check_bucket_path(s3, path_to_bucket, indent = True, exit_on_error = True):
     if indent:
-        print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'... ", end="")
+        print(f"\t\t\t--> Checking bucket '{path_to_bucket}'... ", end="")
     else:
-        print(f"--> Checking Bucket '{path_to_bucket}'... ", end="")
+        print(f"--> Checking bucket '{path_to_bucket}'... ", end="")
         
     try:
         s3.head_bucket(Bucket = path_to_bucket)
             
     except ClientError as e:
         if e.response["Error"]["Code"] == "404":
+            print("Not Found")
             return False #Not found 
         else:
             if exit_on_error:
@@ -197,7 +199,7 @@ def check_bucket_name(s3, xp_name, bucket_alias, username, output=False, indent=
 
 def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, output=False):
 
-    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=output)
+    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=output, indent=True)
     if success:    
         print(f"\t\t\t--> Bucket '{path_to_bucket}' already exists!")
         # add_bucket_sqs_queue(s3, path_to_bucket)

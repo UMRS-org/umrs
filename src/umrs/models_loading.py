@@ -8,7 +8,7 @@ from typing import Optional
 
 
 class UmrsModel:
-    def __init__(self, model_name: str, type: str, return_type: str, embedding_vector_size: int, max_tokens: Optional[int], model, input_type: str, compute_func, modality, spacy_model, tokenizer):
+    def __init__(self, model_name: str, type: str, return_type: str, embedding_vector_size: int, max_tokens: Optional[int], model, input_type: str, compute_func, modality, spacy_model, tokenizer, device = None):
         self.model_name = model_name
         self.type = type
         self.return_type = return_type
@@ -17,7 +17,10 @@ class UmrsModel:
         self.input_type = input_type
         self.model = model
         self.modality = modality
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        if device is None:
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        else:
+            self.device = device
         self.tokenizer = tokenizer
         if self.model and hasattr(self.model, "to"):
             self.model.to(self.device)
@@ -45,6 +48,8 @@ def load_model(model_cfg, modality):
     
     tokenizer = None
     max_tokens = None
+    device = None
+
     spacy_model = model_cfg.get("spacy_model", None)
     model_mode = model_cfg.get("model_mode", None)
     cfg_file = model_cfg.get("model_cfg_file", None)
@@ -71,10 +76,17 @@ def load_model(model_cfg, modality):
         max_tokens = tokenizer.model_max_length
         compute_func = compute_embeddings_transformer_encoder
         input_type = "text"
+    elif model_type == "HMAE" :
+        from .models.masked_autoencoder import load_masked_autoencoder_infer, infer_masked_autoencoder
+        model, device = load_masked_autoencoder_infer(cfg_file, checkpoint_path, model_name)
+        type = "loaded"
+        compute_func = infer_masked_autoencoder(modality, cfg_file)
+        input_type = "raw_image"
     elif model_type == "MAE" :
         from .models.masked_autoencoder import load_masked_autoencoder, compute_embeddings_masked_autoencoder
         model = load_masked_autoencoder(cfg_file, checkpoint_path)
         type = "loaded"
+        print("MAE model loaded")
         compute_func = compute_embeddings_masked_autoencoder
         input_type = "raw_image"
     elif model_type.startswith("openai://"):
@@ -120,5 +132,5 @@ def load_model(model_cfg, modality):
 
 
     # Create and return the EmbeddingModel object
-    return UmrsModel(model_name, type, return_type, vector_size, max_tokens, model, input_type, compute_func, modality, spacy_model, tokenizer)
+    return UmrsModel(model_name, type, return_type, vector_size, max_tokens, model, input_type, compute_func, modality, spacy_model, tokenizer, device = device)
 
