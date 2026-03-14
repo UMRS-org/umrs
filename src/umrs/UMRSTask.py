@@ -210,6 +210,7 @@ class UMRSTask:
     def update_status(self, task_id: int, new_status: str, verbose=False):
         """Update the status of a single task, retry once on SQLite error."""
         if verbose:
+            import traceback
             traceback.print_stack()
 
         for attempt in range(1, self.max_attempts + 1):

@@ -800,6 +800,8 @@ def make_update_status_callback(task_manager, task_id):
     The returned function accepts a `status` argument when called.
     """
     def callback(status):
+        # import traceback
+        # traceback.print_exc()  # prints the full traceback
         task_manager.tasks_status.update_status(task_id, status)
     return callback
 
@@ -873,8 +875,10 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
                 task_manager.tasks_status.update_status(task_id, TaskStatus.UNKNOWN)
             finished_threads_ident_list =  task_manager.active_threads.clean_finished_threads()
-            print(f"{finished_threads_ident_list=}")
-            task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
+            # we should not update tehg status of finsish tasks here becaue the thread in charge if this task should do it 
+            # If the thread fails then the status stays to what it was at fail time
+            # print(f"{finished_threads_ident_list=}")
+            # task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
             
             # After any event and cleanup, update per-user task status summaries
             try:
@@ -887,7 +891,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
     except KeyboardInterrupt:
         print("\nInterrupted by user. Waiting for running tasks to finish...")
         finished_threads_ident_list = task_manager.active_threads.waitall()
-        task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
+        # task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
         task_manager.active_threads.close()
         task_manager.tasks_status.close()
         print("All tasks finished. Exiting now.")
