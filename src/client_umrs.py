@@ -42,7 +42,7 @@ def configure_buckets(user_cfg, buckets_cfg):
                 output_path_to_bucket = None
             # print(bucket_alias, username, xp_name, modality_name)
             metadata = metadata_dict(modality["sql"])
-            entry = ClientBucketEntry(   
+            entry = ClientBucketEntry(
                 path_to_bucket,
                 username,
                 xp_name,
@@ -261,6 +261,41 @@ subparsers.add_parser('update', help='Update embeddings only for missing/mismatc
 subparsers.add_parser('check', help='Check consistency between S3 objects and DB (server-side)')
 rl_p = subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
 
+# Export embeddings from pgvector
+ee_p = subparsers.add_parser('export_embeddings', help='Export computed embeddings from pgvector database to a local file')
+ee_p.add_argument(
+    'bucket_alias',
+    help=(
+        "Alias of a bucket as defined in the client configuration file.\n"
+        "Use the list_bucket command to show available bucket aliases for a given user."
+    )
+)
+ee_p.add_argument(
+    'local_path',
+    help='Local file path to write the exported embeddings'
+)
+ee_p.add_argument(
+    '--format', choices=['csv', 'jsonl'], default='csv', dest='export_format',
+    help='Output format (default: csv)'
+)
+ee_p.add_argument(
+    '--db-host', default=None,
+    help='PostgreSQL host (default: env DB_HOST or POSTGRES_HOST or localhost)'
+)
+ee_p.add_argument(
+    '--db-port', type=int, default=None,
+    help='PostgreSQL port (default: env DB_PORT or 5432)'
+)
+ee_p.add_argument(
+    '--db-user', default=None,
+    help='PostgreSQL superuser (default: env DB_SUPERUSER or POSTGRES_USER or postgres)'
+)
+ee_p.add_argument(
+    '--db-password', default=None,
+    help='PostgreSQL password (default: env DB_SUPERUSER_PASSWORD or POSTGRES_PASSWORD or postgres)'
+)
+ee_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
+
 
 args = parser.parse_args()
 
@@ -284,8 +319,8 @@ configure_file = args.conf
 # Only enforce config file for legacy mode or actions that need bucket/user config
 status_needs_config = args.action == 'status' and not getattr(args, 'username', None)
 requires_config =  args.action in {
-    'list_buckets', 'upload_file', 'upload_dir', "download_results", 
-    "recompute", "update", "reload"
+    'list_buckets', 'upload_file', 'upload_dir', "download_results",
+    "recompute", "update", "reload", "export_embeddings"
 } or status_needs_config
 
 if requires_config and not os.path.exists(configure_file):
@@ -380,14 +415,112 @@ try:
         finally:
             control_mq.close()
         sys.exit(0)
+    # Export embeddings directly from pgvector (no S3 needed)
+    if args.action == 'export_embeddings':
+        try:
+            bucket_alias_arg = getattr(args, 'bucket_alias')
+            bucket_alias, _ = decompose_bucket_alias_arg(bucket_alias_arg)
+            entry = buckets_cfg.get(bucket_alias)
+            if entry is None:
+                print(api_json(status='error', message=f'Bucket alias not found: {bucket_alias}', output_format=args.output))
+                control_mq.close()
+                sys.exit(1)
+            db_name = entry.db_name
+            xp_name = entry.xp_name
+            modality_name = entry.modality_name
+            # Look up table_name from user config
+            table_name = None
+            for xp in user.get('experiences', []):
+                if xp['xp_name'] == xp_name:
+                    for mod in xp['modalities']:
+                        if mod['modality_name'] == modality_name:
+                            table_name = mod['sql']['table_name']
+                            break
+                    break
+            if not table_name:
+                print(api_json(status='error', message=f'Cannot find table_name for {xp_name}/{modality_name}', output_format=args.output))
+                control_mq.close()
+                sys.exit(1)
+            # Resolve DB connection parameters
+            db_host = args.db_host or os.environ.get('DB_HOST', os.environ.get('POSTGRES_HOST', 'localhost'))
+            db_port = args.db_port or int(os.environ.get('DB_PORT', '5432'))
+            db_user = args.db_user or os.environ.get('DB_SUPERUSER', os.environ.get('POSTGRES_USER', 'postgres'))
+            db_password = args.db_password or os.environ.get('DB_SUPERUSER_PASSWORD', os.environ.get('POSTGRES_PASSWORD', 'postgres'))
+            import psycopg2
+            conn = psycopg2.connect(dbname=db_name, user=db_user, password=db_password, host=db_host, port=db_port)
+            try:
+                with conn.cursor() as cur:
+                    # Discover columns for the table
+                    cur.execute(
+                        "SELECT column_name FROM information_schema.columns "
+                        "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
+                        (table_name,)
+                    )
+                    columns = [row[0] for row in cur.fetchall()]
+                    if not columns:
+                        print(api_json(status='error', message=f'Table {table_name} not found in database {db_name}', output_format=args.output))
+                        sys.exit(1)
+                    if 'embedding' not in columns:
+                        print(api_json(status='error', message=f'Table {table_name} has no embedding column', output_format=args.output))
+                        sys.exit(1)
+                    # Query all rows
+                    from psycopg2 import sql as psql
+                    cur.execute(psql.SQL("SELECT {} FROM {}").format(
+                        psql.SQL(', ').join(psql.Identifier(c) for c in columns),
+                        psql.Identifier(table_name)
+                    ))
+                    rows = cur.fetchall()
+                    # Write output
+                    local_path = args.local_path
+                    os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
+                    if args.export_format == 'csv':
+                        import csv
+                        with open(local_path, 'w', newline='', encoding='utf-8') as f:
+                            writer = csv.writer(f)
+                            writer.writerow(columns)
+                            for row in rows:
+                                writer.writerow([
+                                    str(v) if v is not None else '' for v in row
+                                ])
+                    else:  # jsonl
+                        with open(local_path, 'w', encoding='utf-8') as f:
+                            for row in rows:
+                                record = {}
+                                for col, val in zip(columns, row):
+                                    if val is None:
+                                        record[col] = None
+                                    elif isinstance(val, (int, float, bool)):
+                                        record[col] = val
+                                    else:
+                                        record[col] = str(val)
+                                f.write(_json.dumps(record, ensure_ascii=False) + '\n')
+                    print(api_json(
+                        action='export_embeddings',
+                        database=db_name,
+                        table=table_name,
+                        rows_exported=len(rows),
+                        columns=columns,
+                        local_path=local_path,
+                        format=args.export_format,
+                        output_format=args.output
+                    ))
+            finally:
+                conn.close()
+        except Exception as e:
+            print(api_json(status='error', action='export_embeddings', message=str(e), output_format=args.output))
+            if args.verbose:
+                traceback.print_exc()
+        finally:
+            control_mq.close()
+        sys.exit(0)
     # For upload_* actions we need configuration + bucket alias
     bucket_alias_arg = getattr(args, 'bucket_alias')
     bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
-    
+
     selected_fields = ["username", "xp_name", "modality_name", "s3_configuration_file", "metadata"]
     if args.action == "download_results":
         selected_fields.append("output_path_to_bucket")
-    else : 
+    else :
         selected_fields.append("path_to_bucket")
     username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = buckets_cfg.get(bucket_alias, filter=selected_fields)
 
@@ -464,7 +597,7 @@ def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, met
                 s3_key_list = []
                 for line in file.readlines():
                     line = line.strip()
-                    if line != "" : # skip empty lines as it brings nothing and as it slows down the process 
+                    if line != "" : # skip empty lines as it brings nothing and as it slows down the process
                         s3_key = s3_store_txt(s3, full_bucket_name, subdir, line, data_mq, metadata_args)
                         s3_key_list.append(s3_key)
                         nb_objects += 1
@@ -519,7 +652,7 @@ def download_results(args, full_bucket_name, modality, subdir):
             "output_format": args.output,
         }
         return False, response
-        
+
 
     # check if the target path exists
     if not os.path.exists(args.local_path):
@@ -532,7 +665,7 @@ def download_results(args, full_bucket_name, modality, subdir):
             "output_format": args.output,
         }
         return False, response
-    
+
     done = False
     print_only_new = False
     objects_received = set()
@@ -541,7 +674,7 @@ def download_results(args, full_bucket_name, modality, subdir):
         #get the list of objects on s3 server
         objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
         #down load these object talink into account if we force overwrite or not
-        downloaded_object_set = download_objects(s3, objects_list, checksums, args.local_path, 
+        downloaded_object_set = download_objects(s3, objects_list, checksums, args.local_path,
                             force_overwrite=args.force_overwrite, verbose=args.verbose, print_only_new=print_only_new)
         objects_received.update(downloaded_object_set)
         # for now print only new dowloaded files
@@ -566,7 +699,7 @@ def download_results(args, full_bucket_name, modality, subdir):
             # pprint(data, width=100)
             # Check whether all tasks related to this bucket are finished.
             # If there exists at least one task whose status is not "Done"
-            # and whose work bucket matches the requested bucket prefix 
+            # and whose work bucket matches the requested bucket prefix
             # and are of processing S3 objectstype ,
             # then the computation is still running.
             done = not any(
@@ -577,7 +710,7 @@ def download_results(args, full_bucket_name, modality, subdir):
                 )
                 for entry in data
             )
-        if not done : 
+        if not done :
             if verbose:
                 print("Waiting for update")
             res = control_mq.wait_for_new_data(effective_username, full_bucket_name, timeout=timeout)
@@ -585,15 +718,15 @@ def download_results(args, full_bucket_name, modality, subdir):
                 timeout = min(timeout*2, 64)
             elif res == "UPDATE":
                 timeout= 1
-            else : 
+            else :
                 if verbose:
                     print(f"Error: receiving '{res}' from server while waiting to be notified for new data")
-    # print("Done. Final check...")    
-    # Do it one more time in case the server finished after the last check 
+    # print("Done. Final check...")
+    # Do it one more time in case the server finished after the last check
     # get the list of objects on s3 server
     objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
     #down load these object talink into account if we force overwrite or not
-    downloaded_object_set =download_objects(s3, objects_list, checksums, args.local_path, 
+    downloaded_object_set =download_objects(s3, objects_list, checksums, args.local_path,
                         force_overwrite=args.force_overwrite, print_only_new=print_only_new)
 
     objects_received.update(downloaded_object_set)
@@ -602,11 +735,11 @@ def download_results(args, full_bucket_name, modality, subdir):
             "status": "ok",
             "message": f"Files downloaded with overwrite={args.force_overwrite}",
             "bucket": full_bucket_name,
-            "local_path": args.local_path, 
+            "local_path": args.local_path,
             "subdir": subdir,
             "modality": modality,
             "output_format": args.output,
-            "objects_received": f"{sorted(objects_received)}", 
+            "objects_received": f"{sorted(objects_received)}",
         }
     return True, response
 
@@ -629,8 +762,8 @@ try:
     elif action == "download_results":
         ok, response = download_results(args, full_bucket_name, modality, subdir)
         print(api_json(**response))
-        
-                            
+
+
 except Exception as e:
     print(api_json(status='error', message=str(e), output_format=args.output))
     if args.verbose:
