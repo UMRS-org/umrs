@@ -504,7 +504,7 @@ def process_dir(path, s3, full_bucket_name, subdir, modality, data_mq, metadata_
         control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
     return s3_key_list, file_list
 
-def download_results(args, full_bucket_name, modality, subdir):
+def download_results(args, full_output_bucket_name, modality, subdir):
     effective_username = args.username
     verbose = args.verbose
     if not effective_username and isinstance(user, dict):
@@ -513,7 +513,7 @@ def download_results(args, full_bucket_name, modality, subdir):
         response = {
             "status": "error",
             "message": f"Cannot find effective username for {args.username}",
-            "bucket": full_bucket_name,
+            "bucket": full_output_bucket_name,
             "subdir": subdir,
             "modality": modality,
             "output_format": args.output,
@@ -526,7 +526,7 @@ def download_results(args, full_bucket_name, modality, subdir):
         response = {
             "status": "error",
             "message": f"Local path {args.local_path} does not exists",
-            "bucket": full_bucket_name,
+            "bucket": full_output_bucket_name,
             "subdir": subdir,
             "modality": modality,
             "output_format": args.output,
@@ -535,15 +535,20 @@ def download_results(args, full_bucket_name, modality, subdir):
     
     done = False
     print_only_new = False
-    objects_received = set()
+    files_received = set()
+    files_skipped = set()
     timeout = 1
+
+    # check the output bucket until the server has finish processing the input bucket for thi username
+    # 
     while not done: # loop until we are sure the server has done with this bucket
         #get the list of objects on s3 server
-        objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+        objects_list, _, checksums = list_s3_bucket(s3, full_output_bucket_name, prefix=subdir)
         #down load these object talink into account if we force overwrite or not
-        downloaded_object_set = download_objects(s3, objects_list, checksums, args.local_path, 
+        downloaded_files_set, skipped_files_set = download_objects(s3, objects_list, checksums, args.local_path, files_received,
                             force_overwrite=args.force_overwrite, verbose=args.verbose, print_only_new=print_only_new)
-        objects_received.update(downloaded_object_set)
+        files_received.update(downloaded_files_set)
+        files_skipped.update(skipped_files_set)
         # for now print only new dowloaded files
         print_only_new = True
         # now we need to check if the server is still computing things for this bucket
@@ -556,7 +561,7 @@ def download_results(args, full_bucket_name, modality, subdir):
 
         # if there is no entry, we are done
         message = parsed.get("message")
-        if  message == "No status entries":
+        if  message == "No status entries" or message == "No status for 'process_objects'":
             done=True
         else : #if there are entries, check the one that correspond to this bucket
             # first extract data
@@ -572,7 +577,7 @@ def download_results(args, full_bucket_name, modality, subdir):
             done = not any(
                 entry["status"] != "Done"
                 and any(
-                    full_bucket_name.startswith(w["bucket"]) # and w["work_type"] == "process_objects"
+                    full_output_bucket_name.startswith(w["bucket"]) # and w["work_type"] == "process_objects"
                     for w in entry["work"]
                 )
                 for entry in data
@@ -580,7 +585,7 @@ def download_results(args, full_bucket_name, modality, subdir):
         if not done : 
             if verbose:
                 print("Waiting for update")
-            res = control_mq.wait_for_new_data(effective_username, full_bucket_name, timeout=timeout)
+            res = control_mq.wait_for_new_data(effective_username, full_output_bucket_name, timeout=timeout)
             if res == "TIMEOUT":
                 timeout = min(timeout*2, 64)
             elif res == "UPDATE":
@@ -591,22 +596,24 @@ def download_results(args, full_bucket_name, modality, subdir):
     # print("Done. Final check...")    
     # Do it one more time in case the server finished after the last check 
     # get the list of objects on s3 server
-    objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+    objects_list, total_size, checksums = list_s3_bucket(s3, full_output_bucket_name, prefix=subdir)
     #down load these object talink into account if we force overwrite or not
-    downloaded_object_set =download_objects(s3, objects_list, checksums, args.local_path, 
+    downloaded_files_set, skipped_files_set = download_objects(s3, objects_list, checksums, args.local_path, files_received, 
                         force_overwrite=args.force_overwrite, print_only_new=print_only_new)
-
-    objects_received.update(downloaded_object_set)
-
+    
+    files_received.update(downloaded_files_set)
+    files_skipped.update(skipped_files_set)
+   
     response = {
             "status": "ok",
             "message": f"Files downloaded with overwrite={args.force_overwrite}",
-            "bucket": full_bucket_name,
+            "bucket": full_output_bucket_name,
             "local_path": args.local_path, 
             "subdir": subdir,
             "modality": modality,
             "output_format": args.output,
-            "objects_received": f"{sorted(objects_received)}", 
+            "files_received": f"{sorted(files_received)}", 
+            "files_skipped": f"{sorted(files_skipped)}", 
         }
     return True, response
 
@@ -627,6 +634,7 @@ try:
         else:
             print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
     elif action == "download_results":
+        # here full_bucket_name is the output bucket
         ok, response = download_results(args, full_bucket_name, modality, subdir)
         print(api_json(**response))
         
