@@ -11,8 +11,9 @@
 #   Phase 3  – Upload demo data
 #   Phase 4  – Wait for embeddings to finish
 #   Phase 5  – Verify embeddings in pgvector
-#   Phase 6  – RAG semantic search demo (no LLM needed)
-#   Phase 7  – Summary
+#   Phase 6  – Download computed embeddings to client
+#   Phase 7  – RAG semantic search demo (no LLM needed)
+#   Phase 8  – Summary
 #
 # The always-on LLM stack (demo-llm.yaml) is NOT started by this script.
 # Launch it separately if you need RAG Q&A:
@@ -498,9 +499,37 @@ phase5_verify_embeddings_in_db() {
     return 0
 }
 
-phase6_rag_search_demo() {
+phase6_download_embeddings() {
     echo
-    log "Phase 6: Running RAG semantic search demo"
+    log "Phase 6: Downloading computed embeddings to client"
+
+    local download_dir="/tmp/umrs-demo-embeddings"
+    local export_file="$download_dir/embeddings.csv"
+    podman exec "$UMRS_CLIENT_CONTAINER" mkdir -p "$download_dir"
+
+    log ">>> podman exec $UMRS_CLIENT_CONTAINER python3 /opt/umrs/client_umrs.py -c $USER_CONF export_embeddings rivault-demo-bucket $export_file --format csv --db-host postgres --db-user $PG_SUPERUSER"
+    podman exec -e DB_SUPERUSER_PASSWORD="$PG_SUPERUSER_PASSWORD" \
+        "$UMRS_CLIENT_CONTAINER" python3 /opt/umrs/client_umrs.py \
+        -c "$USER_CONF" --no-check-server export_embeddings \
+        "rivault-demo-bucket" "$export_file" \
+        --format csv \
+        --db-host postgres \
+        --db-user "$PG_SUPERUSER" || {
+        warn "export_embeddings failed"
+        return 1
+    }
+
+    # Show exported file info
+    log "Exported embedding file:"
+    podman exec "$UMRS_CLIENT_CONTAINER" ls -lh "$export_file" || true
+    podman exec "$UMRS_CLIENT_CONTAINER" head -3 "$export_file" || true
+
+    log "Embedding data export complete (stored in $UMRS_CLIENT_CONTAINER:$export_file)"
+}
+
+phase7_rag_search_demo() {
+    echo
+    log "Phase 7: Running RAG semantic search demo"
 
     # The RAG service runs inside ai-login on port 8081.
     # We call /rag/search which only needs embeddings (no LLM required).
@@ -609,9 +638,9 @@ except Exception as e:
     log "RAG search demo complete (vector / hybrid / reranking)"
 }
 
-phase7_summary() {
+phase8_summary() {
     echo
-    log "Phase 7: E2E embedding demo complete"
+    log "Phase 8: E2E embedding demo complete"
     echo
     echo "Services running:"
     echo "  UMRS ZMQ server:   localhost:5555"
@@ -644,10 +673,13 @@ main() {
     phase5_verify_embeddings_in_db || {
         warn "Phase 5: Embedding verification FAILED"
     }
-    phase6_rag_search_demo || {
-        warn "Phase 6: RAG search demo had issues"
+    phase6_download_embeddings || {
+        warn "Phase 6: Embedding download had issues"
     }
-    phase7_summary
+    phase7_rag_search_demo || {
+        warn "Phase 7: RAG search demo had issues"
+    }
+    phase8_summary
 }
 
 main "$@"
