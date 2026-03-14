@@ -432,7 +432,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     if sql_cfg["store_embeddings"] == "yes":
         store_embeddings_flag = True
         vector_size = model.embedding_vector_size
-        column = {"name": "embedding", "type": f"VECTOR({vector_size})"}
+        column = {"name": "embedding", "type": f"VECTOR({vector_size}) NOT NULL"}
         table_columns.append(column)
         column = {"name": "model", "type": "TEXT"}
         table_columns.append(column)
@@ -573,6 +573,8 @@ def store_one_entry_in_db(data_base, embedding, table_name, bucket_name, s3_key,
         # Initialize the list of values corresponding to the columns
         values = [s3_object, date, time, checksum, model_name]
 
+        print(f"{save_embedding=}\n{embedding=}")
+
         if save_embedding:
             # Ensure embedding is a list before inserting
             embedding = embedding.tolist() if hasattr(embedding, "tolist") else embedding
@@ -686,7 +688,7 @@ def store_one_entry_in_db(data_base, embedding, table_name, bucket_name, s3_key,
                 conn.rollback()
         except Exception as rollback_exc:
             print(f"\t--> Error during rollback: {rollback_exc}")
-        print(f"\t--> Error storing entry for query: {e}")
+        print(f"\t--> Error storing entry for query {query}: {e}")
 
     finally:
         if cur is not None:

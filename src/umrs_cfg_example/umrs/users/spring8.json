@@ -38,7 +38,7 @@
         },{
           "modality_name": "tomography_reconstruction",
           "s3": {
-            "bucket_alias": "bucket-reconstrcution",
+            "bucket_alias": "bucket-reconstruction",
             "data": {
               "type": "file",
               "mime_type": "image/raw"
