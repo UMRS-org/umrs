@@ -239,11 +239,14 @@ def recompute_all_objects(active_threads, username, buckets_cfg, device, embeddi
 
     recompute_dict = {}
 
+    user_id_set = set()
+
     for path_to_bucket, entry in buckets_cfg.items():
         with entry.reentrant_lock :
             # skip none matching username
             if username is not None and username != entry.s3_username:
                 continue
+            user_id_set.add(username)
             s3_objects, total_size, _ = list_s3_bucket(entry.s3_connection, path_to_bucket)
             if len(s3_objects) > 0:
                 start_time = time.perf_counter()
@@ -276,7 +279,7 @@ def recompute_all_objects(active_threads, username, buckets_cfg, device, embeddi
     filter_outcome(active_threads, outcome, buckets_cfg, key)
     # execute callback to update task status to completed
     if update_status_callback:
-        update_status_callback(TaskStatus.COMPLETED)
+        update_status_callback(TaskStatus.COMPLETED, mark_uncompleted_to_overridden=True, user_id_list=list(user_id_set))
 
 
 
@@ -288,12 +291,14 @@ def update_objects(active_threads, username, buckets_cfg, device, embedding_back
         update_status_callback(TaskStatus.RUNNING)
 
     update_dict = {}
+    user_id_set = set()
 
     for path_to_bucket, entry in buckets_cfg.items():
        with entry.reentrant_lock :
             # skip none matching username
             if username is not None and username != entry.s3_username:
                 continue
+            user_id_set.add(username)
             s3_objects, total_size, checksums = list_s3_bucket(entry.s3_connection, path_to_bucket)
             status = check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, buckets_cfg)
 
@@ -337,7 +342,7 @@ def update_objects(active_threads, username, buckets_cfg, device, embedding_back
 
     # execute callback to update task status to completed
     if update_status_callback:
-        update_status_callback(TaskStatus.COMPLETED)
+        update_status_callback(TaskStatus.COMPLETED, mark_uncompleted_to_overridden=True, user_id_list=list(user_id_set))
 
 
 
@@ -505,7 +510,7 @@ def check_duplicated_database(users):
             databases_name_dict[db_name] = username
 
 
-def perform_initial_config(configure_file, status_store):
+def perform_initial_config(configure_file, status_store, task_manager):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
@@ -521,7 +526,7 @@ def perform_initial_config(configure_file, status_store):
 
     # Create the tmp_dir if it does not exist
     os.makedirs(tmp_dir, exist_ok=True)
-    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir, status_store=status_store)
+    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir, task_manager = task_manager, status_store=status_store)
     # Align MessageQueue debug with server pretty-print setting (off by default)
     try:
         control_mq.set_debug(ENABLE_PRETTY_PRINT)
@@ -799,10 +804,13 @@ def make_update_status_callback(task_manager, task_id):
     Return a callback function that updates the task status for the given task_id.
     The returned function accepts a `status` argument when called.
     """
-    def callback(status):
+    def callback(status, mark_uncompleted_to_overridden=False, user_id_list=[]):
         # import traceback
         # traceback.print_exc()  # prints the full traceback
         task_manager.tasks_status.update_status(task_id, status)
+        if mark_uncompleted_to_overridden :
+            for user_id in user_id_list:
+                task_manager.tasks_status.mark_uncompleted_tasks(user_id=user_id, cmd=TaskCmd.PROCESS_OBJECTS, new_status=TaskStatus.OVERRIDDEN)
     return callback
 
 def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file):
@@ -902,8 +910,10 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
     # do in this order
     if args.force_recompute:
         recompute_all_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.RECOMPUTE.lower(), log_output=ENABLE_PRETTY_PRINT)
+        task_manager.tasks_status.mark_uncompleted_tasks(user_id=None, cmd=TaskCmd.PROCESS_OBJECTS, new_status=TaskStatus.OVERRIDDEN)
     if args.force_update:
         update_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.UPDATE.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
+        task_manager.tasks_status.mark_uncompleted_tasks(user_id=None, cmd=TaskCmd.PROCESS_OBJECTS, new_status=TaskStatus.OVERRIDDEN)
     if args.check_objects:
         check_objects(task_manager.active_threads, buckets_cfg, TaskCmd.CHECK.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
     if args.check_incomplete_command:
@@ -1003,7 +1013,7 @@ def main():
     task_manager = TaskManager(status_store, thread_dict, f"{get_default_db_subdir()}/tasks.db")
     
 
-    control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store)
+    control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store, task_manager)
     handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
     cfg_summary = pretty_print_cfg(server_cfg, print_output=ENABLE_PRETTY_PRINT)
     task_manager.active_threads.record_status("system", "config", {"summary": cfg_summary})

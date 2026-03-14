@@ -11,7 +11,7 @@ BASE_PORT = 5555
 DEFAULT_NB_MSG = 10240
 class MessageQueue:
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
-                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, status_store=None):
+                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None, status_store=None):
         """
         Initializes the MessageQueue.
 
@@ -38,6 +38,7 @@ class MessageQueue:
         self.timeout = timeout_ms
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
         self.tmp_dir = tmp_dir
+        self.task_manager = task_manager
         self.status_store = status_store
         self.debug = False  # disable noisy send/recv logs by default
 
@@ -539,24 +540,28 @@ class MessageQueue:
     def _get_status_payload(self, client_id, status_key):
         store = self.status_store or {}
         key = (status_key or "all").lower()
-
+  
         if not client_id:
             payload = {"status": "error", "message": "Missing client identifier"}
             return json.dumps(payload, ensure_ascii=False)
 
+        uncompleted_key_list = None
+        if self.task_manager is not None:
+            uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(client_id, status_key)
+  
         client_store = store.get(client_id, {})
         if key in ("all", "*"):
             if not client_store:
-                payload = {"status": "error", "message": "No status entries", "client": client_id}
+                payload = {"status": "error", "message": "No status entries", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
             else:
-                payload = {"status": "ok", "client": client_id, "summaries": client_store}
+                payload = {"status": "ok", "client": client_id, "summaries": client_store, "uncompleted_key_list": uncompleted_key_list}
             return json.dumps(payload, ensure_ascii=False)
 
         entry = client_store.get(key)
         if not entry:
-            payload = {"status": "error", "message": f"No status for '{key}'", "client": client_id}
+            payload = {"status": "error", "message": f"No status for '{key}'", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
         else:
-            payload = {"status": "ok", "client": client_id, "summary": entry}
+            payload = {"status": "ok", "client": client_id, "summary": entry, "uncompleted_key_list": uncompleted_key_list}
         return json.dumps(payload, ensure_ascii=False)
 
     def notify_s3(self, s3_object):

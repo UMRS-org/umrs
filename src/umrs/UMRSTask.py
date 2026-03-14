@@ -27,19 +27,92 @@ class UMRSTask:
         self.max_attempts = max_attempts
 
     def _init_db(self):
-        with self.conn:
-            self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                client_id TEXT,
-                cmd TEXT,            
-                payload TEXT,
-                status TEXT,
-                submitted_at TEXT,
-                updated_at TEXT
-            )
-            """)
+        with self.conn_lock:
+            with self.conn:
+                self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_id TEXT,
+                    cmd TEXT,            
+                    payload TEXT,
+                    status TEXT,
+                    submitted_at TEXT,
+                    updated_at TEXT
+                )
+                """)
 
+    def mark_uncompleted_tasks(self, user_id=None, cmd=TaskCmd.PROCESS_OBJECTS, new_status=TaskStatus.OVERRIDDEN):
+        """
+        Change the status of all uncompleted tasks for a given cmd and user_id
+        to new_status.
+
+        If user_id is None, apply to all users.
+        """
+        with self.conn_lock:
+            now = datetime.utcnow().isoformat()
+            query = """
+                UPDATE tasks
+                SET status = ?, updated_at = ?
+                WHERE cmd = ?
+                AND status != ?
+            """
+
+            params = [new_status, now, cmd, TaskStatus.COMPLETED]
+
+            if user_id is not None:
+                query += " AND client_id = ?"
+                params.append(user_id)
+
+            with self.conn:
+                self.conn.execute(query, params)
+
+    def last_uncompleted_task(self, client_id: str, cmd: str):
+        """
+        Return the payload of the last (chronological order) task with 
+        status != 'COMPLETED' and not OVERRIDDEN  for the given cmd and client_id.
+        Returns None if not found.
+        """
+        with self.conn_lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT payload 
+                FROM tasks
+                WHERE client_id = ? AND cmd = ?
+                AND status NOT IN (?, ?)
+                ORDER BY submitted_at DESC
+                LIMIT 1
+            """, (client_id, cmd, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN))
+            row = cur.fetchone()
+        return row[0] if row else None
+
+
+    def all_uncompleted_task(self, client_id: str, cmd: str):
+        """
+        Return a list of unique payloads for all tasks with 
+        status != COMPLETED and not OVERRIDDEN for the given cmd and client_id,
+        ordered from newest to oldest, removing duplicates.
+        """
+        with self.conn_lock:
+            cur = self.conn.cursor()
+            cur.execute("""
+                SELECT payload 
+                FROM tasks
+                WHERE client_id = ? AND cmd = ? 
+                AND status NOT IN (?, ?)
+                ORDER BY submitted_at DESC
+            """, (client_id, cmd, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN))
+            rows = cur.fetchall()
+
+        seen = set()
+        unique_payloads = []
+        for row in rows:
+            payload = row[0]
+            if payload not in seen:
+                seen.add(payload)
+                unique_payloads.append(payload)
+
+        return unique_payloads
+   
     def list_incomplete_tasks(self, mark_override=False):
         """
         List unique tasks that are not completed, deduplicated by (client_id, cmd, payload).
@@ -55,9 +128,11 @@ class UMRSTask:
         dict with key = (client_id, cmd, payload) and value = status (or task dict)
         """
         (verbose and traceback.print_stack())
-        cursor = self.conn.cursor()
-        cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
-        rows = cursor.fetchall()
+        with self.conn_lock:
+            with self.conn:
+                cursor = self.conn.cursor()
+                cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
+                rows = cursor.fetchall()
 
         seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
         
@@ -126,8 +201,10 @@ class UMRSTask:
             query += " AND client_id = ?"
             params.append(client_id_filter)
 
-        cur = self.conn.execute(query, params)
-        rows = cur.fetchall()
+        with self.conn_lock:
+            with self.conn:
+                cur = self.conn.execute(query, params)
+                rows = cur.fetchall()
 
 
         wrapped_rows = []
@@ -260,7 +337,10 @@ class UMRSTask:
             query += " AND client_id = ?"
             params.append(client_id)
 
-        cur = self.conn.execute(query, params)
+        with self.conn_lock:
+            with self.conn:
+                cur = self.conn.execute(query, params)
+                
         rows = cur.fetchall()
 
         return [

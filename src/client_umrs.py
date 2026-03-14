@@ -554,34 +554,59 @@ def download_results(args, full_output_bucket_name, modality, subdir):
         # now we need to check if the server is still computing things for this bucket
         # ask the server
         raw_response = control_mq.request_status(effective_username, TaskCmd.PROCESS_OBJECTS)
+        print(f"{raw_response=}")
+
         if raw_response is None:
-            break;
+            break;        
+        
         # raw response is a string of a serialized json. transform it into json dict
         parsed = _json.loads(raw_response)
 
-        # if there is no entry, we are done
+        # here we treat the case where some tasks did not finish correctely 
+        # and warn the user it should end it again.
+        status = parsed.get("status")
         message = parsed.get("message")
+        uncompleted_key_list = parsed.get("uncompleted_key_list", None)
+        if uncompleted_key_list is not None: 
+            print("WARNING")            
+            # Transforme each string in list
+            nested_lists = [_json.loads(sublist) for sublist in uncompleted_key_list]
+            # flatten and suppress duplicates
+            unique_keys = list(set(item for sublist in nested_lists for item in sublist))
+            for key in sorted(unique_keys):
+                bucket = key.split('/')[2]
+                if bucket in full_output_bucket_name:
+                    key = key.split('/')[3]
+                    bucket_alias = bucket.split('.')[-1]
+                    print(f"Warning: key {key} in bucket alias {bucket_alias}. Did not finsihed correctely. You should ask the sever to recompute it with update command")
+
+        # if there is no entry, we are done
         if  message == "No status entries" or message == "No status for 'process_objects'":
             done=True
-        else : #if there are entries, check the one that correspond to this bucket
+        elif status == 'ok' : 
+            #if there are entries, check the one that correspond to this bucket
             # first extract data
             # from pprint import pprint
-
-            data = parsed["summary"]["data"]
-            # pprint(data, width=100)
-            # Check whether all tasks related to this bucket are finished.
-            # If there exists at least one task whose status is not "Done"
-            # and whose work bucket matches the requested bucket prefix 
-            # and are of processing S3 objectstype ,
-            # then the computation is still running.
-            done = not any(
-                entry["status"] != "Done"
-                and any(
-                    full_output_bucket_name.startswith(w["bucket"]) # and w["work_type"] == "process_objects"
-                    for w in entry["work"]
+            summary = parsed.get("summary", None)
+            if summary is not None:
+                data = summary["data"]
+                # pprint(data, width=100)
+                # Check whether all tasks related to this bucket are finished.
+                # If there exists at least one task whose status is not "Done"
+                # and whose work bucket matches the requested bucket prefix 
+                # and are of processing S3 objectstype ,
+                # then the computation is still running.
+                done = not any(
+                    entry["status"] != "Done"
+                    and any(
+                        full_output_bucket_name.startswith(w["bucket"]) # and w["work_type"] == "process_objects"
+                        for w in entry["work"]
+                    )
+                    for entry in data
                 )
-                for entry in data
-            )
+        else:
+            print(f"Received {parsed=}")
+            print(f"Not implemented. Warn developpers if seen this message")
         if not done : 
             if verbose:
                 print("Waiting for update")
