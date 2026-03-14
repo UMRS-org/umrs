@@ -86,7 +86,6 @@ def load_model(model_cfg, modality):
         from .models.masked_autoencoder import load_masked_autoencoder, compute_embeddings_masked_autoencoder
         model = load_masked_autoencoder(cfg_file, checkpoint_path)
         type = "loaded"
-        print("MAE model loaded")
         compute_func = compute_embeddings_masked_autoencoder
         input_type = "raw_image"
     elif model_type.startswith("openai://"):

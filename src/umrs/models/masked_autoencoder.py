@@ -351,7 +351,7 @@ def process_infer_masked_autoencode(self, s3, s3_keys, path_to_bucket, output_bu
                 Body=buffer.getvalue()
             )
             # logger.info(f"  Saved features: {feat_path}")
-            embedding = cls_token
+            embedding = cls_token.flatten()
         else:
             # logger.error(f"Unknown mode: {mode}")
             return

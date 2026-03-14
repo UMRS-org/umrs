@@ -573,8 +573,6 @@ def store_one_entry_in_db(data_base, embedding, table_name, bucket_name, s3_key,
         # Initialize the list of values corresponding to the columns
         values = [s3_object, date, time, checksum, model_name]
 
-        print(f"{save_embedding=}\n{embedding=}")
-
         if save_embedding:
             # Ensure embedding is a list before inserting
             embedding = embedding.tolist() if hasattr(embedding, "tolist") else embedding
