@@ -4,5 +4,5 @@ host_bucket = minio:9000/%(bucket)s
 use_https = False
 check_ssl_certificate = False
 access_key = rivault_user
-secret_key = CHANGE_ME
+secret_key = 446853bbfc341cca35f02dc7f4cf96e1
 bucket_location = us-east-1

@@ -84,7 +84,7 @@ fi
 # Use ./setup.sh rivault to start everything in the correct order.
 if [[ -d /opt/umrs ]]; then
     echo "UMRS sources detected at /opt/umrs"
-    if command -v pip3 >/dev/null 2>&1; then
+    if command -v uv >/dev/null 2>&1; then
         # Requirements are pre-installed at image build time.
         # Only re-install if the bind-mounted requirements.txt differs from the baked copy.
         if [[ -f /opt/umrs/requirements.txt ]]; then
@@ -92,7 +92,7 @@ if [[ -d /opt/umrs ]]; then
                 echo "Python requirements already installed (matching image build)."
             else
                 echo "Requirements changed since image build, updating..."
-                pip3 install --no-cache-dir -r /opt/umrs/requirements.txt || true
+                uv pip install -r /opt/umrs/requirements.txt || true
                 cp /opt/umrs/requirements.txt /opt/umrs-requirements.txt 2>/dev/null || true
             fi
         fi

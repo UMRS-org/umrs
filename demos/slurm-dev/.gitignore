@@ -10,7 +10,9 @@ munge-key/
 
 # Shared directories (host ↔ container runtime state)
 job-info/
-umrs-config/
+umrs-config/*
+# But keep vision model configs
+!umrs-config/vision_models.json
 
 # NVIDIA driver libs (copied from host CDI spec)
 nvidia-driver-libs/

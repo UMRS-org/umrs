@@ -262,7 +262,16 @@ fi
 # compute node (this host) to forward ai-login:LOCAL_PORT → 127.0.0.1:11434
 # (rootless podman only binds published ports on 127.0.0.1, not 0.0.0.0).
 # The ai-login container's root SSH public key must be in /root/.ssh/authorized_keys.
-AI_LOGIN_PUBKEY=$(podman exec ai-login cat /root/.ssh/id_ed25519.pub 2>/dev/null)
+# Note: This script runs as root (sudo), but the containers are rootless (user).
+# Try the invoking user's podman first, then fall back to root's.
+SUDO_UID="${SUDO_UID:-}"
+AI_LOGIN_PUBKEY=""
+if [[ -n "$SUDO_UID" ]]; then
+    AI_LOGIN_PUBKEY=$(runuser -u "#$SUDO_UID" -- podman exec ai-login cat /root/.ssh/id_ed25519.pub 2>/dev/null) || true
+fi
+if [[ -z "$AI_LOGIN_PUBKEY" ]]; then
+    AI_LOGIN_PUBKEY=$(podman exec ai-login cat /root/.ssh/id_ed25519.pub 2>/dev/null) || true
+fi
 if [[ -n "$AI_LOGIN_PUBKEY" ]]; then
     mkdir -p /root/.ssh
     chmod 700 /root/.ssh

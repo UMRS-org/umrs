@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "umrs"
+version = "0.1.0"
+description = "UMRS — Unified Model Registry & Storage client"
+requires-python = ">=3.10"
+dependencies = [
+    "pyzmq",
+    "boto3",
+    "pillow",
+    "psycopg2-binary",
+    "tabulate",
+    "pandas",
+    "jsonschema",
+    "charset-normalizer",
+    "requests",
+    "configparser",
+]
+
+[project.scripts]
+umrs-client = "client_umrs:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["umrs*"]
+
+[tool.setuptools]
+py-modules = ["client_umrs"]

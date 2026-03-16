@@ -11,6 +11,17 @@
 - [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed.
 - [ ] Re-run e2e demo and verify embeddings in DB via phase3b.
 
+## Pipeline Template & Demo Restructuring (2026-03-15)
+
+- [x] P1: Make `umrs-client` pip-installable (pyproject.toml + def main())
+- [x] P2: Mini-Rivault vision integration (NGINX /vision/, RIVAULT_PROFILES, env vars)
+- [x] P3: Create admin_guide.md
+- [x] P4: Create user_guide.md
+- [x] P5: Create 4 demo directories (00_start_services, 01_text_embedding, 02_sam3_segmentation, 03_hmae_inference)
+- [x] P6: Clean up broken Python-first templates
+- [x] Remove stale `import torch` from utils.py (blocked pip install)
+- [x] Fix bash brace expansion in demo scripts (`*.{jpg,png}` → `find` command)
+
 ## Review
 
 - Replaced the previous linear script with function-based orchestration and strict shell safety (`set -Eeuo pipefail`).

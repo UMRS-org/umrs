@@ -15,12 +15,21 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
+# Install uv for fast dependency management
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_SYSTEM_PYTHON=1 \
+    UV_NO_CACHE=1
+
 # Install UMRS Python requirements at build time (avoids re-installing every startup).
 # The file is kept so the entrypoint can detect when the bind-mounted source has
 # newer requirements and only re-install in that case.
 COPY src/requirements.txt /opt/umrs-requirements.txt
-RUN pip install --no-cache-dir -r /opt/umrs-requirements.txt
+RUN uv pip install -r /opt/umrs-requirements.txt
 RUN python -m spacy download en_core_web_sm || true
+
+# Install a wrapper so `umrs-client` works from the bind-mounted source at /opt/umrs
+RUN printf '#!/bin/sh\nexec python3 /opt/umrs/client_umrs.py "$@"\n' \
+    > /usr/local/bin/umrs-client && chmod +x /usr/local/bin/umrs-client
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONPATH=/opt/umrs

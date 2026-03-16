@@ -323,13 +323,13 @@ phase4_wait_for_embeddings() {
     echo
     log "Phase 4: Waiting for embedding tasks to finish (timeout: 10 minutes)"
 
-    log ">>> podman exec $UMRS_CLIENT_CONTAINER python3 /opt/umrs/client_umrs.py -c $USER_CONF --output json status all"
+    log ">>> podman exec $UMRS_CLIENT_CONTAINER umrs-client --output json status all"
 
     local attempts=60
     local i
     for i in $(seq 1 "$attempts"); do
         local status_raw status_json task_state
-        status_raw="$(podman exec "$UMRS_CLIENT_CONTAINER" python3 /opt/umrs/client_umrs.py -c "$USER_CONF" --output json status all 2>/dev/null || true)"
+        status_raw="$(podman exec "$UMRS_CLIENT_CONTAINER" umrs-client --output json status all 2>/dev/null || true)"
         status_json="$(echo "$status_raw" | grep '^{' | tail -n 1 || true)"
 
         if [[ -n "$status_json" ]]; then
@@ -353,21 +353,28 @@ def get_threads(payload):
                 yield thread
 
 payload = json.load(sys.stdin)
+in_progress = {"running", "submitted", "launched", "initializing"}
+done_states = {"completed", "done"}
 running = 0
 errors = 0
+completed = 0
 for t in get_threads(payload):
     s = str(t.get("status", "")).lower()
-    if s == "running":
+    if s in in_progress:
         running += 1
-    elif s == "error":
+    elif s in {"error", "failed", "aborted"}:
         errors += 1
+    elif s in done_states:
+        completed += 1
 
 if running > 0:
     print(f"running {running}")
 elif errors > 0:
     print(f"error {errors}")
-else:
+elif completed > 0:
     print("done")
+else:
+    print("unknown")
 ' 2>/dev/null || echo 'unknown')"
 
             case "$task_state" in
@@ -507,10 +514,10 @@ phase6_download_embeddings() {
     local export_file="$download_dir/embeddings.csv"
     podman exec "$UMRS_CLIENT_CONTAINER" mkdir -p "$download_dir"
 
-    log ">>> podman exec $UMRS_CLIENT_CONTAINER python3 /opt/umrs/client_umrs.py -c $USER_CONF export_embeddings rivault-demo-bucket $export_file --format csv --db-host postgres --db-user $PG_SUPERUSER"
+    log ">>> podman exec $UMRS_CLIENT_CONTAINER umrs-client --no-check-server export_embeddings rivault-demo-bucket $export_file --format csv --db-host postgres --db-user $PG_SUPERUSER"
     podman exec -e DB_SUPERUSER_PASSWORD="$PG_SUPERUSER_PASSWORD" \
-        "$UMRS_CLIENT_CONTAINER" python3 /opt/umrs/client_umrs.py \
-        -c "$USER_CONF" --no-check-server export_embeddings \
+        "$UMRS_CLIENT_CONTAINER" umrs-client \
+        --no-check-server export_embeddings \
         "rivault-demo-bucket" "$export_file" \
         --format csv \
         --db-host postgres \
@@ -649,7 +656,7 @@ phase8_summary() {
     echo "  UMRS RAG:          http://localhost:8081"
     echo
     echo "Useful commands:"
-    echo "  Status:      podman exec $UMRS_CLIENT_CONTAINER python3 /opt/umrs/client_umrs.py -c $USER_CONF --output json status all"
+    echo "  Status:      podman exec $UMRS_CLIENT_CONTAINER umrs-client --output json status all"
     echo "  Slurm queue: podman exec $AI_LOGIN_CONTAINER squeue"
     echo "  Logs:        podman logs $AI_LOGIN_CONTAINER"
     echo
