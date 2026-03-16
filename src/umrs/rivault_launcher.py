@@ -314,6 +314,33 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=300.0, 
         time.sleep(interval)
 
 
+def warmup_embedding_model(openai_url, model_name, api_key=None, timeout=120.0, interval=2.0):
+    """
+    Send a test embedding request to ensure the model is truly ready for inference.
+
+    wait_for_model only checks /v1/models metadata; this verifies that the
+    model can actually serve embedding requests (weights loaded, kernels compiled).
+    """
+    from openai import OpenAI, OpenAIError
+    base_url = openai_url[len("openai://"):]
+    client = OpenAI(base_url=base_url, api_key=api_key or "EMPTY")
+    start = time.time()
+    last_err = None
+    while True:
+        try:
+            client.embeddings.create(model=model_name, input=["warmup"])
+            print(f"Warmup embedding succeeded after {time.time() - start:.1f}s")
+            return
+        except (OpenAIError, Exception) as e:
+            last_err = e
+        if time.time() - start > timeout:
+            raise RuntimeError(
+                f"Model {model_name} at {base_url} did not become ready for "
+                f"inference after {timeout}s (last error: {last_err})"
+            )
+        time.sleep(interval)
+
+
 def launch_rivault_model(model_cfg):
     model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"]
     # --- 0. Check cache ---
@@ -393,6 +420,7 @@ def launch_rivault_model(model_cfg):
         # if you also want to replace a placeholder {local_port} with a variable 'local_port'
         model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
         wait_for_model(model_cfg["model_type"], model_cfg["model_name"], api_key=MASTER_KEY)
+        warmup_embedding_model(model_cfg["model_type"], model_cfg["model_name"], api_key=MASTER_KEY)
         print(f"Configuring: {model_cfg['model_type']}...")
         # Store the API key in model_cfg so load_model can forward it
         model_cfg["api_key"] = MASTER_KEY

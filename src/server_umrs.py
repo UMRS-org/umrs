@@ -825,7 +825,9 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                             output_bucket
                         )
                     except Exception as e:
+                        import traceback
                         print(f"Error computing/storing embeddings for bucket '{path_to_bucket}': {e}")
+                        traceback.print_exc()
                         exit_status = TaskStatus.ERROR
             else:
                 print(f"Error: We do not compute embeddings for this bucket \"{path_to_bucket}\" (modality = \"{modality_name}\")\n\tUser is probably not configured")
