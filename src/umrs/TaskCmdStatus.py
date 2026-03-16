@@ -10,6 +10,7 @@ class TaskCmd:
     HAND_CHECK = "HAND_CHECK"
     CREATE_DATA_QUEUE = "CREATE_DATA_QUEUE"
     STATUS = "STATUS"
+    EXPORT_EMBEDDINGS = "EXPORT_EMBEDDINGS"
 
     @classmethod
     def all_cmd(cls):

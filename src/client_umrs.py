@@ -284,8 +284,8 @@ def main():
     subparsers.add_parser('check', help='Check consistency between S3 objects and DB (server-side)')
     rl_p = subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
 
-    # Export embeddings from pgvector
-    ee_p = subparsers.add_parser('export_embeddings', help='Export computed embeddings from pgvector database to a local file')
+    # Export embeddings from pgvector (server-mediated)
+    ee_p = subparsers.add_parser('export_embeddings', help='Export computed embeddings to a local file (via server)')
     ee_p.add_argument(
         'bucket_alias',
         help=(
@@ -300,22 +300,6 @@ def main():
     ee_p.add_argument(
         '--format', choices=['csv', 'jsonl'], default='csv', dest='export_format',
         help='Output format (default: csv)'
-    )
-    ee_p.add_argument(
-        '--db-host', default=None,
-        help='PostgreSQL host (default: env DB_HOST or POSTGRES_HOST or localhost)'
-    )
-    ee_p.add_argument(
-        '--db-port', type=int, default=None,
-        help='PostgreSQL port (default: env DB_PORT or 5432)'
-    )
-    ee_p.add_argument(
-        '--db-user', default=None,
-        help='PostgreSQL superuser (default: env DB_SUPERUSER or POSTGRES_USER or postgres)'
-    )
-    ee_p.add_argument(
-        '--db-password', default=None,
-        help='PostgreSQL password (default: env DB_SUPERUSER_PASSWORD or POSTGRES_PASSWORD or postgres)'
     )
     ee_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
