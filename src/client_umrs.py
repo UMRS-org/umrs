@@ -705,9 +705,10 @@ def main():
             #get the list of objects on s3 server
             objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
             #down load these object talink into account if we force overwrite or not
-            downloaded_object_set = download_objects(s3, objects_list, checksums, args.local_path,
+            downloaded_files, _ = download_objects(s3, objects_list, checksums, args.local_path,
+                                files_allready_received=objects_received,
                                 force_overwrite=args.force_overwrite, verbose=args.verbose, print_only_new=print_only_new)
-            objects_received.update(downloaded_object_set)
+            objects_received.update(downloaded_files)
             # for now print only new dowloaded files
             print_only_new = True
             # now we need to check if the server is still computing things for this bucket
@@ -757,10 +758,11 @@ def main():
         # get the list of objects on s3 server
         objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
         #down load these object talink into account if we force overwrite or not
-        downloaded_object_set =download_objects(s3, objects_list, checksums, args.local_path,
+        downloaded_files, _ = download_objects(s3, objects_list, checksums, args.local_path,
+                            files_allready_received=objects_received,
                             force_overwrite=args.force_overwrite, print_only_new=print_only_new)
 
-        objects_received.update(downloaded_object_set)
+        objects_received.update(downloaded_files)
 
         response = {
                 "status": "ok",

@@ -5,9 +5,19 @@ from torchvision import transforms
 
 ################################ ResNet-50 ###########################
 
+_model_cache = {}
+
 def load_resnet50(model_path=None):
     """Load ResNet-50 model, handling DataParallel checkpoints if needed.
     Uses updated PyTorch conventions."""
+
+    if model_path in _model_cache:
+        print(f"\t\t\t--> Model '{model_path}' already loaded...")
+        return _model_cache[model_path]
+
+
+    print(f"\t\t\t--> Loading model '{model_path}'...")
+
     # Use weights if no model_path provided
     if model_path is None:
         weights = ResNet50_Weights.DEFAULT
@@ -29,6 +39,7 @@ def load_resnet50(model_path=None):
         model.load_state_dict(new_state_dict, strict=False)
 
     model.eval()  # Set to evaluation mode
+    _model_cache[model_path] = model
     return model
 
 

@@ -62,7 +62,7 @@ def s3_key_exists(s3, bucket_name, key):
 def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list):
 
 
-    server = get_s3_server_name(s3_connection)
+    server_name = get_s3_server_name(s3_connection)
     config = {}
 
     config_path = os.path.expanduser(admin_s3_configuration_file)
@@ -76,6 +76,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
 
     for bucket in bucket_list:
         if not check_bucket_path(s3_connection, bucket, indent=False):
+            print("\t\t\t--> Creating bucket {bucket}")
             s3_connection.create_bucket(
                 Bucket=bucket,
                 CreateBucketConfiguration={
@@ -83,7 +84,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
                 }
             )
 
-    if server == "MinIO":
+    if server_name == "MinIO":
         from umrs.minio import minio_s3_create_user, minio_grant_user_access
         alias = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)            
         if alias:
@@ -91,7 +92,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
                 minio_grant_user_access(username, bucket, alias)
 
     else:
-        sys.exit(f"Do not know how to create user and buckets for server '{server}'") 
+        sys.exit(f"Do not know how to create user and buckets for server '{server_name}'") 
 
 
         
@@ -163,15 +164,16 @@ def make_path_to_bucket_string(xp_name, bucket_alias, username, output=False):
     
 def check_bucket_path(s3, path_to_bucket, indent = True, exit_on_error = True):
     if indent:
-        print(f"\t\t\t--> Checking Bucket '{path_to_bucket}'... ", end="")
+        print(f"\t\t\t--> Checking bucket '{path_to_bucket}'... ", end="")
     else:
-        print(f"--> Checking Bucket '{path_to_bucket}'... ", end="")
+        print(f"--> Checking bucket '{path_to_bucket}'... ", end="")
         
     try:
         s3.head_bucket(Bucket = path_to_bucket)
             
     except ClientError as e:
         if e.response["Error"]["Code"] == "404":
+            print("Not Found")
             return False #Not found 
         else:
             if exit_on_error:
@@ -197,7 +199,7 @@ def check_bucket_name(s3, xp_name, bucket_alias, username, output=False, indent=
 
 def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, output=False):
 
-    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=output)
+    path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=output, indent=True)
     if success:    
         print(f"\t\t\t--> Bucket '{path_to_bucket}' already exists!")
         # add_bucket_sqs_queue(s3, path_to_bucket)
@@ -346,7 +348,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
 
 
 
-def download_objects(s3, objects_list, checksums, local_path, force_overwrite=False, verbose=False, print_only_new=False):
+def download_objects(s3, objects_list, checksums, local_path, files_allready_received=None, force_overwrite=False, verbose=False, print_only_new=False):
     """
     Download S3 objects into a local directory ONLY if the directory already exists.
 
@@ -354,8 +356,8 @@ def download_objects(s3, objects_list, checksums, local_path, force_overwrite=Fa
     checksums    : ["etag1", "etag2", ...]
     local_path   : local folder (must already exist)
     """
-    downloaded_objects = set()
-
+    downloaded_files = set()
+    skipped_files = set()
     # --- 1. Local directory must exist ---
     if not os.path.isdir(local_path):
         print(f"Local directory does not exist: {local_path}. Nothing done.")
@@ -375,13 +377,18 @@ def download_objects(s3, objects_list, checksums, local_path, force_overwrite=Fa
         filename = os.path.basename(key)
         local_file = os.path.join(local_path, filename)
 
-        # --- 2. If the file already exists → use checksum to skip or overwrite ---
+        # --- 2. If the file has already been received previously continue
+        if files_allready_received and local_file in files_allready_received: 
+            continue
+
+        # --- 3. If the file already exists → use checksum to skip or overwrite ---
         if os.path.exists(local_file):
             local_md5 = md5_of_file(local_file)
             # print(f"{local_md5=} <=> {s3_etag=}")
             if local_md5 == s3_etag:
                 if not print_only_new and verbose:
-                    print(f"[SKIP] {filename} (checksums match)")
+                    print(f"[SKIP] {filename} (checksum match)")
+                skipped_files.add(f"{local_file}: checksum match")
                 continue
             else:
                 if  force_overwrite :
@@ -390,8 +397,9 @@ def download_objects(s3, objects_list, checksums, local_path, force_overwrite=Fa
                 else :
                     if verbose: 
                         print(f"[NO OVERWRITE - SKIP] {filename} (checksum mismatch) -")
+                    skipped_files.add(f"{local_file}: No overwrite")
                     continue
-        # --- 3. Download the file ---
+        # --- 4. Download the file ---
         try:
             if verbose:
                 print(f"[DOWNLOAD] {s3_uri} → {local_file}")
@@ -399,9 +407,9 @@ def download_objects(s3, objects_list, checksums, local_path, force_overwrite=Fa
         except Exception as e:
             print(f"Error downloading {s3_uri}: {e}")
         
-        downloaded_objects.add(key)
+        downloaded_files.add(local_file)
 
-    return downloaded_objects
+    return downloaded_files, skipped_files
     
 
 def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):

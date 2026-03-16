@@ -4,8 +4,13 @@ from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict
 import torch
 
 ################################ TransformerEncoder  ###########################
-def load_transformer_encoder(model_name):
-   
+
+_model_cache = {}
+
+def load_transformer_encoder(model_name):   
+    if model_name in _model_cache:
+        print(f"\t\t\t--> Model '{model_name}' already loaded...")
+        return _model_cache[model_name]
 
     logging.set_verbosity_error()  # avoid verbose warning
     print(f"\t\t\t--> Loading model '{model_name}'...")
@@ -20,6 +25,8 @@ def load_transformer_encoder(model_name):
         tokenizer = AutoTokenizer.from_pretrained(model_name)
         print("\t\t\t--> Downloaded and cached model.")
 
+    model.eval()
+    _model_cache[model_name] = (model, tokenizer)
     return model, tokenizer
 
 
