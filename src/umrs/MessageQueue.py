@@ -306,6 +306,17 @@ class MessageQueue:
                 timeout = int(splited_args[1]) if len(splited_args) > 1 else None
                 return TaskCmd.WAIT_OUTPUT, (client_id, bucket_name, timeout, zmq_sender_id)
 
+            elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                export_args = splited_msg[2] if len(splited_msg) > 2 else None
+                if client_id is None or export_args is None:
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError as e:
+                        print(f"Error sending export error: {e}")
+                    continue
+                return TaskCmd.EXPORT_EMBEDDINGS, (client_id, export_args, zmq_sender_id)
+
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
                 # Acknowledge and let the server main loop perform the operation
                 try:
@@ -507,6 +518,29 @@ class MessageQueue:
             _, reply = self.recv_string()
         except zmq.Again:
             raise RuntimeError("Timeout waiting for server response in request_status")
+
+        return reply
+
+    def request_export_embeddings(self, client_id, path_to_bucket, export_format="csv"):
+        """Send EXPORT_EMBEDDINGS request and receive the serialised result."""
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_export_embeddings'")
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        safe_args = f"{path_to_bucket};{export_format}".replace(":", "_")
+        request_str = f"{TaskCmd.EXPORT_EMBEDDINGS}:{safe_client_id}:{safe_args}"
+
+        # Allow a generous receive timeout for large tables
+        old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)
+        self.socket.setsockopt(zmq.RCVTIMEO, 120_000)
+
+        self.send_string(request_str)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in request_export_embeddings")
+        finally:
+            self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
 
         return reply
 
