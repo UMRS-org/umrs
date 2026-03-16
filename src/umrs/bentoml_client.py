@@ -121,7 +121,7 @@ class BentoMLTaskClient:
             status = self.get_status(endpoint_name, task_id)
             logger.debug("Task %s status: %s (%.1fs elapsed)", task_id, status, elapsed)
 
-            if status == "success":
+            if status in ("success", "completed"):
                 return self.get_result(endpoint_name, task_id)
             elif status == "failure":
                 raise RuntimeError(f"Task {task_id} failed")

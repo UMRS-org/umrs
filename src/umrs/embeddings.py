@@ -1,4 +1,4 @@
-#!/usr/bin/python3 
+#!/usr/bin/python3
 #import psycopg2
 import numpy as np
 import json
@@ -15,9 +15,9 @@ from umrs.sql import store_embeddings_in_db
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
-def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device, 
+def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device,
                                 modality_name, s3_connection, output_bucket):
-    if modality_name in ["tomography_embedding", "tomography_reconstruction", "tomography_mae_reconstruction", "tomography_features_extraction"]: # case of models where we compute everything from the files (e.g. using data loader)
+    if modality_name in ["tomography_embedding", "tomography_reconstruction", "tomography_mae_reconstruction", "tomography_features_extraction", "segmentation"]: # case of models where we compute everything from the files (e.g. using data loader)
         embeddings, checksums, metadata, saved_s3_keys = model.compute_embeddings(s3_connection, s3_keys, path_to_bucket, output_bucket)
     else: # case where we need to load data into a tensor and then compute embeddings
         saved_s3_keys = [None] * len(s3_keys)
@@ -39,7 +39,7 @@ def load_embedding_model(model_name):
     if not model_name:
         print("No model...");
         return None
-    
+
     # Load the sentence-transformers model
     print(f"\t\t\t--> Loading model '{model_name}'...");
     model = SentenceTransformer(model_name)
@@ -83,15 +83,15 @@ def query_db_with_embeddings(model, conn, cur, query_text, top_k=5):
 
     # Fetch results
     results = cur.fetchall()
-    
+
     # Extract IDs and texts
     ids = [row[0] for row in results]
     texts = [row[1] for row in results]
 
     return ids, texts
-        
+
 def save_texts_in_db(model, conn, cur):
-    
+
     texts = [
         "I love eating a fresh apple every morning.",  # 🍏 Apple as a fruit
         "Apple Inc. is one of the biggest tech companies in the world.",  # 💻 Apple as a company
@@ -123,7 +123,7 @@ def save_texts_in_db(model, conn, cur):
         embedding = model.encode(text)
 
         print(len(embedding))
-        
+
         # Insert into database
         cur.execute("INSERT INTO text_embeddings (text, embedding) VALUES (%s, %s)", (text, embedding.tolist()))
         conn.commit()
@@ -133,7 +133,7 @@ def save_texts_in_db(model, conn, cur):
 
 def cluster_from_embeddings(conn, cur, nb_clusters=4):
     """
-    Performs K-Means clustering on text embeddings retrieved from PostgreSQL 
+    Performs K-Means clustering on text embeddings retrieved from PostgreSQL
     and returns one representative text per cluster.
 
     Args:
@@ -220,7 +220,7 @@ def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
             FROM clustered
             GROUP BY cluster_id
         )
-        SELECT clustered.text 
+        SELECT clustered.text
         FROM clustered
         JOIN centroids ON clustered.cluster_id = centroids.cluster_id
         ORDER BY clustered.embedding <-> centroids.centroid
@@ -233,7 +233,7 @@ def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
 
 def main():
 
-    models = ["all-MiniLM-L6-v2", "all-mpnet-base-v2"] 
+    models = ["all-MiniLM-L6-v2", "all-mpnet-base-v2"]
     dbnames = ["embeddings_db","large_embeddings_db"] #correspinfing DB with same the correct dimensionnality
 
     id = 1 # 0 or 1
@@ -314,8 +314,8 @@ def main():
     centroid_texts = cluster_from_embeddings(conn, cur, nb_clusters = 5)
     for text in centroid_texts:
         print(text)
-                         
-                         
+
+
         # Close connection
     cur.close()
     conn.close()
