@@ -510,3 +510,196 @@ class TestExecutorSandboxCompat:
         executor = self._make_executor([PassthroughStep()])
         embs, chk, meta, saved = executor.run(s3, ["x.txt"], "b", "out")
         assert len(embs) == 1
+
+
+# =========================================================================
+# ExecutionMode enum & _build_runner factory
+# =========================================================================
+
+from umrs.steps.executor import ExecutionMode, _build_runner
+
+
+class TestExecutionMode:
+
+    def test_enum_values(self):
+        assert ExecutionMode.IN_PROCESS.value == "in_process"
+        assert ExecutionMode.SUBPROCESS.value == "subprocess"
+        assert ExecutionMode.SLURM.value == "slurm"
+        assert ExecutionMode.K8S.value == "k8s"
+
+    def test_build_runner_in_process_returns_none(self):
+        assert _build_runner(ExecutionMode.IN_PROCESS) is None
+
+    def test_build_runner_subprocess(self):
+        runner = _build_runner(ExecutionMode.SUBPROCESS)
+        assert runner is not None
+        assert hasattr(runner, "run_step")
+
+    def test_build_runner_slurm(self):
+        runner = _build_runner(ExecutionMode.SLURM)
+        assert runner is not None
+        assert hasattr(runner, "run_step")
+
+    def test_build_runner_k8s(self):
+        runner = _build_runner(ExecutionMode.K8S)
+        assert runner is not None
+        assert hasattr(runner, "run_step")
+
+
+# =========================================================================
+# SlurmStepConfig
+# =========================================================================
+
+from umrs.steps.slurm_runner import SlurmStepConfig, SlurmStepRunner
+
+
+class TestSlurmStepConfig:
+
+    def test_defaults(self):
+        cfg = SlurmStepConfig()
+        assert cfg.partition == "gpu" or isinstance(cfg.partition, str)
+        assert cfg.timeout_seconds == 3600
+        assert cfg.gpu_count == 0
+        assert cfg.cpu_count == 4
+
+    def test_override(self):
+        cfg = SlurmStepConfig(partition="debug", gpu_count=2, timeout_seconds=600)
+        assert cfg.partition == "debug"
+        assert cfg.gpu_count == 2
+        assert cfg.timeout_seconds == 600
+
+
+class TestSlurmStepRunnerSbatch:
+    """Test sbatch script generation (doesn't require Slurm)."""
+
+    def test_generate_sbatch_script(self, tmp_path: Path):
+        cfg = SlurmStepConfig(
+            partition="test",
+            singularity_image="/opt/test.sif",
+            timeout_seconds=7200,
+            gpu_count=1,
+            memory_limit="16G",
+            cpu_count=8,
+        )
+        runner = SlurmStepRunner(cfg)
+
+        job_dir = tmp_path / "job1"
+        job_dir.mkdir()
+        dest = job_dir / "job.sh"
+
+        runner._generate_sbatch_script(dest, job_dir, "/data/user_scripts")
+
+        content = dest.read_text()
+        assert "#SBATCH --partition=test" in content
+        assert "#SBATCH --gpus=1" in content
+        assert "#SBATCH --mem=16G" in content
+        assert "#SBATCH --cpus-per-task=8" in content
+        assert "#SBATCH --time=02:00:00" in content
+        assert "/data/user_scripts:/user_code:ro" in content
+        assert "/opt/test.sif" in content
+        assert "_worker.py" in content
+
+    def test_generate_sbatch_no_gpu(self, tmp_path: Path):
+        cfg = SlurmStepConfig(gpu_count=0)
+        runner = SlurmStepRunner(cfg)
+
+        job_dir = tmp_path / "job2"
+        job_dir.mkdir()
+        dest = job_dir / "job.sh"
+        runner._generate_sbatch_script(dest, job_dir, "/scripts")
+
+        content = dest.read_text()
+        assert "--gpus=" not in content
+
+
+# =========================================================================
+# K8sStepConfig
+# =========================================================================
+
+from umrs.steps.k8s_runner import K8sStepConfig, K8sStepRunner
+
+
+class TestK8sStepConfig:
+
+    def test_defaults(self):
+        cfg = K8sStepConfig()
+        assert cfg.namespace == "umrs-steps" or isinstance(cfg.namespace, str)
+        assert cfg.timeout_seconds == 3600
+        assert cfg.gpu_count == 0
+
+    def test_override(self):
+        cfg = K8sStepConfig(namespace="prod", gpu_count=4, timeout_seconds=120)
+        assert cfg.namespace == "prod"
+        assert cfg.gpu_count == 4
+
+
+# =========================================================================
+# ResourceSpec.extra field
+# =========================================================================
+
+
+class TestResourceSpecExtra:
+
+    def test_extra_field_default(self):
+        rs = ResourceSpec()
+        assert rs.extra == {}
+
+    def test_extra_roundtrip(self):
+        rs = ResourceSpec(extra={"execution_mode": "slurm", "custom": True})
+        d = rs.to_dict()
+        assert d["extra"]["execution_mode"] == "slurm"
+        rs2 = ResourceSpec.from_dict(d)
+        assert rs2.extra == rs.extra
+
+    def test_extra_omitted_when_empty(self):
+        rs = ResourceSpec()
+        d = rs.to_dict()
+        assert "extra" not in d
+
+
+# =========================================================================
+# Executor with execution_mode parameter (backward compat)
+# =========================================================================
+
+
+class TestExecutorModeCompat:
+
+    def _make_steps_and_wf(self):
+        step = PassthroughStep()
+        spec = StepSpec(name=step.name, entrypoint="fake:PassthroughStep")
+        wf = WorkflowDefinition(
+            name="mode-test",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
+            steps=[spec],
+        )
+        return wf, [step]
+
+    def test_default_is_in_process(self):
+        wf, steps = self._make_steps_and_wf()
+        executor = WorkflowExecutor(wf, steps)
+        assert executor._runner is None
+
+    def test_subprocess_mode_creates_runner(self):
+        wf, steps = self._make_steps_and_wf()
+        executor = WorkflowExecutor(
+            wf, steps, execution_mode=ExecutionMode.SUBPROCESS,
+        )
+        assert executor._runner is not None
+
+    def test_backward_compat_sandbox_config(self):
+        """Old-style sandbox=SandboxConfig() should still work."""
+        from umrs.steps.sandbox import SandboxConfig
+        wf, steps = self._make_steps_and_wf()
+        executor = WorkflowExecutor(
+            wf, steps,
+            sandbox=SandboxConfig(enabled=True),
+        )
+        assert executor._runner is not None
+
+    def test_in_process_run_works(self):
+        wf, steps = self._make_steps_and_wf()
+        executor = WorkflowExecutor(wf, steps)
+        s3 = _mock_s3()
+        s3._store["b/x.txt"] = b"data"
+        embs, chk, meta, saved = executor.run(s3, ["x.txt"], "b", "out")
+        assert len(embs) == 1

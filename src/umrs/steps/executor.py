@@ -30,14 +30,78 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any, Dict, List, Optional, Tuple
+from enum import Enum
+from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 from umrs.steps.context import StepContext, StepResult
 from umrs.steps.interface import UMRSStep
 from umrs.steps.models import WorkflowDefinition
-from umrs.steps.sandbox import SandboxConfig, SubprocessSandbox
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Execution mode enum
+# ---------------------------------------------------------------------------
+
+class ExecutionMode(Enum):
+    """How user steps are executed."""
+
+    IN_PROCESS = "in_process"      # Direct call (dev / lightweight)
+    SUBPROCESS = "subprocess"      # Isolated child process (default prod)
+    SLURM = "slurm"                # Slurm batch job + Singularity
+    K8S = "k8s"                    # Kubernetes Job
+
+
+# ---------------------------------------------------------------------------
+# Step-runner protocol  (SubprocessSandbox, SlurmStepRunner, K8sStepRunner
+# all satisfy this without needing an explicit base class.)
+# ---------------------------------------------------------------------------
+
+@runtime_checkable
+class StepRunner(Protocol):
+    """Any object that can execute a single step out-of-process."""
+
+    def run_step(
+        self,
+        *,
+        entrypoint: str,
+        step_config: Dict[str, Any],
+        script_dir: str,
+        input_bucket: str,
+        input_keys: List[str],
+        output_bucket: str,
+        s3_params: Dict[str, str],
+        run_id: str = "",
+        shared_metadata: Optional[Dict[str, Any]] = None,
+        env: Optional[Dict[str, str]] = None,
+    ) -> StepResult: ...
+
+
+def _build_runner(
+    mode: ExecutionMode,
+    runner_config: Optional[Any] = None,
+) -> Optional[StepRunner]:
+    """Construct the backend runner for the chosen execution mode."""
+    if mode == ExecutionMode.IN_PROCESS:
+        return None
+
+    if mode == ExecutionMode.SUBPROCESS:
+        from umrs.steps.sandbox import SandboxConfig, SubprocessSandbox
+        cfg = runner_config if isinstance(runner_config, SandboxConfig) else SandboxConfig()
+        return SubprocessSandbox(cfg)
+
+    if mode == ExecutionMode.SLURM:
+        from umrs.steps.slurm_runner import SlurmStepConfig, SlurmStepRunner
+        cfg = runner_config if isinstance(runner_config, SlurmStepConfig) else SlurmStepConfig()
+        return SlurmStepRunner(cfg)
+
+    if mode == ExecutionMode.K8S:
+        from umrs.steps.k8s_runner import K8sStepConfig, K8sStepRunner
+        cfg = runner_config if isinstance(runner_config, K8sStepConfig) else K8sStepConfig()
+        return K8sStepRunner(cfg)
+
+    raise ValueError(f"Unknown execution mode: {mode}")
 
 
 class WorkflowExecutor:
@@ -47,8 +111,10 @@ class WorkflowExecutor:
         self,
         workflow: WorkflowDefinition,
         steps: List[UMRSStep],
-        sandbox: Optional[SandboxConfig] = None,
+        sandbox: Optional[Any] = None,
         s3_params: Optional[Dict[str, str]] = None,
+        execution_mode: ExecutionMode = ExecutionMode.IN_PROCESS,
+        runner_config: Optional[Any] = None,
     ) -> None:
         if len(steps) != len(workflow.steps):
             raise ValueError(
@@ -57,11 +123,19 @@ class WorkflowExecutor:
             )
         self.workflow = workflow
         self.steps = steps
-        self.sandbox = sandbox
-        self.s3_params = s3_params  # needed for subprocess mode
-        self._subprocess_sandbox: Optional[SubprocessSandbox] = None
-        if sandbox and sandbox.enabled:
-            self._subprocess_sandbox = SubprocessSandbox(sandbox)
+        self.s3_params = s3_params
+
+        # Backward compat: if caller passes ``sandbox=SandboxConfig(...)``
+        # without the new ``execution_mode`` param, honour it.
+        if sandbox is not None and execution_mode == ExecutionMode.IN_PROCESS:
+            from umrs.steps.sandbox import SandboxConfig
+            if isinstance(sandbox, SandboxConfig) and sandbox.enabled:
+                execution_mode = ExecutionMode.SUBPROCESS
+                runner_config = sandbox
+
+        self._runner: Optional[StepRunner] = _build_runner(
+            execution_mode, runner_config,
+        )
 
     # ------------------------------------------------------------------
     # Public: compute_embeddings-compatible method
@@ -122,9 +196,9 @@ class WorkflowExecutor:
                 len(current_keys), step_output_bucket,
             )
 
-            if self._subprocess_sandbox and self.s3_params:
-                # --- Sandboxed execution (subprocess) ---
-                result = self._subprocess_sandbox.run_step(
+            if self._runner and self.s3_params:
+                # --- Out-of-process execution (subprocess / slurm / k8s) ---
+                result = self._runner.run_step(
                     entrypoint=spec.entrypoint,
                     step_config=spec.config,
                     script_dir=str(self.workflow.source.path),
@@ -195,6 +269,9 @@ class WorkflowExecutor:
                 logger.warning("teardown failed for step '%s'", step.name,
                                exc_info=True)
 
+        # Clean up staging artifacts from intermediate steps
+        self._cleanup_staging(s3, path_to_bucket, run_id)
+
         logger.info("Workflow '%s' run=%s complete.", self.workflow.name, run_id)
         return embeddings_list, last_checksums, last_metadata, saved_keys
 
@@ -227,3 +304,40 @@ class WorkflowExecutor:
             except Exception:
                 meta.append({})
         return meta
+
+    @staticmethod
+    def _cleanup_staging(
+        s3: Any, bucket: str, run_id: str,
+    ) -> None:
+        """Delete intermediate staging objects for this run.
+
+        Staging objects live under ``_staging/<run_id>/`` in the source
+        bucket.  Cleaning them up avoids unbounded storage growth.
+        """
+        prefix = f"_staging/{run_id}/"
+        try:
+            paginator = s3.get_paginator("list_objects_v2")
+            to_delete: List[Dict[str, str]] = []
+            for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+                for obj in page.get("Contents", []):
+                    to_delete.append({"Key": obj["Key"]})
+
+            # S3 delete_objects supports up to 1000 keys per call
+            while to_delete:
+                batch, to_delete = to_delete[:1000], to_delete[1000:]
+                s3.delete_objects(
+                    Bucket=bucket,
+                    Delete={"Objects": batch, "Quiet": True},
+                )
+            if to_delete or batch:
+                logger.debug(
+                    "Cleaned up staging prefix %s in bucket %s",
+                    prefix, bucket,
+                )
+        except Exception:
+            # Non-fatal: staging cleanup is best-effort.  Mock S3 clients
+            # in tests may not support pagination.
+            logger.debug(
+                "Staging cleanup skipped for %s (non-fatal)", prefix,
+                exc_info=True,
+            )

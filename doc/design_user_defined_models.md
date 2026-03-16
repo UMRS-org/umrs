@@ -542,36 +542,45 @@ S3 keys (raw CT scans)
 
 ## 10. Implementation Plan
 
-### Phase 1: Core Interface & In-Process Execution (U-201 through U-205)
+### Phase 1: Core Interface & In-Process Execution (U-201 through U-205) ✅
 
 **Goal**: Users can define single-step and multi-step workflows that run in the UMRS server process.
 
-| Task | What | Files |
-|------|------|-------|
-| U-201 | `UMRSStep` ABC, `StepContext`, `StepResult` | `src/umrs/steps/interface.py`, `context.py` |
-| U-202 | `WorkflowDefinition` model + JSON schema validation | `src/umrs/steps/models.py` |
-| U-203 | `ScriptLoader` (local path first, then S3/git) | `src/umrs/steps/loader.py` |
-| U-204 | `WorkflowExecutor` with step chaining + S3 staging | `src/umrs/steps/executor.py` |
-| U-205 | `user_script://` type in `models_loading.py` | `src/umrs/models_loading.py` (one elif) |
+| Task | What | Files | Status |
+|------|------|-------|--------|
+| U-201 | `UMRSStep` ABC, `StepContext`, `StepResult` | `src/umrs/steps/interface.py`, `context.py` | ✅ |
+| U-202 | `WorkflowDefinition` model + JSON schema validation | `src/umrs/steps/models.py` | ✅ |
+| U-203 | `ScriptLoader` (local path first, then S3/git) | `src/umrs/steps/loader.py` | ✅ |
+| U-204 | `WorkflowExecutor` with step chaining + S3 staging | `src/umrs/steps/executor.py` | ✅ |
+| U-205 | `user_script://` type in `models_loading.py` | `src/umrs/models_loading.py` (one elif) | ✅ |
 
-### Phase 2: Sandboxed & Remote Execution (U-206)
+### Phase 2: Sandboxed & Remote Execution (U-206) ✅
 
 **Goal**: User scripts run in isolated environments with resource limits.
 
-| Sub-task | What |
-|----------|------|
-| U-206a | Subprocess execution mode (isolated venv via `PluginRunner`) |
-| U-206b | Slurm execution mode (bind-mount user dir into Singularity/Podman) |
-| U-206c | K8s execution mode (mount from PVC or ConfigMap) |
-| U-206d | Resource limit enforcement + timeout |
-| U-206e | Audit trail integration |
+| Sub-task | What | Status |
+|----------|------|--------|
+| U-206a | Subprocess sandbox (`SubprocessSandbox` in `sandbox.py`) | ✅ |
+| U-206b | Slurm execution (`SlurmStepRunner` in `slurm_runner.py`) | ✅ |
+| U-206c | K8s execution (`K8sStepRunner` in `k8s_runner.py`) | ✅ |
+| U-206d | Resource limit enforcement + timeout | ✅ |
+| U-206e | Audit trail integration (`StepAuditLog`) | ✅ |
 
-### Phase 3: Demo & Docs (U-207, U-208)
+Execution mode is selected via the `ExecutionMode` enum and configured in
+`workflow.json` → `resources.extra.execution_mode` or the model config's
+`execution_mode` field.  Four modes: `in_process`, `subprocess`, `slurm`, `k8s`.
 
-| Task | What |
-|------|------|
-| U-207 | Demo: `demos/05_user_model/` — user provides denoise script |
-| U-208 | User guide section + example script templates |
+### Phase 3: Demo & Docs (U-207, U-208) ✅
+
+| Task | What | Status |
+|------|------|--------|
+| U-207 | Demo: `demos/05_user_model/` with example scripts | ✅ |
+| U-208 | User guide section + example script templates | ✅ |
+
+### Phase 4: Staging Cleanup ✅
+
+Intermediate artifacts under `_staging/<run_id>/` are automatically deleted
+after a successful workflow run.  Cleanup is best-effort and non-fatal.
 
 ---
 

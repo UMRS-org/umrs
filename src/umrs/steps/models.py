@@ -72,14 +72,18 @@ class ResourceSpec:
     cpu_limit: str = "1"
     memory_limit: str = "1Gi"
     timeout_seconds: int = 3600
+    extra: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "gpu_count": self.gpu_count,
             "cpu_limit": self.cpu_limit,
             "memory_limit": self.memory_limit,
             "timeout_seconds": self.timeout_seconds,
         }
+        if self.extra:
+            d["extra"] = self.extra
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "ResourceSpec":
@@ -88,6 +92,7 @@ class ResourceSpec:
             cpu_limit=data.get("cpu_limit", "1"),
             memory_limit=data.get("memory_limit", "1Gi"),
             timeout_seconds=data.get("timeout_seconds", 3600),
+            extra=data.get("extra", {}),
         )
 
 
