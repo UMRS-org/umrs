@@ -35,6 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from umrs.steps.context import StepContext, StepResult
 from umrs.steps.interface import UMRSStep
 from umrs.steps.models import WorkflowDefinition
+from umrs.steps.sandbox import SandboxConfig, SubprocessSandbox
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,8 @@ class WorkflowExecutor:
         self,
         workflow: WorkflowDefinition,
         steps: List[UMRSStep],
+        sandbox: Optional[SandboxConfig] = None,
+        s3_params: Optional[Dict[str, str]] = None,
     ) -> None:
         if len(steps) != len(workflow.steps):
             raise ValueError(
@@ -54,6 +57,11 @@ class WorkflowExecutor:
             )
         self.workflow = workflow
         self.steps = steps
+        self.sandbox = sandbox
+        self.s3_params = s3_params  # needed for subprocess mode
+        self._subprocess_sandbox: Optional[SubprocessSandbox] = None
+        if sandbox and sandbox.enabled:
+            self._subprocess_sandbox = SubprocessSandbox(sandbox)
 
     # ------------------------------------------------------------------
     # Public: compute_embeddings-compatible method
@@ -108,23 +116,38 @@ class WorkflowExecutor:
                 else f"_staging/{run_id}/step_{idx}_{spec.name}/"
             )
 
-            ctx = StepContext(
-                s3=s3,
-                input_bucket=current_bucket,
-                input_keys=current_keys,
-                output_bucket=step_output_bucket,
-                config=spec.config,
-                metadata=shared_metadata,
-                run_id=run_id,
-            )
-
             logger.info(
                 "  step %d/%d [%s]: %d keys → bucket=%s",
                 idx + 1, len(self.steps), spec.name,
                 len(current_keys), step_output_bucket,
             )
 
-            result: StepResult = step.run(ctx)
+            if self._subprocess_sandbox and self.s3_params:
+                # --- Sandboxed execution (subprocess) ---
+                result = self._subprocess_sandbox.run_step(
+                    entrypoint=spec.entrypoint,
+                    step_config=spec.config,
+                    script_dir=str(self.workflow.source.path),
+                    input_bucket=current_bucket,
+                    input_keys=current_keys,
+                    output_bucket=step_output_bucket,
+                    s3_params=self.s3_params,
+                    run_id=run_id,
+                    shared_metadata=shared_metadata,
+                    env=self.workflow.env,
+                )
+            else:
+                # --- In-process execution (dev / lightweight) ---
+                ctx = StepContext(
+                    s3=s3,
+                    input_bucket=current_bucket,
+                    input_keys=current_keys,
+                    output_bucket=step_output_bucket,
+                    config=spec.config,
+                    metadata=shared_metadata,
+                    run_id=run_id,
+                )
+                result = step.run(ctx)
 
             # Chain outputs → next step's inputs
             if result.output_keys:

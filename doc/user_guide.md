@@ -263,3 +263,103 @@ All commands accept `-c <config>` (config file), `--server-ip <ip>`, `--output j
 - [Demo: Text Embedding](../demos/01_text_embedding/README.md)
 - [Demo: SAM3 Segmentation](../demos/02_sam3_segmentation/README.md)
 - [Demo: HMAE Inference](../demos/03_hmae_inference/README.md)
+- [Demo: User-Defined Workflow](../demos/05_user_model/README.md)
+- [UDM Design Document](design_user_defined_models.md) — architecture of user workflows
+
+---
+
+## 8. User-Defined Model Workflows
+
+Run your own models / processing pipelines without modifying UMRS code.
+
+### 8.1 Write a Step
+
+Create a Python file that inherits `UMRSStep`:
+
+```python
+# my_model.py
+from umrs.steps import UMRSStep, StepContext, StepResult
+
+class DenoiseStep(UMRSStep):
+    name = "denoise"
+
+    def setup(self, config: dict) -> None:
+        self.strength = config.get("strength", 0.1)
+
+    def run(self, ctx: StepContext) -> StepResult:
+        output_keys = []
+        for key in ctx.input_keys:
+            data = ctx.download_bytes(key)
+            processed = self._denoise(data)
+            out_key = f"denoised/{key}"
+            ctx.upload_bytes(out_key, processed)
+            output_keys.append(out_key)
+        return StepResult(output_keys=output_keys)
+```
+
+### 8.2 Write a Workflow Definition
+
+Create `workflow.json` in your scripts directory:
+
+```json
+{
+    "name": "my-denoise-pipeline",
+    "version": "1.0",
+    "source": {"type": "local_path", "path": "/home/user/my_scripts/"},
+    "requirements": ["scikit-image"],
+    "resources": {"gpu_count": 0, "memory_limit": "4Gi", "timeout_seconds": 600},
+    "steps": [
+        {
+            "name": "denoise",
+            "entrypoint": "my_model:DenoiseStep",
+            "config": {"strength": 0.1}
+        }
+    ],
+    "output": {"return_type": "file"}
+}
+```
+
+### 8.3 Register in UMRS
+
+Add to your model configuration (the same JSON where you define SAM3, HMAE, etc.):
+
+```json
+{
+    "model_name": "my-denoise-pipeline",
+    "model_type": "user_script:///home/user/my_scripts/workflow.json",
+    "return_type": "file",
+    "vector_size": 0
+}
+```
+
+### 8.4 Multi-Step Workflows
+
+Chain steps — each step's outputs become the next step's inputs:
+
+```json
+{
+    "steps": [
+        {"name": "preprocess",  "entrypoint": "preproc:ResizeStep",  "config": {"size": 1024}},
+        {"name": "infer",       "entrypoint": "model:InferStep",     "config": {"checkpoint": "/models/net.pt"}},
+        {"name": "postprocess", "entrypoint": "postproc:FilterStep", "config": {"threshold": 0.5}}
+    ]
+}
+```
+
+### 8.5 StepContext Helpers
+
+| Method | Description |
+|--------|-------------|
+| `ctx.download_bytes(key)` | Download S3 object as raw bytes |
+| `ctx.download_numpy(key)` | Download `.npy` file as NumPy array |
+| `ctx.upload_bytes(key, data)` | Upload bytes to S3 |
+| `ctx.upload_numpy(key, arr)` | Upload NumPy array as `.npy` |
+| `ctx.head_object(key)` | Get S3 metadata (ETag, size, custom metadata) |
+
+### 8.6 Source Types
+
+| Type | Example | Notes |
+|------|---------|-------|
+| `local_path` | `/home/user/scripts/` | Direct mount — simplest for dev and Slurm |
+| `s3` | `s3://bucket/scripts.zip` | Downloaded at load time (future) |
+| `git` | `https://github.com/org/repo.git@abc123` | Pinned commit (future) |
