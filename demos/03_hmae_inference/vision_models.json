@@ -5,7 +5,7 @@
       "model": {
         "model_name": "HMAE ViT-B",
         "vector_size": "768",
-        "model_type": "bentoml://http://localhost:{LOCAL_PORT}/vision/hmae_reconstruct/submit",
+        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/hmae_reconstruct/submit",
         "mode": "reconstruct",
         "model_cfg_file": "/models/hmae/infer_hmae_vit_b.yaml",
         "checkpoint_path": "/models/hmae/latest_checkpoint.pth",
