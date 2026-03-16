@@ -22,6 +22,10 @@ VLLM_MODEL=${VLLM_MODEL:-Qwen/Qwen3-0.6B}
 VLLM_PATH_TO_HUGGINGFACE=${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}
 SAM3_MODEL=${SAM3_MODEL:-facebook/sam2-hiera-small}
 VISION_MODEL_PATH=${VISION_MODEL_PATH:-./models/sam3}
+SAM3_MODEL_PATH=${SAM3_MODEL_PATH:-./models/sam3}
+HMAE_MODEL_PATH=${HMAE_MODEL_PATH:-./models/hmae}
+HMAE_CONFIG_PATH=${HMAE_CONFIG_PATH:-./models/hmae/infer_hmae_vit_b.yaml}
+HMAE_CHECKPOINT=${HMAE_CHECKPOINT:-./models/hmae/latest_checkpoint.pth}
 VLLM_TP=${VLLM_TP:-1}						# tensor parallelism
 VLLM_PP=${VLLM_PP:-1}						# pipeline parallelism
 NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}
@@ -152,9 +156,18 @@ sed     -e "s@UMRS_S3_BUCKET_HOST@$(/bin/grep '^UMRS_S3_BUCKET_HOST=' "./env.${u
 sed	-e "s@VLLM_MODEL_PLACEHOLDER@$(/bin/grep '^VLLM_MODEL=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
 	"./litellm_fs/config.yaml" > "./litellm_fs/config.yaml.${uuid}"
 
+# Profiles to activate (override via RIVAULT_PROFILES env var)
+# Default: "harness vllm". For vision models add "vision-bentoml":
+#   export RIVAULT_PROFILES="harness vllm vision-bentoml"
+RIVAULT_PROFILES=${RIVAULT_PROFILES:-"harness vllm"}
+_profile_flags=""
+for _p in $RIVAULT_PROFILES; do
+	_profile_flags="${_profile_flags} --profile ${_p}"
+done
+
 podman-compose --env-file "./env.${uuid}" \
                --file "./serve-model.yaml" ${GPUoverride[@]} \
-               --profile harness --profile vllm \
+               ${_profile_flags} \
                up \
 	       --remove-orphans --detach
 

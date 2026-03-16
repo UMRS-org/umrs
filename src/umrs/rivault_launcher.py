@@ -362,8 +362,32 @@ def launch_rivault_model(model_cfg):
 
     # model_type = "https:.....:{NGINX_PORT}"
 
-     # --- 3. Build the OpenAI-compatible model ---
-    if model_cfg["model_type"].startswith(("openai://","bentoml://")):
+     # --- 3. Build the OpenAI-compatible model or BentoML vision model ---
+    if model_cfg["model_type"].startswith("bentoml://"):
+        # BentoML vision service: resolve placeholders and verify health.
+        # Traffic is routed through NGINX /vision/ prefix so all services
+        # are reachable via the single SSH-tunneled port.
+        model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(NGINX_PORT))
+        model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
+        bentoml_url = model_cfg["model_type"][len("bentoml://"):]
+        print(f"Configuring BentoML vision service at: {bentoml_url}...")
+
+        # Wait for BentoML service health
+        from umrs.bentoml_client import BentoMLTaskClient
+        client = BentoMLTaskClient(bentoml_url)
+        _wait_start = time.time()
+        while not client.is_healthy():
+            if time.time() - _wait_start > 300:
+                raise RuntimeError(f"BentoML service at {bentoml_url} not healthy after 300s")
+            time.sleep(2)
+        print(f"BentoML vision service is healthy at {bentoml_url}")
+
+        # For BentoML, we don't load a local model — we return the client
+        model_cache[model_type_key] = (client, thread_tunnel, proc_tunnel)
+        jobid_cache[model_type_key] = job_id
+        return client
+
+    elif model_cfg["model_type"].startswith("openai://"):
         # replace a placeholder {NGINX_PORT} with the actual value
         model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(NGINX_PORT))
         # if you also want to replace a placeholder {local_port} with a variable 'local_port'

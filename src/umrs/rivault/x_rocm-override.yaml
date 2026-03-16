@@ -6,3 +6,10 @@ services:
       - /dev/dri
     security_opt:
       - seccomp=unconfined
+
+  bentoml-vision:
+    devices:
+      - /dev/kfd
+      - /dev/dri
+    security_opt:
+      - seccomp=unconfined

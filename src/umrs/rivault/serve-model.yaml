@@ -6,6 +6,7 @@ services:
       genai-private-net: {}
     extra_hosts:
       - litellm:${PRIV_IP1TO3:-10.0.0}.${LITELLM_IP4:-20}
+      - bentoml-vision:${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}
     ports:
       - ${NGINX_LITELLM_DOCKER_PORT:?}:4000
     volumes:
@@ -391,6 +392,50 @@ services:
       HIP_VISIBLE_DEVICES: ""
     depends_on:
       - vllm
+    cap_drop: [ ALL ]
+    cap_add: [ sys_nice ]
+    deploy:
+      mode: replicated
+      replicas: 1
+      endpoint_mode: vip
+
+  # BentoML Vision Service (SAM3 + HMAE)
+  # Provides async task queue API for vision model inference
+  # Endpoints: POST /submit, GET /status, GET /get, POST /cancel, PUT /retry
+  bentoml-vision:
+    profiles: [ vision-bentoml ]
+    image: ${BENTOML_VISION_IMAGE:-ghcr.io/riken-rccs/umrs-vision:latest}
+    command: bentoml serve umrs.vision_service.service:VisionModelService --port 3000
+    networks:
+      genai-private-net:
+        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}
+    extra_hosts:
+      - ${UMRS_S3_BUCKET_HOST:?}:${PRIV_IP1TO3:-10.0.0}.${NGINX_OUT_IP4:-252}
+      - minio-host:host-gateway
+    volumes:
+      # SAM3 model weights
+      - type: bind
+        source: ${SAM3_MODEL_PATH:-/models/sam3}
+        target: /models/sam3
+        read_only: true
+      # HMAE model checkpoint and config
+      - type: bind
+        source: ${HMAE_MODEL_PATH:-/models/hmae}
+        target: /models/hmae
+        read_only: true
+      # Scratch space for temporary outputs
+      - type: tmpfs
+        target: /tmp/vision_outputs
+    environment:
+      SAM3_MODEL_PATH: /models/sam3
+      HMAE_CONFIG_PATH: /models/hmae/infer_hmae_vit_b.yaml
+      HMAE_CHECKPOINT: /models/hmae/latest_checkpoint.pth
+      S3_ENDPOINT_URL: http://minio-host:${BENTOML_MINIO_HOST_PORT:-19000}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      TRANSFORMERS_OFFLINE: "1"
+      HF_HUB_OFFLINE: "1"
+      TZ: ${GENAI_TZ:-Asia/Tokyo}
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
     deploy:

@@ -1,6 +1,6 @@
 # UMRS — Unified Multimodal Retrieval System
 
-Config-driven server and client for multimodal data ingestion into S3-compatible storage with automatic embedding computation and storage in PostgreSQL/pgvector.
+Config-driven server and client for multimodal data ingestion into S3-compatible storage with automatic embedding computation and storage in PostgreSQL/pgvector. Supports text, image, and vision model pipelines — including SAM3 segmentation and HMAE reconstruction via BentoML inside sandboxed Mini-Rivault containers.
 
 ## Overview
 
@@ -16,6 +16,7 @@ UMRS watches S3 buckets for new objects (text, images, text files), computes emb
 | `MAE` | Raw image embeddings via Masked Autoencoder | Local |
 | `openai://` | Text embeddings via any OpenAI-compatible API (e.g., vLLM) | Remote |
 | `rivault://` | Two-phase: Slurm launches vLLM+LiteLLM, then uses `openai://` | Remote (HPC) |
+| `bentoml://` | Vision tasks (SAM3, HMAE) via BentoML inside Mini-Rivault | Remote (HPC) |
 
 ### Architecture
 
@@ -40,12 +41,29 @@ UMRS watches S3 buckets for new objects (text, images, text files), computes emb
 │        │      └──────────┘  └──────────┘  └────────────────────┘   │
 └────────┼───────────────────────────────────────────────────────────┘
          │
-         │  (Optional: Slurm + Rivault for HPC inference)
+         │  (Slurm + Mini-Rivault for HPC inference)
          ▼
 ┌─────────────────────────────────────────────────────────────────────┐
 │  HPC / Slurm Cluster                                                │
-│  sbatch → vLLM + LiteLLM + NGINX → SSH tunnel back to UMRS          │
+│  sbatch → Mini-Rivault (podman-compose)                              │
+│  ┌─────────────────────────────────────────────────────────────┐     │
+│  │  NGINX (:4000)                                               │     │
+│  │   /        → LiteLLM → vLLM   (text embeddings)             │     │
+│  │   /vision/ → BentoML-vision    (SAM3, HMAE)                 │     │
+│  └─────────────────────────────────────────────────────────────┘     │
+│  SSH tunnel back to UMRS server                                      │
 └─────────────────────────────────────────────────────────────────────┘
+```
+
+## Quick Start (Client)
+
+Install the UMRS client as a pip package (no GPU or server dependencies needed):
+
+```bash
+cd src
+pip install -e .
+umrs-client --help
+umrs-client ping
 ```
 
 ## Deployment Modes
@@ -66,11 +84,11 @@ docker exec -it umrs-server python src/client_umrs.py ping
 docker exec -it umrs-server python src/client_umrs.py --conf /root/conf_umrs.json list_buckets user1
 ```
 
-See `docker/README.md` for details.
+See [docker/README.md](docker/README.md) for details.
 
 ### 2. Slurm Development Environment
 
-Single-workstation setup with a real Slurm cluster (Podman containers for control plane, native slurmd for GPU access). Rivault launches vLLM+LiteLLM as Slurm jobs.
+Single-workstation setup with a real Slurm cluster (Podman containers for control plane, native slurmd for GPU access). Mini-Rivault launches vLLM+LiteLLM and BentoML-vision as Slurm jobs.
 
 ```bash
 cd demos/slurm-dev
@@ -79,45 +97,68 @@ sudo bash scripts/start-host-slurmd.sh
 bash scripts/run_e2e_demo.sh
 ```
 
-See `demos/slurm-dev/README.md` for the full guide.
+See [demos/slurm-dev/README.md](demos/slurm-dev/README.md) for the full guide.
 
 ### 3. HPC Cluster (R-CCS / Production)
 
-Deploy UMRS on a multi-node HPC cluster with Slurm scheduling and real GPU inference via Rivault.
+Deploy UMRS on a multi-node HPC cluster with Slurm scheduling and real GPU inference via Mini-Rivault.
 
-See `doc/umrs_rivault_rag_plan.md` and `demos/slurm-dev/README.md`.
+See [doc/admin_guide.md](doc/admin_guide.md) and [doc/umrs_rivault_rag_plan.md](doc/umrs_rivault_rag_plan.md).
+
+## Demos
+
+Step-by-step demos that walk through UMRS workflows end to end:
+
+| Demo | Description |
+|------|-------------|
+| [demos/00_start_services/](demos/00_start_services/) | Start/stop all UMRS services + health checks (admin) |
+| [demos/01_text_embedding/](demos/01_text_embedding/) | Upload text, compute embeddings, export results |
+| [demos/02_sam3_segmentation/](demos/02_sam3_segmentation/) | SAM3 image segmentation via BentoML inside Mini-Rivault |
+| [demos/03_hmae_inference/](demos/03_hmae_inference/) | HMAE feature extraction / reconstruction via Mini-Rivault |
+| [demos/04_rag_search/](demos/04_rag_search/) | RAG semantic search: vector, hybrid, reranking, Q&A |
 
 ## Repository Structure
 
 ```
-src/                     Core application code
-├── server_umrs.py       Server entry point
-├── client_umrs.py       Client CLI
-├── embedding_worker.py  Standalone embedding worker
-├── rag_service.py       RAG query service
-└── umrs/                Core modules (S3, SQL, models, ZMQ, etc.)
+src/                        Core application code
+├── pyproject.toml           Pip-installable client package
+├── server_umrs.py           Server entry point
+├── client_umrs.py           Client CLI (also installable as `umrs-client`)
+├── embedding_worker.py      Standalone embedding worker
+├── rag_service.py           RAG query service
+└── umrs/                    Core modules
+    ├── models/              Model implementations (HMAE, SAM3, MAE, etc.)
+    ├── vision_service/      BentoML vision service (SAM3 + HMAE endpoints)
+    ├── rivault/             Mini-Rivault compose stack + NGINX config
+    ├── rivault_launcher.py  Rivault job launcher (Slurm + SSH tunnels)
+    ├── pipeline_sdk/        Optional in-container pipeline library
+    └── ...                  S3, SQL, ZMQ, auth, config, etc.
 
-docker/                  Docker standalone deployment
-demos/
-├── slurm-dev/           Slurm dev environment (Podman + native slurmd)
-│   ├── rivault/         Rivault/vLLM inference stack
-│   └── scripts/         E2E demo and setup scripts
-└── backup/              Archived demo scripts
+demos/                       Step-by-step demos
+├── 00_start_services/       Admin: start/stop/health-check
+├── 01_text_embedding/       User: text embedding workflow
+├── 02_sam3_segmentation/    User: SAM3 vision pipeline
+├── 03_hmae_inference/       User: HMAE vision pipeline
+├── 04_rag_search/           User: RAG semantic search + Q&A
+└── slurm-dev/               Slurm dev environment (Podman + native slurmd)
 
-doc/                     Documentation
-tests/                   Test suite
+docker/                      Docker standalone deployment
+doc/                         Documentation
+tests/                       Test suite
 ```
 
 ## Documentation
 
 | Document | Description |
 |----------|-------------|
-| `doc/umrs_overview.md` | Full architecture, data flow, and implementation guide |
-| `doc/zmq_api_contract.md` | ZeroMQ protocol specification |
-| `doc/umrs_rivault_rag_plan.md` | Rivault + RAG integration plan |
-| `doc/embedding_worker_deployment.md` | Embedding worker setup |
-| `doc/set-up_pgvector.md` | PostgreSQL/pgvector configuration |
-| `doc/multi_users.md` | Multi-user configuration guide |
-| `doc/HOWTO.md` | Legacy how-to notes |
-| `docker/README.md` | Docker deployment guide |
-| `demos/slurm-dev/README.md` | Slurm dev environment guide |
+| [doc/admin_guide.md](doc/admin_guide.md) | Admin deployment & operations guide |
+| [doc/user_guide.md](doc/user_guide.md) | User getting started guide |
+| [doc/umrs_overview.md](doc/umrs_overview.md) | Full architecture, data flow, and implementation guide |
+| [doc/zmq_api_contract.md](doc/zmq_api_contract.md) | ZeroMQ protocol specification |
+| [doc/umrs_rivault_rag_plan.md](doc/umrs_rivault_rag_plan.md) | Rivault + RAG integration plan |
+| [doc/rag_implementation.md](doc/rag_implementation.md) | RAG implementation details |
+| [doc/embedding_worker_deployment.md](doc/embedding_worker_deployment.md) | Embedding worker setup |
+| [doc/set-up_pgvector.md](doc/set-up_pgvector.md) | PostgreSQL/pgvector configuration |
+| [doc/multi_users.md](doc/multi_users.md) | Multi-user configuration guide |
+| [docker/README.md](docker/README.md) | Docker deployment guide |
+| [demos/slurm-dev/README.md](demos/slurm-dev/README.md) | Slurm dev environment guide |

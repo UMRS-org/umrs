@@ -1,0 +1,76 @@
+# Demo 01: Text Embedding
+
+User-facing demo — upload text files, compute embeddings via the UMRS pipeline,
+verify results in pgvector, and export.
+
+## Prerequisites
+
+- Services running (see [Demo 00](../00_start_services/README.md))
+- UMRS client installed (`pip install .` from `src/`)
+- User config JSON from your admin
+
+## Quick Start
+
+```bash
+cd demos/01_text_embedding
+bash run_demo.sh
+```
+
+## What This Demo Does
+
+1. **Ping** the UMRS server to verify connectivity
+2. **Prepare** the embedding model (downloads to shared volume if needed)
+3. **Upload** sample text files to the S3 bucket via `umrs-client`
+4. **Wait** for the embedding pipeline to finish
+5. **Verify** that embeddings are stored in pgvector
+6. **Export** embeddings to a local CSV file
+
+## Running Manually
+
+If you prefer to run steps individually:
+
+```bash
+# 1. Check server
+umrs-client -c conf_umrs.json ping
+
+# 2. Upload text files
+umrs-client -c conf_umrs.json upload_dir ./test_data/text/ rivault-demo-bucket
+
+# 3. Monitor progress
+umrs-client -c conf_umrs.json --output text status all
+
+# 4. Once all tasks show "Done", export embeddings
+umrs-client -c conf_umrs.json export_embeddings rivault-demo-bucket ./embeddings.csv
+```
+
+## Test Data
+
+Sample text files in `test_data/text/` (symlinked from `demos/slurm-dev/test_data/text/`):
+
+| File | Topic |
+|------|-------|
+| `hpc_computing.txt` | High-performance computing |
+| `ml_geophysics.txt` | Machine learning in geophysics |
+| `numerical_methods.txt` | Numerical methods |
+| `rivault_platform.txt` | Rivault platform description |
+| `seismic_waves.txt` | Seismic wave analysis |
+
+## Configuration
+
+The demo uses the Rivault demo user config (`conf_umrs.json`), which defines:
+- Username: `rivault_user`
+- Bucket: `rivault-demo-bucket`
+- Model: `intfloat/e5-base-v2` (768-d embeddings via vLLM in Mini-Rivault)
+- Modality: `text`
+
+## Expected Output
+
+After a successful run:
+- Embeddings stored in pgvector (`text` table in user database)
+- CSV file at `./embeddings.csv` with columns: `id`, `s3_key`, `embedding`, etc.
+- Status shows all `process_objects` tasks as `Done`
+
+## See Also
+
+- [User Guide](../../doc/user_guide.md) — full client documentation
+- [Demo 02: SAM3](../02_sam3_segmentation/README.md) — image segmentation demo

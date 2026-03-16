@@ -76,6 +76,22 @@ def load_model(model_cfg, modality):
         type = "loaded"
         compute_embeddings_func = compute_embeddings_masked_autoencoder
         input_type = "raw_image"
+    elif model_type == "HMAE":
+        from .models.hmae_inference import load_hmae_model, make_hmae_compute_func
+        model, device, hmae_config = load_hmae_model(cfg_file, checkpoint_path)
+        type = "loaded"
+        compute_embeddings_func = make_hmae_compute_func(modality, cfg_file)
+        input_type = "raw_image"
+        # Store config on the EmbeddingModel for use by the compute function
+        _hmae_config = hmae_config
+    elif model_type == "SAM3":
+        from .models.sam3_segmentation import load_sam3_model, compute_sam3_segmentation
+        sam3_model, sam3_processor, sam3_device = load_sam3_model(model_name)
+        model = sam3_model
+        type = "loaded"
+        compute_embeddings_func = compute_sam3_segmentation
+        input_type = "image"
+        _sam3_processor = sam3_processor
     elif model_type.startswith("openai://"):
         # Import OpenAI-compatible embedding utilities and vLLM liveness / capability checks
         from .models.openai_api import make_openai_compute_embeddings, is_server_alive, get_max_tokens_from_vllm
@@ -127,5 +143,12 @@ def load_model(model_cfg, modality):
 
 
     # Create and return the EmbeddingModel object
-    return EmbeddingModel(model_name, type, return_type, vector_size, max_tokens, model, input_type, compute_embeddings_func, modality, spacy_model, tokenizer)
+    em = EmbeddingModel(model_name, type, return_type, vector_size, max_tokens, model, input_type, compute_embeddings_func, modality, spacy_model, tokenizer)
 
+    # Attach extra attributes for vision models
+    if model_type == "HMAE":
+        em._hmae_config = _hmae_config
+    elif model_type == "SAM3":
+        em._sam3_processor = _sam3_processor
+
+    return em

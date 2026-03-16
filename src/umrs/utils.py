@@ -1,5 +1,4 @@
 import hashlib
-import torch
 import json
 ################################## json ##################################
 def normalize_json(obj):
@@ -241,7 +240,7 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
     for chunk_list in embeddings:
         if sizes[index] == 0:
             if len(chunk_list) != 1:
-                print(f"Warining: chunk list len should be 1 and is {len(chunk_list)}. Zeroing everything...")    
+                print(f"Warining: chunk list len should be 1 and is {len(chunk_list)}. Zeroing everything...")
             for chunk in chunk_list:
                 chunk["embedding"] = zero_vec
                 chunk["text"] = ''
@@ -251,4 +250,4 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
                 chunk["num_tokens"] = 0
         index += 1
 
-            
+

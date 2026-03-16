@@ -1,6 +1,15 @@
 .DS_Store
 *.pyc
 __pycache__/
+*.egg-info/
+
+# Demo result/output images (auto-generated, not source)
+demos/*/results/
+# Demo test data images (large CT scans — stage only .gitkeep)
+demos/*/test_data/*.png
+demos/*/test_data/*.jpg
+demos/*/test_data/*.tiff
+demos/slurm-dev/test_data/images/
 
 
 #Ignore vscode AI rules
@@ -21,6 +30,10 @@ src/umrs/rivault/env.*-*-*-*-*
 *.pt
 models/
 */models/
+# But keep source code under src/umrs/models/
+!src/umrs/models/
+!src/umrs/models/**
+src/umrs/models/__pycache__/
 demos/slurm-dev/rivault/models/*.safetensors
 
 # Ignore generated coredns config files (UUID-suffixed runtime artifacts)

@@ -1,0 +1,13 @@
+{
+  "modalities": [
+    {
+      "modality_name": "segmentation",
+      "model": {
+        "model_name": "facebook/sam3",
+        "vector_size": "256",
+        "model_type": "bentoml://http://localhost:{LOCAL_PORT}/vision/sam3_segment/submit",
+        "return_type": "file"
+      }
+    }
+  ]
+}
