@@ -133,12 +133,25 @@ def load_model(model_cfg, modality):
         input_type = "text"
     elif model_type.startswith("user_script://"):
         from .steps.loader import ScriptLoader
-        from .steps.executor import WorkflowExecutor
+        from .steps.executor import WorkflowExecutor, ExecutionMode
 
         source_uri = model_type[len("user_script://"):]
         workflow_def = ScriptLoader.load_workflow(source_uri)
         steps = ScriptLoader.load_steps(workflow_def)
-        executor = WorkflowExecutor(workflow_def, steps)
+
+        # Determine execution mode from workflow or model config
+        exec_mode_str = (
+            model_cfg.get("execution_mode")
+            or (workflow_def.resources.extra.get("execution_mode")
+                if workflow_def.resources else None)
+            or "in_process"
+        )
+        exec_mode = ExecutionMode(exec_mode_str)
+
+        executor = WorkflowExecutor(
+            workflow_def, steps,
+            execution_mode=exec_mode,
+        )
 
         model = None
         type = "user_script"

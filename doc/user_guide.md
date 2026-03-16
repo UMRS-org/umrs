@@ -363,3 +363,56 @@ Chain steps — each step's outputs become the next step's inputs:
 | `local_path` | `/home/user/scripts/` | Direct mount — simplest for dev and Slurm |
 | `s3` | `s3://bucket/scripts.zip` | Downloaded at load time (future) |
 | `git` | `https://github.com/org/repo.git@abc123` | Pinned commit (future) |
+
+### 8.7 Execution Modes
+
+By default, steps run **in-process** (fastest, best for development).
+For production, choose an execution mode via the workflow's
+`resources.extra.execution_mode` or the model config's `execution_mode` field.
+
+| Mode | Value | How it works |
+|------|-------|--------------|
+| In-process | `in_process` | Direct Python call inside the UMRS server process |
+| Subprocess | `subprocess` | Isolated child process with `resource.setrlimit` memory/CPU caps |
+| Slurm | `slurm` | `sbatch` job with Singularity container; user code bind-mounted to `/user_code:ro` |
+| Kubernetes | `k8s` | K8s Job; user code mounted via `hostPath` or PVC |
+
+**Example — workflow.json with Slurm execution:**
+
+```json
+{
+  "name": "my-pipeline",
+  "source": {"type": "local_path", "path": "/data/user/scripts"},
+  "steps": [
+    {"name": "infer", "entrypoint": "my_model:InferStep"}
+  ],
+  "resources": {
+    "gpu_count": 1,
+    "memory_limit": "16Gi",
+    "timeout_seconds": 7200,
+    "extra": {
+      "execution_mode": "slurm"
+    }
+  }
+}
+```
+
+**Or set it in the model config** (`vision_models.json`):
+
+```json
+{
+  "model_type": "user_script:///data/user/workflow.json",
+  "execution_mode": "slurm"
+}
+```
+
+### 8.8 Staging & Cleanup
+
+Intermediate step outputs are written to a staging prefix:
+
+```
+s3://<bucket>/_staging/<run_id>/step_<i>_<name>/…
+```
+
+These artifacts are **automatically cleaned up** after a successful
+workflow run.  The final step's output goes directly to the output bucket.

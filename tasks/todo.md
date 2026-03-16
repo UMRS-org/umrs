@@ -11,12 +11,12 @@
 - [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed.
 - [ ] Re-run e2e demo and verify embeddings in DB via phase3b.
 
-## User-Defined Model Workflows (UDM) — Planning (2026-03-16)
+## User-Defined Model Workflows (UDM) — 2026-03-16
 
 > **Goal**: Let users define and run their own models / multi-step workflows
 > via user-provided Python scripts — without modifying UMRS internal code.
 
-### Design Status: PLANNING (see doc/design_user_defined_models.md)
+### Design Status: IMPLEMENTED (see doc/design_user_defined_models.md)
 
 - [ ] U-200: Finalize design document and review with stakeholder
 - [x] U-201: Implement `UMRSStepInterface` (ABC for user scripts)
@@ -24,9 +24,13 @@
 - [x] U-203: Implement `ScriptLoader` (local path / S3 / git source)
 - [x] U-204: Implement `WorkflowExecutor` (step sequencer + S3 I/O)
 - [x] U-205: Add `user_script://` model_type in `models_loading.py`
-- [ ] U-206: Sandbox execution (isolated venv, resource limits, audit)
-- [ ] U-207: End-to-end demo: user-provided script via mounted path
-- [ ] U-208: Documentation (user guide + example scripts)
+- [x] U-206: Sandbox execution (subprocess + Slurm + K8s + audit)
+- [x] U-207: End-to-end demo: user-provided script via mounted path
+- [x] U-208: Documentation (user guide + example scripts)
+- [x] U-209: ExecutionMode enum + pluggable runner protocol
+- [x] U-210: SlurmStepRunner (sbatch + Singularity bind-mount)
+- [x] U-211: K8sStepRunner (Job + ConfigMap + hostPath/PVC)
+- [x] U-212: Staging cleanup (_staging/<run_id>/ auto-delete)
 
 ---
 
