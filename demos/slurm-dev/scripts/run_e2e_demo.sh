@@ -507,14 +507,12 @@ phase6_download_embeddings() {
     local export_file="$download_dir/embeddings.csv"
     podman exec "$UMRS_CLIENT_CONTAINER" mkdir -p "$download_dir"
 
-    log ">>> podman exec $UMRS_CLIENT_CONTAINER python3 /opt/umrs/client_umrs.py -c $USER_CONF export_embeddings rivault-demo-bucket $export_file --format csv --db-host postgres --db-user $PG_SUPERUSER"
-    podman exec -e DB_SUPERUSER_PASSWORD="$PG_SUPERUSER_PASSWORD" \
+    log ">>> podman exec $UMRS_CLIENT_CONTAINER python3 /opt/umrs/client_umrs.py -c $USER_CONF export_embeddings rivault-demo-bucket $export_file --format csv"
+    podman exec \
         "$UMRS_CLIENT_CONTAINER" python3 /opt/umrs/client_umrs.py \
-        -c "$USER_CONF" --no-check-server export_embeddings \
+        -c "$USER_CONF" export_embeddings \
         "rivault-demo-bucket" "$export_file" \
-        --format csv \
-        --db-host postgres \
-        --db-user "$PG_SUPERUSER" || {
+        --format csv || {
         warn "export_embeddings failed"
         return 1
     }
