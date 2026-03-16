@@ -131,6 +131,22 @@ def load_model(model_cfg, modality):
 
         # Declare that this embedding model expects raw text as input
         input_type = "text"
+    elif model_type.startswith("user_script://"):
+        from .steps.loader import ScriptLoader
+        from .steps.executor import WorkflowExecutor
+
+        source_uri = model_type[len("user_script://"):]
+        workflow_def = ScriptLoader.load_workflow(source_uri)
+        steps = ScriptLoader.load_steps(workflow_def)
+        executor = WorkflowExecutor(workflow_def, steps)
+
+        model = None
+        type = "user_script"
+        compute_embeddings_func = executor.run
+        input_type = "raw_image"  # steps handle their own I/O from S3
+        return_type = workflow_def.output.return_type
+        vector_size = workflow_def.output.embedding_vector_size or vector_size
+
     elif model_type.startswith("rivault://"):
         model = model_cfg
         model["model_type"] = model_type[len("rivault://"):]
