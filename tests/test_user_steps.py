@@ -1,0 +1,438 @@
+"""
+Tests for the user-defined steps (UDM) subsystem.
+
+Covers:
+  - WorkflowDefinition parsing & validation
+  - ScriptLoader (local path)
+  - WorkflowExecutor step chaining & S3 I/O
+  - UMRSStep ABC contract enforcement
+"""
+
+from __future__ import annotations
+
+import io
+import json
+import os
+import tempfile
+import textwrap
+from pathlib import Path
+from typing import Any, Dict, List
+from unittest.mock import MagicMock, patch
+
+import numpy as np
+import pytest
+
+from umrs.steps.context import StepContext, StepResult
+from umrs.steps.executor import WorkflowExecutor
+from umrs.steps.interface import UMRSStep
+from umrs.steps.loader import ScriptLoadError, ScriptLoader
+from umrs.steps.models import (
+    OutputSpec,
+    ResourceSpec,
+    SourceSpec,
+    SourceType,
+    StepSpec,
+    WorkflowDefinition,
+)
+
+
+# =========================================================================
+# Fixtures
+# =========================================================================
+
+def _minimal_workflow_dict(**overrides: Any) -> Dict[str, Any]:
+    """Return the smallest valid workflow.json dict."""
+    d = {
+        "name": "test-pipeline",
+        "source": {"type": "local_path", "path": "/tmp/fake"},
+        "steps": [
+            {"name": "step1", "entrypoint": "my_mod:MyStep", "config": {"k": 1}},
+        ],
+    }
+    d.update(overrides)
+    return d
+
+
+class PassthroughStep(UMRSStep):
+    """Minimal concrete step: copies input keys to output keys."""
+
+    name = "passthrough"
+
+    def run(self, ctx: StepContext) -> StepResult:
+        return StepResult(output_keys=list(ctx.input_keys))
+
+
+class UppercaseStep(UMRSStep):
+    """Reads text from S3, uppercases it, writes to output bucket."""
+
+    name = "uppercase"
+
+    def setup(self, config: dict) -> None:
+        self.suffix = config.get("suffix", "_upper")
+
+    def run(self, ctx: StepContext) -> StepResult:
+        out_keys = []
+        for key in ctx.input_keys:
+            data = ctx.download_bytes(key)
+            out_key = f"{key}{self.suffix}"
+            ctx.upload_bytes(out_key, data.upper())
+            out_keys.append(out_key)
+        return StepResult(output_keys=out_keys)
+
+
+class EmbeddingStep(UMRSStep):
+    """Produces dummy embeddings."""
+
+    name = "embed"
+
+    def run(self, ctx: StepContext) -> StepResult:
+        n = len(ctx.input_keys)
+        return StepResult(
+            output_keys=ctx.input_keys,
+            embeddings=np.ones((n, 4), dtype=np.float32),
+            checksums=["abc"] * n,
+            metadata=[{"step": "embed"}] * n,
+        )
+
+
+# =========================================================================
+# WorkflowDefinition
+# =========================================================================
+
+class TestWorkflowDefinition:
+
+    def test_from_dict_minimal(self):
+        wf = WorkflowDefinition.from_dict(_minimal_workflow_dict())
+        assert wf.name == "test-pipeline"
+        assert len(wf.steps) == 1
+        assert wf.steps[0].entrypoint == "my_mod:MyStep"
+        assert wf.version == "1.0"
+
+    def test_from_dict_full(self):
+        d = _minimal_workflow_dict(
+            version="2.0",
+            description="a pipeline",
+            requirements=["numpy"],
+            env={"FOO": "bar"},
+            resources={"gpu_count": 1, "memory_limit": "4Gi"},
+            output={"return_type": "vector", "embedding_vector_size": 768},
+        )
+        wf = WorkflowDefinition.from_dict(d)
+        assert wf.version == "2.0"
+        assert wf.resources.gpu_count == 1
+        assert wf.output.embedding_vector_size == 768
+
+    def test_roundtrip(self):
+        wf = WorkflowDefinition.from_dict(_minimal_workflow_dict())
+        d2 = wf.to_dict()
+        wf2 = WorkflowDefinition.from_dict(d2)
+        assert wf2.name == wf.name
+        assert len(wf2.steps) == len(wf.steps)
+
+    def test_validate_empty_name(self):
+        d = _minimal_workflow_dict(name="")
+        wf = WorkflowDefinition.from_dict(d)
+        with pytest.raises(ValueError, match="name is required"):
+            wf.validate()
+
+    def test_validate_no_steps(self):
+        d = _minimal_workflow_dict(steps=[])
+        wf = WorkflowDefinition.from_dict(d)
+        with pytest.raises(ValueError, match="at least one step"):
+            wf.validate()
+
+    def test_validate_duplicate_step_names(self):
+        d = _minimal_workflow_dict(steps=[
+            {"name": "dup", "entrypoint": "a:B"},
+            {"name": "dup", "entrypoint": "c:D"},
+        ])
+        wf = WorkflowDefinition.from_dict(d)
+        with pytest.raises(ValueError, match="Duplicate step name"):
+            wf.validate()
+
+    def test_validate_bad_entrypoint(self):
+        d = _minimal_workflow_dict(steps=[
+            {"name": "s1", "entrypoint": "no_colon_here"},
+        ])
+        wf = WorkflowDefinition.from_dict(d)
+        with pytest.raises(ValueError, match="module:ClassName"):
+            wf.validate()
+
+    def test_from_file(self, tmp_path: Path):
+        d = _minimal_workflow_dict()
+        d["source"]["path"] = str(tmp_path)
+        p = tmp_path / "workflow.json"
+        p.write_text(json.dumps(d))
+        wf = WorkflowDefinition.from_file(p)
+        assert wf.name == "test-pipeline"
+
+    def test_from_file_not_found(self):
+        with pytest.raises(FileNotFoundError):
+            WorkflowDefinition.from_file("/nonexistent/workflow.json")
+
+
+# =========================================================================
+# SourceSpec validation
+# =========================================================================
+
+class TestSourceSpec:
+
+    def test_local_path_valid(self):
+        s = SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp/scripts")
+        s.validate()  # should not raise
+
+    def test_local_path_relative(self):
+        s = SourceSpec(type=SourceType.LOCAL_PATH, path="relative/path")
+        with pytest.raises(ValueError, match="absolute"):
+            s.validate()
+
+    def test_git_without_ref(self):
+        s = SourceSpec(type=SourceType.GIT, path="https://github.com/org/repo.git")
+        with pytest.raises(ValueError, match="commit hash"):
+            s.validate()
+
+    def test_s3_invalid_prefix(self):
+        s = SourceSpec(type=SourceType.S3, path="/not/s3")
+        with pytest.raises(ValueError, match="s3://"):
+            s.validate()
+
+
+# =========================================================================
+# ScriptLoader
+# =========================================================================
+
+class TestScriptLoader:
+
+    def test_load_workflow_local(self, tmp_path: Path):
+        d = _minimal_workflow_dict()
+        d["source"]["path"] = str(tmp_path)
+        p = tmp_path / "workflow.json"
+        p.write_text(json.dumps(d))
+        wf = ScriptLoader.load_workflow(str(p))
+        assert wf.name == "test-pipeline"
+
+    def test_load_steps_local(self, tmp_path: Path):
+        # Write a simple user step module
+        (tmp_path / "my_step.py").write_text(textwrap.dedent("""\
+            from umrs.steps import UMRSStep, StepContext, StepResult
+
+            class HelloStep(UMRSStep):
+                name = "hello"
+                def setup(self, config):
+                    self.greeting = config.get("greeting", "hi")
+                def run(self, ctx):
+                    return StepResult(output_keys=ctx.input_keys)
+        """))
+
+        wf = WorkflowDefinition(
+            name="test",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path=str(tmp_path)),
+            steps=[StepSpec(name="hello", entrypoint="my_step:HelloStep",
+                            config={"greeting": "howdy"})],
+        )
+        instances = ScriptLoader.load_steps(wf)
+        assert len(instances) == 1
+        assert instances[0].name == "hello"
+        assert instances[0].greeting == "howdy"  # type: ignore[attr-defined]
+
+    def test_load_steps_bad_entrypoint_format(self, tmp_path: Path):
+        wf = WorkflowDefinition(
+            name="test",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path=str(tmp_path)),
+            steps=[StepSpec(name="s", entrypoint="bad format!")],
+        )
+        with pytest.raises(ScriptLoadError, match="invalid entrypoint"):
+            ScriptLoader.load_steps(wf)
+
+    def test_load_steps_module_not_found(self, tmp_path: Path):
+        wf = WorkflowDefinition(
+            name="test",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path=str(tmp_path)),
+            steps=[StepSpec(name="s", entrypoint="nonexistent_mod:Cls")],
+        )
+        with pytest.raises(ScriptLoadError, match="cannot import"):
+            ScriptLoader.load_steps(wf)
+
+    def test_load_steps_class_not_umrs_step(self, tmp_path: Path):
+        (tmp_path / "bad.py").write_text("class NotAStep:\n    pass\n")
+        wf = WorkflowDefinition(
+            name="test",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path=str(tmp_path)),
+            steps=[StepSpec(name="s", entrypoint="bad:NotAStep")],
+        )
+        with pytest.raises(ScriptLoadError, match="does not inherit"):
+            ScriptLoader.load_steps(wf)
+
+    def test_load_steps_class_missing(self, tmp_path: Path):
+        (tmp_path / "empty_mod.py").write_text("x = 1\n")
+        wf = WorkflowDefinition(
+            name="test",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path=str(tmp_path)),
+            steps=[StepSpec(name="s", entrypoint="empty_mod:Missing")],
+        )
+        with pytest.raises(ScriptLoadError, match="not found"):
+            ScriptLoader.load_steps(wf)
+
+
+# =========================================================================
+# WorkflowExecutor
+# =========================================================================
+
+def _mock_s3():
+    """Build a mock S3 client with basic get/put/head support."""
+    store: Dict[str, bytes] = {}
+    s3 = MagicMock()
+
+    def put_object(Bucket, Key, Body, **kw):
+        store[f"{Bucket}/{Key}"] = Body if isinstance(Body, bytes) else Body.encode()
+
+    def get_object(Bucket, Key):
+        full = f"{Bucket}/{Key}"
+        if full not in store:
+            raise Exception(f"NoSuchKey: {full}")
+        data = store[full]
+        body = MagicMock()
+        body.read.return_value = data
+        return {"Body": body, "ETag": '"abc123"', "ContentLength": len(data),
+                "Metadata": {}}
+
+    def head_object(Bucket, Key):
+        full = f"{Bucket}/{Key}"
+        if full not in store:
+            raise Exception(f"NoSuchKey: {full}")
+        return {"ETag": '"abc123"', "ContentLength": len(store[full]),
+                "Metadata": {}}
+
+    s3.put_object = MagicMock(side_effect=put_object)
+    s3.get_object = MagicMock(side_effect=get_object)
+    s3.head_object = MagicMock(side_effect=head_object)
+    s3._store = store  # expose for assertions
+    return s3
+
+
+class TestWorkflowExecutor:
+
+    def _make_executor(self, steps: List[UMRSStep], **wf_kw) -> WorkflowExecutor:
+        step_specs = [StepSpec(name=s.name, entrypoint=f"fake:{s.__class__.__name__}")
+                      for s in steps]
+        wf = WorkflowDefinition(
+            name=wf_kw.get("name", "test-wf"),
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
+            steps=step_specs,
+            output=wf_kw.get("output", OutputSpec()),
+        )
+        return WorkflowExecutor(wf, steps)
+
+    def test_single_passthrough_step(self):
+        s3 = _mock_s3()
+        s3._store["in-bkt/file1.txt"] = b"hello"
+        s3._store["in-bkt/file2.txt"] = b"world"
+
+        executor = self._make_executor([PassthroughStep()])
+        embs, chk, meta, saved = executor.run(
+            s3, ["file1.txt", "file2.txt"], "in-bkt", "out-bkt"
+        )
+        assert len(embs) == 2
+        assert len(chk) == 2
+
+    def test_single_embedding_step(self):
+        s3 = _mock_s3()
+        s3._store["bkt/a.txt"] = b"data"
+
+        executor = self._make_executor([EmbeddingStep()])
+        embs, chk, meta, saved = executor.run(
+            s3, ["a.txt"], "bkt", "out"
+        )
+        assert len(embs) == 1
+        np.testing.assert_array_equal(embs[0], np.ones(4, dtype=np.float32))
+        assert chk == ["abc"]
+        assert meta == [{"step": "embed"}]
+
+    def test_multi_step_chaining(self):
+        """Uppercase step chains into passthrough step."""
+        s3 = _mock_s3()
+        s3._store["in/hello.txt"] = b"hello world"
+
+        upper = UppercaseStep()
+        upper.setup({"suffix": "_UP"})
+        passth = PassthroughStep()
+
+        executor = self._make_executor([upper, passth])
+        embs, chk, meta, saved = executor.run(
+            s3, ["hello.txt"], "in", "out"
+        )
+        # Uppercase step writes to output bucket with suffix
+        # Passthrough forwards those keys
+        assert len(saved) == 1
+
+    def test_step_count_mismatch(self):
+        wf = WorkflowDefinition(
+            name="bad",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
+            steps=[StepSpec(name="a", entrypoint="x:Y")],
+        )
+        with pytest.raises(ValueError, match="Step count mismatch"):
+            WorkflowExecutor(wf, [PassthroughStep(), PassthroughStep()])
+
+    def test_teardown_called(self):
+        s3 = _mock_s3()
+        s3._store["bkt/f.txt"] = b"x"
+
+        step = PassthroughStep()
+        step.teardown = MagicMock()  # type: ignore[assignment]
+
+        executor = self._make_executor([step])
+        executor.run(s3, ["f.txt"], "bkt", "out")
+        step.teardown.assert_called_once()
+
+
+# =========================================================================
+# StepContext helpers
+# =========================================================================
+
+class TestStepContext:
+
+    def test_download_upload_bytes(self):
+        s3 = _mock_s3()
+        s3._store["bkt/in.bin"] = b"\x00\x01\x02"
+
+        ctx = StepContext(s3=s3, input_bucket="bkt", input_keys=["in.bin"],
+                          output_bucket="out")
+        data = ctx.download_bytes("in.bin")
+        assert data == b"\x00\x01\x02"
+
+        uri = ctx.upload_bytes("out.bin", b"\x03\x04")
+        assert uri == "s3://out/out.bin"
+        assert s3._store["out/out.bin"] == b"\x03\x04"
+
+    def test_download_upload_numpy(self):
+        arr = np.array([1.0, 2.0, 3.0])
+        buf = io.BytesIO()
+        np.save(buf, arr, allow_pickle=False)
+        npy_bytes = buf.getvalue()
+
+        s3 = _mock_s3()
+        s3._store["bkt/vec.npy"] = npy_bytes
+
+        ctx = StepContext(s3=s3, input_bucket="bkt", input_keys=["vec.npy"],
+                          output_bucket="out")
+        loaded = ctx.download_numpy("vec.npy")
+        np.testing.assert_array_equal(loaded, arr)
+
+        ctx.upload_numpy("out.npy", loaded)
+        assert "out/out.npy" in s3._store
+
+
+# =========================================================================
+# UMRSStep ABC enforcement
+# =========================================================================
+
+class TestUMRSStepContract:
+
+    def test_cannot_instantiate_abc(self):
+        with pytest.raises(TypeError):
+            UMRSStep()  # type: ignore[abstract]
+
+    def test_concrete_step_ok(self):
+        step = PassthroughStep()
+        assert step.name == "passthrough"

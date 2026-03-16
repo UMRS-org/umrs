@@ -11,6 +11,25 @@
 - [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed.
 - [ ] Re-run e2e demo and verify embeddings in DB via phase3b.
 
+## User-Defined Model Workflows (UDM) — Planning (2026-03-16)
+
+> **Goal**: Let users define and run their own models / multi-step workflows
+> via user-provided Python scripts — without modifying UMRS internal code.
+
+### Design Status: PLANNING (see doc/design_user_defined_models.md)
+
+- [ ] U-200: Finalize design document and review with stakeholder
+- [x] U-201: Implement `UMRSStepInterface` (ABC for user scripts)
+- [x] U-202: Implement `UserWorkflowDefinition` model + JSON schema
+- [x] U-203: Implement `ScriptLoader` (local path / S3 / git source)
+- [x] U-204: Implement `WorkflowExecutor` (step sequencer + S3 I/O)
+- [x] U-205: Add `user_script://` model_type in `models_loading.py`
+- [ ] U-206: Sandbox execution (isolated venv, resource limits, audit)
+- [ ] U-207: End-to-end demo: user-provided script via mounted path
+- [ ] U-208: Documentation (user guide + example scripts)
+
+---
+
 ## Pipeline Template & Demo Restructuring (2026-03-15)
 
 - [x] P1: Make `umrs-client` pip-installable (pyproject.toml + def main())
