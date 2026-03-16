@@ -1,4 +1,4 @@
-from umrs.models_loading import load_model
+from umrs.models_loading import load_model, EmbeddingModel
 from umrs.config import *
 
 
@@ -18,6 +18,24 @@ jobid_cache = diskcache.Cache(f"{get_default_tmp_subdir()}/job_id_store", size_l
 
 # Ephemeral in-memory cache for models
 model_cache = {}
+
+
+def load_model_as_bentoml(model_name, return_type, vector_size, input_type, compute_func, modality):
+    """Create an EmbeddingModel backed by a BentoML compute adapter."""
+    em = EmbeddingModel(
+        model_name=model_name,
+        type="bentoml",
+        return_type=return_type,
+        embedding_vector_size=vector_size,
+        max_tokens=None,
+        model=None,
+        input_type=input_type,
+        compute_embeddings=compute_func,
+        modality=modality,
+        spacy_model=None,
+        tokenizer=None,
+    )
+    return em
 
 def get_slurm_job_state(job_id):
     result = subprocess.run(
@@ -409,10 +427,38 @@ def launch_rivault_model(model_cfg):
             time.sleep(2)
         print(f"BentoML vision service is healthy at {bentoml_url}")
 
-        # For BentoML, we don't load a local model — we return the client
-        model_cache[model_type_key] = (client, thread_tunnel, proc_tunnel)
+        # Build an EmbeddingModel with a BentoML compute adapter so the
+        # downstream pipeline (embeddings.py) can call model.compute_embeddings()
+        # just like it does for locally-loaded models.
+        from umrs.models.bentoml_adapter import make_bentoml_hmae_compute, make_bentoml_sam3_compute
+
+        # Detect endpoint name from the URL path (e.g. ".../hmae_reconstruct/submit" → "hmae_reconstruct")
+        url_path = bentoml_url.rstrip("/")
+        # Strip trailing /submit if present
+        if url_path.endswith("/submit"):
+            url_path = url_path[:-len("/submit")]
+        endpoint_name = url_path.rsplit("/", 1)[-1]
+
+        mode = model_cfg.get("mode", "reconstruct")
+        model_name = model_cfg["model_name"]
+        vector_size = model_cfg.get("vector_size", "768")
+        return_type = model_cfg.get("return_type", "file")
+        modality = model_cfg.get("_modality", "")
+
+        if "hmae" in endpoint_name:
+            compute_func = make_bentoml_hmae_compute(client, endpoint_name, mode)
+            input_type = "raw_image"
+        elif "sam3" in endpoint_name or "segment" in endpoint_name:
+            compute_func = make_bentoml_sam3_compute(client, endpoint_name)
+            input_type = "image"
+        else:
+            raise RuntimeError(f"Unknown BentoML endpoint: {endpoint_name}")
+
+        model = load_model_as_bentoml(model_name, return_type, vector_size, input_type, compute_func, modality)
+
+        model_cache[model_type_key] = (model, thread_tunnel, proc_tunnel)
         jobid_cache[model_type_key] = job_id
-        return client
+        return model
 
     elif model_cfg["model_type"].startswith("openai://"):
         # replace a placeholder {NGINX_PORT} with the actual value

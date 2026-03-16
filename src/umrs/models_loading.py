@@ -131,9 +131,19 @@ def load_model(model_cfg, modality):
 
         # Declare that this embedding model expects raw text as input
         input_type = "text"
+    elif model_type.startswith("bentoml://"):
+        # Treat bentoml:// the same as rivault:// — defer to launch_rivault_model.
+        # Pass modality and mode through model_cfg so the launcher can build
+        # the correct BentoML compute adapter.
+        model = model_cfg
+        model["_modality"] = modality
+        type = "rivault"
+        input_type = None
+        compute_embeddings_func = None
     elif model_type.startswith("rivault://"):
         model = model_cfg
         model["model_type"] = model_type[len("rivault://"):]
+        model["_modality"] = modality
         type = "rivault"
         input_type=None
         compute_embeddings_func=None
