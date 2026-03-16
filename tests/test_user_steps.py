@@ -436,3 +436,77 @@ class TestUMRSStepContract:
     def test_concrete_step_ok(self):
         step = PassthroughStep()
         assert step.name == "passthrough"
+
+
+# =========================================================================
+# Sandbox — StepAuditLog
+# =========================================================================
+
+from umrs.steps.sandbox import SandboxConfig, StepAuditLog, SubprocessSandbox
+
+
+class TestStepAuditLog:
+
+    def test_log_creates_file(self, tmp_path: Path):
+        audit = StepAuditLog(str(tmp_path))
+        audit.log({"event": "test", "run_id": "abc"})
+
+        log_file = tmp_path / "audit.jsonl"
+        assert log_file.exists()
+        lines = log_file.read_text().strip().split("\n")
+        assert len(lines) == 1
+        entry = json.loads(lines[0])
+        assert entry["event"] == "test"
+        assert "timestamp" in entry
+
+    def test_multiple_events(self, tmp_path: Path):
+        audit = StepAuditLog(str(tmp_path))
+        audit.log({"event": "a"})
+        audit.log({"event": "b"})
+        audit.log({"event": "c"})
+
+        lines = (tmp_path / "audit.jsonl").read_text().strip().split("\n")
+        assert len(lines) == 3
+
+
+# =========================================================================
+# Sandbox — SandboxConfig
+# =========================================================================
+
+class TestSandboxConfig:
+
+    def test_defaults(self):
+        cfg = SandboxConfig()
+        assert cfg.enabled is True
+        assert cfg.timeout_seconds == 3600
+        assert cfg.memory_limit_bytes == 8 * 1024**3
+
+    def test_override(self):
+        cfg = SandboxConfig(timeout_seconds=60, enabled=False)
+        assert cfg.timeout_seconds == 60
+        assert cfg.enabled is False
+
+
+# =========================================================================
+# Sandbox — WorkflowExecutor with sandbox=None (no regression)
+# =========================================================================
+
+class TestExecutorSandboxCompat:
+    """Ensure the executor still works when sandbox is not configured."""
+
+    def _make_executor(self, steps):
+        step_specs = [StepSpec(name=s.name, entrypoint=f"fake:{s.__class__.__name__}")
+                      for s in steps]
+        wf = WorkflowDefinition(
+            name="compat-test",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
+            steps=step_specs,
+        )
+        return WorkflowExecutor(wf, steps, sandbox=None)
+
+    def test_passthrough_no_sandbox(self):
+        s3 = _mock_s3()
+        s3._store["b/x.txt"] = b"data"
+        executor = self._make_executor([PassthroughStep()])
+        embs, chk, meta, saved = executor.run(s3, ["x.txt"], "b", "out")
+        assert len(embs) == 1
