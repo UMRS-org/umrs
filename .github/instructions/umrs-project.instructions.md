@@ -41,10 +41,14 @@ demos/
       demo_hmae_inference.py     ← HMAE BentoML client (3 modes)
   02_sam3_segmentation/
     run_demo.sh              ← end-to-end SAM3 demo (single image, downloads results)
+    vision_models.json       ← SAM3 model config (rivault://bentoml:// scheme)
   03_hmae_inference/
     run_demo.sh              ← end-to-end HMAE demo (single image, downloads results)
+    vision_models.json       ← HMAE model config (rivault://bentoml:// scheme)
     test_data/               ← test images (symlinks OK)
     results/                 ← downloaded outputs land here
+  04_rag_search/
+    run_demo.sh              ← RAG search demo (vector, hybrid, reranking, Q&A)
 ```
 
 ---
@@ -63,10 +67,10 @@ demos/
 
 ### Startup Flow
 1. `sbatch` triggers `demos/slurm-dev/umrs-config/rivault_data/serve-model.slurm` (wrapper inside ai-login)
-2. Wrapper sets host-context overrides (`VLLM_PATH_TO_HUGGINGFACE`, `HMAE_MODEL_PATH`, etc.)
+2. Wrapper `export`s `RIVAULT_PROFILES` (default: `harness vllm vision-bentoml`), sets host-context overrides (`VLLM_PATH_TO_HUGGINGFACE`, `HMAE_MODEL_PATH`, etc.), reloads the BentoML vision tarball if stale
 3. Wrapper calls `exec bash ./serve-model.slurm` (the real Slurm script in `src/umrs/rivault/`)
 4. `serve-model.slurm` auto-detects GPU, picks nvidia/rocm override YAML, writes `env.{uuid}`
-5. Runs `podman-compose ... --profile harness --profile vllm --profile vision-bentoml up`
+5. Reads `${RIVAULT_PROFILES:-"harness vllm"}` and runs `podman-compose ... --profile <p> ... up`
 
 ### Profiles
 - `harness`: nginx + litellm + ll-postgres + coredns + minio + umrs-out-nginx
@@ -81,16 +85,72 @@ demos/
 | `HMAE_MODEL_PATH` | wrapper slurm | `/home/mnagaso/hmae-sample` (checkpoint dir mount source) |
 | `HMAE_CONFIG_PATH` | serve-model.yaml | `/models/hmae/infer_hmae_vit_b.yaml` (inside container) |
 | `HMAE_CHECKPOINT` | serve-model.yaml | `/models/hmae/latest_checkpoint.pth` (inside container) |
-| `RIVAULT_PROFILES` | wrapper slurm / sbatch | space-separated list of compose profiles to activate |
+| `RIVAULT_PROFILES` | wrapper slurm (exported) | space-separated list of compose profiles; default `harness vllm vision-bentoml` |
 | `VLLM_DOCKER_TAG` | wrapper slurm | `cu130-nightly-aarch64` (Blackwell GPU) |
 | `VLLM_GPU_MEM_UTIL` | wrapper slurm | `0.10` (low — always-on LLM takes most GPU) |
 
 ### Tarball Auto-Reload
-`serve-model.slurm` checks if `rivault/images/umrs-vision.tar` is newer than the cached podman image.
-If yes, it runs `podman rmi -f` + `podman load`. Always re-save tarball after rebuilding image:
+The wrapper (`demos/slurm-dev/umrs-config/rivault_data/serve-model.slurm`) checks if `${RIVAULT_DIR}/images/umrs-vision.tar` is newer than the cached podman image. If yes, it runs `podman rmi -f` + `podman load`. Always re-save tarball after rebuilding image:
 ```bash
 rm -f src/umrs/rivault/images/umrs-vision.tar
 podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/rivault/images/umrs-vision.tar
+```
+
+### Slurm Output File Location
+The wrapper has `#SBATCH --output` pointing to `${JOB_INFO_DIR}/slurm-%j.out` (resolved from ai-login as `/root/.config/umrs/tmp/slurm-<N>.out`). However the **actual** file written on the compute node host goes to the working directory at sbatch-submission time (`//slurm-<N>.out` = `/slurm-<N>.out` on the host). To read the real output:
+```bash
+# Inside ai-login (via volume mount path):
+podman exec ai-login cat /root/.config/umrs/tmp/slurm-<N>.out
+# On the host directly:
+cat /slurm-<N>.out
+```
+
+---
+
+## Model Type Scheme
+
+Vision models use a double-scheme that separates launch infrastructure from wire protocol:
+
+```
+rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/<endpoint>/submit
+```
+
+- `rivault://` — requires Slurm job launch + SSH tunnel (handled by `models_loading.py` → `launch_rivault_model()`)
+- `bentoml://` — BentoML async task-queue API (handled inside `launch_rivault_model()`)
+
+### Routing Flow
+```
+Config:  rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/sam3_segment/submit
+              │
+  models_loading.py: rivault:// handler strips prefix, sets type="rivault"
+              │
+  model_cfg["model_type"] = "bentoml://http://localhost:{LOCAL_PORT}/vision/sam3_segment/submit"
+              │
+  server_umrs.py dispatches to launch_rivault_model()
+              │
+  rivault_launcher.py: model_type.startswith("bentoml://") → sbatch with vision-bentoml profile
+              │
+  SSH tunnel established, BentoML adapter created, EmbeddingModel returned
+```
+
+### Endpoint Detection (in `launch_rivault_model()`)
+The endpoint name is derived from the URL path: strip trailing `/submit`, take the last path segment.
+- `.../sam3_segment/submit` → `sam3_segment` → `make_bentoml_sam3_compute()`
+- `.../hmae_reconstruct/submit` → `hmae_reconstruct` → `make_bentoml_hmae_compute(mode=...)`
+
+### RIVAULT_PROFILES Propagation (important)
+`RIVAULT_PROFILES` contains spaces, which are mangled when passed as:
+```bash
+sbatch --export=ALL,RIVAULT_PROFILES="harness vllm vision-bentoml"  # ← BROKEN through podman exec quoting
+```
+**Working approaches**:
+```bash
+# 1. Set env in shell before sbatch (works with podman exec bash -c '...')
+podman exec ai-login bash -c 'export RIVAULT_PROFILES="harness vllm vision-bentoml" && sbatch --export=ALL ...'
+
+# 2. Rely on the wrapper default (recommended — already in serve-model.slurm)
+# The wrapper exports: RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vllm vision-bentoml}"
+podman exec ai-login sbatch /root/.config/umrs/rivault_data/serve-model.slurm
 ```
 
 ---
@@ -222,8 +282,21 @@ services:
 - Error: `docker-archive doesn't support modifying existing images`
 - Fix: Always `rm -f` the old tarball before `podman save`
 
-### 7. `RIVAULT_PROFILES` env var needs exact string for sbatch `--export`
-- `sbatch --export=ALL,RIVAULT_PROFILES="harness vllm vision-bentoml"` — space-separated, quoted
+### 7. `RIVAULT_PROFILES` env var mangled by sbatch `--export` through podman exec
+- Passing `sbatch --export=ALL,RIVAULT_PROFILES="harness vllm vision-bentoml"` through `podman exec` quoting layers strips the value at the first space — only `"harness"` reaches the job.
+- **Root fix**: The wrapper script (`serve-model.slurm`) now `export`s the default directly:
+  `export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vllm vision-bentoml}"`
+- This means the default always includes `vision-bentoml` regardless of how sbatch was invoked.
+
+### 8. Demo scripts reuse Slurm job without checking vision-bentoml profile
+- Bug: If demo 01 (text embedding) started the Rivault job with only `harness vllm` profiles, demos 02 and 03 found the running job and reused it — but `rivault_bentoml-vision_1` was never started, so `/vision/healthz` returned 502 and the demo waited forever.
+- Fix (demos/02_sam3_segmentation/run_demo.sh, demos/03_hmae_inference/run_demo.sh):
+  Before reusing an existing job, probe `${BENTOML_URL}/healthz`:
+  - Healthy → reuse as before
+  - Unhealthy → `scancel` the job and resubmit with `vision-bentoml` included
+
+### 9. bentoml:// standalone handler removed from models_loading.py
+- The old standalone `bentoml://` check in `models_loading.py` was removed. Vision models must now use `rivault://bentoml://` scheme. The `rivault://` handler strips the prefix correctly and the remainder (`bentoml://http://...`) matches the existing check in `launch_rivault_model()`.
 
 ---
 
@@ -231,7 +304,27 @@ services:
 
 ### Check BentoML container logs
 ```bash
-podman exec ai-login ssh compute 'podman logs rivault_bentoml-vision_1 2>&1 | tail -100'
+# Note: SSH to compute-01 from ai-login may require host key setup
+# Instead, read logs directly from the host (compute node is localhost in slurm-dev)
+podman logs rivault_bentoml-vision_1 2>&1 | tail -100
+```
+
+### Check BentoML image loading / RIVAULT_PROFILES in job output
+```bash
+# Job output goes to /slurm-<N>.out on the HOST (not inside ai-login)
+grep 'RIVAULT_PROFILES\|rivault_\|bentoml\|vision\|mini-rivault' /slurm-<N>.out
+# The job also writes to ai-login volume mount path (may be stale from previous job with same ID!):
+podman exec ai-login cat /root/.config/umrs/tmp/slurm-<N>.out
+# ALWAYS check Modify timestamp: stale files from previous sessions have old dates
+podman exec ai-login stat /root/.config/umrs/tmp/slurm-<N>.out | grep Modify
+```
+
+### Verify vision-bentoml profile is active
+```bash
+# Check job output for container names — rivault_bentoml-vision_1 should appear
+grep '^rivault_\|^exit_' /slurm-<N>.out
+# Quick health check
+curl -sf http://localhost:11434/vision/healthz && echo OK || echo FAIL
 ```
 
 ### Check Slurm job status
@@ -266,14 +359,13 @@ curl -sf "http://localhost:11434/vision/healthz"
 cd /home/mnagaso/workspace/umrs
 podman build -t ghcr.io/riken-rccs/umrs-vision:latest -f src/umrs/vision_service/Dockerfile .
 
-# 3. Save tarball (auto-detected by serve-model.slurm on next job)
+# 3. Save tarball (auto-detected by wrapper on next job — tarball newer than cached image triggers reload)
 rm -f src/umrs/rivault/images/umrs-vision.tar
 podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/rivault/images/umrs-vision.tar
 
-# 4. Submit new job (cancels old one if needed)
+# 4. Submit new job (wrapper defaults to vision-bentoml — no --export needed)
 podman exec ai-login scancel <old_job_id>
-podman exec ai-login sbatch --export=ALL,RIVAULT_PROFILES="harness vllm vision-bentoml" \
-  /root/.config/umrs/rivault_data/serve-model.slurm
+podman exec ai-login sbatch /root/.config/umrs/rivault_data/serve-model.slurm
 ```
 
 ---
