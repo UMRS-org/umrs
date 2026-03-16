@@ -30,7 +30,7 @@ The root folder `umrs/` mainly contains JSON configuration files and two directo
 
 - **`users/` directory**
   - Contains user profiles or personalized configurations.
-  - `spring8.json`: particular configuration for the Spring-8 user (with MAE model).
+  - `spring8.json`: configuration for the Spring-8 user with two tomography pipelines: the legacy MAE embedding model (`tomography_embedding`) and the HMAE (Hierarchical MAE) reconstruction and feature extraction models (`tomography_reconstruction`, `tomography_mae_reconstruction`, `tomography_features_extraction`).
   - `user1.json` and `user2.json`: profiles and specific configurations for different users.
 
 ## See Also

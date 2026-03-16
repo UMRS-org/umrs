@@ -88,13 +88,23 @@ RIVAULT_PROFILES="harness vllm vision-bentoml"
 
 ### Vision Model Config (`vision_models.json`)
 
+Each HMAE inference mode maps to its own modality entry:
+
+| Modality | Mode | Output |
+|----------|------|--------|
+| `tomography_reconstruction` | Full encode+decode | `*_recon.png` |
+| `tomography_mae_reconstruction` | Masked reconstruction | `*_mae.png` + loss |
+| `tomography_features_extraction` | Encoder-only | `*_features.pt` |
+
+Example entry for full reconstruction:
+
 ```json
 {
-  "modality_name": "tomography",
+  "modality_name": "tomography_reconstruction",
   "model": {
     "model_name": "HMAE ViT-B",
     "vector_size": "768",
-    "model_type": "bentoml://http://localhost:{LOCAL_PORT}/vision/hmae_reconstruct/submit",
+    "model_type": "HMAE",
     "model_cfg_file": "/models/hmae/infer_hmae_vit_b.yaml",
     "checkpoint_path": "/models/hmae/latest_checkpoint.pth",
     "return_type": "file"

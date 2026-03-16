@@ -22,7 +22,7 @@ import urllib3
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
 
-    
+
 def get_s3_server_name(s3):
 
     response = s3.list_buckets()
@@ -35,7 +35,7 @@ def get_s3_server_name(s3):
         return "MinIO"
     else:
         sys.exit(f"Do not know how to handle S3 server {server}")
-        
+
 
 def s3_strong_password(length=24):
     chars = string.ascii_letters + string.digits + "-_@"
@@ -86,16 +86,16 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
 
     if server_name == "MinIO":
         from umrs.minio import minio_s3_create_user, minio_grant_user_access
-        alias = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)            
+        alias = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)
         if alias:
             for bucket in bucket_list:
                 minio_grant_user_access(username, bucket, alias)
 
     else:
-        sys.exit(f"Do not know how to create user and buckets for server '{server_name}'") 
+        sys.exit(f"Do not know how to create user and buckets for server '{server_name}'")
 
 
-        
+
 def connect_to_s3(config_file):
     """
     Parses an S3 configuration file and returns a boto3 S3 client.
@@ -107,7 +107,7 @@ def connect_to_s3(config_file):
         boto3.client: Configured S3 client.
     """
 
-    
+
     config = {}
 
     config_path = os.path.expanduser(config_file)
@@ -115,7 +115,7 @@ def connect_to_s3(config_file):
     if not os.path.isfile(config_path):
         print(f"S3 Config file '{config_file}' not found")
         sys.exit(1)
-    
+
     # Initialize parser
     config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
     config.read(config_path)
@@ -133,7 +133,7 @@ def connect_to_s3(config_file):
     endpoint_url = f"{protocol}://{s3_host}"
 
     print(f"--> Connecting to S3 service on: {endpoint_url}...")
-    
+
     # Create the S3 client
     s3 = boto3.client(
         "s3",
@@ -151,7 +151,7 @@ def connect_to_s3(config_file):
     except Exception as e:
         sys.exit(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.")
 
-    
+
     return s3, bucket_location
 
 def make_path_to_bucket_string(xp_name, bucket_alias, username, output=False):
@@ -161,26 +161,26 @@ def make_path_to_bucket_string(xp_name, bucket_alias, username, output=False):
     return path.lower().replace(" ","-").replace("_","-")
 
 
-    
+
 def check_bucket_path(s3, path_to_bucket, indent = True, exit_on_error = True):
     if indent:
         print(f"\t\t\t--> Checking bucket '{path_to_bucket}'... ", end="")
     else:
         print(f"--> Checking bucket '{path_to_bucket}'... ", end="")
-        
+
     try:
         s3.head_bucket(Bucket = path_to_bucket)
-            
+
     except ClientError as e:
         if e.response["Error"]["Code"] == "404":
             print("Not Found")
-            return False #Not found 
+            return False #Not found
         else:
             if exit_on_error:
                 sys.exit(f"\nS3 Error: {e}") #Un-managed head_bucket exception
             else:
                 return False
-    except Exception as e:        
+    except Exception as e:
         sys.exit(f"\nS3 Connection Failed: {e}") #Un-managed S3 error
 
     print("OK")
@@ -200,7 +200,7 @@ def check_bucket_name(s3, xp_name, bucket_alias, username, output=False, indent=
 def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, output=False):
 
     path_to_bucket, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=output, indent=True)
-    if success:    
+    if success:
         print(f"\t\t\t--> Bucket '{path_to_bucket}' already exists!")
         # add_bucket_sqs_queue(s3, path_to_bucket)
     else:
@@ -212,7 +212,7 @@ def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, outpu
             }
         )
         print(f"\t\t\t--> Bucket {path_to_bucket} created");
-        
+
     print("\t\t\t--> S3 Bucket Configuration Successful")
     return path_to_bucket
 
@@ -249,7 +249,7 @@ def count_objects_in_bucket(s3, bucket_name, verbose=False):
     except ClientError as e:
         sys.exit(f"Error accessing bucket '{bucket_name}': {e}, while counting number of objects")
 
-    
+
 def list_s3_bucket(s3, bucket_name, prefix=""):
     """
     List all objects in an S3 bucket, optionally restricted to one subdirectory.
@@ -271,7 +271,7 @@ def list_s3_bucket(s3, bucket_name, prefix=""):
         ETag checksums
     """
     # print(f"Listing objects in bucket: {bucket_name} (prefix='{prefix}')")
-    
+
     objects_list = []
     checksums = []
     total_size = 0
@@ -307,20 +307,20 @@ def list_s3_bucket(s3, bucket_name, prefix=""):
         print(f"Error listing bucket '{bucket_name}': {e}")
 
     return objects_list, total_size, checksums
-        
+
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
-    objects = []  
+    objects = []
     metadata = []
     checksums = []
     sizes = []
     has_at_least_a_zero = False;
-    for s3_key in s3_keys: 
+    for s3_key in s3_keys:
         obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
         checksums.append(obj['ETag'].strip('"'))
         metadata.append(obj.get("Metadata", {}))
         obj_size = obj['ContentLength']
         sizes.append(obj_size)
-        
+
         if modality_name == "text":  # Handle text stored in file
             if obj_size:
                 text = obj["Body"].read().decode("utf-8")
@@ -378,7 +378,7 @@ def download_objects(s3, objects_list, checksums, local_path, files_allready_rec
         local_file = os.path.join(local_path, filename)
 
         # --- 2. If the file has already been received previously continue
-        if files_allready_received and local_file in files_allready_received: 
+        if files_allready_received and local_file in files_allready_received:
             continue
 
         # --- 3. If the file already exists → use checksum to skip or overwrite ---
@@ -392,10 +392,10 @@ def download_objects(s3, objects_list, checksums, local_path, files_allready_rec
                 continue
             else:
                 if  force_overwrite :
-                    if verbose: 
+                    if verbose:
                         print(f"[OVERWRITE] {filename} (checksum mismatch)")
                 else :
-                    if verbose: 
+                    if verbose:
                         print(f"[NO OVERWRITE - SKIP] {filename} (checksum mismatch) -")
                     skipped_files.add(f"{local_file}: No overwrite")
                     continue
@@ -406,11 +406,11 @@ def download_objects(s3, objects_list, checksums, local_path, files_allready_rec
             s3.download_file(bucket, key, local_file)
         except Exception as e:
             print(f"Error downloading {s3_uri}: {e}")
-        
+
         downloaded_files.add(local_file)
 
     return downloaded_files, skipped_files
-    
+
 
 def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):
     # Store inline text as an S3 object and notify server
@@ -418,12 +418,12 @@ def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):
     s3_key = compute_md5(text_data)+".txt"
     if subdir is not None:
         s3_key = f"{subdir}/{s3_key}"
-    
+
     s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=text_data, Metadata=metadata_args["Metadata"], ContentType="text/plain")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
-    
+
     return s3_key;
 
 def is_image_by_extension(filename):
@@ -437,7 +437,7 @@ def is_image_by_opening(filename):
         return True
     except (IOError, SyntaxError):
         return False
-    
+
 def is_an_image(filename):
     # Check by extension first
     if not is_image_by_extension(filename):
@@ -450,16 +450,16 @@ def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check
     if check and not is_an_image(in_path):
         print(f"Error: '{in_path}' is not an image. Skipping...")
         return None
-    
+
     s3_key = os.path.basename(in_path)
     if subdir is not None:
         s3_key = f"{subdir}/{s3_key}"
-    
+
     if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
+        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
     else:
         sys.exit(f"Error: {in_path} not found")
-    
+
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
 
@@ -475,12 +475,12 @@ def is_a_text_file(in_path):
     except Exception as e:
         print(f"[DEBUG] Failed to decode '{in_path}': {e}")
         return False
-    
-    
+
+
 def save_tiff_image_to_s3(s3, img_array, path_to_bucket, s3_key):
     """
     Save a NumPy image array to S3 as a TIFF file.
-    
+
     img_array: HWC or CHW uint8 NumPy array
     bucket_name: str, name of the bucket
     s3_key: str, full key/path in the bucket
@@ -488,15 +488,15 @@ def save_tiff_image_to_s3(s3, img_array, path_to_bucket, s3_key):
     # Convert CHW -> HWC if needed
     if img_array.shape[0] in [1, 3]:  # CHW
         img_array = img_array.transpose(1, 2, 0)
-    
+
     # Convert to PIL Image
     img = Image.fromarray(img_array)
-    
+
     # Save to in-memory buffer
     buffer = BytesIO()
     img.save(buffer, format="TIFF")
     buffer.seek(0)
-    
+
     # Upload to S3
     return s3.put_object(Bucket=path_to_bucket, Key=s3_key, Body=buffer.getvalue())
 
@@ -504,16 +504,16 @@ def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     if not is_a_text_file(in_path):
         print(f"Error: '{in_path}' is not a txt file. Skipping...")
         return None
-    
+
     s3_key = os.path.basename(in_path)
     if subdir is not None:
         s3_key = f"{subdir}/{s3_key}"
 
     if os.path.exists(in_path):
-        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args) 
+        s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
     else:
         sys.exit(f"Error: {in_path} not found")
-    
+
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
 

@@ -126,7 +126,7 @@ def _ensure_output_dir():
     os.makedirs(full_tmp_path, exist_ok=True)
     return full_tmp_path
 
-def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None):
+def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=None):
     output_file = error_file = None
     if "plafrim" in slurm_script:
         create_plafrim_slurm_script(slurm_script)
@@ -137,6 +137,9 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None):
     # output_file, error_file = extract_files_from_slurm_script(slurm_script, default_output=default_output_file, default_error=default_error_file)
 
     sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
+    if sbatch_env:
+        env_pairs = ",".join(f"{k}={v}" for k, v in sbatch_env.items())
+        sbatch_extra_args.append(f"--export=ALL,{env_pairs}")
 
     # If we already have a job_id, we only need the output and error file paths. No need to call SLURM.
     if job_id_to_use is not None:
@@ -390,7 +393,13 @@ def launch_rivault_model(model_cfg):
 
     # --- 1. get a node form SLURM ---
     rivault_slurm_script = get_slurm_script_from_host()
-    output_file, error_file, job_id = get_slurm_node(rivault_slurm_script, model_type_key, job_id_to_use=job_id)
+
+    # BentoML vision models need the vision-bentoml compose profile.
+    sbatch_env = None
+    if model_cfg["model_type"].startswith("bentoml://"):
+        sbatch_env = {"RIVAULT_PROFILES": "harness vllm vision-bentoml"}
+
+    output_file, error_file, job_id = get_slurm_node(rivault_slurm_script, model_type_key, job_id_to_use=job_id, sbatch_env=sbatch_env)
 
     print(f"{output_file=} {job_id=}")
 

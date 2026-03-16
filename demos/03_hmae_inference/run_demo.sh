@@ -65,8 +65,20 @@ existing_job="$(podman exec "$AI_LOGIN_CONTAINER" \
     squeue -h -o '%i %j' 2>/dev/null | grep -i 'mini-rivault' | awk '{print $1}' || true)"
 
 if [[ -n "$existing_job" ]]; then
-    log "  Rivault job already running (job $existing_job) — reusing."
-else
+    # Verify the vision-bentoml profile is actually running (NGINX returns 502
+    # when the upstream BentoML container is missing).
+    if curl -sf "${BENTOML_URL}/healthz" >/dev/null 2>&1; then
+        log "  Rivault job already running (job $existing_job) with healthy vision service — reusing."
+    else
+        log "  Rivault job $existing_job exists but vision-bentoml is NOT healthy."
+        log "  Cancelling job $existing_job and relaunching with vision-bentoml profile..."
+        run_cmd podman exec "$AI_LOGIN_CONTAINER" scancel "$existing_job"
+        sleep 3  # brief pause for cleanup
+        existing_job=""
+    fi
+fi
+
+if [[ -z "$existing_job" ]]; then
     log "  Submitting Slurm job with RIVAULT_PROFILES=\"harness vllm vision-bentoml\"..."
     run_cmd podman exec "$AI_LOGIN_CONTAINER" \
         sbatch --export=ALL,RIVAULT_PROFILES="harness vllm vision-bentoml" \
