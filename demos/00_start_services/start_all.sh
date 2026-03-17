@@ -91,6 +91,15 @@ case "$node_state" in
         ;;
 esac
 
+# Release any held jobs left over from prior runs
+held_jobs="$(podman exec "$AI_LOGIN_CONTAINER" squeue -h -t PD -o '%i %r' 2>/dev/null | grep -i 'held' | awk '{print $1}' || true)"
+if [[ -n "$held_jobs" ]]; then
+    for jid in $held_jobs; do
+        log "Releasing held job $jid..."
+        podman exec "$AI_LOGIN_CONTAINER" scontrol release "$jid"
+    done
+fi
+
 # ---------- Done ----------
 log ""
 log "All services started successfully."

@@ -1,32 +1,27 @@
 #!/usr/bin/env bash
 # =============================================================================
-# HMAE Inference Demo via Mini-Rivault
+# HMAE Inference Demo
 # =============================================================================
-# Launches Mini-Rivault with the vision-bentoml profile, uploads images,
-# submits HMAE inference through BentoML vision service, retrieves results.
+# Uploads images to UMRS via umrs-client. The UMRS server automatically
+# launches the BentoML vision service on Rivault/Slurm, runs HMAE inference,
+# and writes results to the output S3 bucket.
 #
-# Supports three modes: mae (masked reconstruction), full (full reconstruction),
-# and features (feature extraction). Default: all three.
+# Flow: upload images → server processes → download results
 #
 # Requires:
 #   - Services running (demos/00_start_services/)
-#   - HMAE model checkpoint pre-staged at $HMAE_MODEL_PATH
+#   - HMAE model checkpoint pre-staged on the Rivault node
 # =============================================================================
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEMO_DIR="$(dirname "$SCRIPT_DIR")"
-SLURM_DEV_DIR="$DEMO_DIR/slurm-dev"
 
-AI_LOGIN_CONTAINER="ai-login"
 UMRS_CLIENT_CONTAINER="umrs-client"
 
-# Inference mode: mae, full, features, or all (default)
-HMAE_MODE="${HMAE_MODE:-all}"
-
-# NGINX port must match what serve-model.slurm uses on the host.
-NGINX_PORT="${NGINX_LITELLM_DOCKER_PORT:-11434}"
-BENTOML_URL="http://localhost:${NGINX_PORT}/vision"
+# Bucket alias as defined in user_rivault.json
+BUCKET_ALIAS="hmae-demo"
+# Username as defined in user_rivault.json
+USERNAME="${UMRS_USERNAME:-rivault_user}"
 
 LOG_PREFIX="[hmae_demo]"
 log() { echo "$LOG_PREFIX $*"; }
@@ -42,130 +37,52 @@ log "Step 1: Verifying UMRS server..."
 run_cmd podman exec "$UMRS_CLIENT_CONTAINER" umrs-client ping || \
     die "UMRS server not reachable. Start services first."
 
+# Reload config so the server creates vision output buckets and grants user access
+run_cmd podman exec "$UMRS_CLIENT_CONTAINER" umrs-client reload || warn "reload failed"
+sleep 3  # brief pause for server to process reload
+
 # ---------- Step 2: Check for test images ----------
 log ""
 log "Step 2: Checking test images..."
-TEST_DATA_DIR="$SCRIPT_DIR/test_data"
-image_count=$(find -L "$TEST_DATA_DIR" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.tiff' \) 2>/dev/null | wc -l)
-if [[ -d "$TEST_DATA_DIR" ]] && [[ "$image_count" -gt 0 ]]; then
-    log "  Found $image_count test image(s) in $TEST_DATA_DIR"
+# Test images are mounted into the container at /opt/test_data/images/ via docker-compose
+CONTAINER_TEST_DATA="/opt/test_data/images"
+image_count=$(podman exec "$UMRS_CLIENT_CONTAINER" \
+    find "$CONTAINER_TEST_DATA" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.tiff' \) 2>/dev/null | wc -l)
+if [[ "$image_count" -gt 0 ]]; then
+    log "  Found $image_count test image(s) at $CONTAINER_TEST_DATA (inside container)"
 else
-    warn "No test images found in $TEST_DATA_DIR"
-    warn "Place X-ray CT slice images (.png/.tiff) in test_data/"
+    warn "No test images found at $CONTAINER_TEST_DATA inside the container"
+    warn "Place X-ray CT slice images (.png/.tiff) in demos/slurm-dev/test_data/images/"
     die "No test images available"
 fi
 
-# ---------- Step 3: Launch Mini-Rivault with vision-bentoml ----------
+# ---------- Step 3: Upload images via umrs-client ----------
 log ""
-log "Step 3: Launching Mini-Rivault with vision-bentoml profile..."
-log "  HMAE checkpoint must be pre-staged at: \${HMAE_MODEL_PATH:-./rivault/models/hmae}"
+log "Step 3: Uploading images to UMRS bucket '$BUCKET_ALIAS'..."
 
-# Check for an existing Rivault job
-existing_job="$(podman exec "$AI_LOGIN_CONTAINER" \
-    squeue -h -o '%i %j' 2>/dev/null | grep -i 'mini-rivault' | awk '{print $1}' || true)"
+# Upload via umrs-client (server detects new objects and processes them automatically)
+run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
+    umrs-client upload_dir "$CONTAINER_TEST_DATA" "$BUCKET_ALIAS" "$USERNAME"
 
-if [[ -n "$existing_job" ]]; then
-    # Verify the vision-bentoml profile is actually running (NGINX returns 502
-    # when the upstream BentoML container is missing).
-    if curl -sf "${BENTOML_URL}/healthz" >/dev/null 2>&1; then
-        log "  Rivault job already running (job $existing_job) with healthy vision service — reusing."
-    else
-        log "  Rivault job $existing_job exists but vision-bentoml is NOT healthy."
-        log "  Cancelling job $existing_job and relaunching with vision-bentoml profile..."
-        run_cmd podman exec "$AI_LOGIN_CONTAINER" scancel "$existing_job"
-        sleep 3  # brief pause for cleanup
-        existing_job=""
-    fi
-fi
+log "  Images uploaded. Server will launch Rivault/BentoML and process automatically."
 
-if [[ -z "$existing_job" ]]; then
-    log "  Submitting Slurm job with RIVAULT_PROFILES=\"harness vllm vision-bentoml\"..."
-    run_cmd podman exec "$AI_LOGIN_CONTAINER" \
-        sbatch --export=ALL,RIVAULT_PROFILES="harness vllm vision-bentoml" \
-        /root/.config/umrs/rivault_data/serve-model.slurm
-
-    # Wait for job to start running
-    log "  Waiting for Slurm job to start..."
-    for i in $(seq 1 60); do
-        job_state="$(podman exec "$AI_LOGIN_CONTAINER" \
-            squeue -h -o '%T' -n mini-rivault 2>/dev/null | head -1 || true)"
-        if [[ "$job_state" == "RUNNING" ]]; then
-            log "  Slurm job is running."
-            break
-        fi
-        [[ "$i" -eq 60 ]] && die "Timeout waiting for Slurm job to start (state: ${job_state:-UNKNOWN})"
-        sleep 5
-    done
-fi
-
-# ---------- Step 4: Wait for BentoML to be healthy ----------
+# ---------- Step 4: Download results ----------
 log ""
-log "Step 4: Waiting for BentoML service at $BENTOML_URL ..."
-
-for i in $(seq 1 90); do
-    if curl -sf "${BENTOML_URL}/healthz" >/dev/null 2>&1; then
-        log "  BentoML vision service is healthy!"
-        break
-    fi
-    [[ "$i" -eq 90 ]] && die "Timeout: BentoML not healthy after 450s at $BENTOML_URL"
-    [[ $((i % 6)) -eq 0 ]] && log "  Still waiting... (${i}×5s)"
-    sleep 5
-done
-
-# ---------- Step 5: Run HMAE demo script ----------
-log ""
-log "Step 5: Running HMAE inference (mode: '$HMAE_MODE')..."
-log ""
-
-DEMO_SCRIPT="$SLURM_DEV_DIR/scripts/demo_hmae_inference.py"
-if [[ ! -f "$DEMO_SCRIPT" ]]; then
-    die "Demo script not found: $DEMO_SCRIPT"
-fi
-
-S3_ENDPOINT="http://localhost:${MINIO_PORT:-19000}"
-S3_ACCESS_KEY="${S3_ACCESS_KEY:-minioadmin}"
-S3_SECRET_KEY="${S3_SECRET_KEY:-minioadmin}"
-S3_BUCKET="hmae-demo"
-
-# Build mode flag
-mode_flag=""
-if [[ "$HMAE_MODE" == "all" ]]; then
-    mode_flag="--all"
-else
-    mode_flag="--mode $HMAE_MODE"
-fi
-
-# Pick first image only (demo needs just one)
-TEST_IMAGE="$(find -L "$TEST_DATA_DIR" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.tiff' \) | head -1)"
-log "  Image: $(basename "$TEST_IMAGE")"
-
-run_cmd python3 "$DEMO_SCRIPT" \
-    --bentoml-url "$BENTOML_URL" \
-    --s3-endpoint "$S3_ENDPOINT" \
-    --image-path "$TEST_IMAGE" \
-    $mode_flag || die "HMAE inference failed."
-
-# ---------- Step 6: Download results to client side ----------
-log ""
-log "Step 6: Downloading results from S3..."
+log "Step 4: Downloading results..."
+log "  The download_results command will poll the server until processing is complete."
+log "  This may take several minutes if the server is launching Rivault/BentoML for the first time."
 RESULTS_DIR="$SCRIPT_DIR/results"
 mkdir -p "$RESULTS_DIR"
 
-python3 -c "
-import boto3, os
-s3 = boto3.client('s3',
-    endpoint_url='${S3_ENDPOINT}',
-    aws_access_key_id='${S3_ACCESS_KEY}',
-    aws_secret_access_key='${S3_SECRET_KEY}')
-bucket = '${S3_BUCKET}'
-out = '${RESULTS_DIR}'
-resp = s3.list_objects_v2(Bucket=bucket)
-for obj in resp.get('Contents', []):
-    key = obj['Key']
-    dest = os.path.join(out, key)
-    s3.download_file(bucket, key, dest)
-    print(f'  Downloaded: {key} -> {dest}')
-"
+CONTAINER_RESULTS="/tmp/demo_results"
+run_cmd podman exec "$UMRS_CLIENT_CONTAINER" rm -rf "$CONTAINER_RESULTS"
+run_cmd podman exec "$UMRS_CLIENT_CONTAINER" mkdir -p "$CONTAINER_RESULTS"
+DOWNLOAD_START=$SECONDS
+run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
+    umrs-client --verbose download_results "$BUCKET_ALIAS" "$CONTAINER_RESULTS" --force-overwrite
+DOWNLOAD_ELAPSED=$(( SECONDS - DOWNLOAD_START ))
+log "  Server processing + download took ${DOWNLOAD_ELAPSED}s ($(( DOWNLOAD_ELAPSED / 60 ))m $(( DOWNLOAD_ELAPSED % 60 ))s)"
+run_cmd podman cp "$UMRS_CLIENT_CONTAINER:$CONTAINER_RESULTS/." "$RESULTS_DIR/"
 log "  Results saved to: $RESULTS_DIR/"
 ls -lh "$RESULTS_DIR/"
 

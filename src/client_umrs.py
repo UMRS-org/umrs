@@ -685,6 +685,7 @@ def main():
         print_only_new = False
         objects_received = set()
         timeout = 1
+        _wait_start = time.time()
         while not done: # loop until we are sure the server has done with this bucket
             #get the list of objects on s3 server
             objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
@@ -728,7 +729,8 @@ def main():
                 )
             if not done :
                 if verbose:
-                    print("Waiting for update")
+                    elapsed = int(time.time() - _wait_start)
+                    print(f"Waiting for update... (elapsed: {elapsed // 60}m {elapsed % 60}s)")
                 res = control_mq.wait_for_new_data(effective_username, full_bucket_name, timeout=timeout)
                 if res == "TIMEOUT":
                     timeout = min(timeout*2, 64)

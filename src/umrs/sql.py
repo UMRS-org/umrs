@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 import os
 import sys
+import time
 import psycopg2
 from psycopg2 import sql
 from psycopg2 import pool as pg_pool
@@ -386,51 +387,74 @@ def enable_table_notifications(conn, table_name: str):
     """
     Enable PostgreSQL NOTIFY on INSERT/UPDATE/DELETE for a given table.
     Creates a trigger and trigger function if they do not exist.
+
+    Uses a PostgreSQL advisory lock to prevent concurrent DDL from
+    multiple processes (e.g. RAG service + main server starting together).
     """
     func_name = f"notify_{table_name}_update"
     trigger_name = f"{table_name}_notify_trigger"
     channel = f"{table_name}_update"
 
-    with conn.cursor() as cur:
-        # 1️⃣ Create trigger function
-        cur.execute(
-            sql.SQL("""
-            CREATE OR REPLACE FUNCTION {}()
-            RETURNS trigger AS $$
-            BEGIN
-                PERFORM pg_notify({}, TG_OP);
-                RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql;
-            """).format(
-                sql.Identifier(func_name),
-                sql.Literal(channel)
-            )
-        )
+    # Derive a stable advisory lock key from the table name
+    lock_key = hash(table_name) & 0x7FFFFFFF  # positive 32-bit int
 
-        # 2️⃣ Drop trigger if exists (idempotent)
-        cur.execute(
-            sql.SQL("DROP TRIGGER IF EXISTS {} ON {};").format(
-                sql.Identifier(trigger_name),
-                sql.Identifier(table_name)
-            )
-        )
+    max_retries = 3
+    for attempt in range(1, max_retries + 1):
+        try:
+            with conn.cursor() as cur:
+                # Acquire session-level advisory lock to serialize DDL
+                cur.execute("SELECT pg_advisory_lock(%s);", (lock_key,))
 
-        # 3️⃣ Create trigger
-        cur.execute(
-            sql.SQL("""
-            CREATE TRIGGER {}
-            AFTER INSERT OR UPDATE OR DELETE ON {}
-            FOR EACH STATEMENT
-            EXECUTE FUNCTION {}();
-            """).format(
-                sql.Identifier(trigger_name),
-                sql.Identifier(table_name),
-                sql.Identifier(func_name)
-            )
-        )
+                try:
+                    # 1️⃣ Create trigger function
+                    cur.execute(
+                        sql.SQL("""
+                        CREATE OR REPLACE FUNCTION {}()
+                        RETURNS trigger AS $$
+                        BEGIN
+                            PERFORM pg_notify({}, TG_OP);
+                            RETURN NEW;
+                        END;
+                        $$ LANGUAGE plpgsql;
+                        """).format(
+                            sql.Identifier(func_name),
+                            sql.Literal(channel)
+                        )
+                    )
 
-    conn.commit()
+                    # 2️⃣ Drop trigger if exists (idempotent)
+                    cur.execute(
+                        sql.SQL("DROP TRIGGER IF EXISTS {} ON {};").format(
+                            sql.Identifier(trigger_name),
+                            sql.Identifier(table_name)
+                        )
+                    )
+
+                    # 3️⃣ Create trigger
+                    cur.execute(
+                        sql.SQL("""
+                        CREATE TRIGGER {}
+                        AFTER INSERT OR UPDATE OR DELETE ON {}
+                        FOR EACH STATEMENT
+                        EXECUTE FUNCTION {}();
+                        """).format(
+                            sql.Identifier(trigger_name),
+                            sql.Identifier(table_name),
+                            sql.Identifier(func_name)
+                        )
+                    )
+                finally:
+                    cur.execute("SELECT pg_advisory_unlock(%s);", (lock_key,))
+
+            conn.commit()
+            return  # success
+        except psycopg2.errors.InternalError_ as exc:
+            conn.rollback()
+            if "tuple concurrently updated" in str(exc) and attempt < max_retries:
+                print(f"\t\t\t--> Concurrent DDL detected on '{table_name}', retrying ({attempt}/{max_retries})...")
+                time.sleep(0.5 * attempt)
+            else:
+                raise
 
 def configure_table(data_base, sql_cfg,  modality_name, model):
     conn = data_base.get_conn()
@@ -618,12 +642,21 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         # INSERT and UPDATE if s3_object already exists
         # Start building the INSERT query dynamically for the given table
         safe_table = sql.Identifier(table_name).as_string(conn)
-        query = f"""
+        has_embedding_col = data_base.has_column(table_name, "embedding")
+
+        if has_embedding_col:
+            query = f"""
         INSERT INTO {safe_table} (
             s3_object, embedding, date, time, checksum, model
         """
-        # Initialize the list of values corresponding to the columns
-        values = [s3_object, embedding, date, time, checksum, model_name]
+            # Initialize the list of values corresponding to the columns
+            values = [s3_object, embedding, date, time, checksum, model_name]
+        else:
+            query = f"""
+        INSERT INTO {safe_table} (
+            s3_object, date, time, checksum
+        """
+            values = [s3_object, date, time, checksum]
 
         # If the table has the "_content" column, add related columns to the query
         if data_base.has_column(table_name, "_content"):
@@ -648,12 +681,19 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             query += " ON CONFLICT (s3_object) DO UPDATE SET"
 
         # Specify the columns to update in case of conflict (always update these)
-        query += """
+        if has_embedding_col:
+            query += """
             embedding = EXCLUDED.embedding,
             date = EXCLUDED.date,
             time = EXCLUDED.time,
             checksum = EXCLUDED.checksum,
             model = EXCLUDED.model
+        """
+        else:
+            query += """
+            date = EXCLUDED.date,
+            time = EXCLUDED.time,
+            checksum = EXCLUDED.checksum
         """
 
         # If the "_content" column exists, also update all content-related fields

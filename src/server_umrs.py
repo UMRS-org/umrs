@@ -265,7 +265,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             rlock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
             bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name,
                                        model, store_embeddings_flag, modality_name, s3_connection, metadata,
-                                       xp_name, num_objects, output_path_to_bucket, rlock)
+                                       xp_name, num_objects, model.return_type, output_path_to_bucket, rlock)
             buckets_cfg.store(path_to_bucket, bucket_entry)
             print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
 
@@ -800,18 +800,21 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                 with rivault_lock:
                     model = launch_rivault_model(model.model.copy())
             except Exception as e:
+                import traceback
                 print(f"Error creating the RiVault model: {e}")
+                traceback.print_exc()
                 exit_status = TaskStatus.ERROR
                 continue
 
 
 
         with reentrant_lock:
-            if store_embeddings_flag:
+            should_process = store_embeddings_flag or (model is not None and getattr(model, 'return_type', None) == 'file')
+            if should_process:
                 if exit_status != TaskStatus.ERROR:
                     if update_status_callback:
                         update_status_callback(TaskStatus.RUNNING)
-                    print(f"\t--> Storing to data base in {table_name}")
+                    print(f"\t--> Processing in {table_name}")
                     try:
                         embedding_backend.compute_and_store(
                             path_to_bucket,
@@ -938,8 +941,8 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
     try:
         while True:
-            print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
-            task_manager.tasks_status.pretty_print_tasks()
+            print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######", flush=True)
+            task_manager.tasks_status.pretty_print_tasks(limit=20)
             result = control_mq.server_control_queue_loop()
             if not result:
                 continue

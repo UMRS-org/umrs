@@ -135,5 +135,5 @@ class BentoMLTaskClient:
         try:
             resp = self._session.get(f"{self.base_url}/healthz", timeout=5)
             return resp.status_code == 200
-        except requests.ConnectionError:
+        except (requests.ConnectionError, requests.Timeout):
             return False
