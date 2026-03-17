@@ -161,7 +161,7 @@ model and the always-on chat LLM both need the GPU. Run them sequentially:
 ## Test Data
 
 - **Text**: 5 science documents in `test_data/text/` (seismic waves, ML geophysics, HPC, RiVault, numerical methods)
-- **Images**: Cat, Dog, Eagle images from `data/img/` (mounted into containers)
+- **Images**: Cat, Dog, Eagle images from `data/img/` (mounted at `/opt/rag_data/images` in containers)
 
 ## Configuration
 

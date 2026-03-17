@@ -82,7 +82,7 @@ services:
       - ./s3cfg_rivault_user:/root/.s3cfg_rivault_user:ro
       # Demo test data and scripts
       - ./test_data:/opt/test_data:ro
-      - ../../data/img:/opt/test_data/images:ro
+      - ../../data/img:/opt/rag_data/images:ro
       - ./scripts:/opt/scripts:ro
       - ${MODEL_PATH:-../../src/umrs/rivault/models}:/shared/models:rw
     env_file:
@@ -90,6 +90,8 @@ services:
     environment:
       - SLURM_CONF=/etc/slurm/slurm.conf
       # Rivault configuration for UMRS
+      # Use the demo-specific wrapper which sets host paths (HMAE_MODEL_PATH, etc.)
+      - RIVAULT_SLURM_SCRIPT=/root/.config/umrs/rivault_data/serve-model.slurm
       - RIVAULT_REMOTE_PORT=${RIVAULT_REMOTE_PORT:-11434}
       - NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT:-11434}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-sk-demo-dev}
@@ -223,7 +225,7 @@ services:
     volumes:
       - ../../src:/opt/umrs:ro
       - ./test_data:/opt/test_data:ro
-      - ../../data/img:/opt/test_data/images:ro
+      - ../../data/img:/opt/rag_data/images:ro
       - ./scripts:/opt/scripts:ro
       # UMRS configuration files
       - ./conf_umrs.json:/root/conf_umrs.json:ro

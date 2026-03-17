@@ -214,7 +214,7 @@ def main():
         help="Client config file path",
     )
     parser.add_argument(
-        "--image-dir", default="/opt/test_data/images",
+        "--image-dir", default="/opt/rag_data/images",
         help="Directory containing image test files",
     )
     parser.add_argument(

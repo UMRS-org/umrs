@@ -109,13 +109,32 @@ class UMRSTask:
                     (TaskStatus.ABORTED, now, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN, TaskStatus.NO_SUCH_BUCKET)
                 )
 
-    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True, verbose=False):
+    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True, verbose=False, limit=None):
         """
         Pretty-print tasks from the database.
         Can filter by status or client_id.
+        If limit is set, only the most recent N tasks are shown.
         """
         if verbose:
             traceback.print_stack()
+
+        # Count total tasks first (for display)
+        total_count = 0
+        if limit:
+            count_query = "SELECT COUNT(*) FROM tasks WHERE 1=1"
+            count_params = []
+            if status_filter:
+                count_query += " AND status = ?"
+                count_params.append(status_filter)
+            if client_id_filter:
+                count_query += " AND client_id = ?"
+                count_params.append(client_id_filter)
+            try:
+                row = self.conn.execute(count_query, count_params).fetchone()
+                total_count = row[0] if row else 0
+            except Exception:
+                total_count = 0
+
         query = "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at FROM tasks WHERE 1=1"
         params = []
 
@@ -126,9 +145,16 @@ class UMRSTask:
             query += " AND client_id = ?"
             params.append(client_id_filter)
 
+        query += " ORDER BY id DESC"
+        if limit:
+            query += " LIMIT ?"
+            params.append(limit)
+
         cur = self.conn.execute(query, params)
         rows = cur.fetchall()
 
+        # Reverse to show oldest-first within the limited set
+        rows = list(reversed(rows))
 
         wrapped_rows = []
         for row in rows:
@@ -144,7 +170,10 @@ class UMRSTask:
         else:
             headers = ["ID", "Client ID", "Command", "Payload", "Status", "Submitted At", "Updated At"]
             table = tabulate(wrapped_rows, headers, tablefmt="fancy_grid")
-            message = "Tasks in DB:\n" + table
+            if limit and total_count > limit:
+                message = f"Tasks in DB (showing {limit} of {total_count} most recent):\n" + table
+            else:
+                message = "Tasks in DB:\n" + table
 
         if print_output:
             print(message)
@@ -247,7 +276,7 @@ class UMRSTask:
                     raise
 
         # Print tasks
-        self.pretty_print_tasks()
+        self.pretty_print_tasks(limit=20)
 
     def get_tasks(
         self,

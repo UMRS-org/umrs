@@ -15,6 +15,30 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+def _copy_to_output_bucket(s3, s3_uri, output_bucket):
+    """Copy an object from its current bucket to the output bucket.
+
+    Args:
+        s3: boto3 S3 client.
+        s3_uri: Full S3 URI like ``s3://bucket/key``.
+        output_bucket: Target output bucket name.
+
+    Returns:
+        New S3 URI in the output bucket, or the original if copy is skipped.
+    """
+    if not output_bucket or not s3_uri:
+        return s3_uri
+    stripped = s3_uri.replace("s3://", "", 1)
+    src_bucket, key = stripped.split("/", 1)
+    if src_bucket == output_bucket:
+        return s3_uri
+    copy_source = {"Bucket": src_bucket, "Key": key}
+    s3.copy_object(CopySource=copy_source, Bucket=output_bucket, Key=key)
+    new_uri = f"s3://{output_bucket}/{key}"
+    logger.info("Copied %s -> %s", s3_uri, new_uri)
+    return new_uri
+
+
 def make_bentoml_hmae_compute(client, endpoint_name, mode):
     """Create a compute_embeddings closure for HMAE via BentoML.
 
@@ -52,8 +76,9 @@ def make_bentoml_hmae_compute(client, endpoint_name, mode):
                     f"BentoML HMAE task failed for {s3_key}: {result['error']}"
                 )
 
-            # Extract output S3 key and embedding
+            # Extract output S3 key and copy to output bucket
             output_s3_key = result.get("output_s3_key")
+            output_s3_key = _copy_to_output_bucket(s3, output_s3_key, output_bucket)
             saved_keys.append(output_s3_key)
 
             # For features mode, cls_token is produced as embedding; for
@@ -104,7 +129,9 @@ def make_bentoml_sam3_compute(client, endpoint_name):
                 )
 
             results_list.append(result)
-            saved_keys.append(result.get("overlay_s3_key"))
+            overlay_s3_key = result.get("overlay_s3_key")
+            overlay_s3_key = _copy_to_output_bucket(s3, overlay_s3_key, output_bucket)
+            saved_keys.append(overlay_s3_key)
 
         return results_list, checksums, metadata_list, saved_keys
 

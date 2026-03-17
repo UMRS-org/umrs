@@ -245,7 +245,7 @@ class MessageQueue:
 
         while True:
             zmq_sender_id, msg = self.recv_string() # Blocking call
-            print(f"Received request: {msg}")
+            print(f"Received request: {msg}", flush=True)
             # messgae structure should be "{command}:{username}:{other information (e.g file/object count)}"
             splited_msg = msg.split(":")
 
@@ -388,7 +388,6 @@ class MessageQueue:
         if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
             data_queue = self.client_dictionary[client_id]["data_queue"]
             port = self.client_dictionary[client_id]["port"]
-            print(f"Listening data to port {port}")
             objects =  data_queue.wait_for_s3_events(nb_objects)
             try:
                 self.send_string("ACKNOWLEDGE", zmq_sender_id)
@@ -396,6 +395,7 @@ class MessageQueue:
                 print(f"Error in sending acknowleding client: {e}")
             return TaskCmd.PROCESS_OBJECTS, (client_id, objects)
         else:
+            print(f"Warning: no data queue for client={client_id}")
             try:
                 self.send_string("NO_DATA_QUEUE", zmq_sender_id)
             except RuntimeError as e:
@@ -579,7 +579,7 @@ class MessageQueue:
     def _get_status_payload(self, client_id, status_key):
         store = self.status_store or {}
         key = (status_key or "all").lower()
-  
+
         if not client_id:
             payload = {"status": "error", "message": "Missing client identifier"}
             return json.dumps(payload, ensure_ascii=False)
@@ -587,7 +587,7 @@ class MessageQueue:
         uncompleted_key_list = None
         if self.task_manager is not None:
             uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(client_id, status_key)
-  
+
         client_store = store.get(client_id, {})
         if key in ("all", "*"):
             if not client_store:

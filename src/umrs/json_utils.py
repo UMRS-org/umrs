@@ -60,6 +60,7 @@ client_schema = {
                     "model_cfg_file" : { "type": "string" },
                     "checkpoint_path": { "type": "string" },
                     "spacy_model": { "type": "string" },
+                    "mode": { "type": "string" },
                     "return_type": {
                       "type": ["string", "null"],
                       "enum": ["file", None]

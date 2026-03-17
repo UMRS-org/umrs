@@ -391,6 +391,22 @@ def launch_rivault_model(model_cfg):
 
             job_id = None
 
+    # --- 0b. BentoML models share a single Rivault stack. If another BentoML
+    #          model already has a running job, reuse it instead of submitting
+    #          a second Slurm job that would just PEND forever. ---
+    if job_id is None and model_cfg["model_type"].startswith("bentoml://"):
+        for cached_key in list(jobid_cache):
+            if cached_key == model_type_key:
+                continue
+            # Only reuse jobs from other BentoML models (same Rivault stack)
+            if ":bentoml://" not in str(cached_key):
+                continue
+            cached_job_id = jobid_cache.get(cached_key)
+            if cached_job_id is not None and is_slurm_job_running(cached_job_id):
+                print(f"===> Reusing running BentoML Rivault job {cached_job_id} from '{cached_key}' for '{model_type_key}'.")
+                job_id = cached_job_id
+                break
+
     # --- 1. get a node form SLURM ---
     rivault_slurm_script = get_slurm_script_from_host()
 
@@ -428,18 +444,6 @@ def launch_rivault_model(model_cfg):
 
         # Wait for BentoML service health
         from umrs.bentoml_client import BentoMLTaskClient
-        client = BentoMLTaskClient(bentoml_url)
-        _wait_start = time.time()
-        while not client.is_healthy():
-            if time.time() - _wait_start > 300:
-                raise RuntimeError(f"BentoML service at {bentoml_url} not healthy after 300s")
-            time.sleep(2)
-        print(f"BentoML vision service is healthy at {bentoml_url}")
-
-        # Build an EmbeddingModel with a BentoML compute adapter so the
-        # downstream pipeline (embeddings.py) can call model.compute_embeddings()
-        # just like it does for locally-loaded models.
-        from umrs.models.bentoml_adapter import make_bentoml_hmae_compute, make_bentoml_sam3_compute
 
         # Detect endpoint name from the URL path (e.g. ".../hmae_reconstruct/submit" → "hmae_reconstruct")
         url_path = bentoml_url.rstrip("/")
@@ -447,6 +451,20 @@ def launch_rivault_model(model_cfg):
         if url_path.endswith("/submit"):
             url_path = url_path[:-len("/submit")]
         endpoint_name = url_path.rsplit("/", 1)[-1]
+
+        # Derive the service base URL by stripping the endpoint path
+        # e.g. "http://localhost:33241/vision/sam3_segment/submit" → "http://localhost:33241/vision"
+        service_base_url = url_path[:url_path.rfind("/" + endpoint_name)]
+
+        client = BentoMLTaskClient(service_base_url)
+        _wait_start = time.time()
+        while not client.is_healthy():
+            if time.time() - _wait_start > 300:
+                raise RuntimeError(f"BentoML service at {bentoml_url} not healthy after 300s")
+            time.sleep(2)
+        print(f"BentoML vision service is healthy at {bentoml_url}")
+
+        from umrs.models.bentoml_adapter import make_bentoml_hmae_compute, make_bentoml_sam3_compute
 
         mode = model_cfg.get("mode", "reconstruct")
         model_name = model_cfg["model_name"]
