@@ -10,17 +10,76 @@ import mimetypes
 from io import BytesIO
 import configparser
 from charset_normalizer import from_path, from_bytes
-from typing import List, Dict
+from typing import List, Dict, Optional
 from umrs.utils import compute_md5, md5_of_file
 
 import secrets
 import string
-import subprocess
+
 
 
 import urllib3
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+
+class S3Mode:
+    """Constants for S3 client operations."""
+    GET = "get_object"
+    PUT = "put_object"
+
+def create_presigned_url(
+    s3: boto3.client,
+    bucket_name: str,
+    object_key: str,
+    mode: str,
+    duration: int = 3600
+) -> Optional[str]:
+    """
+    Generate a pre-signed URL to share an S3 object.
+
+    Parameters
+    ----------
+    s3_client : boto3.client
+        A Boto3 S3 client object.
+    bucket_name : str
+        Name of the S3 bucket.
+    object_key : str
+        Key (path) of the S3 object.
+    mode : str
+        Operation mode: S3Mode.GET for download, S3Mode.PUT for upload.
+    duration : int, optional
+        Time in seconds for which the pre-signed URL is valid. Default is 3600 seconds (1 hour).
+
+    Returns
+    -------
+    Optional[str]
+        The generated pre-signed URL as a string, or None if generation fails.
+
+    Raises
+    ------
+    ValueError
+        If the mode is not a valid S3 operation.
+    """
+    # Validate mode
+    if mode not in (S3Mode.GET, S3Mode.PUT):
+        raise ValueError(f"Invalid mode '{mode}', must be S3Mode.GET or S3Mode.PUT.")
+
+    try:
+        # Generate the pre-signed URL using boto3
+        url = s3.generate_presigned_url(
+            ClientMethod=mode,
+            Params={
+                "Bucket": bucket_name,
+                "Key": object_key
+            },
+            ExpiresIn=duration
+        )
+        return url
+    except ClientError as e:
+        # Log the exception and return None if generation fails
+        print(f"[ERROR] Failed to generate pre-signed URL for {bucket_name}/{object_key}: {e}")
+        return None
+
 
     
 def get_s3_server_name(s3):
