@@ -245,7 +245,7 @@ class UMRSTask:
                     time.sleep(0.5)
                 else:
                     # last failure Print and raise error properly
-                    print(f"Erreur SQLite critique lors de la mise à jour de la tâche {task_id}:")
+                    print(f"Critical SQLite error while updating {task_id}:")
                     print(f"  {type(e).__name__}: {e}")
                     traceback.print_exc()
                     raise
