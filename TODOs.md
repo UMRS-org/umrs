@@ -187,4 +187,7 @@
 	- Add concurrency controls / rate limiting for large directory uploads.
 	- Support checksum pre-manifest to accelerate idempotency check for massive directories.
 
-
+## Discussion mid april 2026
+- Make a siimple way to five credential to read and write s"_bucket with temporary credential
+- push the model code outside of UMRS and call it with bento ML
+- built a full environement for teh client to be sebt to Spring8
