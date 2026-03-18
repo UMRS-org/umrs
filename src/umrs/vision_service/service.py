@@ -1,34 +1,43 @@
-"""BentoML Vision Model Service for UMRS.
+"""BentoML Generic Vision Service for UMRS.
 
-Provides async task queue endpoints for SAM3 segmentation and HMAE inference.
-Models are loaded sequentially (one GPU, one model at a time) and share the
-same BentoML service. Auto-generates task queue API:
-    POST /submit — submit a task, returns task_id immediately
-    GET  /status — check task status by task_id
-    GET  /get    — retrieve task result by task_id
-    POST /cancel — cancel a pending task
-    PUT  /retry  — retry a failed task
+Provides a single ``/infer`` async task-queue endpoint that dispatches to
+pluggable model adapters (SAM3, HMAE, or any future vision model).
+
+BentoML auto-generates from ``@bentoml.task``:
+    POST /infer/submit  — submit a task, returns task_id immediately
+    GET  /infer/status  — check task status by task_id
+    GET  /infer/get     — retrieve task result by task_id
+    POST /infer/cancel  — cancel a pending task
+    PUT  /infer/retry   — retry a failed task
+
+Request payload for ``/infer/submit``::
+
+    {
+        "model_type":    "sam3" | "hmae" | "<future>",
+        "model_config":  { ... adapter-specific params ... },
+        "image_url":     "s3://bucket/key.png",
+        "output_bucket": "results"          # optional
+    }
 
 Environment variables:
-    HF_TOKEN           — HuggingFace token for downloading facebook/sam3
-    SAM3_MODEL_PATH    — path to SAM3 model weights (or HF repo id)
-    HMAE_CONFIG_PATH   — path to HMAE inference YAML config
-    HMAE_CHECKPOINT    — path to HMAE checkpoint (.pth)
-    S3_ENDPOINT_URL    — MinIO/S3 endpoint
-    S3_ACCESS_KEY      — S3 access key
-    S3_SECRET_KEY      — S3 secret key
+    S3_ENDPOINT_URL      — MinIO/S3 endpoint
+    S3_ACCESS_KEY        — S3 access key
+    S3_SECRET_KEY        — S3 secret key
+    MAX_VISION_MODELS    — LRU model cache capacity (default 3)
+    VISION_ADAPTERS_DIR  — directory of custom adapter .py files (default /adapters)
+    VISION_ADAPTERS      — comma-separated ``module:ClassName`` entries for
+                           custom adapters on the Python path
 """
 
-import os
 import io
-import base64
 import logging
-from typing import Optional
+import os
 
 import bentoml
-import torch
-import numpy as np
 from PIL import Image
+
+from umrs.vision_service.adapters import ADAPTER_REGISTRY
+from umrs.vision_service.model_cache import ModelCache
 
 logger = logging.getLogger(__name__)
 
@@ -71,181 +80,60 @@ def _download_image_from_s3(s3, image_url):
     traffic={"timeout": 600},
 )
 class VisionModelService:
-    """Unified vision model service supporting SAM3 segmentation and HMAE inference.
+    """Generic vision model service with pluggable adapters.
 
-    Models are loaded lazily on first use and cached. Only one model is active
-    at a time to conserve GPU memory (sequential execution).
+    Models are loaded lazily on first request and kept in an LRU cache.
+    Multiple models can be resident concurrently (up to MAX_VISION_MODELS).
     """
 
     def __init__(self):
-        self._sam3_model = None
-        self._sam3_processor = None
-        self._hmae_model = None
-        self._hmae_config = None
-        self._device = "cuda" if torch.cuda.is_available() else "cpu"
         self._s3 = None
+        self._cache = ModelCache()
 
     def _ensure_s3(self):
         if self._s3 is None:
             self._s3 = _get_s3_client()
         return self._s3
 
-    def _ensure_sam3(self):
-        if self._sam3_model is None:
-            from umrs.models.sam3_segmentation import load_sam3_model
-            model_path = os.environ.get("SAM3_MODEL_PATH", "facebook/sam3")
-            self._sam3_model, self._sam3_processor, self._device = load_sam3_model(model_path)
-        return self._sam3_model, self._sam3_processor
-
-    def _ensure_hmae(self):
-        if self._hmae_model is None:
-            from umrs.models.hmae_inference import load_hmae_model
-            cfg_path = os.environ.get("HMAE_CONFIG_PATH",
-                                       "umrs/models/hmae/configs/infer_hmae_vit_b.yaml")
-            ckpt_path = os.environ.get("HMAE_CHECKPOINT",
-                                        "./checkpoints/latest_checkpoint.pth")
-            self._hmae_model, self._device, self._hmae_config = load_hmae_model(cfg_path, ckpt_path)
-        return self._hmae_model, self._hmae_config
-
-    # -------------------------------------------------------------------
-    # SAM3 Segmentation
-    # -------------------------------------------------------------------
-
     @bentoml.task
-    def sam3_segment(self, image_url: str, prompt: str,
-                     threshold: float = 0.5,
-                     mask_threshold: float = 0.5) -> dict:
-        """Segment objects in an image using SAM3 with a text prompt.
+    def infer(
+        self,
+        model_type: str,
+        model_config: dict,
+        image_url: str,
+        output_bucket: str = "",
+    ) -> dict:
+        """Run vision-model inference on a single image.
 
         Args:
-            image_url: S3 URL to the image (s3://bucket/key).
-            prompt: text prompt describing what to segment (e.g. "crack", "void").
-            threshold: confidence threshold.
-            mask_threshold: mask binarization threshold.
+            model_type: Adapter key registered in ADAPTER_REGISTRY
+                        (e.g. ``"sam3"``, ``"hmae"``).
+            model_config: Adapter-specific configuration (checkpoint paths,
+                          mode, prompt, thresholds, …).
+            image_url: S3 URL of the input image (``s3://bucket/key``).
+            output_bucket: Bucket for output artifacts.  Defaults to the
+                           source bucket when empty.
 
         Returns:
-            dict with: num_objects, boxes, scores, overlay_s3_key
+            dict with adapter-specific results and output S3 keys.
         """
+        adapter = ADAPTER_REGISTRY.get(model_type)
+        if adapter is None:
+            return {
+                "error": (
+                    f"Unknown model_type '{model_type}'. "
+                    f"Available: {sorted(ADAPTER_REGISTRY)}"
+                ),
+            }
+
         try:
-            from umrs.models.sam3_segmentation import segment_image_with_text, overlay_masks_on_image
-
-            model, processor = self._ensure_sam3()
             s3 = self._ensure_s3()
-
             image, bucket, key = _download_image_from_s3(s3, image_url)
-            result = segment_image_with_text(model, processor, image, prompt, self._device,
-                                              threshold, mask_threshold)
-        except Exception as exc:
-            logger.exception("sam3_segment failed")
-            return {"error": str(exc), "num_objects": 0, "boxes": [], "scores": []}
-
-        response = {
-            "num_objects": result["num_objects"],
-            "boxes": result["boxes"],
-            "scores": result["scores"],
-            "source_image": image_url,
-            "prompt": prompt,
-        }
-
-        # Upload overlay visualization
-        if result["num_objects"] > 0:
-            overlay = overlay_masks_on_image(image, result["masks"])
-            base = key.rsplit(".", 1)[0] if "." in key else key
-            overlay_key = f"{base}_sam3_seg.png"
-            buf = io.BytesIO()
-            overlay.save(buf, format="PNG")
-            buf.seek(0)
-            s3.put_object(Bucket=bucket, Key=overlay_key, Body=buf.getvalue(),
-                          ContentType="image/png")
-            response["overlay_s3_key"] = f"s3://{bucket}/{overlay_key}"
-
-        logger.info("SAM3 segmentation: found %d objects for prompt '%s'",
-                     result["num_objects"], prompt)
-        return response
-
-    # -------------------------------------------------------------------
-    # HMAE Inference (3 modes)
-    # -------------------------------------------------------------------
-
-    @bentoml.task
-    def hmae_reconstruct(self, image_url: str,
-                         mode: str = "reconstruct") -> dict:
-        """Run HMAE inference on an image.
-
-        Args:
-            image_url: S3 URL to the image (s3://bucket/key).
-            mode: One of "reconstruct", "mae", "features".
-
-        Returns:
-            dict with mode-specific results and output S3 keys.
-        """
-        try:
-            from umrs.models.hmae_inference import (
-                preprocess_image_from_bytes, infer_reconstruct, infer_mae,
-                infer_features, visualize_reconstruction,
+            model = self._cache.get_or_load(adapter, model_config)
+            return adapter.infer(
+                model, image, bucket, key,
+                model_config, s3, output_bucket or bucket,
             )
-
-            model, config = self._ensure_hmae()
-            s3 = self._ensure_s3()
-            model_cfg = config["model"]
-            use_bf16 = config["inference"].get("use_bf16", True)
-            if self._device == "cpu":
-                use_bf16 = False
-
-            # Download image
-            image, bucket, key = _download_image_from_s3(s3, image_url)
-            buf = io.BytesIO()
-            image.save(buf, format="PNG")
-            image_bytes = buf.getvalue()
-
-            # Preprocess
-            data = preprocess_image_from_bytes(
-                image_bytes,
-                img_size=model_cfg["img_size"],
-                in_channels=model_cfg.get("in_channels", 1),
-                fixed_length=model_cfg.get("fixed_length", 1024),
-                patch_size=model_cfg["patch_size"],
-            )
-
-            device = torch.device(self._device)
-            base = key.rsplit(".", 1)[0] if "." in key else key
-            response = {"source_image": image_url, "mode": mode}
-
-            if mode == "reconstruct":
-                pred = infer_reconstruct(model, data, device, config, use_bf16)
-                png_bytes = visualize_reconstruction(data, pred, config)
-                out_key = f"{base}_recon.png"
-                s3.put_object(Bucket=bucket, Key=out_key, Body=png_bytes, ContentType="image/png")
-                response["output_s3_key"] = f"s3://{bucket}/{out_key}"
-
-            elif mode == "mae":
-                pred, mask, loss = infer_mae(model, data, device, config, use_bf16)
-                png_bytes = visualize_reconstruction(data, pred, config, mask=mask, loss=loss)
-                out_key = f"{base}_mae.png"
-                s3.put_object(Bucket=bucket, Key=out_key, Body=png_bytes, ContentType="image/png")
-                response["output_s3_key"] = f"s3://{bucket}/{out_key}"
-                response["mae_loss"] = loss
-
-            elif mode == "features":
-                features = infer_features(model, data, device, config, use_bf16)
-                cls_token = features[:, 0, :]
-                patch_tokens = features[:, 1:, :]
-
-                out_key = f"{base}_features.pt"
-                feat_buf = io.BytesIO()
-                torch.save({"cls": cls_token, "patches": patch_tokens, "coords": data["coords"]}, feat_buf)
-                feat_buf.seek(0)
-                s3.put_object(Bucket=bucket, Key=out_key, Body=feat_buf.getvalue())
-                response["output_s3_key"] = f"s3://{bucket}/{out_key}"
-                response["cls_shape"] = list(cls_token.shape)
-                response["patch_shape"] = list(patch_tokens.shape)
-
-            else:
-                raise ValueError(f"Unknown HMAE mode: {mode}. Use 'reconstruct', 'mae', or 'features'.")
-
         except Exception as exc:
-            logger.exception("hmae_reconstruct failed")
-            return {"error": str(exc), "source_image": image_url, "mode": mode}
-
-        logger.info("HMAE %s completed for %s", mode, image_url)
-        return response
+            logger.exception("infer failed (model_type=%s)", model_type)
+            return {"error": str(exc), "source_image": image_url}

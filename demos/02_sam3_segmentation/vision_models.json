@@ -5,7 +5,7 @@
       "model": {
         "model_name": "facebook/sam3",
         "vector_size": "256",
-        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/sam3_segment/submit",
+        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "return_type": "file"
       }
     }

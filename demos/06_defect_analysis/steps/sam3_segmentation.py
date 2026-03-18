@@ -63,12 +63,15 @@ class SAM3SegmentationStep(UMRSStep):
 
             # Submit BentoML task
             resp = session.post(
-                f"{self.bentoml_url}/sam3_segment/submit",
+                f"{self.bentoml_url}/infer/submit",
                 json={
+                    "model_type": "sam3",
+                    "model_config": {
+                        "prompt": self.prompt,
+                        "threshold": self.threshold,
+                        "mask_threshold": self.mask_threshold,
+                    },
                     "image_url": image_url,
-                    "prompt": self.prompt,
-                    "threshold": self.threshold,
-                    "mask_threshold": self.mask_threshold,
                 },
                 timeout=30,
             )
@@ -135,7 +138,7 @@ class SAM3SegmentationStep(UMRSStep):
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             resp = session.get(
-                f"{self.bentoml_url}/sam3_segment/status",
+                f"{self.bentoml_url}/infer/status",
                 params={"task_id": task_id},
                 timeout=10,
             )
@@ -145,7 +148,7 @@ class SAM3SegmentationStep(UMRSStep):
 
             if status in ("success", "completed"):
                 result_resp = session.get(
-                    f"{self.bentoml_url}/sam3_segment/get",
+                    f"{self.bentoml_url}/infer/get",
                     params={"task_id": task_id},
                     timeout=30,
                 )

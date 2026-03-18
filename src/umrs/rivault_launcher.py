@@ -445,16 +445,19 @@ def launch_rivault_model(model_cfg):
         # Wait for BentoML service health
         from umrs.bentoml_client import BentoMLTaskClient
 
-        # Detect endpoint name from the URL path (e.g. ".../hmae_reconstruct/submit" → "hmae_reconstruct")
+        # Derive the service base URL — strip any trailing endpoint segments
+        # so we get e.g. "http://localhost:33241/vision"
         url_path = bentoml_url.rstrip("/")
-        # Strip trailing /submit if present
-        if url_path.endswith("/submit"):
-            url_path = url_path[:-len("/submit")]
-        endpoint_name = url_path.rsplit("/", 1)[-1]
-
-        # Derive the service base URL by stripping the endpoint path
-        # e.g. "http://localhost:33241/vision/sam3_segment/submit" → "http://localhost:33241/vision"
-        service_base_url = url_path[:url_path.rfind("/" + endpoint_name)]
+        for suffix in ("/submit", "/status", "/get"):
+            if url_path.endswith(suffix):
+                url_path = url_path[:-len(suffix)]
+                break
+        # Strip model-specific endpoint name if present (e.g. /sam3_segment, /hmae_reconstruct)
+        last_segment = url_path.rsplit("/", 1)[-1]
+        if last_segment in ("sam3_segment", "hmae_reconstruct", "infer"):
+            service_base_url = url_path[:url_path.rfind("/" + last_segment)]
+        else:
+            service_base_url = url_path
 
         client = BentoMLTaskClient(service_base_url)
         _wait_start = time.time()
@@ -464,22 +467,32 @@ def launch_rivault_model(model_cfg):
             time.sleep(2)
         print(f"BentoML vision service is healthy at {bentoml_url}")
 
-        from umrs.models.bentoml_adapter import make_bentoml_hmae_compute, make_bentoml_sam3_compute
+        from umrs.models.bentoml_adapter import make_bentoml_vision_compute
 
-        mode = model_cfg.get("mode", "reconstruct")
+        # Build model_config for the generic /infer endpoint
+        vision_model_type = model_cfg.get("vision_model_type", "")
+        if not vision_model_type:
+            # Auto-detect from the old-style URL path
+            if "hmae" in bentoml_url:
+                vision_model_type = "hmae"
+            elif "sam3" in bentoml_url or "segment" in bentoml_url:
+                vision_model_type = "sam3"
+            else:
+                vision_model_type = "hmae"
+
+        vision_model_config = dict(model_cfg.get("vision_model_config", {}))
+        if vision_model_type == "hmae" and "mode" not in vision_model_config:
+            vision_model_config["mode"] = model_cfg.get("mode", "reconstruct")
+
+        compute_func = make_bentoml_vision_compute(
+            client, vision_model_type, vision_model_config,
+        )
+
         model_name = model_cfg["model_name"]
         vector_size = model_cfg.get("vector_size", "768")
         return_type = model_cfg.get("return_type", "file")
         modality = model_cfg.get("_modality", "")
-
-        if "hmae" in endpoint_name:
-            compute_func = make_bentoml_hmae_compute(client, endpoint_name, mode)
-            input_type = "raw_image"
-        elif "sam3" in endpoint_name or "segment" in endpoint_name:
-            compute_func = make_bentoml_sam3_compute(client, endpoint_name)
-            input_type = "image"
-        else:
-            raise RuntimeError(f"Unknown BentoML endpoint: {endpoint_name}")
+        input_type = "raw_image" if vision_model_type == "hmae" else "image"
 
         model = load_model_as_bentoml(model_name, return_type, vector_size, input_type, compute_func, modality)
 
