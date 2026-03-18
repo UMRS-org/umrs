@@ -169,6 +169,10 @@ class UMRSTask:
             client_id, files = full_payload if isinstance(full_payload, tuple) else ("", full_payload)
             str_payload = json.dumps(files)
 
+        elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
+            client_id, export_args, _ = full_payload
+            str_payload = json.dumps(export_args)
+
         elif cmd in (TaskCmd.HAND_CHECK, TaskCmd.CREATE_DATA_QUEUE, TaskCmd.STATUS):
             print(f"We do not create task_id for {cmd=}")
             return None

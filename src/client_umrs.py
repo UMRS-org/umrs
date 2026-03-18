@@ -310,6 +310,7 @@ requires_config =  args.action in {
 if requires_config and not os.path.exists(configure_file):
     sys.exit(f"Configuration file \"{configure_file}\" not found.")
 
+
 user = None
 buckets_cfg = None
 if requires_config:
