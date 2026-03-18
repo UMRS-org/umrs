@@ -399,9 +399,8 @@ services:
       replicas: 1
       endpoint_mode: vip
 
-  # BentoML Vision Service (SAM3 + HMAE)
-  # Provides async task queue API for vision model inference
-  # Endpoints: POST /submit, GET /status, GET /get, POST /cancel, PUT /retry
+  # BentoML Vision Service (generic adapter-based inference)
+  # Provides async task queue API: POST /infer/submit, GET /infer/status, GET /infer/get
   bentoml-vision:
     profiles: [ vision-bentoml ]
     image: ${BENTOML_VISION_IMAGE:-ghcr.io/riken-rccs/umrs-vision:latest}
@@ -426,6 +425,11 @@ services:
       # Scratch space for temporary outputs
       - type: tmpfs
         target: /tmp/vision_outputs
+      # Custom user adapters (drop .py files here)
+      - type: bind
+        source: ${VISION_ADAPTERS_DIR:-/adapters}
+        target: /adapters
+        read_only: true
     environment:
       SAM3_MODEL_PATH: /models/sam3
       HMAE_CONFIG_PATH: /models/hmae/infer_hmae_vit_b.yaml
@@ -433,6 +437,9 @@ services:
       S3_ENDPOINT_URL: http://minio-host:${BENTOML_MINIO_HOST_PORT:-19000}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      MAX_VISION_MODELS: ${MAX_VISION_MODELS:-3}
+      VISION_ADAPTERS_DIR: /adapters
+      VISION_ADAPTERS: ${VISION_ADAPTERS:-}
       TRANSFORMERS_OFFLINE: "1"
       HF_HUB_OFFLINE: "1"
       TZ: ${GENAI_TZ:-Asia/Tokyo}

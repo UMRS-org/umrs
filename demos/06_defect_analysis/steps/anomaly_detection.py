@@ -63,8 +63,12 @@ class AnomalyDetectionStep(UMRSStep):
 
             # Submit BentoML HMAE mae task
             resp = session.post(
-                f"{self.bentoml_url}/hmae_reconstruct/submit",
-                json={"image_url": image_url, "mode": "mae"},
+                f"{self.bentoml_url}/infer/submit",
+                json={
+                    "model_type": "hmae",
+                    "model_config": {"mode": "mae"},
+                    "image_url": image_url,
+                },
                 timeout=30,
             )
             resp.raise_for_status()
@@ -124,7 +128,7 @@ class AnomalyDetectionStep(UMRSStep):
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             resp = session.get(
-                f"{self.bentoml_url}/hmae_reconstruct/status",
+                f"{self.bentoml_url}/infer/status",
                 params={"task_id": task_id},
                 timeout=10,
             )
@@ -134,7 +138,7 @@ class AnomalyDetectionStep(UMRSStep):
 
             if status in ("success", "completed"):
                 result_resp = session.get(
-                    f"{self.bentoml_url}/hmae_reconstruct/get",
+                    f"{self.bentoml_url}/infer/get",
                     params={"task_id": task_id},
                     timeout=30,
                 )

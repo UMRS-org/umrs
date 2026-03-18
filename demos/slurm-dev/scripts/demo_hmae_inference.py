@@ -18,9 +18,9 @@ on X-ray CT images of concrete specimens:
      - Output: .pt file with cls, patches, coords tensors
 
 The BentoML vision service exposes:
-    POST /hmae_reconstruct/submit  — submit task, returns task_id
-    GET  /hmae_reconstruct/status  — check task status
-    GET  /hmae_reconstruct/get     — retrieve result
+    POST /infer/submit  — submit task, returns task_id
+    GET  /infer/status  — check task status
+    GET  /infer/get     — retrieve result
     POST /hmae_reconstruct/cancel  — cancel pending task
     PUT  /hmae_reconstruct/retry   — retry failed task
 
@@ -82,10 +82,11 @@ def upload_images_to_s3(s3_endpoint, access_key, secret_key, bucket, image_paths
 
 def submit_hmae_task(bentoml_url, image_url, mode="reconstruct"):
     """Submit an HMAE inference task via BentoML task queue."""
-    url = f"{bentoml_url}/hmae_reconstruct/submit"
+    url = f"{bentoml_url}/infer/submit"
     payload = {
+        "model_type": "hmae",
+        "model_config": {"mode": mode},
         "image_url": image_url,
-        "mode": mode,
     }
 
     print(f"  POST {url}")
@@ -101,7 +102,7 @@ def submit_hmae_task(bentoml_url, image_url, mode="reconstruct"):
 
 def poll_task_status(bentoml_url, task_id, poll_interval=2.0, timeout=600.0):
     """Poll task status until completion."""
-    url = f"{bentoml_url}/hmae_reconstruct/status"
+    url = f"{bentoml_url}/infer/status"
     start = time.time()
 
     while True:
@@ -138,7 +139,7 @@ def poll_task_status(bentoml_url, task_id, poll_interval=2.0, timeout=600.0):
 
 def get_task_result(bentoml_url, task_id):
     """Retrieve the result of a completed task."""
-    url = f"{bentoml_url}/hmae_reconstruct/get"
+    url = f"{bentoml_url}/infer/get"
     resp = requests.get(url, params={"task_id": task_id}, timeout=30)
     resp.raise_for_status()
     return resp.json()

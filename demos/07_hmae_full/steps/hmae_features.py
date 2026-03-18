@@ -169,8 +169,12 @@ class HMAEFeaturesStep(UMRSStep):
         """Submit HMAE features task and poll until done."""
         try:
             resp = session.post(
-                f"{self.bentoml_url}/hmae_reconstruct/submit",
-                json={"image_url": image_url, "mode": "features"},
+                f"{self.bentoml_url}/infer/submit",
+                json={
+                    "model_type": "hmae",
+                    "model_config": {"mode": "features"},
+                    "image_url": image_url,
+                },
                 timeout=30,
             )
             resp.raise_for_status()
@@ -182,7 +186,7 @@ class HMAEFeaturesStep(UMRSStep):
         while time.monotonic() < deadline:
             try:
                 resp = session.get(
-                    f"{self.bentoml_url}/hmae_reconstruct/status",
+                    f"{self.bentoml_url}/infer/status",
                     params={"task_id": task_id},
                     timeout=10,
                 )
@@ -192,7 +196,7 @@ class HMAEFeaturesStep(UMRSStep):
 
                 if status in ("success", "completed"):
                     rr = session.get(
-                        f"{self.bentoml_url}/hmae_reconstruct/get",
+                        f"{self.bentoml_url}/infer/get",
                         params={"task_id": task_id},
                         timeout=30,
                     )

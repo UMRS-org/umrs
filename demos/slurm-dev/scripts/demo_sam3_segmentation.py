@@ -10,9 +10,9 @@ Demonstrates:
 5. Display results (masks, bounding boxes, scores)
 
 The BentoML vision service exposes:
-    POST /sam3_segment/submit   — submit task, returns task_id
-    GET  /sam3_segment/status   — check task status
-    GET  /sam3_segment/get      — retrieve result
+    POST /infer/submit   — submit task, returns task_id
+    GET  /infer/status   — check task status
+    GET  /infer/get      — retrieve result
     POST /sam3_segment/cancel   — cancel pending task
     PUT  /sam3_segment/retry    — retry failed task
 
@@ -63,12 +63,15 @@ def upload_image_to_s3(s3_endpoint, access_key, secret_key, bucket, image_path):
 
 def submit_sam3_task(bentoml_url, image_url, prompt, threshold=0.5):
     """Submit a SAM3 segmentation task via BentoML task queue."""
-    url = f"{bentoml_url}/sam3_segment/submit"
+    url = f"{bentoml_url}/infer/submit"
     payload = {
+        "model_type": "sam3",
+        "model_config": {
+            "prompt": prompt,
+            "threshold": threshold,
+            "mask_threshold": 0.5,
+        },
         "image_url": image_url,
-        "prompt": prompt,
-        "threshold": threshold,
-        "mask_threshold": 0.5,
     }
 
     print(f"\n  POST {url}")
@@ -84,7 +87,7 @@ def submit_sam3_task(bentoml_url, image_url, prompt, threshold=0.5):
 
 def poll_task_status(bentoml_url, task_id, poll_interval=2.0, timeout=600.0):
     """Poll task status until completion."""
-    url = f"{bentoml_url}/sam3_segment/status"
+    url = f"{bentoml_url}/infer/status"
     start = time.time()
 
     while True:
@@ -121,7 +124,7 @@ def poll_task_status(bentoml_url, task_id, poll_interval=2.0, timeout=600.0):
 
 def get_task_result(bentoml_url, task_id):
     """Retrieve the result of a completed task."""
-    url = f"{bentoml_url}/sam3_segment/get"
+    url = f"{bentoml_url}/infer/get"
     resp = requests.get(url, params={"task_id": task_id}, timeout=30)
     resp.raise_for_status()
     return resp.json()

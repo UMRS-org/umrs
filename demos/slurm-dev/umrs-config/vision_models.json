@@ -5,7 +5,7 @@
       "model": {
         "model_name": "facebook/sam3",
         "vector_size": "256",
-        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/sam3_segment/submit",
+        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "return_type": "file"
       }
     },
@@ -14,7 +14,7 @@
       "model": {
         "model_name": "HMAE ViT-B",
         "vector_size": "768",
-        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/hmae_reconstruct/submit",
+        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "mode": "reconstruct",
         "return_type": "file"
       }
@@ -24,7 +24,7 @@
       "model": {
         "model_name": "HMAE ViT-B",
         "vector_size": "768",
-        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/hmae_reconstruct/submit",
+        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "mode": "mae",
         "return_type": "file"
       }
@@ -34,7 +34,7 @@
       "model": {
         "model_name": "HMAE ViT-B",
         "vector_size": "768",
-        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/hmae_reconstruct/submit",
+        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "mode": "features",
         "return_type": "file"
       }
