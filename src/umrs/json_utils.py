@@ -128,22 +128,26 @@ server_schema = {
 }
 
 def load_client_cfg_file(json_filename, username_list=[]):
-    json_filename = os.path.expanduser(json_filename)
-    if not os.path.exists(json_filename):
-      sys.exit(f"Client JSON file {json_filename} does not exist. Exiting...")
+  json_filename = os.path.expanduser(json_filename)
+  if not os.path.exists(json_filename):
+    sys.exit(f"Client JSON file {json_filename} does not exist. Exiting...")
 
+  try:
     with open(json_filename, encoding="utf-8") as f:
       data = json.load(f)
+  except json.decoder.JSONDecodeError as e:
+        sys.exit(f"Error: Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos}).\nExiting...")
 
-      # Validate using the in-memory variable
-      try:
-          validate(instance=data, schema=client_schema)
-          if data["username"] in username_list:
-              sys.exit(f"\t❌Error: {json_filename} uses the same username than an other client configuration file.\n\tMerge the two configuration files or change the username.\n\tExiting...")
-          return data
-      except ValidationError as e:
-          sys.exit(f"Invalid client JSON file {json_filename}: {e.message}.\nExiting...")
-
+  try: 
+   
+    # Validate using the in-memory variable
+    validate(instance=data, schema=client_schema)
+    if data["username"] in username_list:
+        sys.exit(f"Error: {json_filename} uses the same username than an other client configuration file.\nMerge the two configuration files or change the username.\n\tExiting...")
+    return data
+  except ValidationError as e:
+      sys.exit(f"Invalid client JSON file {json_filename}: {e.message}.\nExiting...")
+  
 
 def load_server_cfg_file(json_filename):
     json_filename = os.path.expanduser(json_filename)
@@ -151,18 +155,23 @@ def load_server_cfg_file(json_filename):
     username_list = []
     if not os.path.exists(json_filename):
       sys.exit(f"Server JSON file {json_filename} does not exist. Exiting...")
-    with open(json_filename, "r", encoding="utf-8") as file:
-      content = json.load(file)
-      try:
-        validate(instance=content, schema=server_schema)
-        admin_s3_configuration_file = content["admin_s3_configuration_file"]
-        for user_conf_file in content["users"]:
-          user_content = load_client_cfg_file(user_conf_file, username_list=username_list)
-          username_list.append(user_content["username"])
-          user_content['config_file_path'] = user_conf_file
-          users.append(user_content)
-        # Also return the full server configuration dict so callers can
-        # access optional settings such as embedding backend configuration.
-        return admin_s3_configuration_file, users, content
-      except ValidationError as e:
-        sys.exit(f"Invalid server JSON file {json_filename}: {e.message}.\nExiting...")
+    
+    try:
+      with open(json_filename, "r", encoding="utf-8") as file:
+        content = json.load(file)
+    except json.decoder.JSONDecodeError as e:
+        sys.exit(f"Error: Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos}).\nExiting...")
+    
+    try:
+      validate(instance=content, schema=server_schema)
+      admin_s3_configuration_file = content["admin_s3_configuration_file"]
+      for user_conf_file in content["users"]:
+        user_content = load_client_cfg_file(user_conf_file, username_list=username_list)
+        username_list.append(user_content["username"])
+        user_content['config_file_path'] = user_conf_file
+        users.append(user_content)
+      # Also return the full server configuration dict so callers can
+      # access optional settings such as embedding backend configuration.
+      return admin_s3_configuration_file, users, content
+    except ValidationError as e:
+      sys.exit(f"Invalid server JSON file {json_filename}: {e.message}.\nExiting...")
