@@ -169,7 +169,7 @@ class DataBase:
             self.db_pool.putconn(conn)
 
 
-def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback=None) : 
+def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback=None) :
     """Query the DB for embeddings and return a JSON-serialised response.
 
     ``export_args`` is ``"path_to_bucket;format"`` where *format* is ``csv``
@@ -180,84 +180,86 @@ def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq
     status = TaskStatus.RUNNING
     if update_status_callback:
         update_status_callback(status)
-    
+
     parts = export_args.split(";")
     path_to_bucket = parts[0]
     export_format = parts[1] if len(parts) > 1 else "csv"
-    
+
     entry = buckets_cfg.get(path_to_bucket)
     if entry is None:
-        return json.dumps({"status": "error",
-                           "message": f"No bucket entry found for path: {path_to_bucket}"},
-                          ensure_ascii=False)
-
-    data_base = entry.data_base
-    table_name = entry.table_name
-    db_name = entry.db_name
-
-    conn = data_base.get_conn()
-    try:
-        with conn.cursor() as cur:
-            # Discover columns
-            cur.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
-                (table_name,)
-            )
-            columns = [row[0] for row in cur.fetchall()]
-            if not columns:
-                return json.dumps({"status": "error",
-                                   "message": f"Table {table_name} not found in database {db_name}"},
-                                  ensure_ascii=False)
-            if "embedding" not in columns:
-                return json.dumps({"status": "error",
-                                   "message": f"Table {table_name} has no embedding column"},
-                                  ensure_ascii=False)
-
-            # Fetch all rows
-            cur.execute(sql.SQL("SELECT {} FROM {}").format(
-                sql.SQL(", ").join(sql.Identifier(c) for c in columns),
-                sql.Identifier(table_name),
-            ))
-            rows = cur.fetchall()
-    except Exception as e:
-        results = json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+        results = json.dumps({"status": "error",
+                              "message": f"No bucket entry found for path: {path_to_bucket}"},
+                             ensure_ascii=False)
         status = TaskStatus.ERROR
-    finally:
-        data_base.put_conn(conn)
+    else:
+        data_base = entry.data_base
+        table_name = entry.table_name
+        db_name = entry.db_name
 
-    
-    if status != TaskStatus.ERROR:
-        # Serialise rows — convert non-JSON-serialisable types to strings
-        serialised_rows = []
-        for row in rows:
-            serialised_rows.append([
-                v if v is None or isinstance(v, (int, float, bool, str))
-                else str(v)
-                for v in row
-            ])
+        conn = data_base.get_conn()
+        try:
+            with conn.cursor() as cur:
+                # Discover columns
+                cur.execute(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
+                    (table_name,)
+                )
+                columns = [row[0] for row in cur.fetchall()]
+                if not columns:
+                    results = json.dumps({"status": "error",
+                                         "message": f"Table {table_name} not found in database {db_name}"},
+                                        ensure_ascii=False)
+                    status = TaskStatus.ERROR
+                elif "embedding" not in columns:
+                    results = json.dumps({"status": "error",
+                                         "message": f"Table {table_name} has no embedding column"},
+                                        ensure_ascii=False)
+                    status = TaskStatus.ERROR
+                else:
+                    # Fetch all rows
+                    cur.execute(sql.SQL("SELECT {} FROM {}").format(
+                        sql.SQL(", ").join(sql.Identifier(c) for c in columns),
+                        sql.Identifier(table_name),
+                    ))
+                    rows = cur.fetchall()
+        except Exception as e:
+            results = json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
+            status = TaskStatus.ERROR
+        finally:
+            data_base.put_conn(conn)
 
-        results = json.dumps({
-            "status": "ok",
-            "database": db_name,
-            "table": table_name,
-            "columns": columns,
-            "rows": serialised_rows,
-            "rows_exported": len(serialised_rows),
-            "format": export_format,
-        }, ensure_ascii=False)
+        if status != TaskStatus.ERROR:
+            # Serialise rows — convert non-JSON-serialisable types to strings
+            serialised_rows = []
+            for row in rows:
+                serialised_rows.append([
+                    v if v is None or isinstance(v, (int, float, bool, str))
+                    else str(v)
+                    for v in row
+                ])
 
-        status  = TaskStatus.COMPLETED
+            results = json.dumps({
+                "status": "ok",
+                "database": db_name,
+                "table": table_name,
+                "columns": columns,
+                "rows": serialised_rows,
+                "rows_exported": len(serialised_rows),
+                "format": export_format,
+            }, ensure_ascii=False)
+
+            status = TaskStatus.COMPLETED
 
     try:
         control_mq.send_string(results, zmq_sender_id)
     except RuntimeError:
         pass
-        
+
     active_threads.update_status_to_done()
     active_threads.record_status_for_users_by_key([user], key)
     active_threads.remove_from_running_list()
-    
+
     if update_status_callback:
         update_status_callback(status)
 
