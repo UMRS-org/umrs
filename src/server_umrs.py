@@ -852,77 +852,6 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
 #########################        Main server loop        #########################
 ##################################################################################
 
-def _handle_export_embeddings(client_id, export_args, buckets_cfg):
-    """Query the DB for embeddings and return a JSON-serialised response.
-
-    ``export_args`` is ``"path_to_bucket;format"`` where *format* is ``csv``
-    or ``jsonl``.  The response is a JSON string with columns + rows so the
-    client can write them to a local file without ever touching the DB.
-    """
-    from psycopg2 import sql as psql
-
-    parts = export_args.split(";")
-    path_to_bucket = parts[0]
-    export_format = parts[1] if len(parts) > 1 else "csv"
-
-    entry = buckets_cfg.get(path_to_bucket)
-    if entry is None:
-        return json.dumps({"status": "error",
-                           "message": f"No bucket entry found for path: {path_to_bucket}"},
-                          ensure_ascii=False)
-
-    data_base = entry.data_base
-    table_name = entry.table_name
-    db_name = entry.db_name
-
-    conn = data_base.get_conn()
-    try:
-        with conn.cursor() as cur:
-            # Discover columns
-            cur.execute(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
-                (table_name,)
-            )
-            columns = [row[0] for row in cur.fetchall()]
-            if not columns:
-                return json.dumps({"status": "error",
-                                   "message": f"Table {table_name} not found in database {db_name}"},
-                                  ensure_ascii=False)
-            if "embedding" not in columns:
-                return json.dumps({"status": "error",
-                                   "message": f"Table {table_name} has no embedding column"},
-                                  ensure_ascii=False)
-
-            # Fetch all rows
-            cur.execute(psql.SQL("SELECT {} FROM {}").format(
-                psql.SQL(", ").join(psql.Identifier(c) for c in columns),
-                psql.Identifier(table_name),
-            ))
-            rows = cur.fetchall()
-    finally:
-        data_base.put_conn(conn)
-
-    # Serialise rows — convert non-JSON-serialisable types to strings
-    serialised_rows = []
-    for row in rows:
-        serialised_rows.append([
-            v if v is None or isinstance(v, (int, float, bool, str))
-            else str(v)
-            for v in row
-        ])
-
-    return json.dumps({
-        "status": "ok",
-        "database": db_name,
-        "table": table_name,
-        "columns": columns,
-        "rows": serialised_rows,
-        "rows_exported": len(serialised_rows),
-        "format": export_format,
-    }, ensure_ascii=False)
-
-
 def make_update_status_callback(task_manager, task_id):
     """
     Return a callback function that updates the task status for the given task_id.
@@ -1000,16 +929,8 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                     task_manager.associate_thread_with_task(thread_ident, task_id)
             elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
                 client_id, export_args, zmq_sender_id = payload
-                try:
-                    reply = _handle_export_embeddings(client_id, export_args, buckets_cfg)
-                    control_mq.send_string(reply, zmq_sender_id)
-                except Exception as e:
-                    err = json.dumps({"status": "error", "message": str(e)}, ensure_ascii=False)
-                    try:
-                        control_mq.send_string(err, zmq_sender_id)
-                    except RuntimeError:
-                        pass
-                update_status_func(TaskStatus.COMPLETED)
+                thread_ident = task_manager.active_threads.launch_export_embeddings(client_id, export_args, buckets_cfg, control_mq, zmq_sender_id, cmd.lower(), update_status_callback=update_status_func)
+                task_manager.associate_thread_with_task(thread_ident, task_id)
 
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")

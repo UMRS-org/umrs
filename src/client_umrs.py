@@ -430,7 +430,7 @@ def main():
             finally:
                 control_mq.close()
             sys.exit(0)
-        # Export embeddings directly from pgvector (no S3 needed)
+        # Export embeddings via server (Client → Server → Database)
         if args.action == 'export_embeddings':
             try:
                 bucket_alias_arg = getattr(args, 'bucket_alias')
@@ -440,87 +440,56 @@ def main():
                     print(api_json(status='error', message=f'Bucket alias not found: {bucket_alias}', output_format=args.output))
                     control_mq.close()
                     sys.exit(1)
-                db_name = entry.db_name
-                xp_name = entry.xp_name
-                modality_name = entry.modality_name
-                # Look up table_name from user config
-                table_name = None
-                for xp in user.get('experiences', []):
-                    if xp['xp_name'] == xp_name:
-                        for mod in xp['modalities']:
-                            if mod['modality_name'] == modality_name:
-                                table_name = mod['sql']['table_name']
-                                break
-                        break
-                if not table_name:
-                    print(api_json(status='error', message=f'Cannot find table_name for {xp_name}/{modality_name}', output_format=args.output))
+                # The server keys buckets by path_to_bucket
+                path_to_bucket = entry.path_to_bucket
+                effective_username = getattr(args, 'username', None) or (
+                    user.get('username') if isinstance(user, dict) else None
+                )
+                if not effective_username:
+                    print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
                     control_mq.close()
                     sys.exit(1)
-                # Resolve DB connection parameters
-                db_host = args.db_host or os.environ.get('DB_HOST', os.environ.get('POSTGRES_HOST', 'localhost'))
-                db_port = args.db_port or int(os.environ.get('DB_PORT', '5432'))
-                db_user = args.db_user or os.environ.get('DB_SUPERUSER', os.environ.get('POSTGRES_USER', 'postgres'))
-                db_password = args.db_password or os.environ.get('DB_SUPERUSER_PASSWORD', os.environ.get('POSTGRES_PASSWORD', 'postgres'))
-                import psycopg2
-                conn = psycopg2.connect(dbname=db_name, user=db_user, password=db_password, host=db_host, port=db_port)
-                try:
-                    with conn.cursor() as cur:
-                        # Discover columns for the table
-                        cur.execute(
-                            "SELECT column_name FROM information_schema.columns "
-                            "WHERE table_schema='public' AND table_name=%s ORDER BY ordinal_position",
-                            (table_name,)
-                        )
-                        columns = [row[0] for row in cur.fetchall()]
-                        if not columns:
-                            print(api_json(status='error', message=f'Table {table_name} not found in database {db_name}', output_format=args.output))
-                            sys.exit(1)
-                        if 'embedding' not in columns:
-                            print(api_json(status='error', message=f'Table {table_name} has no embedding column', output_format=args.output))
-                            sys.exit(1)
-                        # Query all rows
-                        from psycopg2 import sql as psql
-                        cur.execute(psql.SQL("SELECT {} FROM {}").format(
-                            psql.SQL(', ').join(psql.Identifier(c) for c in columns),
-                            psql.Identifier(table_name)
-                        ))
-                        rows = cur.fetchall()
-                        # Write output
-                        local_path = args.local_path
-                        os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
-                        if args.export_format == 'csv':
-                            import csv
-                            with open(local_path, 'w', newline='', encoding='utf-8') as f:
-                                writer = csv.writer(f)
-                                writer.writerow(columns)
-                                for row in rows:
-                                    writer.writerow([
-                                        str(v) if v is not None else '' for v in row
-                                    ])
-                        else:  # jsonl
-                            with open(local_path, 'w', encoding='utf-8') as f:
-                                for row in rows:
-                                    record = {}
-                                    for col, val in zip(columns, row):
-                                        if val is None:
-                                            record[col] = None
-                                        elif isinstance(val, (int, float, bool)):
-                                            record[col] = val
-                                        else:
-                                            record[col] = str(val)
-                                    f.write(_json.dumps(record, ensure_ascii=False) + '\n')
-                        print(api_json(
-                            action='export_embeddings',
-                            database=db_name,
-                            table=table_name,
-                            rows_exported=len(rows),
-                            columns=columns,
-                            local_path=local_path,
-                            format=args.export_format,
-                            output_format=args.output
-                        ))
-                finally:
-                    conn.close()
+                # Ask the server to fetch embeddings from the DB
+                raw_response = control_mq.request_export_embeddings(
+                    effective_username, path_to_bucket, args.export_format,
+                )
+                response = _json.loads(raw_response)
+                if response.get('status') != 'ok':
+                    print(api_json(status='error', action='export_embeddings',
+                                   message=response.get('message', 'Server returned an error'),
+                                   output_format=args.output))
+                    control_mq.close()
+                    sys.exit(1)
+                columns = response['columns']
+                rows = response['rows']
+                local_path = args.local_path
+                os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
+                if args.export_format == 'csv':
+                    import csv
+                    with open(local_path, 'w', newline='', encoding='utf-8') as f:
+                        writer = csv.writer(f)
+                        writer.writerow(columns)
+                        for row in rows:
+                            writer.writerow([
+                                str(v) if v is not None else '' for v in row
+                            ])
+                else:  # jsonl
+                    with open(local_path, 'w', encoding='utf-8') as f:
+                        for row in rows:
+                            record = {}
+                            for col, val in zip(columns, row):
+                                record[col] = val
+                            f.write(_json.dumps(record, ensure_ascii=False) + '\n')
+                print(api_json(
+                    action='export_embeddings',
+                    database=response.get('database', ''),
+                    table=response.get('table', ''),
+                    rows_exported=response.get('rows_exported', len(rows)),
+                    columns=columns,
+                    local_path=local_path,
+                    format=args.export_format,
+                    output_format=args.output
+                ))
             except Exception as e:
                 print(api_json(status='error', action='export_embeddings', message=str(e), output_format=args.output))
                 if args.verbose:
