@@ -9,10 +9,12 @@ it can be used instead.
 Supported commands (via TaskCmd):
   MODEL_REGISTER  — register a local model path
   MODEL_LIST      — list all registered models
+  MODEL_DOWNLOAD  — download from HuggingFace in a background thread, then register
 
-NOTE: MODEL_DOWNLOAD was removed. Downloads now run client-side (on the
-login node which has internet access), then the client sends MODEL_REGISTER.
-This avoids blocking the server ZMQ loop and supports air-gapped compute nodes.
+model download has two modes:
+  - Client-side (default):  client downloads locally, then sends MODEL_REGISTER
+  - Server-side (--server-side): client sends MODEL_DOWNLOAD, server downloads
+    in a background thread and replies immediately with "accepted"
 """
 
 from __future__ import annotations
@@ -107,15 +109,89 @@ def _handle_register(client_id: str, payload_str: str) -> str:
 
 
 def _handle_list(client_id: str, payload_str: str) -> str:
-    """List all registered models."""
+    """List registered models, optionally filtered by scope."""
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError:
+        payload = {}
+
     with _CATALOG_LOCK:
         catalog = _load_catalog()
     models = catalog.get("models", [])
+
+    scope_filter = payload.get("scope") if isinstance(payload, dict) else None
+    if scope_filter:
+        models = [m for m in models if m.get("scope") == scope_filter]
+
     return json.dumps({
         "status": "ok",
         "count": len(models),
         "models": models,
     }, default=str)
+
+
+def _handle_download(client_id: str, payload_str: str) -> str:
+    """Accept a server-side download request, run it in a background thread.
+
+    Returns immediately with an "accepted" response.  The download runs
+    asynchronously; upon completion the model is auto-registered.
+    """
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError as e:
+        return json.dumps({"status": "error", "message": f"Invalid JSON: {e}"})
+
+    repo_id = payload.get("repo_id", "").strip()
+    target_name = payload.get("name", "").strip()
+    scope = payload.get("scope", "system")
+
+    if not repo_id:
+        return json.dumps({"status": "error", "message": "repo_id is required"})
+    if not target_name:
+        target_name = repo_id.split("/")[-1]
+
+    staging_root = os.environ.get("UMRS_MODEL_STAGING_ROOT")
+    if not staging_root:
+        staging_root = os.path.join(get_default_umrs_cfg_dir(), "models")
+    target_path = os.path.join(staging_root, target_name)
+
+    def _bg_download():
+        """Background thread: download from HF, then register."""
+        try:
+            if os.path.exists(target_path) and os.listdir(target_path):
+                logger.info("Model already at %s, registering only", target_path)
+            else:
+                from huggingface_hub import snapshot_download
+                os.makedirs(target_path, exist_ok=True)
+                logger.info("Downloading %s → %s ...", repo_id, target_path)
+                snapshot_download(
+                    repo_id=repo_id,
+                    local_dir=target_path,
+                    token=os.environ.get("HF_TOKEN"),
+                )
+                logger.info("Download complete: %s", target_path)
+
+            register_payload = json.dumps({
+                "name": target_name,
+                "path": os.path.abspath(target_path),
+                "model_type": "embedding",
+                "scope": scope,
+                "huggingface_id": repo_id,
+                "description": f"Downloaded from {repo_id}",
+            })
+            result = _handle_register(client_id, register_payload)
+            logger.info("Server-side download result: %s", result)
+        except Exception:
+            logger.exception("Server-side download failed for %s", repo_id)
+
+    t = threading.Thread(target=_bg_download, daemon=True,
+                         name=f"model-dl-{target_name}")
+    t.start()
+
+    return json.dumps({
+        "status": "ok",
+        "message": f"Download accepted: {repo_id} → {target_path} (running in background)",
+    })
 
 
 def handle_model_command(cmd: str, client_id: str, payload_str: str) -> str:
@@ -125,7 +201,7 @@ def handle_model_command(cmd: str, client_id: str, payload_str: str) -> str:
     Called from the server main loop when a MODEL_* command is received.
 
     Args:
-        cmd: TaskCmd value (MODEL_REGISTER, MODEL_LIST)
+        cmd: TaskCmd value (MODEL_REGISTER, MODEL_LIST, MODEL_DOWNLOAD)
         client_id: Username / client identifier
         payload_str: JSON-encoded payload
 
@@ -139,6 +215,8 @@ def handle_model_command(cmd: str, client_id: str, payload_str: str) -> str:
             return _handle_register(client_id, payload_str)
         elif cmd == TaskCmd.MODEL_LIST:
             return _handle_list(client_id, payload_str)
+        elif cmd == TaskCmd.MODEL_DOWNLOAD:
+            return _handle_download(client_id, payload_str)
         else:
             return json.dumps({"status": "error", "message": f"Unknown model command: {cmd}"})
     except Exception as e:
