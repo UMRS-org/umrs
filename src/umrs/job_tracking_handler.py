@@ -7,9 +7,10 @@ When the full jobs/store.py is available (PostgreSQL), it can be used instead.
 
 Supported commands (via TaskCmd):
   JOB_SUBMIT  — submit a new job
-  JOB_STATUS  — get status of a job (with attempt history)
-  JOB_LIST    — list jobs with optional filters
   JOB_CANCEL  — cancel a running job
+
+To query running job state, use the existing STATUS command (umrs-client status)
+which reads from the in-memory UMRSThreads store.
 """
 
 from __future__ import annotations
@@ -123,66 +124,6 @@ def _handle_submit(client_id: str, payload_str: str) -> str:
     }, default=str)
 
 
-def _handle_status(client_id: str, payload_str: str) -> str:
-    """Get status of a specific job."""
-    try:
-        payload = json.loads(payload_str) if payload_str else {}
-    except json.JSONDecodeError as e:
-        return json.dumps({"status": "error", "message": f"Invalid JSON: {e}"})
-
-    job_id = payload.get("job_id", "").strip()
-    if not job_id:
-        return json.dumps({"status": "error", "message": "job_id is required"})
-
-    with _JOBS_LOCK:
-        data = _load_jobs()
-
-    for job in data["jobs"]:
-        if job["job_id"] == job_id:
-            return json.dumps({
-                "status": "ok",
-                "job": job,
-            }, default=str)
-
-    return json.dumps({"status": "error", "message": f"Job not found: {job_id}"})
-
-
-def _handle_list(client_id: str, payload_str: str) -> str:
-    """List jobs with optional filters."""
-    try:
-        payload = json.loads(payload_str) if payload_str else {}
-    except json.JSONDecodeError:
-        payload = {}
-
-    with _JOBS_LOCK:
-        data = _load_jobs()
-
-    jobs = data["jobs"]
-
-    # Apply filters
-    status_filter = payload.get("status")
-    if status_filter:
-        jobs = [j for j in jobs if j["status"] == status_filter]
-
-    job_type_filter = payload.get("job_type")
-    if job_type_filter:
-        jobs = [j for j in jobs if j["job_type"] == job_type_filter]
-
-    user_filter = payload.get("user_id")
-    if user_filter:
-        jobs = [j for j in jobs if j["user_id"] == user_filter]
-
-    # Limit
-    limit = payload.get("limit", 50)
-    jobs = jobs[-limit:]
-
-    return json.dumps({
-        "status": "ok",
-        "count": len(jobs),
-        "jobs": jobs,
-    }, default=str)
-
-
 def _handle_cancel(client_id: str, payload_str: str) -> str:
     """Cancel a job."""
     try:
@@ -234,7 +175,7 @@ def handle_job_command(cmd: str, client_id: str, payload_str: str) -> str:
     Called from the server main loop when a JOB_* command is received.
 
     Args:
-        cmd: TaskCmd value (JOB_SUBMIT, JOB_STATUS, JOB_LIST, JOB_CANCEL)
+        cmd: TaskCmd value (JOB_SUBMIT, JOB_CANCEL)
         client_id: Username / client identifier
         payload_str: JSON-encoded payload
 
@@ -246,10 +187,6 @@ def handle_job_command(cmd: str, client_id: str, payload_str: str) -> str:
     try:
         if cmd == TaskCmd.JOB_SUBMIT:
             return _handle_submit(client_id, payload_str)
-        elif cmd == TaskCmd.JOB_STATUS:
-            return _handle_status(client_id, payload_str)
-        elif cmd == TaskCmd.JOB_LIST:
-            return _handle_list(client_id, payload_str)
         elif cmd == TaskCmd.JOB_CANCEL:
             return _handle_cancel(client_id, payload_str)
         else:

@@ -326,7 +326,7 @@ def main():
     md_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
 
     # --- Job tracking commands ---
-    job_p = subparsers.add_parser('job', help='Job tracking commands (submit, status, list, cancel)')
+    job_p = subparsers.add_parser('job', help='Job commands (submit, cancel); use \'status\' to query running jobs')
     job_sub = job_p.add_subparsers(dest='job_action', required=True)
 
     # job submit
@@ -335,16 +335,6 @@ def main():
     js_p.add_argument('--spec', default='{}', help='Job spec as JSON string')
     js_p.add_argument('--project', default='default', help='Project ID')
     js_p.add_argument('--max-attempts', type=int, default=3, help='Max retry attempts')
-
-    # job status
-    jst_p = job_sub.add_parser('status', help='Get job status with attempt history')
-    jst_p.add_argument('job_id', help='Job ID')
-
-    # job list
-    jl_p = job_sub.add_parser('list', help='List jobs')
-    jl_p.add_argument('--status', default=None, choices=['planned', 'queued', 'running', 'completed', 'failed', 'cancelled'], help='Filter by status')
-    jl_p.add_argument('--type', default=None, dest='job_type_filter', help='Filter by job type')
-    jl_p.add_argument('--limit', type=int, default=50, help='Max results')
 
     # job cancel
     jc_p = job_sub.add_parser('cancel', help='Cancel a running job')
@@ -476,16 +466,6 @@ def main():
                         "max_attempts": args.max_attempts,
                     })
                     raw = control_mq.request_model_command(client_id, TaskCmd.JOB_SUBMIT, payload)
-                elif job_action == 'status':
-                    payload = _json.dumps({"job_id": args.job_id})
-                    raw = control_mq.request_model_command(client_id, TaskCmd.JOB_STATUS, payload)
-                elif job_action == 'list':
-                    payload = _json.dumps({
-                        "status": args.status,
-                        "job_type": args.job_type_filter,
-                        "limit": args.limit,
-                    })
-                    raw = control_mq.request_model_command(client_id, TaskCmd.JOB_LIST, payload)
                 elif job_action == 'cancel':
                     payload = _json.dumps({"job_id": args.job_id})
                     raw = control_mq.request_model_command(client_id, TaskCmd.JOB_CANCEL, payload)
@@ -499,27 +479,7 @@ def main():
                 else:
                     parsed = _json.loads(raw)
                     if parsed.get('status') == 'ok':
-                        if job_action == 'list':
-                            jobs = parsed.get('jobs', [])
-                            if not jobs:
-                                print("No jobs found.")
-                            else:
-                                print(f"{'JOB_ID':20s}  {'TYPE':20s}  {'STATUS':12s}  {'USER':15s}  {'CREATED'}")
-                                for j in jobs:
-                                    print(f"  {j['job_id']:20s}  {j['job_type']:20s}  {j['status']:12s}  {j['user_id']:15s}  {j.get('created_at','')}")
-                        elif job_action == 'status':
-                            j = parsed.get('job', {})
-                            print(f"Job:     {j.get('job_id')}")
-                            print(f"Type:    {j.get('job_type')}")
-                            print(f"Status:  {j.get('status')}")
-                            print(f"Created: {j.get('created_at')}")
-                            attempts = j.get('attempts', [])
-                            if attempts:
-                                print(f"Attempts ({len(attempts)}):")
-                                for a in attempts:
-                                    print(f"  #{a['attempt_no']}: {a['status']}  ({a.get('started_at', '')})")
-                        else:
-                            print(f"OK: {parsed.get('message', '')}")
+                        print(f"OK: {parsed.get('message', '')}")
                     else:
                         print(f"Error: {parsed.get('message', 'unknown error')}")
             except Exception as e:
