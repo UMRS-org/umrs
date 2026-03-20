@@ -5,7 +5,7 @@ set -euo pipefail
 # Shows: model register, model list, model download via umrs-client
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLIENT="python3 ${SCRIPT_DIR}/../../src/client_umrs.py"
+CLIENT="umrs-client"
 SERVER_IP="${UMRS_SERVER_IP:-127.0.0.1}"
 
 echo "=== Demo 08: Model Registration & Staging ==="

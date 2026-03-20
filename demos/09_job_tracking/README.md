@@ -13,7 +13,7 @@ the UMRS ZeroMQ protocol.
 ### Submit a job
 
 ```bash
-python3 ../../src/client_umrs.py job submit embedding_batch \
+umrs-client job submit embedding_batch \
     --spec '{"bucket": "my-bucket", "model": "e5-base-v2"}' \
     --project default --max-attempts 3
 ```
@@ -21,21 +21,21 @@ python3 ../../src/client_umrs.py job submit embedding_batch \
 ### List jobs
 
 ```bash
-python3 ../../src/client_umrs.py job list
-python3 ../../src/client_umrs.py job list --status running
-python3 ../../src/client_umrs.py job list --type embedding_batch
+umrs-client job list
+umrs-client job list --status running
+umrs-client job list --type embedding_batch
 ```
 
 ### Check job status (with attempt history)
 
 ```bash
-python3 ../../src/client_umrs.py job status job-abc123def456
+umrs-client job status job-abc123def456
 ```
 
 ### Cancel a job
 
 ```bash
-python3 ../../src/client_umrs.py job cancel job-abc123def456
+umrs-client job cancel job-abc123def456
 ```
 
 ## Job Types

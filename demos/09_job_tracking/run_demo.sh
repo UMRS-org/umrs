@@ -5,7 +5,7 @@ set -euo pipefail
 # Shows: job submit, job list, job status, job cancel
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CLIENT="python3 ${SCRIPT_DIR}/../../src/client_umrs.py"
+CLIENT="umrs-client"
 SERVER_IP="${UMRS_SERVER_IP:-127.0.0.1}"
 
 echo "=== Demo 09: Job Tracking via ZeroMQ ==="

@@ -17,20 +17,20 @@ list available models, and download models from HuggingFace.
 ../slurm-dev/scripts/download_rivault_models.sh intfloat/e5-base-v2
 
 # Or via umrs-client (server downloads and registers):
-python3 ../../src/client_umrs.py model download intfloat/e5-base-v2
+umrs-client model download intfloat/e5-base-v2
 ```
 
 ### 2. Register a local model
 
 ```bash
-python3 ../../src/client_umrs.py model register e5-base-v2 /path/to/models/e5-base-v2 \
+umrs-client model register e5-base-v2 /path/to/models/e5-base-v2 \
     --type embedding --scope system --description "Multilingual embedding model"
 ```
 
 ### 3. List registered models
 
 ```bash
-python3 ../../src/client_umrs.py model list
+umrs-client model list
 ```
 
 ## How It Works
