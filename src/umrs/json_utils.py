@@ -61,6 +61,8 @@ client_schema = {
                     "checkpoint_path": { "type": "string" },
                     "spacy_model": { "type": "string" },
                     "mode": { "type": "string" },
+                    "vision_model_type": { "type": "string" },
+                    "vision_model_config": { "type": "object" },
                     "return_type": {
                       "type": ["string", "null"],
                       "enum": ["file", None]
@@ -138,8 +140,8 @@ def load_client_cfg_file(json_filename, username_list=[]):
   except json.decoder.JSONDecodeError as e:
         sys.exit(f"Error: Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos}).\nExiting...")
 
-  try: 
-   
+  try:
+
     # Validate using the in-memory variable
     validate(instance=data, schema=client_schema)
     if data["username"] in username_list:
@@ -147,7 +149,7 @@ def load_client_cfg_file(json_filename, username_list=[]):
     return data
   except ValidationError as e:
       sys.exit(f"Invalid client JSON file {json_filename}: {e.message}.\nExiting...")
-  
+
 
 def load_server_cfg_file(json_filename):
     json_filename = os.path.expanduser(json_filename)
@@ -155,13 +157,13 @@ def load_server_cfg_file(json_filename):
     username_list = []
     if not os.path.exists(json_filename):
       sys.exit(f"Server JSON file {json_filename} does not exist. Exiting...")
-    
+
     try:
       with open(json_filename, "r", encoding="utf-8") as file:
         content = json.load(file)
     except json.decoder.JSONDecodeError as e:
         sys.exit(f"Error: Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos}).\nExiting...")
-    
+
     try:
       validate(instance=content, schema=server_schema)
       admin_s3_configuration_file = content["admin_s3_configuration_file"]

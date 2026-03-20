@@ -85,7 +85,7 @@ bash run_demo.sh
 
 - **Input**: Raw images (S3 keys)
 - **Output**: `<image>_sam3_meta.json` per image (bounding boxes, scores, overlay path)
-- **API**: `POST /sam3_segment/submit` → poll → get
+- **API**: `POST /infer/submit` (model_type=sam3) → poll → get
 - **Config**: `prompt`, `threshold`, `mask_threshold`, `timeout`
 
 ### Step 2: Region Extraction (`region_extraction.py`)
@@ -178,8 +178,8 @@ results/
 ```
 
 Each step receives a `StepContext` providing:
-- `download(key)` / `upload(key, data)` — S3 I/O
-- `step_metadata` — shared state between steps
+- `download_bytes(key)` / `upload_bytes(key, data)` — S3 I/O
+- `ctx.metadata` — shared state between steps
 - Step config dict from `workflow.json`
 
 ## Extending the Pipeline
@@ -187,7 +187,7 @@ Each step receives a `StepContext` providing:
 Add a new step by:
 
 1. Create a Python file in `steps/` with a class inheriting `UMRSStep`
-2. Implement `setup(config)`, `run(ctx, s3_keys) → StepResult`, `teardown()`
+2. Implement `setup(config)`, `run(ctx) → StepResult`, `teardown()`
 3. Add entry to `workflow.json` `steps` array
 
 Example: add a visualization step after step 4:
@@ -195,7 +195,7 @@ Example: add a visualization step after step 4:
 ```python
 class VisualizationStep(UMRSStep):
     name = "visualize"
-    def run(self, ctx, s3_keys):
+    def run(self, ctx: StepContext) -> StepResult:
         # Load report.json, generate matplotlib scatter plot
         ...
 ```

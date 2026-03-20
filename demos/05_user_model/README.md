@@ -195,10 +195,11 @@ class InvertImageStep(UMRSStep):
         return StepResult(output_keys=output_keys)
 ```
 
-### Example 2: Call a BentoML vision API endpoint
+### Example 2: Call the BentoML vision API
 
 Steps can call any HTTP API during `run()`. This is how the HMAE and SAM3
-demos integrate with the BentoML vision service running on the Rivault stack:
+demos integrate with the BentoML vision service running on the Rivault stack.
+All vision models use the unified `/infer` endpoint:
 
 ```python
 import time, requests
@@ -210,6 +211,8 @@ class MyVisionStep(UMRSStep):
     def setup(self, config: dict) -> None:
         # BentoML service URL, e.g. "http://localhost:11434/vision"
         self.bentoml_url = config["bentoml_url"].rstrip("/")
+        self.model_type = config.get("model_type", "hmae")
+        self.model_config = config.get("model_config", {"mode": "features"})
         self.timeout = config.get("timeout", 300)
 
     def run(self, ctx: StepContext) -> StepResult:
@@ -219,10 +222,14 @@ class MyVisionStep(UMRSStep):
         for key in ctx.input_keys:
             image_url = f"s3://{ctx.input_bucket}/{key}"
 
-            # 1. Submit task to BentoML async task queue
+            # 1. Submit task to the unified /infer endpoint
             resp = session.post(
-                f"{self.bentoml_url}/my_endpoint/submit",
-                json={"image_url": image_url, "param": "value"},
+                f"{self.bentoml_url}/infer/submit",
+                json={
+                    "model_type": self.model_type,
+                    "model_config": self.model_config,
+                    "image_url": image_url,
+                },
                 timeout=30,
             )
             resp.raise_for_status()
@@ -232,7 +239,7 @@ class MyVisionStep(UMRSStep):
             deadline = time.monotonic() + self.timeout
             while time.monotonic() < deadline:
                 status_resp = session.get(
-                    f"{self.bentoml_url}/my_endpoint/status",
+                    f"{self.bentoml_url}/infer/status",
                     params={"task_id": task_id}, timeout=10,
                 )
                 status = status_resp.json().get("status", "")
@@ -244,7 +251,7 @@ class MyVisionStep(UMRSStep):
 
             # 3. Retrieve result
             result = session.get(
-                f"{self.bentoml_url}/my_endpoint/get",
+                f"{self.bentoml_url}/infer/get",
                 params={"task_id": task_id}, timeout=30,
             ).json()
 
@@ -407,41 +414,55 @@ the `my-results` input bucket.
 
 ## BentoML vision API endpoints
 
-When your step calls the Rivault BentoML vision service, use these endpoints:
+All vision models are served through a single unified `/infer` endpoint. When your
+step calls the Rivault BentoML vision service, use the `model_type` and
+`model_config` fields to select the model and mode:
 
-### SAM3 segmentation
+### Submit a task
 
 ```
-POST /vision/sam3_segment/submit
-     Body: {"image_url": "s3://bucket/key", "prompt": "defect",
-            "threshold": 0.5, "mask_threshold": 0.5}
+POST /vision/infer/submit
+     Body: {"model_type": "sam3" | "hmae",
+            "model_config": { ... adapter-specific params ... },
+            "image_url": "s3://bucket/key",
+            "output_bucket": "results"    (optional)}
      → {"task_id": "..."}
+```
 
-GET  /vision/sam3_segment/status?task_id=...
+### Poll status / retrieve result
+
+```
+GET  /vision/infer/status?task_id=...
      → {"status": "in_progress|completed|failed"}
 
-GET  /vision/sam3_segment/get?task_id=...
-     → {"num_objects": N, "boxes": [...], "scores": [...],
-        "overlay_s3_key": "s3://..."}
+GET  /vision/infer/get?task_id=...
+     → { ... adapter-specific result ... }
 ```
 
-### HMAE inference (all 3 modes)
+### SAM3 segmentation example
 
+```json
+{"model_type": "sam3",
+ "model_config": {"prompt": "defect", "threshold": 0.5, "mask_threshold": 0.5},
+ "image_url": "s3://bucket/key.png"}
 ```
-POST /vision/hmae_reconstruct/submit
-     Body: {"image_url": "s3://bucket/key",
-            "mode": "reconstruct|mae|features"}
-     → {"task_id": "..."}
 
-GET  /vision/hmae_reconstruct/status?task_id=...
-     → {"status": "in_progress|completed|failed"}
+**Result**: `{"num_objects": N, "boxes": [...], "scores": [...], "overlay_s3_key": "s3://..."}`
 
-GET  /vision/hmae_reconstruct/get?task_id=...
-     # mode=reconstruct → {"output_s3_key": "s3://..."}
-     # mode=mae         → {"output_s3_key": "s3://...", "mae_loss": 0.18}
-     # mode=features    → {"output_s3_key": "s3://...features.pt",
-     #                      "cls_shape": [1, 768], "patch_shape": [1024, 768]}
+### HMAE inference example (3 modes)
+
+```json
+{"model_type": "hmae",
+ "model_config": {"mode": "reconstruct"},
+ "image_url": "s3://bucket/key.png"}
 ```
+
+`mode` can be `"reconstruct"`, `"mae"`, or `"features"`.
+
+**Results by mode**:
+- `reconstruct` → `{"output_s3_key": "s3://..."}`
+- `mae` → `{"output_s3_key": "s3://...", "mae_loss": 0.18}`
+- `features` → `{"output_s3_key": "s3://...features.pt", "cls_shape": [1, 768], "patch_shape": [1024, 768]}`
 
 ### Health check
 

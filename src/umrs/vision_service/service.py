@@ -14,7 +14,7 @@ Request payload for ``/infer/submit``::
 
     {
         "model_type":    "sam3" | "hmae" | "<future>",
-        "model_config":  { ... adapter-specific params ... },
+        "inference_config":  { ... adapter-specific params ... },
         "image_url":     "s3://bucket/key.png",
         "output_bucket": "results"          # optional
     }
@@ -99,7 +99,7 @@ class VisionModelService:
     def infer(
         self,
         model_type: str,
-        model_config: dict,
+        inference_config: dict,
         image_url: str,
         output_bucket: str = "",
     ) -> dict:
@@ -108,8 +108,8 @@ class VisionModelService:
         Args:
             model_type: Adapter key registered in ADAPTER_REGISTRY
                         (e.g. ``"sam3"``, ``"hmae"``).
-            model_config: Adapter-specific configuration (checkpoint paths,
-                          mode, prompt, thresholds, …).
+            inference_config: Adapter-specific configuration (checkpoint paths,
+                              mode, prompt, thresholds, …).
             image_url: S3 URL of the input image (``s3://bucket/key``).
             output_bucket: Bucket for output artifacts.  Defaults to the
                            source bucket when empty.
@@ -129,10 +129,10 @@ class VisionModelService:
         try:
             s3 = self._ensure_s3()
             image, bucket, key = _download_image_from_s3(s3, image_url)
-            model = self._cache.get_or_load(adapter, model_config)
+            model = self._cache.get_or_load(adapter, inference_config)
             return adapter.infer(
                 model, image, bucket, key,
-                model_config, s3, output_bucket or bucket,
+                inference_config, s3, output_bucket or bucket,
             )
         except Exception as exc:
             logger.exception("infer failed (model_type=%s)", model_type)

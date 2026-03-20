@@ -55,6 +55,7 @@
             "model_name": "SAM3 Segmentation",
             "vector_size": "768",
             "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "sam3",
             "return_type": "file"
           },
           "sql": {
@@ -109,6 +110,7 @@
             "model_name": "Defect Analysis Pipeline",
             "vector_size": "768",
             "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "sam3",
             "return_type": "file"
           },
           "sql": {
