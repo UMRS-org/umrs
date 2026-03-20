@@ -843,6 +843,19 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         active_threads.update_status_to_done()
         active_threads.record_status_for_users_by_key(users, key)
         active_threads.remove_from_running_list()
+
+    # --- Service lifecycle: auto-release backend jobs when idle ---
+    service_lifecycle = os.environ.get("UMRS_SERVICE_LIFECYCLE", "auto_release")
+    if service_lifecycle == "auto_release":
+        with active_threads.lock:
+            still_running = sum(
+                1 for t in active_threads.thread_list
+                if t.is_alive() and t is not threading.current_thread()
+            )
+        if still_running == 0:
+            from umrs.rivault_launcher import release_all_backend_jobs
+            release_all_backend_jobs()
+
     if update_status_callback:
         update_status_callback(exit_status)
 
