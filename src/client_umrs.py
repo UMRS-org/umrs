@@ -336,12 +336,12 @@ def main():
 
     # job submit
     js_p = job_sub.add_parser('submit', help='Submit a new job')
-    js_p.add_argument('job_type', choices=['index_build', 'embedding_batch', 'pipeline_run', 'endpoint_provision', 'model_download', 'cleanup'], help='Job type')
+    js_p.add_argument('job_type', choices=['endpoint_provision', 'index_build', 'cleanup'], help='Job type')
     js_p.add_argument('--spec', default='{}', help='Job spec as JSON string')
     js_p.add_argument('--project', default='default', help='Project ID')
     js_p.add_argument('--max-attempts', type=int, default=3, help='Max retry attempts')
     js_p.add_argument('--keep-alive', action='store_true', default=False,
-                       help='Keep backend Slurm/K8s job running after task completes (default: auto-release to save node hours)')
+                       help='Keep backend Slurm/K8s endpoint running after task completes (for endpoint_provision; default: auto-release)')
 
     # job cancel
     jc_p = job_sub.add_parser('cancel', help='Cancel a running job')

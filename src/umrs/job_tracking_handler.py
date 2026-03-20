@@ -31,7 +31,16 @@ _JOBS_LOCK = threading.Lock()
 
 # Valid job statuses (matching jobs/models.py JobStatus enum)
 VALID_STATUSES = {"planned", "queued", "running", "completed", "failed", "cancelled"}
-VALID_JOB_TYPES = {"index_build", "embedding_batch", "pipeline_run", "endpoint_provision", "model_download", "cleanup"}
+# Only job types that genuinely need explicit submission (not triggered by file uploads).
+# - endpoint_provision: pre-warm Slurm/K8s service before uploads arrive
+# - index_build: rebuild RAG index (pgvector IVFFlat re-cluster) after bulk inserts
+# - cleanup: teardown endpoints, stale S3 objects, or database tables
+#
+# Excluded because they have dedicated paths:
+# - model_download → MODEL_DOWNLOAD ZMQ command
+# - embedding_batch → PROCESS_OBJECTS (upload) + recompute/update maintenance
+# - pipeline_run → deferred until steps framework is fully wired
+VALID_JOB_TYPES = {"endpoint_provision", "index_build", "cleanup"}
 
 
 def _jobs_path() -> str:
