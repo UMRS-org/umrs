@@ -28,6 +28,8 @@ from umrs.TaskManager import TaskManager
 from umrs.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.embeddings import compute_and_store_embedding
 from umrs.embedding_backend import LocalEmbeddingBackend, create_embedding_backend_from_config
+
+from umrs.model_registry_handler import handle_model_command
 from umrs.cache_paths import find_model_cache
 from umrs.config import *
 
@@ -931,6 +933,15 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 client_id, export_args, zmq_sender_id = payload
                 thread_ident = task_manager.active_threads.launch_export_embeddings(client_id, export_args, buckets_cfg, control_mq, zmq_sender_id, cmd.lower(), update_status_callback=update_status_func)
                 task_manager.associate_thread_with_task(thread_ident, task_id)
+
+            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD):
+                client_id, payload_str, zmq_sender_id = payload
+                response_json = handle_model_command(cmd, client_id, payload_str)
+                try:
+                    control_mq.send_string(response_json, zmq_sender_id)
+                except RuntimeError as e:
+                    print(f"Error sending model command response: {e}")
+                update_status_func(TaskStatus.COMPLETED)
 
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")

@@ -325,6 +325,14 @@ class MessageQueue:
                     print(f"Error acknowledging {cmd} request: {e}")
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 return cmd, client_id
+
+            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD):
+                # Model registry commands: immediate request/reply with JSON payload
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                # The rest of the message (after "CMD:client_id:") is the JSON payload
+                payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
+                return cmd, (client_id, payload_str, zmq_sender_id)
+
             else:
                 print(f"WARNING: Ignoring unknown command from unexpected client: {cmd[:80]}")
                 try:
@@ -610,6 +618,36 @@ class MessageQueue:
 
         # print(f"sending data to port: {self.port}")
         self.send_string(s3_object)
+
+    def request_model_command(self, client_id, model_cmd, payload_json=""):
+        """Send a model registry command and receive a JSON response.
+
+        Args:
+            client_id: Username or client identifier
+            model_cmd: One of MODEL_REGISTER, MODEL_LIST, MODEL_DOWNLOAD
+            payload_json: JSON-encoded payload string
+        Returns:
+            JSON string response from server
+        """
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_model_command'")
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        request_str = f"{model_cmd}:{safe_client_id}:{payload_json}"
+
+        # Allow generous timeout for model downloads
+        old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)
+        self.socket.setsockopt(zmq.RCVTIMEO, 300_000)
+
+        self.send_string(request_str)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in request_model_command")
+        finally:
+            self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
+
+        return reply
 
 
 

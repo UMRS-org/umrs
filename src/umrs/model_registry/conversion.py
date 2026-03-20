@@ -1,6 +1,11 @@
 """
 Model Conversion Pipeline (MM-004).
 
+NOTE: This module defines conversion specifications and job models.
+      The actual conversion backends (calling torch, auto-gptq, etc.)
+      are not yet implemented. Specs are ready for integration when
+      conversion execution is needed.
+
 Supports:
 - FP16/BF16 conversion
 - FP8 quantization

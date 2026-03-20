@@ -11,6 +11,10 @@ class TaskCmd:
     CREATE_DATA_QUEUE = "CREATE_DATA_QUEUE"
     STATUS = "STATUS"
     EXPORT_EMBEDDINGS = "EXPORT_EMBEDDINGS"
+    # Model registry commands
+    MODEL_REGISTER = "MODEL_REGISTER"
+    MODEL_LIST = "MODEL_LIST"
+    MODEL_DOWNLOAD = "MODEL_DOWNLOAD"
 
     @classmethod
     def all_cmd(cls):
