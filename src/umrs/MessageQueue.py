@@ -333,7 +333,7 @@ class MessageQueue:
                 payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
                 return cmd, (client_id, payload_str, zmq_sender_id)
 
-            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_STATUS, TaskCmd.JOB_LIST, TaskCmd.JOB_CANCEL):
+            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
                 # Job tracking commands: immediate request/reply with JSON payload
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""

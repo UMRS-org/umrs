@@ -16,10 +16,9 @@ class TaskCmd:
     MODEL_LIST = "MODEL_LIST"
     MODEL_DOWNLOAD = "MODEL_DOWNLOAD"
     # Job tracking commands
-    JOB_SUBMIT = "JOB_SUBMIT"
-    JOB_STATUS = "JOB_STATUS"
-    JOB_LIST = "JOB_LIST"
-    JOB_CANCEL = "JOB_CANCEL"
+    JOB_SUBMIT = "JOB_SUBMIT"   # durable submission with retry config
+    JOB_CANCEL = "JOB_CANCEL"   # cancel a submitted job by ID
+    # (use STATUS to query running jobs — JOB_LIST/JOB_STATUS would duplicate it)
 
     @classmethod
     def all_cmd(cls):
