@@ -15,6 +15,11 @@ class TaskCmd:
     MODEL_REGISTER = "MODEL_REGISTER"
     MODEL_LIST = "MODEL_LIST"
     MODEL_DOWNLOAD = "MODEL_DOWNLOAD"
+    # Job tracking commands
+    JOB_SUBMIT = "JOB_SUBMIT"
+    JOB_STATUS = "JOB_STATUS"
+    JOB_LIST = "JOB_LIST"
+    JOB_CANCEL = "JOB_CANCEL"
 
     @classmethod
     def all_cmd(cls):
