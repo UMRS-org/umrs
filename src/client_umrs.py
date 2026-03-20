@@ -303,6 +303,28 @@ def main():
     )
     ee_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
+    # --- Model registry commands ---
+    model_p = subparsers.add_parser('model', help='Model registry commands (register, list, download)')
+    model_sub = model_p.add_subparsers(dest='model_action', required=True)
+
+    # model register
+    mr_p = model_sub.add_parser('register', help='Register a local model with UMRS')
+    mr_p.add_argument('name', help='Model name (e.g., e5-base-v2)')
+    mr_p.add_argument('path', help='Filesystem path to model weights')
+    mr_p.add_argument('--type', choices=['llm', 'embedding'], default='embedding', dest='model_type', help='Model type')
+    mr_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
+    mr_p.add_argument('--description', default=None, help='Model description')
+    mr_p.add_argument('--huggingface-id', default=None, help='HuggingFace repo ID (for reference)')
+
+    # model list
+    model_sub.add_parser('list', help='List registered models')
+
+    # model download
+    md_p = model_sub.add_parser('download', help='Download a model from HuggingFace')
+    md_p.add_argument('repo_id', help='HuggingFace repository ID (e.g., intfloat/e5-base-v2)')
+    md_p.add_argument('--name', default=None, help='Local name (defaults to repo basename)')
+    md_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
+
 
     args = parser.parse_args()
 
@@ -357,6 +379,60 @@ def main():
         if args.action == 'ping':
             print(action_ping(control_mq, args.output))
             control_mq.close()
+            sys.exit(0)
+        if args.action == 'model':
+            # Model registry commands — no config file required, uses ZMQ directly
+            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            model_action = args.model_action
+            try:
+                if model_action == 'register':
+                    payload = _json.dumps({
+                        "name": args.name,
+                        "path": os.path.abspath(args.path),
+                        "model_type": args.model_type,
+                        "scope": args.scope,
+                        "description": args.description,
+                        "huggingface_id": args.huggingface_id,
+                    })
+                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
+                elif model_action == 'list':
+                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_LIST)
+                elif model_action == 'download':
+                    target_name = args.name or args.repo_id.split("/")[-1]
+                    payload = _json.dumps({
+                        "repo_id": args.repo_id,
+                        "name": target_name,
+                        "scope": args.scope,
+                    })
+                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_DOWNLOAD, payload)
+                else:
+                    print(api_json(status='error', message=f'Unknown model action: {model_action}', output_format=args.output))
+                    control_mq.close()
+                    sys.exit(1)
+
+                if args.output == 'json':
+                    print(raw)
+                else:
+                    parsed = _json.loads(raw)
+                    if parsed.get('status') == 'ok':
+                        if model_action == 'list':
+                            models = parsed.get('models', [])
+                            if not models:
+                                print("No models registered.")
+                            else:
+                                for m in models:
+                                    scope_str = m.get('scope', '')
+                                    print(f"  {m['name']:30s}  {m.get('model_type',''):10s}  {scope_str:8s}  {m.get('storage_ref','')}")
+                        else:
+                            print(f"OK: {parsed.get('message', '')}")
+                    else:
+                        print(f"Error: {parsed.get('message', 'unknown error')}")
+            except Exception as e:
+                print(api_json(status='error', action='model', message=str(e), output_format=args.output))
+                if args.verbose:
+                    traceback.print_exc()
+            finally:
+                control_mq.close()
             sys.exit(0)
         if args.action == 'list_buckets':
             effective_username = args.username or (user.get('username') if isinstance(user, dict) else None)
