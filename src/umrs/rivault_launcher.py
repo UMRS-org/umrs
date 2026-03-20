@@ -20,6 +20,53 @@ jobid_cache = diskcache.Cache(f"{get_default_tmp_subdir()}/job_id_store", size_l
 model_cache = {}
 
 
+def release_backend_job(model_type_key):
+    """Cancel the Slurm job and clean up SSH tunnel for a specific model.
+
+    Removes the job from jobid_cache / model_cache, runs scancel,
+    and tears down the SSH tunnel subprocess + thread.
+    """
+    job_id = jobid_cache.pop(model_type_key, None)
+    if model_type_key in model_cache:
+        _, thread_tunnel, proc_tunnel = model_cache.pop(model_type_key)
+        try:
+            proc_tunnel.terminate()
+            proc_tunnel.wait(timeout=10)
+        except Exception:
+            pass
+        try:
+            thread_tunnel.join(timeout=5)
+        except Exception:
+            pass
+    if job_id is not None:
+        try:
+            subprocess.run(
+                ["scancel", str(job_id)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+            print(f"[lifecycle] Cancelled Slurm job {job_id} for '{model_type_key}'")
+        except FileNotFoundError:
+            print(f"[lifecycle] scancel not found — Slurm job {job_id} not cancelled (non-Slurm env?)")
+        except Exception as e:
+            print(f"[lifecycle] Error cancelling Slurm job {job_id}: {e}")
+
+
+def release_all_backend_jobs():
+    """Cancel ALL cached Slurm jobs and clean up SSH tunnels.
+
+    Called when service_lifecycle is 'auto_release' and no more
+    processing threads are active.
+    """
+    keys = list(jobid_cache)
+    if not keys:
+        return
+    print(f"[lifecycle] Releasing {len(keys)} backend job(s)...")
+    for key in keys:
+        release_backend_job(key)
+
+
 def load_model_as_bentoml(model_name, return_type, vector_size, input_type, compute_func, modality):
     """Create an EmbeddingModel backed by a BentoML compute adapter."""
     em = EmbeddingModel(

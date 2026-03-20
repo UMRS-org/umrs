@@ -1,7 +1,7 @@
 # Demo 09 — Job Tracking via ZeroMQ
 
 This demo shows how to submit, monitor, and manage durable jobs through
-the UMRS ZeroMQ protocol.
+the UMRS ZeroMQ protocol — including backend service lifecycle control.
 
 ## Prerequisites
 
@@ -18,6 +18,25 @@ umrs-client job submit embedding_batch \
     --project default --max-attempts 3
 ```
 
+### Keep the backend service alive for sequential processing
+
+By default, Slurm/K8s jobs are **auto-released** after the task completes
+to save node hours. If you plan successive/frequent processes, use
+`--keep-alive` to keep the service running:
+
+```bash
+# Keep backend service running for reuse:
+umrs-client job submit embedding_batch \
+    --spec '{"bucket": "batch-1"}' --keep-alive
+
+# Later: next batch reuses the same Slurm/K8s job (no cold start):
+umrs-client job submit embedding_batch \
+    --spec '{"bucket": "batch-2"}' --keep-alive
+
+# When done: cancel the Slurm job manually, or let it expire via TTL:
+umrs-client job cancel <job_id>
+```
+
 ### Cancel a job
 
 ```bash
@@ -31,6 +50,29 @@ Use the existing `status` command — it already covers active task state:
 ```bash
 umrs-client status all
 umrs-client status process_objects
+```
+
+## Service Lifecycle Policy
+
+Controls what happens to backend Slurm/K8s jobs after processing completes.
+
+| Mode | Node hours | Cold start | Use case |
+|------|-----------|-----------|----------|
+| `auto_release` (default) | Saved | Every time | One-off or infrequent processing |
+| `keep_alive` | Consumed until TTL/cancel | Only first time | Successive batch processing |
+
+**Server-wide default** (env var):
+```bash
+# Default: cancel Slurm/K8s jobs after processing (saves node hours)
+export UMRS_SERVICE_LIFECYCLE=auto_release
+
+# Alternative: keep services running for reuse
+export UMRS_SERVICE_LIFECYCLE=keep_alive
+```
+
+**Per-job override** (CLI flag):
+```bash
+umrs-client job submit endpoint_provision --spec '...' --keep-alive
 ```
 
 ## Job Types
@@ -63,6 +105,9 @@ Each job tracks multiple **attempts**, with automatic retry on failure.
   with advisory locks, crash reconciliation, and multi-instance support
 - To **query** running jobs, use `umrs-client status all` (reads from the
   in-memory UMRSThreads store — adding a separate JOB_STATUS would duplicate it)
+- **Auto-release**: When the last processing thread finishes and
+  `UMRS_SERVICE_LIFECYCLE=auto_release` (default), the server runs `scancel`
+  on all cached Slurm jobs, tears down SSH tunnels, and frees node hours
 
 ## Run Demo
 

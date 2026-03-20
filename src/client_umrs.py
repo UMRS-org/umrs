@@ -340,6 +340,8 @@ def main():
     js_p.add_argument('--spec', default='{}', help='Job spec as JSON string')
     js_p.add_argument('--project', default='default', help='Project ID')
     js_p.add_argument('--max-attempts', type=int, default=3, help='Max retry attempts')
+    js_p.add_argument('--keep-alive', action='store_true', default=False,
+                       help='Keep backend Slurm/K8s job running after task completes (default: auto-release to save node hours)')
 
     # job cancel
     jc_p = job_sub.add_parser('cancel', help='Cancel a running job')
@@ -509,6 +511,7 @@ def main():
                         "spec": spec,
                         "project_id": args.project,
                         "max_attempts": args.max_attempts,
+                        "keep_alive": args.keep_alive,
                     })
                     raw = control_mq.request_model_command(client_id, TaskCmd.JOB_SUBMIT, payload)
                 elif job_action == 'cancel':

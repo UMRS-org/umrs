@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Demo 09: Job Tracking via ZeroMQ
-# Shows: job submit, job list, job status, job cancel
+# Shows: job submit, job cancel, --keep-alive lifecycle policy
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIENT="umrs-client"
@@ -30,11 +30,11 @@ echo "${RESULT}"
 JOB_ID=$(echo "${RESULT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('job',{}).get('job_id',''))" 2>/dev/null || echo "")
 echo ""
 
-# Step 3: Submit a second job
-echo "--- Step 3: Submit pipeline_run job ---"
+# Step 3: Submit a second job with --keep-alive (keeps backend running for reuse)
+echo "--- Step 3: Submit pipeline_run job with --keep-alive ---"
 ${CLIENT} --server-ip "${SERVER_IP}" job submit pipeline_run \
     --spec '{"pipeline": "image-analysis", "input": "s3://images/"}' \
-    --project demo
+    --project demo --keep-alive
 echo ""
 
 # Step 4: Cancel the first job

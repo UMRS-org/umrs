@@ -94,6 +94,7 @@ def _handle_submit(client_id: str, payload_str: str) -> str:
         "priority": payload.get("priority", 0),
         "desired_max_attempts": payload.get("max_attempts", 3),
         "restart_policy": payload.get("restart_policy", "on_crash"),
+        "keep_alive": payload.get("keep_alive", False),
         "attempts": [],
         "created_at": now,
         "updated_at": now,
