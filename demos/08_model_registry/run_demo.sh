@@ -50,9 +50,14 @@ echo ""
 
 # Step 4: Download a model from HuggingFace (optional, requires HF access)
 if [ "${DEMO_DOWNLOAD:-0}" = "1" ]; then
-    echo "--- Step 4: Download model from HuggingFace ---"
+    echo "--- Step 4a: Download model (client-side, default) ---"
     ${CLIENT} --server-ip "${SERVER_IP}" model download intfloat/e5-base-v2
     echo ""
+
+    # Uncomment to test server-side download instead:
+    # echo "--- Step 4b: Download model (server-side) ---"
+    # ${CLIENT} --server-ip "${SERVER_IP}" model download intfloat/e5-base-v2 --server-side
+    # echo ""
 
     echo "--- Step 5: List models after download ---"
     ${CLIENT} --server-ip "${SERVER_IP}" model list
@@ -61,5 +66,13 @@ else
     echo "--- Step 4: Skipping HuggingFace download (set DEMO_DOWNLOAD=1 to enable) ---"
     echo ""
 fi
+
+# Step 6: Scope filtering
+echo "--- Step 6: List models by scope ---"
+echo "  System models:"
+${CLIENT} --server-ip "${SERVER_IP}" model list --scope system
+echo "  User models:"
+${CLIENT} --server-ip "${SERVER_IP}" model list --scope user
+echo ""
 
 echo "=== Demo 08 Complete ==="

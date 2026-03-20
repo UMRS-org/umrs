@@ -944,6 +944,18 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                     print(f"Error sending model command response: {e}")
                 update_status_func(TaskStatus.COMPLETED)
 
+            elif cmd == TaskCmd.MODEL_DOWNLOAD:
+                # Server-side download: reply immediately, run download in background thread
+                client_id, payload_str, zmq_sender_id = payload
+                ack = handle_model_command(cmd, client_id, payload_str)
+                try:
+                    control_mq.send_string(ack, zmq_sender_id)
+                except RuntimeError as e:
+                    print(f"Error sending model download ack: {e}")
+                # The handler spawns a background thread for the actual download;
+                # the ack already told the client it's accepted.
+                update_status_func(TaskStatus.COMPLETED)
+
             elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
                 client_id, payload_str, zmq_sender_id = payload
                 response_json = handle_job_command(cmd, client_id, payload_str)
