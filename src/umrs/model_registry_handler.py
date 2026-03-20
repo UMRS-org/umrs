@@ -9,7 +9,10 @@ it can be used instead.
 Supported commands (via TaskCmd):
   MODEL_REGISTER  — register a local model path
   MODEL_LIST      — list all registered models
-  MODEL_DOWNLOAD  — download from HuggingFace to shared storage
+
+NOTE: MODEL_DOWNLOAD was removed. Downloads now run client-side (on the
+login node which has internet access), then the client sends MODEL_REGISTER.
+This avoids blocking the server ZMQ loop and supports air-gapped compute nodes.
 """
 
 from __future__ import annotations
@@ -19,7 +22,6 @@ import logging
 import os
 import threading
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Dict
 
 from .config import get_default_umrs_cfg_dir
@@ -116,69 +118,6 @@ def _handle_list(client_id: str, payload_str: str) -> str:
     }, default=str)
 
 
-def _handle_download(client_id: str, payload_str: str) -> str:
-    """Download a model from HuggingFace and register it."""
-    try:
-        payload = json.loads(payload_str) if payload_str else {}
-    except json.JSONDecodeError as e:
-        return json.dumps({"status": "error", "message": f"Invalid JSON: {e}"})
-
-    repo_id = payload.get("repo_id", "").strip()
-    target_name = payload.get("name", "").strip()
-    scope = payload.get("scope", "system")
-
-    if not repo_id:
-        return json.dumps({"status": "error", "message": "repo_id is required"})
-    if not target_name:
-        target_name = repo_id.split("/")[-1]
-
-    # Determine target directory — use rivault models dir or UMRS staging root
-    staging_root = os.environ.get("UMRS_MODEL_STAGING_ROOT")
-    if not staging_root:
-        # Default: UMRS cfg dir / models
-        staging_root = os.path.join(get_default_umrs_cfg_dir(), "models")
-
-    target_path = os.path.join(staging_root, target_name)
-
-    # Check if already downloaded
-    if os.path.exists(target_path) and any(Path(target_path).iterdir()):
-        logger.info("Model already exists at %s, registering only", target_path)
-    else:
-        # Download
-        try:
-            from huggingface_hub import snapshot_download
-
-            os.makedirs(target_path, exist_ok=True)
-            logger.info("Downloading %s to %s ...", repo_id, target_path)
-            snapshot_download(
-                repo_id=repo_id,
-                local_dir=target_path,
-                token=os.environ.get("HF_TOKEN"),
-            )
-            logger.info("Download complete: %s", target_path)
-        except ImportError:
-            return json.dumps({
-                "status": "error",
-                "message": "huggingface_hub not installed. Run: pip install huggingface_hub",
-            })
-        except Exception as e:
-            return json.dumps({
-                "status": "error",
-                "message": f"Download failed: {e}",
-            })
-
-    # Register in catalog
-    register_payload = json.dumps({
-        "name": target_name,
-        "path": os.path.abspath(target_path),
-        "model_type": "embedding",
-        "scope": scope,
-        "huggingface_id": repo_id,
-        "description": f"Downloaded from {repo_id}",
-    })
-    return _handle_register(client_id, register_payload)
-
-
 def handle_model_command(cmd: str, client_id: str, payload_str: str) -> str:
     """
     Dispatch a model registry command and return a JSON response string.
@@ -186,7 +125,7 @@ def handle_model_command(cmd: str, client_id: str, payload_str: str) -> str:
     Called from the server main loop when a MODEL_* command is received.
 
     Args:
-        cmd: TaskCmd value (MODEL_REGISTER, MODEL_LIST, MODEL_DOWNLOAD)
+        cmd: TaskCmd value (MODEL_REGISTER, MODEL_LIST)
         client_id: Username / client identifier
         payload_str: JSON-encoded payload
 
@@ -200,8 +139,6 @@ def handle_model_command(cmd: str, client_id: str, payload_str: str) -> str:
             return _handle_register(client_id, payload_str)
         elif cmd == TaskCmd.MODEL_LIST:
             return _handle_list(client_id, payload_str)
-        elif cmd == TaskCmd.MODEL_DOWNLOAD:
-            return _handle_download(client_id, payload_str)
         else:
             return json.dumps({"status": "error", "message": f"Unknown model command: {cmd}"})
     except Exception as e:

@@ -14,7 +14,6 @@ class TaskCmd:
     # Model registry commands
     MODEL_REGISTER = "MODEL_REGISTER"
     MODEL_LIST = "MODEL_LIST"
-    MODEL_DOWNLOAD = "MODEL_DOWNLOAD"
     # Job tracking commands
     JOB_SUBMIT = "JOB_SUBMIT"   # durable submission with retry config
     JOB_CANCEL = "JOB_CANCEL"   # cancel a submitted job by ID
