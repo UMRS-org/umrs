@@ -1,40 +1,67 @@
-# Demo 09 — Job Tracking via ZeroMQ
+# Demo 09 — Job Submission & Service Lifecycle
 
-This demo shows how to submit, monitor, and manage durable jobs through
-the UMRS ZeroMQ protocol — including backend service lifecycle control.
+Explicit job submission for operations that are **not triggered by file uploads**.
+
+The basic UMRS flow (upload file → compute embeddings) is fully automatic via
+`PROCESS_OBJECTS` — no job submission needed. This demo covers 3 cases where
+you do need an explicit `job submit`:
 
 ## Prerequisites
 
 - UMRS server running (see `demos/00_start_services/`)
 - `umrs-client` available
 
-## Commands
+## Why 3 Job Types?
 
-### Submit a job
+### 1. `endpoint_provision` — Pre-warm a service before uploads
+
+Normally the server launches a Slurm/K8s job **lazily** on the first file
+upload, which adds cold-start latency. If you know you'll process many
+batches, pre-warm the endpoint:
 
 ```bash
-umrs-client job submit embedding_batch \
-    --spec '{"bucket": "my-bucket", "model": "e5-base-v2"}' \
-    --project default --max-attempts 3
+# Pre-warm Mini-RiVault/BentoML endpoint (Slurm job starts immediately):
+umrs-client job submit endpoint_provision \
+    --spec '{"model": "sam3", "backend": "slurm"}' \
+    --project my-project --keep-alive
+
+# Now uploads use the warm endpoint — no cold start:
+umrs-client upload_dir /data/images/batch-1/
+umrs-client upload_dir /data/images/batch-2/
+
+# When done, release the node hours:
+umrs-client job cancel <job_id>
 ```
 
-### Keep the backend service alive for sequential processing
+### 2. `index_build` — Rebuild RAG index after bulk inserts
 
-By default, Slurm/K8s jobs are **auto-released** after the task completes
-to save node hours. If you plan successive/frequent processes, use
-`--keep-alive` to keep the service running:
+After embeddings accumulate in pgvector, the IVFFlat index may need
+re-clustering for optimal search performance. This is a database
+operation, not a file upload:
 
 ```bash
-# Keep backend service running for reuse:
-umrs-client job submit embedding_batch \
-    --spec '{"bucket": "batch-1"}' --keep-alive
+# Rebuild the RAG index after a large ingestion run:
+umrs-client job submit index_build \
+    --spec '{"database": "xp_spring8", "table": "image_embeddings"}' \
+    --project spring8
+```
 
-# Later: next batch reuses the same Slurm/K8s job (no cold start):
-umrs-client job submit embedding_batch \
-    --spec '{"bucket": "batch-2"}' --keep-alive
+### 3. `cleanup` — Teardown resources explicitly
 
-# When done: cancel the Slurm job manually, or let it expire via TTL:
-umrs-client job cancel <job_id>
+Force-clean endpoints, stale S3 objects, or database tables. The janitor
+handles TTL-based cleanup automatically, but sometimes you want immediate
+teardown:
+
+```bash
+# Teardown a specific endpoint:
+umrs-client job submit cleanup \
+    --spec '{"target": "endpoint", "job_id": "job-abc123"}' \
+    --project my-project
+
+# Clean stale S3 objects:
+umrs-client job submit cleanup \
+    --spec '{"target": "s3", "bucket": "old-experiment"}' \
+    --project my-project
 ```
 
 ### Cancel a job
@@ -45,69 +72,49 @@ umrs-client job cancel job-abc123def456
 
 ### Query running jobs
 
-Use the existing `status` command — it already covers active task state:
+Use the existing `status` command — no separate job-list needed:
 
 ```bash
 umrs-client status all
-umrs-client status process_objects
 ```
 
-## Service Lifecycle Policy
+## What About the Other Operations?
 
-Controls what happens to backend Slurm/K8s jobs after processing completes.
+| Operation | Why no `job submit` needed |
+|-----------|--------------------------|
+| Embedding computation | Automatic via `upload_file`/`upload_dir` → `PROCESS_OBJECTS` |
+| Model download | Dedicated `umrs-client model download` command |
+| Re-embed with new model | `umrs-client recompute` / `umrs-client update` maintenance commands |
 
-| Mode | Node hours | Cold start | Use case |
-|------|-----------|-----------|----------|
-| `auto_release` (default) | Saved | Every time | One-off or infrequent processing |
-| `keep_alive` | Consumed until TTL/cancel | Only first time | Successive batch processing |
+## Service Lifecycle
 
-**Server-wide default** (env var):
+Controls what happens to Slurm/K8s jobs after upload-triggered processing completes.
+
+| Mode | Behavior | Use case |
+|------|----------|----------|
+| `auto_release` (default) | `scancel` after last thread finishes | One-off processing, save node hours |
+| `keep_alive` | Keep running until TTL or cancel | Successive/frequent batch processing |
+
 ```bash
-# Default: cancel Slurm/K8s jobs after processing (saves node hours)
-export UMRS_SERVICE_LIFECYCLE=auto_release
+# Server-wide (env var):
+export UMRS_SERVICE_LIFECYCLE=auto_release   # default
+export UMRS_SERVICE_LIFECYCLE=keep_alive     # for frequent processing
 
-# Alternative: keep services running for reuse
-export UMRS_SERVICE_LIFECYCLE=keep_alive
-```
-
-**Per-job override** (CLI flag):
-```bash
+# Per-job (endpoint_provision only):
 umrs-client job submit endpoint_provision --spec '...' --keep-alive
 ```
-
-## Job Types
-
-| Type | Description |
-|------|-------------|
-| `index_build` | Build RAG index from dataset |
-| `embedding_batch` | Batch embedding computation |
-| `pipeline_run` | Execute ingestion pipeline |
-| `endpoint_provision` | Provision Mini-RiVault endpoint |
-| `model_download` | Download model weights |
-| `cleanup` | Delete resources |
 
 ## Job Lifecycle
 
 ```
-PLANNED → QUEUED → RUNNING → COMPLETED
-                          ↘ FAILED (retry → RUNNING)
-                          ↘ CANCELLED
+QUEUED → RUNNING → COMPLETED
+                ↘ FAILED (retry → RUNNING)
+                ↘ CANCELLED
 ```
 
-Each job tracks multiple **attempts**, with automatic retry on failure.
-
-## How It Works
-
-- Client sends `JOB_SUBMIT` and `JOB_CANCEL` over ZeroMQ
-- Server handles via `job_tracking_handler.py`
-- Jobs are stored in `~/.config/umrs/jobs.json` (lightweight mode)
-- For production: `jobs/store.py` provides PostgreSQL-backed persistence
-  with advisory locks, crash reconciliation, and multi-instance support
-- To **query** running jobs, use `umrs-client status all` (reads from the
-  in-memory UMRSThreads store — adding a separate JOB_STATUS would duplicate it)
-- **Auto-release**: When the last processing thread finishes and
-  `UMRS_SERVICE_LIFECYCLE=auto_release` (default), the server runs `scancel`
-  on all cached Slurm jobs, tears down SSH tunnels, and frees node hours
+Jobs are stored in `~/.config/umrs/jobs.json` (lightweight mode).
+For production: `jobs/store.py` provides PostgreSQL-backed persistence
+with advisory locks, crash reconciliation, and multi-instance support.
 
 ## Run Demo
 

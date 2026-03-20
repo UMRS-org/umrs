@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Demo 09: Job Tracking via ZeroMQ
-# Shows: job submit, job cancel, --keep-alive lifecycle policy
+# Demo 09: Job Submission & Service Lifecycle
+# Shows: endpoint_provision, index_build, cleanup, --keep-alive, cancel
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIENT="umrs-client"
 SERVER_IP="${UMRS_SERVER_IP:-127.0.0.1}"
 
-echo "=== Demo 09: Job Tracking via ZeroMQ ==="
+echo "=== Demo 09: Job Submission & Service Lifecycle ==="
 echo ""
 
 # Step 0: Check server connectivity
@@ -16,30 +16,32 @@ echo "--- Step 0: Ping server ---"
 ${CLIENT} --server-ip "${SERVER_IP}" ping
 echo ""
 
-# Step 1: Check current task state (use status, not job list)
-echo "--- Step 1: Check current task status ---"
-echo "  Tip: 'umrs-client status all' shows running tasks from the in-memory store"
-echo ""
-
-# Step 2: Submit an embedding batch job
-echo "--- Step 2: Submit embedding_batch job ---"
-RESULT=$(${CLIENT} --server-ip "${SERVER_IP}" job submit embedding_batch \
-    --spec '{"bucket": "demo-bucket", "model": "e5-base-v2"}' \
-    --project demo --max-attempts 3)
+# Step 1: Pre-warm an endpoint (avoids cold start on first upload)
+echo "--- Step 1: Pre-warm endpoint (endpoint_provision --keep-alive) ---"
+RESULT=$(${CLIENT} --server-ip "${SERVER_IP}" job submit endpoint_provision \
+    --spec '{"model": "sam3", "backend": "slurm"}' \
+    --project demo --keep-alive)
 echo "${RESULT}"
 JOB_ID=$(echo "${RESULT}" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('job',{}).get('job_id',''))" 2>/dev/null || echo "")
 echo ""
 
-# Step 3: Submit a second job with --keep-alive (keeps backend running for reuse)
-echo "--- Step 3: Submit pipeline_run job with --keep-alive ---"
-${CLIENT} --server-ip "${SERVER_IP}" job submit pipeline_run \
-    --spec '{"pipeline": "image-analysis", "input": "s3://images/"}' \
-    --project demo --keep-alive
+# Step 2: Rebuild RAG index after bulk inserts
+echo "--- Step 2: Rebuild RAG index (index_build) ---"
+${CLIENT} --server-ip "${SERVER_IP}" job submit index_build \
+    --spec '{"database": "xp_demo", "table": "text_embeddings"}' \
+    --project demo
 echo ""
 
-# Step 4: Cancel the first job
+# Step 3: Request cleanup of stale resources
+echo "--- Step 3: Cleanup stale resources ---"
+${CLIENT} --server-ip "${SERVER_IP}" job submit cleanup \
+    --spec '{"target": "endpoint", "job_id": "job-stale000000"}' \
+    --project demo
+echo ""
+
+# Step 4: Cancel the pre-warmed endpoint (release node hours)
 if [ -n "${JOB_ID}" ]; then
-    echo "--- Step 4: Cancel job ${JOB_ID} ---"
+    echo "--- Step 4: Cancel pre-warmed endpoint ${JOB_ID} ---"
     ${CLIENT} --server-ip "${SERVER_IP}" job cancel "${JOB_ID}"
     echo ""
 else
