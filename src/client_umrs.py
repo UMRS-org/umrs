@@ -319,11 +319,13 @@ def main():
     # model list
     model_sub.add_parser('list', help='List registered models')
 
-    # model download
-    md_p = model_sub.add_parser('download', help='Download a model from HuggingFace')
+    # model download (client-side: downloads locally, then registers with server)
+    md_p = model_sub.add_parser('download', help='Download model from HuggingFace to local disk, then register with UMRS')
     md_p.add_argument('repo_id', help='HuggingFace repository ID (e.g., intfloat/e5-base-v2)')
     md_p.add_argument('--name', default=None, help='Local name (defaults to repo basename)')
     md_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
+    md_p.add_argument('--staging-dir', default=None,
+                       help='Directory to store downloaded model (default: ~/.config/umrs/models/ or UMRS_MODEL_STAGING_ROOT)')
 
     # --- Job tracking commands ---
     job_p = subparsers.add_parser('job', help='Job commands (submit, cancel); use \'status\' to query running jobs')
@@ -413,13 +415,43 @@ def main():
                 elif model_action == 'list':
                     raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_LIST)
                 elif model_action == 'download':
-                    target_name = args.name or args.repo_id.split("/")[-1]
+                    # Client-side download: runs on the login node, then registers with server
+                    target_name = args.name or args.repo_id.split('/')[-1]
+                    staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
+                    if not staging_root:
+                        from umrs.config import get_default_umrs_cfg_dir
+                        staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
+                    target_path = os.path.join(staging_root, target_name)
+
+                    # Step 1: Download locally
+                    if os.path.exists(target_path) and os.listdir(target_path):
+                        print(f'Model already exists at {target_path}, skipping download.')
+                    else:
+                        try:
+                            from huggingface_hub import snapshot_download
+                        except ImportError:
+                            print(api_json(status='error', message='huggingface_hub not installed. Run: pip install huggingface_hub', output_format=args.output))
+                            control_mq.close()
+                            sys.exit(1)
+                        print(f'Downloading {args.repo_id} to {target_path} ...')
+                        os.makedirs(target_path, exist_ok=True)
+                        snapshot_download(
+                            repo_id=args.repo_id,
+                            local_dir=target_path,
+                            token=os.environ.get('HF_TOKEN'),
+                        )
+                        print(f'Download complete: {target_path}')
+
+                    # Step 2: Register with server via ZMQ
                     payload = _json.dumps({
-                        "repo_id": args.repo_id,
-                        "name": target_name,
-                        "scope": args.scope,
+                        'name': target_name,
+                        'path': os.path.abspath(target_path),
+                        'model_type': 'embedding',
+                        'scope': args.scope,
+                        'huggingface_id': args.repo_id,
+                        'description': f'Downloaded from {args.repo_id}',
                     })
-                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_DOWNLOAD, payload)
+                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
                 else:
                     print(api_json(status='error', message=f'Unknown model action: {model_action}', output_format=args.output))
                     control_mq.close()

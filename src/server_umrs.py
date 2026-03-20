@@ -935,7 +935,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 thread_ident = task_manager.active_threads.launch_export_embeddings(client_id, export_args, buckets_cfg, control_mq, zmq_sender_id, cmd.lower(), update_status_callback=update_status_func)
                 task_manager.associate_thread_with_task(thread_ident, task_id)
 
-            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD):
+            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST):
                 client_id, payload_str, zmq_sender_id = payload
                 response_json = handle_model_command(cmd, client_id, payload_str)
                 try:
