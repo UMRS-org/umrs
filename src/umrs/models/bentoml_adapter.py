@@ -69,7 +69,7 @@ def make_bentoml_vision_compute(client, model_type, model_config):
             task_id = client.submit(
                 "infer",
                 model_type=model_type,
-                model_config=model_config,
+                inference_config=model_config,
                 image_url=image_url,
                 output_bucket=output_bucket,
             )

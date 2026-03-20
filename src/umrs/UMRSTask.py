@@ -120,38 +120,39 @@ class UMRSTask:
 
         # Count total tasks first (for display)
         total_count = 0
-        if limit:
-            count_query = "SELECT COUNT(*) FROM tasks WHERE 1=1"
-            count_params = []
+        with self.conn_lock:
+            if limit:
+                count_query = "SELECT COUNT(*) FROM tasks WHERE 1=1"
+                count_params = []
+                if status_filter:
+                    count_query += " AND status = ?"
+                    count_params.append(status_filter)
+                if client_id_filter:
+                    count_query += " AND client_id = ?"
+                    count_params.append(client_id_filter)
+                try:
+                    row = self.conn.execute(count_query, count_params).fetchone()
+                    total_count = (row[0] or 0) if row else 0
+                except Exception:
+                    total_count = 0
+
+            query = "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at FROM tasks WHERE 1=1"
+            params = []
+
             if status_filter:
-                count_query += " AND status = ?"
-                count_params.append(status_filter)
+                query += " AND status = ?"
+                params.append(status_filter)
             if client_id_filter:
-                count_query += " AND client_id = ?"
-                count_params.append(client_id_filter)
-            try:
-                row = self.conn.execute(count_query, count_params).fetchone()
-                total_count = row[0] if row else 0
-            except Exception:
-                total_count = 0
+                query += " AND client_id = ?"
+                params.append(client_id_filter)
 
-        query = "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at FROM tasks WHERE 1=1"
-        params = []
+            query += " ORDER BY id DESC"
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
 
-        if status_filter:
-            query += " AND status = ?"
-            params.append(status_filter)
-        if client_id_filter:
-            query += " AND client_id = ?"
-            params.append(client_id_filter)
-
-        query += " ORDER BY id DESC"
-        if limit:
-            query += " LIMIT ?"
-            params.append(limit)
-
-        cur = self.conn.execute(query, params)
-        rows = cur.fetchall()
+            cur = self.conn.execute(query, params)
+            rows = cur.fetchall()
 
         # Reverse to show oldest-first within the limited set
         rows = list(reversed(rows))
@@ -306,8 +307,9 @@ class UMRSTask:
             query += " AND client_id = ?"
             params.append(client_id)
 
-        cur = self.conn.execute(query, params)
-        rows = cur.fetchall()
+        with self.conn_lock:
+            cur = self.conn.execute(query, params)
+            rows = cur.fetchall()
 
         return [
             {
