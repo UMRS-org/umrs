@@ -529,8 +529,6 @@ def launch_rivault_model(model_cfg):
             )
 
         vision_model_config = dict(model_cfg.get("vision_model_config", {}))
-        if vision_model_type == "hmae" and "mode" not in vision_model_config:
-            vision_model_config["mode"] = model_cfg.get("mode", "reconstruct")
 
         compute_func = make_bentoml_vision_compute(
             client, vision_model_type, vision_model_config,
@@ -540,7 +538,7 @@ def launch_rivault_model(model_cfg):
         vector_size = model_cfg.get("vector_size", "768")
         return_type = model_cfg.get("return_type", "file")
         modality = model_cfg.get("_modality", "")
-        input_type = "raw_image" if vision_model_type == "hmae" else "image"
+        input_type = model_cfg.get("input_type", "image")
 
         model = load_model_as_bentoml(model_name, return_type, vector_size, input_type, compute_func, modality)
 

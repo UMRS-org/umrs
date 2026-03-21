@@ -83,6 +83,8 @@
             "model_name": "Hierarchical Masked Autoencoder",
             "vector_size": "768",
             "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "hmae",
+            "vision_model_config": { "mode": "reconstruct" },
             "return_type": "file"
           },
           "sql": {
@@ -138,7 +140,8 @@
             "model_name": "HMAE Full Reconstruction",
             "vector_size": "768",
             "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
-            "mode": "reconstruct",
+            "vision_model_type": "hmae",
+            "vision_model_config": { "mode": "reconstruct" },
             "return_type": "file"
           },
           "sql": {
@@ -166,7 +169,8 @@
             "model_name": "HMAE Masked Reconstruction",
             "vector_size": "768",
             "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
-            "mode": "mae",
+            "vision_model_type": "hmae",
+            "vision_model_config": { "mode": "mae" },
             "return_type": "file"
           },
           "sql": {
@@ -194,7 +198,8 @@
             "model_name": "HMAE Feature Extraction",
             "vector_size": "768",
             "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
-            "mode": "features",
+            "vision_model_type": "hmae",
+            "vision_model_config": { "mode": "features" },
             "return_type": "file"
           },
           "sql": {
