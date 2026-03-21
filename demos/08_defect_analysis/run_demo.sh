@@ -44,7 +44,7 @@ run_cmd() {
 }
 
 # ──────────────────────────────────────────────────────────────────────────
-step "1/5  Preflight checks"
+step "1/6  Preflight checks"
 # ──────────────────────────────────────────────────────────────────────────
 
 run_cmd podman exec "$UMRS_CLIENT_CONTAINER" umrs-client ping || \
@@ -56,7 +56,20 @@ run_cmd podman exec "$UMRS_CLIENT_CONTAINER" umrs-client reload || warn "reload 
 sleep 3  # brief pause for server to process reload
 
 # ──────────────────────────────────────────────────────────────────────────
-step "2/5  Check test images"
+step "2/6  Prepare SAM3 model"
+# ──────────────────────────────────────────────────────────────────────────
+
+# Download SAM3 model from HuggingFace via umrs-client.
+# Uses server-side download (runs on the server where /shared/models is mounted).
+SAM3_REPO="${SAM3_MODEL_REPO:-facebook/sam2-hiera-small}"
+info "Requesting model download: $SAM3_REPO"
+run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
+    umrs-client model download "$SAM3_REPO" --name sam3 \
+    --scope system --server-side 2>&1 | while IFS= read -r line; do info "  $line"; done
+ok "SAM3 model download accepted."
+
+# ──────────────────────────────────────────────────────────────────────────
+step "3/6  Check test images"
 # ──────────────────────────────────────────────────────────────────────────
 
 # Use test images already mounted in the container (shared with demos 02/03)
@@ -76,7 +89,7 @@ podman exec "$UMRS_CLIENT_CONTAINER" bash -c \
 info "Selected $(podman exec "$UMRS_CLIENT_CONTAINER" ls "$CONTAINER_UPLOAD" | wc -l) of $image_count available test images"
 
 # ──────────────────────────────────────────────────────────────────────────
-step "3/5  Upload images via umrs-client"
+step "4/6  Upload images via umrs-client"
 # ──────────────────────────────────────────────────────────────────────────
 
 # Upload via umrs-client (server detects new objects and processes them automatically)
@@ -86,7 +99,7 @@ run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
 ok "Images uploaded. Server will launch Rivault/BentoML and process automatically."
 
 # ──────────────────────────────────────────────────────────────────────────
-step "4/5  Download results"
+step "5/6  Download results"
 # ──────────────────────────────────────────────────────────────────────────
 
 mkdir -p "${RESULTS_DIR}"
@@ -107,7 +120,7 @@ run_cmd podman cp "$UMRS_CLIENT_CONTAINER:$CONTAINER_RESULTS/." "$RESULTS_DIR/"
 ok "Results saved to ${RESULTS_DIR}/"
 
 # ──────────────────────────────────────────────────────────────────────────
-step "5/5  Summary"
+step "6/6  Summary"
 # ──────────────────────────────────────────────────────────────────────────
 
 ls -lh "${RESULTS_DIR}/"

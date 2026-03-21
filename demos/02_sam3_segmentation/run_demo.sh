@@ -41,9 +41,23 @@ run_cmd podman exec "$UMRS_CLIENT_CONTAINER" umrs-client ping || \
 run_cmd podman exec "$UMRS_CLIENT_CONTAINER" umrs-client reload || warn "reload failed"
 sleep 3  # brief pause for server to process reload
 
-# ---------- Step 2: Check for test images ----------
+# ---------- Step 2: Prepare SAM3 model ----------
 log ""
-log "Step 2: Checking test images..."
+log "Step 2: Preparing SAM3 model weights..."
+# Download SAM3 model (facebook/sam2-hiera-small) from HuggingFace.
+# Two download modes are available:
+#   Client-side (default):  downloads on the client, writes to shared volume
+#   Server-side (--server-side): sends request to server, downloads in background
+# The UMRS_MODEL_STAGING_ROOT env var points to /shared/models (shared volume).
+SAM3_REPO="${SAM3_MODEL_REPO:-facebook/sam2-hiera-small}"
+run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
+    umrs-client model download "$SAM3_REPO" --name sam3 \
+    --scope system 2>&1 | while IFS= read -r line; do log "  $line"; done
+log "SAM3 model ready."
+
+# ---------- Step 3: Check for test images ----------
+log ""
+log "Step 3: Checking test images..."
 # Test images are mounted into the container at /opt/test_data/images/ via docker-compose
 CONTAINER_TEST_DATA="/opt/test_data/images"
 image_count=$(podman exec "$UMRS_CLIENT_CONTAINER" \
@@ -56,9 +70,9 @@ else
     die "No test images available"
 fi
 
-# ---------- Step 3: Upload images via umrs-client ----------
+# ---------- Step 4: Upload images via umrs-client ----------
 log ""
-log "Step 3: Uploading images to UMRS bucket '$BUCKET_ALIAS'..."
+log "Step 4: Uploading images to UMRS bucket '$BUCKET_ALIAS'..."
 
 # Upload via umrs-client (server detects new objects and processes them automatically)
 run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
@@ -67,9 +81,9 @@ run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
 log "  Images uploaded. Server will launch Rivault/BentoML and process automatically."
 UPLOAD_DONE=$SECONDS
 
-# ---------- Step 4: Download results ----------
+# ---------- Step 5: Download results ----------
 log ""
-log "Step 4: Downloading results..."
+log "Step 5: Downloading results..."
 log "  The download_results command will poll the server until processing is complete."
 log "  This may take several minutes if the server is launching Rivault/BentoML for the first time."
 RESULTS_DIR="$SCRIPT_DIR/results"

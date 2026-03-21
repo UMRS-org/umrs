@@ -105,6 +105,8 @@ services:
       # directory so that the worker can reuse downloaded weights.
       - SENTENCE_TRANSFORMERS_HOME=${SENTENCE_TRANSFORMERS_HOME:-/shared/models/sentence_transformers}
       - HF_HOME=${HF_HOME:-/shared/models/hf}
+      # Model staging (server-side download writes here)
+      - UMRS_MODEL_STAGING_ROOT=${UMRS_MODEL_STAGING_ROOT:-/shared/models}
       # RAG service (started if UMRS_RAG_ENABLE=1)
       - UMRS_RAG_ENABLE=${UMRS_RAG_ENABLE:-0}
       - UMRS_RAG_PORT=${UMRS_RAG_PORT:-8081}
@@ -222,11 +224,15 @@ services:
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      # Model staging (client-side download writes here, shared with ai-login)
+      - UMRS_MODEL_STAGING_ROOT=/shared/models
     volumes:
       - ../../src:/opt/umrs:ro
       - ./test_data:/opt/test_data:ro
       - ../../data/img:/opt/rag_data/images:ro
       - ./scripts:/opt/scripts:ro
+      # Shared model storage (same host directory as ai-login)
+      - ${MODEL_PATH:-../../src/umrs/rivault/models}:/shared/models:rw
       # UMRS configuration files
       - ./conf_umrs.json:/root/conf_umrs.json:ro
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro
