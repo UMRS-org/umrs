@@ -270,7 +270,7 @@ class UMRSTask:
                     (TaskStatus.ABORTED, now, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN, TaskStatus.NO_SUCH_BUCKET)
                 )
  
-    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True):
+    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, task_id_filter=None, print_output=True):
         """
         Pretty-print tasks from the database.
         Can filter by status or client_id.
@@ -285,6 +285,9 @@ class UMRSTask:
         if client_id_filter:
             query += " AND client_id = ?"
             params.append(client_id_filter)
+        if task_id_filter:
+            query += " AND id = ?"
+            params.append(task_id_filter)
 
         with self.conn_lock:
             with self.conn:
@@ -306,7 +309,7 @@ class UMRSTask:
         else:
             headers = ["ID", "Client ID", "Command", "Payload", "Status", "Submitted At", "Updated At"]
             table = tabulate(wrapped_rows, headers, tablefmt="fancy_grid")
-            message = "Tasks in DB:\n" + table
+            message = "Task(s) with updated status:\n" + table
 
         if print_output:
             print(message)
@@ -422,7 +425,7 @@ class UMRSTask:
                     raise
 
         # Print tasks
-        self.pretty_print_tasks()
+        self.pretty_print_tasks(task_id_filter=task_id)
     
     def get_tasks(
         self,
