@@ -70,7 +70,87 @@ After a successful run:
 - CSV file at `./embeddings.csv` with columns: `id`, `s3_key`, `embedding`, etc.
 - Status shows all `process_objects` tasks as `Done`
 
+---
+
+## Custom Embedding with `user_script://`
+
+Instead of using a built-in embedding model (e.g. `intfloat/e5-base-v2`), you
+can provide your **own embedding pipeline** using the Pipeline SDK.
+
+### Example: Word-Count Embedding
+
+The `custom_embedding/` directory contains a complete working example:
+
+| File | Description |
+|------|-------------|
+| `word_count_step.py` | `Step` that tokenizes text and produces 128-d word-count vectors |
+| `workflow.json` | Pipeline definition pointing to the step |
+
+### How to use it
+
+1. Update the `source.path` in `workflow.json` to point to the directory
+   containing your step files:
+
+```json
+{
+    "source": {
+        "type": "local_path",
+        "path": "/home/user/custom_embedding"
+    }
+}
+```
+
+2. Set `model_type` in your user config to reference the workflow:
+
+```json
+{
+    "modality_name": "text",
+    "model": {
+        "model_name": "Word Count Embeddings",
+        "model_type": "user_script:///home/user/custom_embedding/workflow.json",
+        "vector_size": "128",
+        "return_type": "vector"
+    }
+}
+```
+
+3. Upload text files and process as usual:
+
+```bash
+umrs-client -c conf_umrs.json upload_dir ./test_data/ my-bucket
+umrs-client -c conf_umrs.json status all
+```
+
+### Writing your own step
+
+See [Demo 07: User-Defined Model](../07_user_model/README.md) for the full
+`Step` API reference. In short:
+
+```python
+from umrs.pipeline_sdk import Step, StepContext, StepResult
+import numpy as np
+
+class MyEmbeddingStep(Step):
+    name = "my_embedding"
+
+    def setup(self, config: dict) -> None:
+        # Load your model, tokenizer, etc.
+        ...
+
+    def run(self, ctx: StepContext) -> StepResult:
+        vectors = []
+        for key in ctx.input_keys:
+            data = ctx.download_bytes(key)
+            vec = self._encode(data)      # your encoding logic
+            vectors.append(vec)
+        return StepResult(
+            output_keys=ctx.input_keys,
+            embeddings=np.stack(vectors),  # shape (N, D)
+        )
+```
+
 ## See Also
 
 - [User Guide](../../doc/user_guide.md) — full client documentation
 - [Demo 02: SAM3](../02_sam3_segmentation/README.md) — image segmentation demo
+- [Demo 07: User-Defined Model](../07_user_model/README.md) — full Step API reference

@@ -144,6 +144,18 @@ Step pipeline that can be executed in any supported mode:
 ## See Also
 
 - [Demo 03: HMAE Inference](../03_hmae_inference/README.md) — single-mode HMAE via umrs-client
-- [Demo 05: User Model](../05_user_model/README.md) — Step framework introduction
-- [Demo 06: Defect Analysis](../06_defect_analysis/README.md) — multi-step pipeline with SAM3 + HMAE
+- [Demo 07: User-Defined Model](../07_user_model/README.md) — Step framework introduction + custom vision adapters
+- [Demo 08: Defect Analysis](../08_defect_analysis/README.md) — multi-step pipeline with SAM3 + HMAE
 - [UDM Design Doc](../../doc/design_user_defined_models.md) — Step specification
+
+## Vision Adapter Architecture
+
+All three steps call the BentoML vision service using `model_type: "hmae"`.
+This adapter is loaded from `rivault/default_adapters/hmae_adapter.py` via
+auto-discovery — the same mechanism users can leverage for their own models.
+
+To replace the HMAE adapter or add custom vision processing:
+
+1. Write a `VisionModelAdapter` subclass (see [Demo 07](../07_user_model/README.md))
+2. Place it in `USER_ADAPTERS_DIR` with optional `requirements.txt`
+3. Update `workflow.json` to reference your adapter's `model_type`

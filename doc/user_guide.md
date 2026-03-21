@@ -228,15 +228,49 @@ umrs-client -c conf_umrs.json reload
 
 To add a new model or modality:
 
-1. **Pre-stage model weights** on the shared filesystem (coordinate with admin)
+1. **Pre-stage model weights** on the shared filesystem (or use an existing
+   model already deployed by admin)
 2. **Add a modality entry** in your user config JSON
-3. **Register the model** in `vision_models.json` (for vision) or set
-   `model_type` to an appropriate scheme (`openai://`, `bentoml://`)
+3. **Set `model_type`** to an appropriate scheme (`openai://`, `bentoml://`,
+   or `user_script://` for custom pipelines)
 4. **Reload** the server: `umrs-client -c conf_umrs.json reload`
 
-For custom vision models, the admin adds them to the Mini-Rivault
-`bentoml-vision` service and pre-stages weights. All vision inference is
-sandboxed inside Mini-Rivault — no direct GPU access from the client.
+### Custom Embedding Pipelines (`user_script://`)
+
+You can run your own embedding/processing code without modifying UMRS:
+
+1. Write a `Step` subclass (see §8 below)
+2. Create a `workflow.json` pointing to your scripts
+3. Set `model_type` to `user_script:///path/to/workflow.json` in your config
+
+No admin changes required. See [Demo 01](../demos/01_text_embedding/README.md)
+for a custom text embedding example, or [Demo 07](../demos/07_user_model/README.md)
+for the full API reference.
+
+### Custom Vision Adapters (`VisionModelAdapter`)
+
+For GPU inference models running in the BentoML vision service:
+
+1. Write a Python file with a `VisionModelAdapter` subclass
+2. Place it (+ optional `requirements.txt`) in your adapter directory
+3. Set `USER_ADAPTERS_DIR` before starting the Slurm job:
+   ```bash
+   export USER_ADAPTERS_DIR=/home/user/my_adapters
+   ```
+4. Reference your adapter's name as `vision_model_type` in the model config
+
+The adapter is auto-registered by filename stem (e.g. `my_model.py` →
+`model_type="my_model"`). Built-in adapters (SAM3, HMAE) use the same
+mechanism — they ship as `.py` files in `rivault/default_adapters/`.
+
+If your adapter needs model weights, mount them via `USER_MODEL_PATH`:
+```bash
+export USER_MODEL_PATH=/home/user/model_weights
+```
+Inside the container, they are available at `/models/user/`.
+
+See [Demo 07](../demos/07_user_model/README.md) for a complete example
+(`example_adapters/grayscale_adapter.py`).
 
 ## Quick Reference
 

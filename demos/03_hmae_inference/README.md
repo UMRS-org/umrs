@@ -112,18 +112,34 @@ Example entry for full reconstruction:
 }
 ```
 
+## Adapter Architecture
+
+The HMAE model is loaded as a **pluggable adapter** (`hmae_adapter.py`) — the
+same mechanism used for all vision models including SAM3 and user-provided adapters.
+
+At container startup, the BentoML vision service scans directories listed in
+`VISION_ADAPTERS_DIR` and auto-registers every `VisionModelAdapter` subclass.
+Built-in adapters ship in `rivault/default_adapters/` and are loaded via the
+same auto-discovery mechanism as user adapters.
+
+See [Demo 07: User-Defined Model](../07_user_model/README.md) for writing
+your own VisionModelAdapter.
+
 ## BentoML Task Queue API
+
+All vision models use the unified `/infer` endpoint:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/vision/hmae_reconstruct/submit` | POST | Submit HMAE task |
-| `/vision/hmae_reconstruct/status` | GET | Check task status |
-| `/vision/hmae_reconstruct/get` | GET | Retrieve result |
-| `/vision/hmae_reconstruct/cancel` | POST | Cancel pending task |
-| `/vision/hmae_reconstruct/retry` | PUT | Retry failed task |
+| `/vision/infer/submit` | POST | Submit inference task (any model_type) |
+| `/vision/infer/status` | GET | Check task status |
+| `/vision/infer/get` | GET | Retrieve result |
+| `/vision/infer/cancel` | POST | Cancel pending task |
+| `/vision/infer/retry` | PUT | Retry failed task |
 
 ## See Also
 
 - [Admin Guide](../../doc/admin_guide.md) — deploying vision models
 - [Demo 02: SAM3](../02_sam3_segmentation/README.md) — segmentation demo
+- [Demo 07: User-Defined Model](../07_user_model/README.md) — custom adapters and pipelines
 - [Mini-Rivault README](../../src/umrs/rivault/README.md) — inference stack details

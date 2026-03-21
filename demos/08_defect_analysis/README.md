@@ -217,5 +217,21 @@ and anomaly detection as separate stages.
 | "BentoML health check failed" | Start Mini-Rivault: `bash demos/00_start_services/start_all.sh` |
 | "SAM3 returned 0 objects" | Try a different `PROMPT` (e.g. "structure", "region", "object") |
 | Step 3 times out | Increase `timeout` in workflow.json or set `TIMEOUT=600` |
-| No UMAP available | Install: `pip install umap-learn`. PCA is used as fallback. |
-| Import error for steps | Ensure UMRS is installed: `pip install -e src/` |
+| No UMAP available | Install: `uv pip install umap-learn`. PCA is used as fallback. |
+| Import error for steps | Ensure UMRS is installed: `uv pip install -e src/` |
+
+## Vision Adapter Architecture
+
+Steps 1 and 3 call the BentoML vision service using `model_type: "sam3"` and
+`model_type: "hmae"` respectively.  These correspond to **adapter files** loaded
+from `rivault/default_adapters/` at container startup via the same auto-discovery
+mechanism available to user-provided adapters.
+
+To use a different vision model:
+
+1. Write a `VisionModelAdapter` subclass (see [Demo 07](../07_user_model/README.md))
+2. Place it in `USER_ADAPTERS_DIR` before starting the Slurm job
+3. Update `workflow.json` step configs to reference your adapter's `model_type`
+
+For custom embeddings (e.g. replacing the HMAE feature extractor with your own
+encoder), see the `user_script://` approach in [Demo 01](../01_text_embedding/README.md).

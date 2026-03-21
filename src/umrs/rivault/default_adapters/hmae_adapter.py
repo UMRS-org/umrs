@@ -10,7 +10,7 @@ from typing import Any, Dict
 import torch
 from PIL import Image
 
-from .base import VisionModelAdapter
+from umrs.vision_service.adapters.base import VisionModelAdapter
 
 logger = logging.getLogger(__name__)
 

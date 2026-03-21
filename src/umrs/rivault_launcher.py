@@ -499,9 +499,10 @@ def launch_rivault_model(model_cfg):
             if url_path.endswith(suffix):
                 url_path = url_path[:-len(suffix)]
                 break
-        # Strip model-specific endpoint name if present (e.g. /sam3_segment, /hmae_reconstruct)
+        # Strip model-specific endpoint name if present — the generic
+        # /infer endpoint is used for all adapter types.
         last_segment = url_path.rsplit("/", 1)[-1]
-        if last_segment in ("sam3_segment", "hmae_reconstruct", "infer"):
+        if last_segment in ("infer",):
             service_base_url = url_path[:url_path.rfind("/" + last_segment)]
         else:
             service_base_url = url_path
@@ -516,16 +517,16 @@ def launch_rivault_model(model_cfg):
 
         from umrs.models.bentoml_adapter import make_bentoml_vision_compute
 
-        # Build model_config for the generic /infer endpoint
+        # Build model_config for the generic /infer endpoint.
+        # vision_model_type must be set explicitly in the model config
+        # (e.g. "sam3", "hmae", or any custom adapter name).
         vision_model_type = model_cfg.get("vision_model_type", "")
         if not vision_model_type:
-            # Auto-detect from the old-style URL path
-            if "hmae" in bentoml_url:
-                vision_model_type = "hmae"
-            elif "sam3" in bentoml_url or "segment" in bentoml_url:
-                vision_model_type = "sam3"
-            else:
-                vision_model_type = "hmae"
+            raise ValueError(
+                "Model config requires 'vision_model_type' field "
+                "(e.g. 'sam3', 'hmae', or a custom adapter name). "
+                f"Config: {model_cfg}"
+            )
 
         vision_model_config = dict(model_cfg.get("vision_model_config", {}))
         if vision_model_type == "hmae" and "mode" not in vision_model_config:

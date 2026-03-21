@@ -494,15 +494,88 @@ Always accept both `"success"` and `"completed"` for backward compatibility.
 |------|-------------|
 | `example_scripts/invert_image.py` | Image inversion step — minimal image I/O example |
 | `example_scripts/text_stats.py` | Text statistics step — word/line/char counts |
+| `example_adapters/grayscale_adapter.py` | Custom VisionModelAdapter — grayscale conversion |
 | `workflow.json` | Image inversion workflow |
 | `workflow_text.json` | Text statistics workflow |
 
+---
+
+## Custom Vision Adapters
+
+In addition to embedding pipelines (`user_script://`), you can add **custom
+vision adapters** to the BentoML vision service without modifying UMRS code.
+
+### How it works
+
+The BentoML vision service scans directories listed in `VISION_ADAPTERS_DIR`
+(colon-separated) for Python files defining `VisionModelAdapter` subclasses.
+Each adapter is registered by filename stem (e.g., `grayscale_adapter.py` →
+`model_type="grayscale_adapter"`).
+
+Built-in adapters (SAM3, HMAE) are loaded from `rivault/default_adapters/`
+using the same mechanism — no special treatment.
+
+### Writing a custom adapter
+
+```python
+# my_adapter.py
+from umrs.vision_service.adapters.base import VisionModelAdapter
+
+class MyAdapter(VisionModelAdapter):
+    def cache_key(self, config):
+        return f"my_model:{config.get('checkpoint', 'default')}"
+
+    def load(self, config):
+        # Load model weights, return opaque model object
+        ...
+
+    def infer(self, model, image, bucket, key, config, s3, output_bucket):
+        # Run inference, upload results to S3, return result dict
+        ...
+```
+
+### Deploying your adapter
+
+1. Place your `.py` file(s) in a directory on the compute node
+2. Optionally add a `requirements.txt` for extra dependencies
+3. Set `USER_ADAPTERS_DIR` before launching the Slurm job:
+
+```bash
+export USER_ADAPTERS_DIR=/home/user/my_adapters
+sbatch serve-model.slurm
+```
+
+4. Use your adapter's `model_type` in requests:
+
+```json
+{
+    "model_type": "my_adapter",
+    "inference_config": {"checkpoint": "/models/user/weights.pth"},
+    "image_url": "s3://bucket/image.png"
+}
+```
+
+### Example: Grayscale adapter
+
+See [`example_adapters/grayscale_adapter.py`](example_adapters/grayscale_adapter.py)
+for a complete working example.
+
+### Two extension models compared
+
+| | Embedding Pipeline (`user_script://`) | Vision Adapter (`VisionModelAdapter`) |
+|--|------|------|
+| **Runs inside** | UMRS server process | BentoML container (GPU) |
+| **Best for** | Multi-step processing pipelines | Single-model GPU inference |
+| **Config** | `workflow.json` + Step classes | Single `.py` file |
+| **Dependencies** | Listed in `workflow.json` | `requirements.txt` in adapter dir |
+| **Model type** | `user_script:///path/to/workflow.json` | Adapter filename stem |
+
 ## See also
 
-- [Demo 06: Defect Analysis](../06_defect_analysis/README.md) — 4-step pipeline: SAM3 → region crop → HMAE → clustering
-- [Demo 07: HMAE Full](../07_hmae_full/README.md) — all 3 HMAE modes as Step pipeline
-- [Step interface source](../../src/umrs/steps/interface.py)
-- [StepContext / StepResult source](../../src/umrs/steps/context.py)
-- [WorkflowExecutor source](../../src/umrs/steps/executor.py)
+- [Demo 08: Defect Analysis](../08_defect_analysis/README.md) — 4-step pipeline: SAM3 → region crop → HMAE → clustering
+- [Demo 09: HMAE Full](../09_hmae_full/README.md) — all 3 HMAE modes as Step pipeline
+- [Step ABC source](../../src/umrs/pipeline_sdk/step.py)
+- [WorkflowPipeline source](../../src/umrs/pipeline_sdk/workflow.py)
+- [VisionModelAdapter base](../../src/umrs/vision_service/adapters/base.py)
 - [Design document](../../doc/design_user_defined_models.md)
 - [Unit tests](../../tests/test_user_steps.py)

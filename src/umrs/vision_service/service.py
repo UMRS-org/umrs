@@ -24,7 +24,9 @@ Environment variables:
     S3_ACCESS_KEY        — S3 access key
     S3_SECRET_KEY        — S3 secret key
     MAX_VISION_MODELS    — LRU model cache capacity (default 3)
-    VISION_ADAPTERS_DIR  — directory of custom adapter .py files (default /adapters)
+    VISION_ADAPTERS_DIR  — colon-separated directories of custom adapter .py
+                           files (default /adapters).  Each directory may also
+                           contain a requirements.txt for auto-installation.
     VISION_ADAPTERS      — comma-separated ``module:ClassName`` entries for
                            custom adapters on the Python path
 """
