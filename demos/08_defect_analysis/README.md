@@ -1,4 +1,4 @@
-# Demo 06: Automated Structural Defect Analysis
+# Demo 08: Automated Structural Defect Analysis
 
 Multi-step UDM (User-Defined Models) workflow that chains SAM3 segmentation,
 HMAE feature extraction, anomaly detection, and unsupervised clustering into a

@@ -1,4 +1,4 @@
-# Demo 10 — Server Maintenance
+# Demo 05 — Server Maintenance
 
 Data integrity and maintenance operations — discover, audit, and repair
 the consistency between S3 objects and the pgvector embedding database.
@@ -7,7 +7,7 @@ the consistency between S3 objects and the pgvector embedding database.
 
 - UMRS server running (see `demos/00_start_services/`)
 - `umrs-client` available
-- At least one user configured with data already uploaded (run Demo 01 first)
+- At least one user configured with data already uploaded (run `demos/01_text_embedding/` first)
 
 ## Commands
 

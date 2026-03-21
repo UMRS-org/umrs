@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Demo 09: Job Submission & Service Lifecycle
+# Demo 10: Job Submission & Service Lifecycle
 # Shows: endpoint_provision, index_build, cleanup, --keep-alive, cancel
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIENT="umrs-client"
 SERVER_IP="${UMRS_SERVER_IP:-127.0.0.1}"
 
-echo "=== Demo 09: Job Submission & Service Lifecycle ==="
+echo "=== Demo 10: Job Submission & Service Lifecycle ==="
 echo ""
 
 # Step 0: Check server connectivity
@@ -49,4 +49,4 @@ else
     echo ""
 fi
 
-echo "=== Demo 09 Complete ==="
+echo "=== Demo 10 Complete ==="

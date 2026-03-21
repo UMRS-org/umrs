@@ -106,4 +106,4 @@ Results can be written to multiple destinations:
 
 - Plugin source: `src/umrs/plugins/`
 - Pipeline SDK: `demos/11_pipeline_sdk/` (alternative for in-process pipelines)
-- Model registry: `demos/08_model_registry/`
+- Model registry: `demos/06_model_registry/`

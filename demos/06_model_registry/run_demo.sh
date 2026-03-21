@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Demo 08: Model Registration & Staging
+# Demo 06: Model Registration & Staging
 # Shows: model register, model list, model download via umrs-client
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIENT="umrs-client"
 SERVER_IP="${UMRS_SERVER_IP:-127.0.0.1}"
 
-echo "=== Demo 08: Model Registration & Staging ==="
+echo "=== Demo 06: Model Registration & Staging ==="
 echo ""
 
 # Step 0: Check server connectivity
@@ -75,4 +75,4 @@ echo "  User models:"
 ${CLIENT} --server-ip "${SERVER_IP}" model list --scope user
 echo ""
 
-echo "=== Demo 08 Complete ==="
+echo "=== Demo 06 Complete ==="

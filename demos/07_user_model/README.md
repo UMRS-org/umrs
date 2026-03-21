@@ -1,4 +1,4 @@
-# Demo 05 — User-Defined Model Workflow
+# Demo 07 — User-Defined Model Workflow
 
 Run custom models and processing pipelines **without modifying UMRS code**.
 You write Python scripts, describe them in a `workflow.json`, and UMRS loads
