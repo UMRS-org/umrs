@@ -6,6 +6,7 @@
         "model_name": "facebook/sam3",
         "vector_size": "256",
         "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+        "vision_model_type": "sam3",
         "return_type": "file"
       }
     }
