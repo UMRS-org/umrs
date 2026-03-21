@@ -203,6 +203,14 @@ class UMRSTask:
             client_id, export_args, _ = full_payload
             str_payload = json.dumps(export_args)
 
+        elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD):
+            client_id, payload_str, _zmq_sender_id = full_payload
+            str_payload = payload_str
+
+        elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
+            client_id, payload_str, _zmq_sender_id = full_payload
+            str_payload = payload_str
+
         elif cmd in (TaskCmd.HAND_CHECK, TaskCmd.CREATE_DATA_QUEUE, TaskCmd.STATUS):
             print(f"We do not create task_id for {cmd=}")
             return None
