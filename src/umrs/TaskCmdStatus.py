@@ -27,7 +27,7 @@ class TaskCmd:
         # Optionally add extra keys that are not class constants
         keys.append("all")
         return tuple(keys)
-    
+
     @classmethod
     def status_cmd(cls):
         return (
@@ -39,7 +39,7 @@ class TaskCmd:
             cls.RELOAD.lower(),
             "all"
         )
-    
+
 class TaskStatus:
     SUBMITTED = "Submitted"
     RUNNING = "Running"
@@ -52,4 +52,3 @@ class TaskStatus:
     ERROR = "Error"
     LAUNCHED = "Launched"
     INITIALIZING = "Initializing"
-    
