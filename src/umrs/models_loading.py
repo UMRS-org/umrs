@@ -1,5 +1,3 @@
-
-import spacy
 import torch 
 
 from typing import Optional
@@ -29,6 +27,7 @@ class UmrsModel:
         else:
             self.compute = None
         if spacy_model:
+            import spacy
             self.nlp = spacy.load(spacy_model, disable=["ner", "tagger", "parser"])
             self.nlp.add_pipe("sentencizer")  # simple sentence seperator
         else:
@@ -51,7 +50,6 @@ def load_model(model_cfg, modality):
     device = None
 
     spacy_model = model_cfg.get("spacy_model", None)
-    model_mode = model_cfg.get("model_mode", None)
     cfg_file = model_cfg.get("model_cfg_file", None)
     checkpoint_path = model_cfg.get("checkpoint_path", None)
 
