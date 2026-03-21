@@ -824,7 +824,8 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
     try:
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
-            task_manager.tasks_status.pretty_print_tasks()
+            if ENABLE_PRETTY_PRINT:
+                task_manager.tasks_status.pretty_print_tasks()
             result = control_mq.server_control_queue_loop()
             if not result:
                 continue
