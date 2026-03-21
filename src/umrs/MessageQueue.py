@@ -250,7 +250,7 @@ class MessageQueue:
             splited_msg = msg.split(":")
 
             cmd = splited_msg[0]
-            if cmd == TaskCmd.HAND_CHECK:  # handshake
+            if cmd == TaskCmd.HANDSHAKE:  # handshake
                 try:
                     self.send_string("READY!", zmq_sender_id)
                 except RuntimeError as e:
@@ -418,7 +418,7 @@ class MessageQueue:
         self.set_timeouts(timeout_ms, timeout_ms)
         try:
             try:
-                self.send_string(TaskCmd.HAND_CHECK)
+                self.send_string(TaskCmd.HANDSHAKE)
                 _, answer = self.recv_string()
                 if answer == "READY!":
                     return True

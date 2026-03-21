@@ -8,6 +8,8 @@ from umrs.TaskCmdStatus import TaskCmd, TaskStatus
 import textwrap
 import threading
 import time
+import logging
+from concurrent.futures import ThreadPoolExecutor
 verbose = False
 if verbose:
     import traceback
@@ -16,15 +18,31 @@ if verbose:
 class UMRSTask:
     def __init__(self, db_path: str = "tasks.db", max_attempts = 3):
         self.db_path = db_path
+        # Configure logging to file
+        logging.basicConfig(
+            filename=os.path.join(os.path.dirname(self.db_path), 'umrs.log'),
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        self.logger = logging.getLogger(__name__)
          # Ensure parent directory exists
         dir_path = os.path.dirname(self.db_path)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
+        self.conn.execute("PRAGMA busy_timeout = 5000")  # 5 seconds timeout for locks
         self.conn_lock = threading.Lock()  # To ensure thread-safe commits
+        self.db_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="DBWorker")  # Single-threaded DB executor
         self._init_db()
         self.mark_running_tasks_aborted()  # They were running it crashes
         self.max_attempts = max_attempts
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.db_executor.shutdown(wait=True)
+        self.close()
 
     def _init_db(self):
         with self.conn_lock:
@@ -297,23 +315,43 @@ class UMRSTask:
     def create_task(self, cmd, full_payload):
         (verbose and traceback.print_stack())
         if cmd == TaskCmd.PROCESS_OBJECTS:
+            if not isinstance(full_payload, tuple) or len(full_payload) != 2:
+                raise ValueError("For PROCESS_OBJECTS, full_payload must be a tuple (client_id, s3_objects)")
             client_id, s3_objects = full_payload
-            str_payload = json.dumps(s3_objects)
+            try:
+                str_payload = json.dumps(s3_objects)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Invalid s3_objects for JSON serialization: {e}")
 
         elif cmd == TaskCmd.WAIT_OUTPUT:
+            if not isinstance(full_payload, tuple) or len(full_payload) != 4:
+                raise ValueError("For WAIT_OUTPUT, full_payload must be a tuple (client_id, output_path_to_bucket, timeout, zmq_sender_id)")
             client_id, output_path_to_bucket, timeout, zmq_sender_id = full_payload
-            str_payload = json.dumps(output_path_to_bucket)
+            try:
+                str_payload = json.dumps(output_path_to_bucket)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Invalid output_path_to_bucket for JSON serialization: {e}")
 
         elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
+            if not isinstance(full_payload, str):
+                raise ValueError(f"For {cmd}, full_payload must be a string (client_id)")
             client_id = full_payload
             str_payload = json.dumps("")
 
         elif cmd == TaskCmd.FILE:
-            client_id, files = full_payload if isinstance(full_payload, tuple) else ("", full_payload)
-            str_payload = json.dumps(files)
+            if not isinstance(full_payload, tuple) or len(full_payload) not in (1, 2):
+                raise ValueError("For FILE, full_payload must be a tuple (client_id, files) or (files,)")
+            if len(full_payload) == 2:
+                client_id, files = full_payload
+            else:
+                client_id, files = "", full_payload[0]
+            try:
+                str_payload = json.dumps(files)
+            except (TypeError, ValueError) as e:
+                raise ValueError(f"Invalid files for JSON serialization: {e}")
 
-        elif cmd in (TaskCmd.HAND_CHECK, TaskCmd.CREATE_DATA_QUEUE, TaskCmd.STATUS):
-            print(f"We do not create task_id for {cmd=}")
+        elif cmd in (TaskCmd.HANDSHAKE, TaskCmd.CREATE_DATA_QUEUE, TaskCmd.STATUS):
+            self.logger.info(f"We do not create task_id for {cmd=}")
             return None
 
         else:
@@ -342,11 +380,13 @@ class UMRSTask:
                 if attempt < self.max_attempts:
                     # first failures sleep and retry
                     time.sleep(0.5)
+                    self.logger.warning(f"SQLite error on attempt {attempt} for add_task: {e}")
                 else:
-                    # last failure Print and raise error properly
-                    print(f"Erreur SQLite critique lors de la mise à jour de la tâche {task_id}:")
-                    print(f"  {type(e).__name__}: {e}")
-                    traceback.print_exc()
+                    # last failure
+                    self.logger.error(f"Critical SQLite error in add_task after {self.max_attempts} attempts: {e}")
+                    if verbose:
+                        import traceback
+                        traceback.print_exc()
                     raise
                         
         return cur.lastrowid
@@ -372,11 +412,13 @@ class UMRSTask:
                 if attempt < self.max_attempts:
                     # first failures sleep and retry
                     time.sleep(0.5)
+                    self.logger.warning(f"SQLite error on attempt {attempt} for update_status: {e}")
                 else:
-                    # last failure Print and raise error properly
-                    print(f"Erreur SQLite critique lors de la mise à jour de la tâche {task_id}:")
-                    print(f"  {type(e).__name__}: {e}")
-                    traceback.print_exc()
+                    # last failure
+                    self.logger.error(f"Critical SQLite error in update_status after {self.max_attempts} attempts: {e}")
+                    if verbose:
+                        import traceback
+                        traceback.print_exc()
                     raise
 
         # Print tasks
@@ -404,11 +446,14 @@ class UMRSTask:
             query += " AND client_id = ?"
             params.append(client_id)
 
-        with self.conn_lock:
-            with self.conn:
-                cur = self.conn.execute(query, params)
-                
-        rows = cur.fetchall()
+        try:
+            with self.conn_lock:
+                with self.conn:
+                    cur = self.conn.execute(query, params)
+                    rows = cur.fetchall()
+        except sqlite3.Error as e:
+            self.logger.error(f"Error in get_tasks: {e}")
+            raise
 
         return [
             {
@@ -426,3 +471,17 @@ class UMRSTask:
     def close(self):
         (verbose and traceback.print_stack())
         self.conn.close()
+        self.db_executor.shutdown(wait=True)
+
+    def health_check(self) -> bool:
+        """Perform a basic health check on the database."""
+        try:
+            with self.conn_lock:
+                with self.conn:
+                    cur = self.conn.execute("SELECT COUNT(*) FROM tasks")
+                    count = cur.fetchone()[0]
+                    self.logger.info(f"Health check passed: {count} tasks in DB")
+                    return True
+        except sqlite3.Error as e:
+            self.logger.error(f"Health check failed: {e}")
+            return False

@@ -7,14 +7,14 @@ class TaskCmd:
     CHECK = "CHECK"
     RELOAD = "RELOAD"
     FILE = "FILE"
-    HAND_CHECK = "HAND_CHECK"
+    HANDSHAKE = "HANDSHAKE"
     CREATE_DATA_QUEUE = "CREATE_DATA_QUEUE"
     STATUS = "STATUS"
 
     @classmethod
     def all_cmd(cls):
         # Collect all class attributes that are strings (ignore methods and magic attributes)
-        keys = [v for k, v in vars(cls).items() if isinstance(v, str)]
+        keys = [v for k, v in vars(cls).items() if not k.startswith("__") and isinstance(v, str)]
         # Optionally add extra keys that are not class constants
         keys.append("all")
         return tuple(keys)
