@@ -52,7 +52,7 @@ class PipelineConfig:
 
     # --- BentoML task-queue backend ---
     bentoml_url: Optional[str] = None           # e.g. http://localhost:3000
-    bentoml_endpoint: Optional[str] = None      # e.g. "sam3_segment"
+    bentoml_endpoint: Optional[str] = None      # e.g. "infer"
 
     # --- S3 ---
     s3_endpoint: Optional[str] = None

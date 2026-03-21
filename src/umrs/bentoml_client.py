@@ -33,7 +33,7 @@ class BentoMLTaskClient:
         """Submit a task to a @bentoml.task endpoint.
 
         Args:
-            endpoint_name: Name of the task endpoint (e.g. "sam3_segment").
+            endpoint_name: Name of the task endpoint (e.g. "infer").
             **kwargs: Arguments to pass to the task function.
 
         Returns:

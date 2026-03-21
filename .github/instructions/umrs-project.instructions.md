@@ -112,31 +112,40 @@ cat /slurm-<N>.out
 Vision models use a double-scheme that separates launch infrastructure from wire protocol:
 
 ```
-rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/<endpoint>/submit
+rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit
 ```
 
 - `rivault://` — requires Slurm job launch + SSH tunnel (handled by `models_loading.py` → `launch_rivault_model()`)
 - `bentoml://` — BentoML async task-queue API (handled inside `launch_rivault_model()`)
 
+The adapter name is specified via the `vision_model_type` config field (e.g. `"sam3"`, `"hmae"`, or any custom adapter name), not derived from the URL path.
+
 ### Routing Flow
 ```
-Config:  rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/sam3_segment/submit
+Config:  rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit
+         vision_model_type: "sam3"          ← adapter registry key
+         vision_model_config: { ... }       ← adapter-specific params
               │
   models_loading.py: rivault:// handler strips prefix, sets type="rivault"
               │
-  model_cfg["model_type"] = "bentoml://http://localhost:{LOCAL_PORT}/vision/sam3_segment/submit"
+  model_cfg["model_type"] = "bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit"
               │
   server_umrs.py dispatches to launch_rivault_model()
               │
   rivault_launcher.py: model_type.startswith("bentoml://") → sbatch with vision-bentoml profile
               │
-  SSH tunnel established, BentoML adapter created, EmbeddingModel returned
+  SSH tunnel established, BentoML adapter created via make_bentoml_vision_compute(),
+  vision_model_type + vision_model_config passed through to /infer endpoint
+              │
+  Vision service dispatches to ADAPTER_REGISTRY[vision_model_type].infer()
 ```
 
-### Endpoint Detection (in `launch_rivault_model()`)
-The endpoint name is derived from the URL path: strip trailing `/submit`, take the last path segment.
-- `.../sam3_segment/submit` → `sam3_segment` → `make_bentoml_sam3_compute()`
-- `.../hmae_reconstruct/submit` → `hmae_reconstruct` → `make_bentoml_hmae_compute(mode=...)`
+### Adapter Discovery
+Adapters are loaded at service startup from directories listed in `VISION_ADAPTERS_DIR` (colon-separated, like `$PATH`):
+- `/adapters/system` — built-in adapters (SAM3, HMAE) from `rivault/default_adapters/`
+- `/adapters/user` — user-provided custom adapters
+
+Each `.py` file is scanned for a `VisionModelAdapter` subclass and registered under the filename stem.
 
 ### RIVAULT_PROFILES Propagation (important)
 `RIVAULT_PROFILES` contains spaces, which are mangled when passed as:
@@ -160,15 +169,16 @@ podman exec ai-login sbatch /root/.config/umrs/rivault_data/serve-model.slurm
 ### Endpoints
 All prefixed with `/vision/` through NGINX at `http://localhost:11434/vision`
 
+The service exposes a single generic `/infer` endpoint that dispatches to adapters based on `model_type`:
+
 | Method | Path | Description |
 |---|---|---|
-| POST | `/sam3_segment/submit` | Submit SAM3 task |
-| GET | `/sam3_segment/status?task_id=...` | Poll status |
-| GET | `/sam3_segment/get?task_id=...` | Get result |
-| POST | `/hmae_reconstruct/submit` | Submit HMAE task |
-| GET | `/hmae_reconstruct/status?task_id=...` | Poll status |
-| GET | `/hmae_reconstruct/get?task_id=...` | Get result |
+| POST | `/infer/submit` | Submit vision task (model_type + inference_config) |
+| GET | `/infer/status?task_id=...` | Poll task status |
+| GET | `/infer/get?task_id=...` | Get task result |
 | GET | `/healthz` | Health check |
+
+The `model_type` field in the request payload selects the adapter (e.g. `"sam3"`, `"hmae"`, or a custom adapter name). The `inference_config` dict is passed through to the adapter's `infer()` method.
 
 ### BentoML Task Status Values
 - `in_progress` — running
