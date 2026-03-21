@@ -224,15 +224,11 @@ services:
       - MINIO_ENDPOINT=${MINIO_ENDPOINT:-minio:9000}
       - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
       - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
-      # Model staging (client-side download writes here, shared with ai-login)
-      - UMRS_MODEL_STAGING_ROOT=/shared/models
     volumes:
       - ../../src:/opt/umrs:ro
       - ./test_data:/opt/test_data:ro
       - ../../data/img:/opt/rag_data/images:ro
       - ./scripts:/opt/scripts:ro
-      # Shared model storage (same host directory as ai-login)
-      - ${MODEL_PATH:-../../src/umrs/rivault/models}:/shared/models:rw
       # UMRS configuration files
       - ./conf_umrs.json:/root/conf_umrs.json:ro
       - ./user_files/user_rivault.json:/root/.config/umrs/users/user_rivault.json:ro

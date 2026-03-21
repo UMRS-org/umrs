@@ -44,16 +44,14 @@ sleep 3  # brief pause for server to process reload
 # ---------- Step 2: Prepare SAM3 model ----------
 log ""
 log "Step 2: Preparing SAM3 model weights..."
-# Download SAM3 model (facebook/sam2-hiera-small) from HuggingFace.
-# Two download modes are available:
-#   Client-side (default):  downloads on the client, writes to shared volume
-#   Server-side (--server-side): sends request to server, downloads in background
-# The UMRS_MODEL_STAGING_ROOT env var points to /shared/models (shared volume).
+# Request server-side download of SAM3 model (facebook/sam2-hiera-small).
+# The UMRS server fetches the model from HuggingFace directly on the HPC node.
+# No shared storage needed between client and server.
 SAM3_REPO="${SAM3_MODEL_REPO:-facebook/sam2-hiera-small}"
 run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
     umrs-client model download "$SAM3_REPO" --name sam3 \
-    --scope system 2>&1 | while IFS= read -r line; do log "  $line"; done
-log "SAM3 model ready."
+    --scope system --server-side 2>&1 | while IFS= read -r line; do log "  $line"; done
+log "SAM3 model download requested."
 
 # ---------- Step 3: Check for test images ----------
 log ""

@@ -36,16 +36,14 @@ log "Server is ready."
 # ---------- Step 2: Prepare embedding model ----------
 log ""
 log "Step 2: Downloading embedding model via umrs-client..."
-# Uses umrs-client model download which:
-#   - Downloads from HuggingFace to $UMRS_MODEL_STAGING_ROOT (/shared/models)
-#   - Registers the model in the UMRS model catalog
-# The --staging-dir ensures the model lands in the shared volume visible to vLLM.
-# If already downloaded, umrs-client skips the download and registers only.
+# Uses server-side download: the client sends a download request to the UMRS
+# server, which fetches the model from HuggingFace directly on the HPC node.
+# This is the normal workflow — the client machine and HPC don't share storage.
 MODEL_REPO="${EMBEDDING_MODEL:-intfloat/e5-base-v2}"
 run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
     umrs-client model download "$MODEL_REPO" \
-    --scope system 2>&1 | while IFS= read -r line; do log "  $line"; done
-log "Embedding model ready."
+    --scope system --server-side 2>&1 | while IFS= read -r line; do log "  $line"; done
+log "Embedding model download requested."
 
 # ---------- Step 3: Upload text data ----------
 log ""
