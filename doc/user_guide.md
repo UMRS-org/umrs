@@ -274,13 +274,13 @@ Run your own models / processing pipelines without modifying UMRS code.
 
 ### 8.1 Write a Step
 
-Create a Python file that inherits `UMRSStep`:
+Create a Python file that inherits `Step`:
 
 ```python
 # my_model.py
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-class DenoiseStep(UMRSStep):
+class DenoiseStep(Step):
     name = "denoise"
 
     def setup(self, config: dict) -> None:

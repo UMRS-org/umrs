@@ -1,39 +1,41 @@
 """
-Tests for the user-defined steps (UDM) subsystem.
+Tests for the unified Pipeline SDK — Step + WorkflowPipeline.
 
 Covers:
   - WorkflowDefinition parsing & validation
-  - ScriptLoader (local path)
-  - WorkflowExecutor step chaining & S3 I/O
-  - UMRSStep ABC contract enforcement
+  - Script loading & step import
+  - WorkflowPipeline step chaining & S3 I/O
+  - Step ABC contract enforcement
+  - StepContext S3 helpers
+  - EmbeddingAdapter contract
 """
 
 from __future__ import annotations
 
 import io
 import json
-import os
-import tempfile
 import textwrap
 from pathlib import Path
 from typing import Any, Dict, List
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
 
-from umrs.steps.context import StepContext, StepResult
-from umrs.steps.executor import WorkflowExecutor
-from umrs.steps.interface import UMRSStep
-from umrs.steps.loader import ScriptLoadError, ScriptLoader
-from umrs.steps.models import (
+from umrs.pipeline_sdk.step import Step, StepContext, StepResult
+from umrs.pipeline_sdk.workflow import (
     OutputSpec,
     ResourceSpec,
+    ScriptLoadError,
     SourceSpec,
     SourceType,
     StepSpec,
     WorkflowDefinition,
+    WorkflowPipeline,
+    load_steps,
+    load_workflow,
 )
+from umrs.pipeline_sdk.adapter import EmbeddingAdapter
 
 
 # =========================================================================
@@ -53,18 +55,16 @@ def _minimal_workflow_dict(**overrides: Any) -> Dict[str, Any]:
     return d
 
 
-class PassthroughStep(UMRSStep):
+class PassthroughStep(Step):
     """Minimal concrete step: copies input keys to output keys."""
-
     name = "passthrough"
 
     def run(self, ctx: StepContext) -> StepResult:
         return StepResult(output_keys=list(ctx.input_keys))
 
 
-class UppercaseStep(UMRSStep):
+class UppercaseStep(Step):
     """Reads text from S3, uppercases it, writes to output bucket."""
-
     name = "uppercase"
 
     def setup(self, config: dict) -> None:
@@ -80,9 +80,8 @@ class UppercaseStep(UMRSStep):
         return StepResult(output_keys=out_keys)
 
 
-class EmbeddingStep(UMRSStep):
+class EmbeddingStep(Step):
     """Produces dummy embeddings."""
-
     name = "embed"
 
     def run(self, ctx: StepContext) -> StepResult:
@@ -93,6 +92,42 @@ class EmbeddingStep(UMRSStep):
             checksums=["abc"] * n,
             metadata=[{"step": "embed"}] * n,
         )
+
+
+# =========================================================================
+# Mock S3
+# =========================================================================
+
+def _mock_s3():
+    """Build a mock S3 client with basic get/put/head support."""
+    store: Dict[str, bytes] = {}
+    s3 = MagicMock()
+
+    def put_object(Bucket, Key, Body, **kw):
+        store[f"{Bucket}/{Key}"] = Body if isinstance(Body, bytes) else Body.encode()
+
+    def get_object(Bucket, Key):
+        full = f"{Bucket}/{Key}"
+        if full not in store:
+            raise Exception(f"NoSuchKey: {full}")
+        data = store[full]
+        body = MagicMock()
+        body.read.return_value = data
+        return {"Body": body, "ETag": '"abc123"', "ContentLength": len(data),
+                "Metadata": {}}
+
+    def head_object(Bucket, Key):
+        full = f"{Bucket}/{Key}"
+        if full not in store:
+            raise Exception(f"NoSuchKey: {full}")
+        return {"ETag": '"abc123"', "ContentLength": len(store[full]),
+                "Metadata": {}}
+
+    s3.put_object = MagicMock(side_effect=put_object)
+    s3.get_object = MagicMock(side_effect=get_object)
+    s3.head_object = MagicMock(side_effect=head_object)
+    s3._store = store  # expose for assertions
+    return s3
 
 
 # =========================================================================
@@ -198,25 +233,24 @@ class TestSourceSpec:
 
 
 # =========================================================================
-# ScriptLoader
+# Script loading (load_workflow + load_steps)
 # =========================================================================
 
-class TestScriptLoader:
+class TestScriptLoading:
 
     def test_load_workflow_local(self, tmp_path: Path):
         d = _minimal_workflow_dict()
         d["source"]["path"] = str(tmp_path)
         p = tmp_path / "workflow.json"
         p.write_text(json.dumps(d))
-        wf = ScriptLoader.load_workflow(str(p))
+        wf = load_workflow(str(p))
         assert wf.name == "test-pipeline"
 
     def test_load_steps_local(self, tmp_path: Path):
-        # Write a simple user step module
         (tmp_path / "my_step.py").write_text(textwrap.dedent("""\
-            from umrs.steps import UMRSStep, StepContext, StepResult
+            from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-            class HelloStep(UMRSStep):
+            class HelloStep(Step):
                 name = "hello"
                 def setup(self, config):
                     self.greeting = config.get("greeting", "hi")
@@ -230,7 +264,7 @@ class TestScriptLoader:
             steps=[StepSpec(name="hello", entrypoint="my_step:HelloStep",
                             config={"greeting": "howdy"})],
         )
-        instances = ScriptLoader.load_steps(wf)
+        instances = load_steps(wf)
         assert len(instances) == 1
         assert instances[0].name == "hello"
         assert instances[0].greeting == "howdy"  # type: ignore[attr-defined]
@@ -242,7 +276,7 @@ class TestScriptLoader:
             steps=[StepSpec(name="s", entrypoint="bad format!")],
         )
         with pytest.raises(ScriptLoadError, match="invalid entrypoint"):
-            ScriptLoader.load_steps(wf)
+            load_steps(wf)
 
     def test_load_steps_module_not_found(self, tmp_path: Path):
         wf = WorkflowDefinition(
@@ -251,9 +285,9 @@ class TestScriptLoader:
             steps=[StepSpec(name="s", entrypoint="nonexistent_mod:Cls")],
         )
         with pytest.raises(ScriptLoadError, match="cannot import"):
-            ScriptLoader.load_steps(wf)
+            load_steps(wf)
 
-    def test_load_steps_class_not_umrs_step(self, tmp_path: Path):
+    def test_load_steps_class_not_step(self, tmp_path: Path):
         (tmp_path / "bad.py").write_text("class NotAStep:\n    pass\n")
         wf = WorkflowDefinition(
             name="test",
@@ -261,7 +295,7 @@ class TestScriptLoader:
             steps=[StepSpec(name="s", entrypoint="bad:NotAStep")],
         )
         with pytest.raises(ScriptLoadError, match="does not inherit"):
-            ScriptLoader.load_steps(wf)
+            load_steps(wf)
 
     def test_load_steps_class_missing(self, tmp_path: Path):
         (tmp_path / "empty_mod.py").write_text("x = 1\n")
@@ -271,48 +305,16 @@ class TestScriptLoader:
             steps=[StepSpec(name="s", entrypoint="empty_mod:Missing")],
         )
         with pytest.raises(ScriptLoadError, match="not found"):
-            ScriptLoader.load_steps(wf)
+            load_steps(wf)
 
 
 # =========================================================================
-# WorkflowExecutor
+# WorkflowPipeline (step chaining via run_as_embeddings)
 # =========================================================================
 
-def _mock_s3():
-    """Build a mock S3 client with basic get/put/head support."""
-    store: Dict[str, bytes] = {}
-    s3 = MagicMock()
+class TestWorkflowPipeline:
 
-    def put_object(Bucket, Key, Body, **kw):
-        store[f"{Bucket}/{Key}"] = Body if isinstance(Body, bytes) else Body.encode()
-
-    def get_object(Bucket, Key):
-        full = f"{Bucket}/{Key}"
-        if full not in store:
-            raise Exception(f"NoSuchKey: {full}")
-        data = store[full]
-        body = MagicMock()
-        body.read.return_value = data
-        return {"Body": body, "ETag": '"abc123"', "ContentLength": len(data),
-                "Metadata": {}}
-
-    def head_object(Bucket, Key):
-        full = f"{Bucket}/{Key}"
-        if full not in store:
-            raise Exception(f"NoSuchKey: {full}")
-        return {"ETag": '"abc123"', "ContentLength": len(store[full]),
-                "Metadata": {}}
-
-    s3.put_object = MagicMock(side_effect=put_object)
-    s3.get_object = MagicMock(side_effect=get_object)
-    s3.head_object = MagicMock(side_effect=head_object)
-    s3._store = store  # expose for assertions
-    return s3
-
-
-class TestWorkflowExecutor:
-
-    def _make_executor(self, steps: List[UMRSStep], **wf_kw) -> WorkflowExecutor:
+    def _make_pipeline(self, steps: List[Step], **wf_kw) -> WorkflowPipeline:
         step_specs = [StepSpec(name=s.name, entrypoint=f"fake:{s.__class__.__name__}")
                       for s in steps]
         wf = WorkflowDefinition(
@@ -321,15 +323,15 @@ class TestWorkflowExecutor:
             steps=step_specs,
             output=wf_kw.get("output", OutputSpec()),
         )
-        return WorkflowExecutor(wf, steps)
+        return WorkflowPipeline.from_workflow(wf, steps)
 
     def test_single_passthrough_step(self):
         s3 = _mock_s3()
         s3._store["in-bkt/file1.txt"] = b"hello"
         s3._store["in-bkt/file2.txt"] = b"world"
 
-        executor = self._make_executor([PassthroughStep()])
-        embs, chk, meta, saved = executor.run(
+        pipeline = self._make_pipeline([PassthroughStep()])
+        embs, chk, meta, saved = pipeline.run_as_embeddings(
             s3, ["file1.txt", "file2.txt"], "in-bkt", "out-bkt"
         )
         assert len(embs) == 2
@@ -339,8 +341,8 @@ class TestWorkflowExecutor:
         s3 = _mock_s3()
         s3._store["bkt/a.txt"] = b"data"
 
-        executor = self._make_executor([EmbeddingStep()])
-        embs, chk, meta, saved = executor.run(
+        pipeline = self._make_pipeline([EmbeddingStep()])
+        embs, chk, meta, saved = pipeline.run_as_embeddings(
             s3, ["a.txt"], "bkt", "out"
         )
         assert len(embs) == 1
@@ -357,22 +359,11 @@ class TestWorkflowExecutor:
         upper.setup({"suffix": "_UP"})
         passth = PassthroughStep()
 
-        executor = self._make_executor([upper, passth])
-        embs, chk, meta, saved = executor.run(
+        pipeline = self._make_pipeline([upper, passth])
+        embs, chk, meta, saved = pipeline.run_as_embeddings(
             s3, ["hello.txt"], "in", "out"
         )
-        # Uppercase step writes to output bucket with suffix
-        # Passthrough forwards those keys
         assert len(saved) == 1
-
-    def test_step_count_mismatch(self):
-        wf = WorkflowDefinition(
-            name="bad",
-            source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
-            steps=[StepSpec(name="a", entrypoint="x:Y")],
-        )
-        with pytest.raises(ValueError, match="Step count mismatch"):
-            WorkflowExecutor(wf, [PassthroughStep(), PassthroughStep()])
 
     def test_teardown_called(self):
         s3 = _mock_s3()
@@ -381,8 +372,8 @@ class TestWorkflowExecutor:
         step = PassthroughStep()
         step.teardown = MagicMock()  # type: ignore[assignment]
 
-        executor = self._make_executor([step])
-        executor.run(s3, ["f.txt"], "bkt", "out")
+        pipeline = self._make_pipeline([step])
+        pipeline.run_as_embeddings(s3, ["f.txt"], "bkt", "out")
         step.teardown.assert_called_once()
 
 
@@ -424,14 +415,14 @@ class TestStepContext:
 
 
 # =========================================================================
-# UMRSStep ABC enforcement
+# Step ABC enforcement
 # =========================================================================
 
-class TestUMRSStepContract:
+class TestStepContract:
 
     def test_cannot_instantiate_abc(self):
         with pytest.raises(TypeError):
-            UMRSStep()  # type: ignore[abstract]
+            Step()  # type: ignore[abstract]
 
     def test_concrete_step_ok(self):
         step = PassthroughStep()
@@ -439,204 +430,38 @@ class TestUMRSStepContract:
 
 
 # =========================================================================
-# Sandbox — StepAuditLog
+# EmbeddingAdapter
 # =========================================================================
 
-from umrs.steps.sandbox import SandboxConfig, StepAuditLog, SubprocessSandbox
+class TestEmbeddingAdapter:
 
-
-class TestStepAuditLog:
-
-    def test_log_creates_file(self, tmp_path: Path):
-        audit = StepAuditLog(str(tmp_path))
-        audit.log({"event": "test", "run_id": "abc"})
-
-        log_file = tmp_path / "audit.jsonl"
-        assert log_file.exists()
-        lines = log_file.read_text().strip().split("\n")
-        assert len(lines) == 1
-        entry = json.loads(lines[0])
-        assert entry["event"] == "test"
-        assert "timestamp" in entry
-
-    def test_multiple_events(self, tmp_path: Path):
-        audit = StepAuditLog(str(tmp_path))
-        audit.log({"event": "a"})
-        audit.log({"event": "b"})
-        audit.log({"event": "c"})
-
-        lines = (tmp_path / "audit.jsonl").read_text().strip().split("\n")
-        assert len(lines) == 3
-
-
-# =========================================================================
-# Sandbox — SandboxConfig
-# =========================================================================
-
-class TestSandboxConfig:
-
-    def test_defaults(self):
-        cfg = SandboxConfig()
-        assert cfg.enabled is True
-        assert cfg.timeout_seconds == 3600
-        assert cfg.memory_limit_bytes == 8 * 1024**3
-
-    def test_override(self):
-        cfg = SandboxConfig(timeout_seconds=60, enabled=False)
-        assert cfg.timeout_seconds == 60
-        assert cfg.enabled is False
-
-
-# =========================================================================
-# Sandbox — WorkflowExecutor with sandbox=None (no regression)
-# =========================================================================
-
-class TestExecutorSandboxCompat:
-    """Ensure the executor still works when sandbox is not configured."""
-
-    def _make_executor(self, steps):
-        step_specs = [StepSpec(name=s.name, entrypoint=f"fake:{s.__class__.__name__}")
-                      for s in steps]
-        wf = WorkflowDefinition(
-            name="compat-test",
-            source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
-            steps=step_specs,
-        )
-        return WorkflowExecutor(wf, steps, sandbox=None)
-
-    def test_passthrough_no_sandbox(self):
+    def test_adapter_returns_4_tuple(self):
         s3 = _mock_s3()
-        s3._store["b/x.txt"] = b"data"
-        executor = self._make_executor([PassthroughStep()])
-        embs, chk, meta, saved = executor.run(s3, ["x.txt"], "b", "out")
-        assert len(embs) == 1
+        s3._store["bkt/a.txt"] = b"data"
 
-
-# =========================================================================
-# ExecutionMode enum & _build_runner factory
-# =========================================================================
-
-from umrs.steps.executor import ExecutionMode, _build_runner
-
-
-class TestExecutionMode:
-
-    def test_enum_values(self):
-        assert ExecutionMode.IN_PROCESS.value == "in_process"
-        assert ExecutionMode.SUBPROCESS.value == "subprocess"
-        assert ExecutionMode.SLURM.value == "slurm"
-        assert ExecutionMode.K8S.value == "k8s"
-
-    def test_build_runner_in_process_returns_none(self):
-        assert _build_runner(ExecutionMode.IN_PROCESS) is None
-
-    def test_build_runner_subprocess(self):
-        runner = _build_runner(ExecutionMode.SUBPROCESS)
-        assert runner is not None
-        assert hasattr(runner, "run_step")
-
-    def test_build_runner_slurm(self):
-        runner = _build_runner(ExecutionMode.SLURM)
-        assert runner is not None
-        assert hasattr(runner, "run_step")
-
-    def test_build_runner_k8s(self):
-        runner = _build_runner(ExecutionMode.K8S)
-        assert runner is not None
-        assert hasattr(runner, "run_step")
-
-
-# =========================================================================
-# SlurmStepConfig
-# =========================================================================
-
-from umrs.steps.slurm_runner import SlurmStepConfig, SlurmStepRunner
-
-
-class TestSlurmStepConfig:
-
-    def test_defaults(self):
-        cfg = SlurmStepConfig()
-        assert cfg.partition == "gpu" or isinstance(cfg.partition, str)
-        assert cfg.timeout_seconds == 3600
-        assert cfg.gpu_count == 0
-        assert cfg.cpu_count == 4
-
-    def test_override(self):
-        cfg = SlurmStepConfig(partition="debug", gpu_count=2, timeout_seconds=600)
-        assert cfg.partition == "debug"
-        assert cfg.gpu_count == 2
-        assert cfg.timeout_seconds == 600
-
-
-class TestSlurmStepRunnerSbatch:
-    """Test sbatch script generation (doesn't require Slurm)."""
-
-    def test_generate_sbatch_script(self, tmp_path: Path):
-        cfg = SlurmStepConfig(
-            partition="test",
-            singularity_image="/opt/test.sif",
-            timeout_seconds=7200,
-            gpu_count=1,
-            memory_limit="16G",
-            cpu_count=8,
+        step = EmbeddingStep()
+        spec = StepSpec(name=step.name, entrypoint="fake:EmbeddingStep")
+        wf = WorkflowDefinition(
+            name="adapter-test",
+            source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
+            steps=[spec],
+            output=OutputSpec(return_type="vector", embedding_vector_size=4),
         )
-        runner = SlurmStepRunner(cfg)
+        pipeline = WorkflowPipeline.from_workflow(wf, [step])
+        adapter = EmbeddingAdapter(pipeline)
 
-        job_dir = tmp_path / "job1"
-        job_dir.mkdir()
-        dest = job_dir / "job.sh"
+        result = adapter.compute_embeddings(s3, ["a.txt"], "bkt", "out")
+        assert isinstance(result, tuple)
+        assert len(result) == 4
 
-        runner._generate_sbatch_script(dest, job_dir, "/data/user_scripts")
-
-        content = dest.read_text()
-        assert "#SBATCH --partition=test" in content
-        assert "#SBATCH --gpus=1" in content
-        assert "#SBATCH --mem=16G" in content
-        assert "#SBATCH --cpus-per-task=8" in content
-        assert "#SBATCH --time=02:00:00" in content
-        assert "/data/user_scripts:/user_code:ro" in content
-        assert "/opt/test.sif" in content
-        assert "_worker.py" in content
-
-    def test_generate_sbatch_no_gpu(self, tmp_path: Path):
-        cfg = SlurmStepConfig(gpu_count=0)
-        runner = SlurmStepRunner(cfg)
-
-        job_dir = tmp_path / "job2"
-        job_dir.mkdir()
-        dest = job_dir / "job.sh"
-        runner._generate_sbatch_script(dest, job_dir, "/scripts")
-
-        content = dest.read_text()
-        assert "--gpus=" not in content
-
-
-# =========================================================================
-# K8sStepConfig
-# =========================================================================
-
-from umrs.steps.k8s_runner import K8sStepConfig, K8sStepRunner
-
-
-class TestK8sStepConfig:
-
-    def test_defaults(self):
-        cfg = K8sStepConfig()
-        assert cfg.namespace == "umrs-steps" or isinstance(cfg.namespace, str)
-        assert cfg.timeout_seconds == 3600
-        assert cfg.gpu_count == 0
-
-    def test_override(self):
-        cfg = K8sStepConfig(namespace="prod", gpu_count=4, timeout_seconds=120)
-        assert cfg.namespace == "prod"
-        assert cfg.gpu_count == 4
+        embs, chk, meta, saved = result
+        assert len(embs) == 1
+        np.testing.assert_array_equal(embs[0], np.ones(4, dtype=np.float32))
 
 
 # =========================================================================
 # ResourceSpec.extra field
 # =========================================================================
-
 
 class TestResourceSpecExtra:
 
@@ -655,51 +480,3 @@ class TestResourceSpecExtra:
         rs = ResourceSpec()
         d = rs.to_dict()
         assert "extra" not in d
-
-
-# =========================================================================
-# Executor with execution_mode parameter (backward compat)
-# =========================================================================
-
-
-class TestExecutorModeCompat:
-
-    def _make_steps_and_wf(self):
-        step = PassthroughStep()
-        spec = StepSpec(name=step.name, entrypoint="fake:PassthroughStep")
-        wf = WorkflowDefinition(
-            name="mode-test",
-            source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
-            steps=[spec],
-        )
-        return wf, [step]
-
-    def test_default_is_in_process(self):
-        wf, steps = self._make_steps_and_wf()
-        executor = WorkflowExecutor(wf, steps)
-        assert executor._runner is None
-
-    def test_subprocess_mode_creates_runner(self):
-        wf, steps = self._make_steps_and_wf()
-        executor = WorkflowExecutor(
-            wf, steps, execution_mode=ExecutionMode.SUBPROCESS,
-        )
-        assert executor._runner is not None
-
-    def test_backward_compat_sandbox_config(self):
-        """Old-style sandbox=SandboxConfig() should still work."""
-        from umrs.steps.sandbox import SandboxConfig
-        wf, steps = self._make_steps_and_wf()
-        executor = WorkflowExecutor(
-            wf, steps,
-            sandbox=SandboxConfig(enabled=True),
-        )
-        assert executor._runner is not None
-
-    def test_in_process_run_works(self):
-        wf, steps = self._make_steps_and_wf()
-        executor = WorkflowExecutor(wf, steps)
-        s3 = _mock_s3()
-        s3._store["b/x.txt"] = b"data"
-        embs, chk, meta, saved = executor.run(s3, ["x.txt"], "b", "out")
-        assert len(embs) == 1

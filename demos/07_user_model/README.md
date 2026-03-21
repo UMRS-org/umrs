@@ -16,14 +16,14 @@ This runs the unit test suite and an integration smoke test using a mock S3.
 
 ## Core concepts
 
-### `UMRSStep` — the base class for every step
+### `Step` — the base class for every step
 
-Every processing step inherits from `UMRSStep` and implements three methods:
+Every processing step inherits from `Step` and implements three methods:
 
 ```python
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-class MyStep(UMRSStep):
+class MyStep(Step):
     # Unique identifier — must match the "name" field in workflow.json
     name = "my_step"
 
@@ -171,9 +171,9 @@ return StepResult(
 
 ```python
 # example_scripts/invert_image.py
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-class InvertImageStep(UMRSStep):
+class InvertImageStep(Step):
     name = "invert"
 
     def setup(self, config: dict) -> None:
@@ -203,9 +203,9 @@ All vision models use the unified `/infer` endpoint:
 
 ```python
 import time, requests
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-class MyVisionStep(UMRSStep):
+class MyVisionStep(Step):
     name = "my_vision"
 
     def setup(self, config: dict) -> None:
@@ -269,9 +269,9 @@ class MyVisionStep(UMRSStep):
 
 ```python
 import numpy as np
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-class EmbedStep(UMRSStep):
+class EmbedStep(Step):
     name = "embed"
 
     def run(self, ctx: StepContext) -> StepResult:
@@ -356,7 +356,7 @@ workflow.json ──► ScriptLoader.load_workflow()  reads + validates JSON
                       │    • sys.path.insert(0, source.path)
                       │    • importlib.import_module("module_file")
                       │    • cls = getattr(module, "ClassName")
-                      │    • assert issubclass(cls, UMRSStep)
+                      │    • assert issubclass(cls, Step)
                       │    • instance = cls(); instance.setup(config)
                       ▼
               WorkflowExecutor.run(s3, input_keys, input_bucket, output_bucket)
@@ -500,7 +500,7 @@ Always accept both `"success"` and `"completed"` for backward compatibility.
 ## See also
 
 - [Demo 06: Defect Analysis](../06_defect_analysis/README.md) — 4-step pipeline: SAM3 → region crop → HMAE → clustering
-- [Demo 07: HMAE Full](../07_hmae_full/README.md) — all 3 HMAE modes as UMRSStep pipeline
+- [Demo 07: HMAE Full](../07_hmae_full/README.md) — all 3 HMAE modes as Step pipeline
 - [Step interface source](../../src/umrs/steps/interface.py)
 - [StepContext / StepResult source](../../src/umrs/steps/context.py)
 - [WorkflowExecutor source](../../src/umrs/steps/executor.py)

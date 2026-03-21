@@ -1,1 +1,1 @@
-# Structural Defect Analysis — UMRSStep implementations
+# Structural Defect Analysis — Step implementations

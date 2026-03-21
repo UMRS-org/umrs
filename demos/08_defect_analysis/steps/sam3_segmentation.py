@@ -27,12 +27,12 @@ import logging
 import time
 from typing import Any, Dict, List
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class SAM3SegmentationStep(UMRSStep):
+class SAM3SegmentationStep(Step):
     """Detect structural regions via SAM3 text-prompted segmentation."""
 
     name = "sam3_segment"

@@ -37,9 +37,7 @@ sys.path.insert(0, os.path.join(os.environ.get("PYTHONPATH", "").split(":")[0]))
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from umrs.steps.loader import ScriptLoader
-from umrs.steps.executor import WorkflowExecutor
-from umrs.steps.models import WorkflowDefinition
+from umrs.pipeline_sdk.workflow import load_workflow, load_steps, WorkflowDefinition, WorkflowPipeline
 
 # ── Locate demo artefacts ───────────────────────────────────────────
 demo_dir = Path(__file__).resolve().parent if "__file__" in dir() else Path(os.environ.get("SCRIPT_DIR", "."))
@@ -47,8 +45,8 @@ demo_dir = Path(os.environ.get("SCRIPT_DIR", os.path.dirname(os.path.abspath("."
 
 # Use the repo-relative path
 repo = Path(os.environ["PYTHONPATH"].split(":")[0]).parent
-scripts_dir = repo / "demos" / "05_user_model" / "example_scripts"
-wf_path = repo / "demos" / "05_user_model" / "workflow_text.json"
+scripts_dir = repo / "demos" / "07_user_model" / "example_scripts"
+wf_path = repo / "demos" / "07_user_model" / "workflow_text.json"
 
 # Patch workflow source path to point at the actual scripts
 with open(wf_path) as f:
@@ -83,10 +81,12 @@ store["demo-in/hello.txt"] = b"Hello World!\nThis is a test file.\n"
 store["demo-in/readme.txt"] = b"UMRS user-defined workflows rock.\n"
 
 # ── Load steps & run ────────────────────────────────────────────────
-steps = ScriptLoader.load_steps(wf)
-executor = WorkflowExecutor(wf, steps)
+steps = load_steps(wf)
 
-embs, checksums, metadata, saved_keys = executor.run(
+# Build a WorkflowPipeline from the pre-patched workflow + loaded steps
+pipeline = WorkflowPipeline.from_workflow(wf, steps)
+
+embs, checksums, metadata, saved_keys = pipeline.run_as_embeddings(
     s3, ["hello.txt", "readme.txt"], "demo-in", "demo-out"
 )
 

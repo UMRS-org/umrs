@@ -25,12 +25,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class HMAEFeatureStep(UMRSStep):
+class HMAEFeatureStep(Step):
     """Extract HMAE feature embeddings from image patches."""
 
     name = "hmae_features"

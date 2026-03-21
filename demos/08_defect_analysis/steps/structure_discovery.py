@@ -26,12 +26,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class StructureDiscoveryStep(UMRSStep):
+class StructureDiscoveryStep(Step):
     """Cluster HMAE embeddings and produce a dataset-level analysis report."""
 
     name = "structure_discovery"

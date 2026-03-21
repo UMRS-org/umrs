@@ -5,10 +5,10 @@ Reads images from S3, inverts pixel values (255 - pixel), saves results back.
 This is a minimal demonstration — no GPU, no heavy deps.
 """
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 
-class InvertImageStep(UMRSStep):
+class InvertImageStep(Step):
     """Invert grayscale or RGB images (negative effect)."""
 
     name = "invert"

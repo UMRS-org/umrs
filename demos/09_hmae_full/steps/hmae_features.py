@@ -32,12 +32,12 @@ from typing import Any, Dict, List
 
 import numpy as np
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class HMAEFeaturesStep(UMRSStep):
+class HMAEFeaturesStep(Step):
     """Feature extraction (encoder-only) via BentoML HMAE endpoint."""
 
     name = "hmae_features"

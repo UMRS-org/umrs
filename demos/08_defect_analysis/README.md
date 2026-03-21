@@ -186,14 +186,14 @@ Each step receives a `StepContext` providing:
 
 Add a new step by:
 
-1. Create a Python file in `steps/` with a class inheriting `UMRSStep`
+1. Create a Python file in `steps/` with a class inheriting `Step`
 2. Implement `setup(config)`, `run(ctx) → StepResult`, `teardown()`
 3. Add entry to `workflow.json` `steps` array
 
 Example: add a visualization step after step 4:
 
 ```python
-class VisualizationStep(UMRSStep):
+class VisualizationStep(Step):
     name = "visualize"
     def run(self, ctx: StepContext) -> StepResult:
         # Load report.json, generate matplotlib scatter plot

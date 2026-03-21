@@ -21,12 +21,12 @@ import json
 import logging
 from typing import Any, Dict, List
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class RegionExtractionStep(UMRSStep):
+class RegionExtractionStep(Step):
     """Crop detected SAM3 bounding boxes into individual image patches."""
 
     name = "region_extract"

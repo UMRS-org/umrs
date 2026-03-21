@@ -1,17 +1,37 @@
 """
-Step execution context and result types.
+Step interface — abstract base class for user-defined processing steps.
 
-StepContext wraps the S3 connection and exposes convenient helpers so that
-user scripts never have to manipulate boto3 directly.
+Users implement ``Step`` subclasses in their own Python scripts, then
+reference them from a ``workflow.json`` file.  UMRS discovers, loads, and
+executes these steps via :class:`WorkflowPipeline` without any internal
+code changes.
 
-StepResult carries the outputs of a single step execution back to the
-WorkflowExecutor.
+Typical usage in a user script::
+
+    from umrs.pipeline_sdk import Step, StepContext, StepResult
+
+    class MyPreprocess(Step):
+        name = "preprocess"
+
+        def setup(self, config: dict) -> None:
+            self.size = config.get("target_size", 1024)
+
+        def run(self, ctx: StepContext) -> StepResult:
+            out_keys = []
+            for key in ctx.input_keys:
+                data = ctx.download_bytes(key)
+                processed = self._do_work(data)
+                out_key = f"preprocessed/{key}"
+                ctx.upload_bytes(out_key, processed)
+                out_keys.append(out_key)
+            return StepResult(output_keys=out_keys)
 """
 
 from __future__ import annotations
 
 import io
 import logging
+from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
@@ -21,9 +41,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# ── Step execution context ───────────────────────────────────────────────────
+
 @dataclass
 class StepContext:
-    """Execution context passed to :meth:`UMRSStep.run`.
+    """Execution context passed to :meth:`Step.run`.
 
     Attributes:
         s3: A boto3-compatible S3 client (MinIO).
@@ -43,7 +65,7 @@ class StepContext:
     metadata: Dict[str, Any] = field(default_factory=dict)
     run_id: str = ""
 
-    # ---- S3 download helpers ------------------------------------------------
+    # ── S3 download helpers ──────────────────────────────────────────────
 
     def download_bytes(self, key: str, bucket: Optional[str] = None) -> bytes:
         """Download an S3 object and return its raw bytes."""
@@ -57,7 +79,7 @@ class StepContext:
         raw = self.download_bytes(key, bucket)
         return np.load(io.BytesIO(raw), allow_pickle=False)
 
-    # ---- S3 upload helpers ---------------------------------------------------
+    # ── S3 upload helpers ────────────────────────────────────────────────
 
     def upload_bytes(
         self,
@@ -88,7 +110,7 @@ class StepContext:
         return self.upload_bytes(key, buf.getvalue(), bucket,
                                 content_type="application/x-npy")
 
-    # ---- S3 metadata helpers -------------------------------------------------
+    # ── S3 metadata helpers ──────────────────────────────────────────────
 
     def head_object(self, key: str, bucket: Optional[str] = None) -> Dict[str, Any]:
         """Return S3 HEAD metadata for *key*."""
@@ -98,7 +120,7 @@ class StepContext:
 
 @dataclass
 class StepResult:
-    """Value returned by :meth:`UMRSStep.run`.
+    """Value returned by :meth:`Step.run`.
 
     Attributes:
         output_keys: S3 keys produced by this step (becomes the next
@@ -115,3 +137,39 @@ class StepResult:
     checksums: List[str] = field(default_factory=list)
     metadata: List[Dict[str, Any]] = field(default_factory=list)
     extra: Dict[str, Any] = field(default_factory=dict)
+
+
+# ── Step abstract base class ────────────────────────────────────────────────
+
+class Step(ABC):
+    """Abstract base class every user-defined step must inherit."""
+
+    # Subclasses MUST set a unique name (used as key in workflow.json).
+    name: str = ""
+
+    def setup(self, config: dict) -> None:
+        """Optional one-time initialisation (load weights, parse config, …).
+
+        Called once after instantiation, before any ``run()`` calls.
+        Override this instead of ``__init__`` so the loader can instantiate
+        the class without arguments.
+        """
+
+    @abstractmethod
+    def run(self, ctx: StepContext) -> StepResult:
+        """Execute the step on one batch of S3 objects.
+
+        Args:
+            ctx: A :class:`StepContext` that provides S3 helpers,
+                 ``input_keys``, ``output_bucket``, and a shared
+                 ``metadata`` dict for passing state between steps.
+
+        Returns:
+            A :class:`StepResult` describing what was produced.
+        """
+
+    def teardown(self) -> None:
+        """Optional cleanup (release GPU memory, close files, …).
+
+        Called once after **all** batches have been processed for this step.
+        """
