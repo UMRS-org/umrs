@@ -178,13 +178,14 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
     s3_connection, bucket_location = connect_to_s3(user_s3_configuration_file)
 
-    table_names = set()
+    
 
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
         print(f"\t==> Experience: {xp_name}")
         sql_username  = xp["sql_username"]
         data_base, db_name = create_db(sql_username, xp_name)
+        table_names = set()
         for modality in xp["modalities"]:
             modality_name = modality["modality_name"]
             check_or_quit(modality_name)
@@ -211,7 +212,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             sql_cfg = modality["sql"]
             table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
             if table_name in table_names:
-                sys.exit(f"Error: duplicate table name '{table_name}' in database '{db_name}'\nCheck configuration file of user: '{fullname}' with username: '{username} in '{user_cfg['config_file_path']}'\nExiting...")
+                sys.exit(f"Error: duplicate table name '{table_name}' in database '{db_name}'\nCheck configuration file of user: '{fullname}' with username: '{username}' in '{user_cfg['config_file_path']}'\nExiting...")
             table_names.add(table_name)
             # num_objects =  count_objects_in_bucket(s3_connection, path_to_bucket)
             num_objects = data_base.count_s3_objects(table_name)
