@@ -28,12 +28,12 @@ import logging
 import time
 from typing import Any, Dict, List
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class AnomalyDetectionStep(UMRSStep):
+class AnomalyDetectionStep(Step):
     """Score each patch by HMAE reconstruction error to detect anomalies."""
 
     name = "anomaly_detect"

@@ -38,12 +38,12 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class HMAEAnalysisStep(UMRSStep):
+class HMAEAnalysisStep(Step):
     """Combined HMAE feature extraction + anomaly scoring for each patch."""
 
     name = "hmae_analysis"

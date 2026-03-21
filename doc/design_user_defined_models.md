@@ -52,7 +52,7 @@ runs inference, and writes output.
                           │  workflow.json          my_model.py      │
                           │  ┌──────────────┐      ┌──────────────┐  │
                           │  │ steps:       │      │ class MyStep │  │
-                          │  │  - preprocess│      │  (UMRSStep)  │  │
+                          │  │  - preprocess│      │  (Step)  │  │
                           │  │  - infer     │      │  def run():  │  │
                           │  │  - postproc  │      │    ...       │  │
                           │  └──────┬───────┘      └──────────────┘  │
@@ -96,15 +96,15 @@ runs inference, and writes output.
 
 ## 4. User-Facing Interface
 
-### 4.1 Step Interface (`UMRSStep` ABC)
+### 4.1 Step Interface (`Step` ABC)
 
 Users implement this Python interface for each processing step:
 
 ```python
 # --- file: my_model.py (user-provided) ---
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-class PreprocessStep(UMRSStep):
+class PreprocessStep(Step):
     """Resize and normalize images before inference."""
 
     name = "preprocess"
@@ -140,7 +140,7 @@ class PreprocessStep(UMRSStep):
             metadata={"step": "preprocess", "count": len(results)},
         )
 
-class InferenceStep(UMRSStep):
+class InferenceStep(Step):
     name = "infer"
 
     def setup(self, config: dict) -> None:
@@ -254,12 +254,12 @@ class InferenceStep(UMRSStep):
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| `UMRSStep` ABC | `src/umrs/steps/interface.py` | Contract for user scripts |
-| `StepContext` | `src/umrs/steps/context.py` | S3 helpers + metadata carrier |
-| `StepResult` | `src/umrs/steps/context.py` | Output keys + embeddings + metadata |
-| `ScriptLoader` | `src/umrs/steps/loader.py` | Discovers, validates, imports user scripts |
-| `WorkflowDefinition` | `src/umrs/steps/models.py` | Data model for `workflow.json` |
-| `WorkflowExecutor` | `src/umrs/steps/executor.py` | Sequences steps, manages I/O hand-off |
+| `Step` ABC | `src/umrs/pipeline_sdk/step.py` | Contract for user scripts |
+| `StepContext` | `src/umrs/pipeline_sdk/step.py` | S3 helpers + metadata carrier |
+| `StepResult` | `src/umrs/pipeline_sdk/step.py` | Output keys + embeddings + metadata |
+| `ScriptLoader` | `src/umrs/pipeline_sdk/loader.py` | Discovers, validates, imports user scripts |
+| `WorkflowDefinition` | `src/umrs/pipeline_sdk/models.py` | Data model for `workflow.json` |
+| `WorkflowExecutor` | `src/umrs/pipeline_sdk/executor.py` | Sequences steps, manages I/O hand-off |
 
 ### 5.2 Integration Points (minimal changes to existing code)
 
@@ -372,10 +372,10 @@ ScriptLoader.load_steps(workflow_def)
   │   ├─ Resolve entrypoint "my_model:InferenceStep"
   │   │   → importlib.import_module("my_model")
   │   │   → getattr(module, "InferenceStep")
-  │   ├─ Verify class inherits UMRSStep
+  │   ├─ Verify class inherits Step
   │   ├─ Instantiate, call setup(step.config)
   │   └─ Collect into ordered list
-  └─ Return List[UMRSStep]
+  └─ Return List[Step]
 ```
 
 ### 6.2 Security Constraints
@@ -385,7 +385,7 @@ ScriptLoader.load_steps(workflow_def)
 | **Schema validation** | All required fields present, types correct | Load time |
 | **Source pinning** | Git sources MUST specify commit hash (not branch) | Load time |
 | **Entrypoint format** | Must be `module:ClassName`, no shell injection | Load time |
-| **ABC compliance** | Class must inherit `UMRSStep` | Load time |
+| **ABC compliance** | Class must inherit `Step` | Load time |
 | **Resource limits** | CPU/memory/timeout enforced by Slurm/K8s/cgroups | Runtime |
 | **No network** (optional) | Sandboxed mode blocks outbound (`--network=none`) | Runtime |
 | **Filesystem isolation** | Read-only mount for scripts, write only to S3 staging | Runtime |
@@ -434,10 +434,10 @@ ScriptLoader.load_steps(workflow_def)
 ```bash
 # 1. User writes their model script
 cat > ~/my_models/denoise.py << 'EOF'
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 import numpy as np
 
-class DenoiseStep(UMRSStep):
+class DenoiseStep(Step):
     name = "denoise"
 
     def setup(self, config):
@@ -487,7 +487,7 @@ umrs-client update  # triggers processing via user's denoise pipeline
 
 1. `models_loading.py` sees `user_script://` prefix → calls `ScriptLoader`
 2. `ScriptLoader` reads `/home/user/my_models/workflow.json`, validates schema
-3. `ScriptLoader` imports `denoise.py`, verifies `DenoiseStep(UMRSStep)`, calls `setup()`
+3. `ScriptLoader` imports `denoise.py`, verifies `DenoiseStep(Step)`, calls `setup()`
 4. `WorkflowExecutor` wraps the step chain into a `compute_embeddings()`-compatible function
 5. `EmbeddingModel` returned with `type="user_script"`, `compute=executor.run`
 6. When S3 objects arrive, `compute_and_store()` calls `executor.run(s3, keys, bucket, out_bucket)`
@@ -548,10 +548,10 @@ S3 keys (raw CT scans)
 
 | Task | What | Files | Status |
 |------|------|-------|--------|
-| U-201 | `UMRSStep` ABC, `StepContext`, `StepResult` | `src/umrs/steps/interface.py`, `context.py` | ✅ |
-| U-202 | `WorkflowDefinition` model + JSON schema validation | `src/umrs/steps/models.py` | ✅ |
-| U-203 | `ScriptLoader` (local path first, then S3/git) | `src/umrs/steps/loader.py` | ✅ |
-| U-204 | `WorkflowExecutor` with step chaining + S3 staging | `src/umrs/steps/executor.py` | ✅ |
+| U-201 | `Step` ABC, `StepContext`, `StepResult` | `src/umrs/pipeline_sdk/step.py`, `context.py` | ✅ |
+| U-202 | `WorkflowDefinition` model + JSON schema validation | `src/umrs/pipeline_sdk/models.py` | ✅ |
+| U-203 | `ScriptLoader` (local path first, then S3/git) | `src/umrs/pipeline_sdk/loader.py` | ✅ |
+| U-204 | `WorkflowExecutor` with step chaining + S3 staging | `src/umrs/pipeline_sdk/executor.py` | ✅ |
 | U-205 | `user_script://` type in `models_loading.py` | `src/umrs/models_loading.py` (one elif) | ✅ |
 
 ### Phase 2: Sandboxed & Remote Execution (U-206) ✅
@@ -591,7 +591,7 @@ after a successful workflow run.  Cleanup is best-effort and non-fatal.
 | 1 | Should user scripts run **in-process** or always **subprocess**? | In-process (faster, simpler for dev), subprocess (safer), configurable | Default subprocess in production, in-process for `sandbox: false` in dev |
 | 2 | How to handle **GPU sharing**? One step at a time or parallel? | Sequential (safe), parallel (fast but complex) | Sequential per workflow; parallelism across workflows is handled by orchestrator |
 | 3 | Should intermediate staging artifacts be **auto-cleaned**? | Always clean, configurable retention, never clean | Configurable: `staging_retention: "on_success"` / `"always"` / `"never"` (default: `"on_success"`) |
-| 4 | Should `UMRSStep` support **streaming** (one object at a time) or **batch**? | Batch (current), streaming, both | Batch first (matches existing compute_embeddings contract); add streaming later |
+| 4 | Should `Step` support **streaming** (one object at a time) or **batch**? | Batch (current), streaming, both | Batch first (matches existing compute_embeddings contract); add streaming later |
 | 5 | How to handle **step failures** mid-workflow? | Fail entire workflow, retry step, skip step | Fail workflow by default; add `on_failure: "skip"` per step later |
 | 6 | Should we support **DAG workflows** (parallel branches) or only linear chains? | Linear (simpler), DAG (flexible) | Linear chains first; DAG is a future enhancement |
 | 7 | `umrs.steps` package — pip-installable separately for user dev? | Yes (light SDK), No (import from full package) | Yes — publish `umrs-steps` as a lightweight SDK with just the ABCs + StepContext |

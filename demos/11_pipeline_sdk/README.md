@@ -88,5 +88,5 @@ def compute(self, config, items):
 ## Related
 
 - Pipeline SDK source: `src/umrs/pipeline_sdk/`
-- UMRSStep workflows: `demos/09_hmae_full/` (alternative to Pipeline SDK)
+- Step workflows: `demos/09_hmae_full/` (alternative to Pipeline SDK)
 - Model registry: `demos/06_model_registry/`

@@ -36,7 +36,7 @@ Multi-step pipelines, user-defined models, and complex analysis.
 
 | # | Demo | What you'll learn |
 |---|------|-------------------|
-| 07 | [User-Defined Models](07_user_model/) | Custom model workflows via UMRSStep + `workflow.json` |
+| 07 | [User-Defined Models](07_user_model/) | Custom model workflows via Step + `workflow.json` |
 | 08 | [Defect Analysis](08_defect_analysis/) | Multi-step pipeline: SAM3 → crop → HMAE → clustering |
 | 09 | [HMAE Full Pipeline](09_hmae_full/) | Full HMAE pipeline: reconstruct + MAE + features in parallel |
 
@@ -68,7 +68,7 @@ Something seems wrong with my data?
   → Demo 05 (check + update)
 
 Need a custom model or pipeline?
-  → Demo 07 (UMRSStep) or Demo 08 (multi-step defect analysis)
+  → Demo 07 (Step) or Demo 08 (multi-step defect analysis)
 
 Managing models on HPC?
   → Demo 06 (model registry)

@@ -118,7 +118,7 @@ Step-by-step demos that walk through UMRS workflows end to end:
 | [demos/04_rag_search/](demos/04_rag_search/) | RAG semantic search: vector, hybrid, reranking, Q&A |
 | [demos/05_server_maintenance/](demos/05_server_maintenance/) | Data integrity: list_buckets, check, update, recompute |
 | [demos/06_model_registry/](demos/06_model_registry/) | Model register, list, download (HuggingFace + local) |
-| [demos/07_user_model/](demos/07_user_model/) | User-defined model workflows (UMRSStep) |
+| [demos/07_user_model/](demos/07_user_model/) | User-defined model workflows (Step) |
 | [demos/08_defect_analysis/](demos/08_defect_analysis/) | Multi-step pipeline: SAM3 → crop → HMAE → cluster |
 | [demos/09_hmae_full/](demos/09_hmae_full/) | Full HMAE pipeline (reconstruct, MAE, features) |
 | [demos/10_job_submission/](demos/10_job_submission/) | Job submission, service lifecycle, --keep-alive |

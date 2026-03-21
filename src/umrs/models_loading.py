@@ -132,33 +132,19 @@ def load_model(model_cfg, modality):
         # Declare that this embedding model expects raw text as input
         input_type = "text"
     elif model_type.startswith("user_script://"):
-        from .steps.loader import ScriptLoader
-        from .steps.executor import WorkflowExecutor, ExecutionMode
+        from .pipeline_sdk.workflow import WorkflowPipeline
+        from .pipeline_sdk.adapter import EmbeddingAdapter
 
         source_uri = model_type[len("user_script://"):]
-        workflow_def = ScriptLoader.load_workflow(source_uri)
-        steps = ScriptLoader.load_steps(workflow_def)
-
-        # Determine execution mode from workflow or model config
-        exec_mode_str = (
-            model_cfg.get("execution_mode")
-            or (workflow_def.resources.extra.get("execution_mode")
-                if workflow_def.resources else None)
-            or "in_process"
-        )
-        exec_mode = ExecutionMode(exec_mode_str)
-
-        executor = WorkflowExecutor(
-            workflow_def, steps,
-            execution_mode=exec_mode,
-        )
+        pipeline = WorkflowPipeline(source_uri)
+        adapter = EmbeddingAdapter(pipeline)
 
         model = None
         type = "user_script"
-        compute_embeddings_func = executor.run
+        compute_embeddings_func = adapter.compute_embeddings
         input_type = "raw_image"  # steps handle their own I/O from S3
-        return_type = workflow_def.output.return_type
-        vector_size = workflow_def.output.embedding_vector_size or vector_size
+        return_type = pipeline.workflow.output.return_type
+        vector_size = pipeline.workflow.output.embedding_vector_size or vector_size
 
     elif model_type.startswith("rivault://"):
         model = model_cfg

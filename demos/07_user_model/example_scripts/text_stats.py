@@ -6,11 +6,11 @@ a JSON summary per file.  Demonstrates a text-processing step with
 no ML dependencies.
 """
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 import json
 
 
-class TextStatsStep(UMRSStep):
+class TextStatsStep(Step):
     """Compute basic statistics for each input text file."""
 
     name = "text_stats"

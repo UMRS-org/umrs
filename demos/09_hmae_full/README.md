@@ -1,7 +1,7 @@
 # Demo 09: HMAE Full Pipeline (All 3 Modes)
 
 Runs all three HMAE (Hierarchical Masked Auto-Encoder) inference modes as a
-chained UMRSStep workflow: full reconstruction, masked reconstruction with
+chained Step workflow: full reconstruction, masked reconstruction with
 anomaly scoring, and feature extraction.
 
 ## Pipeline
@@ -40,7 +40,7 @@ bash run_demo.sh
 
 1. Verifies UMRS services are running
 2. Uploads test images (X-ray CT slices) to S3
-3. The server runs the 3-step UMRSStep workflow:
+3. The server runs the 3-step Step workflow:
    - **Step 1 (Reconstruct)**: Full encode+decode — visualizes model reconstruction quality
    - **Step 2 (MAE)**: 50% random masking — measures reconstruction loss as anomaly score
    - **Step 3 (Features)**: Encoder-only — extracts CLS token (768-d) for downstream tasks
@@ -109,14 +109,14 @@ results/
 }
 ```
 
-## UMRSStep Architecture
+## Step Architecture
 
-Each step inherits `UMRSStep` and follows the standard interface:
+Each step inherits `Step` and follows the standard interface:
 
 ```python
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
-class HMAEReconstructStep(UMRSStep):
+class HMAEReconstructStep(Step):
     name = "hmae_reconstruct"
 
     def setup(self, config: dict) -> None:
@@ -135,7 +135,7 @@ Steps share state via `ctx.metadata`:
 ## Workflow Definition
 
 See [workflow.json](workflow.json) for the full definition. The workflow is a standard
-UMRSStep pipeline that can be executed in any supported mode:
+Step pipeline that can be executed in any supported mode:
 
 | File | Mode | Description |
 |------|------|-------------|
@@ -144,6 +144,6 @@ UMRSStep pipeline that can be executed in any supported mode:
 ## See Also
 
 - [Demo 03: HMAE Inference](../03_hmae_inference/README.md) — single-mode HMAE via umrs-client
-- [Demo 05: User Model](../05_user_model/README.md) — UMRSStep framework introduction
+- [Demo 05: User Model](../05_user_model/README.md) — Step framework introduction
 - [Demo 06: Defect Analysis](../06_defect_analysis/README.md) — multi-step pipeline with SAM3 + HMAE
-- [UDM Design Doc](../../doc/design_user_defined_models.md) — UMRSStep specification
+- [UDM Design Doc](../../doc/design_user_defined_models.md) — Step specification

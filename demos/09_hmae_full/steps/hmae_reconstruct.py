@@ -29,12 +29,12 @@ import logging
 import time
 from typing import Any, Dict, List
 
-from umrs.steps import UMRSStep, StepContext, StepResult
+from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
 
-class HMAEReconstructStep(UMRSStep):
+class HMAEReconstructStep(Step):
     """Full reconstruction (no masking) via BentoML HMAE endpoint."""
 
     name = "hmae_reconstruct"
