@@ -422,23 +422,34 @@ services:
         source: ${HMAE_MODEL_PATH:-/models/hmae}
         target: /models/hmae
         read_only: true
+      # User model weights (optional — set USER_MODEL_PATH on the host)
+      - type: bind
+        source: ${USER_MODEL_PATH:-/tmp}
+        target: /models/user
+        read_only: true
       # Scratch space for temporary outputs
       - type: tmpfs
         target: /tmp/vision_outputs
-      # Custom user adapters (drop .py files here)
+      # Built-in adapters (SAM3, HMAE) — shipped with the source tree
       - type: bind
-        source: ${VISION_ADAPTERS_DIR:-/adapters}
-        target: /adapters
+        source: ${DEFAULT_ADAPTERS_DIR:-./default_adapters}
+        target: /adapters/system
+        read_only: true
+      # User-provided adapters (drop .py + optional requirements.txt here)
+      - type: bind
+        source: ${USER_ADAPTERS_DIR:-/tmp}
+        target: /adapters/user
         read_only: true
     environment:
       SAM3_MODEL_PATH: /models/sam3
       HMAE_CONFIG_PATH: /models/hmae/infer_hmae_vit_b.yaml
       HMAE_CHECKPOINT: /models/hmae/latest_checkpoint.pth
+      USER_MODEL_PATH: /models/user
       S3_ENDPOINT_URL: http://minio-host:${BENTOML_MINIO_HOST_PORT:-19000}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
       MAX_VISION_MODELS: ${MAX_VISION_MODELS:-3}
-      VISION_ADAPTERS_DIR: /adapters
+      VISION_ADAPTERS_DIR: /adapters/system:/adapters/user
       VISION_ADAPTERS: ${VISION_ADAPTERS:-}
       TRANSFORMERS_OFFLINE: "1"
       HF_HUB_OFFLINE: "1"

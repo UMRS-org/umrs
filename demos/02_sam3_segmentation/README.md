@@ -100,17 +100,40 @@ SAM3_MODEL_PATH=./rivault/models/sam3
 RIVAULT_PROFILES="harness vllm vision-bentoml"
 ```
 
+## Adapter Architecture
+
+The SAM3 model is loaded as a **pluggable adapter** — a Python file
+(`sam3_adapter.py`) that implements the `VisionModelAdapter` interface.
+
+At container startup, the BentoML vision service scans the directories listed
+in `VISION_ADAPTERS_DIR` (colon-separated, e.g. `/adapters/system:/adapters/user`)
+and auto-registers every `VisionModelAdapter` subclass it finds.
+
+```
+/adapters/system/sam3_adapter.py   → model_type="sam3_adapter"
+/adapters/system/hmae_adapter.py   → model_type="hmae_adapter"
+/adapters/user/my_model.py         → model_type="my_model"  (user-provided)
+```
+
+Built-in adapters (SAM3, HMAE) ship as `.py` files in `rivault/default_adapters/`
+and are loaded via the same mechanism. Users can add their own adapters by placing
+`.py` files in `USER_ADAPTERS_DIR` and optionally including a `requirements.txt`
+for extra dependencies.
+
+See [Demo 07: User-Defined Model](../07_user_model/README.md) for details on
+writing your own adapter.
+
 ## BentoML Task Queue API
 
-The BentoML vision service exposes an async task queue:
+All vision models use the unified `/infer` endpoint:
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/vision/sam3_segment/submit` | POST | Submit segmentation task |
-| `/vision/sam3_segment/status` | GET | Check task status |
-| `/vision/sam3_segment/get` | GET | Retrieve result |
-| `/vision/sam3_segment/cancel` | POST | Cancel pending task |
-| `/vision/sam3_segment/retry` | PUT | Retry failed task |
+| `/vision/infer/submit` | POST | Submit inference task (any model_type) |
+| `/vision/infer/status` | GET | Check task status |
+| `/vision/infer/get` | GET | Retrieve result |
+| `/vision/infer/cancel` | POST | Cancel pending task |
+| `/vision/infer/retry` | PUT | Retry failed task |
 
 All endpoints are accessed through NGINX's `/vision/` prefix via the SSH tunnel.
 
@@ -125,4 +148,5 @@ All endpoints are accessed through NGINX's `/vision/` prefix via the SSH tunnel.
 
 - [Admin Guide](../../doc/admin_guide.md) — deploying vision models
 - [Demo 03: HMAE](../03_hmae_inference/README.md) — feature extraction demo
+- [Demo 07: User-Defined Model](../07_user_model/README.md) — custom adapters and pipelines
 - [Mini-Rivault README](../../src/umrs/rivault/README.md) — inference stack details

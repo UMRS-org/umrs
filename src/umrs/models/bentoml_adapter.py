@@ -4,8 +4,7 @@ Bridges the BentoMLTaskClient async task API into the synchronous
 compute_embeddings interface expected by EmbeddingModel / embeddings.py.
 
 The generic factory ``make_bentoml_vision_compute`` creates a closure for
-**any** model type supported by the generic ``/infer`` endpoint.  The old
-model-specific factories are kept as thin wrappers for backward compatibility.
+**any** model type supported by the generic ``/infer`` endpoint.
 """
 
 import logging
@@ -94,18 +93,4 @@ def make_bentoml_vision_compute(client, model_type, model_config):
     return _compute
 
 
-# ── Backward-compatible wrappers ────────────────────────────────────────
 
-
-def make_bentoml_hmae_compute(client, endpoint_name, mode):
-    """Backward-compatible wrapper — delegates to the generic factory."""
-    return make_bentoml_vision_compute(
-        client, model_type="hmae", model_config={"mode": mode},
-    )
-
-
-def make_bentoml_sam3_compute(client, endpoint_name):
-    """Backward-compatible wrapper — delegates to the generic factory."""
-    return make_bentoml_vision_compute(
-        client, model_type="sam3", model_config={},
-    )

@@ -257,9 +257,10 @@ class InferenceStep(Step):
 | `Step` ABC | `src/umrs/pipeline_sdk/step.py` | Contract for user scripts |
 | `StepContext` | `src/umrs/pipeline_sdk/step.py` | S3 helpers + metadata carrier |
 | `StepResult` | `src/umrs/pipeline_sdk/step.py` | Output keys + embeddings + metadata |
-| `ScriptLoader` | `src/umrs/pipeline_sdk/loader.py` | Discovers, validates, imports user scripts |
-| `WorkflowDefinition` | `src/umrs/pipeline_sdk/models.py` | Data model for `workflow.json` |
-| `WorkflowExecutor` | `src/umrs/pipeline_sdk/executor.py` | Sequences steps, manages I/O hand-off |
+| `WorkflowPipeline` | `src/umrs/pipeline_sdk/workflow.py` | Loads workflow.json, imports steps, chains execution |
+| `EmbeddingAdapter` | `src/umrs/pipeline_sdk/adapter.py` | Bridges WorkflowPipeline → compute_embeddings contract |
+| `WorkflowDefinition` | `src/umrs/pipeline_sdk/workflow.py` | Data model for `workflow.json` |
+| `VisionModelAdapter` | `src/umrs/vision_service/adapters/base.py` | ABC for pluggable vision models (BentoML) |
 
 ### 5.2 Integration Points (minimal changes to existing code)
 
@@ -598,7 +599,86 @@ after a successful workflow run.  Cleanup is best-effort and non-fatal.
 
 ---
 
-## 12. Compatibility Notes
+## 12. Custom Vision Adapters (BentoML)
+
+In addition to the Pipeline SDK (`user_script://`) for embedding pipelines,
+users can extend the BentoML vision service with **custom vision adapters**.
+
+### 12.1 Architecture
+
+```
+/adapters/system/           ← Built-in adapters (shipped with source tree)
+  sam3_adapter.py            → ADAPTER_REGISTRY["sam3_adapter"]
+  hmae_adapter.py            → ADAPTER_REGISTRY["hmae_adapter"]
+/adapters/user/             ← User-provided adapters (bind-mounted from host)
+  my_model.py                → ADAPTER_REGISTRY["my_model"]
+  requirements.txt           ← auto-installed at startup
+```
+
+At BentoML container startup:
+1. `VISION_ADAPTERS_DIR` (colon-separated) is scanned for `*.py` files
+2. If a `requirements.txt` exists in a directory, its packages are auto-installed
+   via `uv pip install` (fallback to `pip`)
+3. Each file's `VisionModelAdapter` subclass is registered by filename stem
+4. The `/infer` endpoint dispatches by `model_type` → `ADAPTER_REGISTRY[model_type]`
+
+### 12.2 VisionModelAdapter Interface
+
+```python
+from umrs.vision_service.adapters.base import VisionModelAdapter
+
+class MyAdapter(VisionModelAdapter):
+    def cache_key(self, config):
+        # Unique string for model cache (same config → same cache entry)
+        return f"my_model:{config.get('checkpoint', 'default')}"
+
+    def load(self, config):
+        # Load model weights → return opaque model object
+        ...
+
+    def infer(self, model, image, bucket, key, config, s3, output_bucket):
+        # Run inference on PIL image, upload results to S3
+        # Return JSON-serializable result dict
+        ...
+```
+
+### 12.3 Deployment
+
+```bash
+# On the compute node, before starting the Slurm job:
+export USER_ADAPTERS_DIR=/home/user/my_adapters    # adapter .py files
+export USER_MODEL_PATH=/home/user/model_weights    # model weights dir
+sbatch serve-model.slurm
+```
+
+Inside the container:
+- Adapters are at `/adapters/user/`
+- Model weights are at `/models/user/`
+
+### 12.4 User Config
+
+```json
+{
+    "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+    "vision_model_type": "my_model",
+    "vision_model_config": { "checkpoint": "/models/user/weights.pth" }
+}
+```
+
+### 12.5 Two Extension Models Compared
+
+| | Embedding Pipeline (`user_script://`) | Vision Adapter (`VisionModelAdapter`) |
+|--|------|------|
+| **Runs inside** | UMRS server process | BentoML container (GPU) |
+| **Best for** | Multi-step processing, custom embeddings | Single-model GPU inference |
+| **Config** | `workflow.json` + Step classes | Single `.py` file |
+| **Dependencies** | `requirements` in workflow.json | `requirements.txt` in adapter dir |
+| **Model type** | `user_script:///path/to/workflow.json` | Adapter filename stem |
+| **GPU access** | Via BentoML HTTP API (from steps) | Direct (adapter runs on GPU node) |
+
+---
+
+## 13. Compatibility Notes
 
 - **Backward compatible**: All existing `model_type` values (`SentenceTransformer`, `openai://`, `rivault://bentoml://`, etc.) continue to work unchanged
 - **Opt-in**: Users who don't need custom models never encounter UDM code
