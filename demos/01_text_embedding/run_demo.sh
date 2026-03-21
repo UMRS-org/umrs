@@ -35,48 +35,17 @@ log "Server is ready."
 
 # ---------- Step 2: Prepare embedding model ----------
 log ""
-log "Step 2: Preparing embedding model on shared volume..."
-log "\$ podman exec $AI_LOGIN_CONTAINER python3 -u - <<'PYEOF' ... PYEOF"
-podman exec "$AI_LOGIN_CONTAINER" python3 -u - <<'PYEOF'
-import json, os, sys
-from huggingface_hub import snapshot_download, scan_cache_dir
-
-user_cfg_path = "/root/.config/umrs/users/user_rivault.json"
-models = set()
-try:
-    with open(user_cfg_path) as f:
-        cfg = json.load(f)
-    for xp in cfg.get("experiences", []):
-        for mod in xp.get("modalities", []):
-            m = mod.get("model", {})
-            mt = m.get("model_type", "")
-            if mt.startswith("rivault://") or mt.startswith("openai://"):
-                name = m.get("model_name")
-                if name:
-                    models.add(name)
-except Exception as e:
-    print(f"  Warning: could not parse user config: {e}", file=sys.stderr)
-
-if not models:
-    models = {"intfloat/e5-base-v2"}
-
-HUB_CACHE = "/shared/models/hub"
-os.makedirs(HUB_CACHE, exist_ok=True)
-
-for name in sorted(models):
-    try:
-        info = scan_cache_dir(HUB_CACHE)
-        if name in {r.repo_id for r in info.repos}:
-            print(f"  {name}: already cached, skipping.")
-            continue
-    except Exception:
-        pass
-    print(f"  Downloading {name}...")
-    snapshot_download(repo_id=name, cache_dir=HUB_CACHE)
-    print(f"  {name}: done.")
-
-print("  Embedding model ready.")
-PYEOF
+log "Step 2: Downloading embedding model via umrs-client..."
+# Uses umrs-client model download which:
+#   - Downloads from HuggingFace to $UMRS_MODEL_STAGING_ROOT (/shared/models)
+#   - Registers the model in the UMRS model catalog
+# The --staging-dir ensures the model lands in the shared volume visible to vLLM.
+# If already downloaded, umrs-client skips the download and registers only.
+MODEL_REPO="${EMBEDDING_MODEL:-intfloat/e5-base-v2}"
+run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
+    umrs-client model download "$MODEL_REPO" \
+    --scope system 2>&1 | while IFS= read -r line; do log "  $line"; done
+log "Embedding model ready."
 
 # ---------- Step 3: Upload text data ----------
 log ""
