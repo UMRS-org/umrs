@@ -46,4 +46,27 @@ This document defines the ZeroMQ-only control and data planes between client(s) 
 
 ## Versioning
 - Base port: `5555`.
-- Protocol strings are stable: `READY?`, `READY!`, `CREATE_DATA_QUEUE`, `OBJECT`, `FILE`, `ACKNOWLEDGE`, `NO_DATA_QUEUE`.
+- Protocol strings are stable: `READY?`, `READY!`, `CREATE_DATA_QUEUE`, `OBJECT`, `FILE`, `ACKNOWLEDGE`, `NO_DATA_QUEUE`, `EXPORT_EMBEDDINGS`.
+
+## Additional Control Commands
+
+5) STATUS
+- Request: `STATUS:<username>:<key>`
+- Response: JSON payload with task summaries
+- Behavior: Server returns status overview for the given user/key. Synchronous request/response on the control channel.
+
+6) RECOMPUTE / UPDATE / CHECK / RELOAD
+- Request: `<CMD>:<username>:0`
+- Response: `ACKNOWLEDGE`
+- Behavior: Server schedules the maintenance command and acknowledges immediately. The operation runs in a background thread.
+
+7) WAIT_OUTPUT
+- Request: `WAIT_OUTPUT:<username>:<bucket_name>;<timeout>`
+- Response: Status message (blocking until done or timeout)
+- Behavior: Server waits for DB table modifications on the bucket's table and replies when new data is detected.
+
+8) EXPORT_EMBEDDINGS
+- Request: `EXPORT_EMBEDDINGS:<username>:<path_to_bucket>;<format>`
+- Response: JSON payload `{"status": "ok", "database": "...", "table": "...", "columns": [...], "rows": [[...], ...], "rows_exported": N, "format": "csv|jsonl"}`
+- Behavior: Server queries the pgvector database for all embeddings in the table associated with the given bucket path. Results are serialised as JSON and returned inline on the control channel. The client writes the data to a local file. **The client never connects directly to the database** — the server mediates all DB access (Client → Server → Database).
+- Error: `{"status": "error", "message": "..."}`

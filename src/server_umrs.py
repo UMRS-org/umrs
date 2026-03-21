@@ -846,6 +846,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
 ##################################################################################
 #########################        Main server loop        #########################
 ##################################################################################
+
 def make_update_status_callback(task_manager, task_id):
     """
     Return a callback function that updates the task status for the given task_id.
@@ -921,6 +922,11 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                                                                      timeout, control_mq, zmq_sender_id, cmd.lower(),
                                                                      update_status_callback=update_status_func)
                     task_manager.associate_thread_with_task(thread_ident, task_id)
+            elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
+                client_id, export_args, zmq_sender_id = payload
+                thread_ident = task_manager.active_threads.launch_export_embeddings(client_id, export_args, buckets_cfg, control_mq, zmq_sender_id, cmd.lower(), update_status_callback=update_status_func)
+                task_manager.associate_thread_with_task(thread_ident, task_id)
+
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
                 task_manager.tasks_status.update_status(task_id, TaskStatus.UNKNOWN)
