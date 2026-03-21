@@ -43,4 +43,10 @@ class TaskStatus:
     ERROR = "Error"
     LAUNCHED = "Launched"
     INITIALIZING = "Initializing"
-    
+   
+    @classmethod
+    def all_status(cls):
+        return [
+            v for k, v in vars(cls).items()
+            if not k.startswith("__") and isinstance(v, str)
+        ]

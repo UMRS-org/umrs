@@ -29,17 +29,78 @@ class UMRSTask:
     def _init_db(self):
         with self.conn_lock:
             with self.conn:
+                # Get all possible statuses dynamically
+                statuses = TaskStatus.all_status()
+                status_list = ', '.join(f"'{s}'" for s in statuses)
+                
+                # Create metadata table to track schema
                 self.conn.execute("""
-                CREATE TABLE IF NOT EXISTS tasks (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    client_id TEXT,
-                    cmd TEXT,            
-                    payload TEXT,
-                    status TEXT,
-                    submitted_at TEXT,
-                    updated_at TEXT
+                CREATE TABLE IF NOT EXISTS schema_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
                 )
                 """)
+                
+                # Check if tasks table needs migration
+                cur = self.conn.cursor()
+                cur.execute("SELECT value FROM schema_metadata WHERE key = 'status_list'")
+                stored_status_list = cur.fetchone()
+                
+                if stored_status_list and stored_status_list[0] != status_list:
+                    # Statuses changed; migrate
+                    self._migrate_table(status_list)
+                
+                # Create or update tasks table
+                self.conn.execute(f"""
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_id TEXT NOT NULL,
+                    cmd TEXT NOT NULL,            
+                    payload TEXT,
+                    status TEXT NOT NULL CHECK (status IN ({status_list})),
+                    submitted_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """)
+                
+                # Store current status_list in metadata
+                self.conn.execute("INSERT OR REPLACE INTO schema_metadata (key, value) VALUES (?, ?)", ("status_list", status_list))
+                
+                # Add indexes for performance
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_client_cmd ON tasks(client_id, cmd)")
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_status ON tasks(status)")
+                self.conn.execute("CREATE INDEX IF NOT EXISTS idx_submitted ON tasks(submitted_at DESC)")
+                # Enable WAL for better concurrency
+                self.conn.execute("PRAGMA journal_mode=WAL")
+
+    def _migrate_table(self, status_list):
+        """Migrate the tasks table to update the CHECK constraint."""
+        # Rename old table
+        self.conn.execute("ALTER TABLE tasks RENAME TO tasks_old")
+        
+        print(f"Migrating UMRS Tasks database to {status_list=}")
+
+        # Create new table with updated CHECK
+        self.conn.execute(f"""
+        CREATE TABLE tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            client_id TEXT NOT NULL,
+            cmd TEXT NOT NULL,            
+            payload TEXT,
+            status TEXT NOT NULL CHECK (status IN ({status_list})),
+            submitted_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """)
+        
+        # Copy data from old table
+        self.conn.execute("""
+        INSERT INTO tasks (id, client_id, cmd, payload, status, submitted_at, updated_at)
+        SELECT id, client_id, cmd, payload, status, submitted_at, updated_at FROM tasks_old
+        """)
+        
+        # Drop old table
+        self.conn.execute("DROP TABLE tasks_old")
 
     def mark_uncompleted_tasks(self, user_id=None, cmd=TaskCmd.PROCESS_OBJECTS, new_status=TaskStatus.OVERRIDDEN):
         """
@@ -129,38 +190,44 @@ class UMRSTask:
         """
         (verbose and traceback.print_stack())
         with self.conn_lock:
-            with self.conn:
+            with self.conn:  # Start transaction
                 cursor = self.conn.cursor()
                 cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
                 rows = cursor.fetchall()
 
-        seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
-        
-        for row in rows:
-            task_id, client_id, cmd, payload, status, submitted_at = row
-            key = (client_id, cmd, payload)
+                seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
+                
+                tasks_to_override = []  # Collect IDs to update
+                
+                for row in rows:
+                    task_id, client_id, cmd, payload, status, submitted_at = row
+                    key = (client_id, cmd, payload)
 
-            # If task is not yet seen, store it
-            if key not in seen_tasks:
-                seen_tasks[key] = {
-                    "id": task_id,
-                    "status": status,
-                    "submitted_at": submitted_at
-                }
-            else:
-                # Task already seen
-                if mark_override:
-                    # Only consider overriding earlier incomplete tasks
-                    current_status = seen_tasks[key]["status"]
-                    if current_status == TaskStatus.COMPLETED and status != TaskStatus.COMPLETED:
-                        # Mark older incomplete task as OVERRIDDEN
-                        with self.conn_lock:
-                            with self.conn:
-                                self.conn.execute(
-                                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                                    (TaskStatus.OVERRIDDEN, datetime.utcnow().isoformat(), task_id)
-                                )
-        
+                    # If task is not yet seen, store it
+                    if key not in seen_tasks:
+                        seen_tasks[key] = {
+                            "id": task_id,
+                            "status": status,
+                            "submitted_at": submitted_at
+                        }
+                    else:
+                        # Task already seen
+                        if mark_override:
+                            # Only consider overriding earlier incomplete tasks
+                            current_status = seen_tasks[key]["status"]
+                            if current_status == TaskStatus.COMPLETED and status != TaskStatus.COMPLETED:
+                                # Mark older incomplete task as OVERRIDDEN
+                                tasks_to_override.append(task_id)
+                
+                # Perform all updates in the same transaction
+                if tasks_to_override:
+                    now = datetime.utcnow().isoformat()
+                    placeholders = ','.join('?' for _ in tasks_to_override)
+                    self.conn.execute(
+                        f"UPDATE tasks SET status = ?, updated_at = ? WHERE id IN ({placeholders})",
+                        [TaskStatus.OVERRIDDEN, now] + tasks_to_override
+                    )
+                # Transaction commits here
 
         # Return dict of unique tasks not completed
         result = {
