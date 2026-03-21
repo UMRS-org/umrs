@@ -4,7 +4,6 @@ import numpy as np
 import json
 import os
 os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-from sentence_transformers import SentenceTransformer
 import os
 from sklearn.cluster import KMeans
 import ast  # To safely convert strings to lists
@@ -35,7 +34,7 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
 
 
 def load_embedding_model(model_name):
-
+    from sentence_transformers import SentenceTransformer
     if not model_name:
         print("No model...");
         return None
