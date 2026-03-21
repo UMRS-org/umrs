@@ -169,6 +169,10 @@ class UMRSTask:
             client_id, files = full_payload if isinstance(full_payload, tuple) else ("", full_payload)
             str_payload = json.dumps(files)
 
+        elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
+            client_id, export_args, _ = full_payload
+            str_payload = json.dumps(export_args)
+
         elif cmd in (TaskCmd.HAND_CHECK, TaskCmd.CREATE_DATA_QUEUE, TaskCmd.STATUS):
             print(f"We do not create task_id for {cmd=}")
             return None
@@ -241,7 +245,7 @@ class UMRSTask:
                     time.sleep(0.5)
                 else:
                     # last failure Print and raise error properly
-                    print(f"Erreur SQLite critique lors de la mise à jour de la tâche {task_id}:")
+                    print(f"Critical SQLite error while updating {task_id}:")
                     print(f"  {type(e).__name__}: {e}")
                     traceback.print_exc()
                     raise
