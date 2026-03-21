@@ -1,4 +1,4 @@
-# Demo 08 — Model Registration & Staging
+# Demo 06 — Model Registration & Staging
 
 This demo shows how to manage models in UMRS: register, list, and download
 models — including user's own trained models.

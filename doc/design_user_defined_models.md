@@ -574,7 +574,7 @@ Execution mode is selected via the `ExecutionMode` enum and configured in
 
 | Task | What | Status |
 |------|------|--------|
-| U-207 | Demo: `demos/05_user_model/` with example scripts | ✅ |
+| U-207 | Demo: `demos/07_user_model/` with example scripts | ✅ |
 | U-208 | User guide section + example script templates | ✅ |
 
 ### Phase 4: Staging Cleanup ✅

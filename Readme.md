@@ -116,6 +116,16 @@ Step-by-step demos that walk through UMRS workflows end to end:
 | [demos/02_sam3_segmentation/](demos/02_sam3_segmentation/) | SAM3 image segmentation via BentoML inside Mini-Rivault |
 | [demos/03_hmae_inference/](demos/03_hmae_inference/) | HMAE feature extraction / reconstruction via Mini-Rivault |
 | [demos/04_rag_search/](demos/04_rag_search/) | RAG semantic search: vector, hybrid, reranking, Q&A |
+| [demos/05_server_maintenance/](demos/05_server_maintenance/) | Data integrity: list_buckets, check, update, recompute |
+| [demos/06_model_registry/](demos/06_model_registry/) | Model register, list, download (HuggingFace + local) |
+| [demos/07_user_model/](demos/07_user_model/) | User-defined model workflows (UMRSStep) |
+| [demos/08_defect_analysis/](demos/08_defect_analysis/) | Multi-step pipeline: SAM3 → crop → HMAE → cluster |
+| [demos/09_hmae_full/](demos/09_hmae_full/) | Full HMAE pipeline (reconstruct, MAE, features) |
+| [demos/10_job_submission/](demos/10_job_submission/) | Job submission, service lifecycle, --keep-alive |
+| [demos/11_pipeline_sdk/](demos/11_pipeline_sdk/) | Pipeline SDK: 6-phase lifecycle |
+| [demos/12_plugins/](demos/12_plugins/) | Plugin system: sandboxed execution (Slurm/K8s) |
+
+See [demos/README.md](demos/README.md) for the full guide.
 
 ## Repository Structure
 
@@ -134,12 +144,20 @@ src/                        Core application code
     ├── pipeline_sdk/        Optional in-container pipeline library
     └── ...                  S3, SQL, ZMQ, auth, config, etc.
 
-demos/                       Step-by-step demos
+demos/                       Step-by-step demos (basic → advanced)
 ├── 00_start_services/       Admin: start/stop/health-check
-├── 01_text_embedding/       User: text embedding workflow
-├── 02_sam3_segmentation/    User: SAM3 vision pipeline
-├── 03_hmae_inference/       User: HMAE vision pipeline
-├── 04_rag_search/           User: RAG semantic search + Q&A
+├── 01_text_embedding/       Basic: text embedding workflow
+├── 02_sam3_segmentation/    Basic: SAM3 vision pipeline
+├── 03_hmae_inference/       Basic: HMAE vision pipeline
+├── 04_rag_search/           Basic: RAG semantic search + Q&A
+├── 05_server_maintenance/   Ops: data integrity (check, update, recompute)
+├── 06_model_registry/       Ops: model management
+├── 07_user_model/           Advanced: user-defined workflows
+├── 08_defect_analysis/      Advanced: multi-step pipeline
+├── 09_hmae_full/            Advanced: full HMAE pipeline
+├── 10_job_submission/       Infra: job submission + lifecycle
+├── 11_pipeline_sdk/         Infra: pipeline SDK
+├── 12_plugins/              Infra: plugin system
 └── slurm-dev/               Slurm dev environment (Podman + native slurmd)
 
 docker/                      Docker standalone deployment

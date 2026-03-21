@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────────────
-# Demo 06 — Structural Defect Analysis
+# Demo 09 — HMAE Full Pipeline (all 3 modes)
 #
-# Uploads images to UMRS via umrs-client. The UMRS server automatically
-# launches the BentoML vision service on Rivault/Slurm, runs defect
-# analysis (SAM3 segmentation), and writes results to the output S3 bucket.
+# Uploads the same images to three bucket aliases — one per HMAE mode.
+# The UMRS server processes each bucket with the corresponding mode
+# (reconstruct, mae, features) and writes results to output buckets.
 #
-# Flow: upload images → server processes → download results
+# Flow: upload images ×3 → server runs 3 modes in parallel → download all
 #
 # Prerequisites:
 #   - Services running (demos/00_start_services/)
-#   - Model weights pre-staged on the Rivault node
+#   - HMAE model checkpoint pre-staged on the Rivault node
 # ──────────────────────────────────────────────────────────────────────────
 set -Eeuo pipefail
 
@@ -18,15 +18,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 UMRS_CLIENT_CONTAINER="umrs-client"
 
-# Bucket alias as defined in user_rivault.json
-BUCKET_ALIAS="defect-analysis"
+# Three bucket aliases — one per HMAE mode (defined in user_rivault.json)
+BUCKET_RECON="hmae-full-recon"
+BUCKET_MAE="hmae-full-mae"
+BUCKET_FEAT="hmae-full-feat"
+
 # Username as defined in user_rivault.json
 USERNAME="${UMRS_USERNAME:-rivault_user}"
 
 # Test images are mounted into the container at /opt/test_data/images/ via docker-compose
-# (same images used by demos 02 and 03)
 CONTAINER_TEST_DATA="/opt/test_data/images"
-MAX_IMAGES=2
+MAX_IMAGES="${MAX_IMAGES:-3}"
 
 RESULTS_DIR="${SCRIPT_DIR}/results"
 
@@ -50,7 +52,7 @@ step "1/5  Preflight checks"
 run_cmd podman exec "$UMRS_CLIENT_CONTAINER" umrs-client ping || \
     fail "UMRS server not reachable. Start services first."
 
-# Reload config so the server creates output buckets and grants user access
+# Reload config so the server creates vision output buckets and grants user access
 info "Reloading UMRS configuration ..."
 run_cmd podman exec "$UMRS_CLIENT_CONTAINER" umrs-client reload || warn "reload failed"
 sleep 3  # brief pause for server to process reload
@@ -59,7 +61,6 @@ sleep 3  # brief pause for server to process reload
 step "2/5  Check test images"
 # ──────────────────────────────────────────────────────────────────────────
 
-# Use test images already mounted in the container (shared with demos 02/03)
 image_count=$(podman exec "$UMRS_CLIENT_CONTAINER" \
     find "$CONTAINER_TEST_DATA" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.tiff' \) 2>/dev/null | wc -l)
 if [[ "$image_count" -eq 0 ]]; then
@@ -76,39 +77,71 @@ podman exec "$UMRS_CLIENT_CONTAINER" bash -c \
 info "Selected $(podman exec "$UMRS_CLIENT_CONTAINER" ls "$CONTAINER_UPLOAD" | wc -l) of $image_count available test images"
 
 # ──────────────────────────────────────────────────────────────────────────
-step "3/5  Upload images via umrs-client"
+step "3/5  Upload images to all 3 mode buckets"
 # ──────────────────────────────────────────────────────────────────────────
 
-# Upload via umrs-client (server detects new objects and processes them automatically)
-run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
-    umrs-client upload_dir "$CONTAINER_UPLOAD" "$BUCKET_ALIAS" "$USERNAME"
+for bucket in "$BUCKET_RECON" "$BUCKET_MAE" "$BUCKET_FEAT"; do
+    info "Uploading to bucket '${bucket}' ..."
+    run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
+        umrs-client upload_dir "$CONTAINER_UPLOAD" "$bucket" "$USERNAME"
+done
 
-ok "Images uploaded. Server will launch Rivault/BentoML and process automatically."
+ok "Images uploaded to 3 buckets. Server will process each with its HMAE mode."
 
 # ──────────────────────────────────────────────────────────────────────────
-step "4/5  Download results"
+step "4/5  Download results from all 3 modes"
 # ──────────────────────────────────────────────────────────────────────────
 
-mkdir -p "${RESULTS_DIR}"
+mkdir -p "${RESULTS_DIR}/reconstruct" "${RESULTS_DIR}/mae" "${RESULTS_DIR}/features"
 
-info "The download_results command will poll the server until processing is complete."
-info "This may take several minutes if the server is launching Rivault/BentoML for the first time."
+info "Downloading results from each mode bucket (polling until complete)..."
+info "This may take several minutes on first run (Rivault + BentoML cold start)."
 
-CONTAINER_RESULTS="/tmp/demo_results"
-run_cmd podman exec "$UMRS_CLIENT_CONTAINER" rm -rf "$CONTAINER_RESULTS"
-run_cmd podman exec "$UMRS_CLIENT_CONTAINER" mkdir -p "$CONTAINER_RESULTS"
 DOWNLOAD_START=$SECONDS
-run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
-    umrs-client --verbose download_results "$BUCKET_ALIAS" "$CONTAINER_RESULTS" --force-overwrite
-DOWNLOAD_ELAPSED=$(( SECONDS - DOWNLOAD_START ))
-info "Server processing + download took ${DOWNLOAD_ELAPSED}s ($(( DOWNLOAD_ELAPSED / 60 ))m $(( DOWNLOAD_ELAPSED % 60 ))s)"
-run_cmd podman cp "$UMRS_CLIENT_CONTAINER:$CONTAINER_RESULTS/." "$RESULTS_DIR/"
 
-ok "Results saved to ${RESULTS_DIR}/"
+for pair in "reconstruct:${BUCKET_RECON}" "mae:${BUCKET_MAE}" "features:${BUCKET_FEAT}"; do
+    mode="${pair%%:*}"
+    bucket="${pair#*:}"
+    info "--- Mode: ${mode} (bucket: ${bucket}) ---"
+
+    CONTAINER_RESULTS="/tmp/demo_results_${mode}"
+    podman exec "$UMRS_CLIENT_CONTAINER" rm -rf "$CONTAINER_RESULTS"
+    podman exec "$UMRS_CLIENT_CONTAINER" mkdir -p "$CONTAINER_RESULTS"
+    run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
+        umrs-client --verbose download_results "$bucket" "$CONTAINER_RESULTS" --force-overwrite
+    run_cmd podman cp "$UMRS_CLIENT_CONTAINER:$CONTAINER_RESULTS/." "$RESULTS_DIR/$mode/"
+    ok "  ${mode} results downloaded."
+done
+
+DOWNLOAD_ELAPSED=$(( SECONDS - DOWNLOAD_START ))
+info "Total processing + download took ${DOWNLOAD_ELAPSED}s ($(( DOWNLOAD_ELAPSED / 60 ))m $(( DOWNLOAD_ELAPSED % 60 ))s)"
+
+ok "All results saved to ${RESULTS_DIR}/"
 
 # ──────────────────────────────────────────────────────────────────────────
 step "5/5  Summary"
 # ──────────────────────────────────────────────────────────────────────────
 
-ls -lh "${RESULTS_DIR}/"
-ok "Demo 06 complete. Results in: ${RESULTS_DIR}/"
+echo ""
+info "Pipeline: reconstruct + mae + features (3 independent modes)"
+echo ""
+
+# Count outputs per mode
+recon_count=$(find "$RESULTS_DIR/reconstruct" -type f 2>/dev/null | wc -l || echo 0)
+mae_count=$(find "$RESULTS_DIR/mae" -type f 2>/dev/null | wc -l || echo 0)
+feat_count=$(find "$RESULTS_DIR/features" -type f 2>/dev/null | wc -l || echo 0)
+
+echo -e "  Reconstruct  : ${recon_count} file(s)"
+echo -e "  MAE          : ${mae_count} file(s)"
+echo -e "  Features     : ${feat_count} file(s)"
+echo ""
+
+for mode_dir in reconstruct mae features; do
+    if [[ -d "$RESULTS_DIR/$mode_dir" ]]; then
+        echo "  ${mode_dir}/:"
+        ls -1h "$RESULTS_DIR/$mode_dir/" 2>/dev/null | sed 's/^/    /'
+        echo ""
+    fi
+done
+
+ok "Demo 09 complete. Results in: ${RESULTS_DIR}/"

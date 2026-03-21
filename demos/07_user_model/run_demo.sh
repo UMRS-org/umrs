@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------
-# Demo 05 — User-Defined Model Workflow (offline / unit-test mode)
+# Demo 07 — User-Defined Model Workflow (offline / unit-test mode)
 #
 # This script exercises the UDM subsystem *without* a running UMRS
 # server or MinIO — it uses a mock S3 and runs the executor directly.
@@ -17,7 +17,7 @@ if [[ ! -x "$PYTHON" ]]; then
     PYTHON="python3"
 fi
 
-echo "=== Demo 05: User-Defined Model Workflow ==="
+echo "=== Demo 07: User-Defined Model Workflow ==="
 echo "Python: $PYTHON"
 echo ""
 
@@ -108,4 +108,4 @@ print("Integration smoke test PASSED ✓")
 PYEOF
 
 echo ""
-echo "=== Demo 05 complete ==="
+echo "=== Demo 07 complete ==="

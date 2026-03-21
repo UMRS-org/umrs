@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Demo 10: Server Maintenance
+# Demo 05: Server Maintenance
 # Shows: list_buckets, check, update, recompute, status
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLIENT="umrs-client"
 SERVER_IP="${UMRS_SERVER_IP:-127.0.0.1}"
 
-echo "=== Demo 10: Server Maintenance ==="
+echo "=== Demo 05: Server Maintenance ==="
 echo ""
 
 # Step 0: Check server connectivity
@@ -59,4 +59,4 @@ else
     echo ""
 fi
 
-echo "=== Demo 10 Complete ==="
+echo "=== Demo 05 Complete ==="

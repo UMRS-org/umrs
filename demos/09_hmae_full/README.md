@@ -1,4 +1,4 @@
-# Demo 07: HMAE Full Pipeline (All 3 Modes)
+# Demo 09: HMAE Full Pipeline (All 3 Modes)
 
 Runs all three HMAE (Hierarchical Masked Auto-Encoder) inference modes as a
 chained UMRSStep workflow: full reconstruction, masked reconstruction with

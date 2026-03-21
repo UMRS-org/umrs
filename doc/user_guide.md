@@ -263,7 +263,7 @@ All commands accept `-c <config>` (config file), `--server-ip <ip>`, `--output j
 - [Demo: Text Embedding](../demos/01_text_embedding/README.md)
 - [Demo: SAM3 Segmentation](../demos/02_sam3_segmentation/README.md)
 - [Demo: HMAE Inference](../demos/03_hmae_inference/README.md)
-- [Demo: User-Defined Workflow](../demos/05_user_model/README.md)
+- [Demo: User-Defined Workflow](../demos/07_user_model/README.md)
 - [UDM Design Document](design_user_defined_models.md) — architecture of user workflows
 
 ---
