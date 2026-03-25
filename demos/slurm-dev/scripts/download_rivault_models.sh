@@ -11,7 +11,7 @@ set -euo pipefail
 # environment for authenticated, higher-rate downloads.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET_BASE="$SCRIPT_DIR/../../src/umrs/rivault/models"
+TARGET_BASE="$SCRIPT_DIR/../../src/umrs/mini-rivault-llm/models"
 mkdir -p "$TARGET_BASE"
 
 

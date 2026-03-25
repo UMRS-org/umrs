@@ -50,7 +50,7 @@ import os
 import sys
 import time
 
-import requests
+import bentoml
 
 
 def upload_images_to_s3(s3_endpoint, access_key, secret_key, bucket, image_paths):
@@ -80,72 +80,40 @@ def upload_images_to_s3(s3_endpoint, access_key, secret_key, bucket, image_paths
     return s3_urls
 
 
-def submit_hmae_task(bentoml_url, image_url, mode="reconstruct"):
-    """Submit an HMAE inference task via BentoML task queue."""
-    url = f"{bentoml_url}/infer/submit"
-    payload = {
-        "model_type": "hmae",
-        "model_config": {"mode": mode},
-        "image_url": image_url,
-    }
+def submit_and_wait_hmae(client, image_url, mode="reconstruct",
+                         poll_interval=2.0, timeout=600.0):
+    """Submit an HMAE task and wait for the result."""
+    print(f"  Submitting HMAE task: image={image_url}, mode={mode}")
 
-    print(f"  POST {url}")
-    print(f"  Payload: image_url={image_url}, mode={mode}")
+    task = client.infer.submit(
+        model_type="hmae",
+        inference_config={"mode": mode},
+        image_url=image_url,
+    )
+    print(f"  Task submitted! ID: {task.id}")
 
-    resp = requests.post(url, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    task_id = data.get("task_id") or data.get("id")
-    print(f"  Task submitted! ID: {task_id}")
-    return task_id
-
-
-def poll_task_status(bentoml_url, task_id, poll_interval=2.0, timeout=600.0):
-    """Poll task status until completion."""
-    url = f"{bentoml_url}/infer/status"
     start = time.time()
-
     while True:
         elapsed = time.time() - start
+        status = task.get_status()
+        print(f"\r\033[2K  [{elapsed:.1f}s] Status: {status.value}", end="", flush=True)
 
-        try:
-            resp = requests.get(url, params={"task_id": task_id}, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            print(f"\r\033[2K  [{elapsed:.1f}s] Poll error: {exc}")
-            if elapsed > timeout:
-                return "timeout"
-            time.sleep(poll_interval)
-            continue
-
-        status = str(data.get("status", data.get("value", "unknown"))).strip()
-        print(f"\r\033[2K  [{elapsed:.1f}s] Status: {status}", end="", flush=True)
-
-        if status in ("success", "completed"):
+        if status.value == "success":
             print(f"\n  Task completed in {elapsed:.1f}s")
-            return "success"
+            return task.get()
 
-        if status in ("failure", "failed", "cancelled"):
-            print(f"\n  Task ended: {status}")
-            return status
+        if status.value in ("failure", "cancelled"):
+            print(f"\n  Task ended: {status.value}")
+            return {"error": f"Task {task.id} {status.value}"}
 
         if elapsed > timeout:
             print(f"\n  TIMEOUT: Task did not complete within {timeout}s")
-            return "timeout"
+            return {"error": f"Task timed out after {timeout}s"}
 
         time.sleep(poll_interval)
 
 
-def get_task_result(bentoml_url, task_id):
-    """Retrieve the result of a completed task."""
-    url = f"{bentoml_url}/infer/get"
-    resp = requests.get(url, params={"task_id": task_id}, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
-
-
-def run_single_mode(bentoml_url, image_url, mode, timeout=300):
+def run_single_mode(client, image_url, mode, timeout=300):
     """Run one HMAE inference mode and display results."""
     mode_descriptions = {
         "mae": "MAE Reconstruction (with masking)",
@@ -159,25 +127,11 @@ def run_single_mode(bentoml_url, image_url, mode, timeout=300):
     print(f"{'─' * 50}")
 
     # Submit
-    task_id = submit_hmae_task(bentoml_url, image_url, mode)
+    result = submit_and_wait_hmae(client, image_url, mode, timeout=timeout)
 
-    # Poll
-    print(f"\n  Waiting for completion...")
-    status = poll_task_status(bentoml_url, task_id, timeout=timeout)
-
-    if status != "success":
-        print(f"  Task ended with status: {status}")
-        # Try to get error details
-        try:
-            result = get_task_result(bentoml_url, task_id)
-            if "error" in result:
-                print(f"  ERROR: {result['error']}")
-        except Exception:
-            pass
+    if "error" in result:
+        print(f"  Task failed: {result['error']}")
         return None
-
-    # Get result
-    result = get_task_result(bentoml_url, task_id)
 
     print(f"\n  Result:")
     print(f"  - Mode: {result.get('mode', mode)}")
@@ -233,13 +187,11 @@ def main():
     # --- Step 1: Check BentoML service health ---
     print("\n--- Step 1: Check BentoML service health ---")
     try:
-        resp = requests.get(f"{args.bentoml_url}/healthz", timeout=5)
-        if resp.status_code == 200:
-            print(f"  BentoML service healthy at {args.bentoml_url}")
-        else:
-            print(f"  WARNING: BentoML returned status {resp.status_code}")
-    except requests.ConnectionError:
-        print(f"  ERROR: Cannot connect to BentoML at {args.bentoml_url}")
+        client = bentoml.SyncHTTPClient(args.bentoml_url,
+                                        server_ready_timeout=30)
+        print(f"  BentoML service healthy at {args.bentoml_url}")
+    except Exception as exc:
+        print(f"  ERROR: Cannot connect to BentoML at {args.bentoml_url}: {exc}")
         sys.exit(1)
 
     # --- Step 2: Collect image URLs ---
@@ -288,7 +240,7 @@ def main():
     all_results = []
     for image_url in image_urls:
         for mode in modes:
-            result = run_single_mode(args.bentoml_url, image_url, mode, args.timeout)
+            result = run_single_mode(client, image_url, mode, args.timeout)
             if result:
                 all_results.append(result)
 
@@ -309,6 +261,7 @@ def main():
         print(f"  [{mode}] -> {output}{extra}")
 
     print(f"\n  Done!")
+    client.close()
 
 
 if __name__ == "__main__":

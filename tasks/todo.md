@@ -45,9 +45,18 @@
 - [x] Remove stale `import torch` from utils.py (blocked pip install)
 - [x] Fix bash brace expansion in demo scripts (`*.{jpg,png}` → `find` command)
 
-## Review
+## Vision Pipeline Fixes (2026-03-24)
 
-- Replaced the previous linear script with function-based orchestration and strict shell safety (`set -Eeuo pipefail`).
+- [x] V1: Fix BentoML status polling — `ResultStatus` enum mismatch (completed/failed/canceled vs success/failure/cancelled)
+- [x] V2: Fix adapter path — `DEFAULT_ADAPTERS_DIR` pointing to empty `mini-rivault-llm/default_adapters/`
+- [x] V3: Fix adapter name — `removesuffix("_adapter")` for filename-to-registry key
+- [x] V4: Fix SystemExit crash — adapter loader catching `SystemExit` from rogue scripts
+- [x] V5: Fix `.dockerignore` — `*.tar` → `**/*.tar` for recursive matching
+- [x] V6: SAM2 optimization — deferred upscaling, batch_size 64→16
+- [x] V7: Docker image rebuild with all fixes
+- [x] V8: Demo 08 end-to-end verification — both images processed in 71s (was timing out at 300-1200s)
+- [ ] V9: Demo 09 (HMAE full) verification
+- [ ] V10: Clean up old tarballs (~27GB of stale images in mini-rivault-llm/images/)
 - Added preflight checks for required commands and config files.
 - Removed brittle hardcoded vLLM container-name assumptions by resolving service container IDs via compose.
 - Added deterministic readiness gates for `ai-login`, `umrs-client`, Slurm node registration, vLLM endpoint, and LiteLLM host endpoint.

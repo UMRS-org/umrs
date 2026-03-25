@@ -49,8 +49,8 @@ CGROUP_CONF_DST="/etc/slurm/cgroup.conf"
 SLURM_NODE_NAME="${SLURM_NODE_NAME:-compute-01}"
 
 # Rivault directory (used by mini-rivault-job.sh / serve-model.slurm)
-# Rivault scripts moved from demos/slurm-dev/rivault/ to src/umrs/rivault/
-RIVAULT_DIR="${RIVAULT_DIR:-$DEMO_DIR/../../src/umrs/rivault}"
+# Rivault scripts moved from demos/slurm-dev/rivault/ to src/umrs/mini-rivault-llm/
+RIVAULT_DIR="${RIVAULT_DIR:-$DEMO_DIR/../../src/umrs/mini-rivault-llm}"
 
 # Job info directory (shared with ai-login container via ./job-info mount)
 JOB_INFO_DIR="${JOB_INFO_DIR:-$DEMO_DIR/job-info}"
@@ -288,9 +288,19 @@ fi
 
 export RIVAULT_DIR
 export JOB_INFO_DIR
+# Also export the Jens vision stack dir for VISION_STACK=jens.
+# The rivault_launcher.py will override RIVAULT_DIR via sbatch --export,
+# but having it here allows manual sbatch invocations to work too.
+export JENS_RIVAULT_DIR="${JENS_RIVAULT_DIR:-$DEMO_DIR/../../src/umrs/mini-rivault-vision}"
 export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-$RIVAULT_DIR/models/vllm/huggingface}"
 export NGINX_LITELLM_DOCKER_PORT="${NGINX_LITELLM_DOCKER_PORT:-11434}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-sk-demo-dev}"
+# Jens's vision stack uses a dedicated port to avoid conflict with LLM stack.
+export BENTOML_VISION_DOCKER_PORT="${BENTOML_VISION_DOCKER_PORT:-3001}"
+# S3 credentials for Jens's VisionFrontend (accesses UMRS MinIO directly).
+export UMRS_S3_ACCESS_KEY="${MINIO_ACCESS_KEY:-minioadmin}"
+export UMRS_S3_SECRET_KEY="${MINIO_SECRET_KEY:-minioadmin}"
+export UMRS_S3_BUCKET_PORT="${UMRS_S3_BUCKET_PORT:-19000}"
 export VLLM_DOCKER_TAG="${VLLM_DOCKER_TAG:-nightly}"
 export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.95}"
 

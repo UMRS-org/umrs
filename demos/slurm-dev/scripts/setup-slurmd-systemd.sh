@@ -15,8 +15,8 @@ if [[ -f "$DEMO_DIR/.env" ]]; then
 fi
 
 SLURM_NODE_NAME="${SLURM_NODE_NAME:-compute-01}"
-# Rivault scripts moved from demos/slurm-dev/rivault/ to src/umrs/rivault/
-RIVAULT_DIR="${RIVAULT_DIR:-$DEMO_DIR/../../src/umrs/rivault}"
+# Rivault scripts moved from demos/slurm-dev/rivault/ to src/umrs/mini-rivault-llm/
+RIVAULT_DIR="${RIVAULT_DIR:-$DEMO_DIR/../../src/umrs/mini-rivault-llm}"
 JOB_INFO_DIR="${JOB_INFO_DIR:-$DEMO_DIR/job-info}"
 
 if [[ $EUID -ne 0 ]]; then echo "ERROR: run with sudo"; exit 1; fi

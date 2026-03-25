@@ -92,11 +92,11 @@ def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
     Generates a grid of points across the image, runs SAM2 for each point,
     and returns the best mask per point (deduplication via IoU filtering).
     Large images are resized to *max_dim* before inference for speed; masks
-    are upscaled back to the original resolution.
+    are upscaled back to the original resolution only after NMS filtering.
     """
     orig_w, orig_h = image.size
 
-    # Down-scale large images to keep inference tractable on CPU
+    # Down-scale large images to keep inference tractable
     scale = 1.0
     if max(orig_w, orig_h) > max_dim:
         scale = max_dim / max(orig_w, orig_h)
@@ -106,6 +106,7 @@ def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
                      orig_w, orig_h, new_w, new_h)
 
     w, h = image.size
+    need_upscale = (w != orig_w or h != orig_h)
 
     # Generate sparse point grid
     xs = np.linspace(0, w - 1, points_per_side, dtype=np.float32)
@@ -113,10 +114,11 @@ def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
     grid_x, grid_y = np.meshgrid(xs, ys)
     points = np.stack([grid_x.ravel(), grid_y.ravel()], axis=-1)
 
+    # Collect masks at inference resolution (not original) for fast NMS
     all_masks = []
     all_scores = []
 
-    batch_size = 64
+    batch_size = 16
     for i in range(0, len(points), batch_size):
         batch_pts = points[i:i + batch_size]
         # Sam2 expects: input_points shape [batch, num_objects, num_points, 2]
@@ -140,16 +142,12 @@ def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
         masks = masks.squeeze(0).squeeze(1)  # [num_objects, H, W]
         iou_scores = iou_scores.squeeze(0).squeeze(-1)  # [num_objects]
 
-        # Resize masks to original image size
+        # Keep masks at inference resolution for NMS; upscale later
         for j in range(masks.shape[0]):
             score = iou_scores[j].item()
             if score < 0.5:
                 continue
-            mask_t = torch.nn.functional.interpolate(
-                masks[j:j+1].unsqueeze(0).float(),
-                size=(orig_h, orig_w), mode="bilinear", align_corners=False,
-            ).squeeze()
-            mask_np = (mask_t.cpu().numpy() > mask_threshold).astype(np.uint8)
+            mask_np = (masks[j].cpu().numpy() > mask_threshold).astype(np.uint8)
             if mask_np.sum() == 0:
                 continue
             all_masks.append(mask_np)
@@ -158,10 +156,23 @@ def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
     if not all_masks:
         return {"masks": [], "boxes": [], "scores": [], "num_objects": 0}
 
-    # Simple IoU-based NMS to remove duplicate masks
+    # NMS on inference-resolution masks (much faster than full-res)
     keep = _nms_masks(all_masks, all_scores, iou_threshold=0.5)
-    masks_out = [all_masks[i] for i in keep]
+    masks_kept = [all_masks[i] for i in keep]
     scores_out = [all_scores[i] for i in keep]
+
+    # Upscale only the surviving masks to original resolution
+    if need_upscale:
+        masks_out = []
+        for m in masks_kept:
+            m_t = torch.from_numpy(m).unsqueeze(0).unsqueeze(0).float()
+            m_up = torch.nn.functional.interpolate(
+                m_t, size=(orig_h, orig_w), mode="nearest",
+            ).squeeze().numpy().astype(np.uint8)
+            masks_out.append(m_up)
+    else:
+        masks_out = masks_kept
+
     boxes_out = [_mask_to_box(m) for m in masks_out]
 
     return {

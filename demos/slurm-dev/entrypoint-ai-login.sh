@@ -70,13 +70,10 @@ chmod 777 /var/run/rivault
 #--local-dir e5-base-v2
 
 
-# Create /opt/rivault symlink so sbatch can find mini-rivault-job.sh.
-# The default RIVAULT_SLURM_SCRIPT points to /opt/rivault/mini-rivault-job.sh;
-# inside this container the rivault scripts live under /opt/umrs/umrs/rivault/.
-if [[ -d /opt/umrs/umrs/rivault ]] && [[ ! -e /opt/rivault ]]; then
-    ln -s /opt/umrs/umrs/rivault /opt/rivault
-    echo "Symlinked /opt/rivault → /opt/umrs/umrs/rivault"
-fi
+# RIVAULT_DIR is now passed via sbatch --export from rivault_launcher.py,
+# computed from the Python package location.  No /opt/* symlinks needed.
+# On containerised setups the RIVAULT_SLURM_SCRIPT env var (set in
+# docker-compose.yaml) already points to ~/.config/umrs/rivault_data/.
 
 # If UMRS source is mounted, install requirements and prepare the server.
 # Note: UMRS is NOT started automatically because the Rivault stack must be

@@ -35,7 +35,7 @@ import os
 import sys
 import time
 
-import requests
+import bentoml
 
 
 def upload_image_to_s3(s3_endpoint, access_key, secret_key, bucket, image_path):
@@ -61,73 +61,42 @@ def upload_image_to_s3(s3_endpoint, access_key, secret_key, bucket, image_path):
     return f"s3://{bucket}/{key}"
 
 
-def submit_sam3_task(bentoml_url, image_url, prompt, threshold=0.5):
-    """Submit a SAM3 segmentation task via BentoML task queue."""
-    url = f"{bentoml_url}/infer/submit"
-    payload = {
-        "model_type": "sam3",
-        "model_config": {
-            "prompt": prompt,
-            "threshold": threshold,
-            "mask_threshold": 0.5,
-        },
-        "image_url": image_url,
+def submit_and_wait_sam3(client, image_url, prompt, threshold=0.5,
+                         poll_interval=2.0, timeout=600.0):
+    """Submit a SAM3 segmentation task and wait for the result."""
+    model_config = {
+        "prompt": prompt,
+        "threshold": threshold,
+        "mask_threshold": 0.5,
     }
+    print(f"\n  Submitting SAM3 task: image={image_url}, prompt={prompt}")
 
-    print(f"\n  POST {url}")
-    print(f"  Payload: {json.dumps(payload, indent=2)}")
+    task = client.infer.submit(
+        model_type="sam3",
+        inference_config=model_config,
+        image_url=image_url,
+    )
+    print(f"  Task submitted! ID: {task.id}")
 
-    resp = requests.post(url, json=payload, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    task_id = data.get("task_id") or data.get("id")
-    print(f"  Task submitted! ID: {task_id}")
-    return task_id
-
-
-def poll_task_status(bentoml_url, task_id, poll_interval=2.0, timeout=600.0):
-    """Poll task status until completion."""
-    url = f"{bentoml_url}/infer/status"
     start = time.time()
-
     while True:
         elapsed = time.time() - start
+        status = task.get_status()
+        print(f"\r\033[2K  [{elapsed:.1f}s] Status: {status.value}", end="", flush=True)
 
-        try:
-            resp = requests.get(url, params={"task_id": task_id}, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            print(f"\r\033[2K  [{elapsed:.1f}s] Poll error: {exc}")
-            if elapsed > timeout:
-                return "timeout"
-            time.sleep(poll_interval)
-            continue
-
-        status = str(data.get("status", data.get("value", "unknown"))).strip()
-        print(f"\r\033[2K  [{elapsed:.1f}s] Status: {status}", end="", flush=True)
-
-        if status in ("success", "completed"):
+        if status.value == "success":
             print(f"\n  Task completed in {elapsed:.1f}s")
-            return "success"
+            return task.get()
 
-        if status in ("failure", "failed", "cancelled"):
-            print(f"\n  Task ended: {status}")
-            return "failure"
+        if status.value in ("failure", "cancelled"):
+            print(f"\n  Task ended: {status.value}")
+            return {"error": f"Task {task.id} {status.value}"}
 
         if elapsed > timeout:
             print(f"\n  TIMEOUT: Task did not complete within {timeout}s")
-            return "timeout"
+            return {"error": f"Task timed out after {timeout}s"}
 
         time.sleep(poll_interval)
-
-
-def get_task_result(bentoml_url, task_id):
-    """Retrieve the result of a completed task."""
-    url = f"{bentoml_url}/infer/get"
-    resp = requests.get(url, params={"task_id": task_id}, timeout=30)
-    resp.raise_for_status()
-    return resp.json()
 
 
 def main():
@@ -161,13 +130,11 @@ def main():
     # --- Step 1: Check BentoML service health ---
     print("\n--- Step 1: Check BentoML service health ---")
     try:
-        resp = requests.get(f"{args.bentoml_url}/healthz", timeout=5)
-        if resp.status_code == 200:
-            print(f"  BentoML service healthy at {args.bentoml_url}")
-        else:
-            print(f"  WARNING: BentoML returned status {resp.status_code}")
-    except requests.ConnectionError:
-        print(f"  ERROR: Cannot connect to BentoML at {args.bentoml_url}")
+        client = bentoml.SyncHTTPClient(args.bentoml_url,
+                                        server_ready_timeout=30)
+        print(f"  BentoML service healthy at {args.bentoml_url}")
+    except Exception as exc:
+        print(f"  ERROR: Cannot connect to BentoML at {args.bentoml_url}: {exc}")
         sys.exit(1)
 
     # --- Step 2: Upload image to S3 ---
@@ -190,20 +157,15 @@ def main():
     print(f"\n--- Step 3: Submit SAM3 task ---")
     print(f"  Image: {image_url}")
     print(f"  Prompt: '{args.prompt}'")
-    task_id = submit_sam3_task(args.bentoml_url, image_url, args.prompt, args.threshold)
+    result = submit_and_wait_sam3(client, image_url, args.prompt,
+                                  args.threshold, timeout=args.timeout)
 
-    # --- Step 4: Poll status ---
-    print(f"\n--- Step 4: Waiting for task completion ---")
-    status = poll_task_status(args.bentoml_url, task_id,
-                               timeout=args.timeout)
-
-    if status != "success":
-        print(f"\n  Task ended with status: {status}")
+    if "error" in result:
+        print(f"\n  Task failed: {result['error']}")
         sys.exit(1)
 
-    # --- Step 5: Retrieve results ---
-    print(f"\n--- Step 5: Retrieve results ---")
-    result = get_task_result(args.bentoml_url, task_id)
+    # --- Step 4: Display results ---
+    print(f"\n--- Step 4: Results ---")
 
     print(f"\n  Results:")
     print(f"  - Objects found: {result.get('num_objects', 0)}")
@@ -220,6 +182,7 @@ def main():
     print("\n" + "=" * 60)
     print("  Demo complete!")
     print("=" * 60)
+    client.close()
 
 
 if __name__ == "__main__":

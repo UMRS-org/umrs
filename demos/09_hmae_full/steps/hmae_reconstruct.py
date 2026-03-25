@@ -29,6 +29,8 @@ import logging
 import time
 from typing import Any, Dict, List
 
+import bentoml
+
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
@@ -40,14 +42,14 @@ class HMAEReconstructStep(Step):
     name = "hmae_reconstruct"
 
     def setup(self, config: Dict[str, Any]) -> None:
-        self.bentoml_url = config["bentoml_url"].rstrip("/")
+        self.client = bentoml.SyncHTTPClient(
+            config["bentoml_url"].rstrip("/"),
+            server_ready_timeout=60,
+        )
         self.timeout = config.get("timeout", 300)
         self.poll_interval = config.get("poll_interval", 2.0)
 
     def run(self, ctx: StepContext) -> StepResult:
-        import requests
-
-        session = requests.Session()
         output_keys: List[str] = []
         metadata_list: List[Dict[str, Any]] = []
         checksums: List[str] = []
@@ -63,7 +65,7 @@ class HMAEReconstructStep(Step):
             )
 
             image_url = f"s3://{ctx.input_bucket}/{key}"
-            result = self._submit_and_poll(session, image_url)
+            result = self._submit_and_poll(image_url)
 
             base = key.rsplit(".", 1)[0] if "." in key else key
             meta = {
@@ -101,49 +103,27 @@ class HMAEReconstructStep(Step):
             extra={"total_images": len(ctx.input_keys), "mode": "reconstruct"},
         )
 
-    def _submit_and_poll(self, session, image_url: str) -> Dict[str, Any]:
+    def _submit_and_poll(self, image_url: str) -> Dict[str, Any]:
         """Submit HMAE reconstruct task and poll until done."""
         try:
-            resp = session.post(
-                f"{self.bentoml_url}/infer/submit",
-                json={
-                    "model_type": "hmae",
-                    "model_config": {"mode": "reconstruct"},
-                    "image_url": image_url,
-                },
-                timeout=30,
+            task = self.client.infer.submit(
+                model_type="hmae",
+                inference_config={"mode": "reconstruct"},
+                image_url=image_url,
             )
-            resp.raise_for_status()
-            task_id = resp.json().get("task_id") or resp.json().get("id")
         except Exception as exc:
             return {"error": str(exc)}
 
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             try:
-                resp = session.get(
-                    f"{self.bentoml_url}/infer/status",
-                    params={"task_id": task_id},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                status = data.get("status") or data.get("value", "")
-
-                if status in ("success", "completed"):
-                    rr = session.get(
-                        f"{self.bentoml_url}/infer/get",
-                        params={"task_id": task_id},
-                        timeout=30,
-                    )
-                    rr.raise_for_status()
-                    return rr.json()
-
-                if status in ("failure", "failed"):
-                    return {"error": f"Reconstruct task {task_id} failed"}
+                status = task.get_status()
+                if status.value == "success":
+                    return task.get()
+                if status.value in ("failure", "cancelled"):
+                    return {"error": f"Reconstruct task {task.id} {status.value}"}
             except Exception as exc:
                 return {"error": str(exc)}
-
             time.sleep(self.poll_interval)
 
         return {"error": f"Reconstruct task timed out after {self.timeout}s"}

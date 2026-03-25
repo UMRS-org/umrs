@@ -17,8 +17,8 @@
 #
 # The always-on LLM stack (demo-llm.yaml) is NOT started by this script.
 # Launch it separately if you need RAG Q&A:
-#   podman-compose --env-file ../../src/umrs/rivault/demo-llm.env \
-#       -f ../../src/umrs/rivault/demo-llm.yaml -f ../../src/umrs/rivault/x_nvidia-override.yaml up -d
+#   podman-compose --env-file ../../src/umrs/mini-rivault-llm/demo-llm.env \
+#       -f ../../src/umrs/mini-rivault-llm/demo-llm.yaml -f ../../src/umrs/mini-rivault-llm/x_nvidia-override.yaml up -d
 # =============================================================================
 
 set -Eeuo pipefail
@@ -662,8 +662,8 @@ phase8_summary() {
     echo "  ${COMPOSE_CMD[*]} -f $COMPOSE_FILE down"
     echo
     echo "To also start the LLM stack for RAG Q&A (separate GPU):"
-    echo "  cd $DEMO_DIR && podman-compose --env-file ../../src/umrs/rivault/demo-llm.env \\"
-    echo "      -f ../../src/umrs/rivault/demo-llm.yaml -f ../../src/umrs/rivault/x_nvidia-override.yaml up -d"
+    echo "  cd $DEMO_DIR && podman-compose --env-file ../../src/umrs/mini-rivault-llm/demo-llm.env \\"
+    echo "      -f ../../src/umrs/mini-rivault-llm/demo-llm.yaml -f ../../src/umrs/mini-rivault-llm/x_nvidia-override.yaml up -d"
 }
 
 main() {

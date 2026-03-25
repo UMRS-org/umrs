@@ -25,6 +25,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+import bentoml
+
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
@@ -36,14 +38,14 @@ class HMAEFeatureStep(Step):
     name = "hmae_features"
 
     def setup(self, config: Dict[str, Any]) -> None:
-        self.bentoml_url = config["bentoml_url"].rstrip("/")
+        self.client = bentoml.SyncHTTPClient(
+            config["bentoml_url"].rstrip("/"),
+            server_ready_timeout=60,
+        )
         self.timeout = config.get("timeout", 300)
         self.poll_interval = config.get("poll_interval", 2.0)
 
     def run(self, ctx: StepContext) -> StepResult:
-        import requests
-
-        session = requests.Session()
         output_keys: List[str] = []
         metadata_list: List[Dict[str, Any]] = []
         checksums: List[str] = []
@@ -57,21 +59,8 @@ class HMAEFeatureStep(Step):
 
             image_url = f"s3://{ctx.input_bucket}/{key}"
 
-            # Submit BentoML HMAE features task
-            resp = session.post(
-                f"{self.bentoml_url}/infer/submit",
-                json={
-                    "model_type": "hmae",
-                    "model_config": {"mode": "features"},
-                    "image_url": image_url,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            task_id = resp.json().get("task_id") or resp.json().get("id")
-
-            # Poll
-            result = self._poll_result(session, task_id)
+            # Submit BentoML HMAE features task and poll
+            result = self._submit_and_poll(image_url)
 
             if "error" in result:
                 logger.warning("HMAE features failed for %s: %s", key, result["error"])
@@ -138,31 +127,27 @@ class HMAEFeatureStep(Step):
             logger.warning("Failed to extract CLS from %s: %s", feat_s3_url, exc)
             return np.zeros(768, dtype=np.float32)
 
-    def _poll_result(self, session, task_id: str) -> Dict[str, Any]:
-        """Poll BentoML HMAE task queue until completion."""
+    def _submit_and_poll(self, image_url: str) -> Dict[str, Any]:
+        """Submit HMAE features task and poll until completion."""
+        try:
+            task = self.client.infer.submit(
+                model_type="hmae",
+                inference_config={"mode": "features"},
+                image_url=image_url,
+            )
+        except Exception as exc:
+            return {"error": str(exc)}
+
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
-            resp = session.get(
-                f"{self.bentoml_url}/infer/status",
-                params={"task_id": task_id},
-                timeout=10,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            status = data.get("status") or data.get("value", "")
-
-            if status in ("success", "completed"):
-                result_resp = session.get(
-                    f"{self.bentoml_url}/infer/get",
-                    params={"task_id": task_id},
-                    timeout=30,
-                )
-                result_resp.raise_for_status()
-                return result_resp.json()
-
-            if status in ("failure", "failed"):
-                return {"error": f"HMAE task {task_id} failed"}
-
+            try:
+                status = task.get_status()
+                if status.value == "success":
+                    return task.get()
+                if status.value in ("failure", "cancelled"):
+                    return {"error": f"HMAE task {task.id} {status.value}"}
+            except Exception as exc:
+                return {"error": str(exc)}
             time.sleep(self.poll_interval)
 
-        return {"error": f"HMAE task {task_id} timed out after {self.timeout}s"}
+        return {"error": f"HMAE task timed out after {self.timeout}s"}

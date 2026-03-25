@@ -463,10 +463,10 @@ def main():
                             'path': os.path.abspath(target_path),
                             'model_type': 'embedding',
                             'scope': args.scope,
-                        'huggingface_id': args.repo_id,
-                        'description': f'Downloaded from {args.repo_id}',
-                    })
-                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
+                            'huggingface_id': args.repo_id,
+                            'description': f'Downloaded from {args.repo_id}',
+                        })
+                        raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
                 else:
                     print(api_json(status='error', message=f'Unknown model action: {model_action}', output_format=args.output))
                     control_mq.close()
