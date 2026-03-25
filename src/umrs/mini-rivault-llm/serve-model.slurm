@@ -120,9 +120,14 @@ podman ps -qa --filter 'name=rivault_' --format '{{.ID}}' 2>/dev/null | \
 podman network rm -f genai-private-net 2>/dev/null || true
 
 # Verify the network is actually gone (belt-and-suspenders)
+# When containers have dependency chains (e.g. --volumes-from), the filtered
+# removal above may miss dependents.  Nuke ALL containers as a last resort.
 if podman network exists genai-private-net 2>/dev/null; then
 	echo "[rivault] WARN: genai-private-net still exists after rm; force-removing lingering containers..."
 	podman ps -aq --filter network=genai-private-net 2>/dev/null | xargs -r podman rm -f 2>/dev/null || true
+	# Also remove any remaining containers that may block network deletion
+	# (e.g. dependent containers not caught by the network filter)
+	podman ps -aq 2>/dev/null | xargs -r podman rm -f 2>/dev/null || true
 	podman network rm -f genai-private-net || { echo "[rivault] ERROR: cannot remove genai-private-net"; exit 1; }
 fi
 
