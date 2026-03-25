@@ -34,7 +34,7 @@ single reproducible pipeline for materials-science image analysis.
 ## Quick Start
 
 ```bash
-cd demos/06_defect_analysis
+cd demos/08_defect_analysis
 bash run_demo.sh
 ```
 

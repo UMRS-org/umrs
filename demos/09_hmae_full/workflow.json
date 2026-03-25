@@ -4,7 +4,7 @@
   "description": "Run all 3 HMAE inference modes: full reconstruction, masked reconstruction (anomaly scoring), and feature extraction",
   "source": {
     "type": "local_path",
-    "path": "/home/mnagaso/workspace/umrs/demos/07_hmae_full/steps"
+    "path": "/home/mnagaso/workspace/umrs/demos/09_hmae_full/steps"
   },
   "steps": [
     {

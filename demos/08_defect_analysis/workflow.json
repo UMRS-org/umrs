@@ -3,7 +3,7 @@
   "description": "Automated structural defect analysis: SAM3 segmentation → region extraction → HMAE features + anomaly detection → structure clustering",
   "source": {
     "type": "local_path",
-    "path": "/home/mnagaso/workspace/umrs/demos/06_defect_analysis/steps"
+    "path": "/home/mnagaso/workspace/umrs/demos/08_defect_analysis/steps"
   },
   "steps": [
     {
