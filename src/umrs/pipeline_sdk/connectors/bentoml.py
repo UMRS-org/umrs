@@ -1,56 +1,55 @@
-"""BentoML task-queue connector — re-exports the existing client with helpers."""
+"""BentoML task-queue connector — helpers for the native client."""
 
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import time
+from typing import Any, Dict, List
 
-from umrs.bentoml_client import BentoMLTaskClient  # noqa: F401 — re-export
+import bentoml
+
+from umrs.vision_service.bentoml_client import submit_and_wait  # noqa: F401 — re-export
 
 logger = logging.getLogger(__name__)
 
 
-def submit_and_wait(client: BentoMLTaskClient, endpoint: str,
-                    timeout: float = 300.0, poll_interval: float = 2.0,
-                    **kwargs) -> Dict[str, Any]:
-    """Submit a task and block until it completes.
-
-    Convenience wrapper around ``client.submit()`` +
-    ``client.wait_for_result()``.
-    """
-    task_id = client.submit(endpoint, **kwargs)
-    logger.info("Submitted %s task %s", endpoint, task_id)
-    return client.wait_for_result(
-        endpoint, task_id,
-        poll_interval=poll_interval,
-        timeout=timeout,
-    )
-
-
-def submit_batch(client: BentoMLTaskClient, endpoint: str,
+def submit_batch(client: bentoml.SyncHTTPClient, endpoint: str,
                  items: List[Dict[str, Any]],
                  timeout: float = 300.0,
                  poll_interval: float = 2.0) -> List[Dict[str, Any]]:
     """Submit multiple tasks and wait for all of them.
 
     Args:
+        client: ``bentoml.SyncHTTPClient`` connected to the service.
+        endpoint: Task endpoint name (e.g. ``"infer"``).
         items: List of kwarg dicts, one per task.
+        timeout: Maximum seconds to wait per task.
+        poll_interval: Seconds between status polls.
 
     Returns:
         List of result dicts in the same order as *items*.
     """
-    task_ids = []
+    endpoint_obj = getattr(client, endpoint)
+    tasks = []
     for kwargs in items:
-        tid = client.submit(endpoint, **kwargs)
-        task_ids.append(tid)
-        logger.info("Submitted %s task %s", endpoint, tid)
+        task = endpoint_obj.submit(**kwargs)
+        tasks.append(task)
+        logger.info("Submitted %s task %s", endpoint, task.id)
 
     results = []
-    for tid in task_ids:
-        result = client.wait_for_result(
-            endpoint, tid,
-            poll_interval=poll_interval,
-            timeout=timeout,
-        )
-        results.append(result)
+    for task in tasks:
+        start = time.monotonic()
+        while True:
+            elapsed = time.monotonic() - start
+            if elapsed > timeout:
+                raise TimeoutError(
+                    f"Task {task.id} did not complete within {timeout}s"
+                )
+            status = task.get_status()
+            if status.value == "success":
+                results.append(task.get())
+                break
+            elif status.value in ("failure", "cancelled"):
+                raise RuntimeError(f"Task {task.id} {status.value}")
+            time.sleep(poll_interval)
     return results

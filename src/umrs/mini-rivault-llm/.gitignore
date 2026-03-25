@@ -16,4 +16,5 @@ env.*
 /questionsui_fs/db/*
 /bench/res*
 /images/*.tar
+/images/*.tar.gz
 .*.sw*

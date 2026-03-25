@@ -119,7 +119,7 @@ def _load_adapters_from_dir(directory: str) -> None:
     for py_file in sorted(dir_path.glob("*.py")):
         if py_file.name.startswith("_"):
             continue
-        name = py_file.stem
+        name = py_file.stem.removesuffix("_adapter")
         try:
             spec = importlib.util.spec_from_file_location(name, py_file)
             if spec is None or spec.loader is None:
@@ -135,6 +135,10 @@ def _load_adapters_from_dir(directory: str) -> None:
                 )
         except Exception:
             logger.exception("Failed to load adapter from %s", py_file)
+        except SystemExit as exc:
+            logger.error(
+                "Adapter %s called sys.exit(%s) — ignoring", py_file, exc.code,
+            )
 
 
 def _load_adapters_from_env(env_value: str) -> None:

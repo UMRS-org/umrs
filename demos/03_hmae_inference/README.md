@@ -142,4 +142,4 @@ All vision models use the unified `/infer` endpoint:
 - [Admin Guide](../../doc/admin_guide.md) — deploying vision models
 - [Demo 02: SAM3](../02_sam3_segmentation/README.md) — segmentation demo
 - [Demo 07: User-Defined Model](../07_user_model/README.md) — custom adapters and pipelines
-- [Mini-Rivault README](../../src/umrs/rivault/README.md) — inference stack details
+- [Mini-Rivault README](../../src/umrs/mini-rivault-llm/README.md) — inference stack details

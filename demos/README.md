@@ -50,6 +50,16 @@ Job management, pipeline SDK, and plugin system for HPC/cloud.
 | 11 | [Pipeline SDK](11_pipeline_sdk/) | 6-phase pipeline lifecycle (configure→ingest→compute→collect→verify→present) |
 | 12 | [Plugins](12_plugins/) | Sandboxed plugin execution on Slurm/K8s |
 
+## Alternative Vision Backends
+
+Use Jens's standalone `mini-rivault-vision` stack instead of the UMRS generic adapter.
+Set `VISION_STACK=jens` in the environment.
+
+| # | Demo | What you'll learn |
+|---|------|-------------------|
+| 13 | [SAM3 (Jens)](13_sam3_jens/) | SAM3 segmentation via Jens's `/vision_task` endpoint |
+| 14 | [HMAE (Jens)](14_hmae_jens/) | HMAE inference via Jens's `/vision_task` endpoint |
+
 ## Quick Reference
 
 ### Which demo should I start with?

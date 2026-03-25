@@ -63,10 +63,15 @@ step "2/6  Prepare SAM3 model"
 # Uses server-side download (runs on the server where /shared/models is mounted).
 SAM3_REPO="${SAM3_MODEL_REPO:-facebook/sam2-hiera-small}"
 info "Requesting model download: $SAM3_REPO"
-run_cmd podman exec "$UMRS_CLIENT_CONTAINER" \
+DL_OUTPUT=$(podman exec "$UMRS_CLIENT_CONTAINER" \
     umrs-client model download "$SAM3_REPO" --name sam3 \
-    --scope system --server-side 2>&1 | while IFS= read -r line; do info "  $line"; done
-ok "SAM3 model download accepted."
+    --scope system --server-side 2>&1)
+echo "$DL_OUTPUT" | while IFS= read -r line; do info "  $line"; done
+if echo "$DL_OUTPUT" | grep -q '"status": "error"'; then
+    warn "Model download returned an error (may be harmless if model weights are already staged)."
+else
+    ok "SAM3 model download accepted."
+fi
 
 # ──────────────────────────────────────────────────────────────────────────
 step "3/6  Check test images"

@@ -300,4 +300,4 @@ curl http://localhost:$NGINX_PORT/vision/healthz
 - [User Guide](user_guide.md) — end-user getting started
 - [UMRS Overview](umrs_overview.md) — architecture details
 - [RAG Implementation](rag_implementation.md) — RAG pipeline setup
-- [Mini-Rivault README](../src/umrs/rivault/README.md) — inference stack details
+- [Mini-Rivault README](../src/umrs/mini-rivault-llm/README.md) — inference stack details

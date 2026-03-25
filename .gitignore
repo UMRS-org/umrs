@@ -16,10 +16,10 @@ demos/slurm-dev/test_data/images/
 .github/instructions/codacy.instructions.md
 
 # Ignore runtime-generated UUID-suffixed config artifacts
-src/umrs/rivault/nginx_fs/out-nginx.conf.*-*-*-*-*
-src/umrs/rivault/coredns_fs/coredns.conf.*-*-*-*-*
-src/umrs/rivault/litellm_fs/config.yaml.*-*-*-*-*
-src/umrs/rivault/env.*-*-*-*-*
+src/umrs/mini-rivault-llm/nginx_fs/out-nginx.conf.*-*-*-*-*
+src/umrs/mini-rivault-llm/coredns_fs/coredns.conf.*-*-*-*-*
+src/umrs/mini-rivault-llm/litellm_fs/config.yaml.*-*-*-*-*
+src/umrs/mini-rivault-llm/env.*-*-*-*-*
 
 # Ignore model binaries and large model caches
 /data/models/
@@ -37,4 +37,4 @@ src/umrs/models/__pycache__/
 demos/slurm-dev/rivault/models/*.safetensors
 
 # Ignore generated coredns config files (UUID-suffixed runtime artifacts)
-src/umrs/rivault/coredns_fs/coredns.conf.*
+src/umrs/mini-rivault-llm/coredns_fs/coredns.conf.*

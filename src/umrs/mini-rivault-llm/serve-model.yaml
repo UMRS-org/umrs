@@ -9,6 +9,7 @@ services:
       - bentoml-vision:${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}
     ports:
       - ${NGINX_LITELLM_DOCKER_PORT:?}:4000
+      - ${BENTOML_VISION_DOCKER_PORT:-3001}:3001
     volumes:
       - type: bind
         source: ./nginx_fs/umrs.conf
@@ -437,7 +438,7 @@ services:
         read_only: true
       # User-provided adapters (drop .py + optional requirements.txt here)
       - type: bind
-        source: ${USER_ADAPTERS_DIR:-/tmp}
+        source: ${USER_ADAPTERS_DIR:-./user_adapters}
         target: /adapters/user
         read_only: true
     environment:

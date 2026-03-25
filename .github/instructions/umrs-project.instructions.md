@@ -68,13 +68,15 @@ demos/
 ### Startup Flow
 1. `sbatch` triggers `demos/slurm-dev/umrs-config/rivault_data/serve-model.slurm` (wrapper inside ai-login)
 2. Wrapper `export`s `RIVAULT_PROFILES` (default: `harness vllm vision-bentoml`), sets host-context overrides (`VLLM_PATH_TO_HUGGINGFACE`, `HMAE_MODEL_PATH`, etc.), reloads the BentoML vision tarball if stale
-3. Wrapper calls `exec bash ./serve-model.slurm` (the real Slurm script in `src/umrs/rivault/`)
+3. Wrapper calls `exec bash ./serve-model.slurm` (the real Slurm script in `src/umrs/mini-rivault-llm/`)
 4. `serve-model.slurm` auto-detects GPU, picks nvidia/rocm override YAML, writes `env.{uuid}`
 5. Reads `${RIVAULT_PROFILES:-"harness vllm"}` and runs `podman-compose ... --profile <p> ... up`
 
 ### Profiles
 - `harness`: nginx + litellm + ll-postgres + coredns + minio + umrs-out-nginx
 - `vllm`: vLLM service (LLM inference)
+
+Note: Vision serving (BentoML) is now in `src/umrs/mini-rivault-vision/`, separate from the LLM stack.
 - `vision-bentoml`: BentoML vision service (SAM3 + HMAE)
 
 ### Key env vars (set in wrapper slurm or env.{uuid})
@@ -92,8 +94,8 @@ demos/
 ### Tarball Auto-Reload
 The wrapper (`demos/slurm-dev/umrs-config/rivault_data/serve-model.slurm`) checks if `${RIVAULT_DIR}/images/umrs-vision.tar` is newer than the cached podman image. If yes, it runs `podman rmi -f` + `podman load`. Always re-save tarball after rebuilding image:
 ```bash
-rm -f src/umrs/rivault/images/umrs-vision.tar
-podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/rivault/images/umrs-vision.tar
+rm -f src/umrs/mini-rivault-vision/images/umrs-vision.tar
+podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/mini-rivault-vision/images/umrs-vision.tar
 ```
 
 ### Slurm Output File Location
@@ -142,7 +144,7 @@ Config:  rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit
 
 ### Adapter Discovery
 Adapters are loaded at service startup from directories listed in `VISION_ADAPTERS_DIR` (colon-separated, like `$PATH`):
-- `/adapters/system` — built-in adapters (SAM3, HMAE) from `rivault/default_adapters/`
+- `/adapters/system` — built-in adapters (SAM3, HMAE) from `mini-rivault-vision/default_adapters/`
 - `/adapters/user` — user-provided custom adapters
 
 Each `.py` file is scanned for a `VisionModelAdapter` subclass and registered under the filename stem.
@@ -195,7 +197,7 @@ The `model_type` field in the request payload selects the adapter (e.g. `"sam3"`
 - CUDA bundled inside PyTorch wheels; host driver mounted via CDI
 
 ### GPU Passthrough
-`src/umrs/rivault/x_nvidia-override.yaml` must include **both** `vllm` and `bentoml-vision`:
+GPU override YAMLs: `src/umrs/mini-rivault-llm/x_nvidia-override.yaml` (for vllm) and `src/umrs/mini-rivault-vision/x_nvidia-override.yaml` (for bentoml-vision):
 ```yaml
 services:
   vllm:
@@ -370,8 +372,8 @@ cd /home/mnagaso/workspace/umrs
 podman build -t ghcr.io/riken-rccs/umrs-vision:latest -f src/umrs/vision_service/Dockerfile .
 
 # 3. Save tarball (auto-detected by wrapper on next job — tarball newer than cached image triggers reload)
-rm -f src/umrs/rivault/images/umrs-vision.tar
-podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/rivault/images/umrs-vision.tar
+rm -f src/umrs/mini-rivault-vision/images/umrs-vision.tar
+podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/mini-rivault-vision/images/umrs-vision.tar
 
 # 4. Submit new job (wrapper defaults to vision-bentoml — no --export needed)
 podman exec ai-login scancel <old_job_id>

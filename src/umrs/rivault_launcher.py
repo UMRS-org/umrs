@@ -455,12 +455,20 @@ def launch_rivault_model(model_cfg):
                 break
 
     # --- 1. get a node form SLURM ---
-    rivault_slurm_script = get_slurm_script_from_host()
+    # Select slurm script based on VISION_STACK setting.
+    from umrs.config import VISION_STACK, JENS_RIVAULT_SLURM_SCRIPT
+    vision_stack = os.environ.get("VISION_STACK", VISION_STACK)
 
-    # BentoML vision models need the vision-bentoml compose profile.
+    if model_cfg["model_type"].startswith("bentoml://") and vision_stack == "jens":
+        rivault_slurm_script = JENS_RIVAULT_SLURM_SCRIPT
+        print(f"[VISION_STACK=jens] Using Jens's standalone stack: {rivault_slurm_script}")
+    else:
+        rivault_slurm_script = get_slurm_script_from_host()
+
+    # Compute RIVAULT_DIR is handled by the wrapper scripts themselves:
+    # they auto-discover from the Python package or use the slurmd-exported value.
+    # We only pass extra sbatch env if explicitly needed.
     sbatch_env = None
-    if model_cfg["model_type"].startswith("bentoml://"):
-        sbatch_env = {"RIVAULT_PROFILES": "harness vllm vision-bentoml"}
 
     output_file, error_file, job_id = get_slurm_node(rivault_slurm_script, model_type_key, job_id_to_use=job_id, sbatch_env=sbatch_env)
 
@@ -468,11 +476,25 @@ def launch_rivault_model(model_cfg):
 
     # --- 2. Extract compute node address and create SSH tunnel ---
     server_address = extract_node_address(output_file) if output_file else "localhost"
-    remote_port = get_rivault_remote_port()
-    if remote_port < 0:
-        remote_port = model_cfg.get("server_port", None)
-        if remote_port is None:
-            raise ValueError("Remote port for RivaULT not specified. Please set the RIVAULT_REMOTE_PORT environment variable or specify 'server_port' in the model configuration.")
+
+    # BentoML vision models use a dedicated NGINX port (no path prefix)
+    # to avoid httpx absolute-path resolution issues with /readyz etc.
+    if model_cfg["model_type"].startswith("bentoml://"):
+        if vision_stack == "jens":
+            # Jens's stack: NGINX publishes on NGINX_LITELLM_DOCKER_PORT → BentoML:4000.
+            # The port is written into env.<uuid> by serve-model.slurm; for now
+            # we fall back to reading it from the UMRS env or default to 3001.
+            remote_port = int(os.environ.get("BENTOML_VISION_DOCKER_PORT",
+                                             os.environ.get("NGINX_LITELLM_DOCKER_PORT", 3001)))
+        else:
+            remote_port = int(os.environ.get("BENTOML_VISION_DOCKER_PORT", 3001))
+    else:
+        remote_port = get_rivault_remote_port()
+        if remote_port < 0:
+            remote_port = model_cfg.get("server_port", None)
+            if remote_port is None:
+                raise ValueError("Remote port for RivaULT not specified. Please set the RIVAULT_REMOTE_PORT environment variable or specify 'server_port' in the model configuration.")
+
     local_port, thread_tunnel, proc_tunnel = ssh_tunnel_forward_to_remote(server_address, remote_port)
     NGINX_PORT = os.getenv("NGINX_LITELLM_DOCKER_PORT")
     MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
@@ -481,41 +503,52 @@ def launch_rivault_model(model_cfg):
 
      # --- 3. Build the OpenAI-compatible model or BentoML vision model ---
     if model_cfg["model_type"].startswith("bentoml://"):
-        # BentoML vision service: resolve placeholders and verify health.
-        # Traffic is routed through NGINX /vision/ prefix so all services
-        # are reachable via the single SSH-tunneled port.
-        model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(NGINX_PORT))
-        model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
-        bentoml_url = model_cfg["model_type"][len("bentoml://"):]
-        print(f"Configuring BentoML vision service at: {bentoml_url}...")
+        # BentoML vision service: connect via the dedicated NGINX port
+        # (BENTOML_VISION_DOCKER_PORT, default 3001) which proxies to
+        # bentoml-vision:3000 at root path.  This avoids the path-prefix
+        # issues that arise with /vision/ location blocks — BentoML's
+        # SyncHTTPClient uses absolute paths (/readyz, /schema.json,
+        # /infer/submit) which would bypass the /vision/ location.
+        service_base_url = f"http://localhost:{local_port}"
+        print(f"Configuring BentoML vision service at: {service_base_url}...")
 
-        # Wait for BentoML service health
-        from umrs.bentoml_client import BentoMLTaskClient
+        import bentoml
+        import httpx
 
-        # Derive the service base URL — strip any trailing endpoint segments
-        # so we get e.g. "http://localhost:33241/vision"
-        url_path = bentoml_url.rstrip("/")
-        for suffix in ("/submit", "/status", "/get"):
-            if url_path.endswith(suffix):
-                url_path = url_path[:-len(suffix)]
+        # BentoML's wait_until_server_ready only catches TimeoutException and
+        # ConnectError.  During cold start the proxy may accept connections
+        # then reset them (ReadError), which crashes the health-check loop.
+        # Retry the entire client construction on transient read errors.
+        ready_timeout = 300
+        start_time = __import__("time").monotonic()
+        while True:
+            remaining = ready_timeout - (__import__("time").monotonic() - start_time)
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"BentoML service at {service_base_url} not ready "
+                    f"after {ready_timeout}s"
+                )
+            try:
+                # Jens's VisionFrontend checks AUTH_TOKEN via Bearer header;
+                # pass the token so the BentoML client sends it on every request.
+                token = MASTER_KEY if (vision_stack == "jens" and MASTER_KEY) else None
+                client = bentoml.SyncHTTPClient(
+                    service_base_url, server_ready_timeout=remaining,
+                    token=token,
+                )
                 break
-        # Strip model-specific endpoint name if present — the generic
-        # /infer endpoint is used for all adapter types.
-        last_segment = url_path.rsplit("/", 1)[-1]
-        if last_segment in ("infer",):
-            service_base_url = url_path[:url_path.rfind("/" + last_segment)]
-        else:
-            service_base_url = url_path
+            except (httpx.ReadError, httpx.RemoteProtocolError):
+                __import__("time").sleep(5)
+                continue
 
-        client = BentoMLTaskClient(service_base_url)
-        _wait_start = time.time()
-        while not client.is_healthy():
-            if time.time() - _wait_start > 300:
-                raise RuntimeError(f"BentoML service at {bentoml_url} not healthy after 300s")
-            time.sleep(2)
-        print(f"BentoML vision service is healthy at {bentoml_url}")
+        print(f"BentoML vision service is healthy at {service_base_url}")
 
-        from umrs.models.bentoml_adapter import make_bentoml_vision_compute
+        # BentoML 1.4.x bug: _submit() references self._opened_files but it
+        # lives on self._file_manager._opened_files.  Alias it so submit works.
+        if not hasattr(client, "_opened_files") and hasattr(client, "_file_manager"):
+            client._opened_files = client._file_manager._opened_files
+
+        from umrs.vision_service.bentoml_adapter import make_bentoml_vision_compute
 
         # Build model_config for the generic /infer endpoint.
         # vision_model_type must be set explicitly in the model config
@@ -530,9 +563,18 @@ def launch_rivault_model(model_cfg):
 
         vision_model_config = dict(model_cfg.get("vision_model_config", {}))
 
-        compute_func = make_bentoml_vision_compute(
-            client, vision_model_type, vision_model_config,
-        )
+        if vision_stack == "jens":
+            # Jens's standalone stack: /vision_task endpoint with pickle protocol.
+            from umrs.vision_service.bentoml_adapter import make_jens_vision_compute
+            compute_func = make_jens_vision_compute(
+                client, vision_model_type, vision_model_config,
+                auth_token=MASTER_KEY,
+            )
+        else:
+            # UMRS generic stack: /infer endpoint with JSON protocol.
+            compute_func = make_bentoml_vision_compute(
+                client, vision_model_type, vision_model_config,
+            )
 
         model_name = model_cfg["model_name"]
         vector_size = model_cfg.get("vector_size", "768")

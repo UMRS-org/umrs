@@ -149,4 +149,4 @@ All endpoints are accessed through NGINX's `/vision/` prefix via the SSH tunnel.
 - [Admin Guide](../../doc/admin_guide.md) — deploying vision models
 - [Demo 03: HMAE](../03_hmae_inference/README.md) — feature extraction demo
 - [Demo 07: User-Defined Model](../07_user_model/README.md) — custom adapters and pipelines
-- [Mini-Rivault README](../../src/umrs/rivault/README.md) — inference stack details
+- [Mini-Rivault README](../../src/umrs/mini-rivault-llm/README.md) — inference stack details

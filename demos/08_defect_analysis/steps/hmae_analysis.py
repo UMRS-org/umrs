@@ -38,6 +38,8 @@ from typing import Any, Dict, List, Optional
 
 import numpy as np
 
+import bentoml
+
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
@@ -49,15 +51,15 @@ class HMAEAnalysisStep(Step):
     name = "hmae_analysis"
 
     def setup(self, config: Dict[str, Any]) -> None:
-        self.bentoml_url = config["bentoml_url"].rstrip("/")
+        self.client = bentoml.SyncHTTPClient(
+            config["bentoml_url"].rstrip("/"),
+            server_ready_timeout=60,
+        )
         self.anomaly_threshold = config.get("anomaly_threshold", 0.3)
         self.timeout = config.get("timeout", 300)
         self.poll_interval = config.get("poll_interval", 2.0)
 
     def run(self, ctx: StepContext) -> StepResult:
-        import requests
-
-        session = requests.Session()
         output_keys: List[str] = []
         metadata_list: List[Dict[str, Any]] = []
         checksums: List[str] = []
@@ -76,7 +78,7 @@ class HMAEAnalysisStep(Step):
 
             # ── 1. Feature extraction ────────────────────────────────────
             feat_result = self._submit_and_poll(
-                session, image_url, mode="features",
+                image_url, mode="features",
             )
             if "error" in feat_result:
                 logger.warning("  features failed: %s", feat_result["error"])
@@ -92,7 +94,7 @@ class HMAEAnalysisStep(Step):
 
             # ── 2. MAE anomaly scoring ───────────────────────────────────
             mae_result = self._submit_and_poll(
-                session, image_url, mode="mae",
+                image_url, mode="mae",
             )
             mae_loss = float(mae_result.get("mae_loss", -1.0))
             is_anomaly = (
@@ -155,50 +157,28 @@ class HMAEAnalysisStep(Step):
     # ------------------------------------------------------------------
 
     def _submit_and_poll(
-        self, session, image_url: str, mode: str,
+        self, image_url: str, mode: str,
     ) -> Dict[str, Any]:
         """Submit HMAE task and poll until done."""
         try:
-            resp = session.post(
-                f"{self.bentoml_url}/infer/submit",
-                json={
-                    "model_type": "hmae",
-                    "model_config": {"mode": mode},
-                    "image_url": image_url,
-                },
-                timeout=30,
+            task = self.client.infer.submit(
+                model_type="hmae",
+                inference_config={"mode": mode},
+                image_url=image_url,
             )
-            resp.raise_for_status()
-            task_id = resp.json().get("task_id") or resp.json().get("id")
         except Exception as exc:
             return {"error": str(exc)}
 
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             try:
-                resp = session.get(
-                    f"{self.bentoml_url}/infer/status",
-                    params={"task_id": task_id},
-                    timeout=10,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                status = data.get("status") or data.get("value", "")
-
-                if status in ("success", "completed"):
-                    rr = session.get(
-                        f"{self.bentoml_url}/infer/get",
-                        params={"task_id": task_id},
-                        timeout=30,
-                    )
-                    rr.raise_for_status()
-                    return rr.json()
-
-                if status in ("failure", "failed"):
-                    return {"error": f"HMAE {mode} task {task_id} failed"}
+                status = task.get_status()
+                if status.value == "success":
+                    return task.get()
+                if status.value in ("failure", "cancelled"):
+                    return {"error": f"HMAE {mode} task {task.id} {status.value}"}
             except Exception as exc:
                 return {"error": str(exc)}
-
             time.sleep(self.poll_interval)
 
         return {"error": f"HMAE {mode} task timed out after {self.timeout}s"}
