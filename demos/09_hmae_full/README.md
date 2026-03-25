@@ -32,7 +32,7 @@ anomaly scoring, and feature extraction.
 ## Quick Start
 
 ```bash
-cd demos/07_hmae_full
+cd demos/09_hmae_full
 bash run_demo.sh
 ```
 

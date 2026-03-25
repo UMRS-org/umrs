@@ -11,9 +11,13 @@ FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    munge \
-    libmunge-dev \
+# NOTE: munge's postinst script runs `su munge …` which fails in rootless
+# Podman when force_mask is set (strips setuid from /bin/su).  We install the
+# library first, then force-install the munge package ignoring the postinst error.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libmunge2 libmunge-dev \
+    && apt-get install -y --no-install-recommends munge || true \
+    && dpkg --configure -a --force-all || true \
     && rm -rf /var/lib/apt/lists/*
 
 # Create munge directories
