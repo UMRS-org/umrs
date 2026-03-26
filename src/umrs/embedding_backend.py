@@ -1,5 +1,6 @@
 import uuid
 import json
+import logging
 from typing import List, Any, Optional
 
 import zmq
@@ -7,6 +8,9 @@ import numpy as np
 
 from umrs.embeddings import compute_and_store_embedding
 from umrs.sql import store_embeddings_in_db
+from umrs.s3_presign import generate_presigned_urls_for_keys
+
+logger = logging.getLogger(__name__)
 
 # avoid circular import
 from typing import TYPE_CHECKING
@@ -126,6 +130,19 @@ class RemoteEmbeddingBackend(EmbeddingBackend):
             "modality_name": modality_name,
             "model_name": getattr(model, "model_name", None),
         }
+
+        # Generate presigned GET URLs so the worker can download objects
+        # without needing direct S3 credentials.
+        try:
+            presigned_urls = generate_presigned_urls_for_keys(
+                s3_connection, path_to_bucket, s3_keys, operation="get",
+            )
+            payload["presigned_urls"] = presigned_urls
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate presigned URLs, worker will fall back "
+                "to direct S3: %s", exc,
+            )
 
         try:
             self._socket.send_json(payload)

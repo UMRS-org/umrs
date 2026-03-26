@@ -20,10 +20,10 @@ PARENT_DIR = os.path.dirname(CURRENT_DIR)
 if PARENT_DIR not in sys.path:
     sys.path.insert(0, PARENT_DIR)
 
-from umrs.s3 import load_data_from_s3, connect_to_s3
+from umrs.s3 import connect_to_s3
 from umrs.models_loading import load_model
-from umrs.utils import zero_out_embeddings_for_empty_objects
 from umrs.cache_paths import cache_base_for_kind, find_model_cache
+from umrs.embeddings import compute_embeddings_core
 
 
 class WorkerConfigError(RuntimeError):
@@ -236,33 +236,6 @@ def _load_model_from_rivault(
     return cache[cache_key]
 
 
-def _compute_embeddings(
-    model: Any,
-    modality_name: str,
-    s3_connection: Any,
-    path_to_bucket: str,
-    s3_keys: list[str],
-) -> Tuple[list[Any], list[Any], list[Any]]:
-    if modality_name in ["tomography"]:
-        embeddings, checksums, metadata = model.compute_embeddings(
-            s3_connection,
-            s3_keys,
-            path_to_bucket,
-        )
-        return embeddings, checksums, metadata
-
-    objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
-        s3_connection,
-        path_to_bucket,
-        s3_keys,
-        modality_name,
-    )
-    embeddings = model.compute_embeddings(objects)
-    if has_zero:
-        zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name)
-    return embeddings, checksums, metadata
-
-
 def _get_or_load_model(
     model_cache: Dict[Tuple[str, str, str | None], Any],
     cache_key: Tuple[str, str, str | None],
@@ -430,8 +403,12 @@ def main() -> None:
     socket.bind(args.bind)
 
     s3_cfg_path = os.path.expanduser(args.s3_config)
-    print(f"[worker] Using S3 config: {s3_cfg_path}")
-    s3_connection, _ = connect_to_s3(s3_cfg_path)
+    s3_connection = None
+    if os.path.isfile(s3_cfg_path):
+        print(f"[worker] Using S3 config: {s3_cfg_path}")
+        s3_connection, _ = connect_to_s3(s3_cfg_path)
+    else:
+        print(f"[worker] S3 config not found ({s3_cfg_path}), relying on presigned URLs")
 
     model_cache: Dict[Tuple[str, str, str | None], Any] = {}
 
@@ -448,6 +425,13 @@ def main() -> None:
             s3_keys = request["s3_keys"]
             modality_name = request["modality_name"]
             model_name = request.get("model_name")
+            presigned_urls = request.get("presigned_urls")
+
+            if not presigned_urls and s3_connection is None:
+                raise RuntimeError(
+                    "No presigned URLs in payload and no S3 config file available. "
+                    "Cannot download data."
+                )
 
             if not model_name:
                 raise ValueError("Missing 'model_name' in request")
@@ -461,12 +445,13 @@ def main() -> None:
                 model_name,
             )
 
-            embeddings, checksums, metadata = _compute_embeddings(
+            embeddings, checksums, metadata, _saved_keys = compute_embeddings_core(
                 model,
                 modality_name,
                 s3_connection,
                 path_to_bucket,
                 s3_keys,
+                presigned_urls=presigned_urls,
             )
 
             if modality_name in ("text", "text file"):

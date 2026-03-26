@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import urllib.request
 from typing import Any, Dict
 
 import torch
@@ -40,6 +41,7 @@ class SAM3Adapter(VisionModelAdapter):
         config: Dict[str, Any],
         s3,
         output_bucket: str,
+        presigned_output_urls: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         from umrs.models.sam3_segmentation import (
             segment_image_with_text,
@@ -73,8 +75,21 @@ class SAM3Adapter(VisionModelAdapter):
             overlay.save(buf, format="PNG")
             buf.seek(0)
             dst_bucket = output_bucket or bucket
-            s3.put_object(Bucket=dst_bucket, Key=overlay_key,
-                          Body=buf.getvalue(), ContentType="image/png")
+            png_data = buf.getvalue()
+
+            # Prefer presigned PUT URL when available
+            presigned_url = (presigned_output_urls or {}).get(overlay_key)
+            if presigned_url:
+                req = urllib.request.Request(
+                    presigned_url,
+                    data=png_data,
+                    method="PUT",
+                    headers={"Content-Type": "image/png"},
+                )
+                urllib.request.urlopen(req, timeout=120)  # noqa: S310
+            else:
+                s3.put_object(Bucket=dst_bucket, Key=overlay_key,
+                              Body=png_data, ContentType="image/png")
             response["overlay_s3_key"] = f"s3://{dst_bucket}/{overlay_key}"
 
         logger.info("SAM3 segmentation: found %d objects for prompt '%s'",

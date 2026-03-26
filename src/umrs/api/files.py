@@ -22,6 +22,8 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
+from umrs.s3_presign import generate_presigned_get, generate_presigned_put
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/files", tags=["files"])
@@ -249,22 +251,28 @@ async def generate_presigned_url(
 
         if request.operation == PresignedOperation.UPLOAD:
             # Generate presigned PUT URL
-            params: Dict[str, Any] = {
-                "Bucket": bucket,
-                "Key": key,
-            }
-
-            if request.content_type:
-                params["ContentType"] = request.content_type
-
+            # NOTE: for metadata support we still call boto3 directly here
+            # because the shared utility doesn't handle per-object metadata.
             if request.metadata:
-                params["Metadata"] = request.metadata
-
-            url = s3_client.generate_presigned_url(
-                ClientMethod="put_object",
-                Params=params,
-                ExpiresIn=ttl_sec,
-            )
+                params: Dict[str, Any] = {
+                    "Bucket": bucket,
+                    "Key": key,
+                    "Metadata": request.metadata,
+                }
+                if request.content_type:
+                    params["ContentType"] = request.content_type
+                url = s3_client.generate_presigned_url(
+                    ClientMethod="put_object",
+                    Params=params,
+                    ExpiresIn=ttl_sec,
+                )
+            else:
+                url = generate_presigned_put(
+                    s3_client, bucket, key,
+                    content_type=request.content_type or "application/octet-stream",
+                    ttl=ttl_sec,
+                    use_external_endpoint=False,
+                )
 
             headers = {}
             if request.content_type:
@@ -274,14 +282,7 @@ async def generate_presigned_url(
 
         else:
             # Generate presigned GET URL
-            url = s3_client.generate_presigned_url(
-                ClientMethod="get_object",
-                Params={
-                    "Bucket": bucket,
-                    "Key": key,
-                },
-                ExpiresIn=ttl_sec,
-            )
+            url = generate_presigned_get(s3_client, bucket, key, ttl=ttl_sec, use_external_endpoint=False)
             headers = None
             method = "GET"
 

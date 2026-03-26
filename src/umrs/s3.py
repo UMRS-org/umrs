@@ -347,6 +347,77 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     return objects, metadata, checksums, sizes, has_at_least_a_zero
 
 
+def load_data_from_presigned_urls(presigned_urls, s3_keys, modality_name):
+    """Download objects via presigned GET URLs (no S3 credentials needed).
+
+    This is the presigned-URL equivalent of ``load_data_from_s3``.  The
+    compute worker calls this when the server provides presigned URLs in the
+    job payload.
+
+    Args:
+        presigned_urls: Dict mapping s3_key -> presigned GET URL string.
+        s3_keys: Ordered list of S3 keys to download (determines order of
+                 returned lists).
+        modality_name: ``"text"``, ``"image"``, or ``"text file"``.
+
+    Returns:
+        Same 5-tuple as ``load_data_from_s3``:
+        ``(objects, metadata, checksums, sizes, has_at_least_a_zero)``
+
+        Note: ``metadata`` will be empty dicts and ``checksums`` will be
+        computed from the response body (MD5) since presigned GET responses
+        don't always include ETag headers reliably.
+    """
+    import hashlib
+    import urllib.request
+
+    objects = []
+    metadata_list = []
+    checksums = []
+    sizes = []
+    has_at_least_a_zero = False
+
+    for s3_key in s3_keys:
+        url = presigned_urls[s3_key]
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+            body = resp.read()
+
+        obj_size = len(body)
+        sizes.append(obj_size)
+        # Compute MD5 checksum from body (mirrors ETag for non-multipart uploads)
+        checksums.append(hashlib.md5(body).hexdigest())  # noqa: S324
+        metadata_list.append({})
+
+        if modality_name == "text":
+            if obj_size:
+                text = body.decode("utf-8")
+            else:
+                has_at_least_a_zero = True
+                text = "A"
+            objects.append(text)
+
+        elif modality_name == "image":
+            image = Image.open(BytesIO(body))
+            objects.append(image)
+
+        elif modality_name == "text file":
+            if obj_size:
+                text = str(from_bytes(body).best())
+            else:
+                has_at_least_a_zero = True
+                text = "A"
+            objects.append(text)
+
+        else:
+            raise ValueError(
+                f"Unsupported modality '{modality_name}' while loading data "
+                f"'{s3_key}' via presigned URL"
+            )
+
+    return objects, metadata_list, checksums, sizes, has_at_least_a_zero
+
+
 
 def download_objects(s3, objects_list, checksums, local_path, files_allready_received=None, force_overwrite=False, verbose=False, print_only_new=False):
     """

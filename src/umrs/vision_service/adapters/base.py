@@ -39,6 +39,7 @@ class VisionModelAdapter(abc.ABC):
         config: Dict[str, Any],
         s3,
         output_bucket: str,
+        presigned_output_urls: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         """Run inference on a single image.
 
@@ -49,8 +50,12 @@ class VisionModelAdapter(abc.ABC):
             key: Source S3 object key.
             config: Same config dict as ``load()`` — may contain per-request
                     parameters (e.g. ``mode``, ``prompt``).
-            s3: boto3 S3 client for uploading results.
+            s3: boto3 S3 client for uploading results. May be ``None`` when
+                presigned output URLs are provided.
             output_bucket: Bucket to write output artifacts to.
+            presigned_output_urls: Optional dict mapping output_key ->
+                    presigned PUT URL.  When provided, adapters should upload
+                    results via HTTP PUT instead of ``s3.put_object()``.
 
         Returns:
             JSON-serialisable result dict.

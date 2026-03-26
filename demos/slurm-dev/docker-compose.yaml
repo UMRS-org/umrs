@@ -111,6 +111,11 @@ services:
       - UMRS_RAG_ENABLE=${UMRS_RAG_ENABLE:-0}
       - UMRS_RAG_PORT=${UMRS_RAG_PORT:-8081}
       - VLLM_BASE_URL=${VLLM_BASE_URL:-http://localhost:14000/v1}
+      # External S3 endpoint for presigned URL generation.
+      # Presigned URLs must use a hostname reachable from compute node
+      # containers. The compute node's compose maps "minio-host" to
+      # the Docker host-gateway.
+      - S3_PRESIGN_ENDPOINT=${S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
     depends_on:
       munge:
         condition: service_healthy
