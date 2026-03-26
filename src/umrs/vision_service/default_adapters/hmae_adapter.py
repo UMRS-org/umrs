@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import urllib.request
 from typing import Any, Dict
 
 import torch
@@ -13,6 +14,26 @@ from PIL import Image
 from umrs.vision_service.adapters.base import VisionModelAdapter
 
 logger = logging.getLogger(__name__)
+
+
+def _upload_result(s3, dst_bucket, out_key, data, content_type,
+                   presigned_output_urls):
+    """Upload result via presigned URL or direct S3.
+
+    Helper to avoid repeating the presigned/direct branching in each mode.
+    """
+    presigned_url = (presigned_output_urls or {}).get(out_key)
+    if presigned_url:
+        req = urllib.request.Request(
+            presigned_url,
+            data=data,
+            method="PUT",
+            headers={"Content-Type": content_type},
+        )
+        urllib.request.urlopen(req, timeout=120)  # noqa: S310
+    else:
+        s3.put_object(Bucket=dst_bucket, Key=out_key,
+                      Body=data, ContentType=content_type)
 
 
 class HMAEAdapter(VisionModelAdapter):
@@ -56,6 +77,7 @@ class HMAEAdapter(VisionModelAdapter):
         config: Dict[str, Any],
         s3,
         output_bucket: str,
+        presigned_output_urls: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         from umrs.models.hmae_inference import (
             preprocess_image_from_bytes,
@@ -99,8 +121,8 @@ class HMAEAdapter(VisionModelAdapter):
                                      hmae_config, use_bf16)
             png_bytes = visualize_reconstruction(data, pred, hmae_config)
             out_key = f"{base}_recon.png"
-            s3.put_object(Bucket=dst_bucket, Key=out_key,
-                          Body=png_bytes, ContentType="image/png")
+            _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
+                           presigned_output_urls)
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
 
         elif mode == "mae":
@@ -109,8 +131,8 @@ class HMAEAdapter(VisionModelAdapter):
             png_bytes = visualize_reconstruction(data, pred, hmae_config,
                                                  mask=mask, loss=loss)
             out_key = f"{base}_mae.png"
-            s3.put_object(Bucket=dst_bucket, Key=out_key,
-                          Body=png_bytes, ContentType="image/png")
+            _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
+                           presigned_output_urls)
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
             response["mae_loss"] = loss
 
@@ -125,8 +147,9 @@ class HMAEAdapter(VisionModelAdapter):
             torch.save({"cls": cls_token, "patches": patch_tokens,
                         "coords": data["coords"]}, feat_buf)
             feat_buf.seek(0)
-            s3.put_object(Bucket=dst_bucket, Key=out_key,
-                          Body=feat_buf.getvalue())
+            feat_data = feat_buf.getvalue()
+            _upload_result(s3, dst_bucket, out_key, feat_data,
+                           "application/octet-stream", presigned_output_urls)
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
             response["cls_shape"] = list(cls_token.shape)
             response["patch_shape"] = list(patch_tokens.shape)

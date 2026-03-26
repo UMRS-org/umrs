@@ -12,6 +12,11 @@ import time
 
 import bentoml
 
+from umrs.s3_presign import (
+    generate_presigned_get,
+    generate_presigned_put,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +42,33 @@ def _copy_to_output_bucket(s3, s3_uri, output_bucket):
     new_uri = f"s3://{output_bucket}/{key}"
     logger.info("Copied %s -> %s", s3_uri, new_uri)
     return new_uri
+
+
+def _predict_output_keys(s3_key, model_type, model_config):
+    """Predict output S3 keys based on adapter naming conventions.
+
+    Each adapter uses deterministic naming for result artifacts.
+    Returns a dict mapping output_key -> content_type.
+    """
+    base = s3_key.rsplit(".", 1)[0] if "." in s3_key else s3_key
+    outputs = {}
+
+    if model_type == "sam3":
+        outputs[f"{base}_sam3_seg.png"] = "image/png"
+
+    elif model_type == "hmae":
+        mode = model_config.get("mode", "reconstruct")
+        if mode == "reconstruct":
+            outputs[f"{base}_recon.png"] = "image/png"
+        elif mode == "mae":
+            outputs[f"{base}_mae.png"] = "image/png"
+        elif mode == "features":
+            outputs[f"{base}_features.pt"] = "application/octet-stream"
+        else:
+            # Unknown mode — don't predict, service will fall back to direct S3
+            pass
+    # For unknown model types, return empty — service will fall back to direct S3
+    return outputs
 
 
 def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, model_config,
@@ -72,11 +104,39 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
             metadata_list.append(obj.get("Metadata", {}))
 
             image_url = f"s3://{path_to_bucket}/{s3_key}"
+
+            # Generate presigned URLs so the vision service on the compute
+            # node can access S3 without direct credentials.
+            presigned_input_url = None
+            presigned_output_urls = {}
+            try:
+                presigned_input_url = generate_presigned_get(
+                    s3, path_to_bucket, s3_key,
+                )
+                dst_bucket = output_bucket or path_to_bucket
+                predicted_outputs = _predict_output_keys(
+                    s3_key, model_type, model_config,
+                )
+                for out_key, ct in predicted_outputs.items():
+                    presigned_output_urls[out_key] = generate_presigned_put(
+                        s3, dst_bucket, out_key, content_type=ct,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to generate presigned URLs for %s, "
+                    "vision service will fall back to direct S3: %s",
+                    s3_key, exc,
+                )
+                presigned_input_url = None
+                presigned_output_urls = {}
+
             task = client.infer.submit(
                 model_type=model_type,
                 inference_config=model_config,
                 image_url=image_url,
                 output_bucket=output_bucket,
+                presigned_input_url=presigned_input_url or "",
+                presigned_output_urls=presigned_output_urls,
             )
             logger.info("Task submitted: infer -> %s", task.id)
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import urllib.request
 from typing import Any, Dict
 
 from PIL import Image
@@ -43,6 +44,7 @@ class GrayscaleAdapter(VisionModelAdapter):
         config: Dict[str, Any],
         s3,
         output_bucket: str,
+        presigned_output_urls: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         # Convert to grayscale
         gray = image.convert("L")
@@ -55,12 +57,25 @@ class GrayscaleAdapter(VisionModelAdapter):
         buf = io.BytesIO()
         gray.save(buf, format="PNG")
         buf.seek(0)
-        s3.put_object(
-            Bucket=dst_bucket,
-            Key=out_key,
-            Body=buf.getvalue(),
-            ContentType="image/png",
-        )
+        png_data = buf.getvalue()
+
+        # Prefer presigned PUT URL when available (no S3 credentials needed)
+        presigned_url = (presigned_output_urls or {}).get(out_key)
+        if presigned_url:
+            req = urllib.request.Request(
+                presigned_url,
+                data=png_data,
+                method="PUT",
+                headers={"Content-Type": "image/png"},
+            )
+            urllib.request.urlopen(req, timeout=120)  # noqa: S310
+        else:
+            s3.put_object(
+                Bucket=dst_bucket,
+                Key=out_key,
+                Body=png_data,
+                ContentType="image/png",
+            )
 
         logger.info("Grayscale conversion done for s3://%s/%s", bucket, key)
         return {

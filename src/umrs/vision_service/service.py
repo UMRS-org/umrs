@@ -34,6 +34,7 @@ Environment variables:
 import io
 import logging
 import os
+import urllib.request
 
 import bentoml
 from PIL import Image
@@ -77,6 +78,28 @@ def _download_image_from_s3(s3, image_url):
     return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key
 
 
+def _download_image_from_presigned_url(presigned_url, image_url):
+    """Download an image via presigned GET URL (no S3 credentials needed).
+
+    Returns the same 3-tuple as ``_download_image_from_s3``:
+    ``(PIL.Image, bucket, key)`` — bucket/key are parsed from ``image_url``
+    so that downstream code can still construct output keys.
+    """
+    if image_url.startswith("s3://"):
+        path = image_url[5:]
+    else:
+        path = image_url
+    parts = path.split("/", 1)
+    if len(parts) != 2:
+        raise ValueError(f"Invalid S3 image URL: {image_url}")
+    bucket, key = parts
+
+    req = urllib.request.Request(presigned_url, method="GET")
+    with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+        image_bytes = resp.read()
+    return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key
+
+
 @bentoml.service(
     resources={"gpu": 1},
     traffic={"timeout": 600},
@@ -104,6 +127,8 @@ class VisionModelService:
         inference_config: dict,
         image_url: str,
         output_bucket: str = "",
+        presigned_input_url: str = "",
+        presigned_output_urls: dict | None = None,
     ) -> dict:
         """Run vision-model inference on a single image.
 
@@ -115,6 +140,12 @@ class VisionModelService:
             image_url: S3 URL of the input image (``s3://bucket/key``).
             output_bucket: Bucket for output artifacts.  Defaults to the
                            source bucket when empty.
+            presigned_input_url: Presigned GET URL for the input image.
+                                 When provided, the service downloads via
+                                 HTTP instead of using direct S3 credentials.
+            presigned_output_urls: Dict mapping output_key -> presigned PUT URL.
+                                   When provided, adapters upload results via
+                                   HTTP PUT instead of ``s3.put_object()``.
 
         Returns:
             dict with adapter-specific results and output S3 keys.
@@ -129,12 +160,23 @@ class VisionModelService:
             }
 
         try:
-            s3 = self._ensure_s3()
-            image, bucket, key = _download_image_from_s3(s3, image_url)
+            # Download input image: prefer presigned URL, fall back to direct S3
+            if presigned_input_url:
+                image, bucket, key = _download_image_from_presigned_url(
+                    presigned_input_url, image_url,
+                )
+                # Still initialise S3 client as fallback for adapters that
+                # don't have presigned output URLs
+                s3 = self._ensure_s3() if not presigned_output_urls else None
+            else:
+                s3 = self._ensure_s3()
+                image, bucket, key = _download_image_from_s3(s3, image_url)
+
             model = self._cache.get_or_load(adapter, inference_config)
             return adapter.infer(
                 model, image, bucket, key,
                 inference_config, s3, output_bucket or bucket,
+                presigned_output_urls=presigned_output_urls or {},
             )
         except Exception as exc:
             logger.exception("infer failed (model_type=%s)", model_type)

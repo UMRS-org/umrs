@@ -9,22 +9,92 @@ import os
 from sklearn.cluster import KMeans
 import ast  # To safely convert strings to lists
 
-from umrs.s3 import load_data_from_s3
+from umrs.s3 import load_data_from_s3, load_data_from_presigned_urls
 from umrs.utils import zero_out_embeddings_for_empty_objects
 from umrs.sql import store_embeddings_in_db
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+# Modalities where the model handles its own S3 I/O (data loading + output
+# writing) rather than receiving pre-loaded tensors.
+DIRECT_COMPUTE_MODALITIES = frozenset({
+    "tomography",
+    "tomography_embedding",
+    "tomography_reconstruction",
+    "tomography_mae_reconstruction",
+    "tomography_features_extraction",
+    "segmentation",
+})
+
+# Model types that always do their own I/O regardless of modality name.
+DIRECT_COMPUTE_MODEL_TYPES = frozenset({"user_script", "bentoml"})
+
+
+def compute_embeddings_core(
+    model,
+    modality_name,
+    s3_connection,
+    path_to_bucket,
+    s3_keys,
+    output_bucket=None,
+    presigned_urls=None,
+):
+    """Core embedding computation pipeline shared by local and remote backends.
+
+    For *direct-compute* modalities the model handles its own data loading and
+    output writing.  For standard modalities (text, image, …) data is loaded
+    from S3 (or via presigned URLs when available) and passed to the model.
+
+    Args:
+        model: ``EmbeddingModel`` instance (must expose ``compute_embeddings``).
+        modality_name: Modality string (e.g. ``"text"``, ``"image"``,
+            ``"tomography_embedding"``).
+        s3_connection: boto3-compatible S3 client.
+        path_to_bucket: Source bucket name.
+        s3_keys: List of S3 object keys to process.
+        output_bucket: Destination bucket for models that produce output
+            files (``None`` when not applicable).
+        presigned_urls: Optional ``{key: presigned_get_url}`` mapping.  When
+            provided the standard path downloads objects via HTTP instead of
+            direct S3 access.
+
+    Returns:
+        ``(embeddings, checksums, metadata, saved_s3_keys)`` – four parallel
+        lists.  ``saved_s3_keys`` is a list of ``None`` for modalities that
+        don't produce output files.
+    """
+    model_type = getattr(model, "type", None)
+
+    if modality_name in DIRECT_COMPUTE_MODALITIES or model_type in DIRECT_COMPUTE_MODEL_TYPES:
+        embeddings, checksums, metadata, saved_s3_keys = model.compute_embeddings(
+            s3_connection, s3_keys, path_to_bucket, output_bucket,
+        )
+        return embeddings, checksums, metadata, saved_s3_keys
+
+    # Standard path: load data first, then compute embeddings.
+    saved_s3_keys = [None] * len(s3_keys)
+
+    if presigned_urls:
+        objects, metadata, checksums, sizes, has_zero = load_data_from_presigned_urls(
+            presigned_urls, s3_keys, modality_name,
+        )
+    else:
+        objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
+            s3_connection, path_to_bucket, s3_keys, modality_name,
+        )
+
+    embeddings = model.compute_embeddings(objects)
+    if has_zero:
+        zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name)
+
+    return embeddings, checksums, metadata, saved_s3_keys
+
 
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device,
                                 modality_name, s3_connection, output_bucket):
-    if modality_name in ["tomography_embedding", "tomography_reconstruction", "tomography_mae_reconstruction", "tomography_features_extraction", "segmentation"] or model.type == "user_script" or model.type == "bentoml": # case of models where we compute everything from the files (e.g. using data loader)
-        embeddings, checksums, metadata, saved_s3_keys = model.compute_embeddings(s3_connection, s3_keys, path_to_bucket, output_bucket)
-    else: # case where we need to load data into a tensor and then compute embeddings
-        saved_s3_keys = [None] * len(s3_keys)
-        objects, metadata, checksums, sizes, has_at_least_a_zero = load_data_from_s3(s3_connection, path_to_bucket, s3_keys, modality_name)
-        embeddings = model.compute_embeddings(objects)
-        if has_at_least_a_zero:
-            zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name)
+    embeddings, checksums, metadata, saved_s3_keys = compute_embeddings_core(
+        model, modality_name, s3_connection, path_to_bucket, s3_keys,
+        output_bucket=output_bucket,
+    )
 
     assert(len(embeddings) == len(checksums))
     assert(len(embeddings) == len(metadata))
