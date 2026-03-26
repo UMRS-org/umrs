@@ -38,3 +38,5 @@ demos/slurm-dev/rivault/models/*.safetensors
 
 # Ignore generated coredns config files (UUID-suffixed runtime artifacts)
 src/umrs/mini-rivault-llm/coredns_fs/coredns.conf.*
+
+**/.venv
