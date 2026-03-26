@@ -115,15 +115,6 @@ server_schema = {
         "type": "string"
       },
       "minItems": 1
-    },
-    "embedding_backend": {
-      "type": "string"
-    },
-    "embedding_worker_address": {
-      "type": "string"
-    },
-    "embedding_worker_timeout_sec": {
-      "type": ["number", "integer"]
     }
   },
   "additionalProperties": False

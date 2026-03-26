@@ -9,9 +9,6 @@ data:
   DB_HOST: postgres
   POSTGRES_DB: images_and_texts_ejeannot
   UMRS_SERVER_HOST: umrs-server
-  EMBEDDING_WORKER_ADDRESS: tcp://umrs-embed-worker:6000
-  EMBEDDING_WORKER_BIND: tcp://0.0.0.0:6000
-  EMBEDDING_DEVICE: cuda
   RIVAULT_ENDPOINT: http://rivault:8000
 ---
 apiVersion: v1

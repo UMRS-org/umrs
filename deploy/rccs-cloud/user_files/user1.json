@@ -1,0 +1,70 @@
+{
+  "username": "user1",
+  "fullname": "Masaru Nagaso",
+  "s3_configuration_file": "~/.s3cfg_user1",
+  "experiences": [
+    {
+      "xp_name": "Text Embedding",
+      "sql_username": "usr1_text",
+      "modalities": [
+        {
+          "modality_name": "text",
+          "s3": {
+            "bucket_alias": "user1-texts",
+            "data": { "type": "inline", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "TransformerEncoder"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        },
+        {
+          "modality_name": "text file",
+          "s3": {
+            "bucket_alias": "user1-textfiles",
+            "data": { "type": "file", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "intfloat/e5-base-v2",
+            "vector_size": "768",
+            "model_type": "TransformerEncoder"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "text_file",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        },
+        {
+          "modality_name": "image",
+          "s3": {
+            "bucket_alias": "user1-images",
+            "data": { "type": "file", "mime_type": "image/jpeg" }
+          },
+          "model": {
+            "model_name": "openai/clip-vit-base-patch32",
+            "vector_size": "512",
+            "model_type": "SentenceTransformer"
+          },
+          "sql": {
+            "store_embeddings": "yes",
+            "table_name": "image",
+            "meta_data": [
+              { "name": "keywords", "type": "TEXT" }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -27,7 +27,7 @@ from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 from umrs.TaskManager import TaskManager
 from umrs.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.embeddings import compute_and_store_embedding
-from umrs.embedding_backend import LocalEmbeddingBackend, create_embedding_backend_from_config
+from umrs.embedding_backend import LocalEmbeddingBackend
 
 from umrs.model_registry_handler import handle_model_command
 from umrs.job_tracking_handler import handle_job_command
@@ -42,7 +42,6 @@ rivault_lock = threading.Lock()
 # ---------------------- Server configuration class ----------------------
 from dataclasses import dataclass, field
 from umrs.BucketsCfg import BucketsCfg, ServerBucketEntry
-from typing import Literal
 
 @dataclass
 class ServerCfg:
@@ -51,7 +50,6 @@ class ServerCfg:
     """
     user_config_map: dict = field(default_factory=dict)
     buckets_cfg: "BucketsCfg" = field(default_factory=lambda: BucketsCfg())
-    embedding_backend: Literal["local", "remote"] = "local"
 
 # ---------------------- Provisioning and configuration ----------------------
 
@@ -589,14 +587,7 @@ def perform_initial_config(configure_file, status_store):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"-->  Models will be run on device: {device}")
 
-    # Select embedding backend based on configuration (local or remote).
-    try:
-        embedding_backend = create_embedding_backend_from_config(server_cfg)
-        backend_name = type(embedding_backend).__name__
-        print(f"-->  Using embedding backend: {backend_name}")
-    except Exception as exc:
-        print(f"Error while creating embedding backend from config, falling back to local backend: {exc}")
-        embedding_backend = LocalEmbeddingBackend()
+    embedding_backend = LocalEmbeddingBackend()
     print(f"\n######################\nServer configuration done!\n######################\n")
 
     return control_mq, server_cfg, device, embedding_backend
