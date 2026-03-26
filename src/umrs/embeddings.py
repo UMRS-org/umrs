@@ -9,7 +9,7 @@ import os
 from sklearn.cluster import KMeans
 import ast  # To safely convert strings to lists
 
-from umrs.s3 import load_data_from_s3, load_data_from_presigned_urls
+from umrs.s3 import load_data_from_s3
 from umrs.utils import zero_out_embeddings_for_empty_objects
 from umrs.sql import store_embeddings_in_db
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -36,13 +36,12 @@ def compute_embeddings_core(
     path_to_bucket,
     s3_keys,
     output_bucket=None,
-    presigned_urls=None,
 ):
-    """Core embedding computation pipeline shared by local and remote backends.
+    """Core embedding computation pipeline.
 
     For *direct-compute* modalities the model handles its own data loading and
     output writing.  For standard modalities (text, image, …) data is loaded
-    from S3 (or via presigned URLs when available) and passed to the model.
+    from S3 and passed to the model.
 
     Args:
         model: ``EmbeddingModel`` instance (must expose ``compute_embeddings``).
@@ -53,9 +52,6 @@ def compute_embeddings_core(
         s3_keys: List of S3 object keys to process.
         output_bucket: Destination bucket for models that produce output
             files (``None`` when not applicable).
-        presigned_urls: Optional ``{key: presigned_get_url}`` mapping.  When
-            provided the standard path downloads objects via HTTP instead of
-            direct S3 access.
 
     Returns:
         ``(embeddings, checksums, metadata, saved_s3_keys)`` – four parallel
@@ -73,14 +69,9 @@ def compute_embeddings_core(
     # Standard path: load data first, then compute embeddings.
     saved_s3_keys = [None] * len(s3_keys)
 
-    if presigned_urls:
-        objects, metadata, checksums, sizes, has_zero = load_data_from_presigned_urls(
-            presigned_urls, s3_keys, modality_name,
-        )
-    else:
-        objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
-            s3_connection, path_to_bucket, s3_keys, modality_name,
-        )
+    objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
+        s3_connection, path_to_bucket, s3_keys, modality_name,
+    )
 
     embeddings = model.compute_embeddings(objects)
     if has_zero:
