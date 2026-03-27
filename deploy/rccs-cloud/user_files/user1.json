@@ -86,6 +86,67 @@
           }
         }
       ]
+    },
+    {
+      "xp_name": "SAM3 Segmentation",
+      "sql_username": "usr1_sam3",
+      "modalities": [
+        {
+          "modality_name": "segmentation",
+          "s3": {
+            "bucket_alias": "user1-sam3",
+            "need_output_bucket": true,
+            "data": {
+              "type": "file",
+              "mime_type": "image/png"
+            }
+          },
+          "model": {
+            "model_name": "facebook/sam2-hiera-small",
+            "vector_size": "256",
+            "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "sam3",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "sam3_seg",
+            "meta_data": []
+          }
+        }
+      ]
+    },
+    {
+      "xp_name": "HMAE Inference",
+      "sql_username": "usr1_hmae",
+      "modalities": [
+        {
+          "modality_name": "tomography",
+          "s3": {
+            "bucket_alias": "user1-hmae",
+            "need_output_bucket": true,
+            "data": {
+              "type": "file",
+              "mime_type": "image/png"
+            }
+          },
+          "model": {
+            "model_name": "HMAE ViT-B",
+            "vector_size": "768",
+            "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "hmae",
+            "vision_model_config": {
+              "mode": "reconstruct"
+            },
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "hmae_infer",
+            "meta_data": []
+          }
+        }
+      ]
     }
   ]
 }
