@@ -70,7 +70,7 @@ def threads(p):
     if isinstance(s, dict):
         yield from s.get("data", [])
 p = json.load(sys.stdin)
-tasks = list(threads(p))
+tasks = [t for t in threads(p) if isinstance(t, dict)]
 in_progress_states = {"running", "submitted", "launched", "initializing"}
 done_states = {"completed", "done"}
 r = sum(1 for t in tasks if t.get("status","").lower() in in_progress_states)
