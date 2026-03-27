@@ -7,6 +7,27 @@
 - [x] Add a short review/results section with verification outcomes.
 - [x] Investigate false-positive "All embedding tasks completed" (phase3 bug).
 - [x] Fix phase3 to detect Error status; add phase3b DB verification.
+
+## Full Demo Validation (2026-03-27)
+
+- [x] Demo 00: Health check — 6/6 checks pass (ai-login, postgres, minio, slurmd, slurm node, pgvector)
+- [x] Demo 01: Text embedding — 40 embeddings verified, exported to CSV. **Bug fixed:** status parser crashed on non-dict items in summaries JSON (`check`/`update` categories contain strings, not dicts)
+- [x] Demo 02: SAM3 segmentation — 2 images processed in 72s, results downloaded
+- [x] Demo 03: HMAE inference — 2 images reconstructed in 23s
+- [x] Demo 04: RAG search — vector, hybrid, reranking all return relevant results. RAG Q&A retrieval works (LLM connection error expected — vLLM not active)
+- [x] Demo 05: Server maintenance — 7 buckets fully consistent, 0 mismatches/errors
+- [x] Demo 06: Model registry — 2 system models listed, duplicate registration handled gracefully
+- [x] Demo 07: User model — 31/31 pytest tests pass, integration smoke test passes
+- [x] Demo 08: Defect analysis — 4-step pipeline completed in 83s, segmentation results downloaded
+- [x] Demo 09: HMAE full pipeline — reconstruct+mae+features (6 files) completed in 100s
+- [x] Demo 10: Job submission — endpoint_provision, index_build, cleanup, cancel all work
+- [x] Demo 11: Pipeline SDK — TextAnalysisPipeline LOCAL mode: 1 file, 201 words analyzed
+- [x] Demo 12: Plugins — Full lifecycle (define→validate→preview→execute→audit) succeeds
+- [x] Demo 13: SAM3 Jens — Jens's standalone stack: 2 images in 80s
+- [x] Demo 14: HMAE Jens — Jens's standalone stack: 2 images in 60s
+
+**Result: 15/15 demos pass. 1 bug found and fixed (Demo 01 status parser).**
+
 - [ ] Diagnose LiteLLM Prisma table errors (root cause of proxy failure).
 - [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed.
 - [ ] Re-run e2e demo and verify embeddings in DB via phase3b.
