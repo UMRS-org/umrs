@@ -5,9 +5,7 @@ src/umrs/mini-rivault-llm/models/
 src/umrs/mini-rivault-vision/images/
 data/
 XP/
-docker/data/
 docker/ssl/
-docker/user_files/
 demos/slurm-dev/test_data/
 demos/slurm-dev/munge-key/
 demos/slurm-dev/user_files/

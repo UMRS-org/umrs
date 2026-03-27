@@ -149,6 +149,17 @@ if [ "$_net_created" -ne 1 ]; then
 	exit 1
 fi
 echo "[rivault] genai-private-net created with subnet ${IP1TO3}.0/24"
+
+# ─── SSH tunnel: forward localhost:9000 on compute node → login node MinIO ───
+# Presigned S3 URLs use localhost:9000 so that compute-node containers can
+# download/upload data via the login node's MinIO instance.
+UMRS_S3_TUNNEL_PORT=${UMRS_S3_TUNNEL_PORT:-9000}
+UMRS_S3_TUNNEL_HOST=${UMRS_S3_TUNNEL_HOST:-${SLURM_SUBMIT_HOST:-localhost}}
+ssh -fN -L "${UMRS_S3_TUNNEL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
+    -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes 2>&1 \
+    && echo "[rivault] SSH tunnel: localhost:${UMRS_S3_TUNNEL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT}" \
+    || echo "[rivault] WARNING: SSH tunnel to ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} failed (presigned URLs may not work)"
+
 sed -i  -e "s@^\(PRIV_IP1TO3=\).*@\1${IP1TO3}@g" \
 	-e "s@^\(UUID=\).*@\1${uuid}@g" \
 	"./env.${uuid}"

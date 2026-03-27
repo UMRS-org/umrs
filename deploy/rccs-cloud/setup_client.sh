@@ -30,12 +30,12 @@ SRC_DIR="${SCRIPT_DIR}/../../src"
 if [ -f "${SRC_DIR}/pyproject.toml" ]; then
     echo ""
     echo "Installing umrs package from ${SRC_DIR} ..."
-    pip install -e "${SRC_DIR}"
+    uv pip install -e "${SRC_DIR}"
     echo "umrs package installed."
 else
     echo ""
     echo "WARNING: Could not find ${SRC_DIR}/pyproject.toml"
-    echo "Install manually: pip install -e /path/to/umrs/src"
+    echo "Install manually: uv pip install -e /path/to/umrs/src"
 fi
 
 echo ""

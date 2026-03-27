@@ -33,7 +33,7 @@ services:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     ports:
-      - "${MINIO_BIND:-0.0.0.0}:9000:9000"
+      - "${MINIO_BIND:-127.0.0.1}:9000:9000"
       - "127.0.0.1:9001:9001"
     command: server /data --console-address ":9001"
     volumes:
@@ -58,9 +58,9 @@ services:
       # Do NOT set UMRS_SERVER_HOST — default 127.0.0.1 is correct for
       # SSH-tunneled clients (advertised data-queue URLs must use localhost).
       #
-      # S3 presigned URL endpoint: must be reachable from compute nodes.
-      # Use the login node's hostname or IP so dgx nodes can HTTP GET/PUT.
-      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://rccs-cloud:9000}
+      # S3 presigned URL endpoint: compute nodes access MinIO via an SSH
+      # tunnel (localhost:9000 on compute → login node MinIO).
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://localhost:9000}
       # Model cache on Lustre (shared with compute nodes)
       SENTENCE_TRANSFORMERS_HOME: ${MODEL_DIR:-/lvs0/rccs-dmp/mnagaso/umrs_models}/sentence_transformers
       HF_HOME: ${MODEL_DIR:-/lvs0/rccs-dmp/mnagaso/umrs_models}/hf
@@ -68,12 +68,14 @@ services:
     volumes:
       - ./conf_umrs.json:/root/conf_umrs.json:ro
       - ./s3cfg:/root/.s3cfg:ro
-      - ./s3cfg:/root/.s3cfg_user1:ro
       - ./user_files:/root/user_files:ro
       # Lustre — shared model cache visible from compute nodes
       - ${MODEL_DIR:-/lvs0/rccs-dmp/mnagaso/umrs_models}:/shared/models
     restart: unless-stopped
-    command: ["python", "src/server_umrs.py", "-c", "/root/conf_umrs.json"]
+    # Remove baked-in user s3cfg files so the server regenerates them
+    # with the correct host (127.0.0.1 from admin .s3cfg) instead of
+    # the Docker-DNS default (minio:9000) that doesn't work with network_mode:host.
+    command: ["sh", "-c", "rm -f /root/.s3cfg_user* && python src/server_umrs.py -c /root/conf_umrs.json"]
 
 volumes:
   pg_data:

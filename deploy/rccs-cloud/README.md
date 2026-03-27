@@ -28,8 +28,8 @@ Ports tunneled over SSH (for local Mac access):
 | 9000 | MinIO S3 API (optional; local admin/debug only) |
 | 8081 | RAG service |
 
-For Slurm jobs, MinIO must be reachable directly as `rccs-cloud:9000` (or numeric IP)
-from compute nodes. Do not rely on SSH tunnel endpoints for presigned URLs.
+For Slurm jobs, MinIO is accessed via an SSH tunnel (`localhost:9000`) created
+automatically by `serve-model.slurm`. See [Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs).
 
 ---
 
@@ -37,9 +37,83 @@ from compute nodes. Do not rely on SSH tunnel endpoints for presigned URLs.
 
 - SSH access: `ssh rccs-cloud` works without a password (key configured).
 - The repo is cloned on rccs-cloud (e.g. at `/lvs0/rccs-dmp/mnagaso/umrs`).
-- `podman` and `podman compose` are available on rccs-cloud.
+- `podman` is available on rccs-cloud.
+- `podman-compose` is installed (`pip install --user podman-compose`). Ensure
+  `~/.local/bin` is in your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"`
+  to `~/.bashrc` if needed).
+- **Podman storage on a local filesystem** — see [Step 0a](#step-0a--configure-podman-storage-required) below.
+- **Passwordless SSH from compute nodes to login node** — see [Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs) below.
 - Lustre at `/lvs0/rccs-dmp/` is mounted on both login node and compute nodes.
 - Python ≥ 3.10 locally (or a venv with the umrs package).
+
+---
+
+## Step 0a — Configure Podman storage (required)
+
+rccs-cloud home directories are on Lustre, which does not support extended
+attributes (`xattr`).  Podman's default overlay storage will fail with
+`lsetxattr: operation not supported` when pulling or building images.
+
+Redirect Podman storage to a **local** filesystem (e.g. `/tmp`):
+
+```bash
+mkdir -p ~/.config/containers
+cat > ~/.config/containers/storage.conf << 'EOF'
+[storage]
+driver = "overlay"
+graphroot = "/tmp/${USER}/containers/storage"
+runroot  = "/tmp/${USER}/containers/run"
+EOF
+```
+
+Then reset any existing (broken) storage state:
+
+```bash
+podman system reset --force
+```
+
+Verify the new graphroot:
+
+```bash
+podman info --format '{{.Store.GraphRoot}}'
+# Should print: /tmp/<your-username>/containers/storage
+```
+
+> **Note**: `/tmp` is local to the login node and is cleared on reboot.
+> Container images will need to be re-pulled after a reboot.  If a persistent
+> local volume is available (e.g. `/local/$USER`), use that path instead.
+
+---
+
+## Step 0b — Enable compute → login SSH (required for Slurm jobs)
+
+Slurm compute nodes (dgx-s, dgx-m*) cannot reach the login node’s MinIO
+service directly (port 9000 is not routable).  The mini-rivault Slurm script
+opens an **SSH tunnel** from the compute node back to the login node to
+forward MinIO traffic.
+
+For this tunnel to work, **passwordless SSH from compute nodes to the login
+node** must be enabled.  Since all nodes share the same home directory on
+Lustre, a one-time setup is sufficient:
+
+```bash
+# On rccs-cloud (login node):
+# Generate a key pair if you don't already have one:
+[ -f ~/.ssh/id_rsa ] || ssh-keygen -t rsa -N '' -f ~/.ssh/id_rsa
+
+# Authorize your own key for loopback/compute-to-login SSH:
+cat ~/.ssh/id_rsa.pub >> ~/.ssh/authorized_keys
+chmod 600 ~/.ssh/authorized_keys
+```
+
+Verify it works:
+
+```bash
+ssh -o BatchMode=yes -o StrictHostKeyChecking=no localhost echo "self-ssh OK"
+```
+
+You should see `self-ssh OK` with no password prompt.  This also enables SSH
+from any compute node back to the login node since they share `~/.ssh/`.
 
 ---
 
@@ -62,9 +136,9 @@ Key values to adjust:
 |---|---|---|
 | `POSTGRES_PASSWORD` | `umrs_rccs` | Change in production |
 | `MINIO_ROOT_PASSWORD` | `minioadmin` | Change in production |
-| `S3_PRESIGN_ENDPOINT` | `http://rccs-cloud:9000` | **Must** be the hostname or IP that compute nodes (dgx-s/dgx-m*) can reach via HTTP.  If `rccs-cloud` resolves correctly from compute nodes, leave it.  Otherwise use the numeric IP. |
+| `S3_PRESIGN_ENDPOINT` | `http://localhost:9000` | Compute nodes access MinIO via an SSH tunnel (see below).  The Slurm script opens `localhost:9000` → login node MinIO automatically. |
 | `MODEL_DIR` | `/lvs0/rccs-dmp/mnagaso/umrs_models` | Lustre path, shared between login and compute nodes |
-| `MINIO_BIND` | `0.0.0.0` | Bind MinIO API to all interfaces so compute nodes can use presigned URLs. Change to `127.0.0.1` if you don't use mini-rivault compute. |
+| `MINIO_BIND` | `127.0.0.1` | MinIO listens on localhost only.  Compute nodes use the SSH tunnel. |
 
 ### 1b. Edit user config
 
@@ -106,23 +180,54 @@ The first launch will:
 
 ---
 
-## Step 2.5 — Verify direct MinIO reachability from Slurm jobs (recommended)
+## Step 2.5 — Verify MinIO reachability from Slurm jobs via SSH tunnel
 
-Before running embedding/RiVault workloads, verify that compute nodes can reach
-MinIO on rccs-cloud directly:
+Compute nodes (dgx-s, dgx-m*) cannot reach the login node’s MinIO directly
+(port 9000 is not routable).  The mini-rivault Slurm script
+(`src/umrs/mini-rivault-llm/serve-model.slurm`) automatically opens an SSH
+tunnel that forwards `localhost:9000` on the compute node to `127.0.0.1:9000`
+on the login node.
+
+> **Prerequisite**: [Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs)
+> must be completed — passwordless SSH from compute nodes to the login node
+> is required for the tunnel.
+
+To verify the tunnel works, submit a quick test job (replace `dgx-s` with any
+target partition):
 
 ```bash
-# On rccs-cloud (submit host)
-sbatch --wrap='curl -sS -m 5 -I http://rccs-cloud:9000/minio/health/live || exit 42'
+# On rccs-cloud:
+sbatch -p dgx-s --time=00:05:00 --wrap='
+  ssh -fN -L 9000:127.0.0.1:9000 '"$HOSTNAME"' -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes
+  sleep 2
+  curl -sS -m 5 -I http://localhost:9000/minio/health/live || exit 42
+'
+```
+
+Check the output once the job completes:
+
+```bash
+cat ~/slurm-<jobid>.out
 ```
 
 Interpretation:
-- HTTP response headers: OK, compute nodes can reach MinIO.
-- `Connection refused`: host reachable but MinIO is not listening/bound correctly.
-- `timed out`: routing/firewall issue between compute network and rccs-cloud.
+- `HTTP/1.1 200 OK`: tunnel works, MinIO is reachable.
+- `Permission denied (publickey...)`: SSH key not in `authorized_keys` — redo
+  [Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs).
+- `Connection refused`: tunnel opened but MinIO is not running on the login node.
+- `port forwarding failed`: network issue between compute and login nodes.
 
-If name resolution is unreliable on compute nodes, set `S3_PRESIGN_ENDPOINT` to the
-numeric IP in `.env` (for example `http://134.160.188.155:9000`).
+To test **all** partitions at once:
+
+```bash
+for part in dgx-s dgx-m0 dgx-m1 dgx-m2 dgx-m3; do
+  sbatch -p "$part" --time=00:05:00 -J "test-$part" --wrap='
+    ssh -fN -L 9000:127.0.0.1:9000 '"$HOSTNAME"' -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes
+    sleep 2
+    curl -sS -m 5 -I http://localhost:9000/minio/health/live || exit 42
+  '
+done
+```
 
 ---
 
@@ -331,17 +436,34 @@ EOF
 mc admin policy attach local user2-policy --user user2
 ```
 
-Then give `user2` an `s3cfg` file pointing at `rccs-cloud:9000` with their
-new credentials.
+Then give `user2` an `s3cfg` file pointing at `localhost:9000` (via the SSH tunnel)
+with their new credentials.
 
-> ⚠️ **Security note**: MinIO is bound on all interfaces (`MINIO_BIND=0.0.0.0`)
-> so that compute nodes can use presigned URLs.  Ensure rccs-cloud firewall rules
-> restrict port 9000 to trusted hosts only, or change to `127.0.0.1` and expose
-> it to other users via SSH tunnels instead.
+> ⚠️ **Security note**: MinIO is bound on localhost only (`MINIO_BIND=127.0.0.1`).
+> Compute nodes access MinIO through an SSH tunnel set up by the Slurm script.
+> If you need to expose MinIO directly to other hosts, change `MINIO_BIND` to
+> `0.0.0.0` in `.env` and ensure firewall rules restrict port 9000 to trusted
+> hosts.
 
 ---
 
 ## Troubleshooting
+
+### `lsetxattr: operation not supported` when pulling/building images
+
+Podman's overlay storage does not work on Lustre (network filesystem).  Configure
+Podman to use a local filesystem — see [Step 0a](#step-0a--configure-podman-storage-required).
+
+After updating `storage.conf`, run `podman system reset --force` and retry.
+
+### `docker-compose` / `podman-compose` not found
+
+`podman compose` requires an external compose provider.  Install `podman-compose`:
+
+```bash
+pip install --user podman-compose
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc
+```
 
 ### Containers not starting
 
@@ -351,21 +473,15 @@ podman compose logs minio
 podman compose logs umrs-server
 ```
 
-If startup fails with `looking up compose provider failed`, your host has
-`podman` but no compose provider. Install one:
-
-```bash
-pip install --user podman-compose
-export PATH="$HOME/.local/bin:$PATH"
-```
-
-Then run `./start.sh` again. The script auto-detects and uses
-`podman-compose` when available.
-
 ### MinIO unreachable from compute node
 
-- Check `S3_PRESIGN_ENDPOINT` in `.env` — it must resolve to the login node from dgx nodes.
-- Test from a compute node: `curl http://rccs-cloud:9000/minio/health/live`
+Compute nodes access MinIO via an SSH tunnel (`localhost:9000`), not directly.
+
+1. Ensure [Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs) is done
+   (your public key is in `~/.ssh/authorized_keys`).
+2. Test self-SSH on the login node: `ssh -o BatchMode=yes localhost echo ok`
+3. Run the verification in [Step 2.5](#step-25--verify-minio-reachability-from-slurm-jobs-via-ssh-tunnel).
+4. Check that `S3_PRESIGN_ENDPOINT=http://localhost:9000` in `.env`.
 
 ### Server fails to connect to postgres
 
