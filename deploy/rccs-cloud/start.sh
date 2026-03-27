@@ -13,10 +13,17 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# ─── Guard: must run on a Linux host where podman is available ───
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "ERROR: start.sh must be run on rccs-cloud (Linux), not on $(uname -s)."
+    echo "  Run:  ssh rccs-cloud 'cd /path/to/umrs/deploy/rccs-cloud && ./start.sh'"
+    exit 1
+fi
+
 # ─── Check podman-compose is available ───
 if ! command -v podman-compose &>/dev/null; then
     echo "ERROR: podman-compose not found."
-    echo "  Install it: pip install --user podman-compose"
+    echo "  Install it: uv pip install podman-compose"
     echo "  Then ensure ~/.local/bin is in your PATH."
     exit 1
 fi
@@ -39,10 +46,13 @@ fi
 
 source .env
 
-# ─── Create model directory on Lustre ───
+# ─── Create model directory (skip if path is not writable from here) ───
 MODEL_DIR="${MODEL_DIR:-/lvs0/rccs-dmp/mnagaso/umrs_models}"
-mkdir -p "${MODEL_DIR}/sentence_transformers" "${MODEL_DIR}/hf"
-echo "Model cache: ${MODEL_DIR}"
+if mkdir -p "${MODEL_DIR}/sentence_transformers" "${MODEL_DIR}/hf" 2>/dev/null; then
+    echo "Model cache: ${MODEL_DIR}"
+else
+    echo "WARNING: Could not create MODEL_DIR '${MODEL_DIR}' — ensure it exists on rccs-cloud."
+fi
 
 # ─── Start services ───
 echo "Starting UMRS services..."
