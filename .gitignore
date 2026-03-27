@@ -40,3 +40,6 @@ demos/slurm-dev/rivault/models/*.safetensors
 src/umrs/mini-rivault-llm/coredns_fs/coredns.conf.*
 
 **/.venv
+
+slurm-*.out
+.env
