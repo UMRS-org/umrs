@@ -11,7 +11,10 @@
           "modality_name": "text",
           "s3": {
             "bucket_alias": "user1-texts",
-            "data": { "type": "inline", "mime_type": "text/plain" }
+            "data": {
+              "type": "inline",
+              "mime_type": "text/plain"
+            }
           },
           "model": {
             "model_name": "intfloat/e5-base-v2",
@@ -23,7 +26,10 @@
             "store_embeddings": "yes",
             "table_name": "text",
             "meta_data": [
-              { "name": "keywords", "type": "TEXT" }
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
             ]
           }
         },
@@ -31,7 +37,10 @@
           "modality_name": "text file",
           "s3": {
             "bucket_alias": "user1-textfiles",
-            "data": { "type": "file", "mime_type": "text/plain" }
+            "data": {
+              "type": "file",
+              "mime_type": "text/plain"
+            }
           },
           "model": {
             "model_name": "intfloat/e5-base-v2",
@@ -43,7 +52,10 @@
             "store_embeddings": "yes",
             "table_name": "text_file",
             "meta_data": [
-              { "name": "keywords", "type": "TEXT" }
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
             ]
           }
         },
@@ -51,7 +63,10 @@
           "modality_name": "image",
           "s3": {
             "bucket_alias": "user1-images",
-            "data": { "type": "file", "mime_type": "image/jpeg" }
+            "data": {
+              "type": "file",
+              "mime_type": "image/jpeg"
+            }
           },
           "model": {
             "model_name": "openai/clip-vit-base-patch32",
@@ -63,7 +78,10 @@
             "store_embeddings": "yes",
             "table_name": "image",
             "meta_data": [
-              { "name": "keywords", "type": "TEXT" }
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
             ]
           }
         }
