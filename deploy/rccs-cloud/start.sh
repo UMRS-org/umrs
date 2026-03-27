@@ -13,6 +13,37 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+select_compose_cmd() {
+    if command -v podman-compose >/dev/null 2>&1; then
+        COMPOSE_CMD=(podman-compose)
+        return 0
+    fi
+
+    if podman compose version >/dev/null 2>&1; then
+        COMPOSE_CMD=(podman compose)
+        return 0
+    fi
+
+    if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+        COMPOSE_CMD=(docker compose)
+        return 0
+    fi
+
+    cat <<'EOF'
+Error: no working compose backend found.
+
+Detected:
+- podman is installed, but "podman compose" has no provider on this host.
+
+Install one of the following:
+1) pip install --user podman-compose
+2) install docker compose plugin (if docker is available)
+
+Then rerun: ./start.sh
+EOF
+    return 1
+}
+
 # ─── .env setup ───
 if [ ! -f .env ]; then
     echo "No .env found — copying env.example to .env"
@@ -28,8 +59,10 @@ mkdir -p "${MODEL_DIR}/sentence_transformers" "${MODEL_DIR}/hf"
 echo "Model cache: ${MODEL_DIR}"
 
 # ─── Start services ───
+select_compose_cmd
+
 echo "Starting UMRS services..."
-podman compose up -d
+"${COMPOSE_CMD[@]}" up -d
 
 echo ""
 echo "=== Services started ==="
@@ -39,5 +72,6 @@ echo "  umrs-server: localhost:5555 (ZMQ), localhost:8000 (HTTP)"
 echo ""
 echo "Presigned URL endpoint: ${S3_PRESIGN_ENDPOINT:-http://rccs-cloud:9000}"
 echo ""
-echo "Check logs:  podman compose logs -f umrs-server"
+echo "Compose cmd: ${COMPOSE_CMD[*]}"
+echo "Check logs:  ${COMPOSE_CMD[*]} logs -f umrs-server"
 echo "Stop:        ./stop.sh"
