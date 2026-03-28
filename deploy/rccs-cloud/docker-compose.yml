@@ -68,7 +68,7 @@ services:
     volumes:
       - ./conf_umrs.json:/root/conf_umrs.json:ro
       - ./s3cfg:/root/.s3cfg:ro
-      - ./user_files:/root/user_files:ro
+      - ./user_files:/root/user_files
       # Lustre — shared model cache visible from compute nodes
       - ${MODEL_DIR:-/lvs0/rccs-dmp/mnagaso/umrs_models}:/shared/models
     restart: unless-stopped
