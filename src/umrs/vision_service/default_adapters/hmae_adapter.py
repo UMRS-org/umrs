@@ -20,7 +20,7 @@ def _upload_result(s3, dst_bucket, out_key, data, content_type,
                    presigned_output_urls):
     """Upload result via presigned URL or direct S3.
 
-    Helper to avoid repeating the presigned/direct branching in each mode.
+    Helper to avoid repeating the presigned/direct branching in each task.
     """
     presigned_url = (presigned_output_urls or {}).get(out_key)
     if presigned_url:
@@ -37,7 +37,7 @@ def _upload_result(s3, dst_bucket, out_key, data, content_type,
 
 
 class HMAEAdapter(VisionModelAdapter):
-    """Load and run HMAE inference (reconstruct / mae / features)."""
+    """Load and run HMAE inference (reconstruction / mae_reconstruction / feature_extraction)."""
 
     def cache_key(self, config: Dict[str, Any]) -> str:
         cfg_path = config.get(
@@ -87,7 +87,7 @@ class HMAEAdapter(VisionModelAdapter):
             visualize_reconstruction,
         )
 
-        mode = config.get("mode", "reconstruct")
+        task = config.get("task", "reconstruction")
         hmae_config = model["config"]
         device = torch.device(model["device"])
         model_cfg = hmae_config["model"]
@@ -113,10 +113,10 @@ class HMAEAdapter(VisionModelAdapter):
         dst_bucket = output_bucket or bucket
         response: Dict[str, Any] = {
             "source_image": f"s3://{bucket}/{key}",
-            "mode": mode,
+            "task": task,
         }
 
-        if mode == "reconstruct":
+        if task == "reconstruction":
             pred = infer_reconstruct(model["model"], data, device,
                                      hmae_config, use_bf16)
             png_bytes = visualize_reconstruction(data, pred, hmae_config)
@@ -125,7 +125,7 @@ class HMAEAdapter(VisionModelAdapter):
                            presigned_output_urls)
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
 
-        elif mode == "mae":
+        elif task == "mae_reconstruction":
             pred, mask, loss = infer_mae(model["model"], data, device,
                                          hmae_config, use_bf16)
             png_bytes = visualize_reconstruction(data, pred, hmae_config,
@@ -136,7 +136,7 @@ class HMAEAdapter(VisionModelAdapter):
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
             response["mae_loss"] = loss
 
-        elif mode == "features":
+        elif task == "feature_extraction":
             features = infer_features(model["model"], data, device,
                                       hmae_config, use_bf16)
             cls_token = features[:, 0, :]
@@ -156,9 +156,9 @@ class HMAEAdapter(VisionModelAdapter):
 
         else:
             raise ValueError(
-                f"Unknown HMAE mode: {mode}. "
-                "Use 'reconstruct', 'mae', or 'features'."
+                f"Unknown HMAE task: {task}. "
+                "Use 'reconstruction', 'mae_reconstruction', or 'feature_extraction'."
             )
 
-        logger.info("HMAE %s completed for s3://%s/%s", mode, bucket, key)
+        logger.info("HMAE %s completed for s3://%s/%s", task, bucket, key)
         return response

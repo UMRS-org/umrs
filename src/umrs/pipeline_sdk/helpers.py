@@ -82,7 +82,7 @@ def format_results_table(results: List[Result]) -> str:
         if r.error:
             detail_parts.append(f"error={r.error[:40]}")
         elif r.data:
-            for k in ("num_objects", "mae_loss", "cls_shape", "mode"):
+            for k in ("num_objects", "mae_loss", "cls_shape", "task"):
                 if k in r.data:
                     detail_parts.append(f"{k}={r.data[k]}")
         detail = ", ".join(detail_parts) or "—"

@@ -588,7 +588,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
 
-    if modality_name == "text" or modality_name == "text file":
+    if modality_name in ("text", "text_file", "text file"):
         columns_to_add = [
             {"name": "_content", "type": "TEXT"},
             {"name": "chunk_start", "type": "BIGINT"},
@@ -888,7 +888,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
     if metadata_list is None:
         metadata_list = [{} for _ in s3_keys]
 
-    if modality_name in ("image", "tomography"):
+    if modality_name in ("image", "tomography", "volume"):
         # One embedding per image file
         for embedding, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
             # print(f"storing embedding for {s3_key}... ")
@@ -906,7 +906,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
                 silent = False
             )
 
-    elif modality_name in ("text", "text file"):
+    elif modality_name in ("text", "text_file", "text file"):
         # Multiple embeddings per file (one per text chunk)
         for chunked_embeddings, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
             sorted_chunks = sorted(chunked_embeddings, key=lambda chunk: chunk["start"])

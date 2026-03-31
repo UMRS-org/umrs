@@ -89,7 +89,7 @@ results/
 ```json
 {
   "source_key": "volume_170.png",
-  "mode": "mae",
+  "task": "mae_reconstruction",
   "mae_loss": 0.1842,
   "anomaly_threshold": 0.3,
   "is_anomaly": false,
@@ -102,7 +102,7 @@ results/
 ```json
 {
   "source_key": "volume_170.png",
-  "mode": "features",
+  "task": "feature_extraction",
   "features_s3_key": "s3://bucket/volume_170_features.pt",
   "embedding_key": "features/volume_170_emb.npy",
   "embedding_dim": 768

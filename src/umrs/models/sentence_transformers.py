@@ -18,7 +18,7 @@ def load_sentence_transformers_model(model_name):
         print("\t\t\t--> Local cache not available or incomplete. Downloading from Hugging Face...")
         model = SentenceTransformer(model_name)
         print("\t\t\t--> Downloaded and cached model.")
-    
+
     _model_cache[model_name] = model
     return model;
 
@@ -44,7 +44,7 @@ def compute_embeddings_img(self, images):
 
 
 def sentence_transformers(modality):
-    if modality == "text":
+    if modality in ("text", "text_file"):
         compute_embeddings_func = compute_embeddings_text
         input_type = "text"
     elif modality == "image":

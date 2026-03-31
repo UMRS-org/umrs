@@ -1,10 +1,10 @@
 """HMAE inference integration for UMRS.
 
 Merges the clean hmae-infer implementation (quadtree + HMAEVIT) with the
-UMRS S3 pipeline from the HMAE_inference branch. Supports three inference modes:
-  - reconstruct: full reconstruction (encode all patches, decode all)
-  - mae: MAE-style masked reconstruction (random masking + decode)
-  - features: encoder-only feature extraction (CLS + patch tokens)
+UMRS S3 pipeline from the HMAE_inference branch. Supports three tasks:
+  - reconstruction: full reconstruction (encode all patches, decode all)
+  - mae_reconstruction: MAE-style masked reconstruction (random masking + decode)
+  - feature_extraction: encoder-only feature extraction (CLS + patch tokens)
 """
 
 import os
@@ -323,7 +323,7 @@ def _upload_png_to_s3(s3, bucket, key, png_bytes):
 # UMRS compute pipeline (for embedding worker / model_loading integration)
 # ---------------------------------------------------------------------------
 
-def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, mode="reconstruct"):
+def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, task="reconstruction"):
     """Main UMRS pipeline: process images from S3 through HMAE inference.
 
     Args:
@@ -332,7 +332,7 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, mod
         s3_keys: list of S3 object keys.
         path_to_bucket: source bucket name.
         output_bucket: destination bucket for results.
-        mode: "reconstruct", "mae", or "features".
+        task: "reconstruction", "mae_reconstruction", or "feature_extraction".
 
     Returns:
         (cls_embeddings, checksums, metadata_list, saved_keys)
@@ -354,7 +354,7 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, mod
     metadata_list = []
 
     for idx, s3_key in enumerate(filtered_keys):
-        logger.info("[%d/%d] Processing %s (mode=%s)", idx + 1, len(filtered_keys), s3_key, mode)
+        logger.info("[%d/%d] Processing %s (task=%s)", idx + 1, len(filtered_keys), s3_key, task)
 
         data, checksum, metadata = preprocess_image_from_s3(
             s3, path_to_bucket, s3_key,
@@ -368,14 +368,14 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, mod
 
         base = os.path.splitext(s3_key)[0]
 
-        if mode == "reconstruct":
+        if task == "reconstruction":
             pred = infer_reconstruct(model, data, device, config, use_bf16)
             saved_key = f"{base}_recon.png"
             png_bytes = visualize_reconstruction(data, pred, config)
             _upload_png_to_s3(s3, output_bucket, saved_key, png_bytes)
             embedding = None
 
-        elif mode == "mae":
+        elif task == "mae_reconstruction":
             pred, mask, loss = infer_mae(model, data, device, config, use_bf16)
             logger.info("  MAE loss: %.6f", loss)
             saved_key = f"{base}_mae.png"
@@ -383,7 +383,7 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, mod
             _upload_png_to_s3(s3, output_bucket, saved_key, png_bytes)
             embedding = None
 
-        elif mode == "features":
+        elif task == "feature_extraction":
             features = infer_features(model, data, device, config, use_bf16)
             cls_token = features[:, 0, :]
             patch_tokens = features[:, 1:, :]
@@ -395,7 +395,7 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, mod
             s3.put_object(Bucket=output_bucket, Key=saved_key, Body=buffer.getvalue())
             embedding = cls_token
         else:
-            raise ValueError(f"Unknown HMAE inference mode: {mode}")
+            raise ValueError(f"Unknown HMAE task: {task}")
 
         saved_keys.append(f"{output_bucket}/{saved_key}")
         cls_embeddings.append(embedding)
@@ -403,25 +403,25 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, mod
     return cls_embeddings, checksums, metadata_list, saved_keys
 
 
-def make_hmae_compute_func(modality, cfg_file):
-    """Create a bound compute function for a specific HMAE modality/mode.
+def make_hmae_compute_func(modality, cfg_file, task=None):
+    """Create a bound compute function for a specific HMAE task.
 
-    Maps modality names to inference modes:
-        tomography_reconstruction     -> reconstruct
-        tomography_mae_reconstruction -> mae
-        tomography_features_extraction -> features
+    Args:
+        modality: Modality name (unused, kept for API compatibility).
+        cfg_file: Path to HMAE YAML config.
+        task: UMRS task name — ``"reconstruction"``, ``"mae_reconstruction"``,
+            ``"feature_extraction"``, or ``"embedding"``.
+            Defaults to ``"reconstruction"`` when ``None``.
     """
     with open(cfg_file, "r") as f:
         config = yaml.safe_load(f)
 
-    mode_map = {
-        "tomography_reconstruction": "reconstruct",
-        "tomography_mae_reconstruction": "mae",
-        "tomography_features_extraction": "features",
-    }
-    mode = mode_map.get(modality, "reconstruct")
+    resolved_task = task if task is not None else "reconstruction"
+    # embedding uses the same code path as feature_extraction
+    if resolved_task == "embedding":
+        resolved_task = "feature_extraction"
 
     def func(self, s3, s3_keys, path_to_bucket, output_bucket):
-        return compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, mode, )
+        return compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, resolved_task)
 
     return func

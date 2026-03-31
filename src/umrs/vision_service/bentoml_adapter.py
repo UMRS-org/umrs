@@ -44,7 +44,7 @@ def _copy_to_output_bucket(s3, s3_uri, output_bucket):
     return new_uri
 
 
-def _predict_output_keys(s3_key, model_type, model_config):
+def _predict_output_keys(s3_key, model_type, model_config, task=None):
     """Predict output S3 keys based on adapter naming conventions.
 
     Each adapter uses deterministic naming for result artifacts.
@@ -57,22 +57,19 @@ def _predict_output_keys(s3_key, model_type, model_config):
         outputs[f"{base}_sam3_seg.png"] = "image/png"
 
     elif model_type == "hmae":
-        mode = model_config.get("mode", "reconstruct")
-        if mode == "reconstruct":
+        task_resolved = task or "reconstruction"
+        if task_resolved == "reconstruction":
             outputs[f"{base}_recon.png"] = "image/png"
-        elif mode == "mae":
+        elif task_resolved == "mae_reconstruction":
             outputs[f"{base}_mae.png"] = "image/png"
-        elif mode == "features":
+        elif task_resolved == "feature_extraction":
             outputs[f"{base}_features.pt"] = "application/octet-stream"
-        else:
-            # Unknown mode — don't predict, service will fall back to direct S3
-            pass
     # For unknown model types, return empty — service will fall back to direct S3
     return outputs
 
 
 def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, model_config,
-                                poll_interval=2.0, timeout=1200.0):
+                                task=None, poll_interval=2.0, timeout=1200.0):
     """Create a compute_embeddings closure for any vision model via BentoML.
 
     Submits tasks to the ``/infer`` endpoint using BentoML's native client
@@ -82,12 +79,17 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
         client: ``bentoml.SyncHTTPClient`` connected to the vision service.
         model_type: Adapter key (e.g. ``"sam3"``, ``"hmae"``).
         model_config: Adapter-specific config dict forwarded to the service.
+        task: UMRS task name (e.g. ``"reconstruction"``).
         poll_interval: Seconds between status polls.
         timeout: Maximum seconds to wait per task.
 
     Returns:
         A method suitable for binding to ``EmbeddingModel.compute_embeddings``.
     """
+    # Inject task into model_config so it reaches the server-side adapter.
+    effective_config = dict(model_config)
+    if task:
+        effective_config["task"] = task
 
     def _compute(self, s3, s3_keys, path_to_bucket, output_bucket):
         results = []
@@ -115,7 +117,7 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
                 )
                 dst_bucket = output_bucket or path_to_bucket
                 predicted_outputs = _predict_output_keys(
-                    s3_key, model_type, model_config,
+                    s3_key, model_type, effective_config, task=task,
                 )
                 for out_key, ct in predicted_outputs.items():
                     presigned_output_urls[out_key] = generate_presigned_put(
@@ -130,31 +132,31 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
                 presigned_input_url = None
                 presigned_output_urls = {}
 
-            task = client.infer.submit(
+            bento_task = client.infer.submit(
                 model_type=model_type,
-                inference_config=model_config,
+                inference_config=effective_config,
                 image_url=image_url,
                 output_bucket=output_bucket,
                 presigned_input_url=presigned_input_url or "",
                 presigned_output_urls=presigned_output_urls,
             )
-            logger.info("Task submitted: infer -> %s", task.id)
+            logger.info("Task submitted: infer -> %s", bento_task.id)
 
             start = time.monotonic()
             while True:
                 elapsed = time.monotonic() - start
                 if elapsed > timeout:
                     raise TimeoutError(
-                        f"Task {task.id} did not complete within {timeout}s"
+                        f"Task {bento_task.id} did not complete within {timeout}s"
                     )
-                status = task.get_status()
+                status = bento_task.get_status()
                 if status.value == "completed":
-                    result = task.get()
+                    result = bento_task.get()
                     break
                 elif status.value == "failed":
-                    raise RuntimeError(f"Task {task.id} failed")
+                    raise RuntimeError(f"Task {bento_task.id} failed")
                 elif status.value == "canceled":
-                    raise RuntimeError(f"Task {task.id} was canceled")
+                    raise RuntimeError(f"Task {bento_task.id} was canceled")
                 time.sleep(poll_interval)
 
             if "error" in result:
@@ -181,22 +183,20 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
 # ---------------------------------------------------------------------------
 
 def make_jens_vision_compute(client: bentoml.SyncHTTPClient, model_type, model_config,
-                             auth_token=None, poll_interval=2.0, timeout=1200.0):
+                             task=None, auth_token=None, poll_interval=2.0, timeout=1200.0):
     """Create a compute_embeddings closure for Jens's ``/vision_task`` endpoint.
 
     Jens's VisionFrontend accepts:
         image (str): s3:// URI or URL
         model (str): "hmae" or "sam3"
-        task  (str): inference mode (e.g. "reconstruct", "mae", "features")
+        task  (str): UMRS task name (e.g. "reconstruction", "segmentation")
         out   (str): "raw" or s3:// output URI
 
     Returns pickled dicts.
     """
     import pickle
 
-    # Map UMRS model_config to Jens's task parameter.
-    # For HMAE the task is the inference mode; for SAM3 it's typically empty.
-    task_param = model_config.get("mode", "reconstruct")
+    task_param = task or "reconstruction"
 
     def _compute(self, s3, s3_keys, path_to_bucket, output_bucket):
         results = []
@@ -215,29 +215,29 @@ def make_jens_vision_compute(client: bentoml.SyncHTTPClient, model_type, model_c
             image_url = f"s3://{path_to_bucket}/{s3_key}"
             out_uri = f"s3://{output_bucket}/{s3_key}" if output_bucket else "raw"
 
-            task = client.vision_task.submit(
+            bento_task = client.vision_task.submit(
                 image=image_url,
                 model=model_type,
                 task=task_param,
                 out=out_uri,
             )
-            logger.info("Task submitted: vision_task -> %s", task.id)
+            logger.info("Task submitted: vision_task -> %s", bento_task.id)
 
             start = time.monotonic()
             while True:
                 elapsed = time.monotonic() - start
                 if elapsed > timeout:
                     raise TimeoutError(
-                        f"Task {task.id} did not complete within {timeout}s"
+                        f"Task {bento_task.id} did not complete within {timeout}s"
                     )
-                status = task.get_status()
+                status = bento_task.get_status()
                 if status.value == "completed":
-                    raw_result = task.get()
+                    raw_result = bento_task.get()
                     break
                 elif status.value == "failed":
-                    raise RuntimeError(f"Task {task.id} failed")
+                    raise RuntimeError(f"Task {bento_task.id} failed")
                 elif status.value == "canceled":
-                    raise RuntimeError(f"Task {task.id} was canceled")
+                    raise RuntimeError(f"Task {bento_task.id} was canceled")
                 time.sleep(poll_interval)
 
             # Jens's endpoint returns pickled bytes.

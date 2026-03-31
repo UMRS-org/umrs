@@ -7,6 +7,7 @@ from umrs.s3 import *
 from umrs.MessageQueue import MessageQueue
 from umrs.metadata import check_and_build_metadata
 from umrs.modality import *
+from umrs.modality import resolve_modality_task
 from umrs.json_utils import load_client_cfg_file
 from umrs.pretty_print import pretty_print_user_cfg
 from umrs.config import get_default_docker_s3cfg
@@ -57,8 +58,10 @@ def configure_buckets(user_cfg, buckets_cfg):
         xp_name = xp["xp_name"]
         db_name = create_db_name(sql_username, xp_name)
         for modality in xp["modalities"]:
-            modality_name = modality["modality_name"]
-            check_or_quit(modality_name)
+            # Support both old (modality_name) and new (modality + task) config
+            raw_modality_name = modality.get("modality_name") or modality.get("modality")
+            raw_task = modality.get("task")
+            modality_name, task = resolve_modality_task(raw_modality_name, raw_task)
             bucket_alias =  modality["s3"]["bucket_alias"]
             path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
             if modality["s3"].get("need_output_bucket", False):
@@ -72,6 +75,7 @@ def configure_buckets(user_cfg, buckets_cfg):
                 username,
                 xp_name,
                 modality_name,
+                task,
                 s3_configuration_file,
                 metadata,
                 sql_username,
@@ -173,6 +177,7 @@ def action_list_buckets(bucket_cfg, username, output_format):
             buckets.append({
                 'bucket_alias': alias,
                 'modality': entry.modality_name,
+                'task': entry.task,
                 'path_to_bucket': entry.path_to_bucket
             })
     return api_json(buckets=buckets, output_format=output_format)
@@ -740,20 +745,20 @@ def main():
             print(f"Error: file {file_path} is not a valid.")
             return None, 0
 
-        print(f"Processing file '{file_path}' for modality '{modality}'")
+        category = modality_category(modality)
+        print(f"Processing file '{file_path}' for modality '{modality}' (category: {category})")
 
-        if modality in ["image" , "tomography"]: # send an image
-            if os.path.isfile(file_path):
-                s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check = (modality!="tomography"))
-                if s3_key and notify_server:
-                    control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
-                return s3_key, 1
-        elif modality == "text file" : # send a text file by chunking it
-                s3_key = s3_store_text_file(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args)
-                if s3_key and notify_server:
-                    control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
-                return s3_key, 1
-        elif modality == "text": # consider each line of the file as a string to be process
+        if category == "image":
+            s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check=(modality not in ("volume",)))
+            if s3_key and notify_server:
+                control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
+            return s3_key, 1
+        elif category == "text_file":
+            s3_key = s3_store_text_file(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args)
+            if s3_key and notify_server:
+                control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
+            return s3_key, 1
+        elif category == "text":  # consider each line of the file as a string to be processed
             try:
                 with open(file_path,"r") as file:
                     nb_objects = 0
@@ -771,7 +776,7 @@ def main():
                 print(f"Unicode decoding error: {e}")
                 print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file.")
         else:
-            print(f"Error: Unknown modality '{modality}'. Nothing has been sent to the server")
+            print(f"Error: Unknown modality category '{category}' (modality: '{modality}'). Nothing has been sent to the server")
 
         return None, 0
 

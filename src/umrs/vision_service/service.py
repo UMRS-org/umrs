@@ -136,7 +136,7 @@ class VisionModelService:
             model_type: Adapter key registered in ADAPTER_REGISTRY
                         (e.g. ``"sam3"``, ``"hmae"``).
             inference_config: Adapter-specific configuration (checkpoint paths,
-                              mode, prompt, thresholds, …).
+                              task, prompt, thresholds, …).
             image_url: S3 URL of the input image (``s3://bucket/key``).
             output_bucket: Bucket for output artifacts.  Defaults to the
                            source bucket when empty.
