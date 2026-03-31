@@ -43,3 +43,5 @@ src/umrs/mini-rivault-llm/coredns_fs/coredns.conf.*
 
 slurm-*.out
 .env
+
+tmp
