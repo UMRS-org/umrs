@@ -66,18 +66,33 @@ if [[ -n "$_real_home" && "$_real_home" != "$HOME" ]]; then
     export HOME="$_real_home"
 fi
 
-# ─── Ensure podman-compose is available ──────────────────────────────────────
+# ─── Ensure podman-compose is available (>= 1.2.0 for --profile support) ─────
 # serve-model.slurm calls `pip3 install podman-compose` when absent, but
 # Debian-based compute nodes (Python 3.12+) have "externally-managed"
 # environments. Install into a user-local venv that will survive across jobs.
+# NOTE: System podman-compose may be too old (e.g. 1.0.6 lacks --profile).
 _PC_VENV="${HOME}/.local/share/rivault-venv"
-if ! command -v podman-compose >/dev/null 2>&1; then
+_PC_MIN_VERSION="1.2.0"
+
+_need_venv=false
+if command -v podman-compose >/dev/null 2>&1; then
+    _pc_ver="$(podman-compose -v 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)"
+    if [[ -z "$_pc_ver" ]] || printf '%s\n%s\n' "$_PC_MIN_VERSION" "$_pc_ver" | sort -V | head -1 | grep -qv "$_PC_MIN_VERSION"; then
+        echo "[wrapper] System podman-compose ${_pc_ver:-unknown} is too old (need >= ${_PC_MIN_VERSION})."
+        _need_venv=true
+    fi
+else
+    _need_venv=true
+fi
+
+if $_need_venv; then
     if [[ ! -x "${_PC_VENV}/bin/podman-compose" ]]; then
         echo "[wrapper] Installing podman-compose into ${_PC_VENV} ..."
         python3 -m venv --system-site-packages "$_PC_VENV"
         "${_PC_VENV}/bin/pip" install --quiet 'podman-compose>=1.2.0'
     fi
     export PATH="${_PC_VENV}/bin:${PATH}"
+    echo "[wrapper] Using venv podman-compose: $(podman-compose -v 2>/dev/null)"
 fi
 
 # ─── Podman storage config (must match inner serve-model.slurm) ──────────────

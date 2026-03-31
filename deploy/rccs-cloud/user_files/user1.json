@@ -1,7 +1,7 @@
 {
   "username": "user1",
   "fullname": "Masaru Nagaso",
-  "s3_configuration_file": "~/.s3cfg_user1",
+  "s3_configuration_file": "~/.config/umrs/s3cfg",
   "experiences": [
     {
       "xp_name": "Text Embedding",
@@ -11,10 +11,7 @@
           "modality_name": "text",
           "s3": {
             "bucket_alias": "user1-texts",
-            "data": {
-              "type": "inline",
-              "mime_type": "text/plain"
-            }
+            "data": { "type": "inline", "mime_type": "text/plain" }
           },
           "model": {
             "model_name": "intfloat/e5-base-v2",
@@ -26,10 +23,7 @@
             "store_embeddings": "yes",
             "table_name": "text",
             "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              }
+              { "name": "keywords", "type": "TEXT" }
             ]
           }
         },
@@ -37,10 +31,7 @@
           "modality_name": "text file",
           "s3": {
             "bucket_alias": "user1-textfiles",
-            "data": {
-              "type": "file",
-              "mime_type": "text/plain"
-            }
+            "data": { "type": "file", "mime_type": "text/plain" }
           },
           "model": {
             "model_name": "intfloat/e5-base-v2",
@@ -52,10 +43,7 @@
             "store_embeddings": "yes",
             "table_name": "text_file",
             "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              }
+              { "name": "keywords", "type": "TEXT" }
             ]
           }
         },
@@ -63,10 +51,7 @@
           "modality_name": "image",
           "s3": {
             "bucket_alias": "user1-images",
-            "data": {
-              "type": "file",
-              "mime_type": "image/jpeg"
-            }
+            "data": { "type": "file", "mime_type": "image/jpeg" }
           },
           "model": {
             "model_name": "openai/clip-vit-base-patch32",
@@ -78,10 +63,7 @@
             "store_embeddings": "yes",
             "table_name": "image",
             "meta_data": [
-              {
-                "name": "keywords",
-                "type": "TEXT"
-              }
+              { "name": "keywords", "type": "TEXT" }
             ]
           }
         }
@@ -96,10 +78,7 @@
           "s3": {
             "bucket_alias": "user1-sam3",
             "need_output_bucket": true,
-            "data": {
-              "type": "file",
-              "mime_type": "image/png"
-            }
+            "data": { "type": "file", "mime_type": "image/png" }
           },
           "model": {
             "model_name": "facebook/sam2-hiera-small",
@@ -125,19 +104,14 @@
           "s3": {
             "bucket_alias": "user1-hmae",
             "need_output_bucket": true,
-            "data": {
-              "type": "file",
-              "mime_type": "image/png"
-            }
+            "data": { "type": "file", "mime_type": "image/png" }
           },
           "model": {
             "model_name": "HMAE ViT-B",
             "vector_size": "768",
             "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
             "vision_model_type": "hmae",
-            "vision_model_config": {
-              "task": "reconstruction"
-            },
+            "vision_model_config": { "mode": "reconstruct" },
             "return_type": "file"
           },
           "sql": {
