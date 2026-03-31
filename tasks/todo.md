@@ -32,6 +32,39 @@
 - [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed.
 - [ ] Re-run e2e demo and verify embeddings in DB via phase3b.
 
+## rccs-cloud Hybrid Deployment (2026-03-29)
+
+> **Goal**: Deploy UMRS to rccs-cloud login node (hybrid architecture) and
+> run core demos 00–04 end-to-end.
+
+### Pre-deployment
+- [x] Sync client/user1.json with GPU-first model_types
+- [x] Rsync deploy/rccs-cloud/ files to remote (uncommitted changes)
+- [x] Rsync src/ to remote (umrs package needed for install)
+
+### Server setup (on rccs-cloud)
+- [x] Delete broken .venv (macOS symlinks) and run setup_server.sh
+- [x] Fix setup_server.sh to auto-detect Python 3.10+ (was using 3.9)
+- [x] Install `mc` (MinIO Client) on rccs-cloud (~/.local/bin/mc)
+- [x] Fix docker-compose.yml: disable unix sockets for rootless podman
+- [x] Fix start.sh: add ~/.local/bin to PATH, fix pg_isready -h localhost
+- [x] Fix health_check_server.sh: pgvector pipe bug, port 5556 on-demand
+- [x] Install pgvector extension in postgres DB
+- [x] Verify .env settings (MODEL_DIR, passwords)
+- [x] Run start.sh — containers + native server running
+- [x] Run health_check_server.sh — 10/10 passed, 0 failed, 75 idle nodes
+
+### Client setup (local Mac)
+- [x] Run setup_client.sh (configs in ~/.config/umrs/, umrs pkg installed)
+- [x] SSH tunnel started (PID 6852, ports 5555/5556/9000/8081)
+
+### Demo execution (blocked: VS Code terminal capture broken)
+- [ ] Demo 00: health check (SSH tunnels + UMRS ping)
+- [ ] Demo 01: text embedding (upload texts, wait for embeddings)
+- [ ] Demo 02: RAG search (vector + hybrid + Q&A) — needs UMRS_RAG_ENABLE=1
+- [ ] Demo 03: SAM3 segmentation (upload images, download results)
+- [ ] Demo 04: HMAE inference (upload CT images, download results)
+
 ## User-Defined Model Workflows (UDM) — 2026-03-16
 
 > **Goal**: Let users define and run their own models / multi-step workflows

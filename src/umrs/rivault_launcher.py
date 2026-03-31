@@ -562,18 +562,20 @@ def launch_rivault_model(model_cfg):
             )
 
         vision_model_config = dict(model_cfg.get("vision_model_config", {}))
+        task = model_cfg.get("_task")
 
         if vision_stack == "jens":
             # Jens's standalone stack: /vision_task endpoint with pickle protocol.
             from umrs.vision_service.bentoml_adapter import make_jens_vision_compute
             compute_func = make_jens_vision_compute(
                 client, vision_model_type, vision_model_config,
-                auth_token=MASTER_KEY,
+                task=task, auth_token=MASTER_KEY,
             )
         else:
             # UMRS generic stack: /infer endpoint with JSON protocol.
             compute_func = make_bentoml_vision_compute(
                 client, vision_model_type, vision_model_config,
+                task=task,
             )
 
         model_name = model_cfg["model_name"]

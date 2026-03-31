@@ -1,7 +1,7 @@
 """
 Step 3: HMAE Feature Extraction — compute embeddings for each image patch.
 
-Submits each patch to the BentoML HMAE ``features`` mode endpoint, collects
+Submits each patch to the BentoML HMAE ``feature_extraction`` task endpoint, collects
 the CLS token (768-d) and patch tokens, and stores embeddings as ``.npy``.
 
 Input keys:  ``patches/<basename>_patch_<i>.png`` (from Step 2)
@@ -132,7 +132,7 @@ class HMAEFeatureStep(Step):
         try:
             task = self.client.infer.submit(
                 model_type="hmae",
-                inference_config={"mode": "features"},
+                inference_config={"task": "feature_extraction"},
                 image_url=image_url,
             )
         except Exception as exc:

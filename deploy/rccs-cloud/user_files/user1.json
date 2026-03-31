@@ -19,7 +19,7 @@
           "model": {
             "model_name": "intfloat/e5-base-v2",
             "vector_size": "768",
-            "model_type": "TransformerEncoder",
+            "model_type": "rivault://openai://http://localhost:8001/v1",
             "return_type": null
           },
           "sql": {
@@ -45,7 +45,7 @@
           "model": {
             "model_name": "intfloat/e5-base-v2",
             "vector_size": "768",
-            "model_type": "TransformerEncoder",
+            "model_type": "rivault://openai://http://localhost:8001/v1",
             "return_type": null
           },
           "sql": {
@@ -71,7 +71,7 @@
           "model": {
             "model_name": "openai/clip-vit-base-patch32",
             "vector_size": "512",
-            "model_type": "SentenceTransformer",
+            "model_type": "rivault://openai://http://localhost:8001/v1",
             "return_type": null
           },
           "sql": {
@@ -136,7 +136,7 @@
             "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
             "vision_model_type": "hmae",
             "vision_model_config": {
-              "mode": "reconstruct"
+              "task": "reconstruction"
             },
             "return_type": "file"
           },

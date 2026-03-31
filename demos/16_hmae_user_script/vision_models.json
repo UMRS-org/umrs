@@ -1,0 +1,14 @@
+{
+  "modalities": [
+    {
+      "modality": "image",
+      "task": "reconstruction",
+      "model": {
+        "model_name": "HMAE ViT-B (user_script)",
+        "vector_size": "0",
+        "model_type": "user_script:///PLACEHOLDER/workflow.json",
+        "return_type": "file"
+      }
+    }
+  ]
+}

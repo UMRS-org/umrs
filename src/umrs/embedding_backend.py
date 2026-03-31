@@ -21,6 +21,7 @@ class LocalEmbeddingBackend:
         modality_name: str,
         s3_connection: Any,
         output_bucket: str,
+        task: str = None,
     ) -> None:
         compute_and_store_embedding(
             path_to_bucket,
@@ -32,4 +33,5 @@ class LocalEmbeddingBackend:
             modality_name,
             s3_connection,
             output_bucket,
+            task=task,
         )

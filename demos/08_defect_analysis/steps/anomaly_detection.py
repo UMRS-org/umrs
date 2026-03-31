@@ -1,7 +1,7 @@
 """
 Step 4: Anomaly Detection — MAE reconstruction error scoring.
 
-Submits each patch to the BentoML HMAE ``mae`` mode endpoint to get a
+Submits each patch to the BentoML HMAE ``mae_reconstruction`` task endpoint to get a
 masked-autoencoder reconstruction.  High reconstruction error indicates
 anomalous / unusual structures.
 
@@ -117,7 +117,7 @@ class AnomalyDetectionStep(Step):
         try:
             task = self.client.infer.submit(
                 model_type="hmae",
-                inference_config={"mode": "mae"},
+                inference_config={"task": "mae_reconstruction"},
                 image_url=image_url,
             )
         except Exception as exc:

@@ -1,0 +1,14 @@
+{
+  "modalities": [
+    {
+      "modality": "image",
+      "task": "segmentation",
+      "model": {
+        "model_name": "SAM3 Segmentation (user_script)",
+        "vector_size": "0",
+        "model_type": "user_script:///PLACEHOLDER/workflow.json",
+        "return_type": "file"
+      }
+    }
+  ]
+}

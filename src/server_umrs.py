@@ -21,7 +21,7 @@ from umrs.sql import create_db_user, create_db, configure_table, check_S3_object
 from umrs.models_loading import load_model
 from umrs.MessageQueue import MessageQueue
 from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_thread_status
-from umrs.modality import check_or_quit
+from umrs.modality import check_or_quit, resolve_modality_task
 
 from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
 from umrs.TaskManager import TaskManager
@@ -143,8 +143,9 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
         sql_username  = xp["sql_username"]
         create_db_user(sql_username)
         for modality in xp["modalities"]:
-            modality_name = modality["modality_name"]
-            check_or_quit(modality_name)
+            raw_modality_name = modality.get("modality_name") or modality.get("modality")
+            raw_task = modality.get("task")
+            modality_name, task = resolve_modality_task(raw_modality_name, raw_task)
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
             bucket_list.append(path_to_bucket)
@@ -238,14 +239,16 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
         sql_username  = xp["sql_username"]
         data_base, db_name = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
-            modality_name = modality["modality_name"]
-            check_or_quit(modality_name)
-            print(f"\t\tModality: {modality_name}")
+            # Support both old (modality_name) and new (modality + task) config
+            raw_modality_name = modality.get("modality_name") or modality.get("modality")
+            raw_task = modality.get("task")
+            modality_name, task = resolve_modality_task(raw_modality_name, raw_task)
+            print(f"\t\tModality: {modality_name} (task: {task})")
             bucket_alias = modality["s3"]["bucket_alias"]
             need_output_bucket = modality["s3"].get("need_output_bucket", False)
             path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
             model_cfg = modality['model']
-            model = load_model(model_cfg, modality_name)
+            model = load_model(model_cfg, modality_name, task=task)
             # Best-effort upload of model weights to RiVault so that
             # compute workers can later stream them from there.
             try:
@@ -265,7 +268,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
             # in case of race condition. In practice we certainly do not want several procesing on the same bucket happening in parallel
             rlock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
             bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name,
-                                       model, store_embeddings_flag, modality_name, s3_connection, metadata,
+                                       model, store_embeddings_flag, modality_name, task, s3_connection, metadata,
                                        xp_name, num_objects, model.return_type, output_path_to_bucket, rlock)
             buckets_cfg.store(path_to_bucket, bucket_entry)
             print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
@@ -780,8 +783,8 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
 
     exit_status = TaskStatus.COMPLETED
     for path_to_bucket in keys_per_bucket.keys():
-        selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "s3_connection", "output_path_to_bucket", "reentrant_lock"]
-        user, data_base, table_name, model, store_embeddings_flag, modality_name, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket, filter=selected_fields)
+        selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "task", "s3_connection", "output_path_to_bucket", "reentrant_lock"]
+        user, data_base, table_name, model, store_embeddings_flag, modality_name, task, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket, filter=selected_fields)
 
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
@@ -819,7 +822,8 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                             device,
                             modality_name,
                             s3_connection,
-                            output_bucket
+                            output_bucket,
+                            task=task,
                         )
                     except Exception as e:
                         import traceback

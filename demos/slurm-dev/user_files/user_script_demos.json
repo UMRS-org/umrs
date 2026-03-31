@@ -1,0 +1,75 @@
+{
+  "username": "rivault_user",
+  "fullname": "Rivault Demo User",
+  "s3_configuration_file": "~/.s3cfg_rivault_user",
+  "experiences": [
+    {
+      "xp_name": "SAM3_UserScript",
+      "sql_username": "rivault_user",
+      "modalities": [
+        {
+          "modality": "image",
+          "task": "segmentation",
+          "s3": {
+            "bucket_alias": "sam3-user-script",
+            "data": {
+              "type": "file",
+              "mime_type": "image/png"
+            },
+            "need_output_bucket": true
+          },
+          "model": {
+            "model_name": "SAM3 Segmentation (user_script)",
+            "vector_size": "0",
+            "model_type": "user_script:///opt/demos/15_sam3_user_script/workflow.json",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "sam3_user_script",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "xp_name": "HMAE_UserScript",
+      "sql_username": "rivault_user",
+      "modalities": [
+        {
+          "modality": "image",
+          "task": "reconstruction",
+          "s3": {
+            "bucket_alias": "hmae-user-script",
+            "data": {
+              "type": "file",
+              "mime_type": "image/png"
+            },
+            "need_output_bucket": true
+          },
+          "model": {
+            "model_name": "HMAE ViT-B (user_script)",
+            "vector_size": "0",
+            "model_type": "user_script:///opt/demos/16_hmae_user_script/workflow.json",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "hmae_user_script",
+            "meta_data": [
+              {
+                "name": "keywords",
+                "type": "TEXT"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

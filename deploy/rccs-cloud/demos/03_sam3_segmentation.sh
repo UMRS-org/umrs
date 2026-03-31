@@ -43,7 +43,21 @@ $CLIENT ping || die "Server not reachable. Is ssh_tunnel.sh running?"
 # Reload server config so it picks up the SAM3 experience/buckets
 log "Reloading server config..."
 $CLIENT reload 2>/dev/null || true
-sleep 2
+
+# Wait for server to finish reload (synchronous: blocks ZMQ loop while
+# re-creating S3 users/buckets via mc subprocess calls).
+log "Waiting for server to complete reload..."
+for _try in 1 2 3 4 5 6; do
+    sleep 3
+    if $CLIENT --no-check-server ping >/dev/null 2>&1; then
+        log "Server ready after reload."
+        break
+    fi
+    if [[ $_try -eq 6 ]]; then
+        die "Server did not recover after reload. Check server logs."
+    fi
+    log "  retry $_try/6 ..."
+done
 
 # ─── Step 2: Upload images ────────────────────────────────────────────────────
 echo

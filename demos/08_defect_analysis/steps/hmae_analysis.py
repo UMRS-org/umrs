@@ -2,8 +2,8 @@
 Step 3: HMAE Analysis — combined feature extraction + anomaly detection.
 
 For each image patch, this step submits **two** BentoML HMAE tasks:
-  1. ``mode=features`` → CLS embedding (768-d vector)
-  2. ``mode=mae``      → masked reconstruction error (anomaly score)
+  1. ``task=feature_extraction`` → CLS embedding (768-d vector)
+  2. ``task=mae_reconstruction``      → masked reconstruction error (anomaly score)
 
 This eliminates the need for separate feature and anomaly steps in the
 linear workflow chain.
@@ -78,7 +78,7 @@ class HMAEAnalysisStep(Step):
 
             # ── 1. Feature extraction ────────────────────────────────────
             feat_result = self._submit_and_poll(
-                image_url, mode="features",
+                image_url, task="feature_extraction",
             )
             if "error" in feat_result:
                 logger.warning("  features failed: %s", feat_result["error"])
@@ -94,7 +94,7 @@ class HMAEAnalysisStep(Step):
 
             # ── 2. MAE anomaly scoring ───────────────────────────────────
             mae_result = self._submit_and_poll(
-                image_url, mode="mae",
+                image_url, task="mae_reconstruction",
             )
             mae_loss = float(mae_result.get("mae_loss", -1.0))
             is_anomaly = (
@@ -157,13 +157,13 @@ class HMAEAnalysisStep(Step):
     # ------------------------------------------------------------------
 
     def _submit_and_poll(
-        self, image_url: str, mode: str,
+        self, image_url: str, task: str,
     ) -> Dict[str, Any]:
         """Submit HMAE task and poll until done."""
         try:
-            task = self.client.infer.submit(
+            bento_task = self.client.infer.submit(
                 model_type="hmae",
-                inference_config={"mode": mode},
+                inference_config={"task": task},
                 image_url=image_url,
             )
         except Exception as exc:
@@ -172,16 +172,16 @@ class HMAEAnalysisStep(Step):
         deadline = time.monotonic() + self.timeout
         while time.monotonic() < deadline:
             try:
-                status = task.get_status()
+                status = bento_task.get_status()
                 if status.value == "success":
-                    return task.get()
+                    return bento_task.get()
                 if status.value in ("failure", "cancelled"):
-                    return {"error": f"HMAE {mode} task {task.id} {status.value}"}
+                    return {"error": f"HMAE {task} task {bento_task.id} {status.value}"}
             except Exception as exc:
                 return {"error": str(exc)}
             time.sleep(self.poll_interval)
 
-        return {"error": f"HMAE {mode} task timed out after {self.timeout}s"}
+        return {"error": f"HMAE {task} task timed out after {self.timeout}s"}
 
     def _extract_cls(self, ctx: StepContext, feat_s3_url: str) -> np.ndarray:
         """Download features.pt and return CLS vector."""

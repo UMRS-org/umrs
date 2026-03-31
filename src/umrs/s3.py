@@ -309,6 +309,8 @@ def list_s3_bucket(s3, bucket_name, prefix=""):
     return objects_list, total_size, checksums
 
 def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
+    from umrs.modality import modality_category
+    category = modality_category(modality_name)
     objects = []
     metadata = []
     checksums = []
@@ -321,7 +323,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
         obj_size = obj['ContentLength']
         sizes.append(obj_size)
 
-        if modality_name == "text":  # Handle text stored in file
+        if category == "text":  # Handle text stored in file
             if obj_size:
                 text = obj["Body"].read().decode("utf-8")
             else :
@@ -329,11 +331,11 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
                 text = "A"
             objects.append(text)
 
-        elif modality_name == "image":  # Handle Image Files
+        elif category == "image":  # Handle Image Files
             image = Image.open(BytesIO(obj["Body"].read()))
             objects.append(image)
 
-        elif modality_name == "text file":  # Handle Text Files
+        elif category in ("text_file", "text file"):  # Handle Text Files
             if obj_size:
                 text = str(from_bytes(obj["Body"].read()).best())
             else :
@@ -342,7 +344,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
             objects.append(text)
 
         else:
-            raise ValueError(f"Unsupported modality '{modality_name}'while loading data '{path_to_bucket}/{s3_key}' from S3")
+            raise ValueError(f"Unsupported modality '{modality_name}' (category: '{category}') while loading data '{path_to_bucket}/{s3_key}' from S3")
 
     return objects, metadata, checksums, sizes, has_at_least_a_zero
 

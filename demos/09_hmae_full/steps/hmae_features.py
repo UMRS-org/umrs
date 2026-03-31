@@ -92,7 +92,7 @@ class HMAEFeaturesStep(Step):
             meta = {
                 "source_key": key,
                 "source_bucket": original_bucket,
-                "mode": "features",
+                "task": "feature_extraction",
                 "features_s3_key": result.get("output_s3_key", ""),
                 "embedding_key": emb_key,
                 "embedding_dim": int(cls_emb.shape[0]),
@@ -124,7 +124,7 @@ class HMAEFeaturesStep(Step):
             metadata=metadata_list,
             extra={
                 "total_images": len(original_keys),
-                "mode": "features",
+                "task": "feature_extraction",
                 "embedding_dim": 768,
             },
         )
@@ -171,7 +171,7 @@ class HMAEFeaturesStep(Step):
         try:
             task = self.client.infer.submit(
                 model_type="hmae",
-                inference_config={"mode": "features"},
+                inference_config={"task": "feature_extraction"},
                 image_url=image_url,
             )
         except Exception as exc:

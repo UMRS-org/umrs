@@ -23,6 +23,7 @@ class ServerBucketEntry:
     model: Any  # Reference to a model object
     store_embeddings_flag: bool
     modality_name: str
+    task: str
     s3_connection: Any  # S3 client or connection object
     metadata: Dict
     xp_name: str
@@ -42,6 +43,7 @@ class ClientBucketEntry:
     username: str
     xp_name: str
     modality_name: str
+    task: str
     s3_configuration_file: str
     metadata: dict
     sql_username: str

@@ -83,7 +83,7 @@ class HMAEMaeStep(Step):
             meta = {
                 "source_key": key,
                 "source_bucket": original_bucket,
-                "mode": "mae",
+                "task": "mae_reconstruction",
                 "mae_loss": mae_loss,
                 "anomaly_threshold": self.anomaly_threshold,
                 "is_anomaly": is_anomaly,
@@ -116,7 +116,7 @@ class HMAEMaeStep(Step):
             metadata=metadata_list,
             extra={
                 "total_images": len(original_keys),
-                "mode": "mae",
+                "task": "mae_reconstruction",
                 "anomaly_count": anomaly_count,
                 "anomaly_rate": (
                     anomaly_count / len(original_keys)
@@ -144,7 +144,7 @@ class HMAEMaeStep(Step):
         try:
             task = self.client.infer.submit(
                 model_type="hmae",
-                inference_config={"mode": "mae"},
+                inference_config={"task": "mae_reconstruction"},
                 image_url=image_url,
             )
         except Exception as exc:

@@ -1,9 +1,10 @@
 # UMRS Deployment Guide — rccs-cloud
 
-This guide walks through deploying UMRS with the server on the rccs-cloud login node.
-
-Recommended mode: run MinIO directly on rccs-cloud and let Slurm compute nodes
-access it over the cluster network. Use SSH tunnels only for local client access.
+This guide walks through deploying UMRS on the rccs-cloud login node using
+a **hybrid architecture**: infrastructure services (PostgreSQL, MinIO) run in
+rootless podman containers, while `umrs-server` runs **natively** so it can
+invoke Slurm CLI tools (`sbatch`, `squeue`, `scancel`) and create SSH tunnels
+to compute nodes.
 
 ---
 
@@ -12,12 +13,18 @@ access it over the cluster network. Use SSH tunnels only for local client access
 ```
 Local machine (optional)          rccs-cloud (login node)          dgx-s / dgx-m* (compute)
 ────────────────────              ───────────────────────          ──────────────────────────
-umrs-client  ←── SSH tunnel ───►  umrs-server (podman)  ←── Slurm ───►  mini-rivault
-rag client   ←── SSH tunnel ───►  rag-service (podman)                  vLLM + LiteLLM
-                                  minio (podman)  ◄────────── HTTP/S3 ─────────┘
-                                  postgres/pgvector (podman)
+umrs-client  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
+rag client   ←── SSH tunnel ───►  rag-service  (NATIVE)                  vLLM + LiteLLM
+                                  minio     (podman container)  ◄── SSH tunnel ──┘
+                                  postgres  (podman container)
                                   /lvs0/rccs-dmp/  (Lustre — shared)
 ```
+
+**Why native?**  `rivault_launcher.py` calls `sbatch`, `squeue`, `scancel`,
+and `ssh -N -L` via `subprocess`.  These binaries are available on the login
+node but not inside a `python:3.10-slim` container.  Running the server natively
+avoids bind-mounting Slurm libs and SSH sockets, which is fragile and
+non-portable.
 
 Ports tunneled over SSH (for local Mac access):
 
@@ -139,6 +146,7 @@ Key values to adjust:
 | `S3_PRESIGN_ENDPOINT` | `http://localhost:9000` | Compute nodes access MinIO via an SSH tunnel (see below).  The Slurm script opens `localhost:9000` → login node MinIO automatically. |
 | `MODEL_DIR` | `/lvs0/rccs-dmp/mnagaso/umrs_models` | Lustre path, shared between login and compute nodes |
 | `MINIO_BIND` | `127.0.0.1` | MinIO listens on localhost only.  Compute nodes use the SSH tunnel. |
+| `RIVAULT_SLURM_SCRIPT` | `./serve-model.slurm` | Path to the site-specific Slurm wrapper |
 
 ### 1b. Edit user config
 
@@ -148,8 +156,23 @@ No change is required to use the defaults.
 
 ### 1c. Edit server config
 
-`conf_umrs.json` lists the user files.  To add a second user, append another
-entry to the `users` array and create a corresponding `user_files/user2.json`.
+`conf_umrs.json` lists the user files.  Paths are **relative to the
+`deploy/rccs-cloud/` directory** (e.g. `./user_files/user1.json`).
+To add a second user, append another entry to the `users` array and create
+a corresponding `user_files/user2.json`.
+
+### 1d. One-time server setup
+
+Run the setup script once to create the Python virtual environment, install
+dependencies, and prepare the Slurm script symlink:
+
+```bash
+./setup_server.sh
+```
+
+This creates `.venv/` under `deploy/rccs-cloud/`, installs CPU-only PyTorch,
+the `umrs` package (editable), and symlinks `serve-model.slurm` into
+`~/.config/umrs/rivault_data/`.
 
 ---
 
@@ -164,17 +187,25 @@ The script will:
 
 1. Auto-create `.env` from `env.example` if not present (prompts you to edit it).
 2. Create the Lustre model cache directories.
-3. Run `podman compose up -d` (postgres, minio, umrs-server).
+3. Start postgres and minio containers via `podman compose up -d`.
+4. Wait for postgres and minio to become healthy.
+5. Launch `server_umrs.py` **natively** (outside any container) with the correct
+   environment variables, writing output to `logs/server.log`.
 
 Check that everything is up:
 
 ```bash
-podman compose ps
-podman compose logs -f umrs-server
+./health_check_server.sh
+tail -f logs/server.log
+```
+
+To restart only the server (e.g. after a code change), keeping containers running:
+
+```bash
+./start.sh --server
 ```
 
 The first launch will:
-- Pull/build container images (~1–2 min over Lustre-cached docker layers).
 - Download embedding model weights to `$MODEL_DIR/sentence_transformers/` (first run only).
 - Auto-create MinIO buckets and PostgreSQL databases for each configured user.
 
@@ -298,23 +329,37 @@ cd demos/01_text_embedding
 
 ---
 
-## Step 6 — GPU embeddings via mini-rivault (optional)
+## Step 6 — GPU inference on compute nodes
 
-Text and image embeddings run locally in the umrs-server container by default
-(using CPU).  For GPU-accelerated embeddings on dgx nodes via mini-rivault:
+All inference (embeddings, vision, LLMs, custom models) runs on GPU compute
+nodes by default.  The `user_files/user1.json` config specifies:
 
-1. Follow the mini-rivault setup in `demos/slurm-dev/` (uses vLLM + LiteLLM).
-2. Update `conf_umrs.json` to point your model at the OpenAI-compatible endpoint:
+- **Embeddings** (text, image): `model_type: "rivault://openai://http://localhost:8001/v1"` — served via vLLM on a compute node.
+- **Vision** (SAM3, HMAE): `model_type: "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit"` — served via BentoML on a compute node.
+
+The server auto-launches Slurm jobs and SSH tunnels when a model is first
+requested — no manual GPU setup is needed.
+
+### Prerequisites
+
+1. Mini-rivault stack configured (see `demos/slurm-dev/`).
+2. `serve-model.slurm` wrapper linked (done by `setup_server.sh`).
+3. Passwordless SSH between login and compute nodes ([Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs)).
+
+### CPU-only fallback (optional)
+
+For debugging or when no GPU nodes are available, you can switch individual
+modalities to CPU-local inference by changing `model_type` in the user config:
 
 ```json
 {
-  "model_name": "intfloat/e5-base-v2",
-  "model_type": "openai://http://localhost:PORT/v1"
+  "model_type": "TransformerEncoder"
 }
 ```
 
-The server will auto-launch a Slurm job via `rivault_launcher.py` when the model
-is first requested.
+or `"SentenceTransformer"` for CLIP-based image embeddings.  This runs
+sentence-transformers directly on the login node (CPU-only PyTorch).  No
+Slurm job is needed, but performance will be significantly slower.
 
 ---
 
@@ -322,15 +367,21 @@ is first requested.
 
 ```bash
 # Check status
-podman compose ps
+./health_check_server.sh
 
 # Tail server logs
-podman compose logs -f umrs-server
+tail -f logs/server.log
+
+# Container status
+podman compose ps
 
 # Reload server config (without restart) — via umrs-client
 umrs-client reload
 
-# Stop services (data preserved in volumes)
+# Restart just the server (containers stay up)
+./start.sh --server
+
+# Stop everything (data preserved in volumes)
 ./stop.sh
 
 # Stop + wipe all persistent data (volumes)
@@ -371,33 +422,25 @@ UMRS handles multi-user S3 access automatically.  Each user defined in
 {
   "admin_s3_configuration_file": "~/.s3cfg",
   "users": [
-    "/root/user_files/user1.json",
-    "/root/user_files/user2.json"
+    "./user_files/user1.json",
+    "./user_files/user2.json"
   ]
 }
 ```
 
-3. Mount the new file in `docker-compose.yml` — add under `umrs-server` volumes:
-
-```yaml
-- ./user_files:/root/user_files:ro
-```
-
-(Already present — just add the new JSON file into the `user_files/` directory.)
-
-4. Send the RELOAD command to provision the new user without restarting:
+3. Send the RELOAD command to provision the new user without restarting:
 
 ```bash
 umrs-client reload
 ```
 
-The server will create the MinIO IAM user, generate `~/.s3cfg_user2` inside the
-container, and create all required buckets.
+The server will create the MinIO IAM user, generate `~/.s3cfg_user2` in the
+home directory, and create all required buckets.
 
 5. Retrieve the generated S3 config for user 2:
 
 ```bash
-podman exec umrs-server cat /root/.s3cfg_user2
+cat ~/.s3cfg_user2
 ```
 
 Copy that file to the second user's machine at `~/.config/umrs/s3cfg` (or
@@ -409,8 +452,8 @@ If the second OS user wants to access MinIO independently (e.g. to upload from
 their own scripts), create credentials for them via the MinIO admin client (`mc`):
 
 ```bash
-# From inside the umrs-server container (mc is installed)
-podman exec -it umrs-server bash
+# Install mc if not available (one-time):
+# curl -sL https://dl.min.io/client/mc/release/linux-arm64/mc -o ~/.local/bin/mc && chmod +x ~/.local/bin/mc
 
 # Alias for the local MinIO instance
 mc alias set local http://127.0.0.1:9000 minioadmin minioadmin
@@ -470,8 +513,18 @@ export PATH="$HOME/.local/bin:$PATH"   # add to ~/.bashrc
 ```bash
 podman compose logs postgres
 podman compose logs minio
-podman compose logs umrs-server
 ```
+
+### Server not starting / crashing
+
+```bash
+tail -50 logs/server.log
+```
+
+Common issues:
+- **Missing venv**: Run `./setup_server.sh` first.
+- **Port already in use**: Another server instance may be running. Check `cat server.pid`.
+- **Import errors**: Activate the venv (`source .venv/bin/activate`) and check `pip list`.
 
 ### MinIO unreachable from compute node
 
@@ -502,5 +555,5 @@ The embedding model (~440 MB for `intfloat/e5-base-v2`) is downloaded on first u
 to `$MODEL_DIR`.  Progress can be watched in server logs:
 
 ```bash
-podman compose logs -f umrs-server | grep -i download
+tail -f logs/server.log | grep -i download
 ```

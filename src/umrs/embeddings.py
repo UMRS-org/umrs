@@ -16,6 +16,8 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Modalities where the model handles its own S3 I/O (data loading + output
 # writing) rather than receiving pre-loaded tensors.
+# DEPRECATED: kept for backward compatibility; prefer task-based routing via
+# DIRECT_COMPUTE_TASKS.
 DIRECT_COMPUTE_MODALITIES = frozenset({
     "tomography",
     "tomography_embedding",
@@ -23,6 +25,16 @@ DIRECT_COMPUTE_MODALITIES = frozenset({
     "tomography_mae_reconstruction",
     "tomography_features_extraction",
     "segmentation",
+})
+
+# Tasks that require direct-compute (model handles its own S3 I/O).
+DIRECT_COMPUTE_TASKS = frozenset({
+    "segmentation",
+    "reconstruction",
+    "mae_reconstruction",
+    "feature_extraction",
+    "detection",
+    "classification",
 })
 
 # Model types that always do their own I/O regardless of modality name.
@@ -36,22 +48,25 @@ def compute_embeddings_core(
     path_to_bucket,
     s3_keys,
     output_bucket=None,
+    task=None,
 ):
     """Core embedding computation pipeline.
 
-    For *direct-compute* modalities the model handles its own data loading and
-    output writing.  For standard modalities (text, image, …) data is loaded
-    from S3 and passed to the model.
+    For *direct-compute* tasks the model handles its own data loading and
+    output writing.  For standard tasks (embedding) data is loaded from S3
+    and passed to the model.
 
     Args:
         model: ``EmbeddingModel`` instance (must expose ``compute_embeddings``).
-        modality_name: Modality string (e.g. ``"text"``, ``"image"``,
-            ``"tomography_embedding"``).
+        modality_name: Pure modality string (e.g. ``"text"``, ``"image"``,
+            ``"volume"``).
         s3_connection: boto3-compatible S3 client.
         path_to_bucket: Source bucket name.
         s3_keys: List of S3 object keys to process.
         output_bucket: Destination bucket for models that produce output
             files (``None`` when not applicable).
+        task: Processing task (e.g. ``"embedding"``, ``"segmentation"``).
+            When ``None``, falls back to legacy modality-name routing.
 
     Returns:
         ``(embeddings, checksums, metadata, saved_s3_keys)`` – four parallel
@@ -60,7 +75,14 @@ def compute_embeddings_core(
     """
     model_type = getattr(model, "type", None)
 
-    if modality_name in DIRECT_COMPUTE_MODALITIES or model_type in DIRECT_COMPUTE_MODEL_TYPES:
+    # Determine if this is a direct-compute path.
+    is_direct = (
+        model_type in DIRECT_COMPUTE_MODEL_TYPES
+        or (task is not None and task in DIRECT_COMPUTE_TASKS)
+        or (task is None and modality_name in DIRECT_COMPUTE_MODALITIES)
+    )
+
+    if is_direct:
         embeddings, checksums, metadata, saved_s3_keys = model.compute_embeddings(
             s3_connection, s3_keys, path_to_bucket, output_bucket,
         )
@@ -81,10 +103,10 @@ def compute_embeddings_core(
 
 
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device,
-                                modality_name, s3_connection, output_bucket):
+                                modality_name, s3_connection, output_bucket, task=None):
     embeddings, checksums, metadata, saved_s3_keys = compute_embeddings_core(
         model, modality_name, s3_connection, path_to_bucket, s3_keys,
-        output_bucket=output_bucket,
+        output_bucket=output_bucket, task=task,
     )
 
     assert(len(embeddings) == len(checksums))

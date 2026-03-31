@@ -6,7 +6,7 @@ import os
 import sys
 from umrs.sql import *
 from umrs.s3 import *
-    
+
 def create_s3_user(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
@@ -24,7 +24,7 @@ def create_s3_user(user_cfg, admin_s3_configuration_file):
         # sql_username  = xp["sql_username"]
         # data_base = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
-            modality_name = modality["modality_name"]
+            modality_name = modality.get("modality_name") or modality.get("modality")
             print(f"\t\tModality: {modality_name}")
             bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = create_path_to_bucket(xp_name, bucket_alias, username)
@@ -36,7 +36,7 @@ def create_s3_user(user_cfg, admin_s3_configuration_file):
 
     s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list)
     s3_connection.close()
-    
+
 def create_sql_users(user_cfg, sql_admin):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
@@ -49,7 +49,7 @@ def create_sql_users(user_cfg, sql_admin):
         print(f"\t==> Experience: {xp_name}")
         sql_username  = xp["sql_username"]
         data_base = create_db(sql_username, xp_name)
-            
+
 parser = argparse.ArgumentParser(description="UMRS create user utility", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 parser.add_argument('-c', '--conf', default='./conf_umrs.json', help='Config file path')
 

@@ -222,7 +222,7 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
     Returns:
         None. Operates in-place on `embeddings`.
     """
-    if modality_name not in ("text", "text file"):
+    if modality_name not in ("text", "text_file", "text file"):
         return  # Currently handles only textual modalities
 
     # Get dimension from the first embedding (supports list/np/tensor)

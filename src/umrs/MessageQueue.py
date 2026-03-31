@@ -68,6 +68,7 @@ class MessageQueue:
         else:  # client
             # Client uses PUSH socket to send data
             self.socket = self.context.socket(zmq.PUSH)
+            self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
@@ -80,6 +81,7 @@ class MessageQueue:
             self.set_timeouts(-1, self.timeout)
         else:  # client
             self.socket = self.context.socket(zmq.DEALER)
+            self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.set_timeouts(self.timeout, self.timeout)
 
@@ -430,8 +432,9 @@ class MessageQueue:
                 # Best-effort cleanup: ignore errors while closing old socket
                 pass
 
-        # Create a new REQ socket and connect
-        self.socket = self.context.socket(zmq.REQ)
+        # Create a new DEALER socket and connect
+        self.socket = self.context.socket(zmq.DEALER)
+        self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
         self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
 
     def is_server_ready(self, timeout_ms=5000):

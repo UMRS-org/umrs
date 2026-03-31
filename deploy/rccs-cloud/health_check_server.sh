@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Server-side health check for the rccs-cloud UMRS deployment.
-# Run on the login node (rccs-cloud), from the deploy/rccs-cloud/ directory.
+# Server-side health check for the rccs-cloud UMRS deployment (hybrid mode).
+# =============================================================================
+# Infrastructure (postgres, minio) — containers
+# umrs-server — native process on the login node
 #
 # Usage:
 #   ./health_check_server.sh
@@ -10,6 +12,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PID_FILE="${SCRIPT_DIR}/server.pid"
+LOG_FILE="${SCRIPT_DIR}/logs/server.log"
 
 # Load .env if present (for POSTGRES_USER, POSTGRES_PASSWORD etc.)
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
@@ -42,37 +46,61 @@ if ! command -v podman >/dev/null 2>&1; then
     log "ERROR: podman not found — run this script on rccs-cloud, not locally."; exit 1
 fi
 
-log "Checking rccs-cloud UMRS services..."
+log "Checking rccs-cloud UMRS services (hybrid mode)..."
 echo
 
-# ─── Container status ───
+# ─── Container status (infrastructure only) ─────────────────────────────────
 check "postgres container running"    podman inspect --format '{{.State.Running}}' umrs-postgres
 check "minio container running"       podman inspect --format '{{.State.Running}}' umrs-minio
-check "umrs-server container running" podman inspect --format '{{.State.Running}}' umrs-server
 
 # ─── PostgreSQL ───
 check "postgres accepting connections" \
-    podman exec umrs-postgres pg_isready -U "$POSTGRES_USER"
+    podman exec umrs-postgres pg_isready -h localhost -U "$POSTGRES_USER"
 
 # ─── pgvector extension ───
-check "pgvector extension installed" \
-    podman exec umrs-postgres psql -U "$POSTGRES_USER" -d postgres \
-        -tAc "SELECT 1 FROM pg_extension WHERE extname='vector';" | grep -q 1
+if podman exec umrs-postgres psql -h localhost -U "$POSTGRES_USER" -d postgres \
+    -tAc "SELECT 1 FROM pg_extension WHERE extname='vector';" 2>/dev/null | grep -q 1; then
+    ok "pgvector extension installed"
+else
+    fail "pgvector extension installed"
+fi
 
 # ─── MinIO ───
 check "minio health endpoint" \
     curl -sf http://127.0.0.1:9000/minio/health/live
 
+# ─── Native umrs-server process ─────────────────────────────────────────────
+if [[ -f "$PID_FILE" ]]; then
+    SERVER_PID=$(cat "$PID_FILE")
+    if kill -0 "$SERVER_PID" 2>/dev/null; then
+        ok "umrs-server running (PID $SERVER_PID)"
+    else
+        fail "umrs-server PID $SERVER_PID not running (stale pid file)"
+    fi
+else
+    fail "umrs-server: no server.pid file found"
+fi
+
 # ─── ZMQ ports (umrs-server) ───
 check "ZMQ control port 5555 listening" nc -z 127.0.0.1 5555
-check "ZMQ data    port 5556 listening" nc -z 127.0.0.1 5556
-
-# ─── Server logs: no recent CRITICAL/ERROR ───
-recent_errors="$(podman logs --since 5m umrs-server 2>&1 | grep -c 'CRITICAL\|Traceback\|ERROR' || true)"
-if [[ "$recent_errors" -eq 0 ]]; then
-    ok "umrs-server logs (no recent errors)"
+# Port 5556 (data plane) opens on demand when a client connects — warn only
+if nc -z 127.0.0.1 5556 2>/dev/null; then
+    ok "ZMQ data port 5556 listening"
 else
-    warn "umrs-server has $recent_errors recent error/traceback lines — check: podman logs umrs-server"
+    warn "ZMQ data port 5556 not open (opens on first client connection)"
+fi
+
+# ─── Server logs: no recent errors ──────────────────────────────────────────
+if [[ -f "$LOG_FILE" ]]; then
+    # Check last 100 lines for recent errors
+    recent_errors="$(tail -100 "$LOG_FILE" 2>/dev/null | grep -c 'CRITICAL\|Traceback\|ERROR' || true)"
+    if [[ "$recent_errors" -eq 0 ]]; then
+        ok "umrs-server logs (no recent errors)"
+    else
+        warn "umrs-server has $recent_errors recent error/traceback lines — check: tail -50 $LOG_FILE"
+    fi
+else
+    warn "umrs-server log not found at $LOG_FILE"
 fi
 
 # ─── Slurm (optional) ───

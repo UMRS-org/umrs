@@ -71,7 +71,7 @@ class HMAEReconstructStep(Step):
             meta = {
                 "source_key": key,
                 "source_bucket": ctx.input_bucket,
-                "mode": "reconstruct",
+                "task": "reconstruction",
                 "output_s3_key": result.get("output_s3_key", ""),
                 "error": result.get("error"),
             }
@@ -100,7 +100,7 @@ class HMAEReconstructStep(Step):
             output_keys=output_keys,
             checksums=checksums,
             metadata=metadata_list,
-            extra={"total_images": len(ctx.input_keys), "mode": "reconstruct"},
+            extra={"total_images": len(ctx.input_keys), "task": "reconstruction"},
         )
 
     def _submit_and_poll(self, image_url: str) -> Dict[str, Any]:
@@ -108,7 +108,7 @@ class HMAEReconstructStep(Step):
         try:
             task = self.client.infer.submit(
                 model_type="hmae",
-                inference_config={"mode": "reconstruct"},
+                inference_config={"task": "reconstruction"},
                 image_url=image_url,
             )
         except Exception as exc:

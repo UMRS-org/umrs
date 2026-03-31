@@ -212,7 +212,7 @@ class MyVisionStep(Step):
         # BentoML service URL, e.g. "http://localhost:11434/vision"
         self.bentoml_url = config["bentoml_url"].rstrip("/")
         self.model_type = config.get("model_type", "hmae")
-        self.model_config = config.get("model_config", {"mode": "features"})
+        self.model_config = config.get("model_config", {"task": "feature_extraction"})
         self.timeout = config.get("timeout", 300)
 
     def run(self, ctx: StepContext) -> StepResult:
@@ -449,20 +449,20 @@ GET  /vision/infer/get?task_id=...
 
 **Result**: `{"num_objects": N, "boxes": [...], "scores": [...], "overlay_s3_key": "s3://..."}`
 
-### HMAE inference example (3 modes)
+### HMAE inference example (3 tasks)
 
 ```json
 {"model_type": "hmae",
- "model_config": {"mode": "reconstruct"},
+ "model_config": {"task": "reconstruction"},
  "image_url": "s3://bucket/key.png"}
 ```
 
-`mode` can be `"reconstruct"`, `"mae"`, or `"features"`.
+`task` can be `"reconstruction"`, `"mae_reconstruction"`, or `"feature_extraction"`.
 
-**Results by mode**:
-- `reconstruct` → `{"output_s3_key": "s3://..."}`
-- `mae` → `{"output_s3_key": "s3://...", "mae_loss": 0.18}`
-- `features` → `{"output_s3_key": "s3://...features.pt", "cls_shape": [1, 768], "patch_shape": [1024, 768]}`
+**Results by task**:
+- `reconstruction` → `{"output_s3_key": "s3://..."}`
+- `mae_reconstruction` → `{"output_s3_key": "s3://...", "mae_loss": 0.18}`
+- `feature_extraction` → `{"output_s3_key": "s3://...features.pt", "cls_shape": [1, 768], "patch_shape": [1024, 768]}`
 
 ### Health check
 

@@ -37,7 +37,7 @@ class EmbeddingModel:
 
 ################################ Models loading  ###########################
 #  Load the Model Dynamically Based on Type
-def load_model(model_cfg, modality):
+def load_model(model_cfg, modality, task=None):
     model_name = model_cfg["model_name"]
     vector_size = model_cfg["vector_size"]
     model_type = model_cfg["model_type"]
@@ -80,7 +80,7 @@ def load_model(model_cfg, modality):
         from .models.hmae_inference import load_hmae_model, make_hmae_compute_func
         model, device, hmae_config = load_hmae_model(cfg_file, checkpoint_path)
         type = "loaded"
-        compute_embeddings_func = make_hmae_compute_func(modality, cfg_file)
+        compute_embeddings_func = make_hmae_compute_func(modality, cfg_file, task=task)
         input_type = "raw_image"
         # Store config on the EmbeddingModel for use by the compute function
         _hmae_config = hmae_config
@@ -150,6 +150,7 @@ def load_model(model_cfg, modality):
         model = model_cfg
         model["model_type"] = model_type[len("rivault://"):]
         model["_modality"] = modality
+        model["_task"] = task
         type = "rivault"
         input_type=None
         compute_embeddings_func=None

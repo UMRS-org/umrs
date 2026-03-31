@@ -3,7 +3,11 @@ import json
 import os
 
 from jsonschema import validate, ValidationError
-from umrs.modality import VALID_MODALITIES
+from umrs.modality import VALID_MODALITIES, LEGACY_MAPPING
+
+# All modality_name values accepted in config files (pure + legacy).
+_ALL_ACCEPTED_MODALITY_NAMES = sorted(set(VALID_MODALITIES) | set(LEGACY_MAPPING.keys()))
+
 client_schema = {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
@@ -24,11 +28,22 @@ client_schema = {
             "type": "array",
             "items": {
               "type": "object",
-              "required": ["modality_name", "s3", "model", "sql"],
+              "required": ["s3", "model", "sql"],
+              "oneOf": [
+                {"required": ["modality_name"]},
+                {"required": ["modality"]}
+              ],
               "properties": {
                 "modality_name": {
                   "type": "string",
+                  "enum": _ALL_ACCEPTED_MODALITY_NAMES
+                },
+                "modality": {
+                  "type": "string",
                   "enum": VALID_MODALITIES
+                },
+                "task": {
+                  "type": "string"
                 },
                 "s3": {
                   "type": "object",
@@ -60,7 +75,6 @@ client_schema = {
                     "model_cfg_file" : { "type": "string" },
                     "checkpoint_path": { "type": "string" },
                     "spacy_model": { "type": "string" },
-                    "mode": { "type": "string" },
                     "vision_model_type": { "type": "string" },
                     "vision_model_config": { "type": "object" },
                     "return_type": {
