@@ -14,7 +14,7 @@ to compute nodes.
 Local machine (optional)          rccs-cloud (login node)          dgx-s / dgx-m* (compute)
 ────────────────────              ───────────────────────          ──────────────────────────
 umrs-client  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
-rag client   ←── SSH tunnel ───►  rag-service  (NATIVE)                  vLLM + LiteLLM
+rag client   ←── SSH tunnel ───►  rag-service  (NATIVE)                  vLLM / BentoML + LiteLLM
                                   minio     (podman container)  ◄── SSH tunnel ──┘
                                   postgres  (podman container)
                                   /lvs0/rccs-dmp/  (Lustre — shared)

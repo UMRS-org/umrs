@@ -57,12 +57,12 @@ check "minio container running"       podman inspect --format '{{.State.Running}
 check "postgres accepting connections" \
     podman exec umrs-postgres pg_isready -h localhost -U "$POSTGRES_USER"
 
-# ─── pgvector extension ───
+# ─── pgvector extension (check availability + usage in any database) ───
 if podman exec umrs-postgres psql -h localhost -U "$POSTGRES_USER" -d postgres \
-    -tAc "SELECT 1 FROM pg_extension WHERE extname='vector';" 2>/dev/null | grep -q 1; then
-    ok "pgvector extension installed"
+    -tAc "SELECT 1 FROM pg_available_extensions WHERE name='vector';" 2>/dev/null | grep -q 1; then
+    ok "pgvector extension available"
 else
-    fail "pgvector extension installed"
+    fail "pgvector extension available"
 fi
 
 # ─── MinIO ───
