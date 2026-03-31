@@ -45,3 +45,5 @@ slurm-*.out
 .env
 
 tmp
+
+__pycache__/
