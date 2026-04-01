@@ -91,7 +91,7 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
     if task:
         effective_config["task"] = task
 
-    def _compute(self, s3, s3_keys, path_to_bucket, output_bucket):
+    def _compute(self, s3, s3_keys, path_to_bucket, output_bucket, skip_existing=True):
         results = []
         checksums = []
         metadata_list = []
@@ -100,37 +100,54 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
         for idx, s3_key in enumerate(s3_keys):
             logger.info("[%d/%d] BentoML %s: %s",
                         idx + 1, len(s3_keys), model_type, s3_key)
+            logger.warning("[DEBUG-ADAPTER] path_to_bucket=%s output_bucket=%s",
+                           path_to_bucket, output_bucket)
 
             obj = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
             checksums.append(obj["ETag"].strip('"'))
             metadata_list.append(obj.get("Metadata", {}))
 
+            # Skip if output already exists in the output bucket
+            if skip_existing and output_bucket:
+                predicted = _predict_output_keys(s3_key, model_type, effective_config, task)
+                if predicted:
+                    all_exist = True
+                    first_key = None
+                    for out_key in predicted:
+                        if first_key is None:
+                            first_key = out_key
+                        try:
+                            s3.head_object(Bucket=output_bucket, Key=out_key)
+                        except Exception:
+                            all_exist = False
+                            break
+                    if all_exist:
+                        logger.info("[%d/%d] Skipping %s — output already exists in %s",
+                                    idx + 1, len(s3_keys), s3_key, output_bucket)
+                        output_s3_uri = f"s3://{output_bucket}/{first_key}"
+                        saved_keys.append(output_s3_uri)
+                        results.append({"status": "skipped", "output_s3_key": output_s3_uri})
+                        continue
+
             image_url = f"s3://{path_to_bucket}/{s3_key}"
 
-            # Generate presigned URLs so the vision service on the compute
-            # node can access S3 without direct credentials.
+            # SKIP presigned URLs — force BentoML service to use its own S3
+            # client (S3_ENDPOINT_URL=http://minio-host:19000 in compose)
+            # which is reachable via the host-gateway SSH tunnel.
             presigned_input_url = None
             presigned_output_urls = {}
-            try:
-                presigned_input_url = generate_presigned_get(
-                    s3, path_to_bucket, s3_key,
-                )
-                dst_bucket = output_bucket or path_to_bucket
-                predicted_outputs = _predict_output_keys(
-                    s3_key, model_type, effective_config, task=task,
-                )
-                for out_key, ct in predicted_outputs.items():
-                    presigned_output_urls[out_key] = generate_presigned_put(
-                        s3, dst_bucket, out_key, content_type=ct,
-                    )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to generate presigned URLs for %s, "
-                    "vision service will fall back to direct S3: %s",
-                    s3_key, exc,
-                )
-                presigned_input_url = None
-                presigned_output_urls = {}
+            logger.warning(
+                "[DEBUG-ADAPTER] Skipping presigned URLs; BentoML service "
+                "will use direct S3 (S3_ENDPOINT_URL in container env)"
+            )
+
+            logger.warning(
+                "[DEBUG-ADAPTER] Submitting task: model_type=%s image_url=%s "
+                "presigned_input_url=%s presigned_output_urls=%s",
+                model_type, image_url,
+                presigned_input_url or "(empty)",
+                list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
+            )
 
             bento_task = client.infer.submit(
                 model_type=model_type,
@@ -140,7 +157,7 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
                 presigned_input_url=presigned_input_url or "",
                 presigned_output_urls=presigned_output_urls,
             )
-            logger.info("Task submitted: infer -> %s", bento_task.id)
+            logger.warning("[DEBUG-ADAPTER] Task submitted: infer -> %s", bento_task.id)
 
             start = time.monotonic()
             while True:
@@ -150,10 +167,15 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
                         f"Task {bento_task.id} did not complete within {timeout}s"
                     )
                 status = bento_task.get_status()
+                logger.warning("[DEBUG-ADAPTER] Task %s status=%s (%.1fs elapsed)",
+                               bento_task.id, status.value, elapsed)
                 if status.value == "completed":
                     result = bento_task.get()
+                    logger.warning("[DEBUG-ADAPTER] Task %s result keys=%s",
+                                   bento_task.id, list(result.keys()) if isinstance(result, dict) else type(result))
                     break
                 elif status.value == "failed":
+                    logger.error("[DEBUG-ADAPTER] Task %s FAILED", bento_task.id)
                     raise RuntimeError(f"Task {bento_task.id} failed")
                 elif status.value == "canceled":
                     raise RuntimeError(f"Task {bento_task.id} was canceled")

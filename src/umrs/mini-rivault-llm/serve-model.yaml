@@ -50,7 +50,7 @@ services:
     extra_hosts:
       - ll-postgres:${PRIV_IP1TO3:-10.0.0}.${LL_POSTGRES_IP4:-21}
       - vllm:${PRIV_IP1TO3:-10.0.0}.${VLLM_IP4:-22}
-      - mcpo:${PRIV_IP1TO3:-10.0.0}.${MCPO_IP4:-23}
+      #- mcpo:${PRIV_IP1TO3:-10.0.0}.${MCPO_IP4:-23}  # disabled — mcpo not in use
     user: "0:0"   # Note: container runs in nobody mode, mountpoint belongs to root -> mismatch
     volumes:
       - type: bind
@@ -60,8 +60,8 @@ services:
         bind: { selinux: "Z" }
     depends_on:
       - ll-postgres
-      - vllm
-      - mcpo
+      #- vllm   # only available when 'vllm' profile is active
+      #- mcpo   # commented out — mcpo/mcp-* disabled for now
     environment:
       DISABLE_ADMIN_UI: "True"
       LITELLM_MODE: "PRODUCTION"
@@ -74,7 +74,7 @@ services:
       #LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?}
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-8}
       DATABASE_URL: postgresql://${LITELLM_POSTGRES_USER:-postgres}:${LITELLM_POSTGRES_PASSWORD:-litellm}@ll-postgres:5432/${LITELLM_POSTGRES_DB:-litellm} #XXX: see details https://docs.litellm.ai/docs/proxy/deploy#deploy-with-database to get Virtual Keys working
-      MCPO_API_KEY: ${MCPO_API_KEY:?}
+      #MCPO_API_KEY: ${MCPO_API_KEY:?}  # disabled — mcpo not in use
       VLLM_API_KEY: ${VLLM_API_KEY:?}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
@@ -111,6 +111,8 @@ services:
     #  - postgres_data:/var/lib/postgresql
     tmpfs:
       - /var/run/postgresql   # Note: we don't need persistency for our case
+    user: "0:0"   # Note: rootless podman needs this so the entrypoint can be exec'd
+    command: ["postgres", "-c", "unix_socket_directories="]  # rootless podman: disable Unix sockets
     environment:
       POSTGRES_USER: ${LITELLM_POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${LITELLM_POSTGRES_PASSWORD:-litellm}
@@ -126,7 +128,7 @@ services:
     #  timeout: 3s
     #  retries: 10
     cap_drop: [ ALL ]
-    cap_add: [ sys_nice, setuid, setgid, chown ]
+    cap_add: [ sys_nice, setuid, setgid, chown, dac_override, fowner ]
     deploy:
       mode: replicated
       replicas: ${POSTGRES_REPLICAS:-1}
@@ -191,58 +193,61 @@ services:
 ##          cpus: "0.1"
 ##          memory: "128M"
 
-  mcpo:
-    profiles: [ harness ]
-    image: ghcr.io/open-webui/mcpo:${MCPO_DOCKER_TAG:-main}
-    command: --port 8000 --api-key ${MCPO_API_KEY:?} --hot-reload --config /tmp/config.json
-    networks:
-      genai-private-net:
-        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${MCPO_IP4:-23}
-    extra_hosts:
-      - mcp-time:${PRIV_IP1TO3:-10.0.0}.${MCP_TIME_IP4:-24}
-    volumes:
-      - type: bind
-        source: ./mcpo_fs/config.json
-        target: /tmp/config.json
-        read_only: true
-    depends_on:
-      - mcp-time
-    environment:
-      TZ: ${GENAI_TZ:-Asia/Tokyo}
-      CUDA_VISIBLE_DEVICES: ""
-      HIP_VISIBLE_DEVICES: ""
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice ]
-##    deploy:
-##      resources:
-##        limits:
-##          cpus: ${MCPO_CPU_LIMIT:-1}
-##          memory: ${MCPO_MEM_LIMIT:-1}G
-##        reservations:
-##          cpus: "0.1"
-##          memory: "128M"
-
-  mcp-time:
-    profiles: [ harness ]
-    image: docker.io/theo01/mcp-time:${MCP_TIME_DOCKER_TAG:-latest}
-    command: --transport stream --address "http://0.0.0.0:8080/mcp"
-    networks:
-      genai-private-net:
-        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${MCP_TIME_IP4:-24}
-    environment:
-      TZ: ${GENAI_TZ:-Asia/Tokyo}
-      CUDA_VISIBLE_DEVICES: ""
-      HIP_VISIBLE_DEVICES: ""
-    cap_drop: [ ALL ]
-    cap_add: [ sys_nice ]
-##    deploy:
-##      resources:
-##        limits:
-##          cpus: ${MCP_TIME_CPU_LIMIT:-1}
-##          memory: ${MCP_TIME_MEM_LIMIT:-1}G
-##        reservations:
-##          cpus: "0.1"
-##          memory: "128M"
+## ── mcpo / mcp-* disabled ─────────────────────────────────────────────
+## Uncomment when MCP tool-calling is needed again.
+#  mcpo:
+#    profiles: [ harness ]
+#    image: ghcr.io/open-webui/mcpo:${MCPO_DOCKER_TAG:-main}
+#    command: --port 8000 --api-key ${MCPO_API_KEY:?} --hot-reload --config /tmp/config.json
+#    networks:
+#      genai-private-net:
+#        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${MCPO_IP4:-23}
+#    extra_hosts:
+#      - mcp-time:${PRIV_IP1TO3:-10.0.0}.${MCP_TIME_IP4:-24}
+#    volumes:
+#      - type: bind
+#        source: ./mcpo_fs/config.json
+#        target: /tmp/config.json
+#        read_only: true
+#    depends_on:
+#      - mcp-time
+#    environment:
+#      TZ: ${GENAI_TZ:-Asia/Tokyo}
+#      CUDA_VISIBLE_DEVICES: ""
+#      HIP_VISIBLE_DEVICES: ""
+#    cap_drop: [ ALL ]
+#    cap_add: [ sys_nice ]
+###    deploy:
+###      resources:
+###        limits:
+###          cpus: ${MCPO_CPU_LIMIT:-1}
+###          memory: ${MCPO_MEM_LIMIT:-1}G
+###        reservations:
+###          cpus: "0.1"
+###          memory: "128M"
+#
+#  mcp-time:
+#    profiles: [ harness ]
+#    image: docker.io/theo01/mcp-time:${MCP_TIME_DOCKER_TAG:-latest}
+#    command: --transport stream --address "http://0.0.0.0:8080/mcp"
+#    networks:
+#      genai-private-net:
+#        ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${MCP_TIME_IP4:-24}
+#    environment:
+#      TZ: ${GENAI_TZ:-Asia/Tokyo}
+#      CUDA_VISIBLE_DEVICES: ""
+#      HIP_VISIBLE_DEVICES: ""
+#    cap_drop: [ ALL ]
+#    cap_add: [ sys_nice ]
+###    deploy:
+###      resources:
+###        limits:
+###          cpus: ${MCP_TIME_CPU_LIMIT:-1}
+###          memory: ${MCP_TIME_MEM_LIMIT:-1}G
+###        reservations:
+###          cpus: "0.1"
+###          memory: "128M"
+## ── end mcpo / mcp-* ─────────────────────────────────────────────────
 
   # Vision MCP server wrapping SAM3 for image segmentation
   mcp-vision:
@@ -440,6 +445,11 @@ services:
       - type: bind
         source: ${USER_ADAPTERS_DIR:-./user_adapters}
         target: /adapters/user
+        read_only: true
+      # Debug: mount live service.py from source tree for hot-patching
+      - type: bind
+        source: ${RIVAULT_DIR:-..}/vision_service/service.py
+        target: /app/umrs/vision_service/service.py
         read_only: true
     environment:
       SAM3_MODEL_PATH: /models/sam3

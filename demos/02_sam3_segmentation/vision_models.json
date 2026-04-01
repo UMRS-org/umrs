@@ -2,6 +2,10 @@
   "modalities": [
     {
       "modality_name": "segmentation",
+      "s3": {
+        "need_output_bucket": true,
+        "data": { "type": "file", "mime_type": "image/png" }
+      },
       "model": {
         "model_name": "facebook/sam3",
         "vector_size": "256",

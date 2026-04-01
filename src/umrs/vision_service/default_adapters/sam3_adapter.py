@@ -53,6 +53,11 @@ class SAM3Adapter(VisionModelAdapter):
         mask_threshold = config.get("mask_threshold", 0.5)
         device = model["device"]
 
+        logger.warning("[DEBUG-SAM3] infer: bucket=%s key=%s prompt=%s device=%s "
+                       "output_bucket=%s presigned_output_urls=%s",
+                       bucket, key, prompt, device, output_bucket,
+                       list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)")
+
         result = segment_image_with_text(
             model["model"], model["processor"], image, prompt,
             device, threshold, mask_threshold,
@@ -76,6 +81,11 @@ class SAM3Adapter(VisionModelAdapter):
             buf.seek(0)
             dst_bucket = output_bucket or bucket
             png_data = buf.getvalue()
+
+            logger.warning("[DEBUG-SAM3] Uploading overlay: key=%s dst_bucket=%s "
+                           "s3=%s presigned=%s",
+                           overlay_key, dst_bucket, s3 is not None,
+                           overlay_key in (presigned_output_urls or {}))
 
             # Prefer presigned PUT URL when available
             presigned_url = (presigned_output_urls or {}).get(overlay_key)

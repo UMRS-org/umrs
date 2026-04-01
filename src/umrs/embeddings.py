@@ -49,6 +49,7 @@ def compute_embeddings_core(
     s3_keys,
     output_bucket=None,
     task=None,
+    skip_existing=True,
 ):
     """Core embedding computation pipeline.
 
@@ -67,6 +68,8 @@ def compute_embeddings_core(
             files (``None`` when not applicable).
         task: Processing task (e.g. ``"embedding"``, ``"segmentation"``).
             When ``None``, falls back to legacy modality-name routing.
+        skip_existing: If True, skip computation when output already exists
+            in output_bucket. Only applies to direct-compute tasks.
 
     Returns:
         ``(embeddings, checksums, metadata, saved_s3_keys)`` – four parallel
@@ -85,6 +88,7 @@ def compute_embeddings_core(
     if is_direct:
         embeddings, checksums, metadata, saved_s3_keys = model.compute_embeddings(
             s3_connection, s3_keys, path_to_bucket, output_bucket,
+            skip_existing=skip_existing,
         )
         return embeddings, checksums, metadata, saved_s3_keys
 
@@ -103,10 +107,11 @@ def compute_embeddings_core(
 
 
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device,
-                                modality_name, s3_connection, output_bucket, task=None):
+                                modality_name, s3_connection, output_bucket, task=None,
+                                skip_existing=True):
     embeddings, checksums, metadata, saved_s3_keys = compute_embeddings_core(
         model, modality_name, s3_connection, path_to_bucket, s3_keys,
-        output_bucket=output_bucket, task=task,
+        output_bucket=output_bucket, task=task, skip_existing=skip_existing,
     )
 
     assert(len(embeddings) == len(checksums))

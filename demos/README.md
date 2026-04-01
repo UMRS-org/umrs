@@ -18,7 +18,7 @@ Core data flow: upload data → compute embeddings → search/export.
 |---|------|-------------------|
 | 01 | [Text Embedding](01_text_embedding/) | Upload text files, compute embeddings, export to CSV |
 | 02 | [SAM3 Segmentation](02_sam3_segmentation/) | Image segmentation via SAM3 + BentoML on Mini-Rivault |
-| 03 | [HMAE Inference](03_hmae_inference/) | HMAE feature extraction / reconstruction (3 modes) |
+| 03 | [HMAE Inference](03_hmae_inference/) | HMAE reconstruction/feature extraction (optional model upload) |
 | 04 | [RAG Search](04_rag_search/) | Semantic search: vector, hybrid BM25, reranking, Q&A |
 
 ## Operations & Maintenance
@@ -100,10 +100,21 @@ Need to pre-warm GPU nodes?
 | `status` | 01, 10 | Query server task status |
 | `check` | 05 | Verify S3 ↔ DB consistency |
 | `update` | 05 | Fix missing/mismatched embeddings |
-| `recompute` | 05 | Force full re-embedding |
+| `recompute` | 02, 03, 05 | Force full re-processing |
 | `reload` | 02, 03 | Reload server config |
 | `model register` | 06 | Register a local model |
 | `model list` | 06 | List registered models |
+| `model upload` | 03, 06 | Upload model with `--register-path` |
 | `model download` | 06 | Download from HuggingFace |
 | `job submit` | 10 | Submit endpoint/index/cleanup job |
 | `job cancel` | 10 | Cancel a running job |
+
+### Environment Variables
+
+| Variable | Used by | Description |
+|----------|---------|-------------|
+| `FORCE_RECOMPUTE` | 02, 03 | Set to `1` to force re-processing (skip-existing disabled) |
+| `HMAE_LOCAL_MODEL_DIR` | 03, 06 | Path to HMAE checkpoint dir for model upload |
+| `UMRS_REMOTE_HMAE_MODEL_PATH` | 03, 06 | Server-side path for model registration |
+| `UMRS_USERNAME` | 02, 03 | Override default username |
+| `DEMO_DOWNLOAD` | 06 | Set to `1` to download model from HuggingFace |

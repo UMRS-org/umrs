@@ -150,8 +150,18 @@ class VisionModelService:
         Returns:
             dict with adapter-specific results and output S3 keys.
         """
+        logger.warning(
+            "[DEBUG-INFER] model_type=%s image_url=%s output_bucket=%s "
+            "presigned_input_url=%s presigned_output_urls=%s",
+            model_type, image_url, output_bucket,
+            presigned_input_url[:80] if presigned_input_url else "(empty)",
+            list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
+        )
+
         adapter = ADAPTER_REGISTRY.get(model_type)
         if adapter is None:
+            logger.error("[DEBUG-INFER] Unknown model_type '%s'. Available: %s",
+                         model_type, sorted(ADAPTER_REGISTRY))
             return {
                 "error": (
                     f"Unknown model_type '{model_type}'. "
@@ -162,6 +172,8 @@ class VisionModelService:
         try:
             # Download input image: prefer presigned URL, fall back to direct S3
             if presigned_input_url:
+                logger.warning("[DEBUG-INFER] Downloading via presigned URL: %s...",
+                               presigned_input_url[:120])
                 image, bucket, key = _download_image_from_presigned_url(
                     presigned_input_url, image_url,
                 )
@@ -169,15 +181,28 @@ class VisionModelService:
                 # don't have presigned output URLs
                 s3 = self._ensure_s3() if not presigned_output_urls else None
             else:
+                logger.warning("[DEBUG-INFER] Downloading via direct S3: %s", image_url)
                 s3 = self._ensure_s3()
+                logger.warning("[DEBUG-INFER] S3 endpoint: %s",
+                               os.environ.get('S3_ENDPOINT_URL', '(not set)'))
                 image, bucket, key = _download_image_from_s3(s3, image_url)
 
+            logger.warning("[DEBUG-INFER] Image downloaded: bucket=%s key=%s size=%s",
+                           bucket, key, image.size)
+
             model = self._cache.get_or_load(adapter, inference_config)
-            return adapter.infer(
+            logger.warning("[DEBUG-INFER] Model loaded, dispatching to adapter %s",
+                           type(adapter).__name__)
+
+            result = adapter.infer(
                 model, image, bucket, key,
                 inference_config, s3, output_bucket or bucket,
                 presigned_output_urls=presigned_output_urls or {},
             )
+            logger.warning("[DEBUG-INFER] Adapter returned: %s",
+                           {k: v for k, v in result.items() if k != 'error'} if isinstance(result, dict) else result)
+            return result
         except Exception as exc:
-            logger.exception("infer failed (model_type=%s)", model_type)
+            logger.exception("[DEBUG-INFER] infer FAILED (model_type=%s): %s",
+                             model_type, exc)
             return {"error": str(exc), "source_image": image_url}

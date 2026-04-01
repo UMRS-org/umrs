@@ -323,7 +323,7 @@ def _upload_png_to_s3(s3, bucket, key, png_bytes):
 # UMRS compute pipeline (for embedding worker / model_loading integration)
 # ---------------------------------------------------------------------------
 
-def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, task="reconstruction"):
+def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, task="reconstruction", skip_existing=True):
     """Main UMRS pipeline: process images from S3 through HMAE inference.
 
     Args:
@@ -333,6 +333,8 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
         path_to_bucket: source bucket name.
         output_bucket: destination bucket for results.
         task: "reconstruction", "mae_reconstruction", or "feature_extraction".
+        skip_existing: If True, skip processing when output already exists
+            in output_bucket.
 
     Returns:
         (cls_embeddings, checksums, metadata_list, saved_keys)
@@ -356,6 +358,33 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
     for idx, s3_key in enumerate(filtered_keys):
         logger.info("[%d/%d] Processing %s (task=%s)", idx + 1, len(filtered_keys), s3_key, task)
 
+        base = os.path.splitext(s3_key)[0]
+
+        # Determine expected output key for this task
+        if task == "reconstruction":
+            expected_out_key = f"{base}_recon.png"
+        elif task == "mae_reconstruction":
+            expected_out_key = f"{base}_mae.png"
+        elif task == "feature_extraction":
+            expected_out_key = f"{base}_features.pt"
+        else:
+            expected_out_key = None
+
+        # Skip if output already exists in the output bucket
+        if skip_existing and output_bucket and expected_out_key:
+            try:
+                s3.head_object(Bucket=output_bucket, Key=expected_out_key)
+                logger.info("[%d/%d] Skipping %s — output already exists in %s",
+                            idx + 1, len(filtered_keys), s3_key, output_bucket)
+                obj = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
+                checksums.append(obj["ETag"].strip('"'))
+                metadata_list.append(obj.get("Metadata", {}))
+                saved_keys.append(f"{output_bucket}/{expected_out_key}")
+                cls_embeddings.append(None)
+                continue
+            except Exception:
+                pass  # Output does not exist, proceed with computation
+
         data, checksum, metadata = preprocess_image_from_s3(
             s3, path_to_bucket, s3_key,
             img_size=model_cfg["img_size"],
@@ -365,8 +394,6 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
         )
         checksums.append(checksum)
         metadata_list.append(metadata)
-
-        base = os.path.splitext(s3_key)[0]
 
         if task == "reconstruction":
             pred = infer_reconstruct(model, data, device, config, use_bf16)
@@ -421,7 +448,7 @@ def make_hmae_compute_func(modality, cfg_file, task=None):
     if resolved_task == "embedding":
         resolved_task = "feature_extraction"
 
-    def func(self, s3, s3_keys, path_to_bucket, output_bucket):
-        return compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, resolved_task)
+    def func(self, s3, s3_keys, path_to_bucket, output_bucket, skip_existing=True):
+        return compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, resolved_task, skip_existing=skip_existing)
 
     return func
