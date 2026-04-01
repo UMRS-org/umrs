@@ -309,7 +309,7 @@ def main():
     ee_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
     # --- Model registry commands ---
-    model_p = subparsers.add_parser('model', help='Model registry commands (register, list, download)')
+    model_p = subparsers.add_parser('model', help='Model registry commands (register, list, download, upload)')
     model_sub = model_p.add_subparsers(dest='model_action', required=True)
 
     # model register
@@ -334,6 +334,20 @@ def main():
                        help='Directory to store downloaded model (default: ~/.config/umrs/models/ or UMRS_MODEL_STAGING_ROOT)')
     md_p.add_argument('--server-side', action='store_true', default=False,
                        help='Download on the server machine instead of locally (requires server internet access)')
+
+    # model upload (copy local directory to staging root, then register)
+    mu_p = model_sub.add_parser('upload', help='Copy a local model directory to the staging root and register with UMRS')
+    mu_p.add_argument('path', help='Local directory containing model files')
+    mu_p.add_argument('--name', required=True, help='Model name for registration')
+    mu_p.add_argument('--type', choices=['llm', 'embedding'], default='embedding', dest='model_type', help='Model type')
+    mu_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
+    mu_p.add_argument('--description', default=None, help='Model description')
+    mu_p.add_argument('--staging-dir', default=None,
+                       help='Staging root directory (default: UMRS_MODEL_STAGING_ROOT or ~/.config/umrs/models/)')
+    mu_p.add_argument('--register-path', default=None,
+                       help='Server-side path to register (use when client and server have different filesystems, e.g. Mac → HPC)')
+    mu_p.add_argument('--force', action='store_true', default=False,
+                       help='Overwrite existing model directory in staging root')
 
     # --- Job tracking commands ---
     job_p = subparsers.add_parser('job', help='Job commands (submit, cancel); use \'status\' to query running jobs')
@@ -472,6 +486,38 @@ def main():
                             'description': f'Downloaded from {args.repo_id}',
                         })
                         raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
+                elif model_action == 'upload':
+                    import shutil
+                    src_path = os.path.abspath(args.path)
+                    if not os.path.isdir(src_path):
+                        print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
+                        control_mq.close()
+                        sys.exit(1)
+                    staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
+                    if not staging_root:
+                        from umrs.config import get_default_umrs_cfg_dir
+                        staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
+                    target_path = os.path.join(staging_root, args.name)
+                    if os.path.exists(target_path):
+                        if args.force:
+                            shutil.rmtree(target_path)
+                        else:
+                            print(f'Model already exists at {target_path}. Use --force to overwrite.')
+                            control_mq.close()
+                            sys.exit(1)
+                    os.makedirs(staging_root, exist_ok=True)
+                    print(f'Copying {src_path} → {target_path} ...')
+                    shutil.copytree(src_path, target_path)
+                    print(f'Copy complete. Registering model ...')
+                    register_path = args.register_path or os.path.abspath(target_path)
+                    payload = _json.dumps({
+                        'name': args.name,
+                        'path': register_path,
+                        'model_type': args.model_type,
+                        'scope': args.scope,
+                        'description': args.description,
+                    })
+                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
                 else:
                     print(api_json(status='error', message=f'Unknown model action: {model_action}', output_format=args.output))
                     control_mq.close()

@@ -100,7 +100,8 @@
       "sql_username": "usr1_hmae",
       "modalities": [
         {
-          "modality_name": "tomography_mae_reconstruction",
+          "modality": "image",
+          "task": "reconstruction",
           "s3": {
             "bucket_alias": "user1-hmae",
             "need_output_bucket": true,

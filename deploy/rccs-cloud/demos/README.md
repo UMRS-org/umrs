@@ -17,11 +17,10 @@ These run **on your local Mac** through SSH tunnels — no `podman exec` needed.
 | 01 | [01_text_embedding.sh](01_text_embedding.sh) | Upload text files → compute embeddings → check status |
 | 02 | [02_rag_search.sh](02_rag_search.sh) | Semantic search: vector, hybrid, and Q&A queries |
 | 03 | [03_sam3_segmentation.sh](03_sam3_segmentation.sh) | Upload images → SAM3 segmentation on Slurm → download results |
-| 04 | [04_hmae_inference.sh](04_hmae_inference.sh) | Upload images → HMAE feature extraction on Slurm → download results |
+| 04 | [04_hmae_inference.sh](04_hmae_inference.sh) | (Optional) upload HMAE model → upload images → HMAE on Slurm → download results |
 | 05 | [05_user_model.sh](05_user_model.sh) | Run a custom user Step (TextStats) against S3 data via pipeline_sdk |
 | 06 | [06_pipeline_sdk.sh](06_pipeline_sdk.sh) | 6-phase Pipeline SDK lifecycle (LOCAL backend, no extra services needed) |
-| 07 | [07_sam3_jens.sh](07_sam3_jens.sh) | SAM3 segmentation via Jens's BentoML stack (`VISION_STACK=jens`) |
-| 08 | [08_hmae_jens.sh](08_hmae_jens.sh) | HMAE inference via Jens's BentoML stack (`VISION_STACK=jens`) |
+| 09 | [09_model_registry.sh](09_model_registry.sh) | Model registry: list, register, upload (with optional real HMAE model) |
 
 ## Quick start
 
@@ -41,13 +40,17 @@ cd demos
 ./03_sam3_segmentation.sh
 ./04_hmae_inference.sh
 
-# Or Jens's vision stack
-./07_sam3_jens.sh
-./08_hmae_jens.sh
+# HMAE with model upload (optional — uploads checkpoint before inference)
+HMAE_LOCAL_MODEL_DIR=~/Downloads/hmae_s8d-1k_pretrain_denorm-seq1k-pz32-bs16-lr2e-4-400ep-rope-cp \
+  ./04_hmae_inference.sh
 
 # User-defined model and Pipeline SDK
 ./05_user_model.sh        # requires embeddings from 01
 ./06_pipeline_sdk.sh
+
+# Model registry (with optional real HMAE upload)
+HMAE_LOCAL_MODEL_DIR=~/Downloads/hmae_s8d-1k_pretrain_denorm-seq1k-pz32-bs16-lr2e-4-400ep-rope-cp \
+  ./09_model_registry.sh
 ```
 
 ## Configuration
@@ -65,9 +68,10 @@ Override with environment variables:
 |----------|---------|---------|
 | `UMRS_USER_CONF` | `~/.config/umrs/users/user1.json` | all demos |
 | `UMRS_TEXT_BUCKET` | `user1-texts` | 01, 02, 05 |
-| `UMRS_IMAGE_BUCKET` | `user1-images` | 03, 04, 07, 08 |
+| `UMRS_IMAGE_BUCKET` | `user1-images` | 03, 04 |
 | `UMRS_RAG_URL` | `http://localhost:8081` | 02 |
-| `VISION_STACK` | `jens` | 07, 08 |
+| `HMAE_LOCAL_MODEL_DIR` | *(unset)* | 04, 09 — path to HMAE checkpoint dir |
+| `UMRS_REMOTE_HMAE_MODEL_PATH` | `/lvs0/.../umrs_models/hmae` | 04, 09 — server-side path for model registration |
 
 Example:
 ```bash

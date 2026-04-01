@@ -297,7 +297,7 @@ def recompute_all_objects(active_threads, username, buckets_cfg, device, embeddi
             s3_objects, total_size, _ = list_s3_bucket(entry.s3_connection, path_to_bucket)
             if len(s3_objects) > 0:
                 start_time = time.perf_counter()
-                process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embedding_backend, key, update_when_done=False)
+                process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embedding_backend, key, update_when_done=False, force_recompute=True)
                 duration = round((time.perf_counter() - start_time),3)
             else:
                 duration = 0
@@ -766,7 +766,7 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
 #----------------------------
 # Process S3 objects
 #----------------------------
-def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embedding_backend, key, update_when_done = True, update_status_callback=None):
+def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embedding_backend, key, update_when_done = True, update_status_callback=None, force_recompute=False):
     nb_objects = len(s3_objects)
     keys_per_bucket = defaultdict(list)
     users = []
@@ -824,6 +824,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                             s3_connection,
                             output_bucket,
                             task=task,
+                            skip_existing=not force_recompute,
                         )
                     except Exception as e:
                         import traceback

@@ -10,6 +10,11 @@
 #   ./03_sam3_segmentation.sh /path/to/images     # your own images
 #
 # The second positional arg overrides the bucket alias (default: user1-images).
+#
+# Force recompute:
+#   By default, the server skips BentoML inference when results already exist
+#   in the output bucket. Set FORCE_RECOMPUTE=1 to force re-processing:
+#     FORCE_RECOMPUTE=1 ./03_sam3_segmentation.sh
 # =============================================================================
 set -euo pipefail
 
@@ -18,6 +23,7 @@ USER_CONF="${UMRS_USER_CONF:-$HOME/.config/umrs/users/user1.json}"
 IMAGE_BUCKET="${UMRS_IMAGE_BUCKET:-user1-sam3}"
 DATA_DIR="${1:-$SCRIPT_DIR/sample_data/images}"
 RESULTS_DIR="${SCRIPT_DIR}/results/sam3"
+FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
 
 log()  { echo "[sam3] $*"; }
 warn() { echo "[sam3] WARNING: $*"; }
@@ -62,8 +68,22 @@ done
 # ─── Step 2: Upload images ────────────────────────────────────────────────────
 echo
 log "Step 2: Upload images to bucket '$IMAGE_BUCKET'"
-$CLIENT upload_dir "$DATA_DIR" "$IMAGE_BUCKET"
+
+# Create a temp directory with only image files (skip README.txt, etc.)
+_upload_dir="$(mktemp -d)"
+trap 'rm -rf "$_upload_dir"' EXIT
+find "$DATA_DIR" -maxdepth 1 -type f \( -name '*.jpg' -o -name '*.png' -o -name '*.tiff' \) \
+    -exec ln -s {} "$_upload_dir/" \;
+log "  Staging $img_count image(s) for upload (non-image files excluded)."
+
+$CLIENT upload_dir "$_upload_dir" "$IMAGE_BUCKET"
 log "Upload done. Server will launch SAM3 on a Slurm node."
+
+# Force recompute: re-process all objects even if results already exist
+if [[ -n "$FORCE_RECOMPUTE" ]]; then
+    log "FORCE_RECOMPUTE is set — triggering full recompute..."
+    $CLIENT recompute || warn "recompute returned non-zero (check server logs)"
+fi
 UPLOAD_TIME=$SECONDS
 
 # ─── Step 3: Download results (polls until done) ──────────────────────────────

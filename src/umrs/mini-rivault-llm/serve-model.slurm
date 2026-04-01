@@ -11,8 +11,7 @@ graphroot = "/var/tmp/podman_${USER}/storage"           # Note: local non-NFS pa
 [storage.options]
 mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
-mountopt="xattr_permissions=2,threaded=1"
-force_mask="700"
+mountopt="nodev,metacopy=on"
 EOF
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
@@ -83,8 +82,22 @@ elif /bin/rocm-smi -i | /bin/grep -qi '^GPU\[0\]' ; then
 	GPUoverride+=("--file" "./x_rocm-override.yaml")
 fi
 
-if ! command -v podman-compose >/dev/null 2>&1; then
-	pip3 install --quiet 'podman-compose>=1.2.0'
+# Ensure podman-compose >= 1.2.0 (needed for --profile support)
+_pc_ok=false
+if command -v podman-compose >/dev/null 2>&1; then
+    _pc_ver="$(podman-compose -v 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+    if [[ -n "$_pc_ver" ]] && printf '%s\n%s\n' "1.2.0" "$_pc_ver" | sort -V | head -1 | grep -q '^1\.2\.0$'; then
+        _pc_ok=true
+    else
+        echo "[rivault] podman-compose ${_pc_ver:-unknown} too old (need >= 1.2.0)"
+    fi
+fi
+if ! $_pc_ok; then
+    echo "[rivault] Installing podman-compose >= 1.2.0 ..."
+    pip3 install --quiet 'podman-compose>=1.2.0' 2>/dev/null || \
+        pip3 install --user --quiet 'podman-compose>=1.2.0' 2>/dev/null || \
+        { python3 -m venv --system-site-packages /tmp/pc-venv && /tmp/pc-venv/bin/pip install --quiet 'podman-compose>=1.2.0' && export PATH="/tmp/pc-venv/bin:$PATH"; }
+    echo "[rivault] podman-compose: $(podman-compose -v 2>/dev/null)"
 fi
 
 ## download model example (LLM for vLLM)
@@ -150,15 +163,24 @@ if [ "$_net_created" -ne 1 ]; then
 fi
 echo "[rivault] genai-private-net created with subnet ${IP1TO3}.0/24"
 
-# ─── SSH tunnel: forward localhost:9000 on compute node → login node MinIO ───
-# Presigned S3 URLs use localhost:9000 so that compute-node containers can
-# download/upload data via the login node's MinIO instance.
+# ─── SSH tunnel: forward MinIO from login node to compute node ────────────────
+# The BentoML container accesses S3 via minio-host:19000 (-> host-gateway:19000).
+# Bind to 0.0.0.0 so containers (via host-gateway) can reach MinIO,
+# and use port 19000 (BENTOML_MINIO_HOST_PORT) as the local port.
 UMRS_S3_TUNNEL_PORT=${UMRS_S3_TUNNEL_PORT:-9000}
 UMRS_S3_TUNNEL_HOST=${UMRS_S3_TUNNEL_HOST:-${SLURM_SUBMIT_HOST:-localhost}}
-ssh -fN -L "${UMRS_S3_TUNNEL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
+_S3_LOCAL_PORT="${BENTOML_MINIO_HOST_PORT:-19000}"
+echo "[rivault] Setting up SSH tunnels for S3 (MinIO) access..."
+# Tunnel 1: 0.0.0.0:19000 → login:9000 (for containers via host-gateway)
+ssh -fN -L "0.0.0.0:${_S3_LOCAL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
     -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes 2>&1 \
-    && echo "[rivault] SSH tunnel: localhost:${UMRS_S3_TUNNEL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT}" \
-    || echo "[rivault] WARNING: SSH tunnel to ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} failed (presigned URLs may not work)"
+    && echo "[rivault] SSH tunnel: 0.0.0.0:${_S3_LOCAL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} (for containers)" \
+    || echo "[rivault] WARNING: SSH tunnel (container) to ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} failed"
+# Tunnel 2: localhost:9000 → login:9000 (for host-level presigned URL access)
+ssh -fN -L "127.0.0.1:${UMRS_S3_TUNNEL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
+    -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes 2>&1 \
+    && echo "[rivault] SSH tunnel: localhost:${UMRS_S3_TUNNEL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} (for host)" \
+    || echo "[rivault] WARNING: SSH tunnel (host) already bound or failed (OK if port ${UMRS_S3_TUNNEL_PORT} == ${_S3_LOCAL_PORT})"
 
 sed -i  -e "s@^\(PRIV_IP1TO3=\).*@\1${IP1TO3}@g" \
 	-e "s@^\(UUID=\).*@\1${uuid}@g" \

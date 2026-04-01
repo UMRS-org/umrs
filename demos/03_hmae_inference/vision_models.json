@@ -1,13 +1,14 @@
 {
   "modalities": [
     {
-      "modality_name": "tomography_reconstruction",
+      "modality": "image",
+      "task": "reconstruction",
       "model": {
         "model_name": "HMAE ViT-B",
         "vector_size": "768",
         "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "vision_model_type": "hmae",
-        "vision_model_config": {},
+        "vision_model_config": { "task": "reconstruction" },
         "return_type": "file"
       }
     }

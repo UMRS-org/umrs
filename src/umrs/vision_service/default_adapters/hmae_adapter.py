@@ -88,6 +88,10 @@ class HMAEAdapter(VisionModelAdapter):
         )
 
         task = config.get("task", "reconstruction")
+        logger.warning("[DEBUG-HMAE] infer: bucket=%s key=%s task=%s "
+                       "output_bucket=%s s3=%s presigned_output_urls=%s",
+                       bucket, key, task, output_bucket, s3 is not None,
+                       list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)")
         hmae_config = model["config"]
         device = torch.device(model["device"])
         model_cfg = hmae_config["model"]

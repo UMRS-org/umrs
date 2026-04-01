@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Run core demos 00-04 sequentially.
+# Run core demos 00-06, 09 sequentially (excludes jens demos 07/08).
 # Requires: SSH tunnels active, umrs-client in PATH.
+#
+# Optional:
+#   HMAE_LOCAL_MODEL_DIR=/path/to/checkpoint  — uploads HMAE model before inference
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,6 +49,24 @@ echo "=== Demo 04: HMAE Inference ==="
 bash "${SCRIPT_DIR}/04_hmae_inference.sh" 2>&1
 echo
 echo "=== Demo 04 DONE ==="
+echo
+
+echo "=== Demo 05: User Model ==="
+bash "${SCRIPT_DIR}/05_user_model.sh" 2>&1
+echo
+echo "=== Demo 05 DONE ==="
+echo
+
+echo "=== Demo 06: Pipeline SDK ==="
+bash "${SCRIPT_DIR}/06_pipeline_sdk.sh" 2>&1
+echo
+echo "=== Demo 06 DONE ==="
+echo
+
+echo "=== Demo 09: Model Registry ==="
+bash "${SCRIPT_DIR}/09_model_registry.sh" 2>&1
+echo
+echo "=== Demo 09 DONE ==="
 echo
 
 echo "=== ALL CORE DEMOS COMPLETE ==="

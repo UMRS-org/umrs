@@ -60,12 +60,33 @@ s3 = boto3.client(
     region_name="us-east-1",
 )
 
-# ── Discover objects in bucket ──────────────────────────────────────
-bucket = "$INPUT_BUCKET"
+# ── Resolve bucket alias to actual MinIO bucket name ────────────────
+# The umrs-client uses aliases like "user1-texts" but the actual MinIO
+# bucket follows the pattern: user.xp.alias (e.g. user1.text-embedding.user1-texts)
+bucket_alias = "$INPUT_BUCKET"
+bucket = None
+try:
+    with open(os.path.expanduser("$USER_CONF")) as f:
+        user_cfg = json.load(f)
+    for xp in user_cfg.get("experiences", []):
+        for mod in xp.get("modalities", []):
+            if mod.get("s3", {}).get("bucket_alias") == bucket_alias:
+                username = user_cfg.get("username", "")
+                xp_name = xp.get("xp_name", "").lower().replace(" ", "-")
+                sql_username = xp.get("sql_username", "")
+                bucket = f"{username}.{xp_name}.{bucket_alias}"
+                break
+        if bucket:
+            break
+except Exception:
+    pass
+if not bucket:
+    bucket = bucket_alias  # fallback to alias
+
 try:
     resp = s3.list_objects_v2(Bucket=bucket)
 except Exception as e:
-    print(f"ERROR: Cannot list bucket '{bucket}': {e}")
+    print(f"ERROR: Cannot list bucket '{bucket}' (alias: '{bucket_alias}'): {e}")
     print("Make sure you have uploaded text files first (01_text_embedding.sh).")
     sys.exit(1)
 

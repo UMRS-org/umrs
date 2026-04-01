@@ -31,8 +31,12 @@ echo
 # ZMQ control port
 check "ZMQ control (localhost:5555)" nc -z localhost 5555
 
-# ZMQ data port
-check "ZMQ data    (localhost:5556)" nc -z localhost 5556
+# ZMQ data port (binds on-demand when a client connects — informational only)
+if nc -z localhost 5556 2>/dev/null; then
+    ok "ZMQ data    (localhost:5556)"; passed=$((passed + 1))
+else
+    log "   ZMQ data    (localhost:5556) — not yet bound (opens on first client connect, OK to skip)"
+fi
 
 # MinIO S3
 check "MinIO S3    (localhost:9000)" curl -sf http://localhost:9000/minio/health/live

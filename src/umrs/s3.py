@@ -391,6 +391,7 @@ def download_objects(s3, objects_list, checksums, local_path, files_allready_rec
                 if not print_only_new and verbose:
                     print(f"[SKIP] {filename} (checksum match)")
                 skipped_files.add(f"{local_file}: checksum match")
+                downloaded_files.add(local_file)
                 continue
             else:
                 if  force_overwrite :

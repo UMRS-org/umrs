@@ -11,7 +11,7 @@ to compute nodes.
 ## Architecture Overview
 
 ```
-Local machine (optional)          rccs-cloud (login node)          dgx-s / dgx-m* (compute)
+Local machine (optional)          rccs-cloud (login node)          fs-dgx-s / fs-dgx-m* (compute)
 ────────────────────              ───────────────────────          ──────────────────────────
 umrs-client  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
 rag client   ←── SSH tunnel ───►  rag-service  (NATIVE)                  vLLM / BentoML + LiteLLM

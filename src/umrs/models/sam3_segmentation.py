@@ -381,7 +381,7 @@ def image_from_s3(s3, bucket, key):
 
 
 def compute_sam3_segmentation(self, s3, s3_keys, path_to_bucket, output_bucket,
-                               text_prompt="object"):
+                               text_prompt="object", skip_existing=True):
     """UMRS pipeline: download images from S3, segment with SAM3, upload results.
 
     Returns:
@@ -396,6 +396,23 @@ def compute_sam3_segmentation(self, s3, s3_keys, path_to_bucket, output_bucket,
     for idx, s3_key in enumerate(s3_keys):
         logger.info("[%d/%d] SAM3 segmenting: %s (prompt='%s')",
                      idx + 1, len(s3_keys), s3_key, text_prompt)
+
+        # Skip if output already exists in the output bucket
+        base = s3_key.rsplit(".", 1)[0] if "." in s3_key else s3_key
+        expected_out_key = f"{base}_sam3_seg.png"
+        if skip_existing and output_bucket:
+            try:
+                s3.head_object(Bucket=output_bucket, Key=expected_out_key)
+                logger.info("[%d/%d] Skipping %s — output already exists in %s",
+                            idx + 1, len(s3_keys), s3_key, output_bucket)
+                head = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
+                checksums.append(head["ETag"].strip('"'))
+                metadata_list.append(head.get("Metadata", {}))
+                saved_keys.append(f"{output_bucket}/{expected_out_key}")
+                results_list.append({"status": "skipped"})
+                continue
+            except Exception:
+                pass  # Output does not exist, proceed with computation
 
         obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
         checksum = obj["ETag"].strip('"')

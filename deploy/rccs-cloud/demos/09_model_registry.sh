@@ -6,7 +6,8 @@
 #
 #   1. List current models
 #   2. Register an existing model from the shared filesystem
-#   3. Upload (copy + register) a model from a local path
+#   3. Upload a real HMAE model from local Mac (optional)
+#   3b. Upload a small test model
 #   4. Verify the registry
 #
 # On HPC systems the shared filesystem (Lustre) is the transport layer.
@@ -15,15 +16,15 @@
 #
 # Usage:
 #   ./09_model_registry.sh
+#   HMAE_LOCAL_MODEL_DIR=~/Downloads/hmae_checkpoint ./09_model_registry.sh
 # =============================================================================
 set -euo pipefail
 # ── client PATH fallback (rccs-cloud: umrs-client lives in ~/umrs-client-venv) ─
 command -v umrs-client >/dev/null 2>&1 || export PATH="$HOME/umrs-client-venv/bin:$PATH"
 
-# Staging root: must match the host-side Lustre path that the container
-# mounts as /shared/models.  The client writes here; the server reads it
-# via the volume mount.
+# Staging root: the server-side Lustre path where models are stored.
 STAGING_ROOT="${UMRS_MODEL_STAGING_ROOT:-${MODEL_DIR:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models}}"
+REMOTE_HMAE_MODEL_PATH="${UMRS_REMOTE_HMAE_MODEL_PATH:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae}"
 
 CLIENT="umrs-client"
 
@@ -33,7 +34,7 @@ fail() { echo "[model_reg]   ✗ $1" >&2; }
 die()  { echo "[model_reg] ERROR: $*" >&2; exit 1; }
 
 # ---------- Step 0: Preflight ----------
-log "Staging root: $STAGING_ROOT"
+log "Staging root (server-side): $STAGING_ROOT"
 $CLIENT ping >/dev/null 2>&1 || die "Server not reachable. Is the ssh tunnel running?"
 log "Server is ready."
 
@@ -63,8 +64,39 @@ else
 fi
 echo
 
-# ---------- Step 3: Upload (copy + register) a small test model ----------
-log "Step 3: Upload a test model via 'model upload'"
+# ---------- Step 3: Upload a real HMAE model (if available) ----------
+# The HMAE model checkpoint is typically trained offline and stored locally.
+# Set HMAE_LOCAL_MODEL_DIR to point at the directory containing
+# latest_checkpoint.pth.  Uses 'model upload --register-path' to copy
+# locally and register the server-side Lustre path with the UMRS server.
+HMAE_LOCAL_MODEL_DIR="${HMAE_LOCAL_MODEL_DIR:-}"
+
+if [[ -n "$HMAE_LOCAL_MODEL_DIR" ]] && [[ -d "$HMAE_LOCAL_MODEL_DIR" ]] \
+   && [[ -f "$HMAE_LOCAL_MODEL_DIR/latest_checkpoint.pth" ]]; then
+    log "Step 3a: Upload real HMAE model via 'model upload'"
+    log "  Source (local):      $HMAE_LOCAL_MODEL_DIR"
+    log "  Register path (HPC): $REMOTE_HMAE_MODEL_PATH"
+
+    $CLIENT model upload "$HMAE_LOCAL_MODEL_DIR" \
+        --name "hmae-pretrained" \
+        --type embedding --scope system \
+        --description "HMAE ViT pretrained checkpoint (s8d-1k)" \
+        --register-path "$REMOTE_HMAE_MODEL_PATH" \
+        --force
+
+    ok "HMAE model upload complete"
+else
+    if [[ -n "$HMAE_LOCAL_MODEL_DIR" ]]; then
+        log "Step 3a: SKIP — HMAE_LOCAL_MODEL_DIR set but not found or missing checkpoint:"
+        log "   $HMAE_LOCAL_MODEL_DIR"
+    else
+        log "Step 3a: SKIP — HMAE_LOCAL_MODEL_DIR not set (set it to upload the HMAE checkpoint)"
+    fi
+fi
+echo
+
+# ---------- Step 3b: Upload a small test model ----------
+log "Step 3b: Upload a test model via 'model upload'"
 
 # Create a tiny test model directory to demonstrate the upload flow
 TEST_MODEL_DIR="$(mktemp -d)"
@@ -72,17 +104,18 @@ echo '{"model_type": "test", "framework": "demo"}' > "$TEST_MODEL_DIR/config.jso
 echo "dummy weights" > "$TEST_MODEL_DIR/model.bin"
 trap 'rm -rf "$TEST_MODEL_DIR"' EXIT
 
+REMOTE_TEST_PATH="$STAGING_ROOT/test-upload-model"
 log "  Created test model at: $TEST_MODEL_DIR"
-log "  Uploading to staging root and registering..."
+log "  Register path (HPC):   $REMOTE_TEST_PATH"
 
 $CLIENT model upload "$TEST_MODEL_DIR" \
     --name "test-upload-model" \
     --type embedding --scope user \
     --description "Demo model uploaded via model upload" \
-    --staging-dir "$STAGING_ROOT" \
+    --register-path "$REMOTE_TEST_PATH" \
     --force
 
-ok "upload complete"
+ok "test model upload complete"
 echo
 
 # ---------- Step 4: Verify ----------
@@ -91,10 +124,13 @@ $CLIENT model list
 
 echo
 log "Done.  The air-gapped HPC model workflow:"
-log "  1. Download/prepare models on the login node (internet access)"
-log "  2. 'umrs-client model upload <path>' copies to shared Lustre + registers"
+log "  1. Download/prepare models on your local machine"
+log "  2. 'umrs-client model upload <path> --register-path <server-path>' copies locally + registers server path"
 log "  3. Compute nodes access models via the shared filesystem — no internet needed"
+log ""
+log "  Tip: set HMAE_LOCAL_MODEL_DIR to upload the HMAE checkpoint:"
+log "    HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint ./09_model_registry.sh"
 
 # ---------- Cleanup: remove the test model from staging & registry ----------
-log "Cleaning up test model from staging root..."
-rm -rf "$STAGING_ROOT/test-upload-model" 2>/dev/null || true
+log "Cleaning up test model..."
+rm -rf "${TMPDIR:-/tmp}/umrs_model_staging/test-upload-model" 2>/dev/null || true

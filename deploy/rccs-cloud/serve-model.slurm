@@ -13,7 +13,7 @@
 # =============================================================================
 
 #SBATCH --job-name=umrs-rivault
-#SBATCH --partition=dgx-s
+#SBATCH --partition=fs-dgx-s
 #SBATCH --nodes=1
 #SBATCH --time=4:00:00
 
@@ -66,34 +66,15 @@ if [[ -n "$_real_home" && "$_real_home" != "$HOME" ]]; then
     export HOME="$_real_home"
 fi
 
-# ─── Ensure podman-compose is available (>= 1.2.0 for --profile support) ─────
-# serve-model.slurm calls `pip3 install podman-compose` when absent, but
-# Debian-based compute nodes (Python 3.12+) have "externally-managed"
-# environments. Install into a user-local venv that will survive across jobs.
-# NOTE: System podman-compose may be too old (e.g. 1.0.6 lacks --profile).
-_PC_VENV="${HOME}/.local/share/rivault-venv"
-_PC_MIN_VERSION="1.2.0"
-
-_need_venv=false
-if command -v podman-compose >/dev/null 2>&1; then
-    _pc_ver="$(podman-compose -v 2>/dev/null | grep -oP '\d+\.\d+\.\d+' | head -1)"
-    if [[ -z "$_pc_ver" ]] || printf '%s\n%s\n' "$_PC_MIN_VERSION" "$_pc_ver" | sort -V | head -1 | grep -qv "$_PC_MIN_VERSION"; then
-        echo "[wrapper] System podman-compose ${_pc_ver:-unknown} is too old (need >= ${_PC_MIN_VERSION})."
-        _need_venv=true
-    fi
-else
-    _need_venv=true
-fi
-
-if $_need_venv; then
-    if [[ ! -x "${_PC_VENV}/bin/podman-compose" ]]; then
-        echo "[wrapper] Installing podman-compose into ${_PC_VENV} ..."
-        python3 -m venv --system-site-packages "$_PC_VENV"
-        "${_PC_VENV}/bin/pip" install --quiet 'podman-compose>=1.2.0'
-    fi
-    export PATH="${_PC_VENV}/bin:${PATH}"
-    echo "[wrapper] Using venv podman-compose: $(podman-compose -v 2>/dev/null)"
-fi
+# ─── Ensure podman-compose >= 1.2.0 for --profile support ─────────────────────
+# Always install into a local /tmp venv on the compute node. This is fast
+# (pip uses cached wheels) and avoids all NFS/PATH/version-check edge cases.
+_PC_VENV="/tmp/rivault-pc-$$"
+echo "[wrapper] Installing podman-compose >= 1.2.0 into ${_PC_VENV} ..."
+python3 -m venv --system-site-packages "$_PC_VENV"
+"${_PC_VENV}/bin/pip" install --quiet 'podman-compose>=1.2.0'
+export PATH="${_PC_VENV}/bin:${PATH}"
+echo "[wrapper] podman-compose ready: $(which podman-compose) — $(podman-compose -v 2>/dev/null)"
 
 # ─── Podman storage config (must match inner serve-model.slurm) ──────────────
 # The inner serve-model.slurm creates this same file; we set it up here first
@@ -113,8 +94,7 @@ graphroot = "/var/tmp/podman_${_WHOAMI}/storage"
 [storage.options]
 mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
-mountopt="xattr_permissions=2,threaded=1"
-force_mask="700"
+mountopt="nodev,metacopy=on"
 EOF
 
 # ─── Vision container image (build on compute node, cache on Lustre) ─────────
@@ -135,17 +115,40 @@ export BENTOML_VISION_IMAGE="${_VISION_IMAGE}"
 export CONTAINERS_CGROUP_MANAGER=cgroupfs
 loginctl enable-linger "$(whoami)" 2>/dev/null || true
 
-# ─── Generate NVIDIA CDI spec if missing ─────────────────────────────────────
-# The x_nvidia-override.yaml uses CDI (`nvidia.com/gpu=all`).
-# CDI requires /etc/cdi/nvidia.yaml (root) or a user-level CDI spec.
-# Generate into user XDG dir so rootless podman can find it.
-_CDI_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/cdi"
-if command -v nvidia-ctk >/dev/null 2>&1 && [[ ! -f "${_CDI_DIR}/nvidia.yaml" ]]; then
-    echo "[wrapper] Generating NVIDIA CDI spec in ${_CDI_DIR} ..."
-    mkdir -p "${_CDI_DIR}"
-    nvidia-ctk cdi generate --output="${_CDI_DIR}/nvidia.yaml" 2>/dev/null \
-        && echo "[wrapper] CDI spec generated." \
-        || echo "[wrapper] WARNING: nvidia-ctk cdi generate failed; GPU passthrough may not work."
+# ─── GPU passthrough: generate device-based x_nvidia-override.yaml ────────────
+# podman 4.x on this cluster cannot resolve CDI `nvidia.com/gpu=all`.
+# Instead, detect GPU device nodes and overwrite x_nvidia-override.yaml
+# with direct /dev/nvidia* device mappings. The inner serve-model.slurm
+# picks up x_nvidia-override.yaml automatically when nvidia-smi detects GPUs.
+if ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
+    _GPU_DEVS=""
+    for _dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
+        [[ -e "$_dev" ]] && _GPU_DEVS="${_GPU_DEVS}      - ${_dev}:${_dev}:rwm\n"
+    done
+    if [[ -n "$_GPU_DEVS" ]]; then
+        _OVERRIDE="${RIVAULT_DIR}/x_nvidia-override.yaml"
+        echo "[wrapper] Generating device-based GPU override: ${_OVERRIDE}"
+        cat > "${_OVERRIDE}" <<GPUEOF
+services:
+  vllm:
+    shm_size: \${VLLM_NCCL_MEM_LIMIT:?error}
+    devices:
+$(echo -e "$_GPU_DEVS")
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+  bentoml-vision:
+    devices:
+$(echo -e "$_GPU_DEVS")
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+GPUEOF
+        echo "[wrapper] Device-based GPU override written."
+    fi
+else
+    echo "[wrapper] No NVIDIA GPUs detected at /dev/nvidia*"
 fi
 
 # ─── Clean up stale podman state from previous runs ──────────────────────────
@@ -182,5 +185,7 @@ else
 fi
 
 # ─── Delegate to the main serve-model.slurm in RIVAULT_DIR ───────────────────
+# Use --norc --noprofile so .bashrc doesn't reset PATH (which would hide the
+# venv podman-compose we just installed above).
 cd "$RIVAULT_DIR"
-exec bash ./serve-model.slurm
+exec bash --norc --noprofile ./serve-model.slurm
