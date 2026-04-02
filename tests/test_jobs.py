@@ -309,5 +309,88 @@ class TestAttemptCheckResult:
         assert result.exit_reason == "container crashed"
 
 
+# =============================================================================
+# Job API Ownership Enforcement Tests
+# =============================================================================
+
+
+class TestCallerIdentity:
+    """Test CallerIdentity and _enforce_job_access."""
+
+    def _make_job(self, project_id="proj-1", user_id="user-1"):
+        return Job(
+            job_id="job-test",
+            project_id=project_id,
+            user_id=user_id,
+            job_type=JobType.INDEX_BUILD,
+            spec={},
+            idempotency_key="key-1",
+        )
+
+    def test_owner_can_access_job(self):
+        """Job owner can access their own job."""
+        from umrs.api.jobs import CallerIdentity
+
+        caller = CallerIdentity(user_id="user-1", project_id="proj-1")
+        job = self._make_job()
+        assert caller.can_access_job(job) is True
+
+    def test_other_user_cannot_access_job(self):
+        """Different user in same project cannot access job."""
+        from umrs.api.jobs import CallerIdentity
+
+        caller = CallerIdentity(user_id="user-2", project_id="proj-1")
+        job = self._make_job()
+        assert caller.can_access_job(job) is False
+
+    def test_other_project_cannot_access_job(self):
+        """Same user in different project cannot access job."""
+        from umrs.api.jobs import CallerIdentity
+
+        caller = CallerIdentity(user_id="user-1", project_id="proj-OTHER")
+        job = self._make_job()
+        assert caller.can_access_job(job) is False
+
+    def test_admin_can_access_any_job(self):
+        """Admin can access any job regardless of ownership."""
+        from umrs.api.jobs import CallerIdentity
+
+        caller = CallerIdentity(user_id="admin-user", project_id="admin-proj", is_admin=True)
+        job = self._make_job()
+        assert caller.can_access_job(job) is True
+
+    def test_enforce_raises_403_for_non_owner(self):
+        """_enforce_job_access raises HTTPException 403 for non-owners."""
+        from fastapi import HTTPException as FastAPIHTTPException
+        from umrs.api.jobs import CallerIdentity, _enforce_job_access
+
+        caller = CallerIdentity(user_id="attacker", project_id="proj-1")
+        job = self._make_job()
+
+        with pytest.raises(FastAPIHTTPException) as exc_info:
+            _enforce_job_access(caller, job, action="cancel")
+        assert exc_info.value.status_code == 403
+
+    def test_enforce_passes_for_owner(self):
+        """_enforce_job_access does not raise for job owner."""
+        from umrs.api.jobs import CallerIdentity, _enforce_job_access
+
+        caller = CallerIdentity(user_id="user-1", project_id="proj-1")
+        job = self._make_job()
+
+        # Should not raise
+        _enforce_job_access(caller, job, action="read")
+
+    def test_enforce_passes_for_admin(self):
+        """_enforce_job_access does not raise for admin."""
+        from umrs.api.jobs import CallerIdentity, _enforce_job_access
+
+        caller = CallerIdentity(user_id="other", project_id="other", is_admin=True)
+        job = self._make_job()
+
+        # Should not raise
+        _enforce_job_access(caller, job, action="cancel")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

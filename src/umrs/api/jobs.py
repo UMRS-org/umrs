@@ -10,6 +10,7 @@ Provides:
 """
 
 import logging
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -58,6 +59,44 @@ def get_job_store() -> JobStore:
             detail="Job store not initialized",
         )
     return _job_store
+
+
+@dataclass
+class CallerIdentity:
+    """Identity of the API caller, extracted from request parameters.
+
+    In production this will come from JWT claims via Gateway.
+    For now, accept as query params (matching the models API MVP pattern).
+    """
+    user_id: str
+    project_id: str
+    is_admin: bool = False
+
+    def can_access_job(self, job: "Job") -> bool:
+        """Check if caller can access a job (owner or admin)."""
+        if self.is_admin:
+            return True
+        return (
+            job.project_id == self.project_id
+            and job.user_id == self.user_id
+        )
+
+
+def get_caller_identity(
+    caller_user_id: str = Query(..., description="Caller's user ID"),
+    caller_project_id: str = Query(..., description="Caller's project ID"),
+    is_admin: bool = Query(False, description="Admin flag (from JWT in production)"),
+) -> CallerIdentity:
+    """Build caller identity from request params.
+
+    Production: extract from JWT claims via Gateway.
+    MVP/Testing: accept as query params.
+    """
+    return CallerIdentity(
+        user_id=caller_user_id,
+        project_id=caller_project_id,
+        is_admin=is_admin,
+    )
 
 
 # =============================================================================
@@ -261,6 +300,22 @@ def _attempt_to_response(attempt: JobAttempt) -> AttemptResponse:
     )
 
 
+def _enforce_job_access(
+    caller: CallerIdentity, job: Job, action: str = "access",
+) -> None:
+    """Raise 403 if caller does not own the job and is not admin."""
+    if not caller.can_access_job(job):
+        logger.warning(
+            "User %s/%s denied %s on job %s (owner: %s/%s)",
+            caller.project_id, caller.user_id, action,
+            job.job_id, job.project_id, job.user_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Not authorised to {action} job {job.job_id}",
+        )
+
+
 # =============================================================================
 # API Endpoints
 # =============================================================================
@@ -358,11 +413,17 @@ async def list_jobs(
     job_type: Optional[str] = Query(None, description="Filter by job type"),
     limit: int = Query(100, ge=1, le=1000, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
+    caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobListResponse:
     """
     List jobs (U-732).
+
+    Non-admin callers are restricted to their own project's jobs.
     """
+    # Non-admin callers can only see their own project's jobs
+    if not caller.is_admin:
+        project_id = caller.project_id
     # Parse filters
     parsed_status = None
     if status_filter:
@@ -393,6 +454,10 @@ async def list_jobs(
         offset=offset,
     )
 
+    # Non-admin callers only see their own jobs within the project
+    if not caller.is_admin:
+        jobs = [j for j in jobs if j.user_id == caller.user_id]
+
     return JobListResponse(
         jobs=[_job_to_response(j) for j in jobs],
         total=len(jobs),  # Note: would need separate count query for true total
@@ -410,13 +475,18 @@ async def list_jobs(
 async def get_job(
     job_id: str,
     include_attempts: bool = Query(True, description="Include attempt history"),
+    caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobResponse:
     """
     Get job details (U-733).
+
+    Returns 403 if the caller does not own the job and is not admin.
     """
     try:
         job = store.get_job(job_id)
+        _enforce_job_access(caller, job, action="read")
+
         response = _job_to_response(job)
 
         if include_attempts:
@@ -441,14 +511,19 @@ async def get_job(
 async def cancel_job(
     job_id: str,
     reason: str = Query("user_cancelled", description="Cancellation reason"),
+    caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobActionResponse:
     """
     Cancel a job (U-734).
 
+    Returns 403 if the caller does not own the job and is not admin.
     Note: This stops scheduling but does NOT kill running backend jobs.
     """
     try:
+        job = store.get_job(job_id)
+        _enforce_job_access(caller, job, action="cancel")
+
         store.cancel_job(job_id, reason)
         return JobActionResponse(
             job_id=job_id,
@@ -477,13 +552,21 @@ async def cancel_job(
 )
 async def retry_job(
     job_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobActionResponse:
     """
     Retry a job (U-735).
 
-    Admin operation - force requeues a failed/cancelled job.
+    Admin-only operation - force requeues a failed/cancelled job.
+    Returns 403 for non-admin callers.
     """
+    if not caller.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Retry is an admin-only operation",
+        )
+
     try:
         store.retry_job(job_id)
         return JobActionResponse(
