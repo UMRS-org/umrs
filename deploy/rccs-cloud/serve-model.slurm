@@ -13,7 +13,7 @@
 # =============================================================================
 
 #SBATCH --job-name=umrs-rivault
-#SBATCH --partition=fs-dgx-s
+#SBATCH --partition=ng-dgx-s
 #SBATCH --nodes=1
 #SBATCH --time=4:00:00
 

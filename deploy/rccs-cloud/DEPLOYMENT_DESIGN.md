@@ -222,7 +222,7 @@ These conditions are specific to the RIKEN rccs-cloud HPC cluster.
 
 ### 3.5 Slurm
 
-- Partitions: `dgx-s`, `dgx-m0`, `dgx-m1`, `dgx-m2`, `dgx-m3`.
+- Partitions: `ng-dgx-s`, `ng-dgx-m0`, `ng-dgx-m1`, `ng-dgx-m2`, `ng-dgx-m3`.
 - The login node has `sbatch`, `squeue`, `scancel`, `sinfo` available.
 - Compute nodes also have Slurm client tools (for nested jobs, if needed).
 

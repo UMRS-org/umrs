@@ -45,5 +45,6 @@ slurm-*.out
 .env
 
 tmp
+*.png
 
 __pycache__/

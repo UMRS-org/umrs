@@ -11,7 +11,7 @@ to compute nodes.
 ## Architecture Overview
 
 ```
-Local machine (optional)          rccs-cloud (login node)          fs-dgx-s / fs-dgx-m* (compute)
+Local machine (optional)          rccs-cloud (login node)          ng-dgx-s / ng-dgx-m* (compute)
 ────────────────────              ───────────────────────          ──────────────────────────
 umrs-client  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
 rag client   ←── SSH tunnel ───►  rag-service  (NATIVE)                  vLLM / BentoML + LiteLLM
@@ -213,7 +213,7 @@ The first launch will:
 
 ## Step 2.5 — Verify MinIO reachability from Slurm jobs via SSH tunnel
 
-Compute nodes (dgx-s, dgx-m*) cannot reach the login node’s MinIO directly
+Compute nodes (ng-dgx-s, ng-dgx-m*) cannot reach the login node's MinIO directly
 (port 9000 is not routable).  The mini-rivault Slurm script
 (`src/umrs/mini-rivault-llm/serve-model.slurm`) automatically opens an SSH
 tunnel that forwards `localhost:9000` on the compute node to `127.0.0.1:9000`
@@ -228,7 +228,7 @@ target partition):
 
 ```bash
 # On rccs-cloud:
-sbatch -p dgx-s --time=00:05:00 --wrap='
+sbatch -p ng-dgx-s --time=00:05:00 --wrap='
   ssh -fN -L 9000:127.0.0.1:9000 '"$HOSTNAME"' -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes
   sleep 2
   curl -sS -m 5 -I http://localhost:9000/minio/health/live || exit 42
@@ -251,7 +251,7 @@ Interpretation:
 To test **all** partitions at once:
 
 ```bash
-for part in dgx-s dgx-m0 dgx-m1 dgx-m2 dgx-m3; do
+for part in ng-dgx-s ng-dgx-m0 ng-dgx-m1 ng-dgx-m2 ng-dgx-m3; do
   sbatch -p "$part" --time=00:05:00 -J "test-$part" --wrap='
     ssh -fN -L 9000:127.0.0.1:9000 '"$HOSTNAME"' -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes
     sleep 2
