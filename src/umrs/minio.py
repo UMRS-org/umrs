@@ -12,21 +12,21 @@ MC_TIMEOUT = 30  # seconds, timeout for mc CLI subprocess calls
 
 def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     """
-    Ensure the mc alias exists. If not, create it. 
-    
+    Ensure the mc alias exists. If not, create it.
+
     Args:
         alias (str): Alias name (e.g., 'myminio')
         url (str): Endpoint URL (e.g., 'https://127.0.0.1:9000')
         access_key (str): MinIO access key
         secret_key (str): MinIO secret key
         insecure (bool): Set True to skip TLS verification
-        
+
     Returns:
         bool: True if alias exists or was created, False on error
     """
 
     print(f"Checking alias: {alias}")
-    
+
     # Check if alias exists
     try:
         result = subprocess.run(
@@ -59,7 +59,7 @@ def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
 def minio_create_user_with_policy(user, password, target, policy_name):
     """
     Creates a MinIO user (if not present) and attaches a policy.
-    
+
     Args:
         user (str): username (access key)
         password (str): user's password (secret key)
@@ -129,7 +129,7 @@ def check_statement_policy(target, policy_name, policy_json):
     # Load input policy and extract Statement
     input_policy = json.loads(policy_json)
     input_statement = normalize_json(input_policy.get("Statement", []))
-    
+
     try:
         # List policies on the MinIO server
         result = subprocess.run(
@@ -151,7 +151,7 @@ def check_statement_policy(target, policy_name, policy_json):
         )
         actual_policy = json.loads(result.stdout)
         actual_statement = normalize_json(actual_policy.get("Policy", {}).get("Statement", []))
-     
+
         if input_statement == actual_statement:
             print(f"Policy '{policy_name}' exists and Statement matches.")
             return True
@@ -162,7 +162,7 @@ def check_statement_policy(target, policy_name, policy_json):
     except subprocess.CalledProcessError as e:
         print("Error accessing MinIO:", e)
         return False
-    
+
 def minio_check_create_list_only_policy(target):
     policy = {
         "Version": "2012-10-17",
@@ -179,7 +179,7 @@ def minio_check_create_list_only_policy(target):
             }
         ]
     }
-    
+
     policy_json = json.dumps(policy, indent=2)
     policy_name = f"listonly"
     policy_file = "/tmp/policy.json"
@@ -207,7 +207,7 @@ def minio_check_create_list_only_policy(target):
         raise RuntimeError(f"Error creating policy: {e}") from e
 
     return policy_name
-    
+
 
 def minio_grant_user_access(user, bucket, target):
     """
@@ -233,8 +233,8 @@ def minio_grant_user_access(user, bucket, target):
     except subprocess.CalledProcessError as e:
         print(f"Error checking policy: {e.stderr or e}")
         return
-    
-    
+
+
     policy = {
         "Version": "2012-10-17",
         "Statement": [
@@ -285,7 +285,7 @@ def minio_grant_user_access(user, bucket, target):
     except subprocess.CalledProcessError as e:
         print(f"Error attaching policy to user: {e}")
 
-        
+
 def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file):
     from umrs.s3 import s3_strong_password
 
@@ -303,7 +303,7 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
     protocol = "https" if use_https else "http"
     endpoint_url = f"{protocol}://{s3_host}"
 
-    
+
     if not os.path.exists(os.path.expanduser(user_s3_configuration_file)):
         # First-run: create mc alias (admin), ensure policy, create user with random password, then write user config
         user_passwd = s3_strong_password()
@@ -349,5 +349,5 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         # Ensure user exists with the password declared in the user's config
         minio_create_user_with_policy(username, u_secret_key, alias, list_only_policy)
 
-        
+
     return alias

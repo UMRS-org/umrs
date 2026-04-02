@@ -57,10 +57,10 @@ class UMRSThreads:
 
         if not isinstance(status_store, Cache) or not isinstance(thread_dict, Cache) :
             sys.exit("Passed variables of UMRSThreads constructor must be Cache objects")
-        
-   
+
+
         self.thread_id = 0
-        
+
         # for now restart from sctatch enev in case of crash
         # this could be changed later by updatring self.thread_id accordingly
         status_store.clear()
@@ -70,8 +70,8 @@ class UMRSThreads:
         self.lock = threading.Lock()
         self.thread_dict = thread_dict
         self.status_store = status_store # shared with ZeroMQ. Here we write. ZerMQ reads it
-            
-    
+
+
     def _wait_for_key_in_dict(self, dict, key, check_interval=0.05, timeout=60):
         start = time.time()
         while True:
@@ -86,28 +86,28 @@ class UMRSThreads:
 
     def launch_s3_threads(self, s3_objects, buckets_cfg, device,  embedding_backend, key, update_status_callback=None):
         from server_umrs import process_s3_objects
-        
+
         thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, buckets_cfg, device,  embedding_backend, key, True, update_status_callback))
-        
+
         if update_status_callback is not None:
             update_status_callback(TaskStatus.LAUNCHED)
-        
+
         thread.start()
-        
+
         self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
         self.thread_list.append(thread)
         return thread.ident
-        
+
 
     def launch_export_embeddings(self, user, export_args, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback=None):
         from umrs.sql import export_embeddings
-        
-        thread = threading.Thread(target=export_embeddings, 
+
+        thread = threading.Thread(target=export_embeddings,
                                   args=(self, user, export_args, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback))
 
         if update_status_callback is not None:
             update_status_callback(TaskStatus.LAUNCHED)
-        
+
         thread.start()
 
         # `export_args`` is ``"path_to_bucket;format"
@@ -118,16 +118,16 @@ class UMRSThreads:
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
         self.thread_list.append(thread)
         return thread.ident
-    
+
     def launch_wait_table_modification_on_db(self, path_to_bucket, buckets_cfg, user, data_base, table_name, timeout, control_mq, zmq_sender_id, key, update_status_callback=None):
         from umrs.sql import wait_table_modification_on_db
         from collections import defaultdict
-                
+
         thread = threading.Thread(target=wait_table_modification_on_db, args=(self, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id, update_status_callback))
-       
+
         if update_status_callback is not None:
             update_status_callback(TaskStatus.LAUNCHED)
-        
+
         thread.start()
         keys_per_bucket = {}
         keys_per_bucket[path_to_bucket] = None
@@ -136,66 +136,66 @@ class UMRSThreads:
 
         self.thread_list.append(thread)
         return thread.ident
-        
-    def launch_check_objects(self, buckets_cfg, key, verbose, log_output, update_status_callback=None) : 
+
+    def launch_check_objects(self, buckets_cfg, key, verbose, log_output, update_status_callback=None) :
         from server_umrs import check_objects
-     
+
         thread = threading.Thread(target=check_objects, args=(self, buckets_cfg, key, verbose, log_output, update_status_callback))
-       
+
         if update_status_callback is not None:
             update_status_callback(TaskStatus.LAUNCHED)
-        
+
         thread.start()
-        
+
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
             keys_per_bucket[path_to_bucket] = entry.num_objects
-        
+
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
         return thread.ident
-        
+
     def launch_update_objects(self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, update_status_callback=None) :
         from server_umrs import update_objects
-  
+
 
         thread = threading.Thread(target=update_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, update_status_callback))
-        
+
         if update_status_callback is not None:
             update_status_callback(TaskStatus.LAUNCHED)
-        
+
         thread.start()
-        
+
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
             keys_per_bucket[path_to_bucket] = entry.num_objects
-        
+
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
         return thread.ident
-        
+
 
     def launch_recompute_all_objects(self, client_id,  buckets_cfg, device, embedding_backend, key, log_output, update_status_callback=None):
         from server_umrs import recompute_all_objects
-  
+
         thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, log_output, update_status_callback))
-       
+
         if update_status_callback is not None:
             update_status_callback(TaskStatus.LAUNCHED)
-        
+
         thread.start()
-        
+
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
             keys_per_bucket[path_to_bucket] = entry.num_objects
-        
+
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
 
         self.thread_list.append(thread)
         return thread.ident
-        
+
 
     def update_thread_dict(self, buckets_cfg, keys_per_bucket, key, thread_ident = "self"):
         array_of_works = []
@@ -216,7 +216,7 @@ class UMRSThreads:
         with self.lock:
             thread_id = self.thread_id
             self.thread_id += 1
-        if thread_ident == "self" : #we are inside a thread thread, we need to get its ident 
+        if thread_ident == "self" : #we are inside a thread thread, we need to get its ident
             current_thread = threading.current_thread()
             thread_ident = current_thread.ident
         with self.lock:
@@ -228,12 +228,12 @@ class UMRSThreads:
 
         # print(f"{thread_ident=}\n\t{thread_id=}\n\t{ThreadStatus.RUNNING}" )
         self.record_status_for_users_by_key([user], key)
-    
+
     def is_worker_thread(self):
         current_thread = threading.current_thread()
         thread_ident = current_thread.ident
         return thread_ident in self.thread_dict
-    
+
     def remove_from_running_list(self):
         current_thread = threading.current_thread()
         with self.lock:
@@ -252,7 +252,7 @@ class UMRSThreads:
                 self.thread_dict[new_key] = entry    # reassign back to cache
             else:
                 print(f"Error: cannot find '{thread_ident}' entry for {self.thread_dict=}")
-    
+
     def clean_finished_threads(self):
         from server_umrs import ENABLE_PRETTY_PRINT
         with self.lock:
@@ -351,7 +351,7 @@ class UMRSThreads:
         return safe
 
 
-    
+
     def record_status_for_users_by_key(self, users, key):
         """Record 'threads' status summaries for the provided user list into the global status store."""
         if self.status_store is None:
