@@ -8,7 +8,15 @@ except ImportError as e:
     raise ImportError("Cannot find zeroMQ module") from e
 
 BASE_PORT = 5555
-DATA_BASE_PORT = int(os.environ.get("UMRS_DATA_BASE_PORT", BASE_PORT))
+_data_port_raw = os.environ.get("UMRS_DATA_BASE_PORT")
+if _data_port_raw is not None:
+    DATA_BASE_PORT = int(_data_port_raw)
+    if DATA_BASE_PORT == BASE_PORT:
+        raise ValueError(
+            f"UMRS_DATA_BASE_PORT ({DATA_BASE_PORT}) must differ from BASE_PORT ({BASE_PORT})"
+        )
+else:
+    DATA_BASE_PORT = BASE_PORT + 1
 DEFAULT_NB_MSG = 10240
 class MessageQueue:
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
@@ -194,13 +202,16 @@ class MessageQueue:
 
         with open(send_file_path, "rb") as f:
             # Send file in chunks
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                self.socket.send(chunk)
-            # Send end signal (can be empty frame)
-            self.socket.send(b'__END_OF_FILE__')
+            try:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    self.socket.send(chunk)
+                # Send end signal (can be empty frame)
+                self.socket.send(b'__END_OF_FILE__')
+            except zmq.ZMQError as e:
+                raise RuntimeError(f"Failed to send file: {e}")
 
 
     def recv_file(self, out_dir="/tmp"):
@@ -210,15 +221,21 @@ class MessageQueue:
         if not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)  # Ensure directory exists
 
-        with tempfile.NamedTemporaryFile(mode='w+b', dir=out_dir, delete=False) as tmp_file:
-            while True:
-                chunk = self.socket.recv()
-                if chunk == b'__END_OF_FILE__':
-                    break
-                tmp_file.write(chunk)
-            tmp_file.flush()
-            tmp_path = os.path.abspath(tmp_file.name)
-        return tmp_path
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w+b', dir=out_dir, delete=False) as tmp_file:
+                tmp_path = os.path.abspath(tmp_file.name)
+                while True:
+                    chunk = self.socket.recv()
+                    if chunk == b'__END_OF_FILE__':
+                        break
+                    tmp_file.write(chunk)
+                tmp_file.flush()
+            return tmp_path
+        except Exception:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
 
 
 
@@ -260,12 +277,19 @@ class MessageQueue:
                     print(f"Error in client handshake: {e}")
 
             elif cmd == TaskCmd.CREATE_DATA_QUEUE:  # prepare PUB-SUB request
+                if len(splited_msg) < 2:
+                    print(f"ERROR: CREATE_DATA_QUEUE missing client_id: {msg}")
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError:
+                        pass
+                    continue
                 client_id = splited_msg[1]
                 if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
                     port = self.client_dictionary[client_id]["port"]
                 else:
-                    max_port = max((entry.get("port", DATA_BASE_PORT - 1) for entry in self.client_dictionary.values()), default=DATA_BASE_PORT - 1)
-                    port = max_port + 1
+                    existing_ports = [entry["port"] for entry in self.client_dictionary.values() if "port" in entry]
+                    port = max(existing_ports) + 1 if existing_ports else DATA_BASE_PORT
                     self.client_dictionary.setdefault(client_id, {})["port"] = port
                     data_queue = MessageQueue(role='server', queue_type='data', server_ip=self.server_ip, port=port)
                     self.client_dictionary[client_id]["data_queue"] = data_queue
@@ -277,13 +301,43 @@ class MessageQueue:
                     print(f"Error in sending back port to client: {e}")
 
             elif cmd == TaskCmd.PROCESS_OBJECTS:  # prepare PUB-SUB request
+                if len(splited_msg) < 3:
+                    print(f"ERROR: PROCESS_OBJECTS missing fields: {msg}")
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError:
+                        pass
+                    continue
                 client_id = splited_msg[1]
-                nb_objects = int(splited_msg[2])
+                try:
+                    nb_objects = int(splited_msg[2])
+                except ValueError:
+                    print(f"ERROR: PROCESS_OBJECTS invalid count: {splited_msg[2]}")
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError:
+                        pass
+                    continue
                 return self._process_object_cmd(client_id, nb_objects, zmq_sender_id)
 
             elif cmd == TaskCmd.FILE:  # prepare PUB-SUB request
+                if len(splited_msg) < 3:
+                    print(f"ERROR: FILE missing fields: {msg}")
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError:
+                        pass
+                    continue
                 client_id = splited_msg[1]
-                nb_files = int(splited_msg[2])
+                try:
+                    nb_files = int(splited_msg[2])
+                except ValueError:
+                    print(f"ERROR: FILE invalid count: {splited_msg[2]}")
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError:
+                        pass
+                    continue
                 # include client_id in the payload for server-side identity enforcement
                 return self._process_file_cmd(client_id, nb_files, zmq_sender_id)
             elif cmd ==  TaskCmd.STATUS:

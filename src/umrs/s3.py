@@ -1,6 +1,5 @@
 #!/usr/bin/python3
 import os
-import sys
 import boto3
 from botocore.exceptions import ClientError
 import json
@@ -34,7 +33,7 @@ def get_s3_server_name(s3):
     if "minio" in server.lower():
         return "MinIO"
     else:
-        sys.exit(f"Do not know how to handle S3 server {server}")
+        raise RuntimeError(f"Do not know how to handle S3 server {server}")
 
 
 def s3_strong_password(length=24):
@@ -72,7 +71,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
     config.read(config_path)
     bucket_location = config.get("default", "bucket_location", fallback = None)
     if bucket_location is None:
-        sys.exit(f"file {admin_s3_configuration_file} must have a bucket_location entry for [default]")
+        raise RuntimeError(f"file {admin_s3_configuration_file} must have a bucket_location entry for [default]")
 
     for bucket in bucket_list:
         if not check_bucket_path(s3_connection, bucket, indent=False):
@@ -92,7 +91,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
                 minio_grant_user_access(username, bucket, alias)
 
     else:
-        sys.exit(f"Do not know how to create user and buckets for server '{server_name}'")
+        raise RuntimeError(f"Do not know how to create user and buckets for server '{server_name}'")
 
 
 
@@ -113,8 +112,7 @@ def connect_to_s3(config_file):
     config_path = os.path.expanduser(config_file)
 
     if not os.path.isfile(config_path):
-        print(f"S3 Config file '{config_file}' not found")
-        sys.exit(1)
+        raise FileNotFoundError(f"S3 Config file '{config_file}' not found")
 
     # Initialize parser
     config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
@@ -149,7 +147,7 @@ def connect_to_s3(config_file):
         response = s3.list_buckets()
         print("--> Succesfully connected to S3 service.")
     except Exception as e:
-        sys.exit(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.")
+        raise RuntimeError(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.")
 
 
     return s3, bucket_location
@@ -177,11 +175,11 @@ def check_bucket_path(s3, path_to_bucket, indent = True, exit_on_error = True):
             return False #Not found
         else:
             if exit_on_error:
-                sys.exit(f"\nS3 Error: {e}") #Un-managed head_bucket exception
+                raise RuntimeError(f"S3 Error: {e}") from e
             else:
                 return False
     except Exception as e:
-        sys.exit(f"\nS3 Connection Failed: {e}") #Un-managed S3 error
+        raise RuntimeError(f"S3 Connection Failed: {e}") from e
 
     print("OK")
     return True
@@ -247,7 +245,7 @@ def count_objects_in_bucket(s3, bucket_name, verbose=False):
         return total_objects
 
     except ClientError as e:
-        sys.exit(f"Error accessing bucket '{bucket_name}': {e}, while counting number of objects")
+        raise RuntimeError(f"Error accessing bucket '{bucket_name}': {e}") from e
 
 
 def list_s3_bucket(s3, bucket_name, prefix=""):
@@ -461,7 +459,7 @@ def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
     else:
-        sys.exit(f"Error: {in_path} not found")
+        raise FileNotFoundError(f"Error: {in_path} not found")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
@@ -515,7 +513,7 @@ def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     if os.path.exists(in_path):
         s3.upload_file(in_path, path_to_bucket, s3_key, ExtraArgs=metadata_args)
     else:
-        sys.exit(f"Error: {in_path} not found")
+        raise FileNotFoundError(f"Error: {in_path} not found")
 
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)

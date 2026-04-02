@@ -128,6 +128,8 @@ class DataBase:
                 return None  # timeout
 
             conn.poll()
+            if not conn.notifies:
+                return None  # spurious wakeup
             notify = conn.notifies.pop(0)
             conn.notifies.clear()
 
