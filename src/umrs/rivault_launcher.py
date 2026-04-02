@@ -90,6 +90,7 @@ def get_slurm_job_state(job_id):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        timeout=15,
     )
 
     if result.returncode != 0:

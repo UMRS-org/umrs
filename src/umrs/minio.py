@@ -1,5 +1,5 @@
 import subprocess
-import sys, os
+import os
 import json
 import secrets
 import string
@@ -7,6 +7,8 @@ import configparser
 import textwrap
 import subprocess
 from umrs.utils import normalize_json
+
+MC_TIMEOUT = 30  # seconds, timeout for mc CLI subprocess calls
 
 def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     """
@@ -29,7 +31,8 @@ def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     try:
         result = subprocess.run(
             ["mc", "alias", "list"],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True,
+            timeout=MC_TIMEOUT
         )
         for line in result.stdout.splitlines():
             if line.strip().startswith(alias):
@@ -44,7 +47,7 @@ def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     if insecure:
         cmd.append('--insecure')
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True, timeout=MC_TIMEOUT)
         print(f"Alias '{alias}' created.")
         return True
     except subprocess.CalledProcessError as e:
@@ -68,7 +71,8 @@ def minio_create_user_with_policy(user, password, target, policy_name):
     try:
         result = subprocess.run(
             ["mc", "admin", "user", "list", target, "--insecure"],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True,
+            timeout=MC_TIMEOUT
         )
         user_exists = user in result.stdout
     except subprocess.CalledProcessError as e:
@@ -82,6 +86,7 @@ def minio_create_user_with_policy(user, password, target, policy_name):
             check=True,
             capture_output=True,
             text=True,
+            timeout=MC_TIMEOUT,
         )
         if user_exists:
             print(f"User '{user}' exists; secret updated.")
@@ -96,19 +101,21 @@ def minio_create_user_with_policy(user, password, target, policy_name):
     try:
         result = subprocess.run(
             ["mc", "admin", "policy", "list", target, "--insecure"],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True,
+            timeout=MC_TIMEOUT
         )
         policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
         if policy_name not in policies:
             print(f"Policy '{policy_name}' not found on '{target}', creating it first may be required.")
     except subprocess.CalledProcessError as e:
-        sys.exit(f"Error listing policies: {e.stderr}")
+        raise RuntimeError(f"Error listing policies: {e.stderr}") from e
 
     # Attach the policy to the user (idempotent)
     try:
         subprocess.run(
             ["mc", "admin", "policy", "attach", target, policy_name, "--user", user, "--insecure"],
-            check=True
+            check=True,
+            timeout=MC_TIMEOUT
         )
         print(f"Policy '{policy_name}' attached to user '{user}'.")
     except subprocess.CalledProcessError as e:
@@ -127,7 +134,8 @@ def check_statement_policy(target, policy_name, policy_json):
         # List policies on the MinIO server
         result = subprocess.run(
             ["mc", "admin", "policy", "list", target, "--insecure"],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True,
+            timeout=MC_TIMEOUT
         )
         policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
 
@@ -138,7 +146,8 @@ def check_statement_policy(target, policy_name, policy_json):
         # Get the actual policy content
         result = subprocess.run(
             ["mc", "admin", "policy", "info", target, policy_name, "--insecure"],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True,
+            timeout=MC_TIMEOUT
         )
         actual_policy = json.loads(result.stdout)
         actual_statement = normalize_json(actual_policy.get("Policy", {}).get("Statement", []))
@@ -181,7 +190,7 @@ def minio_check_create_list_only_policy(target):
             print(f"Policy '{policy_name}' already exists on '{target}'.")
             return policy_name
     except subprocess.CalledProcessError as e:
-        sys.exit(f"Error listing policies: {e.stderr}")
+        raise RuntimeError(f"Error listing policies: {e.stderr}") from e
 
     # Save policy JSON to file
     with open(policy_file, 'w') as f:
@@ -191,10 +200,11 @@ def minio_check_create_list_only_policy(target):
     try:
         subprocess.run(
             ["mc", "admin", "policy", "create", target, policy_name, policy_file, "--insecure"],
-            check=True
+            check=True,
+            timeout=MC_TIMEOUT
         )
     except subprocess.CalledProcessError as e:
-        sys.exit(f"Error creating policy: {e}")
+        raise RuntimeError(f"Error creating policy: {e}") from e
 
     return policy_name
     
@@ -212,7 +222,8 @@ def minio_grant_user_access(user, bucket, target):
     try:
         results = subprocess.run(
             ["mc", "admin", "policy", "entities", target, "--user", user, "--insecure"],
-            capture_output=True, text=True, check=True
+            capture_output=True, text=True, check=True,
+            timeout=MC_TIMEOUT
         )
 
         # print(f"results: {results.stdout}\n{policy_name}")
@@ -255,7 +266,8 @@ def minio_grant_user_access(user, bucket, target):
     try:
         subprocess.run(
             ["mc", "admin", "policy", "create", target, policy_name, policy_file, "--insecure"],
-            check=True
+            check=True,
+            timeout=MC_TIMEOUT
         )
     except subprocess.CalledProcessError as e:
         print(f"Error creating policy: {e}")
@@ -266,7 +278,8 @@ def minio_grant_user_access(user, bucket, target):
         print(f"Attaching allow policy to bucket '{bucket}'...")
         subprocess.run(
             ["mc", "admin", "policy", "attach", target, policy_name, "--user", user, "--insecure"],
-            check=True
+            check=True,
+            timeout=MC_TIMEOUT
         )
         print(f"==> Policy '{policy_name}' attached to user '{user}'.")
     except subprocess.CalledProcessError as e:
@@ -326,7 +339,7 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         u_secret_key = ucfg.get("default", "secret_key")
 
         if u_access_key != username:
-            sys.exit(
+            raise RuntimeError(
                 f"Critical error. The access key in '{user_s3_configuration_file}' should be '{username}', but is '{u_access_key}'.\n"
                 "Cannot continue. Either update the JSON user config file or change/remove the S3 user config file."
             )

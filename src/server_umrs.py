@@ -884,7 +884,11 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######", flush=True)
             task_manager.tasks_status.pretty_print_tasks(limit=20)
-            result = control_mq.server_control_queue_loop()
+            try:
+                result = control_mq.server_control_queue_loop()
+            except Exception as e:
+                print(f"ERROR in control queue loop: {e}", flush=True)
+                continue
             if not result:
                 continue
             cmd, payload = result
@@ -977,6 +981,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
                 task_manager.tasks_status.update_status(task_id, TaskStatus.UNKNOWN)
+
             finished_threads_ident_list =  task_manager.active_threads.clean_finished_threads()
             print(f"{finished_threads_ident_list=}")
             task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
@@ -998,6 +1003,17 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
         print("All tasks finished. Exiting now.")
         control_mq.close()
         sys.exit(0)
+    except Exception as e:
+        print(f"\nFATAL: Unhandled exception in server event loop: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        try:
+            task_manager.active_threads.close()
+            task_manager.tasks_status.close()
+            control_mq.close()
+        except Exception:
+            pass
+        sys.exit(1)
 
 def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_backend, configure_file, server_cfg):
     # do in this order

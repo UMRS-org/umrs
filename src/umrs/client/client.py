@@ -238,7 +238,10 @@ class UMRSClient:
                 body = response.read().decode("utf-8")
                 if not body:
                     return {}
-                return json_module.loads(body)
+                try:
+                    return json_module.loads(body)
+                except (json_module.JSONDecodeError, ValueError) as e:
+                    raise UMRSError(f"Invalid JSON response from server: {e}")
                 
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8") if e.fp else ""

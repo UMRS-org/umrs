@@ -193,10 +193,17 @@ def validate_key(key: str, project_id: str) -> str:
     """
     Validate and normalize S3 key.
 
-    Ensures key is within project namespace.
+    Ensures key is within project namespace and safe from path traversal.
     """
     # Normalize key
     key = key.strip("/")
+
+    # Reject path traversal attempts
+    if ".." in key.split("/"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid key: path traversal not allowed",
+        )
 
     # Check if key is already namespaced
     if key.startswith(f"{project_id}/"):

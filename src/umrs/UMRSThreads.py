@@ -72,11 +72,14 @@ class UMRSThreads:
         self.status_store = status_store # shared with ZeroMQ. Here we write. ZerMQ reads it
             
     
-    def _wait_for_key_in_dict(self, dict, key, check_interval=0.05):
+    def _wait_for_key_in_dict(self, dict, key, check_interval=0.05, timeout=60):
+        start = time.time()
         while True:
             with self.lock:
                 if key in dict:
                     break
+            if time.time() - start > timeout:
+                raise RuntimeError(f"Timeout ({timeout}s) waiting for thread key {key}")
             time.sleep(check_interval)  # wait for 50ms before checking again
         # key is now valid in dictionary
 
