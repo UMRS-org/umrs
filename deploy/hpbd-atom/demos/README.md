@@ -11,16 +11,22 @@ These run **on your local Mac** through SSH tunnels — no `podman exec` needed.
 
 ## Demos
 
-| # | Script | What it does |
-|---|--------|--------------|
-| 00 | [00_health_check.sh](00_health_check.sh) | Ping the server, check MinIO and RAG reachability |
-| 01 | [01_text_embedding.sh](01_text_embedding.sh) | Upload text files → compute embeddings → check status |
-| 02 | [02_rag_search.sh](02_rag_search.sh) | Semantic search: vector, hybrid, and Q&A queries |
-| 03 | [03_sam3_segmentation.sh](03_sam3_segmentation.sh) | Upload images → SAM3 segmentation on Slurm → download results |
-| 04 | [04_hmae_inference.sh](04_hmae_inference.sh) | (Optional) upload HMAE model → upload images → HMAE on Slurm → download results |
-| 05 | [05_user_model.sh](05_user_model.sh) | Run a custom user Step (TextStats) against S3 data via pipeline_sdk |
-| 06 | [06_pipeline_sdk.sh](06_pipeline_sdk.sh) | 6-phase Pipeline SDK lifecycle (LOCAL backend, no extra services needed) |
-| 09 | [09_model_registry.sh](09_model_registry.sh) | Model registry: list, register, upload (with optional real HMAE model) |
+| # | Script | What it does | Requirements |
+|---|--------|--------------|-------------|
+| 00 | [00_health_check.sh](00_health_check.sh) | Ping the server, check MinIO and RAG reachability | SSH tunnels |
+| 01 | [01_text_embedding.sh](01_text_embedding.sh) | Upload text files → compute embeddings → check status | SSH tunnels |
+| 02 | [02_rag_search.sh](02_rag_search.sh) | Semantic search: vector, hybrid, and Q&A queries | SSH tunnels, RAG service (`UMRS_RAG_ENABLE=1`) |
+| 03 | [03_sam3_segmentation.sh](03_sam3_segmentation.sh) | Upload images → SAM3 segmentation on Slurm → download results | **Slurm + GPU + shared FS** |
+| 04 | [04_hmae_inference.sh](04_hmae_inference.sh) | (Optional) upload HMAE model → upload images → HMAE on Slurm → download results | **Slurm + GPU + shared FS** |
+| 05 | [05_user_model.sh](05_user_model.sh) | Run a custom user Step (TextStats) against S3 data via pipeline_sdk | SSH tunnels, demo 01 first |
+| 06 | [06_pipeline_sdk.sh](06_pipeline_sdk.sh) | 6-phase Pipeline SDK lifecycle (LOCAL backend, no extra services needed) | None (runs locally) |
+| 07 | [07_sam3_jens.sh](07_sam3_jens.sh) | SAM3 with Jens's standalone BentoML stack | **Slurm + GPU + Jens service** |
+| 08 | [08_hmae_jens.sh](08_hmae_jens.sh) | HMAE with Jens's standalone BentoML stack | **Slurm + GPU + Jens service** |
+| 09 | [09_model_registry.sh](09_model_registry.sh) | Model registry: list, register, upload (with optional real HMAE model) | SSH tunnels |
+
+**Note:** Demos 03, 04, 07, 08 require a Slurm cluster with shared filesystem
+between login and compute nodes, plus GPU-capable compute nodes. They are
+skipped automatically by `run_all_core.sh` when Slurm is not available.
 
 ## Quick start
 
@@ -80,5 +86,5 @@ UMRS_IMAGE_BUCKET=my-custom-bucket ./03_sam3_segmentation.sh /path/to/images
 
 ## Sample data
 
-- `sample_data/*.txt` — text files for demos 01, 02, 05, 06
-- `sample_data/images/` — place your `.jpg/.png/.tiff` files here for vision demos
+- `sample_data/*.txt` — text files for demos 01, 02, 05, 06 (3 HPC/ML-themed articles included)
+- `sample_data/images/` — `.jpg/.png/.tiff` images for vision demos (includes `test_pattern.png`)
