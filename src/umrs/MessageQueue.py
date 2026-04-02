@@ -8,6 +8,7 @@ except ImportError as e:
     raise ImportError("Cannot find zeroMQ module") from e
 
 BASE_PORT = 5555
+DATA_BASE_PORT = int(os.environ.get("UMRS_DATA_BASE_PORT", BASE_PORT))
 DEFAULT_NB_MSG = 10240
 class MessageQueue:
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
@@ -263,7 +264,7 @@ class MessageQueue:
                 if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
                     port = self.client_dictionary[client_id]["port"]
                 else:
-                    max_port = max((entry.get("port", BASE_PORT) for entry in self.client_dictionary.values()), default=BASE_PORT)
+                    max_port = max((entry.get("port", DATA_BASE_PORT) for entry in self.client_dictionary.values()), default=DATA_BASE_PORT)
                     port = max_port + 1
                     self.client_dictionary.setdefault(client_id, {})["port"] = port
                     data_queue = MessageQueue(role='server', queue_type='data', server_ip=self.server_ip, port=port)
@@ -513,7 +514,13 @@ class MessageQueue:
         except zmq.Again:
             raise RuntimeError("Timeout waiting for server response in notify_server")
 
-        if reply == "ACKNOWLEDGE":
+        if reply is None:
+            raise RuntimeError(
+                f"Timeout waiting for server response to {notification_type} for user {client_id}. "
+                "The server may be blocked waiting for data-queue messages that did not arrive. "
+                "Check that the SSH tunnel forwards the data port (see UMRS_DATA_BASE_PORT)."
+            )
+        elif reply == "ACKNOWLEDGE":
             if verbose:
                 print("Server acknowledges reception of the objects")
             return True
