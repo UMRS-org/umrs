@@ -115,6 +115,31 @@ else
     ln -s "$SLURM_TARGET" "$SLURM_LINK"
 fi
 
+# ─── Install MinIO Client (mc) ───────────────────────────────────────────────
+# The UMRS server calls `mc` for user/policy management in minio.py.
+MC_BIN="${VENV_DIR}/bin/mc"
+if [[ -x "$MC_BIN" ]]; then
+    log "MinIO Client (mc) already installed at ${MC_BIN}"
+else
+    log "Installing MinIO Client (mc) ..."
+    ARCH="$(uname -m)"
+    case "$ARCH" in
+        x86_64)  MC_ARCH="amd64" ;;
+        aarch64) MC_ARCH="arm64" ;;
+        *)       die "Unsupported architecture for mc: ${ARCH}" ;;
+    esac
+    MC_URL="https://dl.min.io/client/mc/release/linux-${MC_ARCH}/mc"
+    if command -v curl &>/dev/null; then
+        curl -fsSL "$MC_URL" -o "$MC_BIN"
+    elif command -v wget &>/dev/null; then
+        wget -q "$MC_URL" -O "$MC_BIN"
+    else
+        die "Neither curl nor wget found — cannot download mc."
+    fi
+    chmod +x "$MC_BIN"
+    log "MinIO Client installed at ${MC_BIN}"
+fi
+
 # ─── Copy admin s3cfg (server needs it to create per-user credentials) ───────
 if [[ ! -f "${HOME}/.s3cfg" ]]; then
     log "Copying admin s3cfg to ~/.s3cfg"
