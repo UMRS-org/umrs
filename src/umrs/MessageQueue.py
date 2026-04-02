@@ -264,7 +264,7 @@ class MessageQueue:
                 if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
                     port = self.client_dictionary[client_id]["port"]
                 else:
-                    max_port = max((entry.get("port", DATA_BASE_PORT) for entry in self.client_dictionary.values()), default=DATA_BASE_PORT)
+                    max_port = max((entry.get("port", DATA_BASE_PORT - 1) for entry in self.client_dictionary.values()), default=DATA_BASE_PORT - 1)
                     port = max_port + 1
                     self.client_dictionary.setdefault(client_id, {})["port"] = port
                     data_queue = MessageQueue(role='server', queue_type='data', server_ip=self.server_ip, port=port)
