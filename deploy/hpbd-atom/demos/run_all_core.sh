@@ -40,15 +40,21 @@ fi
 echo
 
 echo "=== Demo 03: SAM3 Segmentation ==="
-bash "${SCRIPT_DIR}/03_sam3_segmentation.sh" 2>&1
-echo
-echo "=== Demo 03 DONE ==="
+if command -v sinfo >/dev/null 2>&1 && sinfo -h -N 2>/dev/null | grep -q .; then
+    bash "${SCRIPT_DIR}/03_sam3_segmentation.sh" 2>&1
+    echo "=== Demo 03 DONE ==="
+else
+    echo "SKIP: Slurm not available or no compute nodes (SAM3 requires GPU via Slurm)"
+fi
 echo
 
 echo "=== Demo 04: HMAE Inference ==="
-bash "${SCRIPT_DIR}/04_hmae_inference.sh" 2>&1
-echo
-echo "=== Demo 04 DONE ==="
+if command -v sinfo >/dev/null 2>&1 && sinfo -h -N 2>/dev/null | grep -q .; then
+    bash "${SCRIPT_DIR}/04_hmae_inference.sh" 2>&1
+    echo "=== Demo 04 DONE ==="
+else
+    echo "SKIP: Slurm not available or no compute nodes (HMAE requires GPU via Slurm)"
+fi
 echo
 
 echo "=== Demo 05: User Model ==="

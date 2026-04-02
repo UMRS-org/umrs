@@ -5,8 +5,9 @@
 # Stops the native umrs-server process, then the infrastructure containers.
 #
 # Usage:
-#   ./stop.sh          # graceful stop (data preserved in volumes)
-#   ./stop.sh --clean  # stop + remove volumes (data lost!)
+#   ./stop.sh            # graceful stop (data preserved in volumes)
+#   ./stop.sh --server   # stop only the server (containers keep running)
+#   ./stop.sh --clean    # stop + remove volumes (data lost!)
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -37,6 +38,13 @@ if [[ -f "$PID_FILE" ]]; then
     rm -f "$PID_FILE"
 else
     echo "No server.pid — umrs-server not managed by start.sh (or already stopped)."
+fi
+
+# ─── Server-only mode: skip containers and Slurm cleanup ────────────────────
+if [[ "${1:-}" = "--server" ]]; then
+    echo ""
+    echo "Done (server only). Containers still running."
+    exit 0
 fi
 
 # ─── Best-effort: cancel any Slurm jobs started by server ────────────────────
