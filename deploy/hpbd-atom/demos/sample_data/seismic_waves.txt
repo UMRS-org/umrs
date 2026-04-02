@@ -1,0 +1,26 @@
+Seismic Wave Propagation and Numerical Methods
+
+Seismic waves are elastic waves that propagate through the Earth following
+earthquakes or controlled explosions. The two main body wave types are
+P-waves (primary, compressional) and S-waves (secondary, shear). P-waves
+travel faster and arrive first at seismograph stations. S-waves are slower
+but carry more energy and cause greater ground motion.
+
+Full waveform inversion (FWI) is a computational technique that iteratively
+refines velocity models of the subsurface by minimizing the misfit between
+observed and synthetic seismograms. The forward problem — computing synthetic
+waveforms for a given velocity model — typically requires solving the elastic
+wave equation using finite-difference or spectral-element methods on large 3D
+grids.
+
+Modern HPC clusters accelerate these simulations using GPU computing. A single
+forward simulation on a 500x500x200 grid at 10 Hz dominant frequency can
+require billions of floating-point operations. Domain decomposition with MPI
+distributes the workload across thousands of GPU nodes, while halo exchange
+patterns ensure correct boundary conditions between subdomains.
+
+Key numerical methods for seismic simulation include:
+- Finite-Difference Time-Domain (FDTD): simple implementation, 4th-8th order stencils
+- Spectral-Element Method (SEM): hexahedral meshes, exponential convergence
+- Discontinuous Galerkin (DG): handles complex geometries, local time stepping
+- Boundary Element Method (BEM): efficient for homogeneous subregions
