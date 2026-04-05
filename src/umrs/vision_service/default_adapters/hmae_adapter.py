@@ -53,7 +53,7 @@ class HMAEAdapter(VisionModelAdapter):
         return f"hmae:{cfg_path}:{checkpoint}"
 
     def load(self, config: Dict[str, Any]) -> Any:
-        from umrs.models.hmae_inference import load_hmae_model
+        from umrs.inference.hmae_inference import load_hmae_model
 
         cfg_path = config.get(
             "config_path",
@@ -79,7 +79,7 @@ class HMAEAdapter(VisionModelAdapter):
         output_bucket: str,
         presigned_output_urls: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
-        from umrs.models.hmae_inference import (
+        from umrs.inference.hmae_inference import (
             preprocess_image_from_bytes,
             infer_reconstruct,
             infer_mae,

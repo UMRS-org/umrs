@@ -13,7 +13,7 @@ from .files import router as files_router
 from .jobs import router as jobs_router
 from .models import router as models_router
 from .models import policy_router
-from .pipelines import router as pipelines_router
+from .pipelines import router as pipelines_router  # api/pipelines.py router (not the old umrs.pipelines package)
 
 __all__ = [
     "endpoints_router",

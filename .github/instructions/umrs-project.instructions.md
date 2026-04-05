@@ -27,7 +27,7 @@ src/umrs/                    ← main Python package
     service.py               ← BentoML VisionModelService (SAM3 + HMAE tasks)
     Dockerfile               ← builds ghcr.io/riken-rccs/umrs-vision:latest
     requirements-vision.txt  ← Python deps (torch/torchvision installed separately)
-  models/
+  inference/                  ← Embedding & vision model implementations
     hmae/                    ← HMAE model code (hvit.py, engine.py, __init__.py)
     hmae_inference.py        ← HMAE inference helpers (load, preprocess, infer, visualise)
     sam3_segmentation.py     ← SAM3 segmentation helpers
@@ -53,8 +53,11 @@ src/umrs/                    ← main Python package
     slurm_backend.py         ← Slurm job orchestration
     compose_backend.py       ← Docker compose orchestration
   model_registry/            ← Model registry (scope, type, version, serving profiles)
+  rag/                       ← RAG profiles, component registries, and search logic
+    search.py                ← BM25, vector, hybrid search, reranking, context assembly
+    models.py                ← PipelineDefinition, RAGProfile, ChunkerSpec, etc.
+    registry.py              ← ChunkerRegistry, EmbedderRegistry, RerankerRegistry
   jobs/                      ← Job system (submit, cancel, retry, audit)
-  rag_pipeline.py            ← RAG pipeline (BM25, vector, hybrid search, reranking)
   modality.py                ← Modality/task resolution (text, image, volume, etc.)
 src/client_umrs.py           ← CLI client (argparse, ZMQ control channel)
 src/server_umrs.py           ← Main server (ZMQ listener, task dispatch)

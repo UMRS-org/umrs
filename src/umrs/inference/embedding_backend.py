@@ -1,6 +1,6 @@
 from typing import List, Any
 
-from umrs.models.embeddings import compute_and_store_embedding
+from umrs.inference.embeddings import compute_and_store_embedding
 
 
 class LocalEmbeddingBackend:

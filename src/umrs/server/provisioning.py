@@ -14,7 +14,7 @@ import requests
 
 from umrs.shared.cache_paths import find_model_cache
 from umrs.shared.modality import resolve_modality_task
-from umrs.models.loading import load_model
+from umrs.inference.loading import load_model
 from umrs.shared.pretty_print import pretty_print_thread_status
 from umrs.shared.storage.s3 import (
     configure_bucket,

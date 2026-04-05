@@ -1,7 +1,8 @@
 """
-Pipeline and RAG Profile management module.
+RAG (Retrieval-Augmented Generation) module.
 
 Provides:
+- Search: BM25, HybridSearcher, CrossEncoderReranker, ContextAssembler, RAGPipeline
 - PipelineDefinition: Custom ingestion pipeline configuration (X-001)
 - RAGProfile: RAG search and retrieval configuration (X-002)
 - ChunkerRegistry: Available chunking methods (X-003)
@@ -35,9 +36,30 @@ from .registry import (
     get_embedder_registry,
     get_reranker_registry,
 )
+from .search import (
+    BM25,
+    ContextAssembler,
+    CrossEncoderReranker,
+    HybridSearcher,
+    RAGContext,
+    RAGContentScanner,
+    RAGPipeline,
+    SearchResult,
+    get_rag_scanner,
+)
 
 __all__ = [
-    # Models
+    # Search
+    "BM25",
+    "ContextAssembler",
+    "CrossEncoderReranker",
+    "HybridSearcher",
+    "RAGContext",
+    "RAGContentScanner",
+    "RAGPipeline",
+    "SearchResult",
+    "get_rag_scanner",
+    # Pipeline / RAG config models
     "ChunkerSpec",
     "ChunkerType",
     "EmbedderSpec",
