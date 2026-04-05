@@ -1,31 +1,19 @@
 """
-Model Registry Store (U-803, U-804, U-805).
+Model Registry data access layer — ModelStore (U-803, U-804, U-805).
 
-Provides:
-- CRUD operations for model catalog entries
-- CRUD operations for model policies (U-805)
-- Access control (ACL) enforcement
-- Path validation for secure serving
-- Duplicate detection
-- ModelRef resolution (U-808)
-
-See DEVELOPMENT_OBJECTIVES.md Section 1.9 for design details.
+CRUD operations for model catalog entries and model policies,
+with ACL enforcement and path validation.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-import re
-from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 import psycopg2
-from psycopg2 import sql
 
-from .models import (
+from ..models import (
     ExecutionAuthority,
     ModelEntry,
     ModelPolicy,
@@ -37,350 +25,11 @@ from .models import (
     generate_model_id,
     generate_policy_id,
 )
+from .acl import ACLEnforcer, AccessContext
+from .errors import DuplicateModelError, ModelNotFoundError, PermissionDeniedError
+from .path_validator import PathValidator
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-# Exceptions
-# =============================================================================
-
-
-class ModelNotFoundError(Exception):
-    """Raised when a model is not found."""
-
-    def __init__(self, model_id: str):
-        self.model_id = model_id
-        super().__init__(f"Model not found: {model_id}")
-
-
-class DuplicateModelError(Exception):
-    """Raised when a model with the same name already exists in scope."""
-
-    def __init__(self, name: str, scope: ModelScope, project_id: Optional[str] = None):
-        self.name = name
-        self.scope = scope
-        self.project_id = project_id
-        if scope == ModelScope.PROJECT:
-            super().__init__(
-                f"Model '{name}' already exists in project '{project_id}'"
-            )
-        else:
-            super().__init__(f"Model '{name}' already exists in {scope.value} scope")
-
-
-class PermissionDeniedError(Exception):
-    """Raised when user lacks permission to access/modify a model."""
-
-    def __init__(
-        self,
-        user_id: str,
-        model_id: str,
-        action: str = "access",
-        reason: Optional[str] = None,
-    ):
-        self.user_id = user_id
-        self.model_id = model_id
-        self.action = action
-        msg = f"User '{user_id}' cannot {action} model '{model_id}'"
-        if reason:
-            msg += f": {reason}"
-        super().__init__(msg)
-
-
-class PathNotAllowedError(Exception):
-    """Raised when a storage path is not in the allowed directories."""
-
-    def __init__(self, path: str, allowed_patterns: List[str]):
-        self.path = path
-        self.allowed_patterns = allowed_patterns
-        super().__init__(
-            f"Path '{path}' is not allowed. "
-            f"Allowed patterns: {', '.join(allowed_patterns)}"
-        )
-
-
-# =============================================================================
-# Path Validation (U-804)
-# =============================================================================
-
-# Default allowed path patterns for model storage
-# These can be overridden via environment variable MODEL_ALLOWED_PATHS
-DEFAULT_ALLOWED_PATHS = [
-    "/shared/models/system/*",       # System models
-    "/shared/projects/*/models/*",   # Project models
-    "/shared/users/*/models/*",      # User models
-    "/models/*",                     # Development/Docker paths
-    "/home/*/models/*",              # Home directory models (dev)
-]
-
-
-@dataclass
-class PathValidator:
-    """
-    Validates that storage paths are within allowed directories.
-
-    This prevents users from serving arbitrary filesystem paths.
-    """
-
-    allowed_patterns: List[str]
-
-    def __init__(self, allowed_patterns: Optional[List[str]] = None):
-        """
-        Initialize path validator.
-
-        Args:
-            allowed_patterns: List of glob-like patterns (uses * for wildcard).
-                              If None, uses DEFAULT_ALLOWED_PATHS or
-                              MODEL_ALLOWED_PATHS environment variable.
-        """
-        if allowed_patterns is not None:
-            self.allowed_patterns = allowed_patterns
-        else:
-            # Check environment variable
-            env_paths = os.environ.get("MODEL_ALLOWED_PATHS")
-            if env_paths:
-                self.allowed_patterns = [p.strip() for p in env_paths.split(":")]
-            else:
-                self.allowed_patterns = DEFAULT_ALLOWED_PATHS.copy()
-
-    def is_allowed(self, path: str) -> bool:
-        """
-        Check if a path matches any allowed pattern.
-
-        Args:
-            path: Absolute filesystem path
-
-        Returns:
-            True if path is allowed
-        """
-        # Normalize path
-        path = os.path.normpath(path)
-
-        for pattern in self.allowed_patterns:
-            if self._match_pattern(path, pattern):
-                return True
-        return False
-
-    def validate(self, path: str) -> None:
-        """
-        Validate a path, raising PathNotAllowedError if not allowed.
-
-        Args:
-            path: Absolute filesystem path
-
-        Raises:
-            PathNotAllowedError: If path is not in allowed directories
-        """
-        if not self.is_allowed(path):
-            raise PathNotAllowedError(path, self.allowed_patterns)
-
-    def _match_pattern(self, path: str, pattern: str) -> bool:
-        """
-        Match path against a glob-like pattern.
-
-        Supports:
-        - * matches any single path component
-        - ** not supported (use * for each level)
-        """
-        # Convert glob pattern to regex
-        # Escape special regex chars except *
-        regex_pattern = re.escape(pattern)
-        # Replace escaped \* with regex for "any path component"
-        regex_pattern = regex_pattern.replace(r"\*", r"[^/]+")
-        # Anchor pattern
-        regex_pattern = f"^{regex_pattern}$"
-
-        return bool(re.match(regex_pattern, path))
-
-    def validate_scope_path(
-        self,
-        path: str,
-        scope: ModelScope,
-        owner_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-    ) -> None:
-        """
-        Validate that path matches the claimed scope.
-
-        For example, a user model should be in /shared/users/<owner_id>/models/,
-        not in /shared/models/system/.
-
-        Args:
-            path: Storage path
-            scope: Claimed model scope
-            owner_id: Owner user ID (for user scope)
-            project_id: Project ID (for project scope)
-
-        Raises:
-            PathNotAllowedError: If path doesn't match scope
-        """
-        # First check general allowlist
-        self.validate(path)
-
-        # Additional scope-specific validation
-        normalized = os.path.normpath(path)
-
-        if scope == ModelScope.SYSTEM:
-            # System models should be in system directories
-            valid_prefixes = ["/shared/models/system", "/models"]
-            if not any(normalized.startswith(p) for p in valid_prefixes):
-                raise PathNotAllowedError(
-                    path,
-                    [f"{p}/*" for p in valid_prefixes],
-                )
-
-        elif scope == ModelScope.PROJECT:
-            if not project_id:
-                raise ValueError("project_id required for project scope")
-            # Project models should be in project directory
-            expected_prefix = f"/shared/projects/{project_id}/models"
-            if not normalized.startswith(expected_prefix):
-                # Also allow generic project patterns for dev
-                if not normalized.startswith("/shared/projects/"):
-                    raise PathNotAllowedError(path, [f"{expected_prefix}/*"])
-
-        elif scope == ModelScope.USER:
-            if not owner_id:
-                raise ValueError("owner_id required for user scope")
-            # User models should be in user directory
-            valid_prefixes = [
-                f"/shared/users/{owner_id}/models",
-                f"/home/{owner_id}/models",
-            ]
-            if not any(normalized.startswith(p) for p in valid_prefixes):
-                raise PathNotAllowedError(
-                    path,
-                    [f"{p}/*" for p in valid_prefixes],
-                )
-
-
-# =============================================================================
-# ACL Enforcement (U-803)
-# =============================================================================
-
-
-@dataclass
-class AccessContext:
-    """Context for access control decisions."""
-
-    user_id: str
-    is_admin: bool = False
-    project_memberships: Set[str] = None  # Projects user belongs to
-    admin_project_ids: Set[str] = None    # Projects where user is admin (U-815)
-
-    def __post_init__(self):
-        if self.project_memberships is None:
-            self.project_memberships = set()
-        if self.admin_project_ids is None:
-            self.admin_project_ids = set()
-
-
-class ACLEnforcer:
-    """
-    Enforces access control for model operations.
-
-    Rules:
-    - System models: readable by all, writable by admins only
-    - Project models: readable/writable by project members
-    - User models: readable/writable by owner only
-    """
-
-    def can_read(self, model: ModelEntry, ctx: AccessContext) -> bool:
-        """Check if user can read/use a model."""
-        if ctx.is_admin:
-            return True
-
-        if model.scope == ModelScope.SYSTEM:
-            return True  # All users can read system models
-
-        if model.scope == ModelScope.PROJECT:
-            return model.project_id in ctx.project_memberships
-
-        if model.scope == ModelScope.USER:
-            return model.owner_id == ctx.user_id
-
-        return False
-
-    def can_write(self, model: ModelEntry, ctx: AccessContext) -> bool:
-        """Check if user can modify/delete a model."""
-        if ctx.is_admin:
-            return True
-
-        if model.scope == ModelScope.SYSTEM:
-            return False  # Only admins can write system models
-
-        if model.scope == ModelScope.PROJECT:
-            # Project members can write (could add project_admin check later)
-            return model.project_id in ctx.project_memberships
-
-        if model.scope == ModelScope.USER:
-            return model.owner_id == ctx.user_id
-
-        return False
-
-    def can_create(
-        self,
-        scope: ModelScope,
-        ctx: AccessContext,
-        project_id: Optional[str] = None,
-    ) -> bool:
-        """Check if user can create a model in the given scope."""
-        if ctx.is_admin:
-            return True
-
-        if scope == ModelScope.SYSTEM:
-            return False  # Only admins can create system models
-
-        if scope == ModelScope.PROJECT:
-            if not project_id:
-                return False
-            return project_id in ctx.project_memberships
-
-        if scope == ModelScope.USER:
-            return True  # Users can create their own models
-
-        return False
-
-    def enforce_read(self, model: ModelEntry, ctx: AccessContext) -> None:
-        """Raise PermissionDeniedError if user cannot read model."""
-        if not self.can_read(model, ctx):
-            raise PermissionDeniedError(
-                ctx.user_id,
-                model.model_id,
-                "read",
-                f"Not a member of {model.scope.value} scope",
-            )
-
-    def enforce_write(self, model: ModelEntry, ctx: AccessContext) -> None:
-        """Raise PermissionDeniedError if user cannot write model."""
-        if not self.can_write(model, ctx):
-            raise PermissionDeniedError(
-                ctx.user_id,
-                model.model_id,
-                "modify",
-                f"Not authorized to modify {model.scope.value} models",
-            )
-
-    def enforce_create(
-        self,
-        scope: ModelScope,
-        ctx: AccessContext,
-        project_id: Optional[str] = None,
-    ) -> None:
-        """Raise PermissionDeniedError if user cannot create in scope."""
-        if not self.can_create(scope, ctx, project_id):
-            raise PermissionDeniedError(
-                ctx.user_id,
-                "new_model",
-                "create",
-                f"Not authorized to create {scope.value} models",
-            )
-
-
-# =============================================================================
-# Model Store
-# =============================================================================
 
 
 class ModelStore:
@@ -396,14 +45,6 @@ class ModelStore:
         path_validator: Optional[PathValidator] = None,
         acl_enforcer: Optional[ACLEnforcer] = None,
     ):
-        """
-        Initialize model store.
-
-        Args:
-            conn: PostgreSQL connection
-            path_validator: Path validator instance (uses default if None)
-            acl_enforcer: ACL enforcer instance (uses default if None)
-        """
         self.conn = conn
         self.path_validator = path_validator or PathValidator()
         self.acl = acl_enforcer or ACLEnforcer()
@@ -431,43 +72,21 @@ class ModelStore:
         """
         Create a new model entry.
 
-        Args:
-            name: Model name (unique within scope)
-            scope: Visibility scope
-            storage_ref: Filesystem path to model weights (legacy, prefer model_ref)
-            model_type: LLM or embedding
-            owner_id: Owner user ID (required for user scope)
-            project_id: Project ID (required for project scope)
-            huggingface_id: Source HuggingFace model ID
-            description: Human-readable description
-            serving_profile: vLLM/LiteLLM configuration
-            status: Initial status
-            model_ref: ModelRef abstraction (U-808) - preferred over storage_ref
-            execution_authority_default: Default execution authority (U-807)
-            ctx: Access context for authorization
-
-        Returns:
-            Created ModelEntry
-
         Raises:
             PermissionDeniedError: If user cannot create in scope
             PathNotAllowedError: If storage path is not allowed
             DuplicateModelError: If model name already exists in scope
         """
-        # Enforce ACL
         if ctx:
             self.acl.enforce_create(scope, ctx, project_id)
 
-        # Validate storage path
         self.path_validator.validate_scope_path(
             storage_ref, scope, owner_id, project_id
         )
 
-        # Generate ID
         model_id = generate_model_id()
         serving_profile = serving_profile or ServingProfile()
 
-        # Create entry
         model = ModelEntry(
             model_id=model_id,
             name=name,
@@ -484,7 +103,6 @@ class ModelStore:
             status=status,
         )
 
-        # Insert into database
         try:
             with self.conn.cursor() as cur:
                 cur.execute(
@@ -540,20 +158,7 @@ class ModelStore:
         model_id: str,
         ctx: Optional[AccessContext] = None,
     ) -> ModelEntry:
-        """
-        Get a model by ID.
-
-        Args:
-            model_id: Model identifier
-            ctx: Access context for authorization
-
-        Returns:
-            ModelEntry
-
-        Raises:
-            ModelNotFoundError: If model doesn't exist
-            PermissionDeniedError: If user cannot access model
-        """
+        """Get a model by ID."""
         with self.conn.cursor() as cur:
             cur.execute(
                 """
@@ -573,7 +178,6 @@ class ModelStore:
 
         model = ModelEntry.from_row(row)
 
-        # Enforce ACL
         if ctx:
             self.acl.enforce_read(model, ctx)
 
@@ -587,23 +191,7 @@ class ModelStore:
         owner_id: Optional[str] = None,
         ctx: Optional[AccessContext] = None,
     ) -> ModelEntry:
-        """
-        Get a model by name within a scope.
-
-        Args:
-            name: Model name
-            scope: Model scope
-            project_id: Project ID (for project scope)
-            owner_id: Owner ID (for user scope)
-            ctx: Access context
-
-        Returns:
-            ModelEntry
-
-        Raises:
-            ModelNotFoundError: If model doesn't exist
-            PermissionDeniedError: If user cannot access model
-        """
+        """Get a model by name within a scope."""
         with self.conn.cursor() as cur:
             if scope == ModelScope.SYSTEM:
                 cur.execute(
@@ -629,7 +217,7 @@ class ModelStore:
                     """,
                     (name, project_id),
                 )
-            else:  # USER
+            else:
                 cur.execute(
                     """
                     SELECT model_id, name, scope, owner_id, project_id,
@@ -664,29 +252,10 @@ class ModelStore:
         limit: int = 100,
         offset: int = 0,
     ) -> List[ModelEntry]:
-        """
-        List models visible to the user.
-
-        Args:
-            ctx: Access context (required for filtering)
-            scope: Filter by scope
-            model_type: Filter by type (llm/embedding)
-            status: Filter by status
-            project_id: Filter by project (also limits to project scope)
-            limit: Max results
-            offset: Pagination offset
-
-        Returns:
-            List of ModelEntry visible to user
-        """
+        """List models visible to the user."""
         conditions = []
         params: List[Any] = []
 
-        # Build visibility filter based on user context
-        # Users can see:
-        # - All system models
-        # - Project models for their projects
-        # - Their own user models
         if not ctx.is_admin:
             visibility_parts = ["scope = 'system'"]
 
@@ -702,7 +271,6 @@ class ModelStore:
 
             conditions.append(f"({' OR '.join(visibility_parts)})")
 
-        # Apply filters
         if scope:
             conditions.append("scope = %s")
             params.append(scope.value)
@@ -719,7 +287,6 @@ class ModelStore:
             conditions.append("project_id = %s")
             params.append(project_id)
 
-        # Build query
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         query = f"""
             SELECT model_id, name, scope, owner_id, project_id,
@@ -751,28 +318,10 @@ class ModelStore:
         serving_profile: Optional[ServingProfile] = None,
         status: Optional[ModelStatus] = None,
     ) -> ModelEntry:
-        """
-        Update model metadata.
-
-        Args:
-            model_id: Model to update
-            ctx: Access context
-            description: New description
-            serving_profile: New serving profile
-            status: New status
-
-        Returns:
-            Updated ModelEntry
-
-        Raises:
-            ModelNotFoundError: If model doesn't exist
-            PermissionDeniedError: If user cannot modify model
-        """
-        # Get current model and check permissions
+        """Update model metadata."""
         model = self.get_model(model_id)
         self.acl.enforce_write(model, ctx)
 
-        # Build update
         updates = []
         params: List[Any] = []
 
@@ -789,7 +338,7 @@ class ModelStore:
             params.append(status.value)
 
         if not updates:
-            return model  # Nothing to update
+            return model
 
         updates.append("updated_at = NOW()")
         params.append(model_id)
@@ -807,7 +356,6 @@ class ModelStore:
             row = cur.fetchone()
             self.conn.commit()
 
-        # Refresh model
         return self.get_model(model_id)
 
     def update_status(
@@ -816,11 +364,7 @@ class ModelStore:
         status: ModelStatus,
         ctx: Optional[AccessContext] = None,
     ) -> None:
-        """
-        Update model status (convenience method).
-
-        This is commonly used after download jobs complete.
-        """
+        """Update model status (convenience method)."""
         if ctx:
             model = self.get_model(model_id)
             self.acl.enforce_write(model, ctx)
@@ -849,19 +393,7 @@ class ModelStore:
         model_id: str,
         ctx: AccessContext,
     ) -> None:
-        """
-        Delete a model entry.
-
-        Note: This only removes the catalog entry, not the actual model files.
-
-        Args:
-            model_id: Model to delete
-            ctx: Access context
-
-        Raises:
-            ModelNotFoundError: If model doesn't exist
-            PermissionDeniedError: If user cannot delete model
-        """
+        """Delete a model entry (catalog only, not files)."""
         model = self.get_model(model_id)
         self.acl.enforce_write(model, ctx)
 
@@ -885,29 +417,9 @@ class ModelStore:
         ctx: AccessContext,
         new_name: Optional[str] = None,
     ) -> ModelEntry:
-        """
-        Publish a user model to project scope (U-815).
-
-        This promotes a user-owned model to be accessible by all project members.
-        Only the model owner can publish, and they must be a project admin.
-
-        Args:
-            model_id: Model to publish
-            target_project_id: Project to publish to
-            ctx: Access context (must be project admin)
-            new_name: Optional new name for the published model
-
-        Returns:
-            Updated model entry with project scope
-
-        Raises:
-            ModelNotFoundError: If model doesn't exist
-            PermissionDeniedError: If user cannot publish this model
-            DuplicateModelError: If model name already exists in project
-        """
+        """Publish a user model to project scope (U-815)."""
         model = self.get_model(model_id)
 
-        # Must be owner of the model
         if model.owner_id != ctx.user_id:
             raise PermissionDeniedError(
                 ctx.user_id,
@@ -916,7 +428,6 @@ class ModelStore:
                 "Only the model owner can publish",
             )
 
-        # Model must be user-scoped
         if model.scope != ModelScope.USER:
             raise PermissionDeniedError(
                 ctx.user_id,
@@ -925,7 +436,6 @@ class ModelStore:
                 f"Can only publish user models, not {model.scope.value}",
             )
 
-        # User must be admin for target project
         if not ctx.is_admin and target_project_id not in ctx.admin_project_ids:
             raise PermissionDeniedError(
                 ctx.user_id,
@@ -934,15 +444,12 @@ class ModelStore:
                 f"Must be admin of project {target_project_id} to publish",
             )
 
-        # Determine final name
         publish_name = new_name if new_name else model.name
 
-        # Check for duplicate in project scope
         existing = self._find_model_by_name(publish_name, ModelScope.PROJECT, target_project_id)
         if existing is not None:
             raise DuplicateModelError(publish_name, ModelScope.PROJECT, target_project_id)
 
-        # Update model to project scope
         with self.conn.cursor() as cur:
             cur.execute(
                 """
@@ -1006,23 +513,7 @@ class ModelStore:
         model_id: str,
         ctx: AccessContext,
     ) -> str:
-        """
-        Resolve model ID to validated storage path.
-
-        This is used by endpoint provisioning to get the model path
-        from a model_id, with ACL enforcement.
-
-        Args:
-            model_id: Model identifier
-            ctx: Access context
-
-        Returns:
-            Validated storage_ref path
-
-        Raises:
-            ModelNotFoundError: If model doesn't exist
-            PermissionDeniedError: If user cannot access model
-        """
+        """Resolve model ID to validated storage path."""
         model = self.get_model(model_id, ctx)
 
         if model.status != ModelStatus.AVAILABLE:
@@ -1064,30 +555,7 @@ class ModelStore:
         default_serving_profile: Optional[ServingProfile] = None,
         ctx: Optional[AccessContext] = None,
     ) -> ModelPolicy:
-        """
-        Create a model policy (U-805).
-
-        Args:
-            model_name: Model name this policy applies to
-            allowed_projects: Projects allowed to use this model
-            denied_projects: Projects denied access (takes precedence)
-            max_concurrent_endpoints: Max concurrent endpoints
-            max_tokens_per_day: Daily token quota
-            priority: Scheduling priority
-            warm_pool_min: Minimum warm endpoints
-            warm_pool_max: Maximum warm endpoints
-            warm_pool_ttl_seconds: Warm endpoint TTL
-            enable_warm_pool: Whether to enable warm pooling
-            is_system_model: Mark as system-level shared model
-            default_serving_profile: Default serving configuration
-            ctx: Access context (admin only)
-
-        Returns:
-            Created ModelPolicy
-
-        Raises:
-            PermissionDeniedError: If non-admin tries to create policy
-        """
+        """Create a model policy (U-805)."""
         if ctx and not ctx.is_admin:
             raise PermissionDeniedError(
                 ctx.user_id, "policy", "create", "Admin only"
@@ -1171,7 +639,7 @@ class ModelStore:
         return ModelPolicy.from_row(row)
 
     def get_policy_by_model_name(self, model_name: str) -> Optional[ModelPolicy]:
-        """Get policy for a model by name. Returns None if no policy exists."""
+        """Get policy for a model by name."""
         with self.conn.cursor() as cur:
             cur.execute(
                 """
@@ -1235,32 +703,12 @@ class ModelStore:
         warm_pool_max: Optional[int] = None,
         ctx: Optional[AccessContext] = None,
     ) -> ModelPolicy:
-        """
-        Update a model policy.
-
-        Args:
-            policy_id: Policy to update
-            allowed_projects: New allowed projects list
-            denied_projects: New denied projects list
-            max_concurrent_endpoints: New max concurrent endpoints
-            enable_warm_pool: Enable/disable warm pooling
-            warm_pool_min: New minimum warm endpoints
-            warm_pool_max: New maximum warm endpoints
-            ctx: Access context (admin only)
-
-        Returns:
-            Updated ModelPolicy
-
-        Raises:
-            ModelNotFoundError: If policy doesn't exist
-            PermissionDeniedError: If non-admin tries to update
-        """
+        """Update a model policy."""
         if ctx and not ctx.is_admin:
             raise PermissionDeniedError(
                 ctx.user_id, policy_id, "update", "Admin only"
             )
 
-        # Check exists
         self.get_policy(policy_id)
 
         updates = []
@@ -1338,26 +786,7 @@ class ModelStore:
         warm_pool_max: Optional[int] = None,
         ctx: Optional[AccessContext] = None,
     ) -> ModelPolicy:
-        """
-        Update a model policy by model name (U-820).
-
-        Args:
-            model_name: Model name whose policy to update
-            allowed_projects: New allowed projects list
-            denied_projects: New denied projects list
-            max_concurrent_endpoints: New max concurrent endpoints
-            enable_warm_pool: Enable/disable warm pooling
-            warm_pool_min: New minimum warm endpoints
-            warm_pool_max: New maximum warm endpoints
-            ctx: Access context (admin only)
-
-        Returns:
-            Updated ModelPolicy
-
-        Raises:
-            ModelNotFoundError: If no policy exists for this model
-            PermissionDeniedError: If non-admin tries to update
-        """
+        """Update a model policy by model name (U-820)."""
         if ctx and not ctx.is_admin:
             raise PermissionDeniedError(
                 ctx.user_id, model_name, "update_policy", "Admin only"
@@ -1400,44 +829,15 @@ class ModelStore:
         """
         Register a system-level model with an associated policy (U-817).
 
-        This is an atomic operation that creates both the model entry
-        and its policy in a single transaction.
-
-        Args:
-            name: Model name (unique in system scope)
-            storage_ref: Filesystem path to model weights
-            model_type: Model type (llm or embedding)
-            huggingface_id: Source HuggingFace model ID
-            description: Model description
-            serving_profile: Serving configuration
-            execution_authority_default: Default execution authority
-            warm_pool_min: Minimum warm endpoints
-            warm_pool_max: Maximum warm endpoints
-            warm_pool_ttl_seconds: Warm endpoint TTL
-            enable_warm_pool: Enable warm pooling
-            allowed_projects: Projects allowed to use model
-            denied_projects: Projects denied access
-            max_concurrent_endpoints: Max concurrent endpoints
-            priority: Scheduling priority
-            ctx: Access context (admin only)
-
-        Returns:
-            Tuple of (ModelEntry, ModelPolicy)
-
-        Raises:
-            PermissionDeniedError: If non-admin tries to create
-            DuplicateModelError: If model already exists
-            PathNotAllowedError: If storage_ref not in allowed paths
+        Atomic operation that creates both model entry and policy.
         """
         if ctx and not ctx.is_admin:
             raise PermissionDeniedError(
                 ctx.user_id, name, "create_system_model", "Admin only"
             )
 
-        # Validate path
         self.path_validator.validate(storage_ref)
 
-        # Check for duplicates
         if self._check_duplicate(name, ModelScope.SYSTEM, None, ctx.user_id if ctx else None):
             raise DuplicateModelError(name, ModelScope.SYSTEM)
 
@@ -1448,7 +848,6 @@ class ModelStore:
 
         try:
             with self.conn.cursor() as cur:
-                # Create model entry
                 cur.execute(
                     """
                     INSERT INTO model_catalog_entries (
@@ -1471,7 +870,6 @@ class ModelStore:
                     ),
                 )
 
-                # Create associated policy
                 cur.execute(
                     """
                     INSERT INTO model_policies (
@@ -1492,7 +890,7 @@ class ModelStore:
                         warm_pool_max,
                         warm_pool_ttl_seconds,
                         enable_warm_pool,
-                        True,  # is_system_model
+                        True,
                         json.dumps(profile.to_dict()),
                     ),
                 )
@@ -1509,7 +907,7 @@ class ModelStore:
                 self.get_policy(policy_id),
             )
 
-        except psycopg2.Error as e:
+        except psycopg2.Error:
             self.conn.rollback()
             raise
 
@@ -1518,20 +916,10 @@ class ModelStore:
         model_name: str,
         project_id: str,
     ) -> tuple[bool, Optional[str]]:
-        """
-        Check if a project has access to a model based on policy.
-
-        Args:
-            model_name: Model name to check
-            project_id: Project requesting access
-
-        Returns:
-            Tuple of (allowed: bool, reason: Optional[str])
-        """
+        """Check if a project has access to a model based on policy."""
         policy = self.get_policy_by_model_name(model_name)
 
         if policy is None:
-            # No policy = allowed by default
             return True, None
 
         if not policy.is_project_allowed(project_id):
