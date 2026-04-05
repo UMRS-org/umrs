@@ -868,7 +868,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 # the ack already told the client it's accepted.
                 update_status_func(TaskStatus.COMPLETED)
 
-            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
+            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST):
                 client_id, payload_str, zmq_sender_id = payload
                 response_json = handle_job_command(cmd, client_id, payload_str)
                 try:
