@@ -52,7 +52,27 @@ src/umrs/                    ← main Python package
     kubernetes_backend.py    ← K8s job orchestration
     slurm_backend.py         ← Slurm job orchestration
     compose_backend.py       ← Docker compose orchestration
+    hybrid/                  ← Hybrid orchestration (Slurm + K8s + Compose)
+      wrappers/              ← Container runtime wrappers (subpackage)
+        base.py              ← RuntimeWrapper ABC, LaunchSpec, MountSpec, ContainerEndpoint
+        singularity.py       ← SingularityWrapper (HPC default)
+        docker.py            ← DockerWrapper (dev/test)
+        kubernetes.py        ← K8sJobWrapper, K8sBootstrapWrapper
+      resolvers/             ← Model reference resolvers (subpackage)
+        base.py              ← ModelRefResolver ABC, ResolvedModel, ResolutionError
+        filesystem.py        ← FilesystemResolver (bind mounts)
+        pvc.py               ← PVCResolver (K8s PVCs)
+        huggingface.py       ← HuggingFaceResolver (download + cache)
+        s3.py                ← S3Resolver (S3 download + cache)
+        registry.py          ← ResolverRegistry (dispatcher)
+      composer.py            ← HybridOrchestrator
+      targets.py             ← ExecutionTarget implementations
   model_registry/            ← Model registry (scope, type, version, serving profiles)
+    store/                   ← Store subpackage (split from monolithic store.py)
+      errors.py              ← ModelNotFoundError, DuplicateModelError, etc.
+      path_validator.py      ← PathValidator, DEFAULT_ALLOWED_PATHS
+      acl.py                 ← AccessContext, ACLEnforcer
+      crud.py                ← ModelStore (CRUD + policies)
   rag/                       ← RAG profiles, component registries, and search logic
     search.py                ← BM25, vector, hybrid search, reranking, context assembly
     models.py                ← PipelineDefinition, RAGProfile, ChunkerSpec, etc.

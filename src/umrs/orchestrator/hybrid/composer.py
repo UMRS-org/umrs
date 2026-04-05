@@ -38,7 +38,7 @@ from .wrappers import (
     K8sJobWrapper,
     LaunchSpec,
     MountSpec,
-    EndpointInfo,
+    ContainerEndpoint,
 )
 from .resolvers import (
     ResolverRegistry,
@@ -168,7 +168,7 @@ class HybridOrchestrator(OrchestratorBackend):
         self._resolvers = resolver_registry or ResolverRegistry.default()
 
         # Track active jobs (job_id -> allocation, endpoint)
-        self._jobs: Dict[str, tuple[AllocationInfo, Optional[EndpointInfo]]] = {}
+        self._jobs: Dict[str, tuple[AllocationInfo, Optional[ContainerEndpoint]]] = {}
 
         logger.info(
             f"HybridOrchestrator initialized: "
@@ -457,7 +457,7 @@ class HybridOrchestrator(OrchestratorBackend):
             labels=kwargs.get("labels", {}),
         )
 
-    async def _check_readiness(self, endpoint: EndpointInfo) -> bool:
+    async def _check_readiness(self, endpoint: ContainerEndpoint) -> bool:
         """Check if endpoint is ready."""
         import aiohttp
 
