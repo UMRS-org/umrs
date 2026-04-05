@@ -127,6 +127,7 @@ Step-by-step demos that walk through UMRS workflows end to end:
 | [demos/19_rag_advanced/](demos/19_rag_advanced/) | Compare RAG modes: vector, BM25, hybrid, reranked |
 | [demos/20_durable_jobs/](demos/20_durable_jobs/) | Durable jobs: submit, poll, dedup, cancel |
 | [demos/21_remote_plugins/](demos/21_remote_plugins/) | Plugin system with multiple source types & backends |
+| [demos/22_monitor/](demos/22_monitor/) | Live-refreshing jobs dashboard (TUI) |
 
 See [demos/README.md](demos/README.md) for the full guide.
 
@@ -138,6 +139,7 @@ workflows on top of the UMRS platform. All modules are stdlib-only and thread-sa
 | Module | Description |
 |--------|-------------|
 | `progress.py` | Streaming progress tracker with callbacks and console bar |
+| `tui/` | Rich-based live jobs dashboard (Terminal UI) |
 | `batch_upload.py` | Resume-capable batch uploads with manifest tracking |
 | `result_diff.py` | Compare results across runs (numeric, text, image diffs) |
 | `webhooks.py` | Event subscription & dispatch with HMAC-signed payloads |
@@ -207,7 +209,8 @@ demos/                       Step-by-step demos (basic → advanced)
 ├── 18_model_lifecycle/      Advanced: model lifecycle management
 ├── 19_rag_advanced/         Advanced: RAG mode comparison
 ├── 20_durable_jobs/         Advanced: durable job patterns
-└── 21_remote_plugins/       Advanced: plugin source types
+├── 21_remote_plugins/       Advanced: plugin source types
+└── 22_monitor/              Advanced: live TUI jobs dashboard
 
 docker/                      Docker standalone deployment
 doc/                         Documentation

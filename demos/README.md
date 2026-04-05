@@ -88,6 +88,7 @@ Complex DAG pipelines, multi-user isolation, durable jobs, and extensibility.
 | 19 | [RAG Advanced](19_rag_advanced/) | Compare vector, BM25, hybrid (RRF), and reranked search |
 | 20 | [Durable Jobs](20_durable_jobs/) | Job submit, poll, idempotent resubmit, cancel |
 | 21 | [Remote Plugins](21_remote_plugins/) | Plugin spec definition, validation, execution, audit log |
+| 22 | [Monitor (TUI)](22_monitor/) | Live-refreshing jobs dashboard with keyboard navigation |
 
 ## Quick Reference
 
@@ -129,6 +130,9 @@ Comparing search strategies?
 
 Need durable job management?
   → Demo 20 (submit, poll, retry, cancel)
+
+Want a live TUI dashboard?
+  → Demo 22 (monitor: jobs table, status filters, detail views)
 ```
 
 ### CLI Commands × Demo Coverage
@@ -152,6 +156,7 @@ Need durable job management?
 | `model download` | 07 | Download from HuggingFace |
 | `job submit` | 11 | Submit endpoint/index/cleanup job |
 | `job cancel` | 11 | Cancel a running job |
+| `monitor` | 22 | Live-refreshing jobs dashboard (TUI) |
 | `upload-workflow` | 14 | Upload a UDM workflow to server |
 
 ### Environment Variables

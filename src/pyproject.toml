@@ -24,6 +24,7 @@ dependencies = [
 client = [
     "httpx",
     "pyyaml",
+    "rich>=13.0",
 ]
 server = [
     "httpx",

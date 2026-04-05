@@ -446,7 +446,7 @@ class MessageQueue:
                 payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
                 return cmd, (client_id, payload_str, zmq_sender_id)
 
-            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
+            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST):
                 # Job tracking commands: immediate request/reply with JSON payload
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
@@ -787,6 +787,19 @@ class MessageQueue:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
 
         return reply
+
+    def request_job_list(self, client_id, filters=None):
+        """Send a JOB_LIST command and receive a JSON response.
+
+        Args:
+            client_id: Username or client identifier
+            filters: Optional dict with keys: status, job_type, project_id, limit
+        Returns:
+            Parsed dict with 'status' and 'jobs' keys
+        """
+        payload = json.dumps(filters or {})
+        raw = self.request_model_command(client_id, TaskCmd.JOB_LIST, payload)
+        return json.loads(raw)
 
 
 

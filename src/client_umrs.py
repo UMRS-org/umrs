@@ -381,6 +381,16 @@ def main():
     wl_p.add_argument('--user', default=None, help='Filter by owner user ID')
     wl_p.add_argument('--name', default=None, help='Filter by workflow name (substring match)')
 
+    # --- Monitor (TUI dashboard) ---
+    mon_p = subparsers.add_parser('monitor', help='Live-refreshing jobs dashboard (TUI)')
+    mon_p.add_argument('--interval', type=float, default=3.0, help='Refresh interval in seconds')
+    mon_p.add_argument('--status', default=None,
+                       choices=['running', 'queued', 'planned', 'completed', 'failed', 'cancelled'],
+                       help='Initial status filter')
+    mon_p.add_argument('--project', default=None, help='Filter by project ID')
+    mon_p.add_argument('--once', action='store_true', default=False,
+                       help='Print dashboard once and exit (no live refresh)')
+
 
     args = parser.parse_args()
 
@@ -600,6 +610,31 @@ def main():
                 print(api_json(status='error', action='job', message=str(e), output_format=args.output))
                 if args.verbose:
                     traceback.print_exc()
+            finally:
+                control_mq.close()
+            sys.exit(0)
+        if args.action == 'monitor':
+            # TUI jobs dashboard — no config file required
+            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            try:
+                from umrs.tui.dashboard import Dashboard
+            except ImportError:
+                sys.exit("The 'rich' library is required for the monitor dashboard.\n"
+                         "Install it with: pip install 'rich>=13.0'")
+            try:
+                dash = Dashboard(
+                    control_mq=control_mq,
+                    client_id=client_id,
+                    interval=args.interval,
+                    status_filter=args.status,
+                    project_filter=args.project,
+                )
+                if args.once:
+                    dash.render_once()
+                else:
+                    dash.run()
+            except KeyboardInterrupt:
+                pass
             finally:
                 control_mq.close()
             sys.exit(0)

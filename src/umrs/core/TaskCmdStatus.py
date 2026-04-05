@@ -18,7 +18,7 @@ class TaskCmd:
     # Job tracking commands
     JOB_SUBMIT = "JOB_SUBMIT"   # durable submission with retry config
     JOB_CANCEL = "JOB_CANCEL"   # cancel a submitted job by ID
-    # (use STATUS to query running jobs — JOB_LIST/JOB_STATUS would duplicate it)
+    JOB_LIST = "JOB_LIST"       # list jobs with optional filters
     # Workflow upload command
     UPLOAD_WORKFLOW = "UPLOAD_WORKFLOW"  # upload a workflow zip to server
     # Workflow registry commands

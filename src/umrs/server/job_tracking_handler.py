@@ -178,6 +178,38 @@ def _handle_cancel(client_id: str, payload_str: str) -> str:
     })
 
 
+def _handle_list(client_id: str, payload_str: str) -> str:
+    """List jobs with optional filters."""
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except json.JSONDecodeError:
+        payload = {}
+
+    filters = {
+        "status": payload.get("status"),
+        "job_type": payload.get("job_type"),
+        "project_id": payload.get("project_id"),
+    }
+    limit = min(int(payload.get("limit", 200)), 1000)
+
+    with _JOBS_LOCK:
+        data = _load_jobs()
+
+    jobs = data.get("jobs", [])
+    for key, val in filters.items():
+        if val:
+            jobs = [j for j in jobs if j.get(key) == val]
+
+    # Most recent first, limited
+    jobs = sorted(jobs, key=lambda j: j.get("created_at", ""), reverse=True)[:limit]
+
+    return json.dumps({
+        "status": "ok",
+        "jobs": jobs,
+        "total": len(jobs),
+    }, default=str)
+
+
 def handle_job_command(cmd: str, client_id: str, payload_str: str) -> str:
     """
     Dispatch a job tracking command and return a JSON response string.
@@ -199,6 +231,8 @@ def handle_job_command(cmd: str, client_id: str, payload_str: str) -> str:
             return _handle_submit(client_id, payload_str)
         elif cmd == TaskCmd.JOB_CANCEL:
             return _handle_cancel(client_id, payload_str)
+        elif cmd == TaskCmd.JOB_LIST:
+            return _handle_list(client_id, payload_str)
         else:
             return json.dumps({"status": "error", "message": f"Unknown job command: {cmd}"})
     except Exception as e:
