@@ -19,8 +19,8 @@ UMRS (Unified Model & Resource Server) is a multi-user AI inference platform tha
 
 ```
 src/umrs/                    ← main Python package
-  rivault/                   ← Rivault stack (Docker compose + Slurm wrappers)
-    serve-model.yaml         ← main compose file (profiles: harness, vllm, vision-bentoml)
+  mini-rivault-llm/          ← LLM + vision compose stack (profiles: harness, vllm, vision-bentoml)
+    serve-model.yaml         ← main compose file
     serve-model.slurm        ← actual Slurm job script (runs on compute node)
     x_nvidia-override.yaml   ← GPU passthrough for vllm + bentoml-vision
   vision_service/
@@ -31,24 +31,60 @@ src/umrs/                    ← main Python package
     hmae/                    ← HMAE model code (hvit.py, engine.py, __init__.py)
     hmae_inference.py        ← HMAE inference helpers (load, preprocess, infer, visualise)
     sam3_segmentation.py     ← SAM3 segmentation helpers
-demos/
-  slurm-dev/                 ← the real running demo environment
-    docker-compose.yaml      ← ai-login + umrs-client + minio containers
-    umrs-config/rivault_data/
-      serve-model.slurm      ← WRAPPER that sbatch runs; sets host-side env overrides
-    scripts/
-      demo_sam3_segmentation.py  ← SAM3 BentoML client
-      demo_hmae_inference.py     ← HMAE BentoML client (3 modes)
-  02_sam3_segmentation/
-    run_demo.sh              ← end-to-end SAM3 demo (single image, downloads results)
-    vision_models.json       ← SAM3 model config (rivault://bentoml:// scheme)
-  03_hmae_inference/
-    run_demo.sh              ← end-to-end HMAE demo (single image, downloads results)
-    vision_models.json       ← HMAE model config (rivault://bentoml:// scheme)
-    test_data/               ← test images (symlinks OK)
-    results/                 ← downloaded outputs land here
-  04_rag_search/
-    run_demo.sh              ← RAG search demo (vector, hybrid, reranking, Q&A)
+  pipeline_sdk/              ← Pipeline SDK (workflow engine, DAG scheduler)
+    base.py                  ← Abstract Pipeline class + PipelineConfig + ComputeBackend
+    step.py                  ← Step abstract base, StepContext, StepResult
+    workflow.py              ← WorkflowPipeline, ExecutionMode, SourceType, StepSpec
+    dag.py                   ← DAGScheduler for topological step ordering
+    adapter.py               ← Integration adapters (EmbeddingAdapter, etc.)
+    connectors/              ← Backend connectors (UMRS, BentoML, local)
+  plugins/                   ← Plugin system (sandboxed execution)
+    models.py                ← PluginSpec, PluginSourceType, PluginStatus, PluginResult
+    runner.py                ← PluginRunner abstract base
+    slurm_runner.py          ← SlurmPluginRunner (Singularity on HPC)
+    k8s_runner.py            ← K8sPluginRunner (Kubernetes Jobs)
+    result_writer.py         ← PluginResultWriter
+    audit.py                 ← PluginAuditLog
+    step_adapter.py          ← step_to_plugin_spec() converter
+    user_workflow.py         ← UserWorkflow, UserWorkflowRunner
+  orchestrator/              ← Endpoint & job orchestration
+    endpoint_registry.py     ← Endpoint lifecycle management
+    kubernetes_backend.py    ← K8s job orchestration
+    slurm_backend.py         ← Slurm job orchestration
+    compose_backend.py       ← Docker compose orchestration
+  model_registry/            ← Model registry (scope, type, version, serving profiles)
+  jobs/                      ← Job system (submit, cancel, retry, audit)
+  rag_pipeline.py            ← RAG pipeline (BM25, vector, hybrid search, reranking)
+  modality.py                ← Modality/task resolution (text, image, volume, etc.)
+src/client_umrs.py           ← CLI client (argparse, ZMQ control channel)
+src/server_umrs.py           ← Main server (ZMQ listener, task dispatch)
+
+demos/                       ← Demo scripts (15 directories: 00–14)
+  lib/common.sh              ← Shared bash helpers (log, ok, warn, die, banner, preflight)
+  sample_data/               ← Shared test data
+  00_start_services/         ← Start/stop all services
+  01_health_check/           ← Health check (ping)
+  02_text_embedding/         ← Text embedding pipeline
+  03_sam3_segmentation/      ← SAM3 segmentation (BentoML vision)
+  04_hmae_inference/         ← HMAE inference (canonical, BentoML vision)
+  05_rag_search/             ← RAG search (vector, hybrid, reranking)
+  06_server_maintenance/     ← Server maintenance (recompute, update, check, reload)
+  07_model_registry/         ← Model registry operations
+  08_user_model/             ← User-scoped model management + custom workflows
+  09_defect_analysis/        ← Custom defect analysis workflows with step scripts
+  10_hmae_full_pipeline/     ← Full HMAE pipeline (workflow.json + steps/)
+  11_job_submission/         ← Job submission & cancellation
+  12_pipeline_sdk/           ← Pipeline SDK demo (text_analysis_pipeline.py)
+  13_plugins/                ← Plugin system demo (word_count_plugin.py)
+  14_opossum_analysis/       ← Opossum motion analysis (canonical)
+
+deploy/rccs-cloud/           ← Production deployment (RCCS Cloud login node)
+  demos/                     ← Deployment-level demo wrappers (00–10)
+    00_health_check.sh … 10_opossum_analysis.sh
+  docker-compose.yml         ← MinIO + PostgreSQL (podman, rootless)
+  serve-model.slurm          ← Model serving Slurm wrapper
+  ssh_tunnel.sh              ← SSH tunnel management
+  start.sh / stop.sh         ← Service lifecycle
 ```
 
 ---
@@ -66,7 +102,7 @@ demos/
 ## Mini-Rivault Stack
 
 ### Startup Flow
-1. `sbatch` triggers `demos/slurm-dev/umrs-config/rivault_data/serve-model.slurm` (wrapper inside ai-login)
+1. `sbatch` triggers `deploy/rccs-cloud/serve-model.slurm` (wrapper on login node)
 2. Wrapper `export`s `RIVAULT_PROFILES` (default: `harness vllm vision-bentoml`), sets host-context overrides (`VLLM_PATH_TO_HUGGINGFACE`, `HMAE_MODEL_PATH`, etc.), reloads the BentoML vision tarball if stale
 3. Wrapper calls `exec bash ./serve-model.slurm` (the real Slurm script in `src/umrs/mini-rivault-llm/`)
 4. `serve-model.slurm` auto-detects GPU, picks nvidia/rocm override YAML, writes `env.{uuid}`
@@ -76,7 +112,7 @@ demos/
 - `harness`: nginx + litellm + ll-postgres + coredns + minio + umrs-out-nginx
 - `vllm`: vLLM service (LLM inference)
 
-Note: Vision serving (BentoML) is now in `src/umrs/mini-rivault-vision/`, separate from the LLM stack.
+Note: Vision serving (BentoML) runs via the `vision-bentoml` profile in `src/umrs/mini-rivault-llm/`. The vision service source code lives in `src/umrs/vision_service/`.
 - `vision-bentoml`: BentoML vision service (SAM3 + HMAE)
 
 ### Key env vars (set in wrapper slurm or env.{uuid})
@@ -92,18 +128,18 @@ Note: Vision serving (BentoML) is now in `src/umrs/mini-rivault-vision/`, separa
 | `VLLM_GPU_MEM_UTIL` | wrapper slurm | `0.10` (low — always-on LLM takes most GPU) |
 
 ### Tarball Auto-Reload
-The wrapper (`demos/slurm-dev/umrs-config/rivault_data/serve-model.slurm`) checks if `${RIVAULT_DIR}/images/umrs-vision.tar` is newer than the cached podman image. If yes, it runs `podman rmi -f` + `podman load`. Always re-save tarball after rebuilding image:
+The wrapper (`deploy/rccs-cloud/serve-model.slurm`) checks if `${RIVAULT_DIR}/images/umrs-vision.tar` is newer than the cached podman image. If yes, it runs `podman rmi -f` + `podman load`. Always re-save tarball after rebuilding image:
 ```bash
-rm -f src/umrs/mini-rivault-vision/images/umrs-vision.tar
-podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/mini-rivault-vision/images/umrs-vision.tar
+rm -f src/umrs/mini-rivault-llm/images/umrs-vision.tar
+podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/mini-rivault-llm/images/umrs-vision.tar
 ```
 
 ### Slurm Output File Location
-The wrapper has `#SBATCH --output` pointing to `${JOB_INFO_DIR}/slurm-%j.out` (resolved from ai-login as `/root/.config/umrs/tmp/slurm-<N>.out`). However the **actual** file written on the compute node host goes to the working directory at sbatch-submission time (`//slurm-<N>.out` = `/slurm-<N>.out` on the host). To read the real output:
+The wrapper has `#SBATCH --output` pointing to `${JOB_INFO_DIR}/slurm-%j.out` (resolved from the login node). To read the output:
 ```bash
-# Inside ai-login (via volume mount path):
-podman exec ai-login cat /root/.config/umrs/tmp/slurm-<N>.out
-# On the host directly:
+# On the login node:
+cat ~/.config/umrs/tmp/slurm-<N>.out
+# Or via the compute node directly:
 cat /slurm-<N>.out
 ```
 
@@ -197,7 +233,7 @@ The `model_type` field in the request payload selects the adapter (e.g. `"sam3"`
 - CUDA bundled inside PyTorch wheels; host driver mounted via CDI
 
 ### GPU Passthrough
-GPU override YAMLs: `src/umrs/mini-rivault-llm/x_nvidia-override.yaml` (for vllm) and `src/umrs/mini-rivault-vision/x_nvidia-override.yaml` (for bentoml-vision):
+GPU override YAMLs: `src/umrs/mini-rivault-llm/x_nvidia-override.yaml` (covers both vllm and bentoml-vision profiles):
 ```yaml
 services:
   vllm:
@@ -323,12 +359,8 @@ podman logs rivault_bentoml-vision_1 2>&1 | tail -100
 
 ### Check BentoML image loading / RIVAULT_PROFILES in job output
 ```bash
-# Job output goes to /slurm-<N>.out on the HOST (not inside ai-login)
-grep 'RIVAULT_PROFILES\|rivault_\|bentoml\|vision\|mini-rivault' /slurm-<N>.out
-# The job also writes to ai-login volume mount path (may be stale from previous job with same ID!):
-podman exec ai-login cat /root/.config/umrs/tmp/slurm-<N>.out
-# ALWAYS check Modify timestamp: stale files from previous sessions have old dates
-podman exec ai-login stat /root/.config/umrs/tmp/slurm-<N>.out | grep Modify
+# Job output on the login node:
+grep 'RIVAULT_PROFILES\|rivault_\|bentoml\|vision\|mini-rivault' ~/.config/umrs/tmp/slurm-<N>.out
 ```
 
 ### Verify vision-bentoml profile is active
@@ -341,7 +373,7 @@ curl -sf http://localhost:11434/vision/healthz && echo OK || echo FAIL
 
 ### Check Slurm job status
 ```bash
-podman exec ai-login squeue
+squeue -u masaru.nagaso
 ```
 
 ### Get HMAE task error details
@@ -372,31 +404,253 @@ cd /home/mnagaso/workspace/umrs
 podman build -t ghcr.io/riken-rccs/umrs-vision:latest -f src/umrs/vision_service/Dockerfile .
 
 # 3. Save tarball (auto-detected by wrapper on next job — tarball newer than cached image triggers reload)
-rm -f src/umrs/mini-rivault-vision/images/umrs-vision.tar
-podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/mini-rivault-vision/images/umrs-vision.tar
+rm -f src/umrs/mini-rivault-llm/images/umrs-vision.tar
+podman save ghcr.io/riken-rccs/umrs-vision:latest -o src/umrs/mini-rivault-llm/images/umrs-vision.tar
 
 # 4. Submit new job (wrapper defaults to vision-bentoml — no --export needed)
-podman exec ai-login scancel <old_job_id>
-podman exec ai-login sbatch /root/.config/umrs/rivault_data/serve-model.slurm
+scancel <old_job_id>
+sbatch deploy/rccs-cloud/serve-model.slurm
 ```
 
 ---
 
 ## Workflow: Run Demos
 
-### Demo 02 — SAM3 Segmentation
+All demos (except 08, 12, 13) require SSH tunnels + activated venv +
+`unset UMRS_SERVER_HOST`. All scripts source `demos/lib/common.sh`
+which provides `$CLIENT`, `preflight()`, `wait_tasks()`, helpers.
+
+### Run a single demo
 ```bash
-cd demos/02_sam3_segmentation
-bash run_demo.sh
-# Results in: demos/02_sam3_segmentation/results/
+source deploy/rccs-cloud/.venv/bin/activate
+unset UMRS_SERVER_HOST
+cd demos/01_health_check && bash run_demo.sh
 ```
 
-### Demo 03 — HMAE Inference
+### Demo inventory
+
+| # | Name | Server? | Bucket alias | Notes |
+|---|------|---------|--------------|-------|
+| 01 | Health Check | yes | — | ping + list_buckets |
+| 02 | Text Embedding | yes | user1-textfiles | upload text → embed → export CSV |
+| 03 | SAM3 Segmentation | yes | user1-sam3 | upload images → BentoML → download results |
+| 04 | HMAE Inference | yes | user1-hmae | upload images → HMAE → download recon |
+| 05 | RAG Search | yes | — | needs port 8081 (RAG service) |
+| 06 | Server Maintenance | yes | — | list/check/update/recompute/status |
+| 07 | Model Registry | yes | — | model list/register/upload/download |
+| 08 | User Model | no | — | pytest + inline smoke test (offline) |
+| 09 | Defect Analysis | yes | user1-sam3 | SAM3 segmentation reused for defects |
+| 10 | HMAE Full Pipeline | yes | user1-hmae | HMAE reconstruction pipeline |
+| 11 | Job Submission | yes | — | job submit/cancel with --keep-alive |
+| 12 | Pipeline SDK | no | — | local TextAnalysisPipeline |
+| 13 | Plugins | no | — | local plugin execution demo |
+| 14 | Opossum Analysis | yes* | user1-textfiles | video motion analysis (*local fallback) |
+
+### Demo 03 — SAM3 Segmentation
 ```bash
-cd demos/03_hmae_inference
-HMAE_MODE=reconstruct bash run_demo.sh   # modes: reconstruct, mae, features, all
-# Results in: demos/03_hmae_inference/results/
+cd demos/03_sam3_segmentation
+bash run_demo.sh
 ```
+
+### Demo 04 — HMAE Inference
+```bash
+cd demos/04_hmae_inference
+bash run_demo.sh
+```
+
+### Demo 12 — Pipeline SDK (local, no server required)
+```bash
+cd demos/12_pipeline_sdk
+bash run_demo.sh
+```
+
+### Demo 13 — Plugin System (local, no server required)
+```bash
+cd demos/13_plugins
+bash run_demo.sh
+```
+
+---
+
+## Client CLI (src/client_umrs.py)
+
+### Command Reference
+| Subcommand | Category | Purpose |
+|---|---|---|
+| `ping` | Basic | Check server readiness |
+| `upload_file <path> <bucket_alias>` | Data | Upload file to S3 bucket |
+| `upload_dir <path> <bucket_alias>` | Data | Upload directory |
+| `download_results <alias> <path>` | Data | Download computed results |
+| `list_buckets` | Info | List available bucket aliases |
+| `status [category]` | Admin | Server summary (embeddings, models, jobs, workflows) |
+| `recompute` | Maintenance | Recompute all embeddings |
+| `update` | Maintenance | Update embeddings for missing/mismatched entries |
+| `check` | Maintenance | Check S3/DB consistency |
+| `reload` | Admin | Reload server config (with optional user config upload) |
+| `export_embeddings <alias> <path>` | Data | Export embeddings to CSV/JSONL |
+| `model register` | Model | Register local model |
+| `model list` | Model | List registered models |
+| `model download` | Model | Download from HuggingFace (supports `--server-side`) |
+| `model upload` | Model | Copy local dir to staging + register |
+| `job submit <type>` | Job | Submit job (endpoint_provision, index_build, cleanup) |
+| `job cancel <id>` | Job | Cancel running job |
+| `upload-workflow <path>` | Workflow | Upload workflow.json + step scripts as zip |
+| `workflow list` | Workflow | List registered workflows |
+
+### Global Flags
+- `-c <conf>` — Config file path
+- `-u <username>` — Override username
+- `--output json|text` — Output format
+- `-k key:value` — Metadata (repeatable)
+
+---
+
+## Pipeline SDK (src/umrs/pipeline_sdk/)
+
+### Lifecycle
+
+All UMRS pipelines follow a standard 6-phase lifecycle:
+
+```
+configure  →  ingest  →  compute  →  collect  →  verify  →  present
+```
+
+Users subclass `Pipeline` from `umrs.pipeline_sdk.base` and implement hooks.
+
+### Compute Backends
+| Backend | Description |
+|---|---|
+| `LOCAL` | Direct computation in process |
+| `UMRS_EMBEDDING` | Upload data → UMRS server computes embeddings → pgvector |
+| `BENTOML_TASK` | Upload data → submit BentoML task → poll → retrieve |
+
+### Workflow Pipelines (declarative)
+`WorkflowPipeline` reads a `workflow.json` file and executes it as a Pipeline:
+```python
+from umrs.pipeline_sdk.workflow import WorkflowPipeline
+pipeline = WorkflowPipeline("/path/to/workflow.json")
+results = pipeline.run()
+```
+
+### Execution Modes
+| Mode | Description |
+|---|---|
+| `IN_PROCESS` | Direct call in server process (dev/default) |
+| `SUBPROCESS` | Isolated subprocess per step |
+| `SLURM` | One Slurm job per step (HPC GPU) |
+| `K8S` | One Kubernetes Job per step (cloud) |
+
+### Source Types
+| Type | Description |
+|---|---|
+| `LOCAL_PATH` | Local filesystem path |
+| `S3` | S3 object |
+| `GIT` | Git repository at specific commit |
+| `UPLOADED` | Server-side directory from client upload |
+
+### DAG Scheduling
+Steps declare dependencies via `depends_on` in `workflow.json`. The `DAGScheduler` resolves topological order and handles parallel independent steps.
+
+---
+
+## Plugin System (src/umrs/plugins/)
+
+Plugins enable sandboxed execution of user-provided code on HPC or cloud backends.
+
+### PluginSpec
+Each plugin is defined by a `PluginSpec` with:
+- **Source**: Git repo (with commit hash), S3 wheel, or local path
+- **Entrypoint**: `module:function` format (e.g., `my_plugin.main:run`)
+- **Resources**: CPU, memory, GPU count limits
+- **Timeout**: Execution timeout in seconds
+- **Requirements**: Additional pip dependencies
+
+### Plugin Runners
+| Runner | Backend | Sandboxing |
+|---|---|---|
+| `SlurmPluginRunner` | Slurm HPC | Singularity container |
+| `K8sPluginRunner` | Kubernetes | Pod isolation |
+| `PluginRunner` | Local | Process isolation (dev) |
+
+### Audit & Results
+- `PluginAuditLog` records all plugin executions
+- `PluginResultWriter` handles output persistence
+- `UserWorkflow` composes multiple plugins into a DAG
+
+---
+
+## Experiences & Modalities
+
+"Experiences" are user-level project scopes. Each experience has:
+- An `xp_name` (e.g. "HMAE Inference", "Text Embedding")
+- A SQL database (e.g. `hmae_inference_usr1_hmae`)
+- One or more **modalities**, each with:
+  - S3 buckets: `<user>.<experience>.<alias>` (input) + optional `-output` (results)
+  - A database table for embeddings/metadata
+  - Model binding (which model processes this modality)
+
+### Modality/Task Resolution (src/umrs/modality.py)
+Pure data types: `text`, `text_file`, `image`, `volume`, `movie`, `volume_movie`
+Tasks: `embedding`, `segmentation`, `reconstruction`, `mae_reconstruction`, `feature_extraction`, `detection`, `classification`
+
+Legacy compound names map to `(modality, task)` pairs (e.g., `"segmentation"` → `("image", "segmentation")`).
+
+### Example User Config
+```json
+{
+  "username": "user1",
+  "experiences": [
+    {
+      "xp_name": "HMAE Inference",
+      "sql_username": "usr1_hmae",
+      "modalities": [
+        {
+          "modality": "volume",
+          "task": "mae_reconstruction",
+          "s3": { "bucket_alias": "user1-hmae", ... },
+          "model": { "model_name": "hmae-pretrained", ... }
+        }
+      ]
+    }
+  ]
+}
+```
+
+---
+
+## RCCS-Cloud Deployment (deploy/rccs-cloud/)
+
+### Architecture
+```
+Local machine        rccs-cloud (login node)      ng-dgx-s (compute)
+umrs-client      ← SSH tunnel →  umrs-server      ← Slurm →  mini-rivault
+                                 minio (podman)              vLLM / BentoML
+                                 postgres (podman)
+                                 /lvs0/rccs-dmp/ (Lustre shared)
+```
+
+Key properties:
+- Native `umrs-server` process (not containerized) → can invoke Slurm CLI + SSH
+- Podman containers for MinIO and PostgreSQL (rootless, Lustre xattr workarounds)
+- SSH tunnels for compute node access (ZMQ 5555/5556, MinIO 9000, RAG 8081)
+- Model staging root: `~/.config/umrs/models/`
+
+### Deploy Demo Numbering
+The deploy demos (deploy/rccs-cloud/demos/) use a different numbering from the in-repo demos:
+
+| Deploy # | In-repo Demo # | Topic |
+|---|---|---|
+| 00 | 01 | Health Check |
+| 01 | 02 | Text Embedding |
+| 02 | 05 | RAG Search |
+| 03 | 03 | SAM3 Segmentation |
+| 04 | 04 | HMAE Inference |
+| 05 | 08 | User Model |
+| 06 | 12 | Pipeline SDK |
+| 07 | — | SAM3 (Jens) |
+| 08 | — | HMAE (Jens) |
+| 09 | 07 | Model Registry |
+| 10 | 14 | Opossum Analysis |
 
 ### Performance (GPU)
 - SAM3: ~46–58s per 8192×8192 image

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "umrs"
 version = "0.1.0"
-description = "UMRS — Unified Model Registry & Storage client"
+description = "UMRS — Unified Model Registry & Storage"
 requires-python = ">=3.10"
 dependencies = [
     "pyzmq",
@@ -20,12 +20,43 @@ dependencies = [
     "configparser",
 ]
 
+[project.optional-dependencies]
+client = [
+    "httpx",
+    "pyyaml",
+]
+server = [
+    "httpx",
+    "pyyaml",
+    "diskcache",
+    "fastapi",
+    "uvicorn[standard]",
+    "python-multipart",
+    "torch",
+    "torchvision",
+    "transformers",
+    "sentence-transformers",
+    "scikit-learn",
+    "spacy",
+    "langchain",
+    "langchain-community",
+    "langchain-openai",
+    "bentoml>=1.3.0",
+    "opencv-python-headless",
+    "posix_ipc",
+    "sysv_ipc",
+]
+all = [
+    "umrs[client,server]",
+]
+
 [project.scripts]
-umrs-client = "client_umrs:main"
+umrs-client = "umrs.client.cli:main"
+umrs-server = "umrs.server.main:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["umrs*"]
 
 [tool.setuptools]
-py-modules = ["client_umrs"]
+py-modules = ["client_umrs", "server_umrs"]

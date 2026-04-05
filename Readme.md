@@ -86,20 +86,7 @@ docker exec -it umrs-server python src/client_umrs.py --conf /root/conf_umrs.jso
 
 See [docker/README.md](docker/README.md) for details.
 
-### 2. Slurm Development Environment
-
-Single-workstation setup with a real Slurm cluster (Podman containers for control plane, native slurmd for GPU access). Mini-Rivault launches vLLM+LiteLLM and BentoML-vision as Slurm jobs.
-
-```bash
-cd demos/slurm-dev
-podman-compose up -d
-sudo bash scripts/start-host-slurmd.sh
-bash scripts/run_e2e_demo.sh
-```
-
-See [demos/slurm-dev/README.md](demos/slurm-dev/README.md) for the full guide.
-
-### 3. HPC Cluster (R-CCS / Production)
+### 2. HPC Cluster (R-CCS / Production)
 
 Deploy UMRS on a multi-node HPC cluster with Slurm scheduling and real GPU inference via Mini-Rivault.
 
@@ -109,23 +96,68 @@ See [doc/admin_guide.md](doc/admin_guide.md) and [doc/umrs_rivault_rag_plan.md](
 
 Step-by-step demos that walk through UMRS workflows end to end:
 
+### Core Demos
+
 | Demo | Description |
 |------|-------------|
-| [demos/00_start_services/](demos/00_start_services/) | Start/stop all UMRS services + health checks (admin) |
-| [demos/01_text_embedding/](demos/01_text_embedding/) | Upload text, compute embeddings, export results |
-| [demos/02_sam3_segmentation/](demos/02_sam3_segmentation/) | SAM3 image segmentation via BentoML inside Mini-Rivault |
-| [demos/03_hmae_inference/](demos/03_hmae_inference/) | HMAE feature extraction / reconstruction via Mini-Rivault |
-| [demos/04_rag_search/](demos/04_rag_search/) | RAG semantic search: vector, hybrid, reranking, Q&A |
-| [demos/05_server_maintenance/](demos/05_server_maintenance/) | Data integrity: list_buckets, check, update, recompute |
-| [demos/06_model_registry/](demos/06_model_registry/) | Model register, list, download (HuggingFace + local) |
-| [demos/07_user_model/](demos/07_user_model/) | User-defined model workflows (Step) |
-| [demos/08_defect_analysis/](demos/08_defect_analysis/) | Multi-step pipeline: SAM3 → crop → HMAE → cluster |
-| [demos/09_hmae_full/](demos/09_hmae_full/) | Full HMAE pipeline (reconstruct, MAE, features) |
-| [demos/10_job_submission/](demos/10_job_submission/) | Job submission, service lifecycle, --keep-alive |
-| [demos/11_pipeline_sdk/](demos/11_pipeline_sdk/) | Pipeline SDK: 6-phase lifecycle |
-| [demos/12_plugins/](demos/12_plugins/) | Plugin system: sandboxed execution (Slurm/K8s) |
+| [demos/00_start_services/](demos/00_start_services/) | Start all UMRS services (control plane + host slurmd) |
+| [demos/01_health_check/](demos/01_health_check/) | Verify UMRS server connectivity and user configuration |
+| [demos/02_text_embedding/](demos/02_text_embedding/) | Upload text → server-side embedding → export vectors |
+| [demos/03_sam3_segmentation/](demos/03_sam3_segmentation/) | SAM3 image segmentation via BentoML on Slurm |
+| [demos/04_hmae_inference/](demos/04_hmae_inference/) | HMAE reconstruction / feature extraction via Slurm |
+| [demos/05_rag_search/](demos/05_rag_search/) | RAG semantic search: vector, hybrid, reranking, Q&A |
+| [demos/06_server_maintenance/](demos/06_server_maintenance/) | Maintenance: list_buckets, check, update, recompute |
+| [demos/07_model_registry/](demos/07_model_registry/) | Model registry: register, upload, verify, filter |
+| [demos/08_user_model/](demos/08_user_model/) | User-defined model workflows (Step) |
+| [demos/09_defect_analysis/](demos/09_defect_analysis/) | Defect-oriented SAM3 segmentation pipeline |
+| [demos/10_hmae_full_pipeline/](demos/10_hmae_full_pipeline/) | Full HMAE pipeline (reconstruct + MAE + features) |
+| [demos/11_job_submission/](demos/11_job_submission/) | Job submission & service lifecycle, --keep-alive |
+| [demos/12_pipeline_sdk/](demos/12_pipeline_sdk/) | Pipeline SDK: 6-phase lifecycle (LOCAL backend) |
+| [demos/13_plugins/](demos/13_plugins/) | Plugin system: spec, validate, execute, audit |
+| [demos/14_opossum_analysis/](demos/14_opossum_analysis/) | Video motion analysis via Pipeline SDK |
+
+### Advanced Demos
+
+| Demo | Description |
+|------|-------------|
+| [demos/15_complex_dag/](demos/15_complex_dag/) | Multi-step DAG with parallel branches and fan-in |
+| [demos/16_custom_workflow/](demos/16_custom_workflow/) | Upload & execute custom workflows on the server |
+| [demos/17_multi_user/](demos/17_multi_user/) | User isolation: separate S3 buckets and databases |
+| [demos/18_model_lifecycle/](demos/18_model_lifecycle/) | Model lifecycle: register → use → deprecate |
+| [demos/19_rag_advanced/](demos/19_rag_advanced/) | Compare RAG modes: vector, BM25, hybrid, reranked |
+| [demos/20_durable_jobs/](demos/20_durable_jobs/) | Durable jobs: submit, poll, dedup, cancel |
+| [demos/21_remote_plugins/](demos/21_remote_plugins/) | Plugin system with multiple source types & backends |
 
 See [demos/README.md](demos/README.md) for the full guide.
+
+## Client Library Features
+
+The `umrs` package (`src/umrs/`) includes reusable library modules for building
+workflows on top of the UMRS platform. All modules are stdlib-only and thread-safe.
+
+| Module | Description |
+|--------|-------------|
+| `progress.py` | Streaming progress tracker with callbacks and console bar |
+| `batch_upload.py` | Resume-capable batch uploads with manifest tracking |
+| `result_diff.py` | Compare results across runs (numeric, text, image diffs) |
+| `webhooks.py` | Event subscription & dispatch with HMAC-signed payloads |
+| `resource_tracker.py` | CPU/memory snapshot tracking, quota policies, usage reports |
+| `data_versioning.py` | Immutable dataset versions with tagging and lineage |
+| `pipeline_templates.py` | Parameterized workflow skeletons with built-in templates |
+| `pipeline_builder.py` | Fluent API for composing multi-step pipelines |
+| `experiment_io.py` | Export/import experiments as portable ZIP archives |
+| `scheduler.py` | Cron/interval/one-shot job scheduler with JSON persistence |
+
+## Tests
+
+Unit tests for all library modules (170 tests):
+
+```bash
+cd src
+pip install -e .
+cd ..
+python -m pytest tests/ -v
+```
 
 ## Repository Structure
 
@@ -134,35 +166,52 @@ src/                        Core application code
 ├── pyproject.toml           Pip-installable client package
 ├── server_umrs.py           Server entry point
 ├── client_umrs.py           Client CLI (also installable as `umrs-client`)
-├── embedding_worker.py      Standalone embedding worker
-├── rag_service.py           RAG query service
 └── umrs/                    Core modules
+    ├── api/                 FastAPI services including the RAG query service
     ├── models/              Model implementations (HMAE, SAM3, MAE, etc.)
     ├── vision_service/      BentoML vision service (SAM3 + HMAE endpoints)
     ├── rivault/             Mini-Rivault compose stack + NGINX config
     ├── rivault_launcher.py  Rivault job launcher (Slurm + SSH tunnels)
     ├── pipeline_sdk/        Optional in-container pipeline library
+    ├── progress.py          Streaming progress tracker
+    ├── batch_upload.py      Resume-capable batch uploads
+    ├── result_diff.py       Result comparison & diff
+    ├── webhooks.py          Event subscription & dispatch
+    ├── resource_tracker.py  CPU/memory tracking & quotas
+    ├── data_versioning.py   Immutable dataset versions
+    ├── pipeline_templates.py Parameterized workflow templates
+    ├── pipeline_builder.py  Fluent pipeline composition API
+    ├── experiment_io.py     Experiment export/import (ZIP)
+    ├── scheduler.py         Cron/interval job scheduler
     └── ...                  S3, SQL, ZMQ, auth, config, etc.
 
 demos/                       Step-by-step demos (basic → advanced)
-├── 00_start_services/       Admin: start/stop/health-check
-├── 01_text_embedding/       Basic: text embedding workflow
-├── 02_sam3_segmentation/    Basic: SAM3 vision pipeline
-├── 03_hmae_inference/       Basic: HMAE vision pipeline
-├── 04_rag_search/           Basic: RAG semantic search + Q&A
-├── 05_server_maintenance/   Ops: data integrity (check, update, recompute)
-├── 06_model_registry/       Ops: model management
-├── 07_user_model/           Advanced: user-defined workflows
-├── 08_defect_analysis/      Advanced: multi-step pipeline
-├── 09_hmae_full/            Advanced: full HMAE pipeline
-├── 10_job_submission/       Infra: job submission + lifecycle
-├── 11_pipeline_sdk/         Infra: pipeline SDK
-├── 12_plugins/              Infra: plugin system
-└── slurm-dev/               Slurm dev environment (Podman + native slurmd)
+├── 00_start_services/       Admin: start/stop all services
+├── 01_health_check/         Health: connectivity & config check
+├── 02_text_embedding/       Basic: text embedding workflow
+├── 03_sam3_segmentation/    Basic: SAM3 vision pipeline
+├── 04_hmae_inference/       Basic: HMAE vision pipeline
+├── 05_rag_search/           Basic: RAG semantic search + Q&A
+├── 06_server_maintenance/   Ops: data integrity (check, update, recompute)
+├── 07_model_registry/       Ops: model management
+├── 08_user_model/           Advanced: user-defined workflows
+├── 09_defect_analysis/      Advanced: defect-oriented segmentation
+├── 10_hmae_full_pipeline/   Advanced: full HMAE pipeline
+├── 11_job_submission/       Infra: job submission + lifecycle
+├── 12_pipeline_sdk/         Infra: pipeline SDK
+├── 13_plugins/              Infra: plugin system
+├── 14_opossum_analysis/     Advanced: video motion analysis
+├── 15_complex_dag/          Advanced: DAG with parallel branches
+├── 16_custom_workflow/      Advanced: custom workflow execution
+├── 17_multi_user/           Advanced: multi-user isolation
+├── 18_model_lifecycle/      Advanced: model lifecycle management
+├── 19_rag_advanced/         Advanced: RAG mode comparison
+├── 20_durable_jobs/         Advanced: durable job patterns
+└── 21_remote_plugins/       Advanced: plugin source types
 
 docker/                      Docker standalone deployment
 doc/                         Documentation
-tests/                       Test suite
+tests/                       Unit tests (170 tests)
 ```
 
 ## Documentation
@@ -175,8 +224,8 @@ tests/                       Test suite
 | [doc/zmq_api_contract.md](doc/zmq_api_contract.md) | ZeroMQ protocol specification |
 | [doc/umrs_rivault_rag_plan.md](doc/umrs_rivault_rag_plan.md) | Rivault + RAG integration plan |
 | [doc/rag_implementation.md](doc/rag_implementation.md) | RAG implementation details |
-| [doc/embedding_worker_deployment.md](doc/embedding_worker_deployment.md) | Embedding worker setup |
 | [doc/set-up_pgvector.md](doc/set-up_pgvector.md) | PostgreSQL/pgvector configuration |
 | [doc/multi_users.md](doc/multi_users.md) | Multi-user configuration guide |
+| [doc/design_user_defined_models.md](doc/design_user_defined_models.md) | User-defined model workflow design |
 | [docker/README.md](docker/README.md) | Docker deployment guide |
-| [demos/slurm-dev/README.md](demos/slurm-dev/README.md) | Slurm dev environment guide |
+| [demos/README.md](demos/README.md) | Demo guide (all 22 demos) |

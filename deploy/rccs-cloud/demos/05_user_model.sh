@@ -103,7 +103,7 @@ if len(objects) > 5:
 print()
 
 # ── Build workflow: text_stats step ─────────────────────────────────
-scripts_dir = "$REPO_ROOT/demos/07_user_model/example_scripts"
+scripts_dir = "$REPO_ROOT/demos/08_user_model/example_scripts"
 wf_data = {
     "name": "text-stats-demo",
     "version": "1.0",

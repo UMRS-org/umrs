@@ -22,7 +22,7 @@ from botocore.exceptions import ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
-from umrs.s3_presign import generate_presigned_get, generate_presigned_put
+from umrs.shared.storage.s3_presign import generate_presigned_get, generate_presigned_put
 
 logger = logging.getLogger(__name__)
 

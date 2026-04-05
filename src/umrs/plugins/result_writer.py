@@ -14,9 +14,8 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)

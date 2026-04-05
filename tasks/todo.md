@@ -1,127 +1,212 @@
 # TODO
 
-- [x] Audit current UMRS slurm-dev demo flow and identify fragility points.
-- [x] Redesign `demos/slurm-dev/scripts/run_e2e_demo.sh` for robust preflight, readiness, and cleanup behavior.
-- [x] Implement script changes with safer error handling and deterministic service detection.
-- [x] Verify script syntax and basic execution logic (`bash -n`, shellcheck-style review).
-- [x] Add a short review/results section with verification outcomes.
-- [x] Investigate false-positive "All embedding tasks completed" (phase3 bug).
-- [x] Fix phase3 to detect Error status; add phase3b DB verification.
+## Open Items
 
-## Full Demo Validation (2026-03-27)
+### LiteLLM / Embedding Proxy (2026-03-08)
+- [ ] Diagnose LiteLLM Prisma table errors (root cause of proxy failure)
+- [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed
+- [ ] Re-run e2e demo and verify embeddings in DB via phase3b
 
-- [x] Demo 00: Health check — 6/6 checks pass (ai-login, postgres, minio, slurmd, slurm node, pgvector)
-- [x] Demo 01: Text embedding — 40 embeddings verified, exported to CSV. **Bug fixed:** status parser crashed on non-dict items in summaries JSON (`check`/`update` categories contain strings, not dicts)
-- [x] Demo 02: SAM3 segmentation — 2 images processed in 72s, results downloaded
-- [x] Demo 03: HMAE inference — 2 images reconstructed in 23s
-- [x] Demo 04: RAG search — vector, hybrid, reranking all return relevant results. RAG Q&A retrieval works (LLM connection error expected — vLLM not active)
-- [x] Demo 05: Server maintenance — 7 buckets fully consistent, 0 mismatches/errors
-- [x] Demo 06: Model registry — 2 system models listed, duplicate registration handled gracefully
-- [x] Demo 07: User model — 31/31 pytest tests pass, integration smoke test passes
-- [x] Demo 08: Defect analysis — 4-step pipeline completed in 83s, segmentation results downloaded
-- [x] Demo 09: HMAE full pipeline — reconstruct+mae+features (6 files) completed in 100s
-- [x] Demo 10: Job submission — endpoint_provision, index_build, cleanup, cancel all work
-- [x] Demo 11: Pipeline SDK — TextAnalysisPipeline LOCAL mode: 1 file, 201 words analyzed
-- [x] Demo 12: Plugins — Full lifecycle (define→validate→preview→execute→audit) succeeds
-- [x] Demo 13: SAM3 Jens — Jens's standalone stack: 2 images in 80s
-- [x] Demo 14: HMAE Jens — Jens's standalone stack: 2 images in 60s
-
-**Result: 15/15 demos pass. 1 bug found and fixed (Demo 01 status parser).**
-
-- [ ] Diagnose LiteLLM Prisma table errors (root cause of proxy failure).
-- [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed.
-- [ ] Re-run e2e demo and verify embeddings in DB via phase3b.
-
-## rccs-cloud Hybrid Deployment (2026-03-29)
-
-> **Goal**: Deploy UMRS to rccs-cloud login node (hybrid architecture) and
-> run core demos 00–04 end-to-end.
-
-### Pre-deployment
-- [x] Sync client/user1.json with GPU-first model_types
-- [x] Rsync deploy/rccs-cloud/ files to remote (uncommitted changes)
-- [x] Rsync src/ to remote (umrs package needed for install)
-
-### Server setup (on rccs-cloud)
-- [x] Delete broken .venv (macOS symlinks) and run setup_server.sh
-- [x] Fix setup_server.sh to auto-detect Python 3.10+ (was using 3.9)
-- [x] Install `mc` (MinIO Client) on rccs-cloud (~/.local/bin/mc)
-- [x] Fix docker-compose.yml: disable unix sockets for rootless podman
-- [x] Fix start.sh: add ~/.local/bin to PATH, fix pg_isready -h localhost
-- [x] Fix health_check_server.sh: pgvector pipe bug, port 5556 on-demand
-- [x] Install pgvector extension in postgres DB
-- [x] Verify .env settings (MODEL_DIR, passwords)
-- [x] Run start.sh — containers + native server running
-- [x] Run health_check_server.sh — 10/10 passed, 0 failed, 75 idle nodes
-
-### Client setup (local Mac)
-- [x] Run setup_client.sh (configs in ~/.config/umrs/, umrs pkg installed)
-- [x] SSH tunnel started (PID 6852, ports 5555/5556/9000/8081)
-
-### Demo execution (blocked: VS Code terminal capture broken)
-- [ ] Demo 00: health check (SSH tunnels + UMRS ping)
-- [ ] Demo 01: text embedding (upload texts, wait for embeddings)
+### rccs-cloud Demo Execution
+- [x] Demo 00: health check (SSH tunnels + UMRS ping)
+- [x] Demo 01: text embedding (upload texts, wait for embeddings)
 - [ ] Demo 02: RAG search (vector + hybrid + Q&A) — needs UMRS_RAG_ENABLE=1
-- [ ] Demo 03: SAM3 segmentation (upload images, download results)
-- [ ] Demo 04: HMAE inference (upload CT images, download results)
+- [x] Demo 03: SAM3 segmentation (upload images, download results)
+- [x] Demo 04: HMAE inference (upload CT images, download results)
 
-## User-Defined Model Workflows (UDM) — 2026-03-16
+### User-Defined Model Workflows
+- [ ] U-200: Finalize UDM design document and review with stakeholder
 
-> **Goal**: Let users define and run their own models / multi-step workflows
-> via user-provided Python scripts — without modifying UMRS internal code.
-
-### Design Status: IMPLEMENTED (see doc/design_user_defined_models.md)
-
-- [ ] U-200: Finalize design document and review with stakeholder
-- [x] U-201: Implement `UMRSStepInterface` (ABC for user scripts)
-- [x] U-202: Implement `UserWorkflowDefinition` model + JSON schema
-- [x] U-203: Implement `ScriptLoader` (local path / S3 / git source)
-- [x] U-204: Implement `WorkflowExecutor` (step sequencer + S3 I/O)
-- [x] U-205: Add `user_script://` model_type in `models_loading.py`
-- [x] U-206: Sandbox execution (subprocess + Slurm + K8s + audit)
-- [x] U-207: End-to-end demo: user-provided script via mounted path
-- [x] U-208: Documentation (user guide + example scripts)
-- [x] U-209: ExecutionMode enum + pluggable runner protocol
-- [x] U-210: SlurmStepRunner (sbatch + Singularity bind-mount)
-- [x] U-211: K8sStepRunner (Job + ConfigMap + hostPath/PVC)
-- [x] U-212: Staging cleanup (_staging/<run_id>/ auto-delete)
+### Vision Pipeline
+- [ ] V9: Demo 09 (HMAE full pipeline) verification
+- [ ] V10: Clean up old tarballs (~27GB of stale images in mini-rivault-llm/images/)
 
 ---
 
-## Pipeline Template & Demo Restructuring (2026-03-15)
+### Source Tree Reorganization (2026-04-06)
 
-- [x] P1: Make `umrs-client` pip-installable (pyproject.toml + def main())
-- [x] P2: Mini-Rivault vision integration (NGINX /vision/, RIVAULT_PROFILES, env vars)
-- [x] P3: Create admin_guide.md
-- [x] P4: Create user_guide.md
-- [x] P5: Create 4 demo directories (00_start_services, 01_text_embedding, 02_sam3_segmentation, 03_hmae_inference)
-- [x] P6: Clean up broken Python-first templates
-- [x] Remove stale `import torch` from utils.py (blocked pip install)
-- [x] Fix bash brace expansion in demo scripts (`*.{jpg,png}` → `find` command)
+Goal: Move flat top-level `src/umrs/*.py` modules into canonical subdirectories
+so the source tree clearly communicates what code serves which purpose.
+Each moved file gets a **compatibility wrapper** at the old path.
 
-## Vision Pipeline Fixes (2026-03-24)
+#### Phase 1 — Low-risk infrastructure moves
+- [x] 1a  `shared/`: auth, isolation, modality, cache_paths, resource_tracker, scheduler, webhooks, utils
+- [x] 1b  `server/`: job_tracking_handler, model_registry_handler, workflow_registry_handler, sql, rivault_launcher
+- [x] 1c  `core/`: mq_posix_ipc, mq_sysv_ipc, mq_zeroMQ
+- [x] 1d  `shared/storage/`: s3, s3_presign, minio
 
-- [x] V1: Fix BentoML status polling — `ResultStatus` enum mismatch (completed/failed/canceled vs success/failure/cancelled)
-- [x] V2: Fix adapter path — `DEFAULT_ADAPTERS_DIR` pointing to empty `mini-rivault-llm/default_adapters/`
-- [x] V3: Fix adapter name — `removesuffix("_adapter")` for filename-to-registry key
-- [x] V4: Fix SystemExit crash — adapter loader catching `SystemExit` from rogue scripts
-- [x] V5: Fix `.dockerignore` — `*.tar` → `**/*.tar` for recursive matching
-- [x] V6: SAM2 optimization — deferred upscaling, batch_size 64→16
-- [x] V7: Docker image rebuild with all fixes
-- [x] V8: Demo 08 end-to-end verification — both images processed in 71s (was timing out at 300-1200s)
-- [ ] V9: Demo 09 (HMAE full) verification
-- [ ] V10: Clean up old tarballs (~27GB of stale images in mini-rivault-llm/images/)
-- Added preflight checks for required commands and config files.
-- Removed brittle hardcoded vLLM container-name assumptions by resolving service container IDs via compose.
-- Added deterministic readiness gates for `ai-login`, `umrs-client`, Slurm node registration, vLLM endpoint, and LiteLLM host endpoint.
-- Kept behavior consistent with existing demo flow: control plane up, data upload, embedding run, job cleanup, always-on LLM startup, and RAG QA.
-- Verification completed: `bash -n demos/slurm-dev/scripts/run_e2e_demo.sh` passed.
-- Verification completed: `python3 -m compileall -q src` passed.
-- `shellcheck` could not be run because it is not installed in this environment.
+#### Phase 2 — Domain-specific consolidation
+- [x] 2a  `models/`: embeddings, embedding_backend, models_loading (→loading.py), rag_pipeline
+- [x] 2b  `shared/`: data_versioning, experiment_io, result_diff
+- [x] 2c  `pipeline_sdk/`: pipeline_builder (→builder.py), pipeline_templates (→templates.py)
+- [x] 2d  `client/`: metadata, batch_upload; `shared/`: pretty_print, progress
 
-### Investigation: False-Positive Embedding Completion (2026-03-08)
-- Root cause: phase3 only counted running tasks (0 running = "complete"), but task status was "Error".
-- Error: `Model intfloat/e5-base-v2 not available at http://localhost:42717/v1/models after 300.0s`
-- Proxy chain: nginx→LiteLLM→vLLM. vLLM loaded OK, but LiteLLM has Prisma `TableNotFoundError` (missing LiteLLM_Config, LiteLLM_CredentialsTable, LiteLLM_ProxyModelTable tables).
-- DB state: `text_rivault_rivault_user.text` table exists with `embedding vector(768)` column, 0 rows, 0 embeddings.
-- Fix applied: phase3 now detects Error status; phase3b queries DB directly for embedding verification.
+#### Phase 3 — Cleanup
+- [x] 3a  Remove all 33 compatibility wrappers (28 new + 5 legacy: config, BucketsCfg, json_utils, bentoml_client)
+- [x] 3b  Update all imports in source + test files to canonical paths
+- [x] 3c  Update mock.patch targets to canonical module paths
+- [x] 3d  Verify: 285/285 affected tests pass, all rccs-cloud demos pass
+- [ ] 3e  Move perf_test → tests/ (optional, standalone script)
+
+---
+
+## Completed Archive
+
+<details>
+<summary>Slurm-dev demo hardening (2026-03)</summary>
+
+- [x] Audit current UMRS slurm-dev demo flow and identify fragility points
+- [x] Redesign `demos/slurm-dev/scripts/run_e2e_demo.sh` for robust preflight and cleanup
+- [x] Implement script changes with safer error handling and deterministic service detection
+- [x] Verify script syntax and basic execution logic
+- [x] Investigate false-positive "All embedding tasks completed" (phase3 bug)
+- [x] Fix phase3 to detect Error status; add phase3b DB verification
+</details>
+
+<details>
+<summary>Full Demo Validation — 15/15 pass (2026-03-27)</summary>
+
+- [x] Demos 00–14 all pass (1 bug found and fixed: Demo 01 status parser)
+</details>
+
+<details>
+<summary>Library Features B1–B10 (2026-04-05)</summary>
+
+- [x] B1–B10 all implemented (progress, batch_upload, result_diff, webhooks, resource_tracker, data_versioning, pipeline_templates, pipeline_builder, experiment_io, scheduler)
+</details>
+
+<details>
+<summary>Demos 15–21 (2026-04-05)</summary>
+
+- [x] Demos 15–21 all created (complex_dag, custom_workflow, multi_user, model_lifecycle, rag_advanced, durable_jobs, remote_plugins)
+</details>
+
+<details>
+<summary>Unit Tests (2026-04-05)</summary>
+
+- [x] 10 test files, 170 tests passing
+</details>
+
+<details>
+<summary>Documentation Updates (2026-04-05)</summary>
+
+- [x] demos/README.md, Readme.md, DEVELOPMENT_OBJECTIVES.md all updated
+</details>
+
+<details>
+<summary>rccs-cloud Hybrid Deployment — server + client setup (2026-03-29)</summary>
+
+- [x] Pre-deployment: config sync, rsync
+- [x] Server setup: venv, docker-compose fixes, pgvector, health checks (10/10 pass)
+- [x] Client setup: venv, SSH tunnels (ports 5555/5556/9000/8081)
+</details>
+
+<details>
+<summary>User-Defined Model Workflows — implementation (2026-03-16)</summary>
+
+- [x] U-201–U-212 all implemented (StepInterface, WorkflowDefinition, ScriptLoader, WorkflowExecutor, sandbox execution, runners, staging cleanup)
+</details>
+
+<details>
+<summary>Pipeline Template & Demo Restructuring (2026-03-15)</summary>
+
+- [x] P1–P6: pip-installable client, Mini-Rivault vision, admin/user guides, demo directories, cleanup
+</details>
+
+<details>
+<summary>Vision Pipeline Fixes V1–V8 (2026-03-24)</summary>
+
+- [x] V1–V8: BentoML status polling, adapter path/name, SystemExit crash, dockerignore, SAM2 optimization, image rebuild, Demo 08 e2e verified (71s)
+</details>
+
+<details>
+<summary>Phase 1: Step Package Upload (2026-04-04)</summary>
+
+- [x] PH1-1–PH1-7: UPLOAD_WORKFLOW command, server handler, SourceType.UPLOADED, CLI subcommand, 15/15 tests
+</details>
+
+<details>
+<summary>Phase 2: Step Registry & Discovery (2026-04-04)</summary>
+
+- [x] PH2-1–PH2-8: LIST_WORKFLOWS command, workflow catalog, auto-register, CLI subcommand, extends field
+</details>
+- [x] PH2-9: Write unit tests in `tests/test_workflow_registry.py` (21/21 pass)
+
+## Phase 3: Unified Plugin + Step Model (2026-04-10)
+
+> **Goal**: Bridge the Plugin system (Slurm/K8s runners) with the Pipeline SDK
+> (in-process Steps) via a unified `UserWorkflow` / `UserWorkflowRunner` that
+> dispatches step execution to any backend based on `execution_mode`.
+
+### Implementation
+
+- [x] PH3-1: Add `ExecutionMode` enum (IN_PROCESS, SUBPROCESS, SLURM, K8S) +
+      `execution_mode` field on `WorkflowDefinition` in `workflow.py`
+- [x] PH3-2: Create `src/umrs/plugins/user_workflow.py` —
+      `UserWorkflow` dataclass (WorkflowDefinition superset + env_vars,
+      output_destinations, user_id, project_id)
+- [x] PH3-3: Create `UserWorkflowRunner` orchestrator in same file —
+      switches on execution_mode: in_process (direct), slurm (SlurmPluginRunner),
+      k8s (K8sPluginRunner), subprocess (placeholder)
+- [x] PH3-4: Create `src/umrs/plugins/step_adapter.py` —
+      `step_to_plugin_spec()` wraps a Step as PluginSpec for remote backends
+- [x] PH3-5: Wire `WorkflowPipeline.run_as_embeddings()` to delegate to
+      `UserWorkflowRunner` for non-IN_PROCESS execution modes
+- [x] PH3-6: Add `user_workflow://` prefix handler in `models_loading.py`
+- [x] PH3-7: Export new classes from `plugins/__init__.py`
+      (UserWorkflow, UserWorkflowRunner, step_to_plugin_spec)
+- [x] PH3-8: Write unit tests in `tests/test_user_workflow.py` (24/24 pass)
+
+**67 total tests pass (21 PH2 + 22 PH1 + 24 PH3).**
+
+### Phase 4: DAG / Parallel Steps — DONE ✅
+
+- [x] PH4-1: Add `depends_on`, `max_retries`, `retry_delay` fields to `StepSpec`
+      with `to_dict()`/`from_dict()` round-trip support
+- [x] PH4-2: Create `src/umrs/pipeline_sdk/dag.py` — `DAGScheduler`
+      (Kahn's algorithm, execution levels, topological sort) + `execute_dag()`
+      (ThreadPoolExecutor for parallel levels, fan-in key merge, retry support)
+- [x] PH4-3: Update `WorkflowDefinition.validate()` — depends_on reference
+      checks (unknown step, self-dependency) + cycle detection via DAGScheduler
+- [x] PH4-4: Wire DAG execution into `WorkflowPipeline.compute()` and
+      `run_as_embeddings()` — replaced linear loops with DAGScheduler dispatch.
+      Added `_aggregate_dag_results()` helper for extracting final outputs.
+- [x] PH4-5: Write unit tests in `tests/test_dag_scheduler.py` (33/33 pass)
+      — graph construction, diamond/linear fallback, parallel execution,
+      fan-in, retry, progress reporting, _aggregate_dag_results
+
+**100 total tests pass (67 PH1-3 + 33 PH4).**
+
+### Phase 5: Robustness & Polish — DONE ✅
+
+- [x] PH5-1: Per-step retry with `max_retries` / `retry_delay` in StepSpec
+      (integrated into `execute_dag()`)
+- [x] PH5-2: Cached step imports — `_import_step_class` caches by
+      `(entrypoint, script_dir)` with thread-safe `_step_cache_lock`
+- [x] PH5-3: Replaced `sys.path` manipulation with
+      `importlib.util.spec_from_file_location()` for thread-safe loading
+- [x] PH5-4: Step progress reporting — `StepContext.report_progress(pct, msg)`
+- [x] PH5-5: Write unit tests in `tests/test_robustness.py` (11/11 pass)
+      — importlib loading, sys.path non-mutation, import cache, error handling
+
+**114 total tests pass (67 PH1-3 + 33 PH4 + 14 PH5).**
+
+---
+
+## HMAE Reconstruction Quality + Opossum Demo (2026-04-03)
+
+### Task 1: HMAE Quality Analysis & 3-Mode Demo
+
+**Findings from comparing `tmp/hmae-infer/` (reference) vs UMRS implementation:**
+
+- [x] Analyze core model code (hvit.py, engine.py) — **identical** ✓
+- [x] Analyze inference functions (infer_reconstruct/mae/features) — **identical** ✓
+- [x] Analyze visualization (visualize_reconstruction) — **identical** ✓
+- [x] **BUG: `mode` vs `task` key mismatch** — `demo_hmae_inference.py` sends `inference_config={"mode": mode}` but `hmae_adapter.py` reads `config.get("task", ...)`. Fix adapter to accept both keys.
+- [x] **BUG: Demo 03 only runs `reconstruction`** — `vision_models.json` hardcodes `"task": "reconstruction"`. Update `run_demo.sh` to support `HMAE_MODE` env var for all 3 modes.
+- [x] Write quality analysis summary in session memory
+
+### Task 2: Opossum Demo
+
+- [x] Create `demos/17_opossum_analysis/` demo directory
+- [x] Write run_demo.sh / pipeline scripts for opossum video analysis through UMRS

@@ -36,7 +36,7 @@ log "Running TextAnalysisPipeline (LOCAL backend) ..."
 log "  Phases: configure → ingest → compute → collect → verify → present"
 echo
 
-cd "$REPO_ROOT/demos/11_pipeline_sdk"
+cd "$REPO_ROOT/demos/12_pipeline_sdk"
 python3 text_analysis_pipeline.py --input-dir "$DATA_DIR"
 EXIT_CODE=$?
 
@@ -53,6 +53,6 @@ log "To run with real UMRS embedding backend (ZMQ via SSH tunnel):"
 log "  1. Edit text_analysis_pipeline.py:"
 log "     ComputeBackend.LOCAL  →  ComputeBackend.UMRS_EMBEDDING"
 log "     user_config_path = '$HOME/.config/umrs/users/user1.json'"
-log "  2. Re-run: python3 $REPO_ROOT/demos/11_pipeline_sdk/text_analysis_pipeline.py --input-dir $DATA_DIR"
+log "  2. Re-run: python3 $REPO_ROOT/demos/12_pipeline_sdk/text_analysis_pipeline.py --input-dir $DATA_DIR"
 
 exit $EXIT_CODE

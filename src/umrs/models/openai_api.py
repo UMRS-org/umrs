@@ -2,7 +2,7 @@ from openai import OpenAI, OpenAIError
 from typing import Optional
 import hashlib
 import httpx
-from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
+from umrs.shared.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
 
 _clients = {}
 

@@ -331,7 +331,7 @@ class TestWorkflowPipeline:
         s3._store["in-bkt/file2.txt"] = b"world"
 
         pipeline = self._make_pipeline([PassthroughStep()])
-        embs, chk, meta, saved = pipeline.run_as_embeddings(
+        embs, chk, _meta, _saved = pipeline.run_as_embeddings(
             s3, ["file1.txt", "file2.txt"], "in-bkt", "out-bkt"
         )
         assert len(embs) == 2
@@ -342,7 +342,7 @@ class TestWorkflowPipeline:
         s3._store["bkt/a.txt"] = b"data"
 
         pipeline = self._make_pipeline([EmbeddingStep()])
-        embs, chk, meta, saved = pipeline.run_as_embeddings(
+        embs, chk, meta, _saved = pipeline.run_as_embeddings(
             s3, ["a.txt"], "bkt", "out"
         )
         assert len(embs) == 1
@@ -360,7 +360,7 @@ class TestWorkflowPipeline:
         passth = PassthroughStep()
 
         pipeline = self._make_pipeline([upper, passth])
-        embs, chk, meta, saved = pipeline.run_as_embeddings(
+        _embs, _chk, _meta, saved = pipeline.run_as_embeddings(
             s3, ["hello.txt"], "in", "out"
         )
         assert len(saved) == 1
@@ -454,7 +454,7 @@ class TestEmbeddingAdapter:
         assert isinstance(result, tuple)
         assert len(result) == 4
 
-        embs, chk, meta, saved = result
+        embs, _, _, _ = result
         assert len(embs) == 1
         np.testing.assert_array_equal(embs[0], np.ones(4, dtype=np.float32))
 

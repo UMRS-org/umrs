@@ -28,12 +28,14 @@ Server integration (via EmbeddingAdapter)::
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import io
 import json
 import logging
 import re
 import sys
 import tempfile
+import threading
 import uuid
 import zipfile
 from dataclasses import dataclass, field
@@ -57,16 +59,29 @@ logger = logging.getLogger(__name__)
 # Regex: "module_name:ClassName" — no whitespace, no shell chars.
 _ENTRYPOINT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
 
+# Thread-safe cache for imported step classes: (module_name, script_dir) → class
+_step_class_cache: Dict[Tuple[str, str], Type[Step]] = {}
+_step_cache_lock = threading.Lock()
+
 
 # =========================================================================
 # Data-model classes (formerly umrs.steps.models)
 # =========================================================================
+
+class ExecutionMode(Enum):
+    """How workflow steps are executed."""
+    IN_PROCESS = "in_process"    # Direct call in server process (dev/default)
+    SUBPROCESS = "subprocess"    # Isolated subprocess per step
+    SLURM = "slurm"              # One Slurm job per step (HPC GPU)
+    K8S = "k8s"                  # One Kubernetes Job per step (cloud)
+
 
 class SourceType(Enum):
     """Where the user's Python scripts live."""
     LOCAL_PATH = "local_path"
     S3 = "s3"
     GIT = "git"
+    UPLOADED = "uploaded"  # server-side directory from client upload
 
 
 @dataclass
@@ -83,6 +98,8 @@ class SourceSpec:
             raise ValueError("Local source path must be absolute")
         if self.type == SourceType.S3 and not self.path.startswith("s3://"):
             raise ValueError("S3 source must start with s3://")
+        if self.type == SourceType.UPLOADED and not self.path:
+            raise ValueError("Uploaded source requires a non-empty path")
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {"type": self.type.value, "path": self.path}
@@ -136,6 +153,10 @@ class StepSpec:
     name: str
     entrypoint: str  # "module:ClassName"
     config: Dict[str, Any] = field(default_factory=dict)
+    extends: Optional[str] = None  # "name@version" reference to a registered step
+    depends_on: Optional[List[str]] = None  # step names this step depends on
+    max_retries: int = 0  # per-step retry count (0 = no retries)
+    retry_delay: float = 1.0  # seconds between retries
 
     def validate(self) -> None:
         if not self.name:
@@ -147,11 +168,19 @@ class StepSpec:
             )
 
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d = {
             "name": self.name,
             "entrypoint": self.entrypoint,
             "config": self.config,
         }
+        if self.extends:
+            d["extends"] = self.extends
+        if self.depends_on is not None:
+            d["depends_on"] = self.depends_on
+        if self.max_retries > 0:
+            d["max_retries"] = self.max_retries
+            d["retry_delay"] = self.retry_delay
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "StepSpec":
@@ -159,6 +188,10 @@ class StepSpec:
             name=data["name"],
             entrypoint=data["entrypoint"],
             config=data.get("config", {}),
+            extends=data.get("extends"),
+            depends_on=data.get("depends_on"),
+            max_retries=data.get("max_retries", 0),
+            retry_delay=data.get("retry_delay", 1.0),
         )
 
 
@@ -199,6 +232,7 @@ class WorkflowDefinition:
     env: Dict[str, str] = field(default_factory=dict)
     resources: ResourceSpec = field(default_factory=ResourceSpec)
     output: OutputSpec = field(default_factory=OutputSpec)
+    execution_mode: ExecutionMode = ExecutionMode.IN_PROCESS
 
     def validate(self) -> None:
         """Run all validation checks; raise ``ValueError`` on failure."""
@@ -216,8 +250,29 @@ class WorkflowDefinition:
                 raise ValueError(f"Duplicate step name: '{step.name}'")
             seen_names.add(step.name)
 
+        # Validate depends_on references and detect cycles
+        has_deps = any(s.depends_on is not None for s in self.steps)
+        if has_deps:
+            for step in self.steps:
+                if step.depends_on is not None:
+                    for dep in step.depends_on:
+                        if dep not in seen_names:
+                            raise ValueError(
+                                f"Step '{step.name}' depends on unknown "
+                                f"step '{dep}'"
+                            )
+                        if dep == step.name:
+                            raise ValueError(
+                                f"Step '{step.name}' depends on itself"
+                            )
+            from umrs.pipeline_sdk.dag import DAGScheduler, DAGValidationError
+            try:
+                DAGScheduler(self.steps).validate()
+            except DAGValidationError as exc:
+                raise ValueError(str(exc)) from exc
+
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        d: Dict[str, Any] = {
             "name": self.name,
             "version": self.version,
             "description": self.description,
@@ -228,9 +283,13 @@ class WorkflowDefinition:
             "steps": [s.to_dict() for s in self.steps],
             "output": self.output.to_dict(),
         }
+        if self.execution_mode != ExecutionMode.IN_PROCESS:
+            d["execution_mode"] = self.execution_mode.value
+        return d
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "WorkflowDefinition":
+        mode_str = data.get("execution_mode", "in_process")
         return cls(
             name=data["name"],
             version=data.get("version", "1.0"),
@@ -241,6 +300,7 @@ class WorkflowDefinition:
             resources=ResourceSpec.from_dict(data.get("resources", {})),
             steps=[StepSpec.from_dict(s) for s in data["steps"]],
             output=OutputSpec.from_dict(data.get("output", {})),
+            execution_mode=ExecutionMode(mode_str),
         )
 
     @classmethod
@@ -289,6 +349,14 @@ def _resolve_source(
     if src.type == SourceType.GIT:
         raise NotImplementedError("Git source type is not yet implemented")
 
+    if src.type == SourceType.UPLOADED:
+        p = Path(src.path)
+        if not p.is_dir():
+            raise ScriptLoadError(
+                f"Uploaded source directory does not exist: {p}"
+            )
+        return p
+
     raise ScriptLoadError(f"Unknown source type: {src.type}")
 
 
@@ -319,7 +387,12 @@ def _download_s3_source(s3: Any, s3_uri: str) -> Path:
 
 
 def _import_step_class(spec: StepSpec, script_dir: Path) -> Type[Step]:
-    """Import and validate a single step class."""
+    """Import and validate a single step class.
+
+    Uses ``importlib.util.spec_from_file_location`` for thread-safe
+    loading without mutating ``sys.path``.  Results are cached by
+    ``(entrypoint, script_dir)`` to avoid repeated filesystem access.
+    """
     ep = spec.entrypoint
     if not _ENTRYPOINT_RE.match(ep):
         raise ScriptLoadError(
@@ -328,23 +401,52 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> Type[Step]:
         )
 
     module_name, class_name = ep.split(":", 1)
-
     str_dir = str(script_dir)
-    added = False
-    if str_dir not in sys.path:
-        sys.path.insert(0, str_dir)
-        added = True
+    cache_key = (ep, str_dir)
 
-    try:
-        mod = importlib.import_module(module_name)
-    except Exception as exc:
-        raise ScriptLoadError(
-            f"Step '{spec.name}': cannot import module '{module_name}' "
-            f"from {script_dir}: {exc}"
-        ) from exc
-    finally:
-        if added:
-            sys.path.remove(str_dir)
+    with _step_cache_lock:
+        cached = _step_class_cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+    # Resolve the module file on disk
+    # Support dotted modules: "pkg.sub.mod" -> pkg/sub/mod.py
+    rel_parts = module_name.replace(".", "/")
+    module_file = script_dir / f"{rel_parts}.py"
+    if not module_file.is_file():
+        # Try as a package: pkg/sub/mod/__init__.py
+        module_file = script_dir / rel_parts / "__init__.py"
+
+    if module_file.is_file():
+        # Use importlib.util for thread-safe import without sys.path mutation
+        loader_spec = importlib.util.spec_from_file_location(
+            module_name, str(module_file),
+            submodule_search_locations=[str(script_dir)],
+        )
+        if loader_spec is None or loader_spec.loader is None:
+            raise ScriptLoadError(
+                f"Step '{spec.name}': cannot create module spec for "
+                f"'{module_name}' at {module_file}"
+            )
+        mod = importlib.util.module_from_spec(loader_spec)
+        sys.modules[module_name] = mod
+        try:
+            loader_spec.loader.exec_module(mod)
+        except Exception as exc:
+            sys.modules.pop(module_name, None)
+            raise ScriptLoadError(
+                f"Step '{spec.name}': cannot load module '{module_name}' "
+                f"from {module_file}: {exc}"
+            ) from exc
+    else:
+        # Fallback: module may already be importable (e.g. installed package)
+        try:
+            mod = importlib.import_module(module_name)
+        except Exception as exc:
+            raise ScriptLoadError(
+                f"Step '{spec.name}': cannot import module '{module_name}' "
+                f"from {script_dir}: {exc}"
+            ) from exc
 
     cls = getattr(mod, class_name, None)
     if cls is None:
@@ -357,6 +459,11 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> Type[Step]:
         raise ScriptLoadError(
             f"Step '{spec.name}': {class_name} does not inherit Step"
         )
+
+    with _step_cache_lock:
+        _step_class_cache[cache_key] = cls
+
+    return cls
 
     return cls
 
@@ -474,55 +581,34 @@ class WorkflowPipeline(Pipeline):
     def compute(
         self, config: PipelineConfig, items: List[DataItem],
     ) -> List[TaskHandle]:
-        """Chain steps: step N+1's input = step N's output."""
+        """Chain steps: step N+1's input = step N's output.
+
+        When steps declare ``depends_on``, uses DAG scheduling for
+        parallel execution of independent steps.
+        """
+        from umrs.pipeline_sdk.dag import DAGScheduler, execute_dag
+
         run_id = uuid.uuid4().hex[:12]
-        current_keys = [item.key for item in items]
-        current_bucket = self._input_bucket
+        input_keys = [item.key for item in items]
         shared_metadata: Dict[str, Any] = {}
 
-        last_embeddings: Optional[Any] = None
-        last_checksums: List[str] = []
-        last_metadata: List[Dict[str, Any]] = []
+        scheduler = DAGScheduler(self.workflow.steps)
+        step_results = execute_dag(
+            scheduler,
+            self._step_instances,
+            self.workflow.steps,
+            s3=self._s3,
+            input_bucket=self._input_bucket,
+            input_keys=input_keys,
+            output_bucket=self._output_bucket,
+            run_id=run_id,
+            shared_metadata=shared_metadata,
+        )
 
-        for idx, (step, spec) in enumerate(
-            zip(self._step_instances, self.workflow.steps)
-        ):
-            is_last = idx == len(self._step_instances) - 1
-            step_output_bucket = (
-                self._output_bucket if is_last else self._input_bucket
-            )
-            step_prefix = (
-                "" if is_last
-                else f"_staging/{run_id}/step_{idx}_{spec.name}/"
-            )
-
-            self._log.info(
-                "  step %d/%d [%s]: %d keys → bucket=%s",
-                idx + 1, len(self._step_instances), spec.name,
-                len(current_keys), step_output_bucket,
-            )
-
-            ctx = StepContext(
-                s3=self._s3,
-                input_bucket=current_bucket,
-                input_keys=current_keys,
-                output_bucket=step_output_bucket,
-                config=spec.config,
-                metadata=shared_metadata,
-                run_id=run_id,
-            )
-            result = step.run(ctx)
-
-            if result.output_keys:
-                current_keys = result.output_keys
-                current_bucket = step_output_bucket
-
-            if result.embeddings is not None:
-                last_embeddings = result.embeddings
-            if result.checksums:
-                last_checksums = result.checksums
-            if result.metadata:
-                last_metadata = result.metadata
+        # Extract final results from the last level's steps
+        last_embeddings, last_checksums, last_metadata, current_keys = (
+            self._aggregate_dag_results(step_results, scheduler, input_keys)
+        )
 
         # Teardown all steps
         for step in self._step_instances:
@@ -549,7 +635,7 @@ class WorkflowPipeline(Pipeline):
                     "checksums": last_checksums,
                     "step_metadata": last_metadata,
                     "output_keys": current_keys,
-                    "input_keys": [item.key for item in items],
+                    "input_keys": input_keys,
                 },
             )
         ]
@@ -585,7 +671,21 @@ class WorkflowPipeline(Pipeline):
         ``EmbeddingModel.compute_embeddings``.
 
         Returns ``(embeddings, checksums, metadata_list, saved_keys)``.
+
+        For non-``IN_PROCESS`` execution modes, delegates to
+        :class:`~umrs.plugins.user_workflow.UserWorkflowRunner`.
         """
+        if self.workflow.execution_mode != ExecutionMode.IN_PROCESS:
+            from umrs.plugins.user_workflow import (
+                UserWorkflow,
+                UserWorkflowRunner,
+            )
+            uw = UserWorkflow.from_workflow_definition(self.workflow)
+            runner = UserWorkflowRunner(uw, s3=s3)
+            return runner.run(s3, s3_keys, path_to_bucket, output_bucket)
+
+        from umrs.pipeline_sdk.dag import DAGScheduler, execute_dag
+
         run_id = uuid.uuid4().hex[:12]
         logger.info(
             "Workflow '%s' run=%s: %d steps, %d input keys",
@@ -593,49 +693,24 @@ class WorkflowPipeline(Pipeline):
             len(s3_keys),
         )
 
-        current_keys = list(s3_keys)
-        current_bucket = path_to_bucket
         shared_metadata: Dict[str, Any] = {}
 
-        last_embeddings: Optional[Any] = None
-        last_checksums: List[str] = []
-        last_metadata: List[Dict[str, Any]] = []
+        scheduler = DAGScheduler(self.workflow.steps)
+        step_results = execute_dag(
+            scheduler,
+            self._step_instances,
+            self.workflow.steps,
+            s3=s3,
+            input_bucket=path_to_bucket,
+            input_keys=list(s3_keys),
+            output_bucket=output_bucket,
+            run_id=run_id,
+            shared_metadata=shared_metadata,
+        )
 
-        for idx, (step, spec) in enumerate(
-            zip(self._step_instances, self.workflow.steps)
-        ):
-            is_last = idx == len(self._step_instances) - 1
-            step_output_bucket = (
-                output_bucket if is_last else path_to_bucket
-            )
-
-            logger.info(
-                "  step %d/%d [%s]: %d keys → bucket=%s",
-                idx + 1, len(self._step_instances), spec.name,
-                len(current_keys), step_output_bucket,
-            )
-
-            ctx = StepContext(
-                s3=s3,
-                input_bucket=current_bucket,
-                input_keys=current_keys,
-                output_bucket=step_output_bucket,
-                config=spec.config,
-                metadata=shared_metadata,
-                run_id=run_id,
-            )
-            result = step.run(ctx)
-
-            if result.output_keys:
-                current_keys = result.output_keys
-                current_bucket = step_output_bucket
-
-            if result.embeddings is not None:
-                last_embeddings = result.embeddings
-            if result.checksums:
-                last_checksums = result.checksums
-            if result.metadata:
-                last_metadata = result.metadata
+        last_embeddings, last_checksums, last_metadata, current_keys = (
+            self._aggregate_dag_results(step_results, scheduler, list(s3_keys))
+        )
 
         # Build return tuple matching the compute_embeddings contract
         if not last_checksums:
@@ -668,6 +743,42 @@ class WorkflowPipeline(Pipeline):
         return embeddings_list, last_checksums, last_metadata, saved_keys
 
     # ── Helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _aggregate_dag_results(
+        step_results: Dict[str, Any],
+        scheduler: Any,
+        input_keys: List[str],
+    ) -> Tuple[Any, List[str], List[Dict[str, Any]], List[str]]:
+        """Extract final outputs from the DAG execution results.
+
+        Walks execution levels in reverse to find the last step(s) that
+        produced embeddings, checksums, metadata, or output_keys.
+
+        Returns ``(embeddings, checksums, metadata_list, output_keys)``.
+        """
+        last_embeddings: Any = None
+        last_checksums: List[str] = []
+        last_metadata: List[Dict[str, Any]] = []
+        current_keys: List[str] = list(input_keys)
+
+        # Iterate levels forward so later steps override earlier ones
+        for level in scheduler.execution_levels():
+            for spec_idx in level:
+                spec = scheduler._specs[spec_idx]
+                result = step_results.get(spec.name)
+                if result is None:
+                    continue
+                if result.embeddings is not None:
+                    last_embeddings = result.embeddings
+                if result.checksums:
+                    last_checksums = result.checksums
+                if result.metadata:
+                    last_metadata = result.metadata
+                if result.output_keys:
+                    current_keys = result.output_keys
+
+        return last_embeddings, last_checksums, last_metadata, current_keys
 
     @staticmethod
     def _collect_checksums(

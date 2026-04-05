@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 # Ensure src/ is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from umrs.TaskCmdStatus import TaskCmd, TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 
 
 # ---------------------------------------------------------------------------
@@ -243,7 +243,7 @@ class TestRequestExportEmbeddingsWireFormat:
         mq.recv_string = MagicMock(return_value=(None, '{"status":"ok","columns":[],"rows":[]}'))
 
         # Call the real method on a mock — we just need the wire format logic
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
         # Bind the unbound method to our mock
         result = MessageQueue.request_export_embeddings(mq, "alice", "alice.xp1.mybucket", "jsonl")
 
@@ -254,6 +254,6 @@ class TestRequestExportEmbeddingsWireFormat:
         """Should raise if called from server role."""
         mq = MagicMock()
         mq.role = "server"
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
         with pytest.raises(PermissionError):
             MessageQueue.request_export_embeddings(mq, "alice", "path", "csv")

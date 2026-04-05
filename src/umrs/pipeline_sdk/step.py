@@ -55,6 +55,7 @@ class StepContext:
         config: Step-specific configuration from *workflow.json*.
         metadata: Mutable dict carried across steps for the same run.
         run_id: Unique identifier for the current workflow execution.
+        parent_results: Results from parent steps in DAG mode (keyed by step name).
     """
 
     s3: Any  # boto3 S3 client
@@ -64,6 +65,22 @@ class StepContext:
     config: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
     run_id: str = ""
+    parent_results: Dict[str, "StepResult"] = field(default_factory=dict)
+
+    # ── Progress reporting ───────────────────────────────────────────────
+
+    def report_progress(self, percent: float, message: str = "") -> None:
+        """Emit a progress update for monitoring.
+
+        Args:
+            percent: Completion percentage (0.0 – 100.0).
+            message: Optional human-readable status message.
+        """
+        pct = max(0.0, min(100.0, percent))
+        logger.info(
+            "[run=%s] progress %.1f%% %s",
+            self.run_id, pct, message,
+        )
 
     # ── S3 download helpers ──────────────────────────────────────────────
 
