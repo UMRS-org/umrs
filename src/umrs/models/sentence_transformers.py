@@ -1,5 +1,5 @@
 import torch
-from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
+from umrs.shared.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
 from sentence_transformers import SentenceTransformer
 
 ################################ Sentence Transformers ###########################

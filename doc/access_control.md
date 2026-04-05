@@ -12,7 +12,7 @@ layers: **Server API**, **S3/MinIO storage**, and **Slurm compute**.
 | Mechanism | Location | Status |
 |-----------|----------|--------|
 | Admin token (SHA-256 hashed) | `src/umrs/auth.py` → `AdminTokenManager` | Implemented |
-| Per-user config identity | `src/create_users.py`, JSON config files | Implemented |
+| Per-user config identity | `src/umrs/admin/create_users.py`, JSON config files | Implemented |
 | JWT Bearer from Gateway | `src/umrs/api/endpoints.py` → `get_project_id()` | Stub (MVP uses `X-Project-ID` header) |
 
 Admin tokens are generated as `umrs-admin-{random}`, stored as SHA-256 hashes

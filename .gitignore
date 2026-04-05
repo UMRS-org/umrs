@@ -5,6 +5,8 @@ __pycache__/
 
 # Demo result/output images (auto-generated, not source)
 demos/*/results/
+demos/*/.upload_staging/
+demos/14_opossum_analysis/sample_videos/
 # Demo test data images (large CT scans — stage only .gitkeep)
 demos/*/test_data/*.png
 demos/*/test_data/*.jpg
@@ -48,3 +50,9 @@ tmp
 *.png
 
 __pycache__/
+
+# Large binary artifacts
+*.mp4
+*.tar.gz
+*.csv
+!demos/sample_data/**/*.csv

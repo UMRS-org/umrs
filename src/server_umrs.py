@@ -5,277 +5,41 @@ import os
 import sys
 from collections import defaultdict
 import time
-import torch
 import json
 import diskcache
-from functools import lru_cache
-from typing import Optional
 
 # Add the parent directory of this script (src) to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
 import threading
-from umrs.s3 import *
-from umrs.sql import create_db_user, create_db, configure_table, check_S3_object_status_in_db, create_db_name
-from umrs.models_loading import load_model
-from umrs.MessageQueue import MessageQueue
-from umrs.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_thread_status
-from umrs.modality import check_or_quit, resolve_modality_task
+from umrs.shared.storage.s3 import *
+from umrs.server.sql import check_S3_object_status_in_db, create_db_name
+from umrs.core.MessageQueue import MessageQueue
+from umrs.shared.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_thread_status
 
-from umrs.json_utils import load_server_cfg_file, load_client_cfg_file
-from umrs.TaskManager import TaskManager
-from umrs.TaskCmdStatus import TaskCmd, TaskStatus
-from umrs.embeddings import compute_and_store_embedding
-from umrs.embedding_backend import LocalEmbeddingBackend
+from umrs.server.json_config import load_server_cfg_file, load_client_cfg_file
+from umrs.core.TaskManager import TaskManager
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
+from umrs.models.embedding_backend import LocalEmbeddingBackend
 
-from umrs.model_registry_handler import handle_model_command
-from umrs.job_tracking_handler import handle_job_command
-from umrs.cache_paths import find_model_cache
-from umrs.config import *
+from umrs.server.model_registry_handler import handle_model_command
+from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
+from umrs.server.job_tracking_handler import handle_job_command
+from umrs.shared.config import *
+from umrs.server.config import *
+from umrs.server.provisioning import (
+    ServerCfg,
+    configure_user,
+    create_s3_sql_users,
+    is_client_configured,
+    reconcile_status_on_startup,
+)
 
 _status_store_global = None
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
 
 rivault_lock = threading.Lock()
-
-# ---------------------- Server configuration class ----------------------
-from dataclasses import dataclass, field
-from umrs.BucketsCfg import BucketsCfg, ServerBucketEntry
-
-@dataclass
-class ServerCfg:
-    """
-    All inforations realted to server configuration
-    """
-    user_config_map: dict = field(default_factory=dict)
-    buckets_cfg: "BucketsCfg" = field(default_factory=lambda: BucketsCfg())
-
-# ---------------------- Provisioning and configuration ----------------------
-
-
-def _normalize_rivault_endpoint(raw_endpoint: str) -> str:
-    endpoint = raw_endpoint.rstrip("/")
-    if not endpoint.startswith("http://") and not endpoint.startswith("https://"):
-        raise RuntimeError(
-            f"RIVAULT endpoint must include http/https scheme (got '{raw_endpoint}')"
-        )
-    return endpoint
-
-
-@lru_cache(maxsize=32)
-def _get_rivault_endpoint() -> Optional[str]:
-    raw = os.getenv("RIVAULT_ENDPOINT")
-    if not raw:
-        return None
-    return _normalize_rivault_endpoint(raw)
-
-
-def _make_safe_model_name(model_name: str) -> str:
-    # Keep behaviour in sync with rivault_service: replace '/' by '__'
-    return model_name.replace("/", "__")
-
-
-def _tar_model_cache(model_name: str, tmp_root: str) -> Optional[str]:
-    """Create a tarball containing the cached model files for RiVault uploads."""
-
-    import tarfile
-
-    cache_entry = find_model_cache(model_name)
-    if not cache_entry:
-        return None
-
-    safe_name = _make_safe_model_name(model_name)
-    out_dir = os.path.join(tmp_root, "umrs_models", safe_name)
-    os.makedirs(out_dir, exist_ok=True)
-    tar_path = os.path.join(out_dir, "weights.tar")
-
-    relative_posix = Path(cache_entry.relative_path).as_posix().lstrip("./")
-    arcname = f"{cache_entry.kind}/{relative_posix}" if relative_posix else cache_entry.kind
-
-    try:
-        with tarfile.open(tar_path, "w:gz") as tar:
-            tar.add(cache_entry.path, arcname=arcname)
-        return tar_path
-    except Exception:
-        # Best-effort: if we cannot create the archive, just skip
-        return None
-
-
-def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
-    endpoint = _get_rivault_endpoint()
-    if not endpoint:
-        return
-
-    safe_name = quote(model_name, safe="")
-    weights_url = f"{endpoint}/api/models/{safe_name}/weights"
-
-    # If weights already exist on RiVault, do nothing
-    try:
-        head_resp = requests.head(weights_url, timeout=5)
-        if head_resp.status_code == 200:
-            return
-    except Exception:
-        # If RiVault is unreachable, keep normal behaviour
-        return
-
-    tar_path = _tar_model_cache(model_name, tmp_root)
-    if not tar_path or not os.path.exists(tar_path):
-        return
-
-    try:
-        with open(tar_path, "rb") as handle:
-            files = {"file": ("weights.tar", handle, "application/octet-stream")}
-            resp = requests.put(weights_url, files=files, timeout=600)
-            resp.raise_for_status()
-    except Exception:
-        # Weight upload is best-effort; failures must not break server config
-        return
-
-def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
-    fullname = user_cfg["fullname"]
-    username = user_cfg["username"]
-    print(f"######################\nCreating {fullname} ({username})\n######################")
-
-    bucket_list = []
-    for xp in user_cfg["experiences"]:
-        xp_name = xp["xp_name"]
-        sql_username  = xp["sql_username"]
-        create_db_user(sql_username)
-        for modality in xp["modalities"]:
-            raw_modality_name = modality.get("modality_name") or modality.get("modality")
-            raw_task = modality.get("task")
-            modality_name, task = resolve_modality_task(raw_modality_name, raw_task)
-            bucket_alias = modality["s3"]["bucket_alias"]
-            path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
-            bucket_list.append(path_to_bucket)
-            need_output_bucket = modality["s3"].get("need_output_bucket", False)
-            if need_output_bucket:
-                assert modality["model"]["return_type"] is not None, f"return_type must be set in 'model' for modality '{modality}' of {fullname} ({username})"
-                output_path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
-                bucket_list.append(output_path_to_bucket)
-
-
-    user_s3_configuration_file = user_cfg["s3_configuration_file"]
-    s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
-    s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file, bucket_list)
-    s3_connection.close()
-
-def is_client_configured(client_id, server_cfg):
-    """Check if client_id is present in server configuration."""
-    for  entry in server_cfg.buckets_cfg.values():
-        if entry.s3_username == client_id:
-            return True
-    return False
-
-
-def reconcile_status_on_startup(active_threads, buckets_cfg):
-    """Write an initial PROCESS_OBJECTS status entry for each user based on pgvector counts.
-
-    After a server restart the in-memory status_store is empty, so ``status all``
-    returns "No status entries".  This function populates it with a synthetic
-    summary built from the already-accurate ``num_objects`` values that
-    ``configure_user`` read from pgvector at startup time.
-    """
-    from umrs.TaskCmdStatus import TaskCmd
-    from datetime import datetime
-
-    # Group bucket entries by s3_username
-    user_entries: dict[str, list[tuple[str, ServerBucketEntry]]] = {}
-    for path_to_bucket, entry in buckets_cfg.items():
-        user_entries.setdefault(entry.s3_username, []).append((path_to_bucket, entry))
-
-    for username, entries in user_entries.items():
-        # Build a synthetic 'thread status' dict that pretty_print_thread_status can render
-        synthetic_thread_status = {}
-        works = []
-        for path_to_bucket, entry in entries:
-            works.append({
-                "user": entry.s3_username,
-                "data_base": entry.db_name,
-                "table_name": entry.table_name,
-                "modality_name": entry.modality_name,
-                "bucket": path_to_bucket,
-                "work_type": TaskCmd.PROCESS_OBJECTS.lower(),
-                "nb_objects": entry.num_objects,
-            })
-        if not works:
-            continue
-        synthetic_thread_status["startup"] = {
-            "thread_id": -1,  # sentinel: not a real thread
-            "status": "Done" if any(w["nb_objects"] > 0 for w in works) else "Idle",
-            "work": works,
-        }
-        summary = pretty_print_thread_status(synthetic_thread_status, running_only=False, print_output=False)
-        json_safe = active_threads._json_safe_thread_status(synthetic_thread_status)
-        active_threads.record_status(
-            username,
-            TaskCmd.PROCESS_OBJECTS.lower(),
-            {"summary": summary, "data": json_safe},
-        )
-        # Also write the uppercase key used by the server event loop
-        active_threads.record_status(
-            username,
-            TaskCmd.PROCESS_OBJECTS,
-            {"summary": summary, "data": json_safe},
-        )
-    print("Status store reconciled with pgvector counts.")
-
-def configure_user(user_cfg, server_cfg: ServerCfg):
-    fullname = user_cfg["fullname"]
-    username = user_cfg["username"]
-
-    server_cfg.user_config_map[username] = user_cfg['config_file_path']
-    buckets_cfg = server_cfg.buckets_cfg
-
-    print(f"######################\nConfiguring {fullname} ({username})\n######################")
-
-    user_s3_configuration_file = user_cfg["s3_configuration_file"]
-    s3_connection, bucket_location = connect_to_s3(user_s3_configuration_file)
-
-    for xp in user_cfg["experiences"]:
-        xp_name = xp["xp_name"]
-        print(f"\t==> Experience: {xp_name}")
-        sql_username  = xp["sql_username"]
-        data_base, db_name = create_db(sql_username, xp_name)
-        for modality in xp["modalities"]:
-            # Support both old (modality_name) and new (modality + task) config
-            raw_modality_name = modality.get("modality_name") or modality.get("modality")
-            raw_task = modality.get("task")
-            modality_name, task = resolve_modality_task(raw_modality_name, raw_task)
-            print(f"\t\tModality: {modality_name} (task: {task})")
-            bucket_alias = modality["s3"]["bucket_alias"]
-            need_output_bucket = modality["s3"].get("need_output_bucket", False)
-            path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location)
-            model_cfg = modality['model']
-            model = load_model(model_cfg, modality_name, task=task)
-            # Best-effort upload of model weights to RiVault so that
-            # compute workers can later stream them from there.
-            try:
-                _upload_weights_to_rivault(model_cfg.get("model_name"), os.path.dirname(user_cfg['config_file_path']))
-            except Exception:
-                # Never fail user configuration because of RiVault upload issues
-                pass
-            if model.return_type == "file":
-                assert need_output_bucket
-                output_path_to_bucket = configure_bucket(s3_connection, bucket_alias, xp_name, username, bucket_location, output=True)
-            else:
-                output_path_to_bucket = None
-            sql_cfg = modality["sql"]
-            table_name, store_embeddings_flag, metadata = configure_table(data_base, sql_cfg, modality_name, model)
-            # num_objects =  count_objects_in_bucket(s3_connection, path_to_bucket)
-            num_objects = data_base.count_s3_objects(table_name)
-            # in case of race condition. In practice we certainly do not want several procesing on the same bucket happening in parallel
-            rlock = threading.RLock() # use reentrent lock to avoid deadlock within same thread
-            bucket_entry = ServerBucketEntry(bucket_alias, username, sql_username, data_base, db_name, table_name,
-                                       model, store_embeddings_flag, modality_name, task, s3_connection, metadata,
-                                       xp_name, num_objects, model.return_type, output_path_to_bucket, rlock)
-            buckets_cfg.store(path_to_bucket, bucket_entry)
-            print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
-
-
-
-
 
 # --------------------------- Maintenance commands ---------------------------
 
@@ -587,6 +351,8 @@ def perform_initial_config(configure_file, status_store):
     for user in users:
         configure_user(user, server_cfg)
 
+    import torch
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"-->  Models will be run on device: {device}")
 
@@ -700,6 +466,98 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     return True
 
 
+def _handle_upload_workflow(client_id, zip_path, workflow_name):
+    """Validate and extract an uploaded workflow zip to the user_workflows directory.
+
+    The zip must contain a ``workflow.json`` at its root (or one level deep)
+    with a parseable :class:`WorkflowDefinition`.
+
+    Returns ``(success: bool, dest_dir: str | None, error: str | None)``.
+    """
+    import zipfile
+    from umrs.pipeline_sdk.workflow import WorkflowDefinition
+
+    if not os.path.isfile(zip_path):
+        return False, None, f"Uploaded file not found: {zip_path}"
+
+    # Basic size sanity check (reject > 500 MB)
+    max_size = 500 * 1024 * 1024
+    if os.path.getsize(zip_path) > max_size:
+        return False, None, f"Zip file too large ({os.path.getsize(zip_path)} bytes, max {max_size})"
+
+    if not zipfile.is_zipfile(zip_path):
+        return False, None, f"Uploaded file is not a valid zip archive: {zip_path}"
+
+    # Determine destination
+    workflows_root = os.path.join(get_default_tmp_subdir(), "user_workflows", client_id)
+    dest_dir = os.path.join(workflows_root, workflow_name)
+
+    try:
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            # Security: reject paths that escape the extraction directory
+            for member in zf.namelist():
+                resolved = os.path.realpath(os.path.join(dest_dir, member))
+                if not resolved.startswith(os.path.realpath(dest_dir)):
+                    return False, None, f"Zip contains unsafe path: {member}"
+
+            # Look for workflow.json at root or one level deep
+            candidates = [n for n in zf.namelist() if os.path.basename(n) == "workflow.json"]
+            if not candidates:
+                return False, None, "Zip archive does not contain a workflow.json"
+
+            # Validate workflow.json contents before extracting
+            wf_entry = candidates[0]
+            try:
+                wf_data = json.loads(zf.read(wf_entry))
+                wf = WorkflowDefinition.from_dict(wf_data)
+                # Override source to UPLOADED type pointing to dest_dir
+                # (validation of original source is skipped — we rewrite it)
+            except (json.JSONDecodeError, KeyError, ValueError) as e:
+                return False, None, f"Invalid workflow.json: {e}"
+
+            # Extract
+            os.makedirs(dest_dir, exist_ok=True)
+            zf.extractall(dest_dir)
+
+        # If workflow.json was nested one level (e.g., myworkflow/workflow.json),
+        # move contents up so dest_dir directly contains workflow.json
+        actual_wf = os.path.join(dest_dir, "workflow.json")
+        if not os.path.isfile(actual_wf):
+            # Try to find it one level deep
+            for name in os.listdir(dest_dir):
+                candidate = os.path.join(dest_dir, name, "workflow.json")
+                if os.path.isfile(candidate):
+                    # Move everything from the subdirectory up
+                    sub_dir = os.path.join(dest_dir, name)
+                    import shutil
+                    for item in os.listdir(sub_dir):
+                        shutil.move(os.path.join(sub_dir, item), dest_dir)
+                    os.rmdir(sub_dir)
+                    break
+
+        # Rewrite workflow.json source to UPLOADED type
+        actual_wf = os.path.join(dest_dir, "workflow.json")
+        if os.path.isfile(actual_wf):
+            with open(actual_wf, "r", encoding="utf-8") as fh:
+                wf_data = json.load(fh)
+            wf_data["source"] = {"type": "uploaded", "path": dest_dir}
+            with open(actual_wf, "w", encoding="utf-8") as fh:
+                json.dump(wf_data, fh, indent=2)
+    except zipfile.BadZipFile:
+        return False, None, f"Corrupted zip archive: {zip_path}"
+    except Exception as e:
+        return False, None, f"Failed to extract workflow: {e}"
+    finally:
+        # Clean up the uploaded temp zip
+        try:
+            os.remove(zip_path)
+        except Exception:
+            pass
+
+    print(f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}")
+    return True, dest_dir, None
+
+
 def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, expected_username=None):
     """Persist an uploaded user config JSON: replace create the dir and file and ensure listed in conf.
 
@@ -789,7 +647,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]
         if model.type == "rivault":
-            from umrs.rivault_launcher import launch_rivault_model
+            from umrs.server.rivault_launcher import launch_rivault_model
             try:
                 if update_status_callback:
                     update_status_callback(TaskStatus.INITIALIZING)
@@ -849,7 +707,7 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
                 if t.is_alive() and t is not threading.current_thread()
             )
         if still_running == 0:
-            from umrs.rivault_launcher import release_all_backend_jobs
+            from umrs.server.rivault_launcher import release_all_backend_jobs
             release_all_backend_jobs()
 
     if update_status_callback:
@@ -928,6 +786,47 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                     update_status_func(TaskStatus.COMPLETED)
                 else:
                     task_manager.associate_thread_with_task(thread_ident, task_id)
+
+            elif cmd == TaskCmd.UPLOAD_WORKFLOW:
+                client_id, files, workflow_name = payload
+                if not files:
+                    print("Warning: UPLOAD_WORKFLOW received with no files")
+                    update_status_func(TaskStatus.ERROR)
+                else:
+                    zip_path = files[0]
+                    ok, dest, err = _handle_upload_workflow(client_id, zip_path, workflow_name)
+                    if ok:
+                        print(f"Workflow '{workflow_name}' uploaded for user '{client_id}' at {dest}")
+                        # Auto-register in workflow catalog
+                        try:
+                            wf_json_path = os.path.join(dest, "workflow.json")
+                            with open(wf_json_path, "r", encoding="utf-8") as fh:
+                                wf_data = json.load(fh)
+                            version = wf_data.get("version", "0.1")
+                            register_workflow(
+                                workflow_name=workflow_name,
+                                version=str(version),
+                                user_id=client_id,
+                                source_path=dest,
+                                workflow_json=wf_data,
+                                scope="user",
+                                description=wf_data.get("description", ""),
+                            )
+                        except Exception as e:
+                            print(f"Warning: auto-registration of workflow '{workflow_name}' failed: {e}")
+                        update_status_func(TaskStatus.COMPLETED)
+                    else:
+                        print(f"UPLOAD_WORKFLOW failed: {err}")
+                        update_status_func(TaskStatus.ERROR)
+
+            elif cmd == TaskCmd.LIST_WORKFLOWS:
+                client_id, payload_str, zmq_sender_id = payload
+                response_json = handle_workflow_command(cmd, client_id, payload_str)
+                try:
+                    control_mq.send_string(response_json, zmq_sender_id)
+                except RuntimeError as e:
+                    print(f"Error sending workflow command response: {e}")
+                update_status_func(TaskStatus.COMPLETED)
 
             elif cmd == TaskCmd.WAIT_OUTPUT : # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
                 client_id, output_path_to_bucket, timeout, zmq_sender_id = payload

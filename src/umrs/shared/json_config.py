@@ -1,0 +1,141 @@
+import json
+import os
+import sys
+
+from jsonschema import validate, ValidationError
+from umrs.shared.modality import VALID_MODALITIES, LEGACY_MAPPING
+
+_ALL_ACCEPTED_MODALITY_NAMES = sorted(set(VALID_MODALITIES) | set(LEGACY_MAPPING.keys()))
+
+client_schema = {
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["username", "fullname", "s3_configuration_file", "experiences"],
+  "properties": {
+    "username": { "type": "string" },
+    "fullname": { "type": "string" },
+    "s3_configuration_file": { "type": "string" },
+    "experiences": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["xp_name", "sql_username", "modalities"],
+        "properties": {
+          "xp_name": { "type": "string" },
+          "sql_username": { "type": "string" },
+          "modalities": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["s3", "model", "sql"],
+              "oneOf": [
+                {"required": ["modality_name"]},
+                {"required": ["modality"]}
+              ],
+              "properties": {
+                "modality_name": {
+                  "type": "string",
+                  "enum": _ALL_ACCEPTED_MODALITY_NAMES
+                },
+                "modality": {
+                  "type": "string",
+                  "enum": VALID_MODALITIES
+                },
+                "task": {
+                  "type": "string"
+                },
+                "s3": {
+                  "type": "object",
+                  "required": ["bucket_alias",  "data"],
+                  "properties": {
+                    "bucket_alias": { "type": "string" },
+                    "data": {
+                      "type": "object",
+                      "required": ["type", "mime_type"],
+                      "properties": {
+                        "type": { "type": "string", "enum": ["file", "inline"] },
+                        "mime_type": { "type": "string" }
+                      },
+                      "need_output_bucket": {
+                        "type": "boolean",
+                        "default": False
+                      }
+                    }
+                  }
+                },
+                "model": {
+                  "type": "object",
+                  "required": ["model_name", "vector_size", "model_type", "return_type"],
+                  "properties": {
+                    "model_name": { "type": "string" },
+                    "vector_size": { "type": "string" },
+                    "model_type": { "type": "string" },
+                    "server_port": { "type": "string" },
+                    "model_cfg_file" : { "type": "string" },
+                    "checkpoint_path": { "type": "string" },
+                    "spacy_model": { "type": "string" },
+                    "vision_model_type": { "type": "string" },
+                    "vision_model_config": { "type": "object" },
+                    "return_type": {
+                      "type": ["string", "null"],
+                      "enum": ["file", None]
+                    }
+                  },
+                  "additionalProperties": False
+                },
+                "sql": {
+                  "type": "object",
+                  "required": ["store_embeddings", "table_name", "meta_data"],
+                  "properties": {
+                    "store_embeddings": {
+                      "type": "string",
+                      "enum": ["yes", "no"]
+                    },
+                    "table_name": { "type": "string" },
+                    "meta_data": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": ["name", "type"],
+                        "properties": {
+                          "name": { "type": "string" },
+                          "type": { "type": "string" }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+
+def load_client_cfg_file(json_filename, username_list=None):
+  if username_list is None:
+    username_list = []
+
+  json_filename = os.path.expanduser(json_filename)
+  if not os.path.exists(json_filename):
+    sys.exit(f"Client JSON file {json_filename} does not exist. Exiting...")
+
+  try:
+    with open(json_filename, encoding="utf-8") as f:
+      data = json.load(f)
+  except json.decoder.JSONDecodeError as e:
+        sys.exit(f"Error: Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos}).\nExiting...")
+
+  try:
+    validate(instance=data, schema=client_schema)
+    if data["username"] in username_list:
+        sys.exit(f"Error: {json_filename} uses the same username than an other client configuration file.\nMerge the two configuration files or change the username.\n\tExiting...")
+    return data
+  except ValidationError as e:
+      sys.exit(f"Invalid client JSON file {json_filename}: {e.message}.\nExiting...")
+
+
+__all__ = ["client_schema", "load_client_cfg_file"]

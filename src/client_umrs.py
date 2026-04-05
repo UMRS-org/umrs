@@ -2,23 +2,23 @@
 
 import os
 import sys
-from umrs.sql import *
-from umrs.s3 import *
-from umrs.MessageQueue import MessageQueue
-from umrs.metadata import check_and_build_metadata
-from umrs.modality import *
-from umrs.modality import resolve_modality_task
-from umrs.json_utils import load_client_cfg_file
-from umrs.pretty_print import pretty_print_user_cfg
-from umrs.config import get_default_docker_s3cfg
+from umrs.server.sql import *
+from umrs.shared.storage.s3 import *
+from umrs.core.MessageQueue import MessageQueue
+from umrs.client.metadata import check_and_build_metadata
+from umrs.shared.modality import *
+from umrs.shared.modality import resolve_modality_task
+from umrs.shared.json_config import load_client_cfg_file
+from umrs.shared.pretty_print import pretty_print_user_cfg
+from umrs.shared.config import get_default_docker_s3cfg
 from glob import glob
 import argparse
 from collections import defaultdict
 import traceback
 import json as _json
 import time
-from umrs.TaskCmdStatus import TaskCmd
-from umrs.BucketsCfg import BucketsCfg, ClientBucketEntry
+from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
 
 
 STATUS_CHOICES = TaskCmd.status_cmd()
@@ -366,6 +366,21 @@ def main():
     jc_p = job_sub.add_parser('cancel', help='Cancel a running job')
     jc_p.add_argument('job_id', help='Job ID to cancel')
 
+    # --- Workflow upload command ---
+    uw_p = subparsers.add_parser('upload-workflow', help='Upload a workflow directory (with workflow.json + step scripts) to the server')
+    uw_p.add_argument('path', help='Local directory containing workflow.json and step scripts')
+    uw_p.add_argument('--name', default=None, help='Workflow name (defaults to directory basename)')
+
+    # --- Workflow registry commands ---
+    wf_p = subparsers.add_parser('workflow', help='Workflow registry commands (list)')
+    wf_sub = wf_p.add_subparsers(dest='workflow_action', required=True)
+
+    # workflow list
+    wl_p = wf_sub.add_parser('list', help='List registered workflows')
+    wl_p.add_argument('--scope', default=None, choices=['system', 'user'], help='Filter by scope')
+    wl_p.add_argument('--user', default=None, help='Filter by owner user ID')
+    wl_p.add_argument('--name', default=None, help='Filter by workflow name (substring match)')
+
 
     args = parser.parse_args()
 
@@ -453,7 +468,7 @@ def main():
                         # Client-side download: runs on the login node, then registers with server
                         staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
                         if not staging_root:
-                            from umrs.config import get_default_umrs_cfg_dir
+                            from umrs.shared.config import get_default_umrs_cfg_dir
                             staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
                         target_path = os.path.join(staging_root, target_name)
 
@@ -495,7 +510,7 @@ def main():
                         sys.exit(1)
                     staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
                     if not staging_root:
-                        from umrs.config import get_default_umrs_cfg_dir
+                        from umrs.shared.config import get_default_umrs_cfg_dir
                         staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
                     target_path = os.path.join(staging_root, args.name)
                     if os.path.exists(target_path):
@@ -586,6 +601,95 @@ def main():
                 if args.verbose:
                     traceback.print_exc()
             finally:
+                control_mq.close()
+            sys.exit(0)
+        if args.action == 'workflow':
+            # Workflow registry commands — no config file required
+            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            wf_action = args.workflow_action
+            try:
+                if wf_action == 'list':
+                    filter_payload = {}
+                    if args.scope:
+                        filter_payload['scope'] = args.scope
+                    if args.user:
+                        filter_payload['user_id'] = args.user
+                    if args.name:
+                        filter_payload['name'] = args.name
+                    payload = _json.dumps(filter_payload) if filter_payload else ''
+                    raw = control_mq.request_model_command(client_id, TaskCmd.LIST_WORKFLOWS, payload)
+                else:
+                    print(api_json(status='error', message=f'Unknown workflow action: {wf_action}', output_format=args.output))
+                    control_mq.close()
+                    sys.exit(1)
+
+                if args.output == 'json':
+                    print(raw)
+                else:
+                    parsed = _json.loads(raw)
+                    if parsed.get('status') == 'ok':
+                        workflows = parsed.get('workflows', [])
+                        if not workflows:
+                            print("No workflows registered.")
+                        else:
+                            for w in workflows:
+                                n_steps = len(w.get('steps', []))
+                                print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps} step(s)  {w.get('description','')}")
+                    else:
+                        print(f"Error: {parsed.get('message', 'unknown error')}")
+            except Exception as e:
+                print(api_json(status='error', action='workflow', message=str(e), output_format=args.output))
+                if args.verbose:
+                    traceback.print_exc()
+            finally:
+                control_mq.close()
+            sys.exit(0)
+        if args.action == 'upload-workflow':
+            import tempfile
+            import zipfile
+            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            src_path = os.path.abspath(args.path)
+            if not os.path.isdir(src_path):
+                print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
+                control_mq.close()
+                sys.exit(1)
+            wf_json = os.path.join(src_path, 'workflow.json')
+            if not os.path.isfile(wf_json):
+                print(api_json(status='error', message=f'No workflow.json found in {src_path}', output_format=args.output))
+                control_mq.close()
+                sys.exit(1)
+            workflow_name = args.name or os.path.basename(src_path)
+            # Create a zip archive of the directory
+            try:
+                tmp_zip = tempfile.NamedTemporaryFile(suffix='.zip', delete=False)
+                tmp_zip_path = tmp_zip.name
+                tmp_zip.close()
+                with zipfile.ZipFile(tmp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for root, dirs, files in os.walk(src_path):
+                        for f in files:
+                            abs_path = os.path.join(root, f)
+                            arc_name = os.path.relpath(abs_path, src_path)
+                            zf.write(abs_path, arc_name)
+                # Establish data channel and send the zip
+                data_mq = control_mq.get_data_queue(client_id)
+                try:
+                    data_mq.send_file(tmp_zip_path)
+                    control_mq.notify_server(client_id, TaskCmd.UPLOAD_WORKFLOW, workflow_name)
+                    print(api_json(action='upload-workflow', workflow_name=workflow_name, accepted=True, output_format=args.output))
+                finally:
+                    try:
+                        data_mq.close()
+                    except Exception:
+                        pass
+            except Exception as e:
+                print(api_json(status='error', action='upload-workflow', message=str(e), output_format=args.output))
+                if args.verbose:
+                    traceback.print_exc()
+            finally:
+                try:
+                    os.remove(tmp_zip_path)
+                except Exception:
+                    pass
                 control_mq.close()
             sys.exit(0)
         if args.action == 'list_buckets':

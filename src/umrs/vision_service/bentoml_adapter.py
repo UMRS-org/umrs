@@ -12,7 +12,7 @@ import time
 
 import bentoml
 
-from umrs.s3_presign import (
+from umrs.shared.storage.s3_presign import (
     generate_presigned_get,
     generate_presigned_put,
 )

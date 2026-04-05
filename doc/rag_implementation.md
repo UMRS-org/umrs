@@ -32,7 +32,7 @@ Technical reference for the Retrieval-Augmented Generation (RAG) subsystem in UM
 
 | File | Role |
 |---|---|
-| `src/rag_service.py` | FastAPI endpoints, retriever, score conversion |
+| `src/umrs/api/rag_service.py` | FastAPI endpoints, retriever, score conversion |
 | `src/umrs/rag_pipeline.py` | BM25, hybrid search, reranking, context assembly |
 | `src/umrs/sql.py` | Table creation, HNSW index management |
 

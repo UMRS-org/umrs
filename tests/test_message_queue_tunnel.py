@@ -25,7 +25,7 @@ class TestTunnelModeBasics:
 
     def test_tunnel_mode_default_false(self):
         """tunnel_mode should default to False."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context'):
             mq = MessageQueue(role='server', queue_type='control')
@@ -34,7 +34,7 @@ class TestTunnelModeBasics:
 
     def test_tunnel_mode_stored_true(self):
         """tunnel_mode=True should be stored."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context'):
             mq = MessageQueue(role='server', queue_type='control', tunnel_mode=True)
@@ -43,7 +43,7 @@ class TestTunnelModeBasics:
 
     def test_tunnel_mode_from_env_var(self):
         """tunnel_mode should be set from UMRS_TUNNEL_MODE env var."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch.dict(os.environ, {'UMRS_TUNNEL_MODE': 'true'}):
             with patch('zmq.Context'):
@@ -53,7 +53,7 @@ class TestTunnelModeBasics:
 
     def test_tunnel_mode_env_var_false(self):
         """UMRS_TUNNEL_MODE=false should disable tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch.dict(os.environ, {'UMRS_TUNNEL_MODE': 'false'}):
             with patch('zmq.Context'):
@@ -63,7 +63,7 @@ class TestTunnelModeBasics:
 
     def test_tunnel_mode_explicit_overrides_env(self):
         """Explicit tunnel_mode parameter should override env var."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch.dict(os.environ, {'UMRS_TUNNEL_MODE': 'true'}):
             with patch('zmq.Context'):
@@ -77,7 +77,7 @@ class TestTunnelModeControlQueue:
 
     def test_server_control_queue_binds_localhost_in_tunnel_mode(self):
         """Server control queue should bind to 127.0.0.1 in tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -97,7 +97,7 @@ class TestTunnelModeControlQueue:
 
     def test_server_control_queue_binds_wildcard_in_normal_mode(self):
         """Server control queue should bind to tcp://* in normal mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -117,7 +117,7 @@ class TestTunnelModeControlQueue:
 
     def test_client_control_queue_connects_localhost_in_tunnel_mode(self):
         """Client control queue should connect to 127.0.0.1 in tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -139,7 +139,7 @@ class TestTunnelModeControlQueue:
 
     def test_client_control_queue_connects_server_ip_in_normal_mode(self):
         """Client control queue should connect to server_ip in normal mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -164,7 +164,7 @@ class TestTunnelModeDataQueue:
 
     def test_server_data_queue_binds_localhost_in_tunnel_mode(self):
         """Server data queue should bind to 127.0.0.1 in tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -185,7 +185,7 @@ class TestTunnelModeDataQueue:
 
     def test_client_data_queue_connects_localhost_in_tunnel_mode(self):
         """Client data queue should connect to 127.0.0.1 in tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -212,7 +212,7 @@ class TestTunnelModePortConfig:
 
     def test_control_port_from_env_var(self):
         """Control port should be configurable via UMRS_CONTROL_PORT."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch.dict(os.environ, {'UMRS_CONTROL_PORT': '6666', 'UMRS_TUNNEL_MODE': 'true'}):
             with patch('zmq.Context') as mock_context:
@@ -230,7 +230,7 @@ class TestTunnelModePortConfig:
 
     def test_data_port_from_env_var(self):
         """Data port should be configurable via UMRS_DATA_PORT."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch.dict(os.environ, {'UMRS_DATA_PORT': '7777', 'UMRS_TUNNEL_MODE': 'true'}):
             with patch('zmq.Context') as mock_context:
@@ -252,7 +252,7 @@ class TestGetDataQueueTunnelMode:
 
     def test_get_data_queue_inherits_tunnel_mode(self):
         """get_data_queue should inherit tunnel_mode from control queue."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -276,7 +276,7 @@ class TestGetDataQueueTunnelMode:
 
     def test_get_data_queue_explicit_tunnel_mode_override(self):
         """get_data_queue tunnel_mode parameter should override control queue setting."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -300,7 +300,7 @@ class TestGetDataQueueTunnelMode:
 
     def test_get_data_queue_uses_localhost_in_tunnel_mode(self):
         """get_data_queue should connect to localhost regardless of server response in tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -328,7 +328,7 @@ class TestResetControlQueueTunnelMode:
 
     def test_reset_control_queue_connects_localhost_in_tunnel_mode(self):
         """reset_control_queue should connect to localhost in tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -352,7 +352,7 @@ class TestResetControlQueueTunnelMode:
 
     def test_reset_control_queue_connects_server_ip_in_normal_mode(self):
         """reset_control_queue should connect to server_ip in normal mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()
@@ -380,7 +380,7 @@ class TestDocumentation:
 
     def test_init_docstring_mentions_tunnel_mode(self):
         """__init__ docstring should document tunnel_mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         docstring = MessageQueue.__init__.__doc__
         assert 'tunnel_mode' in docstring
@@ -388,7 +388,7 @@ class TestDocumentation:
 
     def test_get_data_queue_docstring(self):
         """get_data_queue docstring should document tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         docstring = MessageQueue.get_data_queue.__doc__
         assert 'tunnel_mode' in docstring
@@ -399,7 +399,7 @@ class TestSSHTunnelScenario:
 
     def test_full_tunnel_scenario_both_use_localhost(self):
         """Both server and client should use localhost in tunnel mode."""
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
 
         with patch('zmq.Context') as mock_context:
             mock_socket = MagicMock()

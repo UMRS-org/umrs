@@ -1,13 +1,13 @@
 from transformers import AutoTokenizer, AutoModel
 from transformers.utils import logging
-from umrs.utils import flatten_text_chunks, add_embeddings_to_chunks_dict
+from umrs.shared.utils import flatten_text_chunks, add_embeddings_to_chunks_dict
 import torch
 
 ################################ TransformerEncoder  ###########################
 
 _model_cache = {}
 
-def load_transformer_encoder(model_name):   
+def load_transformer_encoder(model_name):
     if model_name in _model_cache:
         print(f"\t\t\t--> Model '{model_name}' already loaded...")
         return _model_cache[model_name]

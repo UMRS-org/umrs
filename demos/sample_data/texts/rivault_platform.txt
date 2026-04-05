@@ -1,0 +1,35 @@
+The Rivault Platform for HPC AI Serving
+
+Rivault is a lightweight orchestration layer that deploys AI inference
+services on HPC clusters managed by Slurm.  It bridges the gap between
+cloud-native AI serving frameworks and traditional batch scheduling
+systems found in academic supercomputing centres.
+
+Architecture:
+- A login node runs the control plane: ZeroMQ message queue, MinIO
+  object storage, PostgreSQL with pgvector for embedding retrieval,
+  and an nginx reverse proxy.
+- Compute nodes are allocated via Slurm (sbatch).  Each allocation
+  launches a Podman-compose stack containing the model-serving
+  containers.
+- The control plane communicates with compute nodes through a shared
+  filesystem and the ZMQ message bus.
+
+Key components:
+1. vLLM: high-throughput LLM inference with paged attention and
+   continuous batching.  Runs as a profile in the Rivault stack.
+2. BentoML: serves vision models (SAM3, HMAE) via a task-queue API.
+   Each model registers as a BentoML runner.
+3. LiteLLM: provides an OpenAI-compatible proxy in front of vLLM,
+   enabling drop-in compatibility with popular LLM client libraries.
+4. RAG service: FastAPI micro-service that combines embedding retrieval
+   (pgvector) with LLM generation for question-answering workflows.
+
+The UMRS client (umrs-client) is the primary user interface.  It connects
+to the control plane via SSH-tunnelled ZMQ sockets and exposes commands
+for uploading data, querying embeddings, managing models, and submitting
+long-running jobs.
+
+Multi-tenancy is achieved through per-user MinIO buckets and PostgreSQL
+schemas.  Each user's configuration file (user.json) defines their
+experiences, modalities, and bucket mappings.

@@ -10,8 +10,7 @@ Tests:
 
 import pytest
 from datetime import datetime
-from typing import Set
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from umrs.model_registry.models import (
     ModelEntry,

@@ -366,7 +366,7 @@ services:
   rag:
     profiles: [ rag ]
     image: ghcr.io/riken-rccs/umrs-rag:${RAG_DOCKER_TAG:-latest}
-    command: python -m umrs.rag_service --port 8100
+    command: python -m umrs.api.rag_service --port 8100
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${RAG_IP4:-32}

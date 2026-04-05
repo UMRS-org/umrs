@@ -17,6 +17,8 @@ from .slurm_runner import SlurmPluginRunner
 from .k8s_runner import K8sPluginRunner
 from .result_writer import PluginResultWriter
 from .audit import PluginAuditLog
+from .step_adapter import step_to_plugin_spec
+from .user_workflow import UserWorkflow, UserWorkflowRunner
 
 __all__ = [
     "PluginSpec",
@@ -29,4 +31,7 @@ __all__ = [
     "K8sPluginRunner",
     "PluginResultWriter",
     "PluginAuditLog",
+    "step_to_plugin_spec",
+    "UserWorkflow",
+    "UserWorkflowRunner",
 ]

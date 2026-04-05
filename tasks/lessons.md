@@ -1,4 +1,10 @@
-# Lessons
+# Lessons Learned
+
+> Corrections and patterns discovered during UMRS development.
+> Each entry records what went wrong, why, and how to avoid it.
+> Review at session start for relevant context.
+
+---
 
 - 2026-03-27: Demo 01 `run_demo.sh` status parser crashed on non-dict items in summaries JSON. The `check` and `update` categories contain string items (bucket names), but the parser assumed all `data` entries are dicts with `.get("status")`. Fix: filter with `isinstance(t, dict)` before calling `.get()`. Always guard against mixed-type lists in API responses.
 - 2026-03-27: `embedding_backend=remote` + `embedding_worker.py` (ZMQ REQ/REP standalone worker) was superseded by mini-rivault (vLLM + LiteLLM on Slurm compute nodes, accessed via OpenAI-compatible `/v1/embeddings` API through SSH tunnel). When a new compute approach replaces an old one, audit **all** layers: Python code (`embedding_backend.py`, `embeddings.py`, `s3.py`), configs (`conf_umrs.json`, JSON schema in `json_utils.py`), Docker compose files, K8s manifests, deploy scripts, kustomization references, and documentation. The presigned URL path in `compute_embeddings_core()` and `load_data_from_presigned_urls()` in `s3.py` were also dead code since only the removed worker consumed them (vision service has its own presigned URL path in `s3_presign.py`). Total removal: 14 files, -1106 lines.

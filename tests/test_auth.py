@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from umrs.auth import (
+from umrs.shared.auth import (
     ADMIN_ONLY_COMMANDS,
     USER_ALLOWED_COMMANDS,
     AdminTokenManager,
@@ -533,7 +533,7 @@ class TestFactoryFunctions:
         config._data_dir = tmp_path
         config._config_dir = tmp_path
 
-        with patch("umrs.auth.get_config_directory", return_value=config):
+        with patch("umrs.shared.auth.get_config_directory", return_value=config):
             auth = create_auth_context_from_request("testuser")
 
         assert auth.username == "testuser"
@@ -549,8 +549,8 @@ class TestFactoryFunctions:
         manager = AdminTokenManager(config)
         token = manager.generate_token("admin-token", "Admin access")
 
-        with patch("umrs.auth.get_config_directory", return_value=config):
-            with patch("umrs.auth.AdminTokenManager", return_value=manager):
+        with patch("umrs.shared.auth.get_config_directory", return_value=config):
+            with patch("umrs.shared.auth.AdminTokenManager", return_value=manager):
                 auth = create_auth_context_from_request("admin", token=token)
 
         assert auth.role == UserRole.ADMIN

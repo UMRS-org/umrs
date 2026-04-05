@@ -48,7 +48,7 @@ def sample_documents_with_embeddings():
 @pytest.fixture
 def sample_search_results():
     """Sample SearchResult objects for testing."""
-    from umrs.rag_pipeline import SearchResult
+    from umrs.models.rag_pipeline import SearchResult
     return [
         SearchResult(
             document_id="doc1",
@@ -84,7 +84,7 @@ class TestBM25:
 
     def test_bm25_initialization(self, sample_documents):
         """Test BM25 index creation."""
-        from umrs.rag_pipeline import BM25
+        from umrs.models.rag_pipeline import BM25
 
         bm25 = BM25()
         bm25.fit(sample_documents)
@@ -96,7 +96,7 @@ class TestBM25:
 
     def test_bm25_tokenize(self):
         """Test BM25 tokenization."""
-        from umrs.rag_pipeline import BM25
+        from umrs.models.rag_pipeline import BM25
 
         bm25 = BM25()
         # _tokenize is private, but we test it for completeness
@@ -108,7 +108,7 @@ class TestBM25:
 
     def test_bm25_score(self, sample_documents):
         """Test BM25 scoring."""
-        from umrs.rag_pipeline import BM25
+        from umrs.models.rag_pipeline import BM25
 
         bm25 = BM25()
         bm25.fit(sample_documents)
@@ -124,7 +124,7 @@ class TestBM25:
 
     def test_bm25_score_top_k(self, sample_documents):
         """Test BM25 scoring with top-k limit."""
-        from umrs.rag_pipeline import BM25
+        from umrs.models.rag_pipeline import BM25
 
         bm25 = BM25()
         bm25.fit(sample_documents)
@@ -139,7 +139,7 @@ class TestBM25:
 
     def test_bm25_empty_query(self, sample_documents):
         """Test BM25 with empty query."""
-        from umrs.rag_pipeline import BM25
+        from umrs.models.rag_pipeline import BM25
 
         bm25 = BM25()
         bm25.fit(sample_documents)
@@ -161,7 +161,7 @@ class TestHybridSearcher:
 
     def test_rrf_score_calculation(self):
         """Test Reciprocal Rank Fusion score calculation."""
-        from umrs.rag_pipeline import HybridSearcher
+        from umrs.models.rag_pipeline import HybridSearcher
 
         searcher = HybridSearcher(
             vector_weight=0.6,
@@ -177,7 +177,7 @@ class TestHybridSearcher:
 
     def test_hybrid_search(self, sample_documents_with_embeddings):
         """Test hybrid search combines vector and BM25 results."""
-        from umrs.rag_pipeline import HybridSearcher
+        from umrs.models.rag_pipeline import HybridSearcher
 
         searcher = HybridSearcher()
 
@@ -196,7 +196,7 @@ class TestHybridSearcher:
 
     def test_hybrid_search_deduplication(self, sample_documents_with_embeddings):
         """Test that hybrid search returns unique documents."""
-        from umrs.rag_pipeline import HybridSearcher
+        from umrs.models.rag_pipeline import HybridSearcher
 
         searcher = HybridSearcher()
 
@@ -225,7 +225,7 @@ class TestCrossEncoderReranker:
 
     def test_reranker_initialization(self):
         """Test reranker initialization (lazy loading)."""
-        from umrs.rag_pipeline import CrossEncoderReranker
+        from umrs.models.rag_pipeline import CrossEncoderReranker
 
         reranker = CrossEncoderReranker()
 
@@ -234,7 +234,7 @@ class TestCrossEncoderReranker:
 
     def test_reranker_with_mock_model(self, sample_search_results):
         """Test reranking with mocked model."""
-        from umrs.rag_pipeline import CrossEncoderReranker
+        from umrs.models.rag_pipeline import CrossEncoderReranker
 
         reranker = CrossEncoderReranker()
 
@@ -255,7 +255,7 @@ class TestCrossEncoderReranker:
 
     def test_reranker_empty_results(self):
         """Test reranking with empty results."""
-        from umrs.rag_pipeline import CrossEncoderReranker
+        from umrs.models.rag_pipeline import CrossEncoderReranker
 
         reranker = CrossEncoderReranker()
 
@@ -278,7 +278,7 @@ class TestContextAssembler:
 
     def test_default_template(self, sample_search_results):
         """Test context assembly with default template."""
-        from umrs.rag_pipeline import ContextAssembler
+        from umrs.models.rag_pipeline import ContextAssembler
 
         assembler = ContextAssembler(enable_injection_scanning=False)
 
@@ -295,7 +295,7 @@ class TestContextAssembler:
 
     def test_custom_template(self, sample_search_results):
         """Test context assembly with custom template."""
-        from umrs.rag_pipeline import ContextAssembler
+        from umrs.models.rag_pipeline import ContextAssembler
 
         template = "Query info:\n\n{chunks}\n\n---\nRefs: {sources}"
         assembler = ContextAssembler(
@@ -312,7 +312,7 @@ class TestContextAssembler:
 
     def test_token_budget(self, sample_search_results):
         """Test token budget enforcement."""
-        from umrs.rag_pipeline import ContextAssembler
+        from umrs.models.rag_pipeline import ContextAssembler
 
         # Very small budget
         assembler = ContextAssembler(
@@ -332,7 +332,7 @@ class TestContextAssembler:
 
     def test_estimate_tokens(self):
         """Test token estimation."""
-        from umrs.rag_pipeline import ContextAssembler
+        from umrs.models.rag_pipeline import ContextAssembler
 
         assembler = ContextAssembler()
 
@@ -345,7 +345,7 @@ class TestContextAssembler:
 
     def test_sources_in_context(self, sample_search_results):
         """Test source extraction in context."""
-        from umrs.rag_pipeline import ContextAssembler
+        from umrs.models.rag_pipeline import ContextAssembler
 
         assembler = ContextAssembler(enable_injection_scanning=False)
 
@@ -371,7 +371,7 @@ class TestRAGPipeline:
 
     def test_pipeline_query(self, sample_documents_with_embeddings):
         """Test full pipeline query."""
-        from umrs.rag_pipeline import RAGPipeline, ContextAssembler
+        from umrs.models.rag_pipeline import RAGPipeline, ContextAssembler
 
         # Create pipeline with injection scanning disabled for test
         assembler = ContextAssembler(enable_injection_scanning=False)
@@ -392,7 +392,7 @@ class TestRAGPipeline:
 
     def test_pipeline_with_reranking(self, sample_documents_with_embeddings):
         """Test pipeline with reranking enabled."""
-        from umrs.rag_pipeline import RAGPipeline, CrossEncoderReranker, ContextAssembler
+        from umrs.models.rag_pipeline import RAGPipeline, CrossEncoderReranker, ContextAssembler
 
         # Create reranker with mocked model
         reranker = CrossEncoderReranker()
@@ -414,7 +414,7 @@ class TestRAGPipeline:
 
     def test_pipeline_top_k(self, sample_documents_with_embeddings):
         """Test pipeline respects top_k parameter."""
-        from umrs.rag_pipeline import RAGPipeline, ContextAssembler
+        from umrs.models.rag_pipeline import RAGPipeline, ContextAssembler
 
         assembler = ContextAssembler(enable_injection_scanning=False)
         pipeline = RAGPipeline(context_assembler=assembler)
@@ -440,7 +440,7 @@ class TestRAGPipelineIntegration:
 
     def test_end_to_end_without_model(self, sample_documents_with_embeddings):
         """Test end-to-end flow without actual model loading."""
-        from umrs.rag_pipeline import (
+        from umrs.models.rag_pipeline import (
             BM25,
             HybridSearcher,
             ContextAssembler,

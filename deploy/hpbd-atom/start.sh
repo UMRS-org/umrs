@@ -115,6 +115,20 @@ if [[ -f "$PID_FILE" ]]; then
     rm -f "$PID_FILE"
 fi
 
+# ─── Kill any process still holding the ZMQ port ────────────────────────────
+ZMQ_PORT="${ZMQ_PORT:-5555}"
+BLOCKING_PID=$(ss -tlnp "sport = :${ZMQ_PORT}" 2>/dev/null \
+    | awk -F'pid=' '/pid=/{print $2}' | awk -F',' '{print $1}' | head -1)
+if [[ -n "${BLOCKING_PID:-}" ]]; then
+    echo "WARNING: Port ${ZMQ_PORT} is still held by PID ${BLOCKING_PID} — killing it."
+    kill "$BLOCKING_PID" 2>/dev/null || true
+    sleep 2
+    if kill -0 "$BLOCKING_PID" 2>/dev/null; then
+        kill -9 "$BLOCKING_PID" 2>/dev/null || true
+        sleep 1
+    fi
+fi
+
 # ─── Environment for the native server ───────────────────────────────────────
 # Ensure ~/.local/bin is in PATH (mc, s3cmd and other user-installed tools).
 export PATH="${HOME}/.local/bin:${PATH}"

@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader
 import torchvision.transforms as transforms
 import numpy as np
 from torch.utils.data import Dataset, DataLoader
-from umrs.s3 import s3_key_exists, save_tiff_image_to_s3
+from umrs.shared.storage.s3 import s3_key_exists, save_tiff_image_to_s3
 
 ################################ Masked Autoencoder(  ###########################
 def load_masked_autoencoder(config_path, checkpoint_path):
@@ -35,16 +35,16 @@ def load_masked_autoencoder(config_path, checkpoint_path):
         decoder_heads=config['model']['decoder_heads'],
         mask_ratio=config['model']['mask_ratio']
     ).to(device)
-    
+
     # Load checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
+
     # Handle different checkpoint formats
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         model.load_state_dict(checkpoint['model_state_dict'])
     else:
         model.load_state_dict(checkpoint)
-    
+
     model.eval()  # Set to evaluation mode
     model.num_patches = (config['model']['img_size'] // config['model']['patch_size']) ** 2
     model.enc_embed_dim = config['model']['encoder_embed_dim']
@@ -62,7 +62,7 @@ class Spring8DatasetFromS3(Dataset):
         self.bucket = bucket_name
         self.resolution = resolution
         self.s3_keys = s3_key_list
-        
+
         if transform:
             self.transform = transform
         else:
@@ -70,38 +70,38 @@ class Spring8DatasetFromS3(Dataset):
                 transforms.ToTensor(),
                 transforms.Normalize(mean=[0.390480], std=[0.29985])
             ])
-    
+
     def __len__(self):
         return len(self.s3_keys)
-    
+
     def __getitem__(self, idx):
         key = self.s3_keys[idx]
-        
+
         # Get object from S3
         obj = self.s3.get_object(Bucket=self.bucket, Key=key)
 
         # Extract metadata and checksum
         checksum = obj['ETag'].strip('"')  # ETag is often quoted
         metadata = obj.get("Metadata", {})   # User metadata dictionary
-       
+
         # extract raw data
         raw_bytes = obj['Body'].read()
-        
+
         # Convert raw bytes to numpy array
         image = np.frombuffer(raw_bytes, dtype=np.uint16).reshape(self.resolution, self.resolution, 1)
-        
+
         # Convert to uint8 range like before
         image = (image / 65535.0 * 255.0).astype(np.uint8)
-        
+
         # Apply transforms
         image_tensor = self.transform(image)
-        
+
         return image_tensor, checksum, metadata
 
 
 def build_s8d_val_dataloader(s3, s3_keys, path_to_bucket, batch_size, num_workers, resolution):
     """
-    Builds and returns only the validation (test) DataLoader, 
+    Builds and returns only the validation (test) DataLoader,
     and lists all file paths included in the validation set.
     """
 
@@ -109,18 +109,18 @@ def build_s8d_val_dataloader(s3, s3_keys, path_to_bucket, batch_size, num_worker
 
     def custom_collate(batch):
         images, checksums, metadatas = zip(*batch)
-    
+
         images = default_collate(images)
         checksums = default_collate(checksums)
         # Keep list of dicts as is (no collate)
         metadatas = list(metadatas)
-        
+
         return images, checksums, metadatas
 
 
 
     val_dataset = Spring8DatasetFromS3(s3, resolution, s3_keys, path_to_bucket)
-    
+
     # Validation DataLoader
     val_loader = DataLoader(
         val_dataset,
@@ -132,7 +132,7 @@ def build_s8d_val_dataloader(s3, s3_keys, path_to_bucket, batch_size, num_worker
         drop_last=False,
         collate_fn=custom_collate,
     )
-    
+
     return val_loader
 
 def extract_embeddings(model, data_loader, device):
@@ -144,8 +144,8 @@ def extract_embeddings(model, data_loader, device):
     visible_patches = int(num_patches * (1 - model.mask_ratio))
     received_patches = visible_patches + 1   # +1 pour le CLS
     patch_dim = model.patch_size**2 * model.in_chans
-    embed_dim = model.enc_embed_dim   
-    
+    embed_dim = model.enc_embed_dim
+
     # Preallocate array for all embeddings
     all_embeddings = torch.empty((num_samples, received_patches, embed_dim), dtype=torch.float32, device=device)
     all_reconstructions = torch.empty((num_samples, num_patches, patch_dim), dtype=torch.float32, device=device)
@@ -163,17 +163,17 @@ def extract_embeddings(model, data_loader, device):
             # Accumulate metadata and checksums from current batch
             res_checksums.extend(checksums)
             res_metadata.extend(metadatas)
-    
+
             images = images.to(device)
-            # embeddings = model.encode(images, convert_to_tensor=False)  
+            # embeddings = model.encode(images, convert_to_tensor=False)
             _, recon_patches_flat, _, embeddings = model(images)
             batch_count = embeddings.shape[0]
             all_embeddings[sample_idx:sample_idx+batch_count] = embeddings
             all_reconstructions[sample_idx:sample_idx+batch_count] = recon_patches_flat
             sample_idx += batch_count
-            
-            
-            
+
+
+
     if sample_idx > 0:
         # Concatenate all embeddings
         final_embeddings = all_embeddings.cpu().numpy()
@@ -190,7 +190,7 @@ def extract_embeddings(model, data_loader, device):
     return final_embeddings, cls_embeddings, final_reconstructions, patch_shape, res_checksums, res_metadata
 
 
-  
+
 def save_one_reconstruction_in_one_image(patches,
                                          s3, s3_key, path_to_bucket,
                                          patch_shape,   # (patch, patch, C)
@@ -198,24 +198,24 @@ def save_one_reconstruction_in_one_image(patches,
                                          overwrite=True):
     """
     Reconstruct a square image from flattened patches and save it as a TIFF.
-    
+
     Parameters:
         patches: np.ndarray or torch.Tensor of shape [num_patches, patch_dim]
                  Contains all flattened patches of a single image.
-                 
+
         save_file: str
             Output filename (.tiff)
-        
+
         patch_shape: tuple
             (patch_height, patch_width, C) — typically (P, P, channels)
-        
+
         resolution: int
             Size of the final (square) output image: resolution x resolution.
             This must match the patch grid: resolution = P * sqrt(num_patches).
-        
+
         overwrite: bool
             If False, do not overwrite an existing file.
-    
+
     Returns:
         save_file: str
             Path to the saved TIFF image.
@@ -282,13 +282,13 @@ def save_all_reconstructions_in_one_image(all_reconstructions,
                                           patch_shape, s3, s3_keys, path_to_bucket,resolution=8192):
     """
     Save each reconstruction (set of patches) as one large mosaic TIFF image.
-    
+
     Parameters:
         all_reconstructions : Tensor/array [N, P, patch_dim]
         in_file_list        : list of input filenames
         patch_shape         : (H, W, C)
         resolution          : final resolution limit (max width/height)
-    
+
     Returns:
         list of output TIFF image paths
     """
@@ -312,10 +312,10 @@ def save_all_reconstructions_in_one_image(all_reconstructions,
             patches, s3, save_key, path_to_bucket, patch_shape, resolution, overwrite=True
         )
         # print(f"Output saved to: {saved_path}")
-        
+
         saved_keys.append(saved_path)
 
-    return saved_keys    
+    return saved_keys
 
 def compute_embeddings_masked_autoencoder(self, s3, s3_keys, path_to_bucket, output_bucket):
      # 2. Load data
@@ -327,18 +327,18 @@ def compute_embeddings_masked_autoencoder(self, s3, s3_keys, path_to_bucket, out
         num_workers=0, # this could be larger but requires a s3 endpoint per worker and hnce to pass the s3 configuration file and not the s3_connection
         resolution=self.model.img_size
     )
-    
+
     # 3 & 4. Extract embeddings
 
     _, cls_embeddings, all_reconstructions, patch_shape, checksums,  metadata = extract_embeddings(self.model, data_loader, self.device)
     # _, cls_embeddings, checksums,  metadata = extract_embeddings(self.model, data_loader, self.device)
-    
+
     saved_keys = None
     if all_reconstructions is not None:
         saved_keys = save_all_reconstructions_in_one_image(all_reconstructions, patch_shape, s3, s3_keys, output_bucket, resolution=self.model.img_size)
         # saved_files = save_all_reconstructions(all_reconstructions, "./reconstruction", file_list, patch_shape
-        
 
-    
+
+
     return cls_embeddings, checksums, metadata, saved_keys
-    
+
