@@ -31,7 +31,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
-from ..pipelines.models import (
+from ..rag.models import (
     ChunkerSpec,
     ChunkerType,
     EmbedderSpec,
@@ -42,7 +42,7 @@ from ..pipelines.models import (
     RerankerSpec,
     RerankerType,
 )
-from ..pipelines.registry import (
+from ..rag.registry import (
     get_chunker_registry,
     get_component_validator,
     get_embedder_registry,

@@ -21,7 +21,7 @@ from umrs.shared.pretty_print import pretty_print_cfg, pretty_print_recompute, p
 from umrs.server.json_config import load_server_cfg_file, load_client_cfg_file
 from umrs.core.TaskManager import TaskManager
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
-from umrs.models.embedding_backend import LocalEmbeddingBackend
+from umrs.inference.embedding_backend import LocalEmbeddingBackend
 
 from umrs.server.model_registry_handler import handle_model_command
 from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow

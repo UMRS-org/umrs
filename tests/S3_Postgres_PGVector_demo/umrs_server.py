@@ -4,7 +4,7 @@ import os
 import sys
 from umrs.server.sql import *
 from umrs.shared.storage.s3 import *
-from umrs.models.embeddings import *
+from umrs.inference.embeddings import *
 import time
 from collections import defaultdict
 import signal

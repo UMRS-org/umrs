@@ -8,7 +8,7 @@ from PIL import Image
 import os, sys
 # Add the parent directory of 'umrs' to sys.path
 sys.path.append(os.path.abspath('.'))
-from umrs.models import *
+from umrs.inference import *
 from types import SimpleNamespace
 
 def cluster_from_embeddings(conn, cur, table, nb_clusters=3):

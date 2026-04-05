@@ -1,4 +1,4 @@
-from umrs.models.loading import load_model, EmbeddingModel
+from umrs.inference.loading import load_model, EmbeddingModel
 from umrs.shared.config import *
 from umrs.server.config import *
 

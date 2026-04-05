@@ -25,7 +25,7 @@ class SAM3Adapter(VisionModelAdapter):
         return f"sam3:{checkpoint}"
 
     def load(self, config: Dict[str, Any]) -> Any:
-        from umrs.models.sam3_segmentation import load_sam3_model
+        from umrs.inference.sam3_segmentation import load_sam3_model
 
         checkpoint = config.get("checkpoint",
                                 os.environ.get("SAM3_MODEL_PATH", "facebook/sam3"))
@@ -43,7 +43,7 @@ class SAM3Adapter(VisionModelAdapter):
         output_bucket: str,
         presigned_output_urls: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
-        from umrs.models.sam3_segmentation import (
+        from umrs.inference.sam3_segmentation import (
             segment_image_with_text,
             overlay_masks_on_image,
         )

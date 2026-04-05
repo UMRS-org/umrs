@@ -14,7 +14,7 @@ from langchain_core.callbacks import CallbackManagerForRetrieverRun
 from langchain_openai import ChatOpenAI
 
 from umrs.shared.utils import add_query_prefix, add_document_prefix
-from umrs.models.rag_pipeline import HybridSearcher, CrossEncoderReranker, SearchResult
+from umrs.rag.search import HybridSearcher, CrossEncoderReranker, SearchResult
 
 from umrs.server.runtime import ServerCfg, configure_user
 from umrs.shared.config import (
