@@ -51,33 +51,33 @@ def load_model(model_cfg, modality, task=None):
 
 
     if model_type == "SentenceTransformer":
-        from .models.sentence_transformers import load_sentence_transformers_model, sentence_transformers
+        from .sentence_transformers import load_sentence_transformers_model, sentence_transformers
         model = load_sentence_transformers_model(model_name)
         type = "loaded"
         tokenizer = model._first_module().tokenizer
         max_tokens = getattr(tokenizer, "model_max_length", None)
         compute_embeddings_func, input_type = sentence_transformers(modality);
     elif model_type == "Resnet-50":
-        from .models.resnet_50 import load_resnet50, compute_embeddings_resnet_50
+        from .resnet_50 import load_resnet50, compute_embeddings_resnet_50
         model = load_resnet50(checkpoint_path)
         type = "loaded"
         compute_embeddings_func = compute_embeddings_resnet_50
         input_type = "image"
     elif model_type == "TransformerEncoder":
-        from .models.transformer_encoder import load_transformer_encoder, compute_embeddings_transformer_encoder
+        from .transformer_encoder import load_transformer_encoder, compute_embeddings_transformer_encoder
         model, tokenizer = load_transformer_encoder(model_name)
         type = "loaded"
         max_tokens = tokenizer.model_max_length
         compute_embeddings_func = compute_embeddings_transformer_encoder
         input_type = "text"
     elif model_type == "MAE" :
-        from .models.masked_autoencoder import load_masked_autoencoder, compute_embeddings_masked_autoencoder
+        from .masked_autoencoder import load_masked_autoencoder, compute_embeddings_masked_autoencoder
         model = load_masked_autoencoder(cfg_file, checkpoint_path)
         type = "loaded"
         compute_embeddings_func = compute_embeddings_masked_autoencoder
         input_type = "raw_image"
     elif model_type == "HMAE":
-        from .models.hmae_inference import load_hmae_model, make_hmae_compute_func
+        from .hmae_inference import load_hmae_model, make_hmae_compute_func
         model, device, hmae_config = load_hmae_model(cfg_file, checkpoint_path)
         type = "loaded"
         compute_embeddings_func = make_hmae_compute_func(modality, cfg_file, task=task)
@@ -85,7 +85,7 @@ def load_model(model_cfg, modality, task=None):
         # Store config on the EmbeddingModel for use by the compute function
         _hmae_config = hmae_config
     elif model_type == "SAM3":
-        from .models.sam3_segmentation import load_sam3_model, compute_sam3_segmentation
+        from .sam3_segmentation import load_sam3_model, compute_sam3_segmentation
         sam3_model, sam3_processor, sam3_device = load_sam3_model(model_name)
         model = sam3_model
         type = "loaded"
@@ -94,7 +94,7 @@ def load_model(model_cfg, modality, task=None):
         _sam3_processor = sam3_processor
     elif model_type.startswith("openai://"):
         # Import OpenAI-compatible embedding utilities and vLLM liveness / capability checks
-        from .models.openai_api import make_openai_compute_embeddings, is_server_alive, get_max_tokens_from_vllm
+        from .openai_api import make_openai_compute_embeddings, is_server_alive, get_max_tokens_from_vllm
 
         # Import HuggingFace tokenizer to locally mirror the server-side tokenization logic
         from transformers import AutoTokenizer

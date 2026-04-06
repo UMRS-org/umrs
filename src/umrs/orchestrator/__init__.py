@@ -92,6 +92,12 @@ from .durable import (
     get_durable_orchestration_service,
     init_durable_orchestration_service,
 )
+from .site_config import (
+    SiteConfig,
+    get_site_config,
+    load_site_config,
+    reset_site_config,
+)
 
 __all__ = [
     # Backend abstractions
@@ -141,4 +147,9 @@ __all__ = [
     "DurableProvisionRequest",
     "get_durable_orchestration_service",
     "init_durable_orchestration_service",
+    # Site configuration
+    "SiteConfig",
+    "get_site_config",
+    "load_site_config",
+    "reset_site_config",
 ]

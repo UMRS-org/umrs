@@ -118,7 +118,19 @@ class OrchestratorConfig:
 
     @classmethod
     def from_env(cls) -> "OrchestratorConfig":
-        """Load configuration from environment variables."""
+        """Load configuration from environment variables.
+
+        If a ``site.yaml`` is available, its values are injected into
+        ``os.environ`` first (without overwriting existing vars), so
+        all the ``os.getenv`` calls below pick them up transparently.
+        """
+        # Layer site-config into env (non-destructive)
+        try:
+            from .site_config import get_site_config
+            get_site_config().inject_env(overwrite=False)
+        except Exception:
+            pass  # graceful fallback when no site.yaml
+
         return cls(
             # Common
             model_path=os.getenv("VLLM_MODEL_PATH", ""),

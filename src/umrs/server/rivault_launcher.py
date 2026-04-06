@@ -9,25 +9,72 @@ import re
 import requests
 import socket
 import os
-import diskcache
 from contextlib import redirect_stderr, redirect_stdout
 import io
 import threading
 
-# persistent in-memory cache (can persist to disk if needed later, e.g. after crash)
-jobid_cache = diskcache.Cache(f"{get_default_tmp_subdir()}/job_id_store", size_limit = 10*1024*1024)
+from umrs.orchestrator.endpoint_registry import (
+    EndpointStatus,
+    get_registry,
+)
 
 # Ephemeral in-memory cache for models
 model_cache = {}
 
 
+# ---------------------------------------------------------------------------
+# Job registry helpers — thin wrapper on EndpointRegistry so the rest of
+# rivault_launcher can keep its simple  key → job_id  semantics while gaining
+# structured state and optional PostgresBackend persistence.
+# ---------------------------------------------------------------------------
+
+_RIVAULT_PROJECT = "rivault"
+
+
+def _get_cached_job(model_type_key):
+    """Return the Slurm job ID (int) cached for *model_type_key*, or None."""
+    ep = get_registry().get(
+        _RIVAULT_PROJECT, model_type_key,
+        prefer_warm=False, min_ttl_sec=0,
+    )
+    if ep and ep.status not in (EndpointStatus.TERMINATED, EndpointStatus.FAILED):
+        return int(ep.job_id)
+    return None
+
+
+def _cache_job(model_type_key, job_id, host="", port=0):
+    """Register / update a job in the endpoint registry."""
+    get_registry().register(
+        _RIVAULT_PROJECT, model_type_key, str(job_id),
+        host=host, port=port, backend="slurm-podman",
+        ttl_sec=14400,  # 4 hours (matches Slurm --time)
+    )
+
+
+def _remove_cached_job(model_type_key):
+    """Remove and return the job_id (int) for *model_type_key*, or None."""
+    ep = get_registry().get(
+        _RIVAULT_PROJECT, model_type_key,
+        prefer_warm=False, min_ttl_sec=0,
+    )
+    if ep:
+        get_registry().remove(ep.job_id)
+        return int(ep.job_id)
+    return None
+
+
+def _list_cached_keys():
+    """Return all model_type_keys currently tracked."""
+    return [ep.model for ep in get_registry().list_all(project_id=_RIVAULT_PROJECT)]
+
+
 def release_backend_job(model_type_key):
     """Cancel the Slurm job and clean up SSH tunnel for a specific model.
 
-    Removes the job from jobid_cache / model_cache, runs scancel,
+    Removes the job from the endpoint registry / model_cache, runs scancel,
     and tears down the SSH tunnel subprocess + thread.
     """
-    job_id = jobid_cache.pop(model_type_key, None)
+    job_id = _remove_cached_job(model_type_key)
     if model_type_key in model_cache:
         _, thread_tunnel, proc_tunnel = model_cache.pop(model_type_key)
         try:
@@ -60,7 +107,7 @@ def release_all_backend_jobs():
     Called when service_lifecycle is 'auto_release' and no more
     processing threads are active.
     """
-    keys = list(jobid_cache)
+    keys = _list_cached_keys()
     if not keys:
         return
     print(f"[lifecycle] Releasing {len(keys)} backend job(s)...")
@@ -215,7 +262,7 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
             if match:
                 job_id = int(match.group(1))
                 print("Job submitted with ID:", job_id)
-                jobid_cache[model_type_key] = job_id  # persist immediately
+                _cache_job(model_type_key, job_id)  # persist immediately
                 if not wait_for_running(job_id):
                     raise ValueError(f"Job {job_id} did not start running. Current state: {get_slurm_job_state(job_id)}")
         if job_id is None:
@@ -412,9 +459,17 @@ def warmup_embedding_model(openai_url, model_name, api_key=None, timeout=120.0, 
 
 
 def launch_rivault_model(model_cfg):
+    # Inject site.yaml values into os.environ so they propagate via sbatch
+    # to serve-model.slurm (which uses ${VAR:-default} patterns).
+    try:
+        from umrs.orchestrator.site_config import get_site_config
+        get_site_config().inject_env(overwrite=False)
+    except Exception:
+        pass  # No site.yaml → existing env vars / script defaults used
+
     model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"]
     # --- 0. Check cache ---
-    job_id = jobid_cache.get(model_type_key, None)
+    job_id = _get_cached_job(model_type_key)
     if job_id is not None:
         print(f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running...")
         if wait_for_running(job_id):
@@ -428,7 +483,7 @@ def launch_rivault_model(model_cfg):
         else:
             # Job not runnning
             print("===> Found a job_id in cache but the job is not running. Cleaning up cache and launching a new job.")
-            jobid_cache.pop(model_type_key, None)
+            _remove_cached_job(model_type_key)
             if model_type_key in model_cache:
                 _, thread_tunnel, proc_tunnel = model_cache.pop(model_type_key)
                 # Terminate the SSH subprocess
@@ -444,13 +499,13 @@ def launch_rivault_model(model_cfg):
     #          model already has a running job, reuse it instead of submitting
     #          a second Slurm job that would just PEND forever. ---
     if job_id is None and model_cfg["model_type"].startswith("bentoml://"):
-        for cached_key in list(jobid_cache):
+        for cached_key in _list_cached_keys():
             if cached_key == model_type_key:
                 continue
             # Only reuse jobs from other BentoML models (same Rivault stack)
             if ":bentoml://" not in str(cached_key):
                 continue
-            cached_job_id = jobid_cache.get(cached_key)
+            cached_job_id = _get_cached_job(cached_key)
             if cached_job_id is not None and is_slurm_job_running(cached_job_id):
                 print(f"===> Reusing running BentoML Rivault job {cached_job_id} from '{cached_key}' for '{model_type_key}'.")
                 job_id = cached_job_id
@@ -588,7 +643,7 @@ def launch_rivault_model(model_cfg):
         model = load_model_as_bentoml(model_name, return_type, vector_size, input_type, compute_func, modality)
 
         model_cache[model_type_key] = (model, thread_tunnel, proc_tunnel)
-        jobid_cache[model_type_key] = job_id
+        _cache_job(model_type_key, job_id, host=server_address, port=local_port)
         return model
 
     elif model_cfg["model_type"].startswith("openai://"):
@@ -606,7 +661,7 @@ def launch_rivault_model(model_cfg):
 
          # --- 4. Cache the loaded model and job_id ---
         model_cache[model_type_key] = (model,  thread_tunnel, proc_tunnel)
-        jobid_cache[model_type_key] = job_id  # persistant
+        _cache_job(model_type_key, job_id, host=server_address, port=local_port)
         return model
     else:
         raise RuntimeError(f"Do not know what to do with model type {model_cfg['model_type']}")
