@@ -1,0 +1,57 @@
+{
+  "name": "vision-multi-mode",
+  "version": "1.0",
+  "description": "Run multiple vision analysis modes in parallel on the same images: segmentation + feature extraction + thumbnail generation",
+  "source": {
+    "type": "local_path",
+    "path": "./steps"
+  },
+  "requirements": ["Pillow", "numpy"],
+  "steps": [
+    {
+      "name": "segment",
+      "entrypoint": "segment_mode:SegmentModeStep",
+      "config": {
+        "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
+        "model_type": "sam3",
+        "prompt": "object",
+        "threshold": 0.5,
+        "timeout": 600
+      }
+    },
+    {
+      "name": "features",
+      "entrypoint": "feature_mode:FeatureModeStep",
+      "config": {
+        "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
+        "model_type": "sam3",
+        "feature_layer": "encoder",
+        "timeout": 600
+      }
+    },
+    {
+      "name": "thumbnails",
+      "entrypoint": "thumbnail_mode:ThumbnailModeStep",
+      "config": {
+        "sizes": [128, 256],
+        "format": "JPEG",
+        "quality": 85
+      }
+    }
+  ],
+  "execution": {
+    "parallel": ["segment", "features", "thumbnails"]
+  },
+  "resources": {
+    "gpu_count": 1,
+    "memory_limit": "16Gi",
+    "timeout_seconds": 3600,
+    "extra": {
+      "execution_mode": "in_process"
+    }
+  },
+  "output": {
+    "return_type": "raw",
+    "embedding_vector_size": 0
+  }
+}

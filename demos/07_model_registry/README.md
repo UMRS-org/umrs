@@ -5,7 +5,7 @@ models — including user's own trained models.
 
 ## Prerequisites
 
-- UMRS server running (see `demos/00_start_services/`)
+- UMRS server running and reachable
 - `umrs-client` available (installed via `pip install -e src/`)
 - `huggingface_hub` installed (for `model download` only)
 
@@ -88,7 +88,7 @@ For production with PostgreSQL, the full `model_registry/store.py`
    - Shared NFS: `/shared/users/<you>/models/my-model`
    - Your home dir: `/home/<you>/models/my-model`
 3. **Register**: `umrs-client model register my-model /path/to/weights --scope user`
-4. **Use** in your user config JSON by referencing the registered name
+4. **Use** in your config JSON by referencing the registered name
 
 ## Air-gapped / Restricted Network Support
 

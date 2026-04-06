@@ -9,11 +9,10 @@
 - **Getting started**: [User Guide](../doc/user_guide.md)
 - **Deploying UMRS**: [Admin Guide](../doc/admin_guide.md)
 - **Demos**: See [demos/README.md](../demos/README.md) for the full guide
-  - [00 — Start Services](../demos/00_start_services/README.md) (admin)
-  - [01 — Text Embedding](../demos/01_text_embedding/README.md) (basic)
-  - [02 — SAM3 Segmentation](../demos/02_sam3_segmentation/README.md) (basic)
-  - [03 — HMAE Inference](../demos/03_hmae_inference/README.md) (basic)
-  - [07 — User-Defined Models](../demos/07_user_model/README.md) (advanced)
+  - [01 — Health Check](../demos/01_health_check/README.md) (basic)
+  - [02 — Text Embedding](../demos/02_text_embedding/README.md) (basic)
+  - [03 — SAM3 Segmentation](../demos/03_sam3_segmentation/README.md) (basic)
+  - [08 — User-Defined Models](../demos/08_user_model/README.md) (advanced)
 
 ## Pipeline SDK (Optional)
 

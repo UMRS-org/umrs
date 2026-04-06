@@ -5,7 +5,7 @@ the consistency between S3 objects and the pgvector embedding database.
 
 ## Prerequisites
 
-- UMRS server running (see `demos/00_start_services/`)
+- UMRS server running and reachable
 - `umrs-client` available
 - At least one user configured with data already uploaded (run `demos/02_text_embedding/` first)
 

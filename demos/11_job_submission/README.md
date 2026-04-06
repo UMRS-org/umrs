@@ -8,7 +8,7 @@ you do need an explicit `job submit`:
 
 ## Prerequisites
 
-- UMRS server running (see `demos/00_start_services/`)
+- UMRS server running and reachable
 - `umrs-client` available
 
 ## Why 3 Job Types?

@@ -6,7 +6,7 @@
 # to the UMRS server, then triggering server-side execution.
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - UMRS server running
 #   - umrs-client installed and in PATH
 # =============================================================================
@@ -19,7 +19,7 @@ WORKFLOW_DIR="${SCRIPT_DIR}/workflow"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 
 banner "Demo 16: Custom Server-Side Workflow"
-echo "User config  : ${CONF}"
+echo "Config       : ${CONF}"
 echo ""
 
 # ---------- Step 1: Pre-flight ----------

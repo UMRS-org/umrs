@@ -1,5 +1,13 @@
 # hpbd-atom Demos
 
+> **DEPRECATED** — These deployment-specific demo wrappers are superseded by the
+> canonical demos at **[demos/](../../../demos/)**. The canonical demos work with
+> any deployment (Docker Compose, rccs-cloud, hpbd-atom, etc.) as long as the
+> server is reachable. See **[demos/README.md](../../../demos/README.md)** and
+> **[doc/demo_guide.md](../../../doc/demo_guide.md)** for the full walkthrough.
+>
+> These scripts remain for historical reference but will not receive updates.
+
 Lightweight demos for the hpbd-atom deployment.
 These run **on your local Mac** through SSH tunnels — no `podman exec` needed.
 

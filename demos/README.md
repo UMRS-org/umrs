@@ -3,20 +3,45 @@
 Step-by-step demos ordered from basic usage to advanced features.
 Each demo has a `run_demo.sh` that can be executed standalone.
 
+These demos work with **any deployment** (Docker Compose, rccs-cloud, hpbd-atom,
+or any other setup) as long as the UMRS server is reachable from your client
+machine.
+
+> For a full walkthrough of every demo, see **[doc/demo_guide.md](../doc/demo_guide.md)**.
+
 ## Prerequisites
 
 All demos (except 08, 12, 13 which run locally) require:
 
-1. **SSH tunnels** to the UMRS server (ports 5555, 5556, 9000; 8081 for RAG):
+1. **UMRS server running** on any supported deployment:
+   - Docker Compose (local dev): `docker compose up` from `docker/`
+   - HPC/cloud: follow the deployment guide for your site
+
+2. **Network connectivity** to the UMRS server. If the server is remote,
+   set up SSH tunnels for the required ports:
    ```bash
-   bash deploy/rccs-cloud/ssh_tunnel.sh
+   # Example: tunnel from your local machine to the remote server
+   ssh -N \
+       -L 5555:localhost:5555 \
+       -L 5556:localhost:5556 \
+       -L 9000:localhost:9000 \
+       -L 8081:localhost:8081 \
+       <your-server-host>
    ```
-2. **Python venv** with `umrs-client` installed:
+   Ports: **5555** (ZMQ control), **5556** (ZMQ data), **9000** (MinIO S3),
+   **8081** (RAG service — optional).
+
+   Site-specific tunnel scripts may be available under `deploy/<site>/ssh_tunnel.sh`.
+
+3. **Python venv** with `umrs-client` installed:
    ```bash
-   source deploy/rccs-cloud/.venv/bin/activate
-   unset UMRS_SERVER_HOST   # clear Docker Compose env leak
+   pip install -e src/            # install umrs package
+   which umrs-client              # verify it's in PATH
    ```
-3. **User config** at `~/.config/umrs/users/user1.json` with configured experiences.
+   Or use a site-specific venv (e.g. `deploy/<site>/.venv/bin/activate`).
+
+4. **Server config** at `~/.config/umrs/conf_umrs.json` with S3, users, and
+   experience definitions. Site-specific `setup_client.sh` scripts create this for you.
 
 All demos source `lib/common.sh` which provides the `$CLIENT` command,
 `preflight()`, `wait_tasks()`, `banner()`, `log()`, `ok()`, `warn()`, `die()`.
@@ -35,7 +60,7 @@ Core data flow: upload data → compute embeddings → search/export.
 |---|------|-------------------|
 | 02 | [Text Embedding](02_text_embedding/) | Upload text files, compute embeddings, export to CSV |
 | 03 | [SAM3 Segmentation](03_sam3_segmentation/) | Image segmentation via SAM3 + BentoML on HPC |
-| 04 | [HMAE Inference](04_hmae_inference/) | HMAE reconstruction/feature extraction (engine: `tmp/hmae-infer/`) |
+| 04 | [Vision Inference](04_vision_inference/) | Generic vision model inference via BentoML (SAM3 or any registered model) |
 | 05 | [RAG Search](05_rag_search/) | Semantic search: vector, hybrid BM25, reranking, Q&A |
 
 ## Operations & Maintenance
@@ -54,8 +79,8 @@ Multi-step pipelines, user-defined models, and complex analysis.
 | # | Demo | What you'll learn |
 |---|------|-------------------|
 | 08 | [User-Defined Models](08_user_model/) | Custom model workflows via Step + `workflow.json` |
-| 09 | [Defect Analysis](09_defect_analysis/) | Multi-step pipeline: SAM3 → crop → HMAE → clustering |
-| 10 | [HMAE Full Pipeline](10_hmae_full_pipeline/) | Full HMAE pipeline: reconstruct + MAE + features in parallel |
+| 09 | [Multi-Step Vision Pipeline](09_multistep_vision_pipeline/) | 3-step pipeline: segment → crop regions → image statistics |
+| 10 | [Multi-Mode Vision](10_vision_multi_mode/) | Parallel branches: segmentation + features + thumbnails |
 
 ## Infrastructure
 
@@ -73,7 +98,7 @@ Domain-specific analysis workflows running on UMRS.
 
 | # | Demo | What you'll learn |
 |---|------|-------------------|
-| 14 | [Opossum Analysis](14_opossum_analysis/) | Video motion analysis for opossum mating detection (engine: `tmp/opossum/`) |
+| 14 | [Video Analysis](14_video_analysis/) | Video motion detection via OpenCV frame differencing (CPU only) |
 
 ## Advanced Features
 
@@ -99,7 +124,7 @@ New to UMRS?
   → Demo 01 (health check) then Demo 02 (text embedding)
 
 Working with images?
-  → Demo 03 (SAM3) or Demo 04 (HMAE)
+  → Demo 03 (SAM3) or Demo 04 (vision inference)
 
 Want to search over embeddings?
   → Demo 05 (RAG search) — needs Demo 02 data first
@@ -108,7 +133,7 @@ Something seems wrong with my data?
   → Demo 06 (check + update)
 
 Need a custom model or pipeline?
-  → Demo 08 (Step) or Demo 09 (multi-step defect analysis)
+  → Demo 08 (Step) or Demo 09 (multi-step vision pipeline)
 
 Managing models on HPC?
   → Demo 07 (model registry)
@@ -117,7 +142,7 @@ Need to pre-warm GPU nodes?
   → Demo 11 (job submission with --keep-alive)
 
 Analyzing video data?
-  → Demo 14 (opossum motion detection)
+  → Demo 14 (video motion detection)
 
 Want parallel DAG pipelines?
   → Demo 15 (complex DAG with merging)
@@ -163,7 +188,7 @@ Want a live TUI dashboard?
 
 | Variable | Used by | Description |
 |----------|---------|-------------|
-| `UMRS_USER_CONF` | all | Path to user config JSON (default: `~/.config/umrs/users/user1.json`) |
+| `UMRS_CONF` | all | Path to server config JSON (default: `~/.config/umrs/conf_umrs.json`) |
 | `FORCE_RECOMPUTE` | 03 | Set to `1` to trigger full recompute after upload |
 | `MAX_IMAGES` | 03, 09, 10 | Limit number of images to upload (default: 2-3) |
 | `HMAE_LOCAL_MODEL_DIR` | 04 | Path to HMAE checkpoint dir for model registration |

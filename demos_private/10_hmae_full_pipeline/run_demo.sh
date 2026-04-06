@@ -10,7 +10,7 @@
 # add additional experiences with separate bucket aliases (see README.md).
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - UMRS server running with HMAE Inference experience
 #   - BentoML vision service available on compute node
 # ──────────────────────────────────────────────────────────────────────────

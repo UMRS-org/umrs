@@ -100,11 +100,10 @@ Step-by-step demos that walk through UMRS workflows end to end:
 
 | Demo | Description |
 |------|-------------|
-| [demos/00_start_services/](demos/00_start_services/) | Start all UMRS services (control plane + host slurmd) |
-| [demos/01_health_check/](demos/01_health_check/) | Verify UMRS server connectivity and user configuration |
+| [demos/01_health_check/](demos/01_health_check/) | Verify UMRS server connectivity and configuration |
 | [demos/02_text_embedding/](demos/02_text_embedding/) | Upload text → server-side embedding → export vectors |
 | [demos/03_sam3_segmentation/](demos/03_sam3_segmentation/) | SAM3 image segmentation via BentoML on Slurm |
-| [demos/04_hmae_inference/](demos/04_hmae_inference/) | HMAE reconstruction / feature extraction via Slurm |
+| [demos/04_vision_inference/](demos/04_vision_inference/) | Generic vision model inference via BentoML |
 | [demos/05_rag_search/](demos/05_rag_search/) | RAG semantic search: vector, hybrid, reranking, Q&A |
 | [demos/06_server_maintenance/](demos/06_server_maintenance/) | Maintenance: list_buckets, check, update, recompute |
 | [demos/07_model_registry/](demos/07_model_registry/) | Model registry: register, upload, verify, filter |
@@ -188,11 +187,10 @@ src/                        Core application code
     └── ...                  S3, SQL, ZMQ, auth, config, etc.
 
 demos/                       Step-by-step demos (basic → advanced)
-├── 00_start_services/       Admin: start/stop all services
 ├── 01_health_check/         Health: connectivity & config check
 ├── 02_text_embedding/       Basic: text embedding workflow
 ├── 03_sam3_segmentation/    Basic: SAM3 vision pipeline
-├── 04_hmae_inference/       Basic: HMAE vision pipeline
+├── 04_vision_inference/     Basic: generic vision model inference
 ├── 05_rag_search/           Basic: RAG semantic search + Q&A
 ├── 06_server_maintenance/   Ops: data integrity (check, update, recompute)
 ├── 07_model_registry/       Ops: model management

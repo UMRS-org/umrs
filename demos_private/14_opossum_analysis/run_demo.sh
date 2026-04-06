@@ -18,7 +18,7 @@
 # organised in hourly subdirectories (20/, 21/, 22/, 23/).
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - UMRS server running
 #   - Python with opencv-python-headless and numpy available
 #

@@ -4,7 +4,7 @@ Demonstrates UMRS RAG (Retrieval-Augmented Generation) search over embedded text
 
 ## Prerequisites
 
-1. Services running → `demos/00_start_services/`
+1. UMRS server running and reachable
 2. Embeddings computed → `demos/02_text_embedding/`
 3. RAG service enabled: set `UMRS_RAG_ENABLE=1` in `demos/slurm-dev/.env` before starting services
 

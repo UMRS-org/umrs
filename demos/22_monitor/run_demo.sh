@@ -8,7 +8,7 @@
 #   3. Show how to launch the interactive live dashboard
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556)
 #   - UMRS server running
 #   - umrs-client installed, `rich` library installed
 # =============================================================================

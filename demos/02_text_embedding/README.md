@@ -5,9 +5,9 @@ verify results in pgvector, and export.
 
 ## Prerequisites
 
-- Services running (see [Demo 00](../00_start_services/README.md))
+- Services running
 - UMRS client installed (`pip install .` from `src/`)
-- User config JSON from your admin
+- Server config JSON from your admin
 
 ## Quick Start
 
@@ -57,7 +57,7 @@ Sample text files in `test_data/text/` (symlinked from `demos/slurm-dev/test_dat
 
 ## Configuration
 
-The demo uses the Rivault demo user config (`conf_umrs.json`), which defines:
+The demo uses the Rivault demo config (`conf_umrs.json`), which defines:
 - Username: `rivault_user`
 - Bucket: `rivault-demo-bucket`
 - Model: `intfloat/e5-base-v2` (768-d embeddings via vLLM in Mini-Rivault)
@@ -100,7 +100,7 @@ The `custom_embedding/` directory contains a complete working example:
 }
 ```
 
-2. Set `model_type` in your user config to reference the workflow:
+2. Set `model_type` in your config to reference the workflow:
 
 ```json
 {

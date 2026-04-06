@@ -9,7 +9,7 @@
 
 # --- Default configuration ---
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-CONF="${UMRS_USER_CONF:-${HOME}/.config/umrs/users/user1.json}"
+CONF="${UMRS_CONF:-${UMRS_USER_CONF:-${HOME}/.config/umrs/conf_umrs.json}}"
 CLIENT="umrs-client -c ${CONF}"
 
 # --- Logging helpers ---

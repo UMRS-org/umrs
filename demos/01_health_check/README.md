@@ -1,12 +1,14 @@
 # Demo 01: Health Check
 
-Quick connectivity check for the UMRS server.
+Quick connectivity check for the UMRS server. Works with any deployment
+(Docker Compose, rccs-cloud, hpbd-atom, etc.).
 
 ## Prerequisites
 
-- Services running (see [Demo 00](../00_start_services/README.md))
-- UMRS client installed (`pip install .` from `src/`)
-- User config JSON from your admin
+- UMRS server running (any deployment)
+- Network connectivity (SSH tunnels if remote)
+- `umrs-client` installed and in PATH
+- User config at `~/.config/umrs/users/user1.json`
 
 ## Quick Start
 
@@ -17,33 +19,46 @@ bash run_demo.sh
 
 ## What This Demo Does
 
-1. **Ping** the UMRS server to verify it is reachable
-2. **List buckets** to confirm the user's S3 configuration
-3. **Server status** to confirm backend services are healthy
+1. **Port connectivity** — checks ZMQ control (5555), ZMQ data (5556), MinIO (9000)
+2. **Ping** the UMRS server via `umrs-client`
+3. **RAG service** — checks if the optional RAG endpoint (8081) is available
+4. **List buckets** to confirm the user's S3 configuration
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `UMRS_ZMQ_HOST` | `localhost` | Host for ZMQ ports |
+| `UMRS_ZMQ_PORT` | `5555` | ZMQ control port |
+| `UMRS_ZMQ_DATA_PORT` | `5556` | ZMQ data port |
+| `UMRS_MINIO_HOST` | `localhost` | MinIO host |
+| `UMRS_MINIO_PORT` | `9000` | MinIO port |
+| `RAG_URL` | `http://localhost:8081` | RAG service URL |
 
 ## Running Manually
 
 ```bash
-# Ping the server
-python ../../src/client_umrs.py --conf ../../docker/conf_umrs.json ping
+# Check port connectivity
+nc -z localhost 5555 && echo "ZMQ OK"
+curl -sf http://localhost:9000/minio/health/live && echo "MinIO OK"
+
+# Ping the UMRS server
+umrs-client -c ~/.config/umrs/users/user1.json ping
 
 # List configured buckets
-python ../../src/client_umrs.py --conf ../../docker/conf_umrs.json list_buckets
+umrs-client -c ~/.config/umrs/users/user1.json list_buckets
 ```
 
 ## Expected Output
 
 ```
-Server is alive — UMRS is reachable.
-Bucket list:
-  bucket_alias_1  →  s3://bucket-name-1
+[health_check]   ✓ ZMQ control  (localhost:5555)
+[health_check]   ✓ MinIO S3     (localhost:9000)
+[health_check] Server is ready.
+[health_check]   ✓ RAG service  (http://localhost:8081)
 ```
 
-If the ping fails, check that:
-- The UMRS server is running (`demos/00_start_services/start_all.sh`)
-- The config JSON has the correct `server_host` and `server_port`
-
-## Next Steps
-
-- [Demo 02: Text Embedding](../02_text_embedding/README.md) — upload text files and compute embeddings
-- [Demo 03: SAM3 Segmentation](../03_sam3_segmentation/README.md) — image segmentation via SAM3
+If checks fail, verify that:
+- The UMRS server is running
+- SSH tunnels are active (if remote): ports 5555, 5556, 9000, 8081
+- Your config file has the correct server settings
