@@ -128,7 +128,7 @@
       "sql_username": "usr1_opossum",
       "modalities": [
         {
-          "modality_name": "video",
+          "modality_name": "movie",
           "s3": {
             "bucket_alias": "user1-opossum",
             "need_output_bucket": true,

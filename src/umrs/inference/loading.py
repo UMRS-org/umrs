@@ -163,6 +163,15 @@ def load_model(model_cfg, modality, task=None):
         return_type = pipeline.workflow.output.return_type
         vector_size = pipeline.workflow.output.embedding_vector_size or vector_size
 
+    elif model_type.startswith("pipeline://"):
+        model = model_cfg
+        model["model_type"] = model_type
+        model["_modality"] = modality
+        model["_task"] = task
+        type = "pipeline"
+        input_type = None
+        compute_embeddings_func = None
+
     elif model_type.startswith("rivault://"):
         model = model_cfg
         model["model_type"] = model_type[len("rivault://"):]
