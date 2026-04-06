@@ -43,9 +43,21 @@ export UMRS_S3_TUNNEL_HOST="${UMRS_S3_TUNNEL_HOST:-${SLURM_SUBMIT_HOST}}"
 export UMRS_S3_TUNNEL_PORT="${UMRS_S3_TUNNEL_PORT:-9000}"
 
 # ─── Vision stack profile ─────────────────────────────────────────────────────
-# Use "harness vision-bentoml" so the BentoML vision service is started.
-# This covers both SAM3 segmentation and HMAE inference.
-export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vision-bentoml}"
+# Use "harness vllm vision-bentoml" to start all services:
+#   - harness: nginx, litellm, ll-postgres, coredns, minio proxy
+#   - vllm: model server for text embeddings (e5-base-v2, clip, etc.)
+#   - vision-bentoml: BentoML vision service (SAM3, HMAE)
+export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vllm vision-bentoml}"
+
+# ─── Fixed NGINX port for LiteLLM/BentoML proxy ──────────────────────────────
+# The inner serve-model.slurm randomises NGINX_LITELLM_DOCKER_PORT when unset.
+# We pin it so the UMRS server can create an SSH tunnel to a known port
+# (RIVAULT_REMOTE_PORT in .env must match this value).
+export NGINX_LITELLM_DOCKER_PORT="${NGINX_LITELLM_DOCKER_PORT:-8001}"
+
+# ─── LiteLLM API key (shared between Slurm job and UMRS server) ─────────────
+# Must match LITELLM_MASTER_KEY in .env so the server can authenticate.
+export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-umrs-rccs-litellm-key}"
 
 # ─── Model cache on Lustre (inherit from server or set default) ──────────────
 export SAM3_MODEL_PATH="${SAM3_MODEL_PATH:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/sam3}"
@@ -53,6 +65,16 @@ export HMAE_MODEL_PATH="${HMAE_MODEL_PATH:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_mode
 export HMAE_CONFIG_PATH="${HMAE_CONFIG_PATH:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/infer_hmae_vit_b.yaml}"
 export HMAE_CHECKPOINT="${HMAE_CHECKPOINT:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/latest_checkpoint.pth}"
 export USER_MODEL_PATH="${USER_MODEL_PATH:-/tmp}"
+
+# ─── vLLM configuration (embedding model on GPU) ─────────────────────────────
+# VLLM_PATH_TO_HUGGINGFACE: HuggingFace hub cache on Lustre (shared with login)
+# VLLM_MODEL: model to serve via vLLM (must be in HF cache)
+# VLLM_DOCKER_TAG: vLLM image tag for Blackwell GPU (aarch64 + CUDA 13.0)
+# VLLM_GPU_MEM_UTIL: low memory fraction — keep room for BentoML vision
+export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/rccs-dmp/mnagaso/umrs_models/hf}"
+export VLLM_MODEL="${VLLM_MODEL:-intfloat/e5-base-v2}"
+export VLLM_DOCKER_TAG="${VLLM_DOCKER_TAG:-cu130-nightly-aarch64}"
+export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.10}"
 
 # ─── Fix HOME (container sets HOME=/root, but job runs as actual user) ────────
 # Inside the umrs-server container HOME=/root. When sbatch is submitted,
@@ -105,9 +127,9 @@ EOF
 #   1. podman local store (/var/tmp/podman_$USER/storage) — survives across jobs on same node
 #   2. Lustre tarball — shared across all compute nodes
 #   3. Build from source — first time only, then saved to Lustre
-_VISION_IMAGE="umrs-vision:latest"
-_VISION_TARBALL="/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar"
-_UMRS_REPO="/lvs0/dne1/rccs-dmp/mnagaso/umrs"
+_VISION_IMAGE="${BENTOML_VISION_IMAGE:-umrs-vision:latest}"
+_VISION_TARBALL="${VISION_TARBALL:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar}"
+_UMRS_REPO="${UMRS_REPO:-/lvs0/dne1/rccs-dmp/mnagaso/umrs}"
 
 export BENTOML_VISION_IMAGE="${_VISION_IMAGE}"
 
@@ -115,19 +137,37 @@ export BENTOML_VISION_IMAGE="${_VISION_IMAGE}"
 export CONTAINERS_CGROUP_MANAGER=cgroupfs
 loginctl enable-linger "$(whoami)" 2>/dev/null || true
 
-# ─── GPU passthrough: generate device-based x_nvidia-override.yaml ────────────
-# podman 4.x on this cluster cannot resolve CDI `nvidia.com/gpu=all`.
-# Instead, detect GPU device nodes and overwrite x_nvidia-override.yaml
-# with direct /dev/nvidia* device mappings. The inner serve-model.slurm
-# picks up x_nvidia-override.yaml automatically when nvidia-smi detects GPUs.
+# ─── GPU passthrough: use CDI or device-based x_nvidia-override.yaml ──────────
+# Prefer CDI (nvidia-ctk) when available — it handles both device nodes AND
+# host driver library mounts automatically. Fall back to raw device mapping
+# (which may require manual library volume mounts for containers like vLLM).
 if ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
-    _GPU_DEVS=""
-    for _dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
-        [[ -e "$_dev" ]] && _GPU_DEVS="${_GPU_DEVS}      - ${_dev}:${_dev}:rwm\n"
-    done
-    if [[ -n "$_GPU_DEVS" ]]; then
-        _OVERRIDE="${RIVAULT_DIR}/x_nvidia-override.yaml"
-        echo "[wrapper] Generating device-based GPU override: ${_OVERRIDE}"
+    _OVERRIDE="${RIVAULT_DIR}/x_nvidia-override.yaml"
+    if nvidia-ctk cdi list 2>/dev/null | grep -q 'nvidia.com/gpu=all'; then
+        echo "[wrapper] CDI available — generating CDI-based GPU override: ${_OVERRIDE}"
+        cat > "${_OVERRIDE}" <<GPUEOF
+services:
+  vllm:
+    shm_size: \${VLLM_NCCL_MEM_LIMIT:?error}
+    devices:
+      - nvidia.com/gpu=all
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+  bentoml-vision:
+    devices:
+      - nvidia.com/gpu=all
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+GPUEOF
+    else
+        echo "[wrapper] CDI not available — generating device-based GPU override: ${_OVERRIDE}"
+        _GPU_DEVS=""
+        for _dev in /dev/nvidia[0-9]* /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools /dev/nvidia-caps/nvidia-cap1 /dev/nvidia-caps/nvidia-cap2; do
+            [[ -e "$_dev" ]] && _GPU_DEVS="${_GPU_DEVS}      - ${_dev}:${_dev}:rwm\n"
+        done
         cat > "${_OVERRIDE}" <<GPUEOF
 services:
   vllm:
@@ -145,19 +185,21 @@ $(echo -e "$_GPU_DEVS")
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
 GPUEOF
-        echo "[wrapper] Device-based GPU override written."
     fi
+    echo "[wrapper] GPU override written."
 else
     echo "[wrapper] No NVIDIA GPUs detected at /dev/nvidia*"
 fi
 
 # ─── Clean up stale podman state from previous runs ──────────────────────────
-# Each Slurm job starts fresh: reset ALL containers/pods/networks so that
-# lock-corrupted state from previous failed jobs never blocks startup.
-# `podman system reset --force` removes containers, pods, networks, but
-# also clears the image store. We reload the vision image from the Lustre
-# tarball afterward (fast — just a local copy).
-podman system reset --force 2>/dev/null || true
+# Each Slurm job starts fresh: remove all containers, pods, and networks so
+# that lock-corrupted state from previous failed jobs never blocks startup.
+# NOTE: We intentionally KEEP the image cache (/var/tmp/podman_$USER/storage)
+# so that large images (vLLM ~10GB, vision ~5GB) don't need to be re-pulled
+# or re-loaded on every job.
+podman pod rm -af 2>/dev/null || true
+podman rm -af 2>/dev/null || true
+podman network prune -f 2>/dev/null || true
 
 # Also clean stale storage left by earlier runs that used an empty $USER
 # (graphroot "/var/tmp/podman_/storage/" instead of the correct one).

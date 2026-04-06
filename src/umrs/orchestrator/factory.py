@@ -40,6 +40,10 @@ def _lazy_register_builtins() -> None:
         register_backend("docker-compose", DockerComposeBackend)
         register_backend("compose", DockerComposeBackend)
 
+    if "slurm-podman" not in _BACKEND_REGISTRY:
+        from .slurm_podman_backend import SlurmPodmanBackend
+        register_backend("slurm-podman", SlurmPodmanBackend)
+
 
 def _detect_backend() -> str:
     """Auto-detect the best available backend."""

@@ -1,0 +1,75 @@
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — RCCS Cloud (NVIDIA GB10 Blackwell)
+# ─────────────────────────────────────────────────────────────
+# This file replaces the hardcoded paths scattered across
+# serve-model.slurm, env.example, and environment variables.
+#
+# Loading priority:
+#   1. UMRS_SITE_CONFIG=/path/to/this/file
+#   2. ./site.yaml  (in CWD when starting UMRS)
+#   3. ~/.config/umrs/site.yaml
+# ─────────────────────────────────────────────────────────────
+
+name: rccs-cloud
+description: >-
+  RIKEN RCCS cloud — single NVIDIA GB10 Blackwell aarch64 node,
+  Slurm scheduler, rootless Podman 4.9, Lustre shared filesystem.
+
+scheduler:
+  kind: slurm
+  partition: ng-dgx-s
+  account: ""
+  qos: ""
+  time_limit: "04:00:00"
+  gpus: 1
+  cpus: 8
+  memory: "64G"
+
+runtime:
+  kind: podman-compose
+  rivault_dir: /lvs0/dne1/rccs-dmp/mnagaso/umrs/src/umrs/mini-rivault-llm
+  repo_dir: /lvs0/dne1/rccs-dmp/mnagaso/umrs
+  vision_image: umrs-vision:latest
+  compose_file: ""                       # defaults to serve-model.yaml inside rivault_dir
+  profiles:
+    - harness
+    - vllm
+    - vision-bentoml
+  gpu_passthrough: auto                  # try CDI first, fall back to device mapping
+  cdi_spec: /var/run/cdi/nvidia.yaml
+  cgroup_manager: cgroupfs
+  storage_root: ""                       # auto-set to /var/tmp/podman_$USER/storage
+
+storage:
+  model_cache_dir: /lvs0/rccs-dmp/mnagaso/umrs_models/hf
+  sam3_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/sam3
+  hmae_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae
+  hmae_config_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/infer_hmae_vit_b.yaml
+  hmae_checkpoint: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/latest_checkpoint.pth
+  vision_tarball: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar
+  user_model_path: /tmp
+  s3_tunnel_host: ""                     # auto-set to $SLURM_SUBMIT_HOST
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: umrs-rccs-litellm-key
+  port_range_min: 11434
+  port_range_max: 11534
+  port_strategy: static_range
+
+vllm:
+  model: intfloat/e5-base-v2
+  docker_tag: cu130-nightly-aarch64
+  gpu_mem_util: 0.10
+  max_model_len: 4096
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+database:
+  host: localhost
+  port: 5432
+  superuser: umrs
+  superuser_password: umrs_rccs
+  user_password: ""
+  registry_dsn: ""                       # set to postgres://umrs:umrs_rccs@localhost:5432/umrs_db to enable PG-backed registry

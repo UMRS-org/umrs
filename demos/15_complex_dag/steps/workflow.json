@@ -1,0 +1,19 @@
+{
+  "name": "complex-dag-demo",
+  "version": "1.0",
+  "source": {
+    "type": "local_path",
+    "path": "."
+  },
+  "execution_mode": "in_process",
+  "steps": [
+    {"name": "load_data",        "entrypoint": "steps:LoadData",        "config": {},  "depends_on": []},
+    {"name": "analyze_text",     "entrypoint": "steps:AnalyzeText",     "config": {},  "depends_on": ["load_data"]},
+    {"name": "analyze_metadata", "entrypoint": "steps:AnalyzeMetadata", "config": {},  "depends_on": ["load_data"]},
+    {"name": "merge_results",    "entrypoint": "steps:MergeResults",    "config": {},  "depends_on": ["analyze_text", "analyze_metadata"]},
+    {"name": "generate_report",  "entrypoint": "steps:GenerateReport",  "config": {},  "depends_on": ["merge_results"]}
+  ],
+  "output": {
+    "return_type": "file"
+  }
+}

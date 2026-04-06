@@ -1,5 +1,41 @@
 # TODO
 
+## Robust Orchestration — Converge & Harden (2026-07-01)
+
+**Goal:** Replace fragile rivault_launcher + site-specific shell wrapper with
+unified orchestration using the existing (but unused) infrastructure in
+`src/umrs/orchestrator/`.
+
+### Discovery: Existing infrastructure already covers Phases 2, 3, 5
+- `detection.py` — BackendDetector (Slurm/K8s/Compose auto-detect) ✅
+- `ports.py` — PortAllocator (StaticRange, RegistryLock, K8sService) ✅
+- `registry_backend.py` — PostgresBackend for endpoint persistence ✅
+- `endpoint_registry.py` — EndpointRegistry with TTL + persistence ✅
+- `service.py` — OrchestrationService with provision flow ✅
+- `readiness.py` — Authoritative readiness polling ✅
+- `durable.py` — Crash-safe provisioning via job system ✅
+
+### Phase 1 — SiteConfig (eliminate hardcoded values)
+- [x] 1a  Create `src/umrs/orchestrator/site_config.py` (SiteConfig dataclass + YAML loader)
+- [x] 1b  Create `deploy/rccs-cloud/site.yaml` (rccs-cloud site definition)
+- [x] 1c  Wire SiteConfig into `OrchestratorConfig.from_env()` + `serve-model.slurm`
+
+### Phase 4 — Slurm+Podman-Compose Backend
+- [x] 4a  Create `src/umrs/orchestrator/slurm_podman_backend.py`
+       (SlurmPodmanBackend: sbatch using site's serve-model.slurm + podman-compose)
+- [x] 4b  Register in factory.py as "slurm-podman" backend
+- [x] 4c  Tests for site_config + slurm_podman_backend (59/59 pass)
+
+### Phase 6 — Wire rivault_launcher
+- [x] 6c  Replace diskcache with EndpointRegistry in rivault_launcher
+- [x] 6d  serve-model.slurm reads from `site.yaml` instead of hardcoded paths
+- [x] 6e  `get_rivault_remote_port()` falls back to SiteConfig
+- [x] 6f  `launch_rivault_model()` injects site.yaml into env before sbatch
+- [ ] 6a  Refactor rivault_launcher to use OrchestrationService.provision() (future)
+- [ ] 6b  SSH tunnels use allocated ports from PortManager (future)
+
+---
+
 ## Open Items
 
 ### LiteLLM / Embedding Proxy (2026-03-08)

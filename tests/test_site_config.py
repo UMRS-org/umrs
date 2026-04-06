@@ -1,0 +1,363 @@
+"""
+Unit tests for SiteConfig (YAML-based site configuration).
+"""
+
+import os
+import textwrap
+from pathlib import Path
+from unittest.mock import patch
+
+import pytest
+
+from umrs.orchestrator.site_config import (
+    SiteConfig,
+    SchedulerConfig,
+    RuntimeConfig,
+    StorageConfig,
+    NetworkConfig,
+    VllmConfig,
+    DatabaseConfig,
+    default_site_config,
+    load_site_config,
+    get_site_config,
+    reset_site_config,
+    _parse_raw,
+)
+
+
+# =============================================================================
+# Fixtures
+# =============================================================================
+
+
+@pytest.fixture(autouse=True)
+def _reset_singleton():
+    """Ensure each test starts with a clean singleton."""
+    reset_site_config()
+    yield
+    reset_site_config()
+
+
+MINIMAL_YAML = textwrap.dedent("""\
+    name: test-site
+    description: Unit test site
+    scheduler:
+      kind: slurm
+      partition: test-gpu
+    runtime:
+      kind: podman-compose
+      rivault_dir: /opt/rivault
+    storage:
+      model_cache_dir: /models/hf
+    network:
+      litellm_port: 9001
+      litellm_master_key: sk-test
+    vllm:
+      model: intfloat/e5-base-v2
+      gpu_mem_util: 0.15
+    database:
+      host: db-host
+      port: 5433
+""")
+
+
+FULL_YAML = textwrap.dedent("""\
+    name: full-site
+    description: Full test with every field
+    scheduler:
+      kind: slurm
+      partition: a100
+      account: myaccount
+      qos: high
+      time_limit: "08:00:00"
+      gpus: 4
+      cpus: 32
+      memory: "256G"
+      extra_sbatch:
+        - --constraint=a100
+        - --exclusive
+    runtime:
+      kind: podman-compose
+      rivault_dir: /opt/rivault
+      compose_file: custom-compose.yaml
+      profiles:
+        - harness
+        - vllm
+      gpu_passthrough: cdi
+      cdi_spec: /run/cdi/nvidia.yaml
+      cgroup_manager: systemd
+      storage_root: /var/tmp/podman_test
+    storage:
+      model_cache_dir: /scratch/models
+      sam3_model_path: /scratch/sam3
+      hmae_model_path: /scratch/hmae
+      hmae_config_path: /scratch/hmae/config.yaml
+      hmae_checkpoint: /scratch/hmae/ckpt.pth
+      vision_tarball: /scratch/vision.tar
+      user_model_path: /scratch/user
+      s3_tunnel_host: login01
+      s3_tunnel_port: 9999
+    network:
+      litellm_port: 8001
+      litellm_master_key: sk-full
+      port_range_min: 20000
+      port_range_max: 20100
+      port_strategy: registry_lock
+    vllm:
+      model: meta/llama-3
+      docker_tag: latest-gpu
+      gpu_mem_util: 0.90
+      max_model_len: 8192
+      max_num_seqs: 16
+      tensor_parallel_size: 4
+    database:
+      host: pg-host
+      port: 5432
+      superuser: admin
+      superuser_password: s3cret
+      user_password: u_pass
+      registry_dsn: postgres://admin:s3cret@pg-host:5432/umrs_db
+    extra:
+      custom_key: custom_value
+""")
+
+
+# =============================================================================
+# Tests — dataclass defaults
+# =============================================================================
+
+
+class TestSiteConfigDefaults:
+    """Verify sane defaults when no YAML / env vars are set."""
+
+    def test_default_name(self):
+        cfg = SiteConfig()
+        assert cfg.name == "default"
+
+    def test_scheduler_defaults(self):
+        s = SchedulerConfig()
+        assert s.kind == "slurm"
+        assert s.partition == ""
+        assert s.time_limit == "04:00:00"
+        assert s.gpus == 1
+
+    def test_runtime_defaults(self):
+        r = RuntimeConfig()
+        assert r.kind == "podman-compose"
+        assert r.gpu_passthrough == "auto"
+        assert r.profiles == ["harness", "vllm", "vision-bentoml"]
+
+    def test_network_defaults(self):
+        n = NetworkConfig()
+        assert n.litellm_port == 8001
+        assert n.port_range_min == 11434
+        assert n.port_range_max == 11534
+        assert n.port_strategy == "static_range"
+
+
+# =============================================================================
+# Tests — YAML loading
+# =============================================================================
+
+
+class TestLoadSiteConfig:
+    """Test load_site_config from YAML files."""
+
+    def test_load_minimal(self, tmp_path):
+        p = tmp_path / "site.yaml"
+        p.write_text(MINIMAL_YAML)
+        cfg = load_site_config(str(p))
+
+        assert cfg.name == "test-site"
+        assert cfg.scheduler.partition == "test-gpu"
+        assert cfg.runtime.kind == "podman-compose"
+        assert cfg.runtime.rivault_dir == "/opt/rivault"
+        assert cfg.storage.model_cache_dir == "/models/hf"
+        assert cfg.network.litellm_port == 9001
+        assert cfg.network.litellm_master_key == "sk-test"
+        assert cfg.vllm.model == "intfloat/e5-base-v2"
+        assert cfg.vllm.gpu_mem_util == 0.15
+        assert cfg.database.host == "db-host"
+        assert cfg.database.port == 5433
+
+    def test_load_full(self, tmp_path):
+        p = tmp_path / "site.yaml"
+        p.write_text(FULL_YAML)
+        cfg = load_site_config(str(p))
+
+        assert cfg.name == "full-site"
+        assert cfg.scheduler.account == "myaccount"
+        assert cfg.scheduler.qos == "high"
+        assert cfg.scheduler.extra_sbatch == ["--constraint=a100", "--exclusive"]
+        assert cfg.runtime.gpu_passthrough == "cdi"
+        assert cfg.storage.s3_tunnel_host == "login01"
+        assert cfg.storage.s3_tunnel_port == 9999
+        assert cfg.network.port_strategy == "registry_lock"
+        assert cfg.vllm.tensor_parallel_size == 4
+        assert cfg.database.registry_dsn == "postgres://admin:s3cret@pg-host:5432/umrs_db"
+        assert cfg.extra == {"custom_key": "custom_value"}
+
+    def test_file_not_found_raises(self):
+        with pytest.raises(FileNotFoundError):
+            load_site_config("/nonexistent/site.yaml")
+
+    def test_unknown_keys_ignored(self, tmp_path):
+        p = tmp_path / "site.yaml"
+        p.write_text("name: x\nscheduler:\n  kind: slurm\n  unknown_field: 42\n")
+        cfg = load_site_config(str(p))
+        assert cfg.scheduler.kind == "slurm"
+
+    def test_empty_yaml(self, tmp_path):
+        p = tmp_path / "site.yaml"
+        p.write_text("")
+        cfg = load_site_config(str(p))
+        assert cfg.name == "default"
+
+    def test_search_path_umrs_site_config_env(self, tmp_path):
+        p = tmp_path / "custom_site.yaml"
+        p.write_text(MINIMAL_YAML)
+        with patch.dict(os.environ, {"UMRS_SITE_CONFIG": str(p)}):
+            cfg = load_site_config()
+            assert cfg.name == "test-site"
+
+    def test_search_path_cwd(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "site.yaml").write_text(MINIMAL_YAML)
+        # Clear UMRS_SITE_CONFIG so CWD is tried
+        with patch.dict(os.environ, {}, clear=True):
+            cfg = load_site_config()
+            assert cfg.name == "test-site"
+
+
+# =============================================================================
+# Tests — to_env / inject_env
+# =============================================================================
+
+
+class TestToEnv:
+    """Test SiteConfig ↔ environment variable bridging."""
+
+    def test_to_env_contains_scheduler(self):
+        cfg = SiteConfig(
+            scheduler=SchedulerConfig(partition="big-gpu", gpus=4, memory="128G"),
+        )
+        env = cfg.to_env()
+        assert env["SLURM_PARTITION"] == "big-gpu"
+        assert env["SLURM_GPUS"] == "4"
+        assert env["SLURM_MEM"] == "128G"
+
+    def test_to_env_contains_network(self):
+        cfg = SiteConfig(
+            network=NetworkConfig(litellm_port=9001, litellm_master_key="sk-x"),
+        )
+        env = cfg.to_env()
+        assert env["NGINX_LITELLM_DOCKER_PORT"] == "9001"
+        assert env["LITELLM_MASTER_KEY"] == "sk-x"
+        assert env["RIVAULT_REMOTE_PORT"] == "9001"
+
+    def test_to_env_contains_vllm(self):
+        cfg = SiteConfig(
+            vllm=VllmConfig(model="llama-3", docker_tag="nightly", gpu_mem_util=0.85),
+        )
+        env = cfg.to_env()
+        assert env["VLLM_MODEL"] == "llama-3"
+        assert env["VLLM_DOCKER_TAG"] == "nightly"
+        assert env["VLLM_GPU_MEM_UTIL"] == "0.85"
+
+    def test_to_env_omits_empty_values(self):
+        cfg = SiteConfig()  # all defaults
+        env = cfg.to_env()
+        # partition is "" by default → should not appear
+        assert "SLURM_PARTITION" not in env
+
+    def test_inject_env_no_overwrite(self, monkeypatch):
+        monkeypatch.setenv("SLURM_PARTITION", "already-set")
+        cfg = SiteConfig(scheduler=SchedulerConfig(partition="from-yaml"))
+        cfg.inject_env(overwrite=False)
+        assert os.environ["SLURM_PARTITION"] == "already-set"
+
+    def test_inject_env_overwrite(self, monkeypatch):
+        monkeypatch.setenv("SLURM_PARTITION", "already-set")
+        cfg = SiteConfig(scheduler=SchedulerConfig(partition="from-yaml"))
+        cfg.inject_env(overwrite=True)
+        assert os.environ["SLURM_PARTITION"] == "from-yaml"
+
+
+# =============================================================================
+# Tests — default_site_config (env-var fallback)
+# =============================================================================
+
+
+class TestDefaultSiteConfig:
+    """Test env-var-only fallback path."""
+
+    def test_reads_env_vars(self, monkeypatch):
+        monkeypatch.setenv("SLURM_PARTITION", "env-part")
+        monkeypatch.setenv("RIVAULT_REMOTE_PORT", "9999")
+        monkeypatch.setenv("VLLM_MODEL", "custom-model")
+        monkeypatch.delenv("DB_SUPERUSER", raising=False)
+        monkeypatch.setenv("POSTGRES_USER", "pg_user_env")
+
+        cfg = default_site_config()
+        assert cfg.name == "env-fallback"
+        assert cfg.scheduler.partition == "env-part"
+        assert cfg.vllm.model == "custom-model"
+        assert cfg.database.superuser == "pg_user_env"
+
+    def test_defaults_without_env(self):
+        with patch.dict(os.environ, {}, clear=True):
+            cfg = default_site_config()
+            assert cfg.scheduler.kind == "slurm"
+            assert cfg.network.litellm_port == 8001
+
+
+# =============================================================================
+# Tests — singleton
+# =============================================================================
+
+
+class TestGetSiteConfig:
+    """Test singleton behaviour."""
+
+    def test_returns_same_instance(self, tmp_path):
+        p = tmp_path / "site.yaml"
+        p.write_text(MINIMAL_YAML)
+        cfg1 = get_site_config(str(p))
+        cfg2 = get_site_config()  # cached
+        assert cfg1 is cfg2
+
+    def test_fallback_when_no_yaml(self):
+        with patch.dict(os.environ, {"UMRS_SITE_CONFIG": ""}, clear=False):
+            # Ensure no site.yaml exists in CWD or home
+            cfg = get_site_config()
+            assert cfg is not None
+            assert cfg.name in ("default", "env-fallback")
+
+    def test_reset_clears_cache(self, tmp_path):
+        p = tmp_path / "site.yaml"
+        p.write_text(MINIMAL_YAML)
+        cfg1 = get_site_config(str(p))
+        reset_site_config()
+        p.write_text(FULL_YAML)
+        cfg2 = get_site_config(str(p))
+        assert cfg1.name == "test-site"
+        assert cfg2.name == "full-site"
+
+
+# =============================================================================
+# Tests — _parse_raw
+# =============================================================================
+
+
+class TestParseRaw:
+    """Test raw dict → SiteConfig conversion."""
+
+    def test_empty_dict(self):
+        cfg = _parse_raw({})
+        assert cfg.name == "default"
+        assert cfg.scheduler.kind == "slurm"
+
+    def test_partial_scheduler(self):
+        cfg = _parse_raw({"scheduler": {"partition": "xgpu"}})
+        assert cfg.scheduler.partition == "xgpu"
+        assert cfg.scheduler.gpus == 1  # default preserved
