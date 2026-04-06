@@ -8,6 +8,49 @@ to compute nodes.
 
 ---
 
+## Quick Deploy (already set up)
+
+If the server environment is already configured (Steps 0–1 done previously),
+these are the only commands needed to deploy or redeploy after a code change:
+
+```bash
+# ── On your local machine ────────────────────────────────────────────────
+# 1. Commit & push
+cd /path/to/umrs
+git push origin feature/user-defined-workflows
+
+# ── On rccs-cloud (via SSH) ──────────────────────────────────────────────
+ssh rccs-cloud
+cd /lvs0/dne1/rccs-dmp/mnagaso/umrs
+
+# 2. Pull latest code
+git pull origin feature/user-defined-workflows
+
+# 3. Update the Python package
+source deploy/rccs-cloud/.venv/bin/activate
+pip install -e src/ --quiet
+
+# 4. Stop existing services (data preserved)
+cd deploy/rccs-cloud
+./stop.sh
+
+# 5. Start everything (containers + server)
+./start.sh
+
+# 6. Verify (wait ~15 s for server init)
+./health_check_server.sh
+```
+
+To restart **only** the server (e.g. after editing Python files), keeping
+containers running:
+
+```bash
+./stop.sh --server
+./start.sh --server
+```
+
+---
+
 ## Architecture Overview
 
 ```
@@ -309,23 +352,32 @@ your local tunnels when uploading via presigned URLs.
 
 ## Step 5 — Run the demos
 
-With tunnels open (if running from local Mac), run any demo from `demos/` using
-the standard umrs-client:
+With tunnels open (if running from local Mac), run any demo from `demos/`:
 
 ```bash
-# Example: push a text file and retrieve its embedding
-umrs-client -c ~/.config/umrs/conf_umrs.json upload_dir ./my_texts --modality text
+# On rccs-cloud (or local with SSH tunnels):
+cd deploy/rccs-cloud/demos
+source ../.venv/bin/activate
 
-# RAG search (requires rag service, see below)
-umrs-client -c ~/.config/umrs/conf_umrs.json rag_query "What is the main topic?"
+# Quick health check
+bash 00_health_check.sh
+
+# Full core demo suite (health → text → SAM3 → HMAE → user model → pipeline → registry)
+bash run_all_core.sh
 ```
 
-Or use the demo scripts:
+Or use `umrs-client` directly:
 
 ```bash
-cd demos/01_text_embedding
-./run_demo.sh
+# Push text files and retrieve embeddings
+umrs-client -c ~/.config/umrs/users/user1.json upload_dir ./my_texts --modality text
+
+# List available buckets
+umrs-client -c ~/.config/umrs/users/user1.json list_buckets
 ```
+
+See [Deployment Verification](#deployment-verification) for the full demo list
+and latest test results.
 
 ---
 
@@ -339,6 +391,20 @@ nodes by default.  The `user_files/user1.json` config specifies:
 
 The server auto-launches Slurm jobs and SSH tunnels when a model is first
 requested — no manual GPU setup is needed.
+
+### Supported model types
+
+| Prefix | Description | Example |
+|--------|-------------|---------|
+| `rivault://openai://…` | Embedding model served by vLLM | `rivault://openai://http://localhost:8001/v1` |
+| `rivault://bentoml://…` | Vision model (SAM3/HMAE) served by BentoML | `rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit` |
+| `user_script://…` | Pipeline SDK workflow (single step) | `user_script://stats:TextStatsStep` |
+| `user_workflow://…` | Pipeline SDK workflow (multi-step DAG) | `user_workflow://my_workflow:Main` |
+| `pipeline://…` | Named pipeline step (deferred execution) | `pipeline://opossum_analyze:OpossumAnalyzeStep` |
+| `TransformerEncoder` | CPU-local sentence-transformers | — |
+| `SentenceTransformer` | CPU-local CLIP/SBERT | — |
+| `HMAE` | CPU-local HMAE (very slow) | — |
+| `SAM3` | CPU-local SAM3 (very slow) | — |
 
 ### Prerequisites
 
@@ -557,3 +623,51 @@ to `$MODEL_DIR`.  Progress can be watched in server logs:
 ```bash
 tail -f logs/server.log | grep -i download
 ```
+
+---
+
+## Deployment Verification
+
+After deploying, run the demo suite to verify everything works end-to-end.
+The demos are in `deploy/rccs-cloud/demos/`.
+
+### Available demos
+
+| # | Demo | What it tests | GPU needed |
+|---|------|---------------|------------|
+| 00 | Health Check | ZMQ, MinIO, server ping | No |
+| 01 | Text Embedding | Upload text → generate embeddings → export CSV | No (vLLM optional) |
+| 02 | RAG Search | Hybrid search over embeddings | No (needs `UMRS_RAG_ENABLE=1`) |
+| 03 | SAM3 Segmentation | Upload images → Slurm GPU → download segmentations | Yes |
+| 04 | HMAE Inference | Upload images → Slurm GPU → download reconstructions | Yes |
+| 05 | User Model | Run user-defined TextStatsStep on S3 objects | No |
+| 06 | Pipeline SDK | Multi-step pipeline workflow | No |
+| 09 | Model Registry | Register / list / upload models | No |
+
+### Run all core demos
+
+```bash
+cd deploy/rccs-cloud/demos
+source ../.venv/bin/activate
+bash run_all_core.sh
+```
+
+Or run individually:
+
+```bash
+bash 00_health_check.sh
+bash 03_sam3_segmentation.sh   # ~2-5 min (Slurm job)
+bash 04_hmae_inference.sh      # ~1-3 min (Slurm job)
+```
+
+### Latest test results (2026-04-06)
+
+| Demo | Result | Duration |
+|------|--------|----------|
+| 00 Health Check | 3/3 passed | instant |
+| 01 Text Embedding | 20 texts uploaded + embedded | ~5 s |
+| 03 SAM3 Segmentation | 6 images processed | 1m 43s |
+| 04 HMAE Inference | 6 images reconstructed | 47s |
+| 05 User Model | 10 files analysed | ~2 s |
+| 09 Model Registry | 3 models listed | instant |
+| Server health check | 11/11 passed | — |
