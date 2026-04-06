@@ -15,7 +15,7 @@ in cloud).
 ## Prerequisites
 
 - Python 3.9+
-- UMRS installed: `pip install -e src/`
+- UMRS installed: `uv pip install -e src/`
 
 ## Quick Start
 

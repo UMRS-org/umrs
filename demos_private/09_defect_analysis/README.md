@@ -27,7 +27,7 @@ single reproducible pipeline for materials-science image analysis.
 - Mini-Rivault stack running with `vision-bentoml` profile (Demo 00)
 - SAM3 + HMAE models loaded in BentoML service
 - MinIO accessible (default `localhost:19000`)
-- UMRS package installed: `pip install -e src/`
+- UMRS package installed: `uv pip install -e src/`
 - Python packages: `numpy`, `requests`, `Pillow`, `boto3`
 - Optional: `umap-learn`, `scikit-learn` (falls back to PCA + KMeans without UMAP)
 

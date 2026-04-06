@@ -28,9 +28,7 @@ git pull origin feature/user-defined-workflows
 
 # 3. Update the Python package
 source deploy/rccs-cloud/.venv/bin/activate
-pip install -e src/ --quiet
-
-# 4. Stop existing services (data preserved)
+   uv pip install -e src/ --quiet
 cd deploy/rccs-cloud
 ./stop.sh
 
@@ -314,10 +312,15 @@ cd deploy/rccs-cloud
 ./setup_client.sh
 ```
 
-This copies the client configs to `~/.config/umrs/` and runs `pip install -e ../../src`.
+This copies the client configs to `~/.config/umrs/` and runs `uv pip install -e ../../src`,
+installing the UMRS client package into the venv at `deploy/rccs-cloud/.venv/`.
 
-> **Note**: `setup_client.sh` installs the `umrs` package in editable mode from the
-> local `src/` directory.  If you prefer a separate venv, activate it first.
+> **Note**: `setup_client.sh` requires [uv](https://docs.astral.sh/uv/) (`brew install uv`
+> on macOS, or `curl -LsSf https://astral.sh/uv/install.sh | sh`).
+> After the script finishes, **activate the venv** before running any demos:
+> ```bash
+> source deploy/rccs-cloud/.venv/bin/activate
+> ```
 
 Verify the install:
 
