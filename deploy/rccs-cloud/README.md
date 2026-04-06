@@ -355,19 +355,24 @@ your local tunnels when uploading via presigned URLs.
 
 ## Step 5 — Run the demos
 
-With tunnels open (if running from local Mac), run any demo from `demos/`:
+With tunnels open (if running from local Mac), run any demo from the
+canonical `demos/` directory at the repo root:
 
 ```bash
-# On rccs-cloud (or local with SSH tunnels):
-cd deploy/rccs-cloud/demos
-source ../.venv/bin/activate
+# Activate the client venv
+source deploy/rccs-cloud/.venv/bin/activate
 
 # Quick health check
-bash 00_health_check.sh
+cd demos/01_health_check
+bash run_demo.sh
 
-# Full core demo suite (health → text → SAM3 → HMAE → user model → pipeline → registry)
-bash run_all_core.sh
+# Text embedding
+cd ../02_text_embedding
+bash run_demo.sh
 ```
+
+See [demos/README.md](../../demos/README.md) for the full list of demos and
+[doc/demo_guide.md](../../doc/demo_guide.md) for a detailed walkthrough.
 
 Or use `umrs-client` directly:
 
@@ -631,46 +636,30 @@ tail -f logs/server.log | grep -i download
 
 ## Deployment Verification
 
-After deploying, run the demo suite to verify everything works end-to-end.
-The demos are in `deploy/rccs-cloud/demos/`.
-
-### Available demos
-
-| # | Demo | What it tests | GPU needed |
-|---|------|---------------|------------|
-| 00 | Health Check | ZMQ, MinIO, server ping | No |
-| 01 | Text Embedding | Upload text → generate embeddings → export CSV | No (vLLM optional) |
-| 02 | RAG Search | Hybrid search over embeddings | No (needs `UMRS_RAG_ENABLE=1`) |
-| 03 | SAM3 Segmentation | Upload images → Slurm GPU → download segmentations | Yes |
-| 04 | HMAE Inference | Upload images → Slurm GPU → download reconstructions | Yes |
-| 05 | User Model | Run user-defined TextStatsStep on S3 objects | No |
-| 06 | Pipeline SDK | Multi-step pipeline workflow | No |
-| 09 | Model Registry | Register / list / upload models | No |
-
-### Run all core demos
+After deploying, verify everything works end-to-end using the canonical demos
+at the repo root. See [demos/README.md](../../demos/README.md) for instructions.
 
 ```bash
-cd deploy/rccs-cloud/demos
-source ../.venv/bin/activate
-bash run_all_core.sh
-```
+source deploy/rccs-cloud/.venv/bin/activate
 
-Or run individually:
+# Health check
+cd demos/01_health_check && bash run_demo.sh && cd ..
 
-```bash
-bash 00_health_check.sh
-bash 03_sam3_segmentation.sh   # ~2-5 min (Slurm job)
-bash 04_hmae_inference.sh      # ~1-3 min (Slurm job)
+# Text embedding (no GPU needed)
+cd 02_text_embedding && bash run_demo.sh && cd ..
+
+# SAM3 segmentation (requires Slurm + GPU)
+cd 03_sam3_segmentation && bash run_demo.sh && cd ..
 ```
 
 ### Latest test results (2026-04-06)
 
 | Demo | Result | Duration |
 |------|--------|----------|
-| 00 Health Check | 3/3 passed | instant |
-| 01 Text Embedding | 20 texts uploaded + embedded | ~5 s |
+| 01 Health Check | 3/3 passed | instant |
+| 02 Text Embedding | 20 texts uploaded + embedded | ~5 s |
 | 03 SAM3 Segmentation | 6 images processed | 1m 43s |
-| 04 HMAE Inference | 6 images reconstructed | 47s |
-| 05 User Model | 10 files analysed | ~2 s |
-| 09 Model Registry | 3 models listed | instant |
+| 04 Vision Inference | 6 images reconstructed | 47s |
+| 08 User Model | 10 files analysed | ~2 s |
+| 07 Model Registry | 3 models listed | instant |
 | Server health check | 11/11 passed | — |

@@ -658,23 +658,6 @@ Key properties:
 - SSH tunnels for compute node access (ZMQ 5555/5556, MinIO 9000, RAG 8081)
 - Model staging root: `~/.config/umrs/models/`
 
-### Deploy Demo Numbering
-The deploy demos (deploy/rccs-cloud/demos/) use a different numbering from the in-repo demos:
-
-| Deploy # | In-repo Demo # | Topic |
-|---|---|---|
-| 00 | 01 | Health Check |
-| 01 | 02 | Text Embedding |
-| 02 | 05 | RAG Search |
-| 03 | 03 | SAM3 Segmentation |
-| 04 | 04 | HMAE Inference |
-| 05 | 08 | User Model |
-| 06 | 12 | Pipeline SDK |
-| 07 | — | SAM3 (Jens) |
-| 08 | — | HMAE (Jens) |
-| 09 | 07 | Model Registry |
-| 10 | 14 | Opossum Analysis |
-
 ### Performance (GPU)
 - SAM3: ~46–58s per 8192×8192 image
 - HMAE reconstruct: ~16s per 8192×8192 image (first call loads model ~10s extra)
