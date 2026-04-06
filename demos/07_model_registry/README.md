@@ -6,7 +6,7 @@ models — including user's own trained models.
 ## Prerequisites
 
 - UMRS server running and reachable
-- `umrs-client` available (installed via `pip install -e src/`)
+- `umrs-client` available (installed via `uv pip install -e src/`)
 - `huggingface_hub` installed (for `model download` only)
 
 ## Commands

@@ -33,12 +33,26 @@ All demos (except 08, 12, 13 which run locally) require:
 
    Site-specific tunnel scripts may be available under `deploy/<site>/ssh_tunnel.sh`.
 
-3. **Python venv** with `umrs-client` installed:
+3. **Python venv** with `umrs-client` installed.
+
+   This project uses [uv](https://docs.astral.sh/uv/) as the standard package manager.
+   Install it once if you haven't already (`brew install uv` on macOS, or
+   `curl -LsSf https://astral.sh/uv/install.sh | sh`).
+
+   **Option A — site-specific setup script (recommended):**
    ```bash
-   pip install -e src/            # install umrs package
-   which umrs-client              # verify it's in PATH
+   cd deploy/<site>/
+   ./setup_client.sh            # installs configs + umrs package
+   source .venv/bin/activate    # activate the venv created by the script
    ```
-   Or use a site-specific venv (e.g. `deploy/<site>/.venv/bin/activate`).
+
+   **Option B — manual:**
+   ```bash
+   uv venv .venv
+   source .venv/bin/activate    # Windows: .venv\Scripts\activate
+   uv pip install -e src/       # install umrs package
+   which umrs-client            # verify it's in PATH
+   ```
 
 4. **Server config** at `~/.config/umrs/conf_umrs.json` with S3, users, and
    experience definitions. Site-specific `setup_client.sh` scripts create this for you.

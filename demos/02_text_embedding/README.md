@@ -6,7 +6,7 @@ verify results in pgvector, and export.
 ## Prerequisites
 
 - Services running
-- UMRS client installed (`pip install .` from `src/`)
+- UMRS client installed (see [demos/README.md](../README.md#prerequisites) — `uv pip install -e src/`)
 - Server config JSON from your admin
 
 ## Quick Start

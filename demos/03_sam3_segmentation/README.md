@@ -8,7 +8,7 @@ Mini-Rivault's BentoML vision service, and retrieve results.
 - UMRS server running and reachable
 - **SAM3 model weights pre-staged** by admin at `$SAM3_MODEL_PATH`
   (default: `./rivault/models/sam3`)
-- UMRS client installed (`pip install .` from `src/`)
+- UMRS client installed (see [demos/README.md](../README.md#prerequisites) — `uv pip install -e src/`)
 
 ## Architecture
 

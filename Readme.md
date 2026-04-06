@@ -57,14 +57,28 @@ UMRS watches S3 buckets for new objects (text, images, text files), computes emb
 
 ## Quick Start (Client)
 
-Install the UMRS client as a pip package (no GPU or server dependencies needed):
+This project uses [uv](https://docs.astral.sh/uv/) as the standard package manager.
+Install it once if you haven't already:
 
 ```bash
-cd src
-pip install -e .
+# macOS / Linux
+curl -LsSf https://astral.sh/uv/install.sh | sh
+# or: brew install uv
+```
+
+Then install the UMRS client (no GPU or server dependencies needed):
+
+```bash
+uv venv .venv
+source .venv/bin/activate     # Windows: .venv\Scripts\activate
+uv pip install -e src/
 umrs-client --help
 umrs-client ping
 ```
+
+Site-specific client setup scripts (e.g. `deploy/rccs-cloud/setup_client.sh`) handle
+venv creation, config installation, and package install in one step — see the
+deployment guide for your site.
 
 ## Deployment Modes
 
@@ -154,9 +168,9 @@ workflows on top of the UMRS platform. All modules are stdlib-only and thread-sa
 Unit tests for all library modules (170 tests):
 
 ```bash
-cd src
-pip install -e .
-cd ..
+uv venv .venv
+source .venv/bin/activate
+uv pip install -e src/
 python -m pytest tests/ -v
 ```
 
