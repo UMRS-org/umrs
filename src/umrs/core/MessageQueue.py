@@ -439,7 +439,7 @@ class MessageQueue:
                 return cmd, client_id
 
             elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
-                         TaskCmd.LIST_WORKFLOWS):
+                         TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW):
                 # Model/workflow registry commands: immediate request/reply with JSON payload
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 # The rest of the message (after "CMD:client_id:") is the JSON payload

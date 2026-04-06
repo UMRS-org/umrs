@@ -371,6 +371,12 @@ def main():
     uw_p.add_argument('path', help='Local directory containing workflow.json and step scripts')
     uw_p.add_argument('--name', default=None, help='Workflow name (defaults to directory basename)')
 
+    # --- Run workflow command ---
+    rw_p = subparsers.add_parser('run-workflow', help='Trigger execution of a registered workflow on the server')
+    rw_p.add_argument('workflow_name', help='Name of the registered workflow to execute')
+    rw_p.add_argument('--bucket', default=None, help='Bucket alias to use as input data source')
+    rw_p.add_argument('--params', default='{}', help='JSON string of additional parameters')
+
     # --- Workflow registry commands ---
     wf_p = subparsers.add_parser('workflow', help='Workflow registry commands (list)')
     wf_sub = wf_p.add_subparsers(dest='workflow_action', required=True)
@@ -436,6 +442,13 @@ def main():
         buckets_cfg = build_buckets_cfg(user)
         if args.verbose:
             print("Configuration loaded successfully.")
+    elif configure_file and os.path.exists(configure_file):
+        # Opportunistically load config for commands that benefit from
+        # knowing the username (e.g. upload-workflow) but don't require it.
+        try:
+            user = load_client_cfg_file(configure_file)
+        except (Exception, SystemExit):
+            pass
 
 
 
@@ -682,7 +695,13 @@ def main():
         if args.action == 'upload-workflow':
             import tempfile
             import zipfile
-            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            # Use the config username when available so the data-queue port
+            # matches the one allocated for upload_dir (critical for SSH tunnels
+            # that only forward a single data port).
+            if user and isinstance(user, dict) and user.get('username'):
+                client_id = user['username']
+            else:
+                client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
             src_path = os.path.abspath(args.path)
             if not os.path.isdir(src_path):
                 print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
@@ -725,6 +744,32 @@ def main():
                     os.remove(tmp_zip_path)
                 except Exception:
                     pass
+                control_mq.close()
+            sys.exit(0)
+        if args.action == 'run-workflow':
+            if user and isinstance(user, dict) and user.get('username'):
+                client_id = user['username']
+            else:
+                client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            workflow_name = args.workflow_name
+            try:
+                params = _json.loads(args.params) if args.params else {}
+            except _json.JSONDecodeError:
+                params = {}
+            if args.bucket:
+                params['bucket'] = args.bucket
+            payload = _json.dumps({
+                'workflow_name': workflow_name,
+                'params': params,
+            })
+            try:
+                raw = control_mq.request_model_command(client_id, TaskCmd.RUN_WORKFLOW, payload)
+                print(raw)
+            except Exception as e:
+                print(api_json(status='error', action='run-workflow', message=str(e), output_format=args.output))
+                if args.verbose:
+                    traceback.print_exc()
+            finally:
                 control_mq.close()
             sys.exit(0)
         if args.action == 'list_buckets':
@@ -875,7 +920,13 @@ def main():
             selected_fields.append("output_path_to_bucket")
         else :
             selected_fields.append("path_to_bucket")
-        username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = buckets_cfg.get(bucket_alias, filter=selected_fields)
+        _bucket_result = buckets_cfg.get(bucket_alias, filter=selected_fields)
+        if _bucket_result is None:
+            raise ValueError(
+                f"Bucket alias '{bucket_alias}' not found in configuration. "
+                f"Check your config file or use one of the configured aliases."
+            )
+        username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = _bucket_result
 
         # If username is provided as arg change it otherwise stay default
         username_arg = getattr(args, 'username', None)
@@ -934,7 +985,7 @@ def main():
         print(f"Processing file '{file_path}' for modality '{modality}' (category: {category})")
 
         if category == "image":
-            s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check=(modality not in ("volume",)))
+            s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check=(modality not in ("volume", "movie", "volume_movie")))
             if s3_key and notify_server:
                 control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
             return s3_key, 1
