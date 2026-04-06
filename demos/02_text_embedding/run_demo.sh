@@ -5,11 +5,11 @@
 # Uploads text files → waits for server-side embedding → exports vectors.
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - UMRS server running with Text Embedding experience
 #   - umrs-client installed and in PATH
 #
-# Bucket alias used: user1-textfiles  (from user config)
+# Bucket alias used: user1-textfiles  (from server config)
 # =============================================================================
 set -Eeuo pipefail
 
@@ -21,7 +21,7 @@ SAMPLE_DIR="${SCRIPT_DIR}/../sample_data/texts"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 
 banner "Demo 02: Text Embedding"
-echo "User config  : ${CONF}"
+echo "Config       : ${CONF}"
 echo "Bucket alias : ${BUCKET_ALIAS}"
 echo "Sample data  : ${SAMPLE_DIR}"
 echo ""

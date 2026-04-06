@@ -5,7 +5,7 @@
 # Shows: endpoint_provision, index_build, cleanup, --keep-alive, cancel
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556)
 #   - UMRS server running
 # =============================================================================
 set -Eeuo pipefail

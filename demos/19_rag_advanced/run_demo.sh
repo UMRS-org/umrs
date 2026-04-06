@@ -9,7 +9,7 @@
 #   4. Reranked hybrid search
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000, RAG 8081)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000, 8081)
 #   - UMRS server running with RAG service on port 8081
 #   - Text data already embedded (run Demo 02 first)
 #   - umrs-client installed and in PATH

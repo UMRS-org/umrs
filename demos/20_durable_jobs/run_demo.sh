@@ -10,7 +10,7 @@
 #   5. Demonstrate retry behavior
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - UMRS server running with job subsystem enabled
 #   - umrs-client installed and in PATH
 # =============================================================================
@@ -22,7 +22,7 @@ DEMO_TAG="durable_job" source "${SCRIPT_DIR}/../lib/common.sh"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 
 banner "Demo 20: Durable Job Orchestration"
-echo "User config  : ${CONF}"
+echo "Config       : ${CONF}"
 echo ""
 
 # ---------- Step 1: Pre-flight ----------

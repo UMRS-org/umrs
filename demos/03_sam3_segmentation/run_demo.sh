@@ -6,11 +6,11 @@
 # downloads segmentation results.
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - UMRS server running with SAM3 Segmentation experience
 #   - BentoML vision service available on compute node
 #
-# Bucket alias: user1-sam3  (from user config, need_output_bucket: true)
+# Bucket alias: user1-sam3  (from config, need_output_bucket: true)
 #
 # Force recompute:
 #   FORCE_RECOMPUTE=1 bash run_demo.sh
@@ -29,7 +29,7 @@ RESULTS_DIR="${SCRIPT_DIR}/results"
 IMAGE_DIR="${IMAGE_DIR:-${SCRIPT_DIR}/test_data_full}"
 
 banner "Demo 03: SAM3 Segmentation"
-echo "User config  : ${CONF}"
+echo "Config       : ${CONF}"
 echo "Bucket alias : ${BUCKET_ALIAS}"
 echo "Image dir    : ${IMAGE_DIR}"
 echo ""

@@ -5,7 +5,7 @@
 # Shows: list_buckets, check, update, recompute, status
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - UMRS server running
 # =============================================================================
 set -Eeuo pipefail

@@ -216,7 +216,8 @@ class UMRSTask:
             client_id, files, workflow_name = full_payload
             str_payload = json.dumps({"files": files, "workflow_name": workflow_name})
 
-        elif cmd in (TaskCmd.HAND_CHECK, TaskCmd.CREATE_DATA_QUEUE, TaskCmd.STATUS):
+        elif cmd in (TaskCmd.HAND_CHECK, TaskCmd.CREATE_DATA_QUEUE, TaskCmd.STATUS,
+                     TaskCmd.JOB_LIST):
             print(f"We do not create task_id for {cmd=}")
             return None
 
@@ -268,6 +269,8 @@ class UMRSTask:
 
     def update_status(self, task_id: int, new_status: str, verbose=False):
         """Update the status of a single task, retry once on SQLite error."""
+        if task_id is None:
+            return
         if verbose:
             traceback.print_stack()
 

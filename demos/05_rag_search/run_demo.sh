@@ -11,7 +11,7 @@
 #   Step 6 – RAG Q&A (optional, requires LLM)
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000, RAG 8081)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000, 8081)
 #   - UMRS server running
 #   - RAG service enabled (port 8081)
 #   - Embeddings computed (run demo 02 first)

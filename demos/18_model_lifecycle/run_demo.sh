@@ -7,7 +7,7 @@
 # Shows model scoping (system vs user).
 #
 # Prerequisites:
-#   - SSH tunnels active (ZMQ 5555/5556, MinIO 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - UMRS server running
 #   - umrs-client installed and in PATH
 # =============================================================================
@@ -19,7 +19,7 @@ DEMO_TAG="model_life" source "${SCRIPT_DIR}/../lib/common.sh"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 
 banner "Demo 18: Model Lifecycle"
-echo "User config  : ${CONF}"
+echo "Config       : ${CONF}"
 echo ""
 
 # ---------- Step 1: Pre-flight ----------
