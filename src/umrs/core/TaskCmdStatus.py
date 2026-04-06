@@ -23,6 +23,7 @@ class TaskCmd:
     UPLOAD_WORKFLOW = "UPLOAD_WORKFLOW"  # upload a workflow zip to server
     # Workflow registry commands
     LIST_WORKFLOWS = "LIST_WORKFLOWS"   # list registered workflows
+    RUN_WORKFLOW = "RUN_WORKFLOW"        # trigger execution of a registered workflow
 
     @classmethod
     def all_cmd(cls):

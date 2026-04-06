@@ -877,6 +877,15 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                     print(f"Error sending job command response: {e}")
                 update_status_func(TaskStatus.COMPLETED)
 
+            elif cmd == TaskCmd.RUN_WORKFLOW:
+                client_id, payload_str, zmq_sender_id = payload
+                response_json = handle_workflow_command(cmd, client_id, payload_str)
+                try:
+                    control_mq.send_string(response_json, zmq_sender_id)
+                except RuntimeError as e:
+                    print(f"Error sending run-workflow response: {e}")
+                update_status_func(TaskStatus.COMPLETED)
+
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
                 task_manager.tasks_status.update_status(task_id, TaskStatus.UNKNOWN)

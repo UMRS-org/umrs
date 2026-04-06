@@ -15,6 +15,10 @@
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - opencv-python-headless and numpy installed (for test video generation)
+#   - A bucket alias with 'movie' modality and 'need_output_bucket: true'
+#     configured in your user config. The default user1-images bucket has
+#     modality 'image' which rejects .mp4 files. Override with:
+#       VIDEO_BUCKET=user1-videos bash run_demo.sh
 #
 # Usage:
 #   bash run_demo.sh                           # generate + analyse test videos
@@ -26,7 +30,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="video_analysis" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${VIDEO_BUCKET:-user1-video}"
+BUCKET_ALIAS="${VIDEO_BUCKET:-user1-images}"
 MAX_VIDEOS="${MAX_VIDEOS:-6}"
 VIDEO_DIR="${1:-}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
