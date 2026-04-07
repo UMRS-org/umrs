@@ -72,7 +72,7 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
       health readiness, and image reload behavior
 
 #### Phase 2 — Wrapper Convergence
-- [ ] H4  Diff source Mini-Rivault launcher versus deploy-site wrappers and
+- [x] H4  Diff source Mini-Rivault launcher versus deploy-site wrappers and
       list intentional divergences versus drift
 - [ ] H5  Remove accidental default mismatches between source launcher,
       deploy wrappers, and `site.yaml` export
@@ -93,6 +93,23 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
 - [ ] H11 Create a repeatable debugging order for wrapper issues,
       site-config mismatches, tunnel issues, and stale tarball/image problems
 - [ ] H12 Align operator docs and demos with the canonical harness behavior
+
+#### Review — Harness Ownership Audit (2026-04-07)
+
+- Source `src/umrs/mini-rivault-llm/serve-model.slurm` is still the canonical
+      compose launcher, but deploy wrappers remain authoritative for several
+      site-specific defaults.
+- `deploy/rccs-cloud/site.yaml` is the clearest canonical source for
+      rccs-cloud values, and `site_config.py` can export those values back into the
+      runtime environment.
+- `deploy/hpbd-atom/` currently has no `site.yaml`, so hpbd-atom still relies
+      primarily on wrapper-local defaults.
+- Profile defaults are intentionally divergent today:
+      rccs-cloud defaults to `harness vllm vision-bentoml`, while hpbd-atom
+      defaults to `harness vision-bentoml`, and source Mini-Rivault still defaults
+      to `harness vllm`.
+- This means profile ownership is not yet canonical; current behavior is a mix
+      of source defaults, wrapper defaults, and optional site-config export.
 
 ---
 
