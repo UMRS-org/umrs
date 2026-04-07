@@ -94,14 +94,9 @@ BUCKET_ALIAS="${TEXT_BUCKET:-user1-textfiles}"
 
 # Upload a small test file
 echo "Testing the model lifecycle with a sample sentence." > "${RESULTS_DIR}/lifecycle_test.txt"
-$CLIENT upload "${RESULTS_DIR}/lifecycle_test.txt" "$BUCKET_ALIAS" 2>&1 \
+$CLIENT upload_file "${RESULTS_DIR}/lifecycle_test.txt" "$BUCKET_ALIAS" 2>&1 \
     | while IFS= read -r line; do log "  $line"; done
-
-log "  Requesting embedding computation..."
-$CLIENT embed "$BUCKET_ALIAS" --model "$MODEL_REPO" 2>&1 \
-    | while IFS= read -r line; do log "  $line"; done \
-    || warn "Embedding request may need server-side model readiness"
-ok "Inference triggered"
+ok "Inference triggered (server will embed automatically)"
 
 # ---------- Step 7: Model status check ----------
 log ""
