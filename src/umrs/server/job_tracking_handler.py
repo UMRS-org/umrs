@@ -29,7 +29,9 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import psycopg2
 from psycopg2 import pool as pg_pool
+from psycopg2 import sql as pg_sql
 
 from umrs.jobs.models import JobStatus, JobType, RestartPolicy
 from umrs.jobs.store import DuplicateJobError, InvalidTransitionError, JobNotFoundError, JobStore
@@ -219,7 +221,7 @@ class DurableJobCommandBackend:
 
 def build_durable_job_backend_from_env() -> Optional[DurableJobCommandBackend]:
     """Best-effort bootstrap of the durable job backend from process env."""
-    db_host = os.environ.get("DB_HOST", "localhost")
+    db_host = os.environ.get("DB_HOST", "127.0.0.1")
     db_port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
     db_name = os.environ.get("UMRS_JOBS_DB", os.environ.get("POSTGRES_DB", "umrs_db"))
     db_user = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
@@ -229,6 +231,26 @@ def build_durable_job_backend_from_env() -> Optional[DurableJobCommandBackend]:
     )
 
     try:
+        admin_conn = psycopg2.connect(
+            dbname="postgres",
+            user=db_user,
+            password=db_password,
+            host=db_host,
+            port=db_port,
+        )
+        admin_conn.autocommit = True
+        try:
+            with admin_conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (db_name,))
+                exists = cur.fetchone()
+                if not exists:
+                    cur.execute(
+                        pg_sql.SQL("CREATE DATABASE {}")
+                        .format(pg_sql.Identifier(db_name))
+                    )
+        finally:
+            admin_conn.close()
+
         db_pool = pg_pool.SimpleConnectionPool(
             minconn=1,
             maxconn=10,

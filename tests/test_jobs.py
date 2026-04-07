@@ -233,6 +233,7 @@ class TestSchemaGeneration:
         from umrs.jobs.schema import (
             CREATE_JOBS_TABLE,
             CREATE_ATTEMPTS_TABLE,
+            CREATE_JOB_LOCKS_TABLE,
             CREATE_INDEXES,
         )
 
@@ -243,6 +244,9 @@ class TestSchemaGeneration:
 
         assert "CREATE TABLE IF NOT EXISTS job_attempts" in CREATE_ATTEMPTS_TABLE
         assert "REFERENCES jobs(job_id)" in CREATE_ATTEMPTS_TABLE
+
+        assert "CREATE INDEX IF NOT EXISTS idx_job_locks_expires" in CREATE_JOB_LOCKS_TABLE
+        assert "WHERE expires_at < NOW()" not in CREATE_JOB_LOCKS_TABLE
 
         assert "CREATE INDEX IF NOT EXISTS" in CREATE_INDEXES
         assert "idx_jobs_scheduler" in CREATE_INDEXES
