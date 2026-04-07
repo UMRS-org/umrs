@@ -642,7 +642,12 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
     exit_status = TaskStatus.COMPLETED
     for path_to_bucket in keys_per_bucket.keys():
         selected_fields = ["s3_username", "data_base", "table_name", "model", "store_embeddings_flag", "modality_name", "task", "s3_connection", "output_path_to_bucket", "reentrant_lock"]
-        user, data_base, table_name, model, store_embeddings_flag, modality_name, task, s3_connection, output_bucket, reentrant_lock = buckets_cfg.get(path_to_bucket, filter=selected_fields)
+        result = buckets_cfg.get(path_to_bucket, filter=selected_fields)
+        if result is None:
+            print(f"WARNING: No bucket config for '{path_to_bucket}', skipping processing")
+            exit_status = TaskStatus.ERROR
+            continue
+        user, data_base, table_name, model, store_embeddings_flag, modality_name, task, s3_connection, output_bucket, reentrant_lock = result
 
         users.append(user)
         s3_keys = keys_per_bucket[path_to_bucket]

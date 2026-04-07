@@ -584,8 +584,10 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         if model.return_type == "file":
             column = {"name": "saved_s3_object", "type": "TEXT"}
             table_columns.append(column)
+        elif model.return_type in ("embedding", "raw"):
+            pass  # no extra column needed
         else:
-            sys.exit(f"Do not know how to manage return type '{model.return_type}' in cfg file")
+            print(f"WARNING: Unknown return type '{model.return_type}' — no extra columns added")
 
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
@@ -644,12 +646,14 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
             conn.rollback()
             print(f"\t\t\t--> Warning: failed creating indexes on '{table_name}': {e}")
 
-    # enble notification for table that generate something so the server can listen to such notifications
+    # enable notification for table that generate something so the server can listen to such notifications
     if model.return_type is not None:
         if model.return_type == "file":
             enable_table_notifications(conn, table_name)
+        elif model.return_type in ("embedding", "raw"):
+            pass  # no notifications needed
         else:
-            sys.exit(f"Do not know how to manage return type '{model.return_type}' in cfg file")
+            print(f"WARNING: Unknown return type '{model.return_type}' — skipping notifications")
 
 
 

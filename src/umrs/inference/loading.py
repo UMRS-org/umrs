@@ -132,8 +132,8 @@ def load_model(model_cfg, modality, task=None):
         # Declare that this embedding model expects raw text as input
         input_type = "text"
     elif model_type.startswith("user_script://"):
-        from .pipeline_sdk.workflow import WorkflowPipeline
-        from .pipeline_sdk.adapter import EmbeddingAdapter
+        from umrs.pipeline_sdk.workflow import WorkflowPipeline
+        from umrs.pipeline_sdk.adapter import EmbeddingAdapter
 
         source_uri = model_type[len("user_script://"):]
         pipeline = WorkflowPipeline(source_uri)
@@ -141,15 +141,19 @@ def load_model(model_cfg, modality, task=None):
 
         model = None
         type = "user_script"
-        compute_embeddings_func = adapter.compute_embeddings
+        # Wrap adapter call so EmbeddingModel.__get__ rebinding does not
+        # replace the adapter's ``self`` with the EmbeddingModel instance.
+        def _user_script_compute(_self, s3, s3_keys, path_to_bucket, output_bucket, **kwargs):
+            return adapter.compute_embeddings(s3, s3_keys, path_to_bucket, output_bucket, **kwargs)
+        compute_embeddings_func = _user_script_compute
         input_type = "raw_image"  # steps handle their own I/O from S3
         return_type = pipeline.workflow.output.return_type
         vector_size = pipeline.workflow.output.embedding_vector_size or vector_size
 
     elif model_type.startswith("user_workflow://"):
-        from .pipeline_sdk.workflow import WorkflowPipeline
-        from .pipeline_sdk.adapter import EmbeddingAdapter
-        from .plugins.user_workflow import UserWorkflow, UserWorkflowRunner
+        from umrs.pipeline_sdk.workflow import WorkflowPipeline
+        from umrs.pipeline_sdk.adapter import EmbeddingAdapter
+        from umrs.inference.plugins.user_workflow import UserWorkflow, UserWorkflowRunner
 
         source_uri = model_type[len("user_workflow://"):]
         pipeline = WorkflowPipeline(source_uri)
@@ -158,7 +162,10 @@ def load_model(model_cfg, modality, task=None):
 
         model = None
         type = "user_workflow"
-        compute_embeddings_func = runner.run
+        # Same __get__ rebinding guard as user_script://
+        def _user_workflow_compute(_self, *args, **kwargs):
+            return runner.run(*args, **kwargs)
+        compute_embeddings_func = _user_workflow_compute
         input_type = "raw_image"
         return_type = pipeline.workflow.output.return_type
         vector_size = pipeline.workflow.output.embedding_vector_size or vector_size

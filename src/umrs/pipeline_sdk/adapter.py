@@ -43,6 +43,7 @@ class EmbeddingAdapter:
         s3_keys: List[str],
         path_to_bucket: str,
         output_bucket: str,
+        **kwargs,
     ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
         """Drop-in replacement for ``EmbeddingModel.compute_embeddings``.
 
