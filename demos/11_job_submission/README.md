@@ -20,9 +20,9 @@ upload, which adds cold-start latency. If you know you'll process many
 batches, pre-warm the endpoint:
 
 ```bash
-# Pre-warm Mini-RiVault/BentoML endpoint (Slurm job starts immediately):
+# Pre-warm Mini-RiVault/BentoML endpoint (the site-configured backend starts immediately):
 umrs-client job submit endpoint_provision \
-    --spec '{"model": "sam3", "backend": "slurm"}' \
+    --spec '{"model": "sam3"}' \
     --project my-project --keep-alive
 
 # Now uploads use the warm endpoint — no cold start:
@@ -72,9 +72,11 @@ umrs-client job cancel job-abc123def456
 
 ### Query running jobs
 
-Use the existing `status` command — no separate job-list needed:
+Use the monitor dashboard for the durable job list, or `status all` for the
+broader server summary:
 
 ```bash
+umrs-client monitor --once
 umrs-client status all
 ```
 
@@ -113,8 +115,9 @@ QUEUED → RUNNING → COMPLETED
 ```
 
 Jobs are stored in `~/.config/umrs/jobs.json` (lightweight mode).
-For production: `jobs/store.py` provides PostgreSQL-backed persistence
-with advisory locks, crash reconciliation, and multi-instance support.
+Current UMRS deployments use the durable PostgreSQL-backed store from
+`jobs/store.py`, with advisory locks, crash reconciliation, and
+multi-instance support.
 
 ## Run Demo
 

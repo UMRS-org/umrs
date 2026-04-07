@@ -2,7 +2,10 @@ import json
 from datetime import UTC, datetime
 
 from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType, RestartPolicy, AttemptStatus
-from umrs.server.job_tracking_handler import DurableJobCommandBackend
+from umrs.server.job_tracking_handler import DurableJobCommandBackend, handle_job_command
+
+JOB_SUBMIT = "JOB_SUBMIT"
+JOB_LIST = "JOB_LIST"
 
 
 class FakeJobStore:
@@ -133,3 +136,32 @@ def test_durable_backend_cancel_uses_job_store():
 
     assert result["status"] == "ok"
     assert store.cancelled == [(job_id, "cancelled by testuser")]
+
+
+def test_handle_job_command_requires_durable_backend():
+    result = json.loads(handle_job_command(JOB_LIST, "testuser", "{}"))
+
+    assert result["status"] == "error"
+    assert result["message"] == "Durable job backend unavailable"
+
+
+def test_handle_job_command_dispatches_to_durable_backend():
+    backend = DurableJobCommandBackend(FakeJobStore())
+
+    result = json.loads(
+        handle_job_command(
+            JOB_SUBMIT,
+            "testuser",
+            json.dumps(
+                {
+                    "project_id": "default",
+                    "job_type": "endpoint_provision",
+                    "spec": {"model": "llama-3"},
+                }
+            ),
+            backend=backend,
+        )
+    )
+
+    assert result["status"] == "ok"
+    assert result["job"]["status"] == "queued"

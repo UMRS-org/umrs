@@ -158,6 +158,21 @@ class TestSbatchEnv:
         env = backend._sbatch_env(LITELLM_MASTER_KEY="override-key")
         assert env["LITELLM_MASTER_KEY"] == "override-key"
 
+    def test_env_exports_partition_candidates_safely(self, slurm_script, output_dir):
+        site = SiteConfig(
+            name="test-site",
+            scheduler=SchedulerConfig(partition="gpu-a,gpu-b", time_limit="02:00:00", gpus=1),
+            runtime=RuntimeConfig(rivault_dir="/opt/rivault"),
+            network=NetworkConfig(litellm_port=8001, litellm_master_key="sk-test"),
+        )
+        backend = SlurmPodmanBackend(site=site, slurm_script=slurm_script)
+        backend._output_dir = output_dir
+
+        env = backend._sbatch_env()
+
+        assert env["SLURM_PARTITION"] == "gpu-a"
+        assert env["SLURM_PARTITIONS"] == "gpu-a,gpu-b"
+
 
 # =============================================================================
 # Tests — submit_job
@@ -195,6 +210,42 @@ class TestSubmitJob:
 
         args = mock_exec.call_args.args if mock_exec.call_args.args else mock_exec.call_args[0]
         assert "--partition=test-gpu" in args
+
+    def test_submit_selects_one_active_partition_from_candidates(self, slurm_script, output_dir):
+        site = SiteConfig(
+            name="test-site",
+            scheduler=SchedulerConfig(partition="gpu-a,gpu-b", time_limit="02:00:00", gpus=1),
+            runtime=RuntimeConfig(rivault_dir="/opt/rivault"),
+            network=NetworkConfig(litellm_port=8001, litellm_master_key="sk-test"),
+        )
+        backend = SlurmPodmanBackend(site=site, slurm_script=slurm_script)
+        backend._output_dir = output_dir
+
+        drain_proc = AsyncMock()
+        drain_proc.communicate.return_value = (b"drain\n", b"")
+        drain_proc.returncode = 0
+
+        idle_proc = AsyncMock()
+        idle_proc.communicate.return_value = (b"idle\n", b"")
+        idle_proc.returncode = 0
+
+        sbatch_proc = AsyncMock()
+        sbatch_proc.communicate.return_value = (b"54321\n", b"")
+        sbatch_proc.returncode = 0
+
+        with patch(
+            "asyncio.create_subprocess_exec",
+            side_effect=[drain_proc, idle_proc, sbatch_proc],
+        ) as mock_exec:
+            job = _run(backend.submit_job())
+
+        assert job.job_id == "54321"
+        args = mock_exec.call_args.args if mock_exec.call_args.args else mock_exec.call_args[0]
+        assert "--partition=gpu-b" in args
+        assert "--partition=gpu-a,gpu-b" not in args
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["SLURM_PARTITION"] == "gpu-b"
 
     def test_submit_failure_raises(self, backend):
         mock_proc = AsyncMock()

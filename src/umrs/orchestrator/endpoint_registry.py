@@ -267,6 +267,35 @@ class EndpointRegistry:
             logger.info(f"Endpoint {job_id} status: {old_status.value} -> {status.value}")
             return endpoint
 
+    def update_location(
+        self,
+        job_id: str,
+        host: Optional[str] = None,
+        port: Optional[int] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Optional[RegisteredEndpoint]:
+        """Update backend-discovered endpoint coordinates by job_id."""
+        with self._lock:
+            endpoint = self._by_job_id.get(job_id)
+            if not endpoint:
+                return None
+
+            if host is not None:
+                endpoint.host = host
+            if port is not None:
+                endpoint.port = port
+            if metadata:
+                endpoint.metadata.update(metadata)
+
+            self._persist(endpoint)
+            logger.info(
+                "Endpoint %s location updated to %s:%s",
+                job_id,
+                endpoint.host,
+                endpoint.port,
+            )
+            return endpoint
+
     def mark_ready(self, job_id: str) -> Optional[RegisteredEndpoint]:
         """Mark endpoint as ready (passed readiness check)."""
         return self.update_status(job_id, EndpointStatus.READY)

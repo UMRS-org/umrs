@@ -5,8 +5,6 @@ Uses Console(file=StringIO()) so no actual TTY is needed.
 """
 
 from __future__ import annotations
-
-import json
 from io import StringIO
 from unittest.mock import MagicMock
 
@@ -232,52 +230,20 @@ class TestDashboardRendering:
         assert dash._quit.is_set()
 
 
-class TestJobListHandler:
-    """Test the server-side _handle_list function."""
+    def test_fetch_jobs_passes_filters_to_message_queue(self):
+        from umrs.tui.dashboard import Dashboard
 
-    def test_list_all(self, tmp_path, monkeypatch):
-        from umrs.server.job_tracking_handler import _handle_list, _jobs_path, _JOBS_LOCK
-        import umrs.server.job_tracking_handler as jth
+        mq = _make_mock_mq()
+        dash = Dashboard(
+            control_mq=mq,
+            client_id="testuser",
+            status_filter="running",
+            project_filter="default",
+        )
 
-        # Redirect jobs file to tmp
-        jobs_file = str(tmp_path / "jobs.json")
-        monkeypatch.setattr(jth, "_jobs_path", lambda: jobs_file)
+        dash._fetch_jobs()
 
-        # Seed data
-        data = {"jobs": SAMPLE_JOBS}
-        with open(jobs_file, "w") as f:
-            json.dump(data, f, default=str)
-
-        result = json.loads(_handle_list("testuser", "{}"))
-        assert result["status"] == "ok"
-        assert len(result["jobs"]) == 3
-
-    def test_list_with_filter(self, tmp_path, monkeypatch):
-        from umrs.server.job_tracking_handler import _handle_list
-        import umrs.server.job_tracking_handler as jth
-
-        jobs_file = str(tmp_path / "jobs.json")
-        monkeypatch.setattr(jth, "_jobs_path", lambda: jobs_file)
-
-        data = {"jobs": SAMPLE_JOBS}
-        with open(jobs_file, "w") as f:
-            json.dump(data, f, default=str)
-
-        result = json.loads(_handle_list("testuser", json.dumps({"status": "running"})))
-        assert result["status"] == "ok"
-        assert len(result["jobs"]) == 1
-        assert result["jobs"][0]["status"] == "running"
-
-    def test_list_empty(self, tmp_path, monkeypatch):
-        from umrs.server.job_tracking_handler import _handle_list
-        import umrs.server.job_tracking_handler as jth
-
-        jobs_file = str(tmp_path / "jobs.json")
-        monkeypatch.setattr(jth, "_jobs_path", lambda: jobs_file)
-
-        with open(jobs_file, "w") as f:
-            json.dump({"jobs": []}, f)
-
-        result = json.loads(_handle_list("testuser", ""))
-        assert result["status"] == "ok"
-        assert result["jobs"] == []
+        mq.request_job_list.assert_called_once_with(
+            "testuser",
+            {"status": "running", "project_id": "default"},
+        )

@@ -112,6 +112,10 @@ class SlurmPodmanBackend(OrchestratorBackend):
     def backend_name(self) -> str:
         return "slurm-podman"
 
+    @staticmethod
+    def _partition_candidates(raw: str) -> List[str]:
+        return [candidate.strip() for candidate in raw.split(",") if candidate.strip()]
+
     # ------------------------------------------------------------------
     # sbatch environment
     # ------------------------------------------------------------------
@@ -142,6 +146,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
             raise FileNotFoundError(f"Slurm script not found: {script}")
 
         site = self.site
+        selected_partition = await self._select_submission_partition()
 
         # Build sbatch arguments from site config
         sbatch_args = [
@@ -151,8 +156,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
             f"--error={self._output_dir}/job-%j.err",
         ]
 
-        if site.scheduler.partition:
-            sbatch_args.append(f"--partition={site.scheduler.partition}")
+        if selected_partition:
+            sbatch_args.append(f"--partition={selected_partition}")
         if site.scheduler.time_limit:
             sbatch_args.append(f"--time={site.scheduler.time_limit}")
         if site.scheduler.gpus:
@@ -174,6 +179,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
         env_overrides: Dict[str, str] = {}
         if model_path:
             env_overrides["VLLM_MODEL_PATH"] = model_path
+        if selected_partition:
+            env_overrides["SLURM_PARTITION"] = selected_partition
         env_overrides.update({k: str(v) for k, v in kwargs.items()
                               if isinstance(v, (str, int, float))})
 
@@ -371,6 +378,56 @@ class SlurmPodmanBackend(OrchestratorBackend):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    async def _select_submission_partition(self) -> str:
+        candidates = self._partition_candidates(self.site.scheduler.partition)
+        if not candidates:
+            return ""
+        if len(candidates) == 1:
+            return candidates[0]
+
+        fallback = candidates[0]
+        mixed_candidates: List[str] = []
+        for partition in candidates:
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "sinfo", "-h", "-p", partition, "-o", "%t",
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+            except FileNotFoundError:
+                logger.warning(
+                    "sinfo not available while selecting partition; using fallback %s",
+                    fallback,
+                )
+                return fallback
+
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.warning(
+                    "Skipping partition %s during selection: %s",
+                    partition,
+                    stderr.decode().strip(),
+                )
+                continue
+
+            states = [line.strip().lower() for line in stdout.decode().splitlines() if line.strip()]
+            if any(state.startswith("idle") for state in states):
+                logger.info("Selected idle Slurm partition %s from %s", partition, candidates)
+                return partition
+            if any(state.startswith("mix") or state.startswith("alloc") for state in states):
+                mixed_candidates.append(partition)
+
+        if mixed_candidates:
+            logger.info(
+                "Selected busy-but-runnable Slurm partition %s from %s",
+                mixed_candidates[0],
+                candidates,
+            )
+            return mixed_candidates[0]
+
+        logger.warning("Falling back to first configured Slurm partition %s from %s", fallback, candidates)
+        return fallback
 
     async def _squeue_info(self, job_id: str) -> tuple[Optional[str], Optional[str]]:
         """Return (node, state) from squeue, or (None, None) if not found."""

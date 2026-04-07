@@ -557,7 +557,7 @@ class JobStore:
         """
         Mark attempt as failed.
 
-        Transitions: SUBMITTED/RUNNING → FAILED
+        Transitions: CREATED/SUBMITTED/RUNNING → FAILED
 
         Args:
             attempt_id: Attempt to mark failed
@@ -579,13 +579,14 @@ class JobStore:
                         ended_at = %s,
                         exit_reason = %s,
                         status_detail = 'failed'
-                    WHERE attempt_id = %s AND status IN (%s, %s)
+                    WHERE attempt_id = %s AND status IN (%s, %s, %s)
                     RETURNING job_id, attempt_no
                 """, (
                     AttemptStatus.FAILED.value,
                     now,
                     exit_reason,
                     attempt_id,
+                    AttemptStatus.CREATED.value,
                     AttemptStatus.SUBMITTED.value,
                     AttemptStatus.RUNNING.value,
                 ))
@@ -751,12 +752,13 @@ class JobStore:
                         status = %s,
                         ended_at = %s,
                         exit_reason = %s
-                    WHERE job_id = %s AND status IN (%s, %s)
+                    WHERE job_id = %s AND status IN (%s, %s, %s)
                 """, (
                     AttemptStatus.FAILED.value,
                     now,
                     f"cancelled: {reason}",
                     job_id,
+                    AttemptStatus.CREATED.value,
                     AttemptStatus.SUBMITTED.value,
                     AttemptStatus.RUNNING.value,
                 ))

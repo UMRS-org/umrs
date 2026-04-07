@@ -127,9 +127,12 @@ class DurableOrchestrationService:
         logger.info("Starting DurableOrchestrationService")
 
         # Ensure job tracking schema exists
-        with self.db_pool.getconn() as conn:
+        conn = self.db_pool.getconn()
+        try:
             ensure_schema(conn)
             conn.commit()
+        finally:
+            self.db_pool.putconn(conn)
 
         # Initialize JobService
         self._job_service = JobService(
@@ -153,6 +156,7 @@ class DurableOrchestrationService:
         status_checker = create_status_checker(
             readiness_poller=orch.readiness_poller,
             registry=orch.registry,
+            orchestrator=orch.backend,
         )
         self._job_service.set_status_checker(status_checker)
 

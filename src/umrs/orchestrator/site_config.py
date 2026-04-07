@@ -28,6 +28,10 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _split_partitions(raw: str) -> List[str]:
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -38,7 +42,7 @@ class SchedulerConfig:
     """Cluster job scheduler settings."""
 
     kind: str = "slurm"                         # slurm | k8s | compose
-    partition: str = ""                         # Slurm partition / K8s namespace
+    partition: str = ""                         # Slurm partition or comma-separated candidates / K8s namespace
     account: str = ""                           # Slurm account
     qos: str = ""                               # Slurm QoS
     time_limit: str = "04:00:00"                # Default wall-clock
@@ -143,7 +147,12 @@ class SiteConfig:
         env: Dict[str, str] = {}
 
         # Scheduler
-        env["SLURM_PARTITION"] = self.scheduler.partition
+        partition_candidates = _split_partitions(self.scheduler.partition)
+        if partition_candidates:
+            env["SLURM_PARTITIONS"] = ",".join(partition_candidates)
+            env["SLURM_PARTITION"] = partition_candidates[0]
+        elif self.scheduler.partition:
+            env["SLURM_PARTITION"] = self.scheduler.partition
         env["SLURM_TIME"] = self.scheduler.time_limit
         env["SLURM_GPUS"] = str(self.scheduler.gpus)
         env["SLURM_CPUS"] = str(self.scheduler.cpus)
@@ -318,7 +327,7 @@ def default_site_config() -> SiteConfig:
 
     # Scheduler
     cfg.scheduler.kind = os.getenv("RIVAULT_ORCHESTRATOR", "slurm")
-    cfg.scheduler.partition = os.getenv("SLURM_PARTITION", "")
+    cfg.scheduler.partition = os.getenv("SLURM_PARTITIONS", os.getenv("SLURM_PARTITION", ""))
     cfg.scheduler.time_limit = os.getenv("SLURM_TIME", "04:00:00")
     cfg.scheduler.gpus = int(os.getenv("SLURM_GPUS", "1"))
     cfg.scheduler.cpus = int(os.getenv("SLURM_CPUS", "8"))

@@ -19,8 +19,8 @@ from .monitor import AttemptCheckResult, BackendStatusChecker
 from .scheduler import OrchestratorBackend
 
 if TYPE_CHECKING:
-    from umrs.orchestrator.backends.base import BaseOrchestrator
-    from umrs.orchestrator.registry import EndpointRegistry
+    from umrs.orchestrator.base import OrchestratorBackend as BaseOrchestrator
+    from umrs.orchestrator.endpoint_registry import EndpointRegistry
     from umrs.orchestrator.readiness import ReadinessPoller
 
 logger = logging.getLogger(__name__)
@@ -55,7 +55,17 @@ class EndpointProvisionBackend(OrchestratorBackend):
     @property
     def backend_name(self) -> str:
         """Return orchestrator type name."""
-        return getattr(self.orchestrator, 'backend_type', 'unknown')
+        backend_name = getattr(self.orchestrator, "backend_name", None)
+        if isinstance(backend_name, str):
+            return backend_name
+
+        backend_type = getattr(self.orchestrator, "backend_type", None)
+        if hasattr(backend_type, "value"):
+            return backend_type.value
+        if isinstance(backend_type, str):
+            return backend_type
+
+        return "unknown"
 
     async def submit_job(
         self,
@@ -88,12 +98,6 @@ class EndpointProvisionBackend(OrchestratorBackend):
         port = self.port_manager.allocate(attempt.attempt_id, target_host)
         if port is None:
             raise RuntimeError("Failed to allocate port for endpoint")
-
-        # Store allocated port in attempt metadata (for cleanup)
-        attempt_meta = {
-            "port": port,
-            "host": target_host,
-        }
 
         try:
             # Submit to underlying orchestrator
@@ -151,22 +155,14 @@ class EndpointProvisionBackend(OrchestratorBackend):
 
     def _determine_target_host(self) -> str:
         """Determine target host based on orchestrator type."""
-        backend_type = getattr(self.orchestrator, 'backend_type', None)
-
-        if backend_type is None:
+        backend_name = self.backend_name.lower()
+        if backend_name in ("compose", "docker-compose"):
             return "localhost"
-
-        # Import here to avoid circular imports
-        from umrs.orchestrator.backends.base import BackendType
-
-        if backend_type == BackendType.COMPOSE:
-            return "localhost"
-        elif backend_type == BackendType.KUBERNETES:
+        if backend_name in ("kubernetes", "k8s"):
             return "mini-rivault"  # K8s Service DNS
-        elif backend_type == BackendType.SLURM:
+        if backend_name in ("slurm", "slurm-podman"):
             return "pending"  # Updated after allocation
-        else:
-            return "localhost"
+        return "localhost"
 
 
 class EndpointProvisionStatusChecker(BackendStatusChecker):
@@ -180,6 +176,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         self,
         readiness_poller: "ReadinessPoller",
         registry: "EndpointRegistry",
+        orchestrator: Optional["BaseOrchestrator"] = None,
     ):
         """
         Initialize checker.
@@ -187,15 +184,17 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         Args:
             readiness_poller: Poller for health/readiness checks
             registry: Endpoint registry to lookup endpoints
+            orchestrator: Optional backend for status refresh and host discovery
         """
         self.readiness_poller = readiness_poller
         self.registry = registry
+        self.orchestrator = orchestrator
 
     @property
     def job_type(self) -> JobType:
         return JobType.ENDPOINT_PROVISION
 
-    async def check_attempt(
+    async def check_status(
         self,
         attempt: JobAttempt,
         job: Job,
@@ -208,19 +207,26 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         # Get backend ref (container/k8s/slurm job ID)
         backend_ref = attempt.backend_ref
         if not backend_ref:
-            return AttemptCheckResult(
-                status=AttemptStatus.FAILED,
-                error="No backend reference",
-            )
+            return AttemptCheckResult.failed("No backend reference")
+
+        backend_error = await self._refresh_from_backend(backend_ref)
+        if backend_error:
+            return AttemptCheckResult.failed(backend_error)
 
         # Lookup endpoint in registry
         endpoint = self.registry.get_by_job_id(backend_ref)
         if not endpoint:
-            # Endpoint not found - may have been cleaned up
-            return AttemptCheckResult(
-                status=AttemptStatus.FAILED,
-                error=f"Endpoint not found in registry: {backend_ref}",
+            return AttemptCheckResult.running("waiting for endpoint registration")
+
+        from umrs.orchestrator.endpoint_registry import EndpointStatus
+
+        if endpoint.status == EndpointStatus.FAILED:
+            return AttemptCheckResult.failed(
+                endpoint.error_message or endpoint.metadata.get("error", "endpoint failed")
             )
+
+        if endpoint.host in ("", "pending"):
+            return AttemptCheckResult.running("waiting for backend allocation")
 
         # Check if endpoint is ready
         try:
@@ -230,39 +236,81 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             )
 
             if is_ready:
-                return AttemptCheckResult(
-                    status=AttemptStatus.SUCCEEDED,
+                return AttemptCheckResult.succeeded(
                     metrics={
                         "host": endpoint.host,
                         "port": endpoint.port,
                         "endpoint_status": endpoint.status.value,
                     },
                 )
-            else:
-                # Not ready yet - still running
-                return AttemptCheckResult(
-                    status=AttemptStatus.RUNNING,
-                )
+
+            return AttemptCheckResult.running(
+                f"waiting for endpoint readiness ({endpoint.host}:{endpoint.port})"
+            )
 
         except Exception as e:
             logger.warning(f"Readiness check failed for {backend_ref}: {e}")
 
             # Don't mark as failed on transient errors
             # Only fail if endpoint explicitly reports failure
-            endpoint_status = endpoint.status
-
-            from umrs.orchestrator.registry import EndpointStatus
-
-            if endpoint_status == EndpointStatus.FAILED:
-                return AttemptCheckResult(
-                    status=AttemptStatus.FAILED,
-                    error=endpoint.metadata.get("error", str(e)),
+            if endpoint.status == EndpointStatus.FAILED:
+                return AttemptCheckResult.failed(
+                    endpoint.error_message or endpoint.metadata.get("error", str(e))
                 )
-            else:
-                # Treat as still running
-                return AttemptCheckResult(
-                    status=AttemptStatus.RUNNING,
-                )
+
+            return AttemptCheckResult.running(
+                f"waiting for endpoint readiness ({endpoint.host}:{endpoint.port})"
+            )
+
+    async def check_attempt(
+        self,
+        attempt: JobAttempt,
+        job: Job,
+    ) -> AttemptCheckResult:
+        """Backward-compatible wrapper for older tests/callers."""
+        return await self.check_status(attempt, job)
+
+    async def _refresh_from_backend(self, backend_ref: str) -> Optional[str]:
+        """Refresh endpoint coordinates and coarse status from backend state."""
+        if self.orchestrator is None:
+            return None
+
+        try:
+            job_info = await self.orchestrator.get_job_status(backend_ref)
+        except Exception as exc:
+            logger.warning("Failed to refresh backend status for %s: %s", backend_ref, exc)
+            return None
+
+        from umrs.orchestrator.base import JobStatus as OrchestratorJobStatus
+        from umrs.orchestrator.endpoint_registry import EndpointStatus
+
+        if job_info.endpoint:
+            self.registry.update_location(
+                backend_ref,
+                host=job_info.endpoint.node,
+                port=job_info.endpoint.litellm_port,
+                metadata={"backend_status": job_info.status.value},
+            )
+
+        if job_info.status == OrchestratorJobStatus.PENDING:
+            self.registry.update_status(backend_ref, EndpointStatus.PROVISIONING)
+        elif job_info.status in (
+            OrchestratorJobStatus.STARTING,
+            OrchestratorJobStatus.RUNNING,
+            OrchestratorJobStatus.READY,
+        ):
+            self.registry.update_status(backend_ref, EndpointStatus.STARTING)
+        elif job_info.status in (
+            OrchestratorJobStatus.FAILED,
+            OrchestratorJobStatus.STOPPED,
+        ):
+            error = job_info.error_message or (
+                f"Backend job {backend_ref} {job_info.status.value}"
+            )
+            self.registry.mark_failed(backend_ref, error)
+            return error
+
+        return None
 
 
 class IndexBuildBackend(OrchestratorBackend):
@@ -349,7 +397,7 @@ class IndexBuildStatusChecker(BackendStatusChecker):
     def job_type(self) -> JobType:
         return JobType.INDEX_BUILD
 
-    async def check_attempt(
+    async def check_status(
         self,
         attempt: JobAttempt,
         job: Job,
@@ -357,35 +405,30 @@ class IndexBuildStatusChecker(BackendStatusChecker):
         """Check status of an index build attempt."""
         task_id = attempt.backend_ref
         if not task_id:
-            return AttemptCheckResult(
-                status=AttemptStatus.FAILED,
-                error="No task ID",
-            )
+            return AttemptCheckResult.failed("No task ID")
 
         try:
             task_status = await self.embedding_worker.get_task_status(task_id)
 
             if task_status.completed:
                 if task_status.success:
-                    return AttemptCheckResult(
-                        status=AttemptStatus.SUCCEEDED,
-                        metrics=task_status.metrics,
-                    )
-                else:
-                    return AttemptCheckResult(
-                        status=AttemptStatus.FAILED,
-                        error=task_status.error,
-                    )
-            else:
-                return AttemptCheckResult(
-                    status=AttemptStatus.RUNNING,
-                )
+                    return AttemptCheckResult.succeeded(metrics=task_status.metrics)
+
+                return AttemptCheckResult.failed(task_status.error)
+
+            return AttemptCheckResult.running("running")
 
         except Exception as e:
             logger.warning(f"Failed to check task status {task_id}: {e}")
-            return AttemptCheckResult(
-                status=AttemptStatus.RUNNING,  # Assume still running on error
-            )
+            return AttemptCheckResult.running("running")
+
+    async def check_attempt(
+        self,
+        attempt: JobAttempt,
+        job: Job,
+    ) -> AttemptCheckResult:
+        """Backward-compatible wrapper for older tests/callers."""
+        return await self.check_status(attempt, job)
 
 
 def create_backend_factory(
@@ -458,6 +501,7 @@ def create_backend_factory(
 def create_status_checker(
     readiness_poller: "ReadinessPoller",
     registry: "EndpointRegistry",
+    orchestrator: Optional["BaseOrchestrator"] = None,
     embedding_worker=None,
     include_model_download: bool = True,
 ):
@@ -467,6 +511,7 @@ def create_status_checker(
     Args:
         readiness_poller: For endpoint provisioning checks
         registry: Endpoint registry
+        orchestrator: Underlying orchestrator for backend status refresh
         embedding_worker: For index build checks (optional)
         include_model_download: Whether to include model download checker
 
@@ -475,21 +520,25 @@ def create_status_checker(
     """
     from .monitor import CompositeStatusChecker
 
-    checkers = [
+    checker = CompositeStatusChecker()
+    checker.register(
+        JobType.ENDPOINT_PROVISION,
         EndpointProvisionStatusChecker(
             readiness_poller=readiness_poller,
             registry=registry,
+            orchestrator=orchestrator,
         ),
-    ]
+    )
 
     if embedding_worker:
-        checkers.append(
+        checker.register(
+            JobType.INDEX_BUILD,
             IndexBuildStatusChecker(embedding_worker=embedding_worker),
         )
 
     if include_model_download:
         from .model_download import ModelDownloadStatusChecker
 
-        checkers.append(ModelDownloadStatusChecker())
+        checker.register(JobType.MODEL_DOWNLOAD, ModelDownloadStatusChecker())
 
-    return CompositeStatusChecker(checkers)
+    return checker
