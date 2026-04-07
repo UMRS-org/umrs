@@ -7,6 +7,7 @@ from collections import defaultdict
 import time
 import json
 import diskcache
+import logging
 
 # Add the parent directory of this script (src) to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
@@ -26,7 +27,7 @@ from umrs.inference.embedding_backend import LocalEmbeddingBackend
 
 from umrs.server.model_registry_handler import handle_model_command
 from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
-from umrs.server.job_tracking_handler import handle_job_command
+from umrs.server.job_tracking_handler import build_durable_job_backend_from_env, handle_job_command
 from umrs.shared.config import *
 from umrs.server.config import *
 from umrs.server.provisioning import (
@@ -39,6 +40,7 @@ from umrs.server.provisioning import (
 
 _status_store_global = None
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
+logger = logging.getLogger(__name__)
 
 rivault_lock = threading.Lock()
 
@@ -737,7 +739,7 @@ def make_update_status_callback(task_manager, task_id):
         task_manager.tasks_status.update_status(task_id, status)
     return callback
 
-def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file):
+def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file, job_command_backend=None):
     buckets_cfg = server_cfg.buckets_cfg
     user_config_map = server_cfg.user_config_map
     status_store = control_mq.get_status_store()
@@ -876,7 +878,7 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST):
                 client_id, payload_str, zmq_sender_id = payload
-                response_json = handle_job_command(cmd, client_id, payload_str)
+                response_json = handle_job_command(cmd, client_id, payload_str, backend=job_command_backend)
                 try:
                     control_mq.send_string(response_json, zmq_sender_id)
                 except RuntimeError as e:
@@ -1044,6 +1046,12 @@ def main():
     print("Initial configuration done.")
     reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
 
+    job_command_backend = build_durable_job_backend_from_env()
+    if job_command_backend is None:
+        print("Job commands using compatibility JSON backend.")
+    else:
+        print("Job commands using durable PostgreSQL backend.")
+
     handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
 
     print("Entering main server event loop.")
@@ -1053,7 +1061,14 @@ def main():
     task_manager.active_threads.record_status("system", "config", {"summary": cfg_summary})
 
     print("Server is ready to process tasks.")
-    server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file)
+    try:
+        server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file, job_command_backend=job_command_backend)
+    finally:
+        if job_command_backend is not None:
+            try:
+                job_command_backend.close()
+            except Exception:
+                logger.exception("Failed to close durable job command backend")
 
 
 if __name__ == "__main__":
