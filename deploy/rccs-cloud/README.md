@@ -204,17 +204,17 @@ cp env.example .env
 nano .env          # or vim / any editor
 ```
 
-Key values to adjust:
+Common values to adjust:
 
 | Variable | Default | Notes |
 |---|---|---|
 | `POSTGRES_PASSWORD` | `umrs_rccs` | Change in production |
 | `MINIO_ROOT_PASSWORD` | `minioadmin` | Change in production |
 | `S3_PRESIGN_ENDPOINT` | `http://localhost:9000` | Compute nodes access MinIO via an SSH tunnel (see below).  The Slurm script opens `localhost:9000` → login node MinIO automatically. |
-| `MODEL_DIR` | `/lvs0/rccs-dmp/mnagaso/umrs_models` | Lustre path, shared between login and compute nodes |
 | `MINIO_BIND` | `127.0.0.1` | MinIO listens on localhost only.  Compute nodes use the SSH tunnel. |
 | `UMRS_SITE_CONFIG` | `~/.config/umrs/site.yaml` | Optional override for the canonical site config path |
 | `RIVAULT_SLURM_SCRIPT` | `~/.config/umrs/rivault_data/serve-model.slurm` | Optional override for the site-specific Slurm wrapper |
+| `MODEL_DIR` | unset by default | Optional local override for `site.yaml` `storage.model_cache_dir` |
 
 Do not duplicate scheduler partitions, `RIVAULT_PROFILES`, LiteLLM port, or
 model-serving paths in `.env` unless you are intentionally overriding
@@ -260,7 +260,7 @@ The script will:
 1. Auto-create `.env` from `env.example` if not present (prompts you to edit it).
 2. Resolve `UMRS_SITE_CONFIG` from `~/.config/umrs/site.yaml` (or fallback to the
   checked-in `deploy/rccs-cloud/site.yaml`).
-3. Create the Lustre model cache directories.
+3. Create the model cache directories from `site.yaml` (or `MODEL_DIR` if you explicitly override it).
 4. Start postgres and minio containers via `podman compose up -d`.
 5. Wait for postgres and minio to become healthy.
 6. Launch `server_umrs.py` **natively** (outside any container) with the correct
@@ -282,7 +282,7 @@ To restart only the server (e.g. after a code change), keeping containers runnin
 If the native server is already running, use `./stop.sh --server` first.
 
 The first launch will:
-- Download embedding model weights to `$MODEL_DIR/sentence_transformers/` (first run only).
+- Download embedding model weights to the configured model cache directory (`site.yaml` `storage.model_cache_dir`, or `MODEL_DIR` when explicitly overridden).
 - Auto-create MinIO buckets and PostgreSQL databases for each configured user.
 
 ---

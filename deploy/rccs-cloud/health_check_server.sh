@@ -32,6 +32,25 @@ finally:
 PY
 }
 
+resolve_model_dir() {
+    if [[ -n "${MODEL_DIR:-}" ]]; then
+        printf '%s\n' "$MODEL_DIR"
+        return 0
+    fi
+
+    if [[ -x "$VENV_PYTHON" && -f "$SITE_CONFIG_PATH" ]]; then
+        UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" "$VENV_PYTHON" - <<'PY' 2>/dev/null || true
+from umrs.orchestrator.site_config import load_site_config
+
+cfg = load_site_config()
+print(cfg.storage.model_cache_dir or "", end="")
+PY
+        return 0
+    fi
+
+    printf '%s\n' "/lvs0/rccs-dmp/mnagaso/umrs_models"
+}
+
 # Load .env if present (for POSTGRES_USER, POSTGRES_PASSWORD etc.)
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
     # shellcheck disable=SC1091
@@ -162,7 +181,7 @@ else
 fi
 
 # ─── Model cache directory ───
-MODEL_DIR="${MODEL_DIR:-/lvs0/rccs-dmp/mnagaso/umrs_models}"
+MODEL_DIR="$(resolve_model_dir)"
 if [[ -d "$MODEL_DIR" ]]; then
     ok "Model cache directory exists ($MODEL_DIR)"
 else

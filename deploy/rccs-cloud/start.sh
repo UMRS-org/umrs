@@ -41,6 +41,25 @@ finally:
 PY
 }
 
+resolve_model_dir() {
+    if [[ -n "${MODEL_DIR:-}" ]]; then
+        printf '%s\n' "$MODEL_DIR"
+        return 0
+    fi
+
+    if [[ -x "${VENV_DIR}/bin/python" && -f "${UMRS_SITE_CONFIG:-}" ]]; then
+        UMRS_SITE_CONFIG="$UMRS_SITE_CONFIG" "${VENV_DIR}/bin/python" - <<'PY' 2>/dev/null || true
+from umrs.orchestrator.site_config import load_site_config
+
+cfg = load_site_config()
+print(cfg.storage.model_cache_dir or "", end="")
+PY
+        return 0
+    fi
+
+    printf '%s\n' "/lvs0/rccs-dmp/mnagaso/umrs_models"
+}
+
 # ─── Guard: must run on a Linux host where podman is available ───────────────
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "ERROR: start.sh must be run on rccs-cloud (Linux), not on $(uname -s)."
@@ -72,7 +91,7 @@ fi
 # ─── .env setup ──────────────────────────────────────────────────────────────
 if [[ ! -f .env ]]; then
     echo "No .env found — copying env.example to .env"
-    echo "*** Edit .env to adjust MODEL_DIR, passwords, etc. ***"
+    echo "*** Edit .env to adjust passwords or local overrides as needed. ***"
     cp env.example .env
 fi
 
@@ -98,7 +117,7 @@ if [[ ! -e "$DEFAULT_RIVAULT_SLURM_SCRIPT" ]]; then
 fi
 
 # ─── Create model directory (skip if path is not writable) ───────────────────
-MODEL_DIR="${MODEL_DIR:-/lvs0/rccs-dmp/mnagaso/umrs_models}"
+MODEL_DIR="$(resolve_model_dir)"
 if mkdir -p "${MODEL_DIR}/sentence_transformers" "${MODEL_DIR}/hf" 2>/dev/null; then
     echo "Model cache: ${MODEL_DIR}"
 else

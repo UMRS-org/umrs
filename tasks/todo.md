@@ -47,7 +47,7 @@ unified orchestration using the existing (but unused) infrastructure in
       server boot owns a shared PostgreSQL-backed job runtime.
 - [x] A3 Remove the JSON compatibility backend after ZMQ job commands and the
       REST/API job surface converge on the same `JobStore` state machine.
-- [ ] A4 Keep `deploy/rccs-cloud/.env` limited to secrets and explicit
+- [x] A4 Keep `deploy/rccs-cloud/.env` limited to secrets and explicit
       overrides; `site.yaml` remains canonical for site defaults.
 
 #### A2 Review — Process-Owned Durable Runtime (2026-04-07)
