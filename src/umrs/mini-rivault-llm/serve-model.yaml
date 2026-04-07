@@ -112,7 +112,7 @@ services:
     tmpfs:
       - /var/run/postgresql   # Note: we don't need persistency for our case
     user: "0:0"   # Note: rootless podman needs this so the entrypoint can be exec'd
-    command: ["postgres", "-c", "unix_socket_directories="]  # rootless podman: disable Unix sockets
+    command: ["postgres", "-c", "unix_socket_directories=/var/run/postgresql"]  # keep bootstrap sockets inside container tmpfs under rootless podman
     environment:
       POSTGRES_USER: ${LITELLM_POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${LITELLM_POSTGRES_PASSWORD:-litellm}
@@ -448,7 +448,7 @@ services:
         read_only: true
       # Debug: mount live service.py from source tree for hot-patching
       - type: bind
-        source: ${RIVAULT_DIR:-..}/vision_service/service.py
+        source: ${VISION_SERVICE_SOURCE:-../vision_service/service.py}
         target: /app/umrs/vision_service/service.py
         read_only: true
     environment:

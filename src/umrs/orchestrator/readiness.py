@@ -83,11 +83,19 @@ class ReadinessConfig:
     # Validation settings
     require_models: bool = True  # Require at least one model in response
     expected_model: Optional[str] = None  # Specific model name to check
+    auth_token: Optional[str] = None  # Bearer token for protected LiteLLM endpoints
 
     @classmethod
     def from_env(cls) -> "ReadinessConfig":
         """Create config from environment variables."""
         import os
+
+        try:
+            from .site_config import get_site_config
+
+            get_site_config().inject_env(overwrite=False)
+        except Exception:
+            pass
 
         return cls(
             timeout_sec=int(os.getenv("RIVAULT_READINESS_TIMEOUT_SEC", "300")),
@@ -105,6 +113,7 @@ class ReadinessConfig:
                 os.getenv("RIVAULT_READINESS_BACKOFF_MULTIPLIER", "2.0")
             ),
             expected_model=os.getenv("RIVAULT_EXPECTED_MODEL"),
+            auth_token=os.getenv("LITELLM_MASTER_KEY") or None,
         )
 
 
@@ -169,9 +178,12 @@ class ReadinessPoller:
         """
         url = f"http://{host}:{port}/v1/models"
         client = await self._get_client()
+        headers = None
+        if self.config.auth_token:
+            headers = {"Authorization": f"Bearer {self.config.auth_token}"}
 
         try:
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
 
             if response.status_code != 200:
                 return False, [], f"HTTP {response.status_code}"

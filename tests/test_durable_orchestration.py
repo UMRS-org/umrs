@@ -11,11 +11,12 @@ Run with:
     pytest tests/test_durable_orchestration.py -v
 """
 
-import asyncio
 import os
 import pytest
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import asyncio
 
 # Test imports
 import sys
@@ -222,8 +223,7 @@ class TestJobModels:
 class TestAdapters:
     """Tests for backend adapters."""
 
-    @pytest.mark.asyncio
-    async def test_endpoint_provision_backend_submit(self):
+    def test_endpoint_provision_backend_submit(self):
         """Test EndpointProvisionBackend submit_job."""
         from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
         from umrs.jobs.adapters import EndpointProvisionBackend
@@ -292,21 +292,121 @@ class TestAdapters:
         # Patch _determine_target_host to avoid module import issues
         with patch.object(backend, '_determine_target_host', return_value="localhost"):
             # Submit
-            backend_ref = await backend.submit_job(job, attempt)
+            backend_ref = asyncio.run(backend.submit_job(job, attempt))
 
             assert backend_ref == "container-123"
             mock_port_manager.allocate.assert_called_once()
             mock_orchestrator.submit_job.assert_called_once()
             mock_registry.register.assert_called_once()
 
+    def test_endpoint_provision_backend_treats_slurm_podman_as_pending_host(self):
+        """Slurm-Podman endpoints should wait for backend host discovery."""
+        from umrs.jobs.adapters import EndpointProvisionBackend
+
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.backend_name = "slurm-podman"
+
+        backend = EndpointProvisionBackend(
+            orchestrator=mock_orchestrator,
+            registry=MagicMock(),
+            port_manager=MagicMock(),
+        )
+
+        assert backend.backend_name == "slurm-podman"
+        assert backend._determine_target_host() == "pending"
+
+    def test_endpoint_status_checker_refreshes_slurm_endpoint_location(self):
+        """Backend status should update pending Slurm endpoints before readiness checks."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import EndpointProvisionStatusChecker
+        from umrs.orchestrator.base import EndpointInfo, JobInfo, JobStatus as OrchestratorJobStatus
+        from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint
+
+        job = Job(
+            job_id="job-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            status=JobStatus.RUNNING,
+            spec={"model": "test-model"},
+            idempotency_key=compute_idempotency_key(
+                project_id="proj-1",
+                user_id="user-1",
+                job_type=JobType.ENDPOINT_PROVISION,
+                spec={"model": "test-model"},
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        attempt = JobAttempt(
+            attempt_id="att-123",
+            job_id="job-123",
+            attempt_no=1,
+            backend="slurm-podman",
+            backend_ref="slurm-123",
+            status=AttemptStatus.SUBMITTED,
+            created_at=datetime.utcnow(),
+        )
+
+        endpoint = RegisteredEndpoint(
+            project_id="proj-1",
+            model="test-model",
+            job_id="slurm-123",
+            host="pending",
+            port=11434,
+            status=EndpointStatus.PROVISIONING,
+            backend="slurm-podman",
+        )
+
+        mock_registry = MagicMock()
+        mock_registry.get_by_job_id.side_effect = lambda _job_id: endpoint
+        mock_registry.update_location.side_effect = (
+            lambda _job_id, host=None, port=None, metadata=None: (
+                setattr(endpoint, "host", host if host is not None else endpoint.host),
+                setattr(endpoint, "port", port if port is not None else endpoint.port),
+                endpoint.metadata.update(metadata or {}),
+                endpoint,
+            )[-1]
+        )
+        mock_registry.update_status.return_value = endpoint
+        mock_registry.mark_failed.return_value = endpoint
+
+        mock_readiness = MagicMock()
+        mock_readiness.check_ready = AsyncMock(return_value=True)
+
+        mock_orchestrator = MagicMock()
+        mock_orchestrator.get_job_status = AsyncMock(
+            return_value=JobInfo(
+                job_id="slurm-123",
+                status=OrchestratorJobStatus.RUNNING,
+                endpoint=EndpointInfo(node="gpu-node-1", litellm_port=11434),
+                backend="slurm-podman",
+            )
+        )
+
+        checker = EndpointProvisionStatusChecker(
+            readiness_poller=mock_readiness,
+            registry=mock_registry,
+            orchestrator=mock_orchestrator,
+        )
+
+        result = asyncio.run(checker.check_status(attempt, job))
+
+        assert result.status == "succeeded"
+        assert endpoint.host == "gpu-node-1"
+        assert result.metrics["host"] == "gpu-node-1"
+        mock_orchestrator.get_job_status.assert_awaited_once_with("slurm-123")
+        mock_readiness.check_ready.assert_awaited_once_with("gpu-node-1", 11434)
+
     def test_backend_factory_creation(self):
         """Test create_backend_factory."""
         from umrs.jobs import JobType
-        from umrs.jobs.adapters import create_backend_factory
+        from umrs.jobs.adapters import create_backend_factory, create_status_checker
 
         mock_orchestrator = MagicMock()
         mock_registry = MagicMock()
         mock_port_manager = MagicMock()
+        mock_readiness_poller = MagicMock()
 
         factory = create_backend_factory(
             orchestrator=mock_orchestrator,
@@ -321,6 +421,66 @@ class TestAdapters:
         # Index build should fail without worker
         with pytest.raises(RuntimeError):
             factory(JobType.INDEX_BUILD)
+
+        checker = create_status_checker(
+            readiness_poller=mock_readiness_poller,
+            registry=mock_registry,
+            include_model_download=False,
+        )
+        assert JobType.ENDPOINT_PROVISION in checker._checkers
+
+
+class TestScheduler:
+    """Tests for scheduler failure handling."""
+
+    def test_schedule_job_marks_backend_submission_failures(self):
+        """Scheduler should mark backend submission failures for retry handling."""
+        from umrs.jobs import JobType
+        from umrs.jobs.scheduler import Scheduler
+
+        job_store = MagicMock()
+        job_store.get_job.return_value = MagicMock(job_type=JobType.ENDPOINT_PROVISION)
+        job_store.create_attempt.return_value = "att-123"
+        job_store.get_attempt.return_value = MagicMock(attempt_id="att-123")
+
+        backend = MagicMock(backend_name="slurm-podman")
+        backend.submit_job = AsyncMock(side_effect=RuntimeError("boom"))
+
+        scheduler = Scheduler(
+            job_store=job_store,
+            backend_factory=lambda _job_type: backend,
+        )
+
+        asyncio.run(scheduler._schedule_job("job-123"))
+
+        job_store.mark_attempt_failed.assert_called_once_with(
+            "att-123",
+            exit_reason="backend_submission_failed: boom",
+            retry_delay=30,
+        )
+
+
+class TestOrchestrationServiceConfig:
+    """Tests for backend selection behavior."""
+
+    def test_backend_prefers_site_config_kind(self):
+        """A configured site backend should override generic auto-detection."""
+        from umrs.orchestrator.service import OrchestrationService
+
+        fake_site = MagicMock()
+        fake_site.scheduler.kind = "slurm-podman"
+        fake_backend = MagicMock()
+
+        with patch("umrs.orchestrator.service.load_site_config", return_value=fake_site), \
+             patch("umrs.orchestrator.service.get_orchestrator", return_value=fake_backend) as mock_get_orchestrator, \
+             patch("umrs.orchestrator.service.detect_backend") as mock_detect_backend:
+            service = OrchestrationService()
+            backend = service.backend
+
+        assert backend is fake_backend
+        assert service.backend_type.value == "slurm"
+        mock_detect_backend.assert_not_called()
+        mock_get_orchestrator.assert_called_once_with("slurm-podman")
 
 
 # ============================================================================
@@ -376,8 +536,7 @@ def db_pool():
 class TestDurableOrchestrationIntegration:
     """Integration tests for durable orchestration."""
 
-    @pytest.mark.asyncio
-    async def test_durable_service_lifecycle(self):
+    def test_durable_service_lifecycle(self):
         """Test DurableOrchestrationService startup/shutdown."""
         from umrs.orchestrator.durable import DurableOrchestrationService
 
@@ -385,7 +544,7 @@ class TestDurableOrchestrationIntegration:
         mock_pool = MockPool()
 
         with patch('umrs.orchestrator.durable.ensure_schema'):
-            with patch('umrs.jobs.service.JobService') as MockJobService:
+            with patch('umrs.orchestrator.durable.JobService') as MockJobService:
                 mock_job_service = MagicMock()
                 mock_job_service.startup = AsyncMock(return_value=MagicMock())
                 mock_job_service.shutdown = AsyncMock()
@@ -406,10 +565,10 @@ class TestDurableOrchestrationIntegration:
                                 db_pool=mock_pool,
                             )
 
-                            await service.startup()
+                            asyncio.run(service.startup())
                             assert service._started
 
-                            await service.shutdown()
+                            asyncio.run(service.shutdown())
                             assert not service._started
 
 

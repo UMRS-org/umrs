@@ -42,13 +42,36 @@ unified orchestration using the existing (but unused) infrastructure in
 - [x] A1 Extract client-safe SQL helpers out of `umrs.server.sql`
       so `client_umrs.py` no longer imports server DB internals for naming
       and metadata shaping.
-- [ ] A2 Rewire `server.job_tracking_handler` from the compatibility
+- [x] A2 Rewire `server.job_tracking_handler` from the compatibility
       `~/.config/umrs/jobs.json` store to the durable `umrs.jobs` service once
       server boot owns a shared PostgreSQL-backed job runtime.
-- [ ] A3 Remove the JSON compatibility backend after ZMQ job commands and the
+- [x] A3 Remove the JSON compatibility backend after ZMQ job commands and the
       REST/API job surface converge on the same `JobStore` state machine.
 - [ ] A4 Keep `deploy/rccs-cloud/.env` limited to secrets and explicit
       overrides; `site.yaml` remains canonical for site defaults.
+
+#### A2 Review — Process-Owned Durable Runtime (2026-04-07)
+- [x] Start a process-owned durable jobs runtime from `server_umrs.py`
+      so scheduler and monitor loops live for the server lifetime.
+- [x] Share that runtime's `JobStore` with ZMQ job commands instead of opening
+      a separate command-only pool when full durable startup succeeds.
+- [x] Keep the durable command-backend fallback for cases where the full async
+      runtime cannot start.
+- [x] Fix latent durable startup bugs that blocked live runtime ownership:
+      thread-safe Postgres pool bootstrap, status-checker factory wiring, and
+      proper pooled connection return during schema initialization.
+
+#### A3 Review — Remove JSON Compatibility Backend (2026-04-07)
+- [x] Delete the `~/.config/umrs/jobs.json` fallback helpers from
+      `server.job_tracking_handler` so ZMQ `JOB_*` commands no longer create a
+      second source of truth for job state.
+- [x] Keep the ZMQ wire contract JSON-shaped while requiring a durable backend
+      behind `JOB_SUBMIT`, `JOB_CANCEL`, and `JOB_LIST`.
+- [x] Return a structured `{"status": "error", ...}` response when neither the
+      process-owned durable runtime nor the command-only durable backend can
+      start during server boot.
+- [x] Replace fallback-specific tests with durable bridge and dashboard
+      contract coverage.
 
 ### LiteLLM / Embedding Proxy (2026-03-08)
 - [ ] Diagnose LiteLLM Prisma table errors (root cause of proxy failure)
@@ -61,6 +84,26 @@ unified orchestration using the existing (but unused) infrastructure in
 - [ ] Demo 02: RAG search (vector + hybrid + Q&A) — needs UMRS_RAG_ENABLE=1
 - [x] Demo 03: SAM3 segmentation (upload images, download results)
 - [x] Demo 04: HMAE inference (upload CT images, download results)
+
+#### rccs-cloud Lifecycle Follow-up (2026-04-08)
+- [x] L1 Fix `deploy/rccs-cloud/stop.sh --server` so it does not stop
+      containers or cancel Slurm jobs during a native server restart.
+- [x] L2 Validate a real `stop.sh --server && start.sh --server` cycle on
+      rccs-cloud with final health checks.
+- [x] L3 Run a live durable `endpoint_provision` smoke test on rccs-cloud using
+      the new `ng-dgx-m*` partition-selection path.
+- [x] L4 Replace raw `nc -z 127.0.0.1 5555` checks in rccs-cloud lifecycle
+      scripts with a real ZMQ handshake so readiness checks stop flapping.
+
+#### rccs-cloud Durable Endpoint Follow-up (2026-04-08)
+- [x] E1 Make durable orchestration honor the site-configured backend kind so
+      rccs-cloud uses `slurm-podman` instead of the legacy `slurm` backend.
+- [x] E2 Allow scheduler-side backend submission failures to move attempts from
+      `created` to `failed` cleanly so jobs do not stick in `running`.
+- [x] E3 Teach the durable endpoint status checker to refresh pending Slurm
+      endpoints from backend job status before polling readiness.
+- [x] E4 Re-run focused durable/orchestrator tests, then repeat the live
+      `endpoint_provision` smoke test on rccs-cloud.
 
 ### User-Defined Model Workflows
 - [ ] U-200: Finalize UDM design document and review with stakeholder

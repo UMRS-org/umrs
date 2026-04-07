@@ -9,11 +9,11 @@
 #
 # Partition / resource tuning:
 #   Edit #SBATCH directives below to match the desired compute partition.
-#   For a quick test/vision inference job use dgx-s.
+#   Current fallback targets the first active ng-dgx-m* partition while ng-dgx-s is unavailable.
 # =============================================================================
 
 #SBATCH --job-name=umrs-rivault
-#SBATCH --partition=ng-dgx-s
+#SBATCH --partition=ng-dgx-m0
 #SBATCH --nodes=1
 #SBATCH --time=4:00:00
 

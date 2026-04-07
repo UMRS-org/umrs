@@ -16,6 +16,22 @@ PID_FILE="${SCRIPT_DIR}/server.pid"
 LOG_FILE="${SCRIPT_DIR}/logs/server.log"
 VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python"
 
+check_zmq_ready() {
+    if [[ ! -x "$VENV_PYTHON" ]]; then
+        return 1
+    fi
+
+    "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
+from umrs.core.MessageQueue import MessageQueue
+
+mq = MessageQueue(role="client", queue_type="control", server_ip="127.0.0.1")
+try:
+    raise SystemExit(0 if mq.is_server_ready(timeout_ms=5000) else 1)
+finally:
+    mq.close()
+PY
+}
+
 # Load .env if present (for POSTGRES_USER, POSTGRES_PASSWORD etc.)
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
     # shellcheck disable=SC1091
@@ -112,7 +128,7 @@ else
 fi
 
 # ─── ZMQ ports (umrs-server) ───
-check "ZMQ control port 5555 listening" nc -z 127.0.0.1 5555
+check "ZMQ control plane responds on 5555" check_zmq_ready
 # Port 5556 (data plane) opens on demand when a client connects — warn only
 if nc -z 127.0.0.1 5556 2>/dev/null; then
     ok "ZMQ data port 5556 listening"

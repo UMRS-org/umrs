@@ -13,18 +13,18 @@
 
 name: rccs-cloud
 description: >-
-  RIKEN RCCS cloud — single NVIDIA GB10 Blackwell aarch64 node,
+  RIKEN RCCS cloud — NVIDIA GB10 Blackwell aarch64 partitions,
   Slurm scheduler, rootless Podman 4.9, Lustre shared filesystem.
 
 scheduler:
-  kind: slurm
-  partition: ng-dgx-s
+  kind: slurm-podman
+  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # candidate partitions; backend picks one active target
   account: ""
   qos: ""
   time_limit: "04:00:00"
-  gpus: 1
+  gpus: 0  # omit explicit GPU requests; ng-dgx-m* partitions reject --gres/--gpus today
   cpus: 8
-  memory: "64G"
+  memory: ""  # omit --mem; ng-dgx-m* partitions currently reject explicit memory requests
 
 runtime:
   kind: podman-compose

@@ -47,12 +47,15 @@ containers running:
 ./start.sh --server
 ```
 
+`./stop.sh --server` leaves postgres, minio, and any active Slurm-backed
+endpoint jobs running. Use plain `./stop.sh` when you want a full stack stop.
+
 ---
 
 ## Architecture Overview
 
 ```
-Local machine (optional)          rccs-cloud (login node)          ng-dgx-s / ng-dgx-m* (compute)
+Local machine (optional)          rccs-cloud (login node)          ng-dgx-m* (compute)
 ────────────────────              ───────────────────────          ──────────────────────────
 umrs-client  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
 rag client   ←── SSH tunnel ───►  rag-service  (NATIVE)                  vLLM / BentoML + LiteLLM
@@ -74,6 +77,12 @@ For the rccs-cloud deployment, configuration ownership is split on purpose:
 - `deploy/rccs-cloud/site.yaml` is the canonical source for non-secret
   site defaults: scheduler settings, runtime paths, profile defaults,
   model-serving ports, and shared storage paths.
+  On rccs-cloud, `scheduler.kind` should stay `slurm-podman` so durable
+  endpoint jobs use the wrapper-backed Slurm/Podman launch path.
+  The active `ng-dgx-m*` partitions also require `scheduler.memory` to stay
+  empty today because Slurm rejects explicit `--mem` requests there.
+  They likewise require `scheduler.gpus: 0` because those partitions reject
+  explicit GPU request flags even though the nodes themselves are GPU hosts.
 - `deploy/rccs-cloud/.env` is for secrets and login-node-local overrides
   such as passwords, MinIO binding, and optional explicit paths.
 - `deploy/rccs-cloud/serve-model.slurm` should remain a launch wrapper.
@@ -270,6 +279,8 @@ To restart only the server (e.g. after a code change), keeping containers runnin
 ./start.sh --server
 ```
 
+If the native server is already running, use `./stop.sh --server` first.
+
 The first launch will:
 - Download embedding model weights to `$MODEL_DIR/sentence_transformers/` (first run only).
 - Auto-create MinIO buckets and PostgreSQL databases for each configured user.
@@ -278,7 +289,7 @@ The first launch will:
 
 ## Step 2.5 — Verify MinIO reachability from Slurm jobs via SSH tunnel
 
-Compute nodes (ng-dgx-s, ng-dgx-m*) cannot reach the login node's MinIO directly
+Compute nodes (currently `ng-dgx-m0` to `ng-dgx-m3`) cannot reach the login node's MinIO directly
 (port 9000 is not routable).  The mini-rivault Slurm script
 (`src/umrs/mini-rivault-llm/serve-model.slurm`) automatically opens an SSH
 tunnel that forwards `localhost:9000` on the compute node to `127.0.0.1:9000`
@@ -288,12 +299,15 @@ on the login node.
 > must be completed — passwordless SSH from compute nodes to the login node
 > is required for the tunnel.
 
-To verify the tunnel works, submit a quick test job (replace `dgx-s` with any
-target partition):
+Current site defaults advertise `ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3` as
+candidate partitions while `ng-dgx-s` is temporarily unavailable. The
+Slurm-Podman backend selects one active partition at submission time. To
+verify the tunnel works manually, submit a quick test job against one active
+partition:
 
 ```bash
 # On rccs-cloud:
-sbatch -p ng-dgx-s --time=00:05:00 --wrap='
+sbatch -p ng-dgx-m0 --time=00:05:00 --wrap='
   ssh -fN -L 9000:127.0.0.1:9000 '"$HOSTNAME"' -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes
   sleep 2
   curl -sS -m 5 -I http://localhost:9000/minio/health/live || exit 42
@@ -316,7 +330,7 @@ Interpretation:
 To test **all** partitions at once:
 
 ```bash
-for part in ng-dgx-s ng-dgx-m0 ng-dgx-m1 ng-dgx-m2 ng-dgx-m3; do
+for part in ng-dgx-m0 ng-dgx-m1 ng-dgx-m2 ng-dgx-m3; do
   sbatch -p "$part" --time=00:05:00 -J "test-$part" --wrap='
     ssh -fN -L 9000:127.0.0.1:9000 '"$HOSTNAME"' -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes
     sleep 2

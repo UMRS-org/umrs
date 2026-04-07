@@ -1,0 +1,76 @@
+# yaml-language-server: $schema=../../src/umrs/orchestrator/site-config.schema.json
+# ─────────────────────────────────────────────────────────────
+# UMRS Site Configuration — hpbd-atom (NVIDIA GB10 aarch64)
+# ─────────────────────────────────────────────────────────────
+# This file gives hpbd-atom the same ownership model as rccs-cloud:
+# site-specific defaults live here and can be exported back into the runtime
+# environment via umrs.orchestrator.site_config.SiteConfig.
+#
+# Loading priority:
+#   1. UMRS_SITE_CONFIG=/path/to/this/file
+#   2. ./site.yaml  (in CWD when starting UMRS)
+#   3. ~/.config/umrs/site.yaml
+# ─────────────────────────────────────────────────────────────
+
+name: hpbd-atom
+description: >-
+  hpbd-atom — single NVIDIA GB10 aarch64 node, Slurm scheduler,
+  rootless Podman 4.x, shared home filesystem.
+
+scheduler:
+  kind: slurm
+  partition: compute
+  account: ""
+  qos: ""
+  time_limit: "04:00:00"
+  gpus: 1
+  cpus: 8
+  memory: "64G"
+
+runtime:
+  kind: podman-compose
+  rivault_dir: /home/mnagaso/workspace/umrs/src/umrs/mini-rivault-llm
+  repo_dir: /home/mnagaso/workspace/umrs
+  vision_image: umrs-vision:latest
+  compose_file: ""
+  profiles:
+    - harness
+    - vision-bentoml
+  gpu_passthrough: device
+  cdi_spec: /var/run/cdi/nvidia.yaml
+  cgroup_manager: cgroupfs
+  storage_root: ""
+
+storage:
+  model_cache_dir: /home/mnagaso/workspace/umrs_models/hf
+  sam3_model_path: /home/mnagaso/workspace/umrs_models/sam3
+  hmae_model_path: /home/mnagaso/workspace/umrs_models/hmae
+  hmae_config_path: /home/mnagaso/workspace/umrs_models/hmae/infer_hmae_vit_b.yaml
+  hmae_checkpoint: /home/mnagaso/workspace/umrs_models/hmae/latest_checkpoint.pth
+  vision_tarball: /home/mnagaso/workspace/umrs_models/umrs-vision.tar
+  user_model_path: /tmp
+  s3_tunnel_host: ""
+  s3_tunnel_port: 9000
+
+network:
+  litellm_port: 8001
+  litellm_master_key: umrs-rccs-litellm-key
+  port_range_min: 11434
+  port_range_max: 11534
+  port_strategy: static_range
+
+vllm:
+  model: intfloat/e5-base-v2
+  docker_tag: latest
+  gpu_mem_util: 0.10
+  max_model_len: 4096
+  max_num_seqs: 4
+  tensor_parallel_size: 1
+
+database:
+  host: 127.0.0.1
+  port: 5432
+  superuser: umrs
+  superuser_password: umrs_rccs
+  user_password: ""
+  registry_dsn: ""

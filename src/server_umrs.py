@@ -27,6 +27,7 @@ from umrs.inference.embedding_backend import LocalEmbeddingBackend
 
 from umrs.server.model_registry_handler import handle_model_command
 from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
+from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env, handle_job_command
 from umrs.shared.config import *
 from umrs.server.config import *
@@ -1046,10 +1047,16 @@ def main():
     print("Initial configuration done.")
     reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
 
-    job_command_backend = build_durable_job_backend_from_env()
-    if job_command_backend is None:
-        print("Job commands using compatibility JSON backend.")
+    durable_job_runtime = start_durable_job_runtime_from_env()
+    if durable_job_runtime is not None:
+        job_command_backend = durable_job_runtime.command_backend
+        print("Job commands using durable PostgreSQL backend with active scheduler.")
     else:
+        job_command_backend = build_durable_job_backend_from_env()
+
+    if job_command_backend is None:
+        print("Job commands unavailable: durable PostgreSQL backend could not start.")
+    elif durable_job_runtime is None:
         print("Job commands using durable PostgreSQL backend.")
 
     handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
@@ -1064,7 +1071,12 @@ def main():
     try:
         server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file, job_command_backend=job_command_backend)
     finally:
-        if job_command_backend is not None:
+        if durable_job_runtime is not None:
+            try:
+                durable_job_runtime.shutdown()
+            except Exception:
+                logger.exception("Failed to shut down durable job runtime")
+        elif job_command_backend is not None:
             try:
                 job_command_backend.close()
             except Exception:

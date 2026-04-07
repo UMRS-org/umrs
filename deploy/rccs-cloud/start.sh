@@ -25,6 +25,22 @@ PID_FILE="${SCRIPT_DIR}/server.pid"
 LOG_DIR="${SCRIPT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/server.log"
 
+check_zmq_ready() {
+    if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+        return 1
+    fi
+
+    "${VENV_DIR}/bin/python" - <<'PY' >/dev/null 2>&1
+from umrs.core.MessageQueue import MessageQueue
+
+mq = MessageQueue(role="client", queue_type="control", server_ip="127.0.0.1")
+try:
+    raise SystemExit(0 if mq.is_server_ready(timeout_ms=2000) else 1)
+finally:
+    mq.close()
+PY
+}
+
 # ─── Guard: must run on a Linux host where podman is available ───────────────
 if [[ "$(uname -s)" != "Linux" ]]; then
     echo "ERROR: start.sh must be run on rccs-cloud (Linux), not on $(uname -s)."
@@ -200,16 +216,16 @@ nohup python "${REPO_ROOT}/src/server_umrs.py" \
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PID_FILE"
 
-# Verify the server started (wait up to 10s for ZMQ port)
-echo -n "Waiting for ZMQ port 5555..."
-for i in $(seq 1 20); do
-    if nc -z 127.0.0.1 5555 2>/dev/null; then
+# Verify the server started (wait up to 30s for real ZMQ readiness)
+echo -n "Waiting for UMRS ZMQ readiness..."
+for i in $(seq 1 60); do
+    if check_zmq_ready; then
         echo " ready (PID $SERVER_PID)."
         break
     fi
     echo -n "."
     sleep 0.5
-    [[ "$i" -eq 20 ]] && echo " NOTE: port not open yet — check ${LOG_FILE}"
+    [[ "$i" -eq 60 ]] && echo " NOTE: server not ready yet — check ${LOG_FILE}"
 done
 
 echo ""

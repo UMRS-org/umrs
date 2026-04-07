@@ -2,17 +2,36 @@
 # =============================================================================
 # Stop the UMRS stack on rccs-cloud — hybrid architecture.
 # =============================================================================
-# Stops the native umrs-server process, then the infrastructure containers.
+# Stops the native umrs-server process and, unless `--server` is requested,
+# also tears down the infrastructure containers.
 #
 # Usage:
-#   ./stop.sh          # graceful stop (data preserved in volumes)
-#   ./stop.sh --clean  # stop + remove volumes (data lost!)
+#   ./stop.sh           # full stop (data preserved in volumes)
+#   ./stop.sh --server  # stop only the native server (containers stay)
+#   ./stop.sh --clean   # full stop + remove volumes (data lost!)
 # =============================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
 
 PID_FILE="./server.pid"
 LOG_FILE="./logs/server.log"
+MODE="full"
+
+case "${1:-}" in
+    "" )
+        ;;
+    --server )
+        MODE="server"
+        ;;
+    --clean )
+        MODE="clean"
+        ;;
+    * )
+        echo "ERROR: Unknown option: ${1}"
+        echo "Usage: ./stop.sh [--server|--clean]"
+        exit 1
+        ;;
+esac
 
 # ─── Stop the native UMRS server ────────────────────────────────────────────
 if [[ -f "$PID_FILE" ]]; then
@@ -39,6 +58,13 @@ else
     echo "No server.pid — umrs-server not managed by start.sh (or already stopped)."
 fi
 
+if [[ "$MODE" = "server" ]]; then
+    echo "Server-only stop requested — leaving Slurm jobs and infrastructure containers running."
+    echo ""
+    echo "Done. To restart only the server: ./start.sh --server"
+    exit 0
+fi
+
 # ─── Best-effort: cancel any Slurm jobs started by server ────────────────────
 if command -v squeue &>/dev/null; then
     SLURM_JOBS=$(squeue -u "$USER" -h -o "%i %j" 2>/dev/null | grep -i 'rivault\|serve-model' | awk '{print $1}' || true)
@@ -50,7 +76,7 @@ if command -v squeue &>/dev/null; then
 fi
 
 # ─── Stop infrastructure containers ─────────────────────────────────────────
-if [[ "${1:-}" = "--clean" ]]; then
+if [[ "$MODE" = "clean" ]]; then
     echo "Stopping containers and removing volumes..."
     podman compose down -v
 else

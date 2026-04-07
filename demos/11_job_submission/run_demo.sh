@@ -29,7 +29,7 @@ echo ""
 # Step 1: Pre-warm an endpoint (avoids cold start on first upload)
 log "Step 1: Pre-warm endpoint (endpoint_provision --keep-alive)..."
 RESULT=$($CLIENT job submit endpoint_provision \
-    --spec '{"model": "sam3", "backend": "slurm"}' \
+    --spec '{"model": "sam3"}' \
     --project demo --keep-alive)
 echo "${RESULT}"
 JOB_ID=$(echo "${RESULT}" | extract_json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('job',{}).get('job_id',''))" 2>/dev/null || echo "")

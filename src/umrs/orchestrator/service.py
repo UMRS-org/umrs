@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -32,6 +33,7 @@ from .readiness import (
     ReadinessPoller,
     get_readiness_poller,
 )
+from .site_config import load_site_config
 
 logger = logging.getLogger(__name__)
 
@@ -119,14 +121,50 @@ class OrchestrationService:
             self._readiness_poller = get_readiness_poller()
         return self._readiness_poller
 
+    @staticmethod
+    def _classify_backend_name(backend_name: str) -> BackendType:
+        """Collapse backend names into the coarse BackendType enum."""
+        normalized = backend_name.lower()
+        if normalized in ("slurm", "slurm-podman"):
+            return BackendType.SLURM
+        if normalized in ("kubernetes", "k8s"):
+            return BackendType.KUBERNETES
+        if normalized in ("docker-compose", "compose"):
+            return BackendType.COMPOSE
+        return BackendType.UNKNOWN
+
+    @staticmethod
+    def _configured_backend_name() -> Optional[str]:
+        """Return an explicitly configured backend, if one exists."""
+        explicit = (os.getenv("RIVAULT_ORCHESTRATOR") or "").strip()
+        if explicit:
+            return explicit
+
+        try:
+            site = load_site_config()
+        except FileNotFoundError:
+            return None
+
+        configured = (site.scheduler.kind or "").strip()
+        return configured or None
+
     @property
     def backend(self) -> OrchestratorBackend:
         """Get orchestrator backend (lazy init with auto-detection)."""
         if self._backend is None:
-            detection = detect_backend()
-            self._backend_type = detection.backend
-            self._backend = get_orchestrator(detection.backend.value)
-            logger.info(f"Using orchestrator backend: {detection}")
+            configured_backend = self._configured_backend_name()
+            if configured_backend:
+                self._backend_type = self._classify_backend_name(configured_backend)
+                self._backend = get_orchestrator(configured_backend)
+                logger.info(
+                    "Using orchestrator backend from configuration: %s",
+                    configured_backend,
+                )
+            else:
+                detection = detect_backend()
+                self._backend_type = detection.backend
+                self._backend = get_orchestrator(detection.backend.value)
+                logger.info(f"Using orchestrator backend: {detection}")
         return self._backend
 
     @property
