@@ -230,6 +230,12 @@ export RIVAULT_PROFILES="harness vllm vision-bentoml rag"
 The UMRS server passes this to `serve-model.slurm`, which converts it to
 `--profile` flags for `podman-compose`.
 
+For site deployments such as rccs-cloud, treat `site.yaml` as the canonical
+source for the default profile set, serving port, and host-side model paths.
+Use `.env` or wrapper-side exports only for explicit overrides or secrets.
+Otherwise, profile and path defaults drift between docs, wrapper scripts, and
+the running server.
+
 ### Security Properties
 
 Each Mini-Rivault instance provides:

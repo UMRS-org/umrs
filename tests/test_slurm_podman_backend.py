@@ -81,6 +81,58 @@ class TestBackendProperties:
     def test_slurm_script_explicit(self, backend, slurm_script):
         assert backend.slurm_script == slurm_script
 
+    def test_slurm_script_resolves_from_repo_dir_and_site_name(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        wrapper = repo_root / "deploy" / "test-site" / "serve-model.slurm"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/bash\necho test\n")
+
+        site = SiteConfig(
+            name="test-site",
+            scheduler=SchedulerConfig(partition="test-gpu"),
+            runtime=RuntimeConfig(
+                repo_dir=str(repo_root),
+                rivault_dir=str(repo_root / "src" / "umrs" / "mini-rivault-llm"),
+            ),
+            network=NetworkConfig(litellm_port=8001, litellm_master_key="sk-test"),
+        )
+
+        backend = SlurmPodmanBackend(site=site)
+        assert backend.slurm_script == str(wrapper)
+
+    def test_slurm_script_resolves_from_rivault_dir_when_repo_dir_missing(self, tmp_path):
+        repo_root = tmp_path / "repo"
+        rivault_dir = repo_root / "src" / "umrs" / "mini-rivault-llm"
+        wrapper = repo_root / "deploy" / "test-site" / "serve-model.slurm"
+        rivault_dir.mkdir(parents=True)
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text("#!/bin/bash\necho test\n")
+
+        site = SiteConfig(
+            name="test-site",
+            scheduler=SchedulerConfig(partition="test-gpu"),
+            runtime=RuntimeConfig(rivault_dir=str(rivault_dir)),
+            network=NetworkConfig(litellm_port=8001, litellm_master_key="sk-test"),
+        )
+
+        backend = SlurmPodmanBackend(site=site)
+        assert backend.slurm_script == str(wrapper)
+
+    def test_slurm_script_falls_back_to_env(self, tmp_path):
+        env_wrapper = tmp_path / "env-serve-model.slurm"
+        env_wrapper.write_text("#!/bin/bash\necho env\n")
+
+        site = SiteConfig(
+            name="missing-site",
+            scheduler=SchedulerConfig(partition="test-gpu"),
+            runtime=RuntimeConfig(repo_dir=str(tmp_path / "missing-repo")),
+            network=NetworkConfig(litellm_port=8001, litellm_master_key="sk-test"),
+        )
+
+        with patch.dict(os.environ, {"RIVAULT_SLURM_SCRIPT": str(env_wrapper)}):
+            backend = SlurmPodmanBackend(site=site)
+            assert backend.slurm_script == str(env_wrapper)
+
     def test_site_property(self, backend, site):
         assert backend.site is site
 

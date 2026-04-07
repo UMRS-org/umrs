@@ -1,0 +1,128 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://umrs.local/site-config.schema.json",
+  "title": "UMRS Site Configuration",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "scheduler": {
+      "$ref": "#/$defs/scheduler"
+    },
+    "runtime": {
+      "$ref": "#/$defs/runtime"
+    },
+    "storage": {
+      "$ref": "#/$defs/storage"
+    },
+    "network": {
+      "$ref": "#/$defs/network"
+    },
+    "vllm": {
+      "$ref": "#/$defs/vllm"
+    },
+    "database": {
+      "$ref": "#/$defs/database"
+    },
+    "extra": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "name"
+  ],
+  "$defs": {
+    "scheduler": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string" },
+        "partition": { "type": "string" },
+        "account": { "type": "string" },
+        "qos": { "type": "string" },
+        "time_limit": { "type": "string" },
+        "gpus": { "type": "integer", "minimum": 0 },
+        "cpus": { "type": "integer", "minimum": 0 },
+        "memory": { "type": "string" },
+        "extra_sbatch": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string" },
+        "compose_file": { "type": "string" },
+        "rivault_dir": { "type": "string" },
+        "repo_dir": { "type": "string" },
+        "vision_image": { "type": "string" },
+        "profiles": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "gpu_passthrough": { "type": "string" },
+        "cdi_spec": { "type": "string" },
+        "cgroup_manager": { "type": "string" },
+        "storage_root": { "type": "string" }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model_cache_dir": { "type": "string" },
+        "sam3_model_path": { "type": "string" },
+        "hmae_model_path": { "type": "string" },
+        "hmae_config_path": { "type": "string" },
+        "hmae_checkpoint": { "type": "string" },
+        "vision_tarball": { "type": "string" },
+        "user_model_path": { "type": "string" },
+        "s3_tunnel_host": { "type": "string" },
+        "s3_tunnel_port": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "litellm_port": { "type": "integer", "minimum": 0 },
+        "litellm_master_key": { "type": "string" },
+        "port_range_min": { "type": "integer", "minimum": 0 },
+        "port_range_max": { "type": "integer", "minimum": 0 },
+        "port_strategy": { "type": "string" }
+      }
+    },
+    "vllm": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "model": { "type": "string" },
+        "docker_tag": { "type": "string" },
+        "gpu_mem_util": { "type": "number", "minimum": 0 },
+        "max_model_len": { "type": "integer", "minimum": 0 },
+        "max_num_seqs": { "type": "integer", "minimum": 0 },
+        "tensor_parallel_size": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "database": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "host": { "type": "string" },
+        "port": { "type": "integer", "minimum": 0 },
+        "superuser": { "type": "string" },
+        "superuser_password": { "type": "string" },
+        "user_password": { "type": "string" },
+        "registry_dsn": { "type": "string" }
+      }
+    }
+  }
+}

@@ -38,6 +38,18 @@ unified orchestration using the existing (but unused) infrastructure in
 
 ## Open Items
 
+### Architecture Follow-up (2026-04-07)
+- [x] A1 Extract client-safe SQL helpers out of `umrs.server.sql`
+      so `client_umrs.py` no longer imports server DB internals for naming
+      and metadata shaping.
+- [ ] A2 Rewire `server.job_tracking_handler` from the compatibility
+      `~/.config/umrs/jobs.json` store to the durable `umrs.jobs` service once
+      server boot owns a shared PostgreSQL-backed job runtime.
+- [ ] A3 Remove the JSON compatibility backend after ZMQ job commands and the
+      REST/API job surface converge on the same `JobStore` state machine.
+- [ ] A4 Keep `deploy/rccs-cloud/.env` limited to secrets and explicit
+      overrides; `site.yaml` remains canonical for site defaults.
+
 ### LiteLLM / Embedding Proxy (2026-03-08)
 - [ ] Diagnose LiteLLM Prisma table errors (root cause of proxy failure)
 - [ ] Fix nginx→LiteLLM→vLLM chain so embeddings can be computed

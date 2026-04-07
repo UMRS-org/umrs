@@ -8,6 +8,7 @@ from psycopg2 import sql
 from psycopg2 import pool as pg_pool
 from datetime import datetime
 from umrs.shared.buckets import BucketsCfg
+from umrs.shared.sql_helpers import create_db_name, metadata_dict
 from umrs.core.TaskCmdStatus import TaskStatus
 
 class DataBase:
@@ -304,14 +305,6 @@ def wait_table_modification_on_db(active_threads, user, key, data_base, table_na
         pretty_print_thread_status(active_threads.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
     print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
-
-
-
-def create_db_name(sql_username, xp_name):
-    db_name = xp_name+"_"+sql_username
-    db_name = db_name.replace(" ","_").lower()
-    return db_name
-
 def db_user_exists(conn, username):
     with conn.cursor() as cur:
         # Check if the username exists
@@ -474,14 +467,6 @@ def get_vector_size(cursor, table_name):
     result = cursor.fetchone()
 
     return result[0] if result else None  # Return vector size or None
-
-def metadata_dict(sql_cfg):
-    metadata = {}
-    for i,column in enumerate(sql_cfg["meta_data"]):
-        metadata[f"key{i}"] = column
-
-    return metadata
-
 def enable_table_notifications(conn, table_name: str):
     """
     Enable PostgreSQL NOTIFY on INSERT/UPDATE/DELETE for a given table.

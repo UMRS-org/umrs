@@ -76,14 +76,32 @@ class SlurmPodmanBackend(OrchestratorBackend):
         """Resolve the path to the site's serve-model.slurm."""
         if self._slurm_script:
             return self._slurm_script
-        # Try site-config runtime.rivault_dir, fall back to env
-        rivault_dir = self.site.runtime.rivault_dir
-        if rivault_dir:
-            candidate = os.path.join(os.path.dirname(rivault_dir), "..", "..",
-                                     "deploy", "rccs-cloud", "serve-model.slurm")
+
+        site = self.site
+
+        # Prefer deploy/<site-name>/serve-model.slurm when repo_dir is known.
+        repo_dir = site.runtime.repo_dir
+        if repo_dir and site.name:
+            candidate = os.path.join(repo_dir, "deploy", site.name, "serve-model.slurm")
             candidate = os.path.normpath(candidate)
             if os.path.isfile(candidate):
                 return candidate
+
+        # Fallback: infer repo root from runtime.rivault_dir.
+        rivault_dir = site.runtime.rivault_dir
+        if rivault_dir and site.name:
+            candidate = os.path.join(
+                os.path.dirname(rivault_dir),
+                "..",
+                "..",
+                "deploy",
+                site.name,
+                "serve-model.slurm",
+            )
+            candidate = os.path.normpath(candidate)
+            if os.path.isfile(candidate):
+                return candidate
+
         # Fallback to RIVAULT_SLURM_SCRIPT env
         return os.environ.get(
             "RIVAULT_SLURM_SCRIPT",
