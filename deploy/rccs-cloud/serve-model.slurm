@@ -43,6 +43,10 @@ export UMRS_S3_TUNNEL_HOST="${UMRS_S3_TUNNEL_HOST:-${SLURM_SUBMIT_HOST}}"
 export UMRS_S3_TUNNEL_PORT="${UMRS_S3_TUNNEL_PORT:-9000}"
 
 # ─── Vision stack profile ─────────────────────────────────────────────────────
+# These ${VAR:-default} values are fallback-only. Normal UMRS launches inject
+# the rccs-cloud site.yaml values into the sbatch environment before this
+# wrapper runs, so wrapper defaults should not be treated as the canonical site
+# contract.
 # Use "harness vllm vision-bentoml" to start all services:
 #   - harness: nginx, litellm, ll-postgres, coredns, minio proxy
 #   - vllm: model server for text embeddings (e5-base-v2, clip, etc.)

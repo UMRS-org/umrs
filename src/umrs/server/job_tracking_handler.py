@@ -1,13 +1,19 @@
 """
-Job Tracking Handler — bridges ZMQ protocol to job tracking operations.
+Compatibility ZMQ bridge for job tracking commands.
 
-Provides handle_job_command() for the server to call from its ZMQ loop.
-Uses a JSON file store for lightweight job tracking (no PostgreSQL required).
-When the full jobs/store.py is available (PostgreSQL), it can be used instead.
+This handler is the legacy CLI-facing job path used by server_umrs.py.
+It persists state in ~/.config/umrs/jobs.json so ZMQ job commands can work
+without requiring the durable PostgreSQL-backed job service to be bootstrapped.
+
+The durable implementation lives under umrs.jobs.* and is the intended long-term
+authority for retries, reconciliation, and attempt state. Until server startup
+wires that service into the ZMQ loop, this module remains an explicit
+compatibility backend rather than a second full jobs architecture.
 
 Supported commands (via TaskCmd):
-  JOB_SUBMIT  — submit a new job
-  JOB_CANCEL  — cancel a running job
+    JOB_SUBMIT  — submit a new job
+    JOB_CANCEL  — cancel a running job
+    JOB_LIST    — list compatibility-tracked jobs
 
 To query running job state, use the existing STATUS command (umrs-client status)
 which reads from the in-memory UMRSThreads store.
@@ -44,7 +50,7 @@ VALID_JOB_TYPES = {"endpoint_provision", "index_build", "cleanup"}
 
 
 def _jobs_path() -> str:
-    """Return path to the JSON jobs file."""
+    """Return path to the compatibility JSON jobs file."""
     cfg_dir = get_default_umrs_cfg_dir()
     return os.path.join(cfg_dir, "jobs.json")
 

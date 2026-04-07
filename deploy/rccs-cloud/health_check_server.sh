@@ -14,6 +14,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PID_FILE="${SCRIPT_DIR}/server.pid"
 LOG_FILE="${SCRIPT_DIR}/logs/server.log"
+VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python"
 
 # Load .env if present (for POSTGRES_USER, POSTGRES_PASSWORD etc.)
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
@@ -28,6 +29,15 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-umrs_rccs}"
 POSTGRES_DB="${POSTGRES_DB:-umrs_db}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
+
+SITE_CONFIG_PATH="${UMRS_SITE_CONFIG:-${HOME}/.config/umrs/site.yaml}"
+if [[ ! -e "$SITE_CONFIG_PATH" ]]; then
+    SITE_CONFIG_PATH="${SCRIPT_DIR}/site.yaml"
+fi
+SLURM_SCRIPT_PATH="${RIVAULT_SLURM_SCRIPT:-${HOME}/.config/umrs/rivault_data/serve-model.slurm}"
+if [[ ! -e "$SLURM_SCRIPT_PATH" ]]; then
+    SLURM_SCRIPT_PATH="${SCRIPT_DIR}/serve-model.slurm"
+fi
 
 log()  { echo "[server-health] $*"; }
 ok()   { echo "[server-health]   ✓ $1"; passed=$((passed + 1)); }
@@ -52,6 +62,26 @@ echo
 # ─── Container status (infrastructure only) ─────────────────────────────────
 check "postgres container running"    podman inspect --format '{{.State.Running}}' umrs-postgres
 check "minio container running"       podman inspect --format '{{.State.Running}}' umrs-minio
+
+# ─── Deployment contract ────────────────────────────────────────────────────
+check "site config file present" test -f "$SITE_CONFIG_PATH"
+check "slurm wrapper file present" test -f "$SLURM_SCRIPT_PATH"
+if [[ -x "$VENV_PYTHON" ]] && [[ -f "$SITE_CONFIG_PATH" ]]; then
+    if UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
+from umrs.orchestrator.site_config import load_site_config
+cfg = load_site_config()
+assert cfg.name == "rccs-cloud"
+assert cfg.scheduler.partition
+assert cfg.runtime.rivault_dir
+PY
+    then
+        ok "site config loads via project venv"
+    else
+        fail "site config loads via project venv"
+    fi
+else
+    warn "site config load check skipped (project venv or config missing)"
+fi
 
 # ─── PostgreSQL ───
 check "postgres accepting connections" \

@@ -2,7 +2,7 @@
 
 import os
 import sys
-from umrs.server.sql import *
+from umrs.shared.sql_helpers import create_db_name, metadata_dict
 from umrs.shared.storage.s3 import *
 from umrs.core.MessageQueue import MessageQueue
 from umrs.client.metadata import check_and_build_metadata
@@ -114,7 +114,7 @@ def parse_metadata_kv(pairs_list):
     return meta
 
 def merge_metadata(base_metadata, override_meta_dict):
-    # base_metadata is the structure produced by metadata_dict(sql_conf) -> includes SQL definitions
+    # base_metadata is the structure produced by metadata_dict(sql_conf).
     # For now we only inject overrides into a flat list under Metadata (matching existing code paths)
     # Existing code path expects metadata_args = { 'Metadata': {...}}
     merged = {k: v for k, v in base_metadata.items()} if base_metadata else {}

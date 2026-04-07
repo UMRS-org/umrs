@@ -14,7 +14,8 @@ sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 import threading
 from umrs.shared.storage.s3 import *
-from umrs.server.sql import check_S3_object_status_in_db, create_db_name
+from umrs.server.sql import check_S3_object_status_in_db
+from umrs.shared.sql_helpers import create_db_name
 from umrs.core.MessageQueue import MessageQueue
 from umrs.shared.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_thread_status
 

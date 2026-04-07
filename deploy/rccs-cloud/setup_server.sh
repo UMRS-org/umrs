@@ -20,10 +20,29 @@ SCRIPT_DIR="$(pwd)"
 REPO_ROOT="$(cd ../.. && pwd)"
 SRC_DIR="${REPO_ROOT}/src"
 VENV_DIR="${SCRIPT_DIR}/.venv"
-RIVAULT_DATA_DIR="${HOME}/.config/umrs/rivault_data"
+UMRS_CONFIG_DIR="${HOME}/.config/umrs"
+RIVAULT_DATA_DIR="${UMRS_CONFIG_DIR}/rivault_data"
 
 log()  { echo "[setup] $*"; }
 die()  { echo "[setup] ERROR: $*" >&2; exit 1; }
+
+ensure_symlink() {
+    local target="$1"
+    local link="$2"
+    local label="$3"
+
+    if [[ -L "$link" ]]; then
+        log "Updating ${label} symlink: ${link} → ${target}"
+        ln -sf "$target" "$link"
+    elif [[ -e "$link" ]]; then
+        log "WARNING: ${link} exists but is not a symlink — backing up."
+        mv "$link" "${link}.bak.$(date +%s)"
+        ln -s "$target" "$link"
+    else
+        log "Creating ${label} symlink: ${link} → ${target}"
+        ln -s "$target" "$link"
+    fi
+}
 
 # ─── Guard: must run on a Linux host ─────────────────────────────────────────
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -92,28 +111,23 @@ python3 -c "
 import umrs; print(f'  umrs package OK ({umrs.__file__})')
 import torch; print(f'  torch {torch.__version__} (CUDA: {torch.cuda.is_available()})')
 from sentence_transformers import SentenceTransformer; print('  sentence-transformers OK')
+from umrs.orchestrator.site_config import load_site_config
+cfg = load_site_config(r'${SCRIPT_DIR}/site.yaml'); print(f'  site config OK ({cfg.name})')
 " || die "Import verification failed — check the installation."
 
-# ─── Link the Slurm wrapper script ──────────────────────────────────────────
+# ─── Link canonical deployment files into ~/.config/umrs/ ──────────────────
 # rivault_launcher.py (via config.py) looks for the wrapper at:
 #   ~/.config/umrs/rivault_data/serve-model.slurm
-# Symlink our rccs-cloud-specific wrapper there.
-mkdir -p "$RIVAULT_DATA_DIR"
+# SiteConfig also looks in ~/.config/umrs/site.yaml when no explicit path is set.
+mkdir -p "$UMRS_CONFIG_DIR" "$RIVAULT_DATA_DIR"
 
 SLURM_TARGET="${SCRIPT_DIR}/serve-model.slurm"
 SLURM_LINK="${RIVAULT_DATA_DIR}/serve-model.slurm"
+SITE_CONFIG_TARGET="${SCRIPT_DIR}/site.yaml"
+SITE_CONFIG_LINK="${UMRS_CONFIG_DIR}/site.yaml"
 
-if [[ -L "$SLURM_LINK" ]]; then
-    log "Updating symlink: ${SLURM_LINK} → ${SLURM_TARGET}"
-    ln -sf "$SLURM_TARGET" "$SLURM_LINK"
-elif [[ -e "$SLURM_LINK" ]]; then
-    log "WARNING: ${SLURM_LINK} exists but is not a symlink — backing up."
-    mv "$SLURM_LINK" "${SLURM_LINK}.bak.$(date +%s)"
-    ln -s "$SLURM_TARGET" "$SLURM_LINK"
-else
-    log "Creating symlink: ${SLURM_LINK} → ${SLURM_TARGET}"
-    ln -s "$SLURM_TARGET" "$SLURM_LINK"
-fi
+ensure_symlink "$SLURM_TARGET" "$SLURM_LINK" "Slurm wrapper"
+ensure_symlink "$SITE_CONFIG_TARGET" "$SITE_CONFIG_LINK" "site config"
 
 # ─── Install MinIO Client (mc) ───────────────────────────────────────────────
 # The UMRS server calls `mc` for user/policy management in minio.py.
@@ -160,6 +174,7 @@ log "=== Server setup complete ==="
 echo ""
 echo "  Venv:       ${VENV_DIR}"
 echo "  Slurm link: ${SLURM_LINK} → ${SLURM_TARGET}"
+echo "  Site link:  ${SITE_CONFIG_LINK} → ${SITE_CONFIG_TARGET}"
 echo "  Config:     ${SCRIPT_DIR}/conf_umrs.json"
 echo ""
 echo "Next steps:"

@@ -26,16 +26,16 @@ cd /lvs0/dne1/rccs-dmp/mnagaso/umrs
 # 2. Pull latest code
 git pull origin feature/user-defined-workflows
 
-# 3. Update the Python package
+# 3. Update the Python package and stop the old server
 source deploy/rccs-cloud/.venv/bin/activate
-   uv pip install -e src/ --quiet
+uv pip install -e src/ --quiet
 cd deploy/rccs-cloud
 ./stop.sh
 
-# 5. Start everything (containers + server)
+# 4. Start everything (containers + server)
 ./start.sh
 
-# 6. Verify (wait ~15 s for server init)
+# 5. Verify (wait ~15 s for server init)
 ./health_check_server.sh
 ```
 
@@ -66,6 +66,23 @@ and `ssh -N -L` via `subprocess`.  These binaries are available on the login
 node but not inside a `python:3.10-slim` container.  Running the server natively
 avoids bind-mounting Slurm libs and SSH sockets, which is fragile and
 non-portable.
+
+## Canonical Config Contract
+
+For the rccs-cloud deployment, configuration ownership is split on purpose:
+
+- `deploy/rccs-cloud/site.yaml` is the canonical source for non-secret
+  site defaults: scheduler settings, runtime paths, profile defaults,
+  model-serving ports, and shared storage paths.
+- `deploy/rccs-cloud/.env` is for secrets and login-node-local overrides
+  such as passwords, MinIO binding, and optional explicit paths.
+- `deploy/rccs-cloud/serve-model.slurm` should remain a launch wrapper.
+  It should consume exported values, not become a second undocumented source
+  of scheduler, profile, or path defaults.
+
+`./setup_server.sh` links both the wrapper and `site.yaml` into
+`~/.config/umrs/`, and `./start.sh` exports `UMRS_SITE_CONFIG` explicitly so
+the native server does not depend on the current working directory.
 
 Ports tunneled over SSH (for local Mac access):
 
@@ -187,7 +204,12 @@ Key values to adjust:
 | `S3_PRESIGN_ENDPOINT` | `http://localhost:9000` | Compute nodes access MinIO via an SSH tunnel (see below).  The Slurm script opens `localhost:9000` → login node MinIO automatically. |
 | `MODEL_DIR` | `/lvs0/rccs-dmp/mnagaso/umrs_models` | Lustre path, shared between login and compute nodes |
 | `MINIO_BIND` | `127.0.0.1` | MinIO listens on localhost only.  Compute nodes use the SSH tunnel. |
-| `RIVAULT_SLURM_SCRIPT` | `./serve-model.slurm` | Path to the site-specific Slurm wrapper |
+| `UMRS_SITE_CONFIG` | `~/.config/umrs/site.yaml` | Optional override for the canonical site config path |
+| `RIVAULT_SLURM_SCRIPT` | `~/.config/umrs/rivault_data/serve-model.slurm` | Optional override for the site-specific Slurm wrapper |
+
+Do not duplicate scheduler partitions, `RIVAULT_PROFILES`, LiteLLM port, or
+model-serving paths in `.env` unless you are intentionally overriding
+`site.yaml`.  Those values are part of the site contract, not per-host secrets.
 
 ### 1b. Edit user config
 
@@ -205,15 +227,15 @@ a corresponding `user_files/user2.json`.
 ### 1d. One-time server setup
 
 Run the setup script once to create the Python virtual environment, install
-dependencies, and prepare the Slurm script symlink:
+dependencies, and prepare the canonical rccs-cloud config links:
 
 ```bash
 ./setup_server.sh
 ```
 
 This creates `.venv/` under `deploy/rccs-cloud/`, installs CPU-only PyTorch,
-the `umrs` package (editable), and symlinks `serve-model.slurm` into
-`~/.config/umrs/rivault_data/`.
+the `umrs` package (editable), and symlinks both `serve-model.slurm` and
+`site.yaml` into `~/.config/umrs/`.
 
 ---
 
@@ -227,10 +249,12 @@ the `umrs` package (editable), and symlinks `serve-model.slurm` into
 The script will:
 
 1. Auto-create `.env` from `env.example` if not present (prompts you to edit it).
-2. Create the Lustre model cache directories.
-3. Start postgres and minio containers via `podman compose up -d`.
-4. Wait for postgres and minio to become healthy.
-5. Launch `server_umrs.py` **natively** (outside any container) with the correct
+2. Resolve `UMRS_SITE_CONFIG` from `~/.config/umrs/site.yaml` (or fallback to the
+  checked-in `deploy/rccs-cloud/site.yaml`).
+3. Create the Lustre model cache directories.
+4. Start postgres and minio containers via `podman compose up -d`.
+5. Wait for postgres and minio to become healthy.
+6. Launch `server_umrs.py` **natively** (outside any container) with the correct
    environment variables, writing output to `logs/server.log`.
 
 Check that everything is up:

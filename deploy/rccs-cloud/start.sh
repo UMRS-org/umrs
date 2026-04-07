@@ -65,6 +65,22 @@ set -o allexport
 source .env
 set +o allexport
 
+DEFAULT_UMRS_SITE_CONFIG="${HOME}/.config/umrs/site.yaml"
+if [[ ! -e "$DEFAULT_UMRS_SITE_CONFIG" ]]; then
+    DEFAULT_UMRS_SITE_CONFIG="${SCRIPT_DIR}/site.yaml"
+fi
+export UMRS_SITE_CONFIG="${UMRS_SITE_CONFIG:-${DEFAULT_UMRS_SITE_CONFIG}}"
+if [[ ! -f "$UMRS_SITE_CONFIG" ]]; then
+    echo "ERROR: Site config not found at ${UMRS_SITE_CONFIG}"
+    echo "  Run: ./setup_server.sh  or set UMRS_SITE_CONFIG explicitly"
+    exit 1
+fi
+
+DEFAULT_RIVAULT_SLURM_SCRIPT="${HOME}/.config/umrs/rivault_data/serve-model.slurm"
+if [[ ! -e "$DEFAULT_RIVAULT_SLURM_SCRIPT" ]]; then
+    DEFAULT_RIVAULT_SLURM_SCRIPT="${SCRIPT_DIR}/serve-model.slurm"
+fi
+
 # ─── Create model directory (skip if path is not writable) ───────────────────
 MODEL_DIR="${MODEL_DIR:-/lvs0/rccs-dmp/mnagaso/umrs_models}"
 if mkdir -p "${MODEL_DIR}/sentence_transformers" "${MODEL_DIR}/hf" 2>/dev/null; then
@@ -153,7 +169,7 @@ export UMRS_MODEL_STAGING_ROOT="${MODEL_DIR}"
 
 # Slurm wrapper script — site-specific (sets RIVAULT_DIR, model paths, profiles).
 # Override with RIVAULT_SLURM_SCRIPT in .env if your wrapper is elsewhere.
-export RIVAULT_SLURM_SCRIPT="${RIVAULT_SLURM_SCRIPT:-${SCRIPT_DIR}/serve-model.slurm}"
+export RIVAULT_SLURM_SCRIPT="${RIVAULT_SLURM_SCRIPT:-${DEFAULT_RIVAULT_SLURM_SCRIPT}}"
 
 # Python environment
 export PYTHONUNBUFFERED=1
@@ -169,6 +185,7 @@ mkdir -p "$LOG_DIR"
 
 echo "Starting umrs-server (native) ..."
 echo "  Config:    ${SCRIPT_DIR}/conf_umrs.json"
+echo "  Site:      ${UMRS_SITE_CONFIG}"
 echo "  Log:       ${LOG_FILE}"
 echo "  PID file:  ${PID_FILE}"
 echo "  Slurm:     ${RIVAULT_SLURM_SCRIPT}"
