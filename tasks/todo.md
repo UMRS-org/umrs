@@ -57,6 +57,43 @@ unified orchestration using the existing (but unused) infrastructure in
 - [ ] V9: Demo 09 (HMAE full pipeline) verification
 - [ ] V10: Clean up old tarballs (~27GB of stale images in mini-rivault-llm/images/)
 
+### Harness Engineering (2026-04-07)
+
+**Goal:** Make the UMRS harness a first-class runtime contract between UMRS,
+Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
+ startup conventions.
+
+#### Phase 1 — Canonical Contract
+- [ ] H1  Define canonical ownership for harness defaults:
+      `site.yaml`, source `serve-model.slurm`, deploy wrappers, and docs
+- [ ] H2  Decide which profile sets are officially supported by default:
+      `harness`, `harness vllm`, `harness vllm vision-bentoml`, optional `rag`
+- [ ] H3  Document invariants for `RIVAULT_PROFILES`, host/container paths,
+      health readiness, and image reload behavior
+
+#### Phase 2 — Wrapper Convergence
+- [ ] H4  Diff source Mini-Rivault launcher versus deploy-site wrappers and
+      list intentional divergences versus drift
+- [ ] H5  Remove accidental default mismatches between source launcher,
+      deploy wrappers, and `site.yaml` export
+- [ ] H6  Ensure wrapper behavior is driven by site config or documented
+      wrapper-only policy, not hidden hardcoded defaults
+
+#### Phase 3 — Validation Harness
+- [ ] H7  Define a minimal harness validation matrix covering text-only,
+      vision-enabled, and full-stack profile sets
+- [ ] H8  Add or strengthen checks that prove service readiness rather than
+      only process/container existence
+- [ ] H9  Verify restart, cleanup, reuse, and stale-image paths in addition to
+      happy-path startup
+
+#### Phase 4 — Observability & Debugging
+- [ ] H10 Standardize what must be visible in logs: active profiles,
+      exported env overrides, selected compose files, and readiness failures
+- [ ] H11 Create a repeatable debugging order for wrapper issues,
+      site-config mismatches, tunnel issues, and stale tarball/image problems
+- [ ] H12 Align operator docs and demos with the canonical harness behavior
+
 ---
 
 ### Source Tree Reorganization (2026-04-06)
