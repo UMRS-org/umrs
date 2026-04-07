@@ -129,8 +129,7 @@ COMMENT ON COLUMN job_locks.heartbeat_at IS 'Last heartbeat from lock owner';
 
 -- Index for finding expired locks
 CREATE INDEX IF NOT EXISTS idx_job_locks_expires
-    ON job_locks(expires_at)
-    WHERE expires_at < NOW();
+    ON job_locks(expires_at);
 
 -- Index for finding locks by owner (cleanup on instance death)
 CREATE INDEX IF NOT EXISTS idx_job_locks_owner
