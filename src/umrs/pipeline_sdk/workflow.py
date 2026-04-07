@@ -472,6 +472,8 @@ def load_workflow(source_uri: str) -> WorkflowDefinition:
     """Load a :class:`WorkflowDefinition` from *source_uri*.
 
     *source_uri* is the part after the ``user_script://`` scheme.
+    Searches first relative to CWD, then in the uploaded-workflows
+    directory (``tmp/user_workflows/<user>/<source_uri>``).
     """
     if source_uri.startswith("s3://"):
         raise NotImplementedError(
@@ -479,7 +481,25 @@ def load_workflow(source_uri: str) -> WorkflowDefinition:
             "Place workflow.json on a mounted local path for now."
         )
     path = Path(source_uri)
-    return WorkflowDefinition.from_file(path)
+    if path.is_file():
+        return WorkflowDefinition.from_file(path)
+
+    # Fallback: search in uploaded-workflows directory
+    from umrs.shared.config import get_default_tmp_subdir
+
+    uploaded_root = Path(get_default_tmp_subdir()) / "user_workflows"
+    if uploaded_root.is_dir():
+        for user_dir in uploaded_root.iterdir():
+            if not user_dir.is_dir():
+                continue
+            candidate = user_dir / source_uri
+            if candidate.is_file():
+                return WorkflowDefinition.from_file(candidate)
+
+    raise FileNotFoundError(
+        f"Workflow not found: {source_uri} "
+        f"(checked CWD and {uploaded_root})"
+    )
 
 
 def load_steps(

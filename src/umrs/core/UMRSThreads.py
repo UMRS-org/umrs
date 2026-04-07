@@ -199,7 +199,11 @@ class UMRSThreads:
         array_of_works = []
         for path_to_bucket in keys_per_bucket.keys():
             selected_fields = ["s3_username", "table_name","modality_name", "db_name"]
-            user, table_name,  modality_name, db_name = buckets_cfg.get(path_to_bucket, fields=selected_fields)
+            result = buckets_cfg.get(path_to_bucket, fields=selected_fields)
+            if result is None:
+                print(f"WARNING: No bucket config for '{path_to_bucket}', skipping")
+                continue
+            user, table_name,  modality_name, db_name = result
             s3_keys = keys_per_bucket[path_to_bucket]
             work = {
                 "user": user,

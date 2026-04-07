@@ -293,18 +293,25 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
         sql_username = xp["sql_username"]
         data_base, _db_name = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
-            bucket_alias, path_to_bucket, num_objects, bucket_entry = _configure_modality_bucket(
-                user_cfg,
-                username,
-                xp_name,
-                sql_username,
-                modality,
-                s3_connection,
-                bucket_location,
-                data_base,
-            )
-            buckets_cfg.store(path_to_bucket, bucket_entry)
-            print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
+            try:
+                bucket_alias, path_to_bucket, num_objects, bucket_entry = _configure_modality_bucket(
+                    user_cfg,
+                    username,
+                    xp_name,
+                    sql_username,
+                    modality,
+                    s3_connection,
+                    bucket_location,
+                    data_base,
+                )
+                buckets_cfg.store(path_to_bucket, bucket_entry)
+                print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
+            except Exception as e:
+                import traceback
+                mod_name = modality.get("modality_name") or modality.get("modality", "?")
+                print(f"\t\t\tWARNING: Failed to configure modality '{mod_name}' "
+                      f"in experience '{xp_name}': {e}")
+                traceback.print_exc()
 
 
 __all__ = [

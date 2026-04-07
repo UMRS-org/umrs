@@ -27,7 +27,7 @@
     "timeout_seconds": 1800
   },
   "output": {
-    "return_type": "raw",
+    "return_type": "file",
     "embedding_vector_size": 0
   }
 }
