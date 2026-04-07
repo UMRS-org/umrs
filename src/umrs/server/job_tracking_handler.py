@@ -29,6 +29,10 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+from psycopg2 import pool as pg_pool
+
+from umrs.jobs.models import JobStatus, JobType, RestartPolicy
+from umrs.jobs.store import DuplicateJobError, InvalidTransitionError, JobNotFoundError, JobStore
 from umrs.shared.config import get_default_umrs_cfg_dir
 
 logger = logging.getLogger(__name__)
@@ -47,6 +51,204 @@ VALID_STATUSES = {"planned", "queued", "running", "completed", "failed", "cancel
 # - embedding_batch → PROCESS_OBJECTS (upload) + recompute/update maintenance
 # - pipeline_run → deferred until steps framework is fully wired
 VALID_JOB_TYPES = {"endpoint_provision", "index_build", "cleanup"}
+
+
+def _parse_payload(payload_str: str) -> Dict[str, Any]:
+    if not payload_str:
+        return {}
+    return json.loads(payload_str)
+
+
+def _parse_job_type(job_type: str) -> JobType:
+    if not job_type:
+        raise ValueError("job_type is required")
+    if job_type not in VALID_JOB_TYPES:
+        raise ValueError(f"Invalid job_type: {job_type}. Valid: {sorted(VALID_JOB_TYPES)}")
+    return JobType(job_type)
+
+
+def _parse_job_status(status: Optional[str]) -> Optional[JobStatus]:
+    if not status:
+        return None
+    if status not in VALID_STATUSES:
+        raise ValueError(f"Invalid status: {status}. Valid: {sorted(VALID_STATUSES)}")
+    return JobStatus(status)
+
+
+def _parse_restart_policy(restart_policy: str) -> RestartPolicy:
+    try:
+        return RestartPolicy(restart_policy or RestartPolicy.ON_CRASH.value)
+    except ValueError as exc:
+        valid = sorted(policy.value for policy in RestartPolicy)
+        raise ValueError(
+            f"Invalid restart_policy: {restart_policy}. Valid: {valid}"
+        ) from exc
+
+
+def _serialize_attempt(attempt) -> Dict[str, Any]:
+    data = attempt.to_dict()
+    data.setdefault("exit_reason", None)
+    return data
+
+
+def _serialize_job(job, attempts: Optional[List[Any]] = None) -> Dict[str, Any]:
+    data = job.to_dict()
+    data["attempts"] = [_serialize_attempt(attempt) for attempt in (attempts or [])]
+    return data
+
+
+class DurableJobCommandBackend:
+    """PostgreSQL-backed adapter for the ZMQ job command surface."""
+
+    def __init__(self, job_store: JobStore, db_pool=None):
+        self._job_store = job_store
+        self._db_pool = db_pool
+
+    def close(self) -> None:
+        if self._db_pool is not None:
+            self._db_pool.closeall()
+
+    def submit(self, client_id: str, payload_str: str) -> str:
+        try:
+            payload = _parse_payload(payload_str)
+        except json.JSONDecodeError as exc:
+            return json.dumps({"status": "error", "message": f"Invalid JSON: {exc}"})
+
+        try:
+            job_type = _parse_job_type((payload.get("job_type") or "").strip())
+            project_id = payload.get("project_id", "default")
+            spec = payload.get("spec", {})
+            priority = int(payload.get("priority", 0))
+            max_attempts = int(payload.get("max_attempts", 3))
+            restart_policy = _parse_restart_policy(payload.get("restart_policy", "on_crash"))
+            idempotency_key = payload.get("idempotency_key")
+
+            job_id = self._job_store.create_job(
+                project_id=project_id,
+                user_id=client_id,
+                job_type=job_type,
+                spec=spec,
+                idempotency_key=idempotency_key,
+                priority=priority,
+                max_attempts=max_attempts,
+                restart_policy=restart_policy,
+            )
+            self._job_store.enqueue_job(job_id)
+            job = self._job_store.get_job(job_id)
+            attempts = self._job_store.get_attempts_for_job(job_id)
+        except DuplicateJobError as exc:
+            job = self._job_store.get_job(exc.existing_job_id)
+            attempts = self._job_store.get_attempts_for_job(exc.existing_job_id)
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "message": f"Job already exists: {exc.existing_job_id}",
+                    "job": _serialize_job(job, attempts),
+                },
+                default=str,
+            )
+        except (InvalidTransitionError, JobNotFoundError, ValueError) as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+
+        logger.info("Durable job submitted: %s (type=%s, user=%s)", job.job_id, job.job_type.value, client_id)
+        return json.dumps(
+            {
+                "status": "ok",
+                "message": f"Job submitted: {job.job_id}",
+                "job": _serialize_job(job, attempts),
+            },
+            default=str,
+        )
+
+    def cancel(self, client_id: str, payload_str: str) -> str:
+        try:
+            payload = _parse_payload(payload_str)
+        except json.JSONDecodeError as exc:
+            return json.dumps({"status": "error", "message": f"Invalid JSON: {exc}"})
+
+        job_id = (payload.get("job_id") or "").strip()
+        if not job_id:
+            return json.dumps({"status": "error", "message": "job_id is required"})
+
+        try:
+            self._job_store.cancel_job(job_id, reason=f"cancelled by {client_id}")
+        except (InvalidTransitionError, JobNotFoundError) as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+
+        logger.info("Durable job cancelled: %s by %s", job_id, client_id)
+        return json.dumps({"status": "ok", "message": f"Job {job_id} cancelled"})
+
+    def list_jobs(self, client_id: str, payload_str: str) -> str:
+        try:
+            payload = _parse_payload(payload_str)
+        except json.JSONDecodeError:
+            payload = {}
+
+        try:
+            status = _parse_job_status(payload.get("status"))
+            job_type = None
+            if payload.get("job_type"):
+                job_type = _parse_job_type(payload.get("job_type"))
+            project_id = payload.get("project_id")
+            limit = min(int(payload.get("limit", 200)), 1000)
+            offset = max(int(payload.get("offset", 0)), 0)
+        except ValueError as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+
+        jobs = self._job_store.list_jobs(
+            project_id=project_id,
+            status=status,
+            job_type=job_type,
+            limit=limit,
+            offset=offset,
+        )
+        serialized_jobs = []
+        for job in jobs:
+            attempts = self._job_store.get_attempts_for_job(job.job_id)
+            serialized_jobs.append(_serialize_job(job, attempts))
+
+        return json.dumps(
+            {
+                "status": "ok",
+                "jobs": serialized_jobs,
+                "total": len(serialized_jobs),
+            },
+            default=str,
+        )
+
+
+def build_durable_job_backend_from_env() -> Optional[DurableJobCommandBackend]:
+    """Best-effort bootstrap of the durable job backend from process env."""
+    db_host = os.environ.get("DB_HOST", "localhost")
+    db_port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
+    db_name = os.environ.get("UMRS_JOBS_DB", os.environ.get("POSTGRES_DB", "umrs_db"))
+    db_user = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    db_password = os.environ.get(
+        "DB_SUPERUSER_PASSWORD",
+        os.environ.get("POSTGRES_PASSWORD", "postgres"),
+    )
+
+    try:
+        db_pool = pg_pool.SimpleConnectionPool(
+            minconn=1,
+            maxconn=10,
+            dbname=db_name,
+            user=db_user,
+            password=db_password,
+            host=db_host,
+            port=db_port,
+        )
+        job_store = JobStore(db_pool)
+        logger.info(
+            "Durable ZMQ job backend enabled (db=%s host=%s port=%s)",
+            db_name,
+            db_host,
+            db_port,
+        )
+        return DurableJobCommandBackend(job_store, db_pool=db_pool)
+    except Exception:
+        logger.exception("Falling back to compatibility JSON job backend")
+        return None
 
 
 def _jobs_path() -> str:
@@ -216,7 +418,7 @@ def _handle_list(client_id: str, payload_str: str) -> str:
     }, default=str)
 
 
-def handle_job_command(cmd: str, client_id: str, payload_str: str) -> str:
+def handle_job_command(cmd: str, client_id: str, payload_str: str, backend: Optional[DurableJobCommandBackend] = None) -> str:
     """
     Dispatch a job tracking command and return a JSON response string.
 
@@ -234,10 +436,16 @@ def handle_job_command(cmd: str, client_id: str, payload_str: str) -> str:
 
     try:
         if cmd == TaskCmd.JOB_SUBMIT:
+            if backend is not None:
+                return backend.submit(client_id, payload_str)
             return _handle_submit(client_id, payload_str)
         elif cmd == TaskCmd.JOB_CANCEL:
+            if backend is not None:
+                return backend.cancel(client_id, payload_str)
             return _handle_cancel(client_id, payload_str)
         elif cmd == TaskCmd.JOB_LIST:
+            if backend is not None:
+                return backend.list_jobs(client_id, payload_str)
             return _handle_list(client_id, payload_str)
         else:
             return json.dumps({"status": "error", "message": f"Unknown job command: {cmd}"})
