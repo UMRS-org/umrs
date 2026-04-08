@@ -157,8 +157,10 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
 - `deploy/rccs-cloud/site.yaml` is the clearest canonical source for
       rccs-cloud values, and `site_config.py` can export those values back into the
       runtime environment.
-- `deploy/hpbd-atom/` currently has no `site.yaml`, so hpbd-atom still relies
-      primarily on wrapper-local defaults.
+- `deploy/hpbd-atom/site.yaml` now exists and the deploy-side startup / health
+      scripts consume it for model-cache defaults, but hpbd-atom still relies
+      on wrapper-local policy for profile defaults and other site-specific
+      launch behavior.
 - Profile defaults are intentionally divergent today:
       rccs-cloud defaults to `harness vllm vision-bentoml`, while hpbd-atom
       defaults to `harness vision-bentoml`, and source Mini-Rivault still defaults
