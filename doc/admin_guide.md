@@ -213,8 +213,13 @@ Mini-Rivault uses compose profiles to select which services start per job.
 
 ### Activating Profiles
 
-Profiles are controlled via the `RIVAULT_PROFILES` environment variable. Set it
-before the Slurm job is submitted:
+Profiles are controlled by `RIVAULT_PROFILES`, but in deploy-site workflows the
+default value should come from `site.yaml` `runtime.profiles`. The deploy
+wrappers and the source `serve-model.slurm` now load site-config exports before
+falling back to hardcoded profile defaults, so explicit `RIVAULT_PROFILES`
+exports are only needed when you want to override the site contract.
+
+Set it before the Slurm job is submitted when you need an explicit override:
 
 ```bash
 # Default (LLM/embedding only)
@@ -233,8 +238,8 @@ The UMRS server passes this to `serve-model.slurm`, which converts it to
 For site deployments such as rccs-cloud, treat `site.yaml` as the canonical
 source for the default profile set, serving port, and host-side model paths.
 Use `.env` or wrapper-side exports only for explicit overrides or secrets.
-Otherwise, profile and path defaults drift between docs, wrapper scripts, and
-the running server.
+Otherwise, profile and path defaults drift between docs, wrapper scripts, the
+source launcher, and the running server.
 
 ### Security Properties
 
