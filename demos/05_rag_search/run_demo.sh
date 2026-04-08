@@ -24,6 +24,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="rag_search" source "${SCRIPT_DIR}/../lib/common.sh"
 
 RAG_URL="${RAG_URL:-http://localhost:8081}"
+RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-${TEXT_BUCKET:-user1-textfiles}}"
+RAG_MODALITY="${RAG_MODALITY:-text_file}"
 
 # ---------- Pretty-printer for RAG results ----------
 PRETTY_PRINT_PY='
@@ -71,6 +73,38 @@ except Exception as e:
     sys.exit(1)
 '
 
+build_payload() {
+    local query="$1" top_k="$2" extra_json="${3:-}"
+    QUERY="$query" \
+    TOP_K="$top_k" \
+    EXTRA_JSON="$extra_json" \
+    RAG_BUCKET_ALIAS="$RAG_BUCKET_ALIAS" \
+    RAG_MODALITY="$RAG_MODALITY" \
+    python3 - <<'PY'
+import json
+import os
+
+payload = {
+    "query": os.environ["QUERY"],
+    "top_k": int(os.environ["TOP_K"]),
+}
+
+bucket_alias = os.environ.get("RAG_BUCKET_ALIAS", "").strip()
+if bucket_alias:
+    payload["bucket_alias"] = bucket_alias
+
+modality = os.environ.get("RAG_MODALITY", "").strip()
+if modality:
+    payload["modality"] = modality
+
+extra_json = os.environ.get("EXTRA_JSON", "").strip()
+if extra_json:
+    payload.update(json.loads("{" + extra_json + "}"))
+
+print(json.dumps(payload))
+PY
+}
+
 rag_search() {
     local query="$1"
     shift
@@ -80,12 +114,7 @@ rag_search() {
     fi
 
     local json_payload
-    json_payload=$(python3 -c "
-import json, sys
-payload = json.loads('{\"query\": \"\", \"top_k\": 3 $extra}')
-payload['query'] = sys.argv[1]
-print(json.dumps(payload))
-" "$query")
+    json_payload=$(build_payload "$query" 3 "$extra")
 
     log "  Query: \"$query\""
     local response
@@ -107,12 +136,7 @@ rag_qa() {
     fi
 
     local json_payload
-    json_payload=$(python3 -c "
-import json, sys
-payload = json.loads('{\"query\": \"\", \"top_k\": 5 $extra}')
-payload['query'] = sys.argv[1]
-print(json.dumps(payload))
-" "$query")
+    json_payload=$(build_payload "$query" 5 "$extra")
 
     log "  Query: \"$query\""
     local response
@@ -128,6 +152,8 @@ print(json.dumps(payload))
 # ==========================================================================
 banner "Demo 05: RAG Semantic Search"
 echo "RAG service  : ${RAG_URL}"
+echo "RAG bucket   : ${RAG_BUCKET_ALIAS}"
+echo "RAG modality : ${RAG_MODALITY}"
 echo ""
 
 # ---------- Step 1: Check services ----------
