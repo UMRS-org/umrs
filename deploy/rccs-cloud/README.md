@@ -50,6 +50,30 @@ containers running:
 `./stop.sh --server` leaves postgres, minio, and any active Slurm-backed
 endpoint jobs running. Use plain `./stop.sh` when you want a full stack stop.
 
+To validate the harness itself after wrapper, `site.yaml`, or orchestration
+changes, run the site-local validator:
+
+```bash
+./validate_harness.sh
+```
+
+That submits the real `serve-model.slurm` wrapper through `slurm-podman` for
+the `text`, `vision`, and `full` profile sets, proves the required endpoints,
+and confirms cleanup by cancelling each Slurm job afterward, escalating to
+`KILL` when a graceful `TERM` does not finish promptly. Use
+`./validate_harness.sh --case text` when you only need one matrix entry.
+
+To validate the proven reuse and restart path after orchestration or wrapper
+changes, run:
+
+```bash
+./validate_harness.sh --skip-matrix --lifecycle-case full
+```
+
+Expected proof is one initial `full` launch, reuse of that same Slurm job,
+cleanup of that job, and a fresh second job after cleanup, with no remaining
+`umrs-rivault` entries in `squeue` at the end.
+
 ---
 
 ## Architecture Overview

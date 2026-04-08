@@ -299,6 +299,75 @@ class TestAdapters:
             mock_orchestrator.submit_job.assert_called_once()
             mock_registry.register.assert_called_once()
 
+    def test_endpoint_provision_backend_merges_env_vars(self):
+        """EndpointProvisionBackend should preserve caller env overrides."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import EndpointProvisionBackend
+
+        mock_orchestrator = AsyncMock()
+        mock_orchestrator.backend_type = "compose"
+        mock_orchestrator.submit_job = AsyncMock(return_value=MagicMock(
+            job_id="container-123",
+            endpoint=MagicMock(node="localhost"),
+        ))
+
+        backend = EndpointProvisionBackend(
+            orchestrator=mock_orchestrator,
+            registry=MagicMock(),
+            port_manager=MagicMock(allocate=MagicMock(return_value=11434)),
+        )
+
+        spec = {
+            "model": "test-model",
+            "model_path": "/models/test",
+            "gpu_count": 1,
+            "max_model_len": 4096,
+            "ttl_sec": 3600,
+            "env_vars": {
+                "RIVAULT_PROFILES": "harness vllm vision-bentoml",
+                "CUSTOM_FLAG": 7,
+            },
+        }
+        idempotency_key = compute_idempotency_key(
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            spec=spec,
+        )
+
+        job = Job(
+            job_id="job-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=idempotency_key,
+            priority=0,
+            desired_max_attempts=3,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+
+        attempt = JobAttempt(
+            attempt_id="att-123",
+            job_id="job-123",
+            attempt_no=1,
+            backend="compose",
+            status=AttemptStatus.CREATED,
+            umrs_instance_id="umrs-1",
+            created_at=datetime.utcnow(),
+        )
+
+        with patch.object(backend, '_determine_target_host', return_value="localhost"):
+            asyncio.run(backend.submit_job(job, attempt))
+
+        env = mock_orchestrator.submit_job.await_args.kwargs["env"]
+        assert env["RIVAULT_PROFILES"] == "harness vllm vision-bentoml"
+        assert env["CUSTOM_FLAG"] == "7"
+        assert env["LITELLM_PORT"] == "11434"
+        assert env["MODEL_NAME"] == "test-model"
+
     def test_endpoint_provision_backend_treats_slurm_podman_as_pending_host(self):
         """Slurm-Podman endpoints should wait for backend host discovery."""
         from umrs.jobs.adapters import EndpointProvisionBackend
@@ -481,6 +550,169 @@ class TestOrchestrationServiceConfig:
         assert service.backend_type.value == "slurm"
         mock_detect_backend.assert_not_called()
         mock_get_orchestrator.assert_called_once_with("slurm-podman")
+
+    def test_provision_reuses_existing_endpoint(self):
+        """Warm reusable endpoints should bypass backend submission."""
+        from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint
+        from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
+
+        endpoint = RegisteredEndpoint(
+            project_id="proj-1",
+            model="intfloat/e5-base-v2",
+            job_id="slurm-123",
+            host="node-1",
+            port=8001,
+            status=EndpointStatus.READY,
+            ready_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(minutes=30),
+            backend="slurm-podman",
+        )
+
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = endpoint
+
+        mock_backend = MagicMock()
+        mock_backend.submit_job = AsyncMock()
+
+        service = OrchestrationService(
+            registry=mock_registry,
+            port_manager=MagicMock(),
+            readiness_poller=MagicMock(),
+            backend=mock_backend,
+        )
+
+        result = asyncio.run(
+            service.provision(
+                ProvisionRequest(
+                    project_id="proj-1",
+                    model="intfloat/e5-base-v2",
+                    model_path="",
+                )
+            )
+        )
+
+        assert result.success is True
+        assert result.reused is True
+        assert result.job_id == "slurm-123"
+        mock_backend.submit_job.assert_not_called()
+
+    def test_provision_passes_env_vars_to_backend(self):
+        """ProvisionRequest env_vars should reach backend submission."""
+        from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
+
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = None
+        mock_registry.register.return_value = MagicMock(job_id="slurm-321", is_usable=True)
+        mock_registry.get_by_job_id.return_value = MagicMock(job_id="slurm-321", is_usable=True)
+
+        mock_port_manager = MagicMock()
+        mock_port_manager.allocate.return_value = 11434
+
+        mock_readiness = MagicMock()
+        mock_readiness.config.timeout_sec = 300
+        mock_readiness.wait_for_ready = AsyncMock(return_value=MagicMock(is_ready=True, models=["intfloat/e5-base-v2"]))
+
+        mock_backend = MagicMock()
+        mock_backend.submit_job = AsyncMock(return_value=MagicMock(
+            job_id="slurm-321",
+            endpoint=MagicMock(node="node-1"),
+        ))
+
+        service = OrchestrationService(
+            registry=mock_registry,
+            port_manager=mock_port_manager,
+            readiness_poller=mock_readiness,
+            backend=mock_backend,
+        )
+
+        result = asyncio.run(
+            service.provision(
+                ProvisionRequest(
+                    project_id="proj-1",
+                    model="intfloat/e5-base-v2",
+                    model_path="",
+                    env_vars={
+                        "RIVAULT_PROFILES": "harness vllm",
+                        "CUSTOM_FLAG": 9,
+                    },
+                )
+            )
+        )
+
+        assert result.success is True
+        env = mock_backend.submit_job.await_args.kwargs["env"]
+        assert env["RIVAULT_PROFILES"] == "harness vllm"
+        assert env["CUSTOM_FLAG"] == "9"
+        assert env["LITELLM_PORT"] == "11434"
+
+    def test_provision_waits_for_backend_endpoint_before_readiness(self):
+        """Slurm-style submissions should resolve the assigned host before readiness polling."""
+        from umrs.orchestrator.detection import BackendType
+        from umrs.orchestrator.base import EndpointInfo, JobInfo, JobStatus as BackendJobStatus
+        from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
+
+        registered_endpoint = MagicMock(job_id="slurm-654", is_usable=True)
+
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = None
+        mock_registry.register.return_value = registered_endpoint
+        mock_registry.get_by_job_id.return_value = registered_endpoint
+
+        mock_port_manager = MagicMock()
+        mock_port_manager.allocate.return_value = 11434
+
+        mock_readiness = MagicMock()
+        mock_readiness.config.timeout_sec = 300
+        mock_readiness.wait_for_ready = AsyncMock(
+            return_value=MagicMock(is_ready=True, models=["intfloat/e5-base-v2"])
+        )
+
+        mock_backend = MagicMock()
+        mock_backend.config = MagicMock(readiness_poll_interval_sec=1)
+        mock_backend.submit_job = AsyncMock(
+            return_value=JobInfo(
+                job_id="slurm-654",
+                status=BackendJobStatus.PENDING,
+                endpoint=None,
+                backend="slurm-podman",
+            )
+        )
+        mock_backend.get_job_status = AsyncMock(
+            return_value=JobInfo(
+                job_id="slurm-654",
+                status=BackendJobStatus.STARTING,
+                endpoint=EndpointInfo(node="gpu-node-1", litellm_port=11434),
+                backend="slurm-podman",
+            )
+        )
+
+        service = OrchestrationService(
+            registry=mock_registry,
+            port_manager=mock_port_manager,
+            readiness_poller=mock_readiness,
+            backend=mock_backend,
+        )
+        service._backend_type = BackendType.SLURM
+
+        result = asyncio.run(
+            service.provision(
+                ProvisionRequest(
+                    project_id="proj-1",
+                    model="intfloat/e5-base-v2",
+                    model_path="",
+                )
+            )
+        )
+
+        assert result.success is True
+        mock_backend.get_job_status.assert_awaited_once_with("slurm-654")
+        register_kwargs = mock_registry.register.call_args.kwargs
+        assert register_kwargs["host"] == "gpu-node-1"
+        assert register_kwargs["port"] == 11434
+        assert register_kwargs["metadata"]["allocated_host"] == "pending"
+        readiness_kwargs = mock_readiness.wait_for_ready.await_args.kwargs
+        assert readiness_kwargs["host"] == "gpu-node-1"
+        assert readiness_kwargs["port"] == 11434
 
 
 # ============================================================================

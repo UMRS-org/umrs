@@ -46,6 +46,14 @@ PY
 
 load_site_env_defaults
 
+mask_secret_state() {
+    if [[ -n "${1:-}" ]]; then
+        printf '%s' '<set>'
+    else
+        printf '%s' '<unset>'
+    fi
+}
+
 mkdir -p "${HOME}/.config/containers/"
 
 cat <<EOF > "${HOME}/.config/containers/storage.conf"
@@ -167,6 +175,17 @@ fi
 
 # fix some cgroup stuff
 loginctl enable-linger $(whoami)
+
+echo "[rivault] Launch context:"
+echo "[rivault]   site config: ${UMRS_SITE_CONFIG:-<none>}"
+echo "[rivault]   profiles: ${RIVAULT_PROFILES:-harness vllm}"
+echo "[rivault]   script dir: ${SCRIPT_DIR}"
+echo "[rivault]   compose files: ./serve-model.yaml ; ./userdata-access.yaml"
+echo "[rivault]   litellm port: ${NGINX_LITELLM_DOCKER_PORT:-auto}"
+echo "[rivault]   litellm key: $(mask_secret_state "${LITELLM_MASTER_KEY:-}")"
+echo "[rivault]   hf cache: ${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}"
+echo "[rivault]   sam3 path: ${SAM3_MODEL_PATH:-./models/sam3}"
+echo "[rivault]   hmae path: ${HMAE_MODEL_PATH:-./models/hmae}"
 
 # start
 # Tear down any leftovers from previous jobs: remove all containers that are

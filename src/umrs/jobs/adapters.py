@@ -12,9 +12,9 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Dict, Optional
 
-from .models import AttemptStatus, Job, JobAttempt, JobType
+from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
 from .scheduler import OrchestratorBackend
 
@@ -90,6 +90,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
         gpu_count = spec.get("gpu_count", 1)
         max_model_len = spec.get("max_model_len", 4096)
         ttl_sec = spec.get("ttl_sec", 3600)
+        requested_env = spec.get("env_vars") or {}
 
         # Determine target host
         target_host = self._determine_target_host()
@@ -100,15 +101,24 @@ class EndpointProvisionBackend(OrchestratorBackend):
             raise RuntimeError("Failed to allocate port for endpoint")
 
         try:
-            # Submit to underlying orchestrator
-            job_info = await self.orchestrator.submit_job(
-                model_path=model_path,
-                env={
+            submit_env = {
+                key: str(value)
+                for key, value in requested_env.items()
+                if isinstance(value, (str, int, float))
+            }
+            submit_env.update(
+                {
                     "LITELLM_PORT": str(port),
                     "VLLM_MAX_MODEL_LEN": str(max_model_len),
                     "PROJECT_ID": project_id,
                     "MODEL_NAME": model_name,
-                },
+                }
+            )
+
+            # Submit to underlying orchestrator
+            job_info = await self.orchestrator.submit_job(
+                model_path=model_path,
+                env=submit_env,
                 gpu_count=gpu_count,
             )
 
@@ -148,7 +158,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
 
             return job_info.job_id
 
-        except Exception as e:
+        except Exception:
             # Release port on any error
             self.port_manager.release(port, target_host)
             raise
@@ -189,6 +199,9 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         self.readiness_poller = readiness_poller
         self.registry = registry
         self.orchestrator = orchestrator
+        self._readiness_attempts: Dict[str, int] = {}
+        self._last_readiness_error: Dict[str, str] = {}
+        self._last_readiness_target: Dict[str, tuple[str, int]] = {}
 
     @property
     def job_type(self) -> JobType:
@@ -221,6 +234,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         from umrs.orchestrator.endpoint_registry import EndpointStatus
 
         if endpoint.status == EndpointStatus.FAILED:
+            self._clear_readiness_tracking(backend_ref)
             return AttemptCheckResult.failed(
                 endpoint.error_message or endpoint.metadata.get("error", "endpoint failed")
             )
@@ -230,12 +244,38 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
 
         # Check if endpoint is ready
         try:
-            is_ready = await self.readiness_poller.check_ready(
+            is_ready, models, error = await self.readiness_poller.check_ready_detail(
                 endpoint.host,
                 endpoint.port,
             )
 
+            check_no = self._next_readiness_check_no(
+                backend_ref,
+                endpoint.host,
+                endpoint.port,
+            )
+
+            if check_no == 1:
+                logger.info(
+                    "Starting readiness polling for %s at %s:%s via durable monitor "
+                    "(auth=%s)",
+                    backend_ref,
+                    endpoint.host,
+                    endpoint.port,
+                    "yes" if self.readiness_poller.config.auth_token else "no",
+                )
+
             if is_ready:
+                logger.info(
+                    "Endpoint %s ready after durable monitor check %s at %s:%s. "
+                    "Models: %s",
+                    backend_ref,
+                    check_no,
+                    endpoint.host,
+                    endpoint.port,
+                    models,
+                )
+                self._clear_readiness_tracking(backend_ref)
                 return AttemptCheckResult.succeeded(
                     metrics={
                         "host": endpoint.host,
@@ -243,6 +283,18 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                         "endpoint_status": endpoint.status.value,
                     },
                 )
+
+            last_error = self._last_readiness_error.get(backend_ref)
+            if check_no == 1 or check_no % 5 == 0 or error != last_error:
+                logger.info(
+                    "Readiness pending for %s at %s:%s after durable monitor check %s: %s",
+                    backend_ref,
+                    endpoint.host,
+                    endpoint.port,
+                    check_no,
+                    error or "not ready",
+                )
+            self._last_readiness_error[backend_ref] = error or ""
 
             return AttemptCheckResult.running(
                 f"waiting for endpoint readiness ({endpoint.host}:{endpoint.port})"
@@ -254,6 +306,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             # Don't mark as failed on transient errors
             # Only fail if endpoint explicitly reports failure
             if endpoint.status == EndpointStatus.FAILED:
+                self._clear_readiness_tracking(backend_ref)
                 return AttemptCheckResult.failed(
                     endpoint.error_message or endpoint.metadata.get("error", str(e))
                 )
@@ -304,6 +357,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             OrchestratorJobStatus.FAILED,
             OrchestratorJobStatus.STOPPED,
         ):
+            self._clear_readiness_tracking(backend_ref)
             error = job_info.error_message or (
                 f"Backend job {backend_ref} {job_info.status.value}"
             )
@@ -311,6 +365,22 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             return error
 
         return None
+
+    def _next_readiness_check_no(self, backend_ref: str, host: str, port: int) -> int:
+        target = (host, port)
+        if self._last_readiness_target.get(backend_ref) != target:
+            self._last_readiness_target[backend_ref] = target
+            self._readiness_attempts[backend_ref] = 0
+            self._last_readiness_error.pop(backend_ref, None)
+
+        check_no = self._readiness_attempts.get(backend_ref, 0) + 1
+        self._readiness_attempts[backend_ref] = check_no
+        return check_no
+
+    def _clear_readiness_tracking(self, backend_ref: str) -> None:
+        self._readiness_attempts.pop(backend_ref, None)
+        self._last_readiness_error.pop(backend_ref, None)
+        self._last_readiness_target.pop(backend_ref, None)
 
 
 class IndexBuildBackend(OrchestratorBackend):

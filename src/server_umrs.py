@@ -45,6 +45,16 @@ logger = logging.getLogger(__name__)
 
 rivault_lock = threading.Lock()
 
+
+def configure_server_logging():
+    """Route Python logger output into the server log stream."""
+    level_name = os.getenv("UMRS_LOG_LEVEL", "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
 # --------------------------- Maintenance commands ---------------------------
 
 def recompute_all_objects(active_threads, username, buckets_cfg, device, embedding_backend, key, log_output=True, update_status_callback=None):
@@ -1012,6 +1022,8 @@ def check_umrs_config_directory():
 # ---------------------------------- CLI ------------------------------------
 
 def main():
+    configure_server_logging()
+
     # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()
     if umrs_cfg_dir:

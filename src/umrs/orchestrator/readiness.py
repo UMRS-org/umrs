@@ -250,8 +250,10 @@ class ReadinessPoller:
 
         logger.info(
             f"Starting readiness polling for {job_id} at {host}:{port} "
-            f"(timeout={self.config.timeout_sec}s)"
+            f"(timeout={self.config.timeout_sec}s, auth={'yes' if self.config.auth_token else 'no'})"
         )
+
+        last_error: Optional[str] = None
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -281,10 +283,18 @@ class ReadinessPoller:
                 return result
 
             # Log progress
-            if attempt == 1 or attempt % 5 == 0:
-                logger.debug(
-                    f"Readiness check {attempt} for {job_id}: {error or 'not ready'}"
+            if attempt == 1 or attempt % 5 == 0 or error != last_error:
+                result.elapsed_sec = time.monotonic() - start_time
+                logger.info(
+                    "Readiness pending for %s at %s:%s after attempt %s (%.1fs): %s",
+                    job_id,
+                    host,
+                    port,
+                    attempt,
+                    result.elapsed_sec,
+                    error or "not ready",
                 )
+                last_error = error
 
             # Progress callback
             if on_progress:
@@ -313,6 +323,14 @@ class ReadinessPoller:
         """
         is_ready, _, _ = await self._check_once(host, port)
         return is_ready
+
+    async def check_ready_detail(
+        self,
+        host: str,
+        port: int,
+    ) -> tuple[bool, List[str], str]:
+        """Return a single readiness check with models and error detail."""
+        return await self._check_once(host, port)
 
     def cancel_poll(self, job_id: str) -> bool:
         """

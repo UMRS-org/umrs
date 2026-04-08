@@ -135,19 +135,24 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
       wrapper-only policy, not hidden hardcoded defaults
 
 #### Phase 3 — Validation Harness
-- [ ] H7  Define a minimal harness validation matrix covering text-only,
+- [x] H7  Define a minimal harness validation matrix covering text-only,
       vision-enabled, and full-stack profile sets
-- [ ] H8  Add or strengthen checks that prove service readiness rather than
+- [x] H8  Add or strengthen checks that prove service readiness rather than
       only process/container existence
-- [ ] H9  Verify restart, cleanup, reuse, and stale-image paths in addition to
+- [x] H9  Verify restart, cleanup, reuse, and stale-image paths in addition to
       happy-path startup
+- [x] H9a Fix `OrchestrationService.provision()` so `slurm-podman` resolves the
+      assigned compute node before authoritative readiness polling.
+- [x] H9b Re-run lifecycle validation on rccs-cloud with unbuffered output and
+      confirm reuse, cleanup, restart, and retained stale-image evidence end to
+      end.
 
 #### Phase 4 — Observability & Debugging
-- [ ] H10 Standardize what must be visible in logs: active profiles,
+- [x] H10 Standardize what must be visible in logs: active profiles,
       exported env overrides, selected compose files, and readiness failures
-- [ ] H11 Create a repeatable debugging order for wrapper issues,
+- [x] H11 Create a repeatable debugging order for wrapper issues,
       site-config mismatches, tunnel issues, and stale tarball/image problems
-- [ ] H12 Align operator docs and demos with the canonical harness behavior
+- [x] H12 Align operator docs and demos with the canonical harness behavior
 
 #### Review — Harness Ownership Audit (2026-04-07)
 
@@ -179,6 +184,49 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
       as the generic no-site-config fallback.
 - This means profile ownership is now canonical for site-configured deployments;
       remaining divergence is documented site policy rather than hidden drift.
+- `slurm-podman` now retains backend stdout/stderr under
+      `deploy/<site>/logs/slurm/slurm-<jobid>.out|err` instead of ephemeral
+      `/tmp`, and routine cleanup no longer deletes those logs before operators
+      can inspect wrapper launch context.
+- `src/server_umrs.py` now enables Python logging at `INFO` by default
+      (`UMRS_LOG_LEVEL` overrides it), so durable scheduler/monitor and
+      readiness logs reach `deploy/<site>/logs/server.log`.
+- Live rccs-cloud smoke `smoke-20260408-observability-retained-5`
+      validated both sides of H10/H11: retained wrapper launch summaries in
+      `deploy/rccs-cloud/logs/slurm/slurm-164051.out` and durable readiness
+      logs in `deploy/rccs-cloud/logs/server.log` showing start, pending
+      errors (`connection error`, `HTTP 502`), and eventual ready state for
+      backend `164051`.
+- `deploy/harness_validate.py` plus the site-local
+      `deploy/rccs-cloud/validate_harness.sh` and
+      `deploy/hpbd-atom/validate_harness.sh` wrappers now provide an executable
+      harness matrix for `text`, `vision`, and `full` profile sets.
+- `SlurmPodmanBackend` now lets explicit process env and `submit_job(env=...)`
+      overrides win over `site.yaml` defaults, so `RIVAULT_PROFILES` can be
+      varied per validation run without relying on brittle shell quoting.
+- Live rccs-cloud harness validation passed for jobs `164062` (`harness vllm`),
+      `164063` (`harness vision-bentoml`), and `164066`
+      (`harness vllm vision-bentoml`). The validator proved retained wrapper
+      launch summaries, authenticated `/v1/models` readiness for text/full,
+      `/vision/healthz` readiness for vision/full, and retained `slurm-*.out`
+      logs after cleanup.
+- Cleanup on rccs-cloud did not finish within a graceful `scancel --signal=TERM`
+      window for those jobs; the validator now escalates to `KILL` and confirms
+      the jobs leave `squeue` while the retained Slurm logs remain available.
+- Lifecycle validation initially stalled because `OrchestrationService.provision()`
+      polled readiness against host `pending`; it now waits for
+      `backend.get_job_status()` to publish the assigned compute node and carries
+      the original allocated host through cleanup.
+- Live rccs-cloud lifecycle validation passed with backend jobs `164106`
+      (initial provision + reuse) and `164107` (fresh restart). Proof included
+      retained wrapper logs, authenticated `/v1/models`, `/vision/healthz`,
+      `Loading vision image from Lustre tarball` evidence on both launches, TERM→KILL
+      cleanup escalation, and a final clean `squeue` for `umrs-rivault` jobs.
+- `doc/admin_guide.md` and `deploy/rccs-cloud/README.md` now document both the
+      matrix validator and the lifecycle validator (`--skip-matrix --lifecycle-case full`).
+- Demo 11 docs/scripts now describe the validated durable path as explicit
+      endpoint warm-up, reuse, and cancel; `UMRS_SERVICE_LIFECYCLE` remains
+      documented only as the legacy upload-triggered lifecycle control.
 
 ---
 
