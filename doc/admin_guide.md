@@ -241,6 +241,46 @@ Use `.env` or wrapper-side exports only for explicit overrides or secrets.
 Otherwise, profile and path defaults drift between docs, wrapper scripts, the
 source launcher, and the running server.
 
+### Canonical Ownership
+
+1. `site.yaml` is the canonical source for deploy-site defaults such as
+   `runtime.profiles`, LiteLLM port/key, and host-side model/cache paths.
+2. `deploy/<site>/start.sh` and `health_check_server.sh` default to the
+   colocated `site.yaml` and `serve-model.slurm`; `.env` is for secrets and
+   explicit overrides, not for duplicating site defaults.
+3. `deploy/<site>/serve-model.slurm` is the canonical site entrypoint. It loads
+   site-config exports first, then applies wrapper-only fallback policy when no
+   explicit env override or site default exists.
+4. `src/umrs/mini-rivault-llm/serve-model.slurm` is the generic source
+   launcher. When `UMRS_SITE_CONFIG` or another discoverable `site.yaml` is
+   present, it loads the same site-config exports before falling back to its
+   generic defaults.
+
+### Supported Default Sets
+
+- `harness`: control-plane-only harness bring-up.
+- `harness vllm`: generic text/embedding default when no site config is active.
+- `harness vision-bentoml`: supported site-specific vision-only default;
+  hpbd-atom currently uses this via `site.yaml`.
+- `harness vllm vision-bentoml`: supported text+vision default; rccs-cloud
+  currently uses this via `site.yaml`.
+- `harness vllm vision-bentoml rag`: supported full-stack extension when RAG is
+  intentionally enabled.
+
+### Harness Invariants
+
+- `harness` is always required; no supported default omits it.
+- `RIVAULT_PROFILES` remains a space-separated contract across server, wrapper,
+  and source launcher.
+- Site-config defaults must win over wrapper/source fallbacks; explicit env vars
+  must win over both.
+- Host paths in `site.yaml` and wrappers are mount-source paths; container paths
+  remain compose/YAML concerns.
+- LiteLLM port and auth key must stay aligned between UMRS, readiness checks,
+  wrappers, and the launched stack.
+- Fallback defaults may exist for generic or non-site launches, but they must
+  never silently override a valid site-config export.
+
 ### Security Properties
 
 Each Mini-Rivault instance provides:
