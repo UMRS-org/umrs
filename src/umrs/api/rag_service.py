@@ -1,6 +1,8 @@
 """UMRS RAG FastAPI service."""
 
 import os
+import re
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
@@ -23,6 +25,8 @@ from umrs.shared.config import (
     get_umrs_cfg_env_var_name,
 )
 from umrs.server.json_config import load_server_cfg_file
+from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint, get_registry
+from umrs.orchestrator.site_config import get_site_config
 
 
 def _cosine_score(distance) -> float:
@@ -34,6 +38,17 @@ def _cosine_score(distance) -> float:
     if distance is None:
         return 0.0
     return max(0.0, 1.0 - float(distance))
+
+
+@dataclass(frozen=True)
+class ResolvedLLMEndpoint:
+    """Resolved OpenAI-compatible LLM target for QA requests."""
+
+    model_name: str
+    base_url: str
+    api_key: str
+    source: str
+    job_id: Optional[str] = None
 
 
 class RAGSearchRequest(BaseModel):
@@ -176,6 +191,19 @@ def _build_cfg_store(configure_file: str) -> Dict[str, Any]:
         }
 
     return {"db_model_store": db_model_store}
+
+
+def _model_name_from_entry(model: Any) -> Optional[str]:
+    """Extract a model name from runtime or config-backed model definitions."""
+    if model is None:
+        return None
+    if hasattr(model, "model_name"):
+        return getattr(model, "model_name") or None
+    if isinstance(model, dict):
+        return model.get("model_name") or None
+    if isinstance(model, str):
+        return model or None
+    return None
 
 
 class UMRSPgVectorRetriever(BaseRetriever):
@@ -378,28 +406,255 @@ def _detect_embedding_model_from_config(
     """Extract the embedding model name from the first text-modality entry."""
     for entry in db_model_store.values():
         if entry.get("modality_name") == "text" and entry.get("store_embeddings_flag"):
-            model = entry.get("model")
-            if model is None:
-                continue
-            # EmbeddingModel object (from load_model)
-            if hasattr(model, "model_name"):
-                return model.model_name
-            # Raw config dict (fallback)
-            if isinstance(model, dict) and "model_name" in model:
-                return model["model_name"]
+            model_name = _model_name_from_entry(entry.get("model"))
+            if model_name:
+                return model_name
     return None
+
+
+def _detect_ingestion_models_from_config(
+    db_model_store: Dict[str, Dict[str, Any]],
+) -> set[str]:
+    """Return model names already used for ingestion/search backends."""
+    models: set[str] = set()
+    for entry in db_model_store.values():
+        if not entry.get("store_embeddings_flag"):
+            continue
+        model_name = _model_name_from_entry(entry.get("model"))
+        if model_name:
+            models.add(model_name)
+    return models
+
+
+_THINK_BLOCK_RE = re.compile(r"<think>.*?</think>\s*", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_reasoning_blocks(text: str) -> str:
+    """Remove model reasoning blocks such as <think>…</think>."""
+    if not text:
+        return ""
+
+    cleaned = _THINK_BLOCK_RE.sub("", text).strip()
+    if cleaned:
+        return cleaned
+
+    stripped = text.strip()
+    if stripped.lower().startswith("<think>"):
+        return ""
+    return stripped
+
+
+def _extract_rewritten_queries(raw_text: str, fallback_query: str) -> List[str]:
+    """Turn LLM rewrite output into concrete search queries."""
+    cleaned = _strip_reasoning_blocks(raw_text)
+    candidates: List[str] = []
+
+    for line in cleaned.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line[0].isdigit() and "." in line:
+            line = line.split(".", 1)[1].strip()
+        if line.startswith(("- ", "* ")):
+            line = line[2:].strip()
+        if (line.startswith('"') and line.endswith('"')) or (
+            line.startswith("'") and line.endswith("'")
+        ):
+            line = line[1:-1].strip()
+        if line:
+            candidates.append(line)
+
+    return candidates or [fallback_query]
+
+
+def _inject_site_env_defaults() -> None:
+    """Load site-configured env defaults needed for registry/auth discovery."""
+    try:
+        get_site_config().inject_env(overwrite=False)
+    except Exception:
+        # RAG should still work in pure env-only setups.
+        pass
+
+
+def _resolve_llm_api_key() -> str:
+    """Resolve the API key used for OpenAI-compatible QA requests."""
+    _inject_site_env_defaults()
+
+    for env_name in ("UMRS_RAG_LLM_API_KEY", "VLLM_API_KEY", "LITELLM_MASTER_KEY"):
+        value = os.getenv(env_name)
+        if value:
+            return value
+
+    try:
+        site_cfg = get_site_config()
+        if site_cfg.network.litellm_master_key:
+            return site_cfg.network.litellm_master_key
+    except Exception:
+        pass
+
+    return "sk-umrs-demo"
+
+
+def _endpoint_sort_key(endpoint: RegisteredEndpoint) -> tuple[int, Any]:
+    """Sort ready endpoints ahead of degraded ones and prefer recent activity."""
+    activity = endpoint.last_used_at or endpoint.ready_at or endpoint.created_at
+    return (1 if endpoint.status == EndpointStatus.READY else 0, activity)
+
+
+def _build_llm_candidates() -> List[ResolvedLLMEndpoint]:
+    """Build an ordered list of QA LLM candidates.
+
+    Precedence:
+    1. Explicit `VLLM_BASE_URL` override when configured.
+    2. Ready registry endpoints that exactly match `UMRS_RAG_LLM_MODEL`.
+    3. Other ready registry endpoints that do not look like ingestion models.
+    4. Default localhost fallback (`http://localhost:8000/v1`).
+    """
+    _inject_site_env_defaults()
+
+    desired_model = os.getenv(
+        "UMRS_RAG_LLM_MODEL",
+        "microsoft/Phi-3-mini-4k-instruct",
+    )
+    desired_project = os.getenv("UMRS_RAG_LLM_PROJECT_ID") or None
+    api_key = _resolve_llm_api_key()
+    seen: set[tuple[str, str]] = set()
+    candidates: List[ResolvedLLMEndpoint] = []
+
+    def add_candidate(candidate: ResolvedLLMEndpoint) -> None:
+        key = (candidate.model_name, candidate.base_url)
+        if key in seen:
+            return
+        seen.add(key)
+        candidates.append(candidate)
+
+    explicit_base_url = os.getenv("VLLM_BASE_URL")
+    if explicit_base_url:
+        add_candidate(
+            ResolvedLLMEndpoint(
+                model_name=desired_model,
+                base_url=explicit_base_url,
+                api_key=api_key,
+                source="env",
+            )
+        )
+
+    try:
+        registry = get_registry()
+        registry_endpoints = registry.list_all(
+            project_id=desired_project,
+            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+        )
+    except Exception:
+        registry_endpoints = []
+
+    exact_matches = sorted(
+        [endpoint for endpoint in registry_endpoints if endpoint.model == desired_model],
+        key=_endpoint_sort_key,
+        reverse=True,
+    )
+    for endpoint in exact_matches:
+        add_candidate(
+            ResolvedLLMEndpoint(
+                model_name=endpoint.model,
+                base_url=endpoint.litellm_url,
+                api_key=api_key,
+                source="registry-exact",
+                job_id=endpoint.job_id,
+            )
+        )
+
+    known_ingestion_models = _detect_ingestion_models_from_config(DB_MODEL_STORE)
+    fallback_endpoints = sorted(
+        [
+            endpoint
+            for endpoint in registry_endpoints
+            if endpoint.model != desired_model and endpoint.model not in known_ingestion_models
+        ],
+        key=_endpoint_sort_key,
+        reverse=True,
+    )
+    for endpoint in fallback_endpoints:
+        add_candidate(
+            ResolvedLLMEndpoint(
+                model_name=endpoint.model,
+                base_url=endpoint.litellm_url,
+                api_key=api_key,
+                source="registry-fallback",
+                job_id=endpoint.job_id,
+            )
+        )
+
+    if not explicit_base_url:
+        add_candidate(
+            ResolvedLLMEndpoint(
+                model_name=desired_model,
+                base_url="http://localhost:8000/v1",
+                api_key=api_key,
+                source="default",
+            )
+        )
+
+    return candidates
+
+
+def _mark_registry_endpoint_used(job_id: Optional[str]) -> None:
+    if not job_id:
+        return
+    try:
+        get_registry().mark_used(job_id)
+    except Exception:
+        pass
+
+
+def _build_chat_client(candidate: ResolvedLLMEndpoint) -> ChatOpenAI:
+    return ChatOpenAI(
+        model=candidate.model_name,
+        base_url=candidate.base_url,
+        api_key=candidate.api_key,
+        temperature=0.1,
+    )
+
+
+def _invoke_llm_with_candidates(
+    messages: List[Any],
+    candidates: List[ResolvedLLMEndpoint],
+) -> tuple[Any, ResolvedLLMEndpoint]:
+    """Try QA LLM candidates in order until one succeeds."""
+    if not candidates:
+        raise RuntimeError("No LLM candidates configured")
+
+    last_error: Optional[Exception] = None
+    for candidate in candidates:
+        try:
+            response = _build_chat_client(candidate).invoke(messages)
+            _mark_registry_endpoint_used(candidate.job_id)
+            return response, candidate
+        except Exception as exc:  # pragma: no cover - exercised via tests
+            last_error = exc
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("No LLM candidates configured")
+
+
+def _response_text(response: Any) -> str:
+    if hasattr(response, "content"):
+        return str(response.content)
+    return str(response)
 
 
 DB_MODEL_STORE: Dict[str, Dict[str, Any]] = {}
 EMBEDDINGS: Optional[SentenceTransformerEmbeddings] = None
-LLM: Optional[ChatOpenAI] = None
 HYBRID_SEARCHER: Optional[HybridSearcher] = None
 RERANKER: Optional[CrossEncoderReranker] = None
 
 
 @app.on_event("startup")
 def startup_event() -> None:
-    global DB_MODEL_STORE, EMBEDDINGS, LLM, HYBRID_SEARCHER, RERANKER
+    global DB_MODEL_STORE, EMBEDDINGS, HYBRID_SEARCHER, RERANKER
+
+    _inject_site_env_defaults()
 
     config_path = _resolve_server_config_path()
     cfg_store = _build_cfg_store(config_path)
@@ -419,21 +674,6 @@ def startup_event() -> None:
     if not model_name:
         model_name = "sentence-transformers/all-MiniLM-L6-v2"
     EMBEDDINGS = PrefixedSentenceTransformerEmbeddings(model_name=model_name)
-
-    # Configure LLM client against OpenAI-compatible vLLM endpoint
-    vllm_base_url = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
-    vllm_api_key = os.getenv("VLLM_API_KEY", "sk-umrs-demo")
-    llm_model_name = os.getenv(
-        "UMRS_RAG_LLM_MODEL",
-        "microsoft/Phi-3-mini-4k-instruct",
-    )
-
-    LLM = ChatOpenAI(
-        model=llm_model_name,
-        base_url=vllm_base_url,
-        api_key=vllm_api_key,
-        temperature=0.1,
-    )
 
     # Hybrid search and cross-encoder reranking (opt-in via request fields)
     HYBRID_SEARCHER = HybridSearcher()
@@ -580,8 +820,7 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
 
     if EMBEDDINGS is None:
         raise HTTPException(status_code=500, detail="Embeddings backend not initialized")
-    if LLM is None:
-        raise HTTPException(status_code=500, detail="LLM backend not initialized")
+    llm_candidates = _build_llm_candidates()
 
     try:
         # Fetch more candidates when hybrid or reranking is requested
@@ -603,6 +842,7 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
 
     # Step 1: optional query rewrite into focused sub-queries
     rewritten_queries: List[str]
+    preferred_candidate: Optional[ResolvedLLMEndpoint] = None
     if payload.enable_query_rewrite:
         system_prompt = (
             "You are a search assistant. Given a user's question, "
@@ -622,30 +862,16 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
         ]
 
         try:
-            rewrite_resp = LLM.invoke(msgs)
-            text = (
-                rewrite_resp.content
-                if hasattr(rewrite_resp, "content")
-                else str(rewrite_resp)
+            rewrite_resp, preferred_candidate = _invoke_llm_with_candidates(
+                msgs,
+                llm_candidates,
             )
+            text = _response_text(rewrite_resp)
         except Exception:
             # Fail-soft if the LLM is temporarily unavailable; fall back to
             # using the original user query for retrieval.
             text = payload.query
-        # Split on lines, strip numbering/bullets
-        candidates: List[str] = []
-        for line in str(text).splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            # Remove common list prefixes like "1.", "-", "*"
-            if line[0].isdigit() and "." in line:
-                line = line.split(".", 1)[1].strip()
-            if line.startswith(("- ", "* ")):
-                line = line[2:].strip()
-            if line:
-                candidates.append(line)
-        rewritten_queries = candidates or [payload.query]
+        rewritten_queries = _extract_rewritten_queries(str(text), payload.query)
     else:
         rewritten_queries = [payload.query]
 
@@ -767,13 +993,20 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
         ),
     ]
 
+    answer_candidates = llm_candidates
+    if preferred_candidate is not None:
+        answer_candidates = [preferred_candidate] + [
+            candidate
+            for candidate in llm_candidates
+            if candidate != preferred_candidate
+        ]
+
     try:
-        answer_resp = LLM.invoke(answer_messages)
-        answer_text = (
-            answer_resp.content
-            if hasattr(answer_resp, "content")
-            else str(answer_resp)
+        answer_resp, _ = _invoke_llm_with_candidates(
+            answer_messages,
+            answer_candidates,
         )
+        answer_text = _strip_reasoning_blocks(_response_text(answer_resp))
     except Exception as exc:
         # Surface retrieval contexts even if the LLM is unavailable so that
         # downstream callers (including automated demos) can still validate
@@ -866,8 +1099,6 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
     """
     if EMBEDDINGS is None:
         raise HTTPException(status_code=500, detail="Embeddings backend not initialized")
-    if LLM is None:
-        raise HTTPException(status_code=500, detail="LLM backend not initialized")
 
     # Map Gateway request to internal format
     internal_request = RAGQARequest(
