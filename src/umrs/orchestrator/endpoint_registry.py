@@ -480,15 +480,15 @@ def get_registry() -> EndpointRegistry:
         with _registry_lock:
             if _registry is None:
                 backend = None
-                backend_type = os.environ.get("UMRS_REGISTRY_BACKEND", "memory")
+                try:
+                    from .registry_backend import InMemoryBackend, get_backend
 
-                if backend_type != "memory":
-                    try:
-                        from .registry_backend import get_backend
-                        backend = get_backend(backend_type)
-                    except Exception as e:
-                        logger.error(f"Failed to initialize {backend_type} backend: {e}")
-                        logger.warning("Falling back to in-memory registry")
+                    backend = get_backend()
+                    if isinstance(backend, InMemoryBackend):
+                        backend = None
+                except Exception as e:
+                    logger.error(f"Failed to initialize registry backend: {e}")
+                    logger.warning("Falling back to in-memory registry")
 
                 _registry = EndpointRegistry(backend=backend)
     return _registry
