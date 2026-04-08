@@ -14,9 +14,21 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PID_FILE="${SCRIPT_DIR}/server.pid"
+RAG_PID_FILE="${SCRIPT_DIR}/rag-service.pid"
 LOG_FILE="${SCRIPT_DIR}/logs/server.log"
 SITE_CONFIG_PATH="${SCRIPT_DIR}/site.yaml"
 VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python"
+
+is_truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 resolve_model_layout() {
     if [[ -n "${MODEL_DIR:-}" ]]; then
@@ -70,6 +82,10 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD:-umrs_rccs}"
 POSTGRES_DB="${POSTGRES_DB:-umrs_db}"
 MINIO_ROOT_USER="${MINIO_ROOT_USER:-minioadmin}"
 MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:-minioadmin}"
+RAG_ENABLED=false
+if is_truthy "${UMRS_RAG_ENABLE:-false}"; then
+    RAG_ENABLED=true
+fi
 
 log()  { echo "[server-health] $*"; }
 ok()   { echo "[server-health]   ✓ $1"; passed=$((passed + 1)); }
@@ -141,6 +157,23 @@ if [[ -f "$PID_FILE" ]]; then
     fi
 else
     fail "umrs-server: no server.pid file found"
+fi
+
+if [[ "$RAG_ENABLED" = true ]]; then
+    if [[ -f "$RAG_PID_FILE" ]]; then
+        RAG_PID=$(cat "$RAG_PID_FILE")
+        if kill -0 "$RAG_PID" 2>/dev/null; then
+            ok "rag-service running (PID $RAG_PID)"
+        else
+            fail "rag-service PID $RAG_PID not running (stale pid file)"
+        fi
+    else
+        fail "rag-service: no rag-service.pid file found"
+    fi
+
+    check "RAG service docs respond on 8081" curl -sf http://127.0.0.1:8081/docs
+else
+    warn "RAG service disabled (set UMRS_RAG_ENABLE=true to enable demos 05 and 19)"
 fi
 
 # ─── ZMQ ports (umrs-server) ───

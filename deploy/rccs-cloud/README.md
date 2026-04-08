@@ -39,6 +39,10 @@ cd deploy/rccs-cloud
 ./health_check_server.sh
 ```
 
+If `UMRS_RAG_ENABLE=true` is set in `.env`, `./start.sh` also launches the
+native `rag-service` on port `8081`, and `./stop.sh --server` stops it
+alongside `umrs-server`.
+
 To restart **only** the server (e.g. after editing Python files), keeping
 containers running:
 
@@ -82,7 +86,7 @@ cleanup of that job, and a fresh second job after cleanup, with no remaining
 Local machine (optional)          rccs-cloud (login node)          ng-dgx-m* (compute)
 ────────────────────              ───────────────────────          ──────────────────────────
 umrs-client  ←── SSH tunnel ───►  umrs-server  (NATIVE)  ←── Slurm ───►  mini-rivault
-rag client   ←── SSH tunnel ───►  rag-service  (NATIVE)                  vLLM / BentoML + LiteLLM
+rag client   ←── SSH tunnel ───►  rag-service  (NATIVE, optional)        vLLM / BentoML + LiteLLM
                                   minio     (podman container)  ◄── SSH tunnel ──┘
                                   postgres  (podman container)
                                   /lvs0/rccs-dmp/  (Lustre — shared)
@@ -124,7 +128,7 @@ Ports tunneled over SSH (for local Mac access):
 | 5555 | ZMQ control plane |
 | 5556 | ZMQ data plane (add more ports for concurrent users) |
 | 9000 | MinIO S3 API (optional; local admin/debug only) |
-| 8081 | RAG service |
+| 8081 | RAG service (optional, enabled with `UMRS_RAG_ENABLE=true`) |
 
 For Slurm jobs, MinIO is accessed via an SSH tunnel (`localhost:9000`) created
 automatically by `serve-model.slurm`. See [Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs).

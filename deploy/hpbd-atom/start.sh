@@ -22,9 +22,48 @@ SCRIPT_DIR="$(pwd)"
 REPO_ROOT="$(cd ../.. && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
 PID_FILE="${SCRIPT_DIR}/server.pid"
+RAG_PID_FILE="${SCRIPT_DIR}/rag-service.pid"
 LOG_DIR="${SCRIPT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/server.log"
+RAG_LOG_FILE="${LOG_DIR}/rag-service.log"
 SITE_CONFIG_PATH="${SCRIPT_DIR}/site.yaml"
+
+check_rag_ready() {
+    curl -sf "http://127.0.0.1:8081/docs" >/dev/null 2>&1
+}
+
+is_truthy() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+stop_managed_process() {
+    local pid_file="$1"
+    local label="$2"
+
+    if [[ ! -f "$pid_file" ]]; then
+        return 0
+    fi
+
+    local process_pid
+    process_pid=$(cat "$pid_file")
+    if kill -0 "$process_pid" 2>/dev/null; then
+        echo "Stopping existing ${label} (PID ${process_pid})..."
+        kill "$process_pid" 2>/dev/null || true
+        sleep 2
+        if kill -0 "$process_pid" 2>/dev/null; then
+            kill -9 "$process_pid" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+    rm -f "$pid_file"
+}
 
 resolve_model_layout() {
     if [[ -n "${MODEL_DIR:-}" ]]; then
@@ -105,6 +144,13 @@ set -o allexport
 source .env
 set +o allexport
 
+export UMRS_CONFIG="${UMRS_CONFIG:-${SCRIPT_DIR}}"
+
+RAG_ENABLED=false
+if is_truthy "${UMRS_RAG_ENABLE:-false}"; then
+    RAG_ENABLED=true
+fi
+
 # ─── Create model cache directories (skip if path is not writable) ──────────
 {
     IFS= read -r MODEL_DIR
@@ -148,17 +194,9 @@ if [[ "${1:-}" != "--server" ]]; then
     done
 fi
 
-# ─── Stop existing server if running ─────────────────────────────────────────
-if [[ -f "$PID_FILE" ]]; then
-    OLD_PID=$(cat "$PID_FILE")
-    if kill -0 "$OLD_PID" 2>/dev/null; then
-        echo "Stopping existing server (PID $OLD_PID)..."
-        kill "$OLD_PID" 2>/dev/null || true
-        sleep 2
-        kill -0 "$OLD_PID" 2>/dev/null && kill -9 "$OLD_PID" 2>/dev/null || true
-    fi
-    rm -f "$PID_FILE"
-fi
+# ─── Stop existing native processes if running ───────────────────────────────
+stop_managed_process "$PID_FILE" "server"
+stop_managed_process "$RAG_PID_FILE" "RAG service"
 
 # ─── Kill any process still holding the ZMQ port ────────────────────────────
 ZMQ_PORT="${ZMQ_PORT:-5555}"
@@ -171,6 +209,20 @@ if [[ -n "${BLOCKING_PID:-}" ]]; then
     if kill -0 "$BLOCKING_PID" 2>/dev/null; then
         kill -9 "$BLOCKING_PID" 2>/dev/null || true
         sleep 1
+    fi
+fi
+
+if [[ "$RAG_ENABLED" = true ]]; then
+    RAG_BLOCKING_PID=$(ss -tlnp "sport = :8081" 2>/dev/null \
+        | awk -F'pid=' '/pid=/{print $2}' | awk -F',' '{print $1}' | head -1)
+    if [[ -n "${RAG_BLOCKING_PID:-}" ]]; then
+        echo "WARNING: Port 8081 is still held by PID ${RAG_BLOCKING_PID} — killing it."
+        kill "$RAG_BLOCKING_PID" 2>/dev/null || true
+        sleep 2
+        if kill -0 "$RAG_BLOCKING_PID" 2>/dev/null; then
+            kill -9 "$RAG_BLOCKING_PID" 2>/dev/null || true
+            sleep 1
+        fi
     fi
 fi
 
@@ -240,15 +292,47 @@ for i in $(seq 1 20); do
     [[ "$i" -eq 20 ]] && echo " NOTE: port not open yet — check ${LOG_FILE}"
 done
 
+if [[ "$RAG_ENABLED" = true ]]; then
+    echo "Starting rag-service (native) ..."
+    echo "  Log:       ${RAG_LOG_FILE}"
+    echo "  PID file:  ${RAG_PID_FILE}"
+
+    PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+        nohup python -m umrs.api.rag_service \
+        >> "$RAG_LOG_FILE" 2>&1 &
+
+    RAG_PID=$!
+    echo "$RAG_PID" > "$RAG_PID_FILE"
+
+    echo -n "Waiting for RAG service readiness..."
+    for i in $(seq 1 120); do
+        if check_rag_ready; then
+            echo " ready (PID $RAG_PID)."
+            break
+        fi
+        echo -n "."
+        sleep 1
+        [[ "$i" -eq 120 ]] && echo " NOTE: RAG service not ready yet — check ${RAG_LOG_FILE}"
+    done
+fi
+
 echo ""
 echo "=== UMRS stack running ==="
 echo "  postgres:    localhost:5432      (container)"
 echo "  minio:       localhost:9000      (container, console: localhost:9001)"
 echo "  umrs-server: localhost:5555      (native, PID $SERVER_PID)"
+if [[ "$RAG_ENABLED" = true ]]; then
+    echo "  rag-service: localhost:8081      (native, PID $RAG_PID)"
+else
+    echo "  rag-service: disabled            (set UMRS_RAG_ENABLE=true in .env to enable)"
+fi
 echo ""
 echo "  Presigned URL endpoint: ${S3_PRESIGN_ENDPOINT}"
 echo "  Model root:  ${MODEL_DIR}"
 echo "  HF cache:    ${HF_CACHE_DIR}"
 echo ""
 echo "Check logs:  tail -f ${LOG_FILE}"
+if [[ "$RAG_ENABLED" = true ]]; then
+    echo "Check RAG:   tail -f ${RAG_LOG_FILE}"
+fi
 echo "Stop:        ./stop.sh"

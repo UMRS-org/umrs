@@ -13,35 +13,66 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 PID_FILE="./server.pid"
+RAG_PID_FILE="./rag-service.pid"
 LOG_FILE="./logs/server.log"
 
-# ─── Stop the native UMRS server ────────────────────────────────────────────
-if [[ -f "$PID_FILE" ]]; then
-    SERVER_PID=$(cat "$PID_FILE")
-    if kill -0 "$SERVER_PID" 2>/dev/null; then
-        echo "Stopping umrs-server (PID $SERVER_PID)..."
-        kill "$SERVER_PID" 2>/dev/null || true
-        # Wait up to 10s for graceful shutdown
-        for i in $(seq 1 20); do
-            kill -0 "$SERVER_PID" 2>/dev/null || break
+MODE="full"
+
+case "${1:-}" in
+    "")
+        ;;
+    --server)
+        MODE="server"
+        ;;
+    --clean)
+        MODE="clean"
+        ;;
+    *)
+        echo "ERROR: Unknown option: ${1}"
+        echo "Usage: ./stop.sh [--server|--clean]"
+        exit 1
+        ;;
+esac
+
+stop_managed_process() {
+    local pid_file="$1"
+    local label="$2"
+    local missing_message="${3:-}"
+
+    if [[ ! -f "$pid_file" ]]; then
+        if [[ -n "$missing_message" ]]; then
+            echo "$missing_message"
+        fi
+        return 0
+    fi
+
+    local process_pid
+    process_pid=$(cat "$pid_file")
+    if kill -0 "$process_pid" 2>/dev/null; then
+        echo "Stopping ${label} (PID ${process_pid})..."
+        kill "$process_pid" 2>/dev/null || true
+        for _ in $(seq 1 20); do
+            kill -0 "$process_pid" 2>/dev/null || break
             sleep 0.5
         done
-        # Force kill if still running
-        if kill -0 "$SERVER_PID" 2>/dev/null; then
-            echo "  Force-killing server..."
-            kill -9 "$SERVER_PID" 2>/dev/null || true
+        if kill -0 "$process_pid" 2>/dev/null; then
+            echo "  Force-killing ${label}..."
+            kill -9 "$process_pid" 2>/dev/null || true
         fi
-        echo "  Server stopped."
+        echo "  ${label} stopped."
     else
-        echo "umrs-server (PID $SERVER_PID) is not running."
+        echo "${label} (PID ${process_pid}) is not running."
     fi
-    rm -f "$PID_FILE"
-else
-    echo "No server.pid — umrs-server not managed by start.sh (or already stopped)."
-fi
+    rm -f "$pid_file"
+}
+
+# ─── Stop the native UMRS server ────────────────────────────────────────────
+stop_managed_process "$PID_FILE" "umrs-server" \
+    "No server.pid — umrs-server not managed by start.sh (or already stopped)."
+stop_managed_process "$RAG_PID_FILE" "rag-service"
 
 # ─── Server-only mode: skip containers and Slurm cleanup ────────────────────
-if [[ "${1:-}" = "--server" ]]; then
+if [[ "$MODE" = "server" ]]; then
     echo ""
     echo "Done (server only). Containers still running."
     exit 0
@@ -58,7 +89,7 @@ if command -v squeue &>/dev/null; then
 fi
 
 # ─── Stop infrastructure containers ─────────────────────────────────────────
-if [[ "${1:-}" = "--clean" ]]; then
+if [[ "$MODE" = "clean" ]]; then
     echo "Stopping containers and removing volumes..."
     podman compose down -v
 else
