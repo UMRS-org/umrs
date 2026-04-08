@@ -129,7 +129,7 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
 #### Phase 2 — Wrapper Convergence
 - [x] H4  Diff source Mini-Rivault launcher versus deploy-site wrappers and
       list intentional divergences versus drift
-- [ ] H5  Remove accidental default mismatches between source launcher,
+- [x] H5  Remove accidental default mismatches between source launcher,
       deploy wrappers, and `site.yaml` export
 - [x] H6  Ensure wrapper behavior is driven by site config or documented
       wrapper-only policy, not hidden hardcoded defaults
@@ -169,12 +169,17 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
       wrapper-local `${VAR:-default}` fallbacks, so profile sets and model-path
       defaults follow the site contract unless the caller explicitly overrides
       them.
+- Source `src/umrs/mini-rivault-llm/serve-model.slurm` now does the same when
+      `UMRS_SITE_CONFIG` or another discoverable `site.yaml` is available, so
+      source-launch defaults and wrapper-launch defaults converge on the same
+      site-config export path instead of diverging silently.
 - Profile defaults are intentionally divergent today:
       rccs-cloud defaults to `harness vllm vision-bentoml`, while hpbd-atom
       defaults to `harness vision-bentoml`, and source Mini-Rivault still defaults
-      to `harness vllm`.
-- This means profile ownership is not yet canonical; current behavior is a mix
-      of source defaults, wrapper defaults, and optional site-config export.
+      to `harness vllm` when no site config is present.
+- This means remaining profile divergence is now intentional site policy when a
+      site config exists, with the generic source fallback only used outside a
+      site-configured deployment.
 
 ---
 

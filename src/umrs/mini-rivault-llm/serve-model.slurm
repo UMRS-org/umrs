@@ -1,5 +1,51 @@
 #!/bin/bash
 
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+    _resolved_script="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || true)"
+    if [[ -n "$_resolved_script" ]]; then
+        SCRIPT_PATH="$_resolved_script"
+    fi
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+
+load_site_env_defaults() {
+    local python_bin
+    local rendered_exports
+
+    python_bin="$(command -v python3 || true)"
+    [[ -n "$python_bin" ]] || return 0
+
+    rendered_exports="$({
+        PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            UMRS_SITE_CONFIG="${UMRS_SITE_CONFIG:-}" \
+            "$python_bin" - <<'PY'
+import os
+import shlex
+
+from umrs.orchestrator.site_config import load_site_config
+
+try:
+    path = os.environ.get("UMRS_SITE_CONFIG") or None
+    cfg = load_site_config(path)
+except FileNotFoundError:
+    raise SystemExit(0)
+
+for key, value in sorted(cfg.to_env().items()):
+    if os.environ.get(key):
+        continue
+    print(f"export {key}={shlex.quote(value)}")
+PY
+    } 2>/dev/null)" || return 0
+
+    if [[ -n "$rendered_exports" ]]; then
+        eval "$rendered_exports"
+    fi
+}
+
+load_site_env_defaults
+
 mkdir -p "${HOME}/.config/containers/"
 
 cat <<EOF > "${HOME}/.config/containers/storage.conf"
@@ -195,7 +241,9 @@ sed	-e "s@VLLM_MODEL_PLACEHOLDER@$(/bin/grep '^VLLM_MODEL=' "./env.${uuid}" | aw
 	"./litellm_fs/config.yaml" > "./litellm_fs/config.yaml.${uuid}"
 
 # Profiles to activate (override via RIVAULT_PROFILES env var)
-# Default: "harness vllm". For vision models add "vision-bentoml":
+# If site defaults were loaded above, runtime.profiles wins. Otherwise the
+# generic source fallback remains "harness vllm". For vision models add
+# "vision-bentoml":
 #   export RIVAULT_PROFILES="harness vllm vision-bentoml"
 RIVAULT_PROFILES=${RIVAULT_PROFILES:-"harness vllm"}
 _profile_flags=""
