@@ -25,6 +25,17 @@ Demonstrates UMRS RAG (Retrieval-Augmented Generation) search over embedded text
 bash run_demo.sh
 ```
 
+By default the demo scopes searches to Demo 02's text-file corpus by sending:
+
+- `bucket_alias=user1-textfiles`
+- `modality=text_file`
+
+Override those defaults when needed:
+
+```bash
+RAG_BUCKET_ALIAS=my-bucket RAG_MODALITY=text bash run_demo.sh
+```
+
 ## RAG API
 
 The RAG service listens on port **8081**. On native site deployments it runs
