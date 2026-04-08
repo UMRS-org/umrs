@@ -496,9 +496,26 @@ def _resolve_llm_api_key() -> str:
 
 
 def _endpoint_sort_key(endpoint: RegisteredEndpoint) -> tuple[int, Any]:
-    """Sort ready endpoints ahead of degraded ones and prefer recent activity."""
+    """Sort usable endpoints ahead of stale transitional ones and prefer activity."""
     activity = endpoint.last_used_at or endpoint.ready_at or endpoint.created_at
-    return (1 if endpoint.status == EndpointStatus.READY else 0, activity)
+    status_rank = {
+        EndpointStatus.READY: 3,
+        EndpointStatus.DEGRADED: 2,
+        EndpointStatus.STARTING: 1,
+        EndpointStatus.PROVISIONING: 0,
+    }
+    return (status_rank.get(endpoint.status, -1), activity)
+
+
+def _probeable_registry_endpoints(
+    endpoints: List[RegisteredEndpoint],
+) -> List[RegisteredEndpoint]:
+    """Return non-terminal endpoints worth probing when readiness lags."""
+    return [
+        endpoint
+        for endpoint in endpoints
+        if endpoint.status in (EndpointStatus.STARTING, EndpointStatus.PROVISIONING)
+    ]
 
 
 def _build_llm_candidates() -> List[ResolvedLLMEndpoint]:
@@ -508,7 +525,8 @@ def _build_llm_candidates() -> List[ResolvedLLMEndpoint]:
     1. Explicit `VLLM_BASE_URL` override when configured.
     2. Ready registry endpoints that exactly match `UMRS_RAG_LLM_MODEL`.
     3. Other ready registry endpoints that do not look like ingestion models.
-    4. Default localhost fallback (`http://localhost:8000/v1`).
+    4. Stale transitional registry endpoints when readiness status lags.
+    5. Default localhost fallback (`http://localhost:8000/v1`).
     """
     _inject_site_env_defaults()
 
@@ -541,15 +559,19 @@ def _build_llm_candidates() -> List[ResolvedLLMEndpoint]:
 
     try:
         registry = get_registry()
-        registry_endpoints = registry.list_all(
-            project_id=desired_project,
-            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
-        )
+        registry_endpoints = registry.list_all(project_id=desired_project)
     except Exception:
         registry_endpoints = []
 
+    usable_registry_endpoints = [
+        endpoint
+        for endpoint in registry_endpoints
+        if endpoint.status in (EndpointStatus.READY, EndpointStatus.DEGRADED)
+    ]
+    transitional_registry_endpoints = _probeable_registry_endpoints(registry_endpoints)
+
     exact_matches = sorted(
-        [endpoint for endpoint in registry_endpoints if endpoint.model == desired_model],
+        [endpoint for endpoint in usable_registry_endpoints if endpoint.model == desired_model],
         key=_endpoint_sort_key,
         reverse=True,
     )
@@ -568,7 +590,7 @@ def _build_llm_candidates() -> List[ResolvedLLMEndpoint]:
     fallback_endpoints = sorted(
         [
             endpoint
-            for endpoint in registry_endpoints
+            for endpoint in usable_registry_endpoints
             if endpoint.model != desired_model and endpoint.model not in known_ingestion_models
         ],
         key=_endpoint_sort_key,
@@ -581,6 +603,42 @@ def _build_llm_candidates() -> List[ResolvedLLMEndpoint]:
                 base_url=endpoint.litellm_url,
                 api_key=api_key,
                 source="registry-fallback",
+                job_id=endpoint.job_id,
+            )
+        )
+
+    stale_exact_matches = sorted(
+        [endpoint for endpoint in transitional_registry_endpoints if endpoint.model == desired_model],
+        key=_endpoint_sort_key,
+        reverse=True,
+    )
+    for endpoint in stale_exact_matches:
+        add_candidate(
+            ResolvedLLMEndpoint(
+                model_name=endpoint.model,
+                base_url=endpoint.litellm_url,
+                api_key=api_key,
+                source="registry-stale-exact",
+                job_id=endpoint.job_id,
+            )
+        )
+
+    stale_fallback_endpoints = sorted(
+        [
+            endpoint
+            for endpoint in transitional_registry_endpoints
+            if endpoint.model != desired_model and endpoint.model not in known_ingestion_models
+        ],
+        key=_endpoint_sort_key,
+        reverse=True,
+    )
+    for endpoint in stale_fallback_endpoints:
+        add_candidate(
+            ResolvedLLMEndpoint(
+                model_name=endpoint.model,
+                base_url=endpoint.litellm_url,
+                api_key=api_key,
+                source="registry-stale-fallback",
                 job_id=endpoint.job_id,
             )
         )
