@@ -111,6 +111,31 @@ unified orchestration using the existing (but unused) infrastructure in
 - [x] E4 Re-run focused durable/orchestrator tests, then repeat the live
       `endpoint_provision` smoke test on rccs-cloud.
 
+#### rccs-cloud QA Backend Recovery (2026-04-08)
+- [x] Q1 Fix the durable job bootstrap regression that leaves `JOB_*` commands
+      unavailable on native rccs-cloud server startup.
+- [x] Q2 Add regression coverage for env-backed durable DB pool bootstrap so
+      native startup failures are caught before deployment.
+- [x] Q3 Re-run targeted validation locally, then sync the fix to rccs-cloud
+      and restart the native server.
+- [x] Q4 Re-test durable `endpoint_provision`, then validate `/rag/qa` against
+      a live OpenAI-compatible backend.
+
+Review:
+- Root cause was a missing `import os` in `src/umrs/server/job_tracking_handler.py`,
+  which crashed both durable runtime bootstrap and the ZMQ durable fallback on
+  native server startup.
+- Local validation: targeted `tests/test_job_tracking_handler_durable.py`
+  passed after adding regression coverage for env-backed DB pool bootstrap.
+- Live validation on rccs-cloud: server restart logged `Durable job runtime
+  started`, durable `endpoint_provision` recovered, and `/rag/qa` returned a
+  generated answer once a `Qwen/Qwen3-0.6B` endpoint was warmed and the shared
+  HF cache was populated on the login node.
+- Operational caveat: the current native `rag-service` process is pointed at
+  the warmed Qwen endpoint through exported env overrides (`VLLM_BASE_URL`,
+  `VLLM_API_KEY`, `UMRS_RAG_LLM_MODEL`); a future native server restart without
+  those overrides will fall back to the static default QA backend settings.
+
 ### User-Defined Model Workflows
 - [ ] U-200: Finalize UDM design document and review with stakeholder
 
