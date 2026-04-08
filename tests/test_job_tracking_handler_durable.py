@@ -2,6 +2,7 @@ import json
 from datetime import UTC, datetime
 
 from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType, RestartPolicy, AttemptStatus
+from umrs.server import job_tracking_handler
 from umrs.server.job_tracking_handler import DurableJobCommandBackend, handle_job_command
 
 JOB_SUBMIT = "JOB_SUBMIT"
@@ -165,3 +166,77 @@ def test_handle_job_command_dispatches_to_durable_backend():
 
     assert result["status"] == "ok"
     assert result["job"]["status"] == "queued"
+
+
+def test_build_durable_job_db_pool_reads_env(monkeypatch):
+    connect_kwargs = {}
+    pool_kwargs = {}
+    sentinel_pool = object()
+
+    class FakeAdminCursor:
+        def __init__(self):
+            self._fetchone = None
+
+        def execute(self, _sql, params=None):
+            if params:
+                self._fetchone = None
+
+        def fetchone(self):
+            return self._fetchone
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    class FakeAdminConnection:
+        def __init__(self):
+            self.autocommit = False
+            self.closed = False
+            self.cursor_obj = FakeAdminCursor()
+
+        def cursor(self):
+            return self.cursor_obj
+
+        def close(self):
+            self.closed = True
+
+    admin_conn = FakeAdminConnection()
+
+    def fake_connect(**kwargs):
+        connect_kwargs.update(kwargs)
+        return admin_conn
+
+    def fake_threaded_pool(**kwargs):
+        pool_kwargs.update(kwargs)
+        return sentinel_pool
+
+    monkeypatch.setenv("DB_HOST", "db-host")
+    monkeypatch.setenv("DB_PORT", "15432")
+    monkeypatch.setenv("UMRS_JOBS_DB", "jobs-db")
+    monkeypatch.setenv("DB_SUPERUSER", "jobs-user")
+    monkeypatch.setenv("DB_SUPERUSER_PASSWORD", "jobs-pass")
+    monkeypatch.setattr(job_tracking_handler.psycopg2, "connect", fake_connect)
+    monkeypatch.setattr(job_tracking_handler.pg_pool, "ThreadedConnectionPool", fake_threaded_pool)
+
+    pool = job_tracking_handler.build_durable_job_db_pool_from_env()
+
+    assert pool is sentinel_pool
+    assert admin_conn.closed is True
+    assert connect_kwargs == {
+        "dbname": "postgres",
+        "user": "jobs-user",
+        "password": "jobs-pass",
+        "host": "db-host",
+        "port": "15432",
+    }
+    assert pool_kwargs == {
+        "minconn": 1,
+        "maxconn": 10,
+        "dbname": "jobs-db",
+        "user": "jobs-user",
+        "password": "jobs-pass",
+        "host": "db-host",
+        "port": "15432",
+    }
