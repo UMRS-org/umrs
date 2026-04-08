@@ -90,9 +90,9 @@ SITE_CONFIG_PATH="${UMRS_SITE_CONFIG:-${HOME}/.config/umrs/site.yaml}"
 if [[ ! -e "$SITE_CONFIG_PATH" ]]; then
     SITE_CONFIG_PATH="${SCRIPT_DIR}/site.yaml"
 fi
-SLURM_SCRIPT_PATH="${RIVAULT_SLURM_SCRIPT:-${HOME}/.config/umrs/rivault_data/serve-model.slurm}"
+SLURM_SCRIPT_PATH="${RIVAULT_SLURM_SCRIPT:-${SCRIPT_DIR}/serve-model.slurm}"
 if [[ ! -e "$SLURM_SCRIPT_PATH" ]]; then
-    SLURM_SCRIPT_PATH="${SCRIPT_DIR}/serve-model.slurm"
+    SLURM_SCRIPT_PATH="${HOME}/.config/umrs/rivault_data/serve-model.slurm"
 fi
 
 log()  { echo "[server-health] $*"; }

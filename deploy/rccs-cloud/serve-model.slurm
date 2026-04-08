@@ -25,6 +25,49 @@ echo "Running on node: $(hostname)"
 echo "Fully qualified name: $(hostname -f)"
 echo "=============================="
 
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+    _resolved_script="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || true)"
+    if [[ -n "$_resolved_script" ]]; then
+        SCRIPT_PATH="$_resolved_script"
+    fi
+fi
+WRAPPER_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "${WRAPPER_DIR}/../.." && pwd)"
+SITE_CONFIG_PATH="${UMRS_SITE_CONFIG:-${WRAPPER_DIR}/site.yaml}"
+
+load_site_env_defaults() {
+    local python_bin
+    local rendered_exports
+
+    python_bin="$(command -v python3 || true)"
+    [[ -n "$python_bin" && -f "$SITE_CONFIG_PATH" ]] || return 0
+
+    rendered_exports="$({
+        PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" \
+            "$python_bin" - <<'PY'
+import os
+import shlex
+
+from umrs.orchestrator.site_config import load_site_config
+
+cfg = load_site_config(os.environ["UMRS_SITE_CONFIG"])
+for key, value in sorted(cfg.to_env().items()):
+    if os.environ.get(key):
+        continue
+    print(f"export {key}={shlex.quote(value)}")
+PY
+    } 2>/dev/null)" || return 0
+
+    if [[ -n "$rendered_exports" ]]; then
+        eval "$rendered_exports"
+    fi
+}
+
+export UMRS_SITE_CONFIG="$SITE_CONFIG_PATH"
+load_site_env_defaults
+
 # ─── Rivault source directory on shared Lustre ───────────────────────────────
 # Points to mini-rivault-llm/ inside the umrs repo on Lustre so that all
 # serve-model.yaml, nginx_fs/, coredns_fs/, litellm_fs/ etc. are accessible
@@ -43,10 +86,9 @@ export UMRS_S3_TUNNEL_HOST="${UMRS_S3_TUNNEL_HOST:-${SLURM_SUBMIT_HOST}}"
 export UMRS_S3_TUNNEL_PORT="${UMRS_S3_TUNNEL_PORT:-9000}"
 
 # ─── Vision stack profile ─────────────────────────────────────────────────────
-# These ${VAR:-default} values are fallback-only. Normal UMRS launches inject
-# the rccs-cloud site.yaml values into the sbatch environment before this
-# wrapper runs, so wrapper defaults should not be treated as the canonical site
-# contract.
+# These ${VAR:-default} values are fallback-only. The colocated site.yaml is
+# loaded first when available, so wrapper defaults are only a safety net when
+# site config or explicit env overrides are unavailable.
 # Use "harness vllm vision-bentoml" to start all services:
 #   - harness: nginx, litellm, ll-postgres, coredns, minio proxy
 #   - vllm: model server for text embeddings (e5-base-v2, clip, etc.)

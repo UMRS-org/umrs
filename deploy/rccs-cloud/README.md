@@ -213,7 +213,7 @@ Common values to adjust:
 | `S3_PRESIGN_ENDPOINT` | `http://localhost:9000` | Compute nodes access MinIO via an SSH tunnel (see below).  The Slurm script opens `localhost:9000` → login node MinIO automatically. |
 | `MINIO_BIND` | `127.0.0.1` | MinIO listens on localhost only.  Compute nodes use the SSH tunnel. |
 | `UMRS_SITE_CONFIG` | `~/.config/umrs/site.yaml` | Optional override for the canonical site config path |
-| `RIVAULT_SLURM_SCRIPT` | `~/.config/umrs/rivault_data/serve-model.slurm` | Optional override for the site-specific Slurm wrapper |
+| `RIVAULT_SLURM_SCRIPT` | `./serve-model.slurm` | Optional override for the site-specific Slurm wrapper; the legacy `~/.config/umrs/rivault_data/serve-model.slurm` path is only a fallback |
 | `MODEL_DIR` | unset by default | Optional local override for the shared model root; otherwise `HF_HOME` comes from `site.yaml` `storage.model_cache_dir` |
 
 Do not duplicate scheduler partitions, `RIVAULT_PROFILES`, LiteLLM port, or

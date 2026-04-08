@@ -131,9 +131,9 @@ if [[ ! -f "$UMRS_SITE_CONFIG" ]]; then
     exit 1
 fi
 
-DEFAULT_RIVAULT_SLURM_SCRIPT="${HOME}/.config/umrs/rivault_data/serve-model.slurm"
+DEFAULT_RIVAULT_SLURM_SCRIPT="${SCRIPT_DIR}/serve-model.slurm"
 if [[ ! -e "$DEFAULT_RIVAULT_SLURM_SCRIPT" ]]; then
-    DEFAULT_RIVAULT_SLURM_SCRIPT="${SCRIPT_DIR}/serve-model.slurm"
+    DEFAULT_RIVAULT_SLURM_SCRIPT="${HOME}/.config/umrs/rivault_data/serve-model.slurm"
 fi
 
 # ─── Create model cache directories (skip if path is not writable) ──────────

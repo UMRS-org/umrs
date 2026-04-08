@@ -131,7 +131,7 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
       list intentional divergences versus drift
 - [ ] H5  Remove accidental default mismatches between source launcher,
       deploy wrappers, and `site.yaml` export
-- [ ] H6  Ensure wrapper behavior is driven by site config or documented
+- [x] H6  Ensure wrapper behavior is driven by site config or documented
       wrapper-only policy, not hidden hardcoded defaults
 
 #### Phase 3 — Validation Harness
@@ -161,6 +161,14 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
       scripts consume it for model-cache defaults, but hpbd-atom still relies
       on wrapper-local policy for profile defaults and other site-specific
       launch behavior.
+- rccs-cloud startup now defaults to the colocated
+      `deploy/rccs-cloud/serve-model.slurm`; the legacy
+      `~/.config/umrs/rivault_data/serve-model.slurm` path is fallback-only
+      unless `RIVAULT_SLURM_SCRIPT` explicitly overrides it.
+- Deploy-site wrappers now load their colocated `site.yaml` before applying
+      wrapper-local `${VAR:-default}` fallbacks, so profile sets and model-path
+      defaults follow the site contract unless the caller explicitly overrides
+      them.
 - Profile defaults are intentionally divergent today:
       rccs-cloud defaults to `harness vllm vision-bentoml`, while hpbd-atom
       defaults to `harness vision-bentoml`, and source Mini-Rivault still defaults

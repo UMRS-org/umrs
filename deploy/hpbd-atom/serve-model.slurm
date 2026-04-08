@@ -24,6 +24,49 @@ echo "Running on node: $(hostname)"
 echo "Fully qualified name: $(hostname -f)"
 echo "=============================="
 
+SCRIPT_PATH="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+    _resolved_script="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || true)"
+    if [[ -n "$_resolved_script" ]]; then
+        SCRIPT_PATH="$_resolved_script"
+    fi
+fi
+WRAPPER_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+REPO_ROOT="$(cd "${WRAPPER_DIR}/../.." && pwd)"
+SITE_CONFIG_PATH="${UMRS_SITE_CONFIG:-${WRAPPER_DIR}/site.yaml}"
+
+load_site_env_defaults() {
+    local python_bin
+    local rendered_exports
+
+    python_bin="$(command -v python3 || true)"
+    [[ -n "$python_bin" && -f "$SITE_CONFIG_PATH" ]] || return 0
+
+    rendered_exports="$({
+        PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" \
+            "$python_bin" - <<'PY'
+import os
+import shlex
+
+from umrs.orchestrator.site_config import load_site_config
+
+cfg = load_site_config(os.environ["UMRS_SITE_CONFIG"])
+for key, value in sorted(cfg.to_env().items()):
+    if os.environ.get(key):
+        continue
+    print(f"export {key}={shlex.quote(value)}")
+PY
+    } 2>/dev/null)" || return 0
+
+    if [[ -n "$rendered_exports" ]]; then
+        eval "$rendered_exports"
+    fi
+}
+
+export UMRS_SITE_CONFIG="$SITE_CONFIG_PATH"
+load_site_env_defaults
+
 # ─── Rivault source directory on shared home ─────────────────────────────────
 # Points to mini-rivault-llm/ inside the umrs repo so that all
 # serve-model.yaml, nginx_fs/, coredns_fs/, litellm_fs/ etc. are accessible
@@ -43,7 +86,9 @@ export UMRS_S3_TUNNEL_PORT="${UMRS_S3_TUNNEL_PORT:-9000}"
 
 # ─── Vision stack profile ─────────────────────────────────────────────────────
 # Use "harness vision-bentoml" so the BentoML vision service is started.
-# This covers both SAM3 segmentation and HMAE inference.
+# This covers both SAM3 segmentation and HMAE inference. The colocated
+# site.yaml is loaded first when available, so this remains a wrapper fallback
+# rather than the canonical site contract.
 export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vision-bentoml}"
 
 # ─── Model cache on shared home (inherit from server or set default) ─────────
