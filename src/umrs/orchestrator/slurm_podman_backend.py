@@ -24,7 +24,6 @@ import asyncio
 import logging
 import os
 import re
-import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -37,6 +36,7 @@ from .base import (
     OrchestratorConfig,
 )
 from .site_config import SiteConfig, get_site_config
+from umrs.shared.config import get_default_tmp_subdir, get_default_umrs_cfg_dir
 
 logger = logging.getLogger(__name__)
 
@@ -59,10 +59,9 @@ class SlurmPodmanBackend(OrchestratorBackend):
         super().__init__(config)
         self._site = site
         self._slurm_script = slurm_script
-        # output_dir stores sbatch stdout/stderr files
-        self._output_dir = Path(
-            os.environ.get("RIVAULT_OUTPUT_DIR", "/tmp/umrs-rivault-jobs")
-        )
+        # Keep Slurm output on durable shared storage so wrapper launch context
+        # and readiness clues survive normal cleanup.
+        self._output_dir = self._resolve_output_dir()
         self._output_dir.mkdir(parents=True, exist_ok=True)
 
     @property
@@ -126,10 +125,30 @@ class SlurmPodmanBackend(OrchestratorBackend):
         Merges the current ``os.environ``, site-config exports, and any
         caller-supplied *overrides*.
         """
-        env = dict(os.environ)  # inherit caller env
-        env.update(self.site.to_env())  # layer site-config on top
+        env = self.site.to_env()
+        env.update(os.environ)
         env.update(overrides)  # explicit overrides win
         return env
+
+    def _resolve_output_dir(self) -> Path:
+        """Resolve a durable directory for Slurm stdout/stderr capture."""
+        explicit_dir = os.environ.get("RIVAULT_OUTPUT_DIR") or os.environ.get(
+            "SLURM_JOB_INFO_DIR"
+        )
+        if explicit_dir:
+            return Path(explicit_dir).expanduser()
+
+        site = self.site
+        if site.runtime.repo_dir and site.name:
+            return (
+                Path(site.runtime.repo_dir)
+                / "deploy"
+                / site.name
+                / "logs"
+                / "slurm"
+            )
+
+        return Path(get_default_umrs_cfg_dir()).expanduser() / get_default_tmp_subdir()
 
     # ------------------------------------------------------------------
     # Job submission
@@ -152,8 +171,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
         sbatch_args = [
             "sbatch",
             "--parsable",
-            f"--output={self._output_dir}/job-%j.out",
-            f"--error={self._output_dir}/job-%j.err",
+            f"--output={self._output_dir}/slurm-%j.out",
+            f"--error={self._output_dir}/slurm-%j.err",
         ]
 
         if selected_partition:
@@ -177,12 +196,26 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
         # Build environment
         env_overrides: Dict[str, str] = {}
+        requested_env = kwargs.pop("env", None)
+        if isinstance(requested_env, dict):
+            env_overrides.update(
+                {
+                    key: str(value)
+                    for key, value in requested_env.items()
+                    if isinstance(value, (str, int, float))
+                }
+            )
         if model_path:
             env_overrides["VLLM_MODEL_PATH"] = model_path
         if selected_partition:
             env_overrides["SLURM_PARTITION"] = selected_partition
-        env_overrides.update({k: str(v) for k, v in kwargs.items()
-                              if isinstance(v, (str, int, float))})
+        env_overrides.update(
+            {
+                key: str(value)
+                for key, value in kwargs.items()
+                if isinstance(value, (str, int, float))
+            }
+        )
 
         env = self._sbatch_env(**env_overrides)
 
@@ -290,12 +323,6 @@ class SlurmPodmanBackend(OrchestratorBackend):
         )
         await proc.communicate()
 
-        # Remove output files
-        for suffix in (".out", ".err"):
-            p = self._output_dir / f"job-{job_id}{suffix}"
-            if p.exists():
-                p.unlink(missing_ok=True)
-
     async def list_jobs(
         self,
         status_filter: Optional[List[JobStatus]] = None,
@@ -323,7 +350,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         return jobs
 
     async def cleanup_orphans(self) -> int:
-        """Remove output files for jobs that are no longer in Slurm."""
+        """Remove legacy output files for jobs that are no longer in Slurm."""
         cleaned = 0
         for out_file in self._output_dir.glob("job-*.out"):
             match = re.search(r"job-(\d+)\.out", out_file.name)
@@ -458,17 +485,26 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
     async def _node_from_output(self, job_id: str) -> Optional[str]:
         """Try to extract the compute-node hostname from the job output file."""
-        out_path = self._output_dir / f"job-{job_id}.out"
-        if not out_path.exists():
-            return None
-        try:
-            text = out_path.read_text(errors="replace")
-            # serve-model.slurm echoes "Node: <hostname>"
-            m = re.search(r"Node:\s+(\S+)", text)
-            if m:
-                return m.group(1)
-        except OSError:
-            pass
+        candidate_paths = (
+            self._output_dir / f"slurm-{job_id}.out",
+            self._output_dir / f"job-{job_id}.out",
+        )
+        for out_path in candidate_paths:
+            if not out_path.exists():
+                continue
+            try:
+                text = out_path.read_text(errors="replace")
+            except OSError:
+                continue
+
+            for pattern in (
+                r"Fully qualified name:\s+(\S+)",
+                r"Running on node:\s+(\S+)",
+                r"Node:\s+(\S+)",
+            ):
+                match = re.search(pattern, text)
+                if match:
+                    return match.group(1)
         return None
 
     @staticmethod

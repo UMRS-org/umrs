@@ -1,10 +1,17 @@
-# Demo 11 — Job Submission & Service Lifecycle
+# Demo 11 — Job Submission & Endpoint Warm-Up
 
 Explicit job submission for operations that are **not triggered by file uploads**.
 
 The basic UMRS flow (upload file → compute embeddings) is fully automatic via
 `PROCESS_OBJECTS` — no job submission needed. This demo covers 3 cases where
-you do need an explicit `job submit`:
+you do need an explicit `job submit`.
+
+For durable site deployments, the validated endpoint lifecycle is explicit
+submit, warm reuse while the endpoint remains registered, and explicit cancel
+when you are done. The legacy `UMRS_SERVICE_LIFECYCLE` environment variable
+still applies to upload-triggered processing in `server_umrs.py`, but it is
+not the lifecycle control that has been validated for durable
+`endpoint_provision`.
 
 ## Prerequisites
 
@@ -17,13 +24,13 @@ you do need an explicit `job submit`:
 
 Normally the server launches a Slurm/K8s job **lazily** on the first file
 upload, which adds cold-start latency. If you know you'll process many
-batches, pre-warm the endpoint:
+batches, pre-warm the endpoint and cancel it explicitly when you are done:
 
 ```bash
 # Pre-warm Mini-RiVault/BentoML endpoint (the site-configured backend starts immediately):
 umrs-client job submit endpoint_provision \
     --spec '{"model": "sam3"}' \
-    --project my-project --keep-alive
+    --project my-project
 
 # Now uploads use the warm endpoint — no cold start:
 umrs-client upload_dir /data/images/batch-1/
@@ -32,6 +39,10 @@ umrs-client upload_dir /data/images/batch-2/
 # When done, release the node hours:
 umrs-client job cancel <job_id>
 ```
+
+In current durable deployments, the UMRS job record completes once the warm
+endpoint is ready. The backing endpoint then remains available for reuse until
+you cancel it or janitor/TTL cleanup removes it.
 
 ### 2. `index_build` — Rebuild RAG index after bulk inserts
 
@@ -88,22 +99,22 @@ umrs-client status all
 | Model download | Dedicated `umrs-client model download` command |
 | Re-embed with new model | `umrs-client recompute` / `umrs-client update` maintenance commands |
 
-## Service Lifecycle
+## Lifecycle Notes
 
-Controls what happens to Slurm/K8s jobs after upload-triggered processing completes.
+Two lifecycle mechanisms exist today:
 
-| Mode | Behavior | Use case |
-|------|----------|----------|
-| `auto_release` (default) | `scancel` after last thread finishes | One-off processing, save node hours |
-| `keep_alive` | Keep running until TTL or cancel | Successive/frequent batch processing |
+| Path | What controls cleanup | Current status |
+|------|-----------------------|----------------|
+| Upload-triggered processing | `UMRS_SERVICE_LIFECYCLE=auto_release|keep_alive` in `server_umrs.py` | Legacy server-side path |
+| Durable `endpoint_provision` | Explicit `job cancel`, registry TTL/janitor cleanup, and warm reuse | Validated path on current site deployments |
+
+For the validated durable path, prefer explicit `job cancel` when you are done
+and use the site-local harness validator to prove reuse or cleanup behavior
+after runtime changes:
 
 ```bash
-# Server-wide (env var):
-export UMRS_SERVICE_LIFECYCLE=auto_release   # default
-export UMRS_SERVICE_LIFECYCLE=keep_alive     # for frequent processing
-
-# Per-job (endpoint_provision only):
-umrs-client job submit endpoint_provision --spec '...' --keep-alive
+cd deploy/<site>
+./validate_harness.sh --skip-matrix --lifecycle-case full
 ```
 
 ## Job Lifecycle
@@ -114,7 +125,7 @@ QUEUED → RUNNING → COMPLETED
                 ↘ CANCELLED
 ```
 
-Jobs are stored in `~/.config/umrs/jobs.json` (lightweight mode).
+Legacy lightweight mode stored jobs in `~/.config/umrs/jobs.json`.
 Current UMRS deployments use the durable PostgreSQL-backed store from
 `jobs/store.py`, with advisory locks, crash reconciliation, and
 multi-instance support.

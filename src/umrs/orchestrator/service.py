@@ -16,10 +16,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Dict, List, Optional
 
-from .base import OrchestratorBackend
+from .base import JobStatus, OrchestratorBackend
 from .detection import BackendType, detect_backend
 from .endpoint_registry import (
     EndpointRegistry,
@@ -50,6 +50,7 @@ class ProvisionRequest:
     max_model_len: int = 4096
     prefer_warm: bool = True  # Try to reuse existing endpoint
     min_ttl_for_reuse_sec: int = 60  # Min TTL remaining for reuse
+    env_vars: Dict[str, str] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -174,6 +175,82 @@ class OrchestrationService:
             _ = self.backend  # Trigger detection
         return self._backend_type or BackendType.UNKNOWN
 
+    async def _resolve_endpoint_location(
+        self,
+        job_id: str,
+        host: str,
+        port: int,
+        deadline: float,
+    ) -> tuple[str, int]:
+        """Wait for the backend to publish a concrete endpoint host."""
+        if host and host != "pending":
+            return host, port
+
+        loop = asyncio.get_running_loop()
+        poll_interval = max(
+            1,
+            int(getattr(self.backend.config, "readiness_poll_interval_sec", 5)),
+        )
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Timed out waiting for backend endpoint location for {job_id}"
+                )
+
+            job = await self.backend.get_job_status(job_id)
+            if job.status == JobStatus.FAILED:
+                raise RuntimeError(
+                    f"Backend job {job_id} failed before publishing an endpoint: "
+                    f"{job.error_message or 'unknown failure'}"
+                )
+            if job.status == JobStatus.STOPPED:
+                raise RuntimeError(
+                    f"Backend job {job_id} stopped before publishing an endpoint"
+                )
+
+            if job.endpoint and job.endpoint.node and job.endpoint.node != "pending":
+                return job.endpoint.node, job.endpoint.litellm_port or port
+
+            await asyncio.sleep(min(float(poll_interval), remaining))
+
+    async def _wait_for_ready_with_budget(
+        self,
+        job_id: str,
+        host: str,
+        port: int,
+        deadline: float,
+        on_progress: Optional[Callable[[Any], None]] = None,
+    ):
+        """Run readiness polling within the remaining provision budget."""
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Timed out waiting for endpoint readiness budget for {job_id}"
+            )
+
+        poller = self.readiness_poller
+        temp_poller: Optional[ReadinessPoller] = None
+
+        if remaining < (poller.config.timeout_sec - 1):
+            temp_poller = ReadinessPoller(
+                replace(poller.config, timeout_sec=max(1, int(remaining)))
+            )
+            poller = temp_poller
+
+        try:
+            return await poller.wait_for_ready(
+                job_id=job_id,
+                host=host,
+                port=port,
+                on_progress=on_progress,
+            )
+        finally:
+            if temp_poller is not None:
+                await temp_poller.close()
+
     async def provision(
         self,
         request: ProvisionRequest,
@@ -245,18 +322,32 @@ class OrchestrationService:
             )
         progress("port_allocated", {"port": port})
 
+        job_id: Optional[str] = None
+        actual_host = target_host
+        actual_port = port
+        deadline = start_time + self.readiness_poller.config.timeout_sec
+
         try:
             # 4. Submit job to backend
             progress("submitting_job", {"backend": self.backend_type.value})
 
-            job_info = await self.backend.submit_job(
-                model_path=request.model_path,
-                env={
+            submit_env = {
+                key: str(value)
+                for key, value in request.env_vars.items()
+                if isinstance(value, (str, int, float))
+            }
+            submit_env.update(
+                {
                     "LITELLM_PORT": str(port),
                     "VLLM_MAX_MODEL_LEN": str(request.max_model_len),
                     "PROJECT_ID": request.project_id,
                     "MODEL_NAME": request.model,
-                },
+                }
+            )
+
+            job_info = await self.backend.submit_job(
+                model_path=request.model_path,
+                env=submit_env,
                 gpu_count=request.gpu_count,
             )
 
@@ -270,8 +361,24 @@ class OrchestrationService:
             job_id = job_info.job_id
             progress("job_submitted", {"job_id": job_id})
 
-            # Update host from job info if available
             actual_host = job_info.endpoint.node if job_info.endpoint else target_host
+            actual_port = (
+                job_info.endpoint.litellm_port
+                if job_info.endpoint and job_info.endpoint.litellm_port
+                else port
+            )
+            progress("waiting_for_assignment", {"job_id": job_id})
+            actual_host, actual_port = await self._resolve_endpoint_location(
+                job_id,
+                actual_host,
+                actual_port,
+                deadline,
+            )
+            progress("assignment_resolved", {"host": actual_host, "port": actual_port})
+
+            endpoint_metadata = dict(request.metadata)
+            endpoint_metadata.setdefault("allocated_host", target_host)
+            endpoint_metadata.setdefault("allocated_port", port)
 
             # 5. Register endpoint in registry (status=provisioning)
             endpoint = self.registry.register(
@@ -279,10 +386,10 @@ class OrchestrationService:
                 model=request.model,
                 job_id=job_id,
                 host=actual_host,
-                port=port,
+                port=actual_port,
                 backend=self.backend_type.value,
                 ttl_sec=request.ttl_sec,
-                metadata=request.metadata,
+                metadata=endpoint_metadata,
             )
             progress("registered", {"endpoint_id": job_id})
 
@@ -290,12 +397,14 @@ class OrchestrationService:
             self.registry.update_status(job_id, EndpointStatus.STARTING)
 
             # 6. Wait for readiness (authoritative)
-            progress("waiting_for_ready", {"timeout": self.readiness_poller.config.timeout_sec})
+            remaining_timeout = max(1, int(deadline - asyncio.get_running_loop().time()))
+            progress("waiting_for_ready", {"timeout": remaining_timeout})
 
-            readiness_result = await self.readiness_poller.wait_for_ready(
+            readiness_result = await self._wait_for_ready_with_budget(
                 job_id=job_id,
                 host=actual_host,
-                port=port,
+                port=actual_port,
+                deadline=deadline,
                 on_progress=lambda r: progress("readiness_check", r.to_dict()),
             )
 
@@ -321,7 +430,12 @@ class OrchestrationService:
                 progress("failed", {"error": error})
 
                 # Cleanup
-                await self._cleanup_failed_job(job_id, actual_host, port)
+                await self._cleanup_failed_job(
+                    job_id,
+                    actual_host,
+                    actual_port,
+                    allocated_host=target_host,
+                )
 
                 return ProvisionResult(
                     success=False,
@@ -332,7 +446,22 @@ class OrchestrationService:
 
         except Exception as e:
             logger.exception(f"Provision failed: {e}")
-            self.port_manager.release(port, target_host)
+            if job_id is not None:
+                try:
+                    await self._cleanup_failed_job(
+                        job_id,
+                        actual_host,
+                        actual_port,
+                        allocated_host=target_host,
+                    )
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "Cleanup failed after provision error for %s: %s",
+                        job_id,
+                        cleanup_error,
+                    )
+            else:
+                self.port_manager.release(port, target_host)
             return ProvisionResult(
                 success=False,
                 error=str(e),
@@ -370,6 +499,9 @@ class OrchestrationService:
 
         # Release port
         self.port_manager.release(endpoint.port, endpoint.host)
+        allocated_host = endpoint.metadata.get("allocated_host")
+        if allocated_host and allocated_host != endpoint.host:
+            self.port_manager.release(endpoint.port, allocated_host)
 
         # Remove from registry
         self.registry.remove(job_id)
@@ -438,6 +570,7 @@ class OrchestrationService:
         job_id: str,
         host: str,
         port: int,
+        allocated_host: Optional[str] = None,
     ):
         """Clean up resources after a failed provision."""
         try:
@@ -446,6 +579,8 @@ class OrchestrationService:
             logger.warning(f"Backend cleanup failed: {e}")
 
         self.port_manager.release(port, host)
+        if allocated_host and allocated_host != host:
+            self.port_manager.release(port, allocated_host)
         self.registry.remove(job_id)
 
     async def close(self):

@@ -67,6 +67,14 @@ PY
 export UMRS_SITE_CONFIG="$SITE_CONFIG_PATH"
 load_site_env_defaults
 
+mask_secret_state() {
+    if [[ -n "${1:-}" ]]; then
+        printf '%s' '<set>'
+    else
+        printf '%s' '<unset>'
+    fi
+}
+
 # ─── Rivault source directory on shared home ─────────────────────────────────
 # Points to mini-rivault-llm/ inside the umrs repo so that all
 # serve-model.yaml, nginx_fs/, coredns_fs/, litellm_fs/ etc. are accessible
@@ -154,6 +162,20 @@ _VISION_TARBALL="/home/mnagaso/workspace/umrs_models/umrs-vision.tar"
 _UMRS_REPO="/home/mnagaso/workspace/umrs"
 
 export BENTOML_VISION_IMAGE="${_VISION_IMAGE}"
+
+echo "[wrapper] Launch context:"
+echo "[wrapper]   site config: ${UMRS_SITE_CONFIG:-<none>}"
+echo "[wrapper]   profiles: ${RIVAULT_PROFILES}"
+echo "[wrapper]   rivault dir: ${RIVAULT_DIR}"
+echo "[wrapper]   repo root: ${_UMRS_REPO}"
+echo "[wrapper]   compose files: ${RIVAULT_DIR}/serve-model.yaml ; ${RIVAULT_DIR}/userdata-access.yaml"
+echo "[wrapper]   litellm port: ${NGINX_LITELLM_DOCKER_PORT:-<unset>}"
+echo "[wrapper]   litellm key: $(mask_secret_state "${LITELLM_MASTER_KEY:-}")"
+echo "[wrapper]   hf cache: ${VLLM_PATH_TO_HUGGINGFACE:-<unset>}"
+echo "[wrapper]   sam3 path: ${SAM3_MODEL_PATH}"
+echo "[wrapper]   hmae path: ${HMAE_MODEL_PATH}"
+echo "[wrapper]   vision image: ${BENTOML_VISION_IMAGE}"
+echo "[wrapper]   vision tarball: ${_VISION_TARBALL}"
 
 # Fix cgroup manager for Slurm compute nodes (no systemd user session)
 export CONTAINERS_CGROUP_MANAGER=cgroupfs

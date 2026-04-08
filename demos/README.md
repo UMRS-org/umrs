@@ -102,7 +102,7 @@ Job management, pipeline SDK, and plugin system for HPC/cloud.
 
 | # | Demo | What you'll learn |
 |---|------|-------------------|
-| 11 | [Job Submission](11_job_submission/) | Explicit job submit/cancel, `--keep-alive`, service lifecycle |
+| 11 | [Job Submission](11_job_submission/) | Explicit job submit/cancel, endpoint warm-up, explicit cleanup |
 | 12 | [Pipeline SDK](12_pipeline_sdk/) | 6-phase pipeline lifecycle (configure→ingest→compute→collect→verify→present) |
 | 13 | [Plugins](13_plugins/) | Sandboxed plugin execution on Slurm/K8s |
 
@@ -153,7 +153,7 @@ Managing models on HPC?
   → Demo 07 (model registry)
 
 Need to pre-warm GPU nodes?
-  → Demo 11 (job submission with --keep-alive)
+  → Demo 11 (explicit endpoint warm-up and cancel)
 
 Analyzing video data?
   → Demo 14 (video motion detection)

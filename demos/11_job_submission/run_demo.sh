@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Demo 11: Job Submission & Service Lifecycle
+# Demo 11: Job Submission & Endpoint Warm-Up
 # =============================================================================
-# Shows: endpoint_provision, index_build, cleanup, --keep-alive, cancel
+# Shows: endpoint_provision, index_build, cleanup, cancel
 #
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556)
@@ -18,7 +18,7 @@ extract_json() {
     grep '^{' | tail -1
 }
 
-banner "Demo 11: Job Submission & Service Lifecycle"
+banner "Demo 11: Job Submission & Endpoint Warm-Up"
 echo ""
 
 # Step 0: Check server connectivity
@@ -27,10 +27,10 @@ preflight
 echo ""
 
 # Step 1: Pre-warm an endpoint (avoids cold start on first upload)
-log "Step 1: Pre-warm endpoint (endpoint_provision --keep-alive)..."
+log "Step 1: Pre-warm endpoint (endpoint_provision)..."
 RESULT=$($CLIENT job submit endpoint_provision \
     --spec '{"model": "sam3"}' \
-    --project demo --keep-alive)
+    --project demo)
 echo "${RESULT}"
 JOB_ID=$(echo "${RESULT}" | extract_json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('job',{}).get('job_id',''))" 2>/dev/null || echo "")
 echo ""

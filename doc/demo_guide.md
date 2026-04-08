@@ -518,8 +518,8 @@ the BentoML service; the thumbnail branch runs on CPU.
 
 ## Demo 11 — Job Submission
 
-**Purpose:** Explicit job submit/cancel lifecycle, `--keep-alive` for GPU
-pre-warming, retry policies.
+**Purpose:** Explicit job submit/cancel, endpoint warm-up, explicit cleanup,
+retry policies.
 
 **Requires server:** Yes  
 **Time:** 1–3 minutes
@@ -535,7 +535,9 @@ bash run_demo.sh
 ```bash
 # 1. Submit a job
 umrs-client -c ~/.config/umrs/conf_umrs.json \
-    job submit endpoint_provision --keep-alive
+    job submit endpoint_provision \
+    --spec '{"model": "sam3"}' \
+    --project demo
 
 # 2. Check job status
 umrs-client -c ~/.config/umrs/conf_umrs.json status all
@@ -544,6 +546,10 @@ umrs-client -c ~/.config/umrs/conf_umrs.json status all
 umrs-client -c ~/.config/umrs/conf_umrs.json \
     job cancel <job_id>
 ```
+
+`UMRS_SERVICE_LIFECYCLE` still applies to upload-triggered processing in the
+server, but the durable endpoint path shown here is validated as explicit
+submit, reuse, and cancel rather than `--keep-alive`-driven lifecycle.
 
 ### Next step → Demo 12
 

@@ -4,14 +4,11 @@ Unit tests for the Slurm + Podman-Compose orchestrator backend.
 
 import asyncio
 import os
-import textwrap
-from datetime import datetime
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from umrs.orchestrator.base import EndpointInfo, JobInfo, JobStatus, OrchestratorConfig
+from umrs.orchestrator.base import JobStatus
 from umrs.orchestrator.site_config import SiteConfig, SchedulerConfig, RuntimeConfig, NetworkConfig, reset_site_config
 from umrs.orchestrator.slurm_podman_backend import SlurmPodmanBackend
 
@@ -145,7 +142,8 @@ class TestBackendProperties:
 class TestSbatchEnv:
 
     def test_env_includes_site_values(self, backend):
-        env = backend._sbatch_env()
+        with patch.dict(os.environ, {}, clear=True):
+            env = backend._sbatch_env()
         assert env["SLURM_PARTITION"] == "test-gpu"
         assert env["NGINX_LITELLM_DOCKER_PORT"] == "8001"
         assert env["LITELLM_MASTER_KEY"] == "sk-test"
@@ -158,6 +156,12 @@ class TestSbatchEnv:
         env = backend._sbatch_env(LITELLM_MASTER_KEY="override-key")
         assert env["LITELLM_MASTER_KEY"] == "override-key"
 
+    def test_process_env_overrides_site_defaults(self, backend):
+        with patch.dict(os.environ, {"RIVAULT_PROFILES": "harness vllm"}, clear=False):
+            env = backend._sbatch_env()
+
+        assert env["RIVAULT_PROFILES"] == "harness vllm"
+
     def test_env_exports_partition_candidates_safely(self, slurm_script, output_dir):
         site = SiteConfig(
             name="test-site",
@@ -168,7 +172,8 @@ class TestSbatchEnv:
         backend = SlurmPodmanBackend(site=site, slurm_script=slurm_script)
         backend._output_dir = output_dir
 
-        env = backend._sbatch_env()
+        with patch.dict(os.environ, {}, clear=True):
+            env = backend._sbatch_env()
 
         assert env["SLURM_PARTITION"] == "gpu-a"
         assert env["SLURM_PARTITIONS"] == "gpu-a,gpu-b"
@@ -210,6 +215,25 @@ class TestSubmitJob:
 
         args = mock_exec.call_args.args if mock_exec.call_args.args else mock_exec.call_args[0]
         assert "--partition=test-gpu" in args
+
+    def test_submit_flattens_env_overrides(self, backend):
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"99999\n", b"")
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            _run(
+                backend.submit_job(
+                    env={
+                        "RIVAULT_PROFILES": "harness vision-bentoml",
+                        "CUSTOM_FLAG": 7,
+                    }
+                )
+            )
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["RIVAULT_PROFILES"] == "harness vision-bentoml"
+        assert env["CUSTOM_FLAG"] == "7"
 
     def test_submit_selects_one_active_partition_from_candidates(self, slurm_script, output_dir):
         site = SiteConfig(
@@ -292,7 +316,7 @@ class TestGetJobStatus:
 
     def test_running_job_with_node(self, backend, output_dir):
         # Write a fake output file with node
-        (output_dir / "job-12345.out").write_text("Node: compute-01\n")
+        (output_dir / "slurm-12345.out").write_text("Running on node: compute-01\n")
 
         # squeue returns running
         mock_proc = AsyncMock()
@@ -355,9 +379,9 @@ class TestCleanup:
         args = mock_exec.call_args.args if mock_exec.call_args.args else mock_exec.call_args[0]
         assert "--signal=KILL" in args
 
-    def test_cleanup_removes_output_files(self, backend, output_dir):
-        (output_dir / "job-12345.out").write_text("output")
-        (output_dir / "job-12345.err").write_text("errors")
+    def test_cleanup_preserves_retained_slurm_logs(self, backend, output_dir):
+        (output_dir / "slurm-12345.out").write_text("output")
+        (output_dir / "slurm-12345.err").write_text("errors")
 
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"", b"")
@@ -366,8 +390,8 @@ class TestCleanup:
         with patch("asyncio.create_subprocess_exec", return_value=mock_proc):
             _run(backend.cleanup("12345"))
 
-        assert not (output_dir / "job-12345.out").exists()
-        assert not (output_dir / "job-12345.err").exists()
+        assert (output_dir / "slurm-12345.out").exists()
+        assert (output_dir / "slurm-12345.err").exists()
 
 
 # =============================================================================
@@ -403,8 +427,8 @@ class TestMapSlurmState:
 class TestNodeFromOutput:
 
     def test_extracts_node(self, backend, output_dir):
-        (output_dir / "job-123.out").write_text(
-            "Starting job...\nNode: compute-42\nDone.\n"
+        (output_dir / "slurm-123.out").write_text(
+            "Starting job...\nFully qualified name: compute-42\nDone.\n"
         )
         node = _run(backend._node_from_output("123"))
         assert node == "compute-42"
@@ -414,7 +438,7 @@ class TestNodeFromOutput:
         assert node is None
 
     def test_returns_none_if_no_match(self, backend, output_dir):
-        (output_dir / "job-123.out").write_text("Some other output\n")
+        (output_dir / "slurm-123.out").write_text("Some other output\n")
         node = _run(backend._node_from_output("123"))
         assert node is None
 
@@ -427,7 +451,7 @@ class TestNodeFromOutput:
 class TestFactoryRegistration:
 
     def test_slurm_podman_registered(self):
-        from umrs.orchestrator.factory import get_orchestrator, _lazy_register_builtins, _BACKEND_REGISTRY
+        from umrs.orchestrator.factory import _lazy_register_builtins, _BACKEND_REGISTRY
         _lazy_register_builtins()
         assert "slurm-podman" in _BACKEND_REGISTRY
 

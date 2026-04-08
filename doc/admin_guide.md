@@ -267,6 +267,52 @@ source launcher, and the running server.
 - `harness vllm vision-bentoml rag`: supported full-stack extension when RAG is
   intentionally enabled.
 
+### Minimal Validation Matrix
+
+Use the same three cases whenever you need to prove the harness still launches
+the intended services after changing wrappers, `site.yaml`, or the
+`slurm-podman` backend:
+
+| Case | Profiles | Required proof |
+|------|----------|----------------|
+| `text` | `harness vllm` | Retained wrapper log summary plus authenticated `/v1/models` success |
+| `vision` | `harness vision-bentoml` | Retained wrapper log summary plus `/vision/healthz` success |
+| `full` | `harness vllm vision-bentoml` | Retained wrapper log summary plus both `/v1/models` and `/vision/healthz` |
+
+On deploy sites, run the validator from the site directory:
+
+```bash
+cd deploy/<site>
+./validate_harness.sh
+```
+
+The validator submits the real site wrapper through `slurm-podman`, overrides
+`RIVAULT_PROFILES` without relying on fragile shell quoting, waits for retained
+`slurm-<jobid>.out` launch summaries, proves the required health endpoints, and
+then cancels the Slurm job, escalating to `KILL` when a graceful `TERM`
+linger would otherwise hide cleanup regressions.
+
+Run a single case when narrowing a regression:
+
+```bash
+./validate_harness.sh --case text
+./validate_harness.sh --case vision
+./validate_harness.sh --case full
+```
+
+To prove restart, reuse, cleanup, and stale-image behavior on a live site,
+run the lifecycle case:
+
+```bash
+./validate_harness.sh --skip-matrix --lifecycle-case full
+```
+
+That path verifies an initial provision, warm reuse of the same backend job,
+explicit cleanup, a fresh restart after cleanup, and retained wrapper-log
+evidence of the vision image or tarball decision. On current `slurm-podman`
+sites, cleanup may still escalate from `TERM` to `KILL`; treat that as valid
+only when the validator finishes successfully and `squeue` is clean afterward.
+
 ### Harness Invariants
 
 - `harness` is always required; no supported default omits it.
@@ -302,6 +348,29 @@ Each Mini-Rivault instance provides:
 
 ## Monitoring and Troubleshooting
 
+### Expected Launch Log Summary
+
+When a site wrapper or the source launcher starts correctly, the Slurm/stdout
+log should show a compact launch summary before container startup. At minimum,
+you should be able to see:
+
+- Site config path in use
+- Active `RIVAULT_PROFILES`
+- Selected compose files
+- Host-side HF/SAM3/HMAE paths
+- LiteLLM port and whether the auth key is set
+- Vision image / tarball selection for deploy wrappers
+
+If those lines are missing, the wrapper or source launcher is not exposing
+enough context to debug drift cleanly.
+
+For `slurm-podman` site deployments, backend-submitted Slurm stdout/stderr is
+retained on shared storage by default under
+`deploy/<site>/logs/slurm/slurm-<jobid>.out` and `slurm-<jobid>.err`
+(`RIVAULT_OUTPUT_DIR` still overrides this when needed). That retained log is
+the authoritative place to confirm wrapper launch context after the job has
+already been cleaned up.
+
 ### Check Service Status
 
 ```bash
@@ -325,6 +394,9 @@ podman exec postgres psql -U umrs -d umrs -c "SELECT datname FROM pg_database;"
 # Slurm job status
 podman exec ai-login squeue -u $USER
 
+# Wrapper launch log for a specific Slurm backend job
+tail -n 80 deploy/<site>/logs/slurm/slurm-<jobid>.out
+
 # Mini-Rivault containers on compute node
 podman ps --filter network=genai-private-net
 
@@ -345,6 +417,28 @@ curl http://localhost:$NGINX_PORT/vision/healthz
 | Vision service unhealthy | Model weights missing | Verify `SAM3_MODEL_PATH`/`HMAE_MODEL_PATH` are pre-staged |
 | ZMQ timeout | ai-login container not running | `podman-compose up -d` |
 | S3 upload fails | Credentials mismatch | Verify user's `.s3cfg` matches server-generated credentials |
+
+### Repeatable Debugging Order
+
+1. Confirm the intended contract: which `site.yaml` is active, which wrapper is
+  being used, and what profile set should start by default.
+2. Confirm the actual launch summary in Slurm/stdout logs: site config path,
+  `RIVAULT_PROFILES`, compose files, model paths, LiteLLM port, and key state.
+3. Confirm the Slurm job and container set: a running job alone is not enough;
+  verify the expected profiles actually produced the expected services.
+4. Confirm endpoint readiness, not just process/container existence:
+  `curl /v1/models` with the LiteLLM bearer token and `vision/healthz` when
+  vision is expected.
+5. Confirm cleanup behavior: `./validate_harness.sh` should end by cancelling
+  the Slurm job cleanly, and retained wrapper logs should stay available under
+  `deploy/<site>/logs/slurm/` afterward.
+6. Confirm reuse, restart, or stale-image behavior separately when those code
+  paths are relevant: run `./validate_harness.sh --skip-matrix --lifecycle-case full`,
+  verify that the first request reuses the same job before cleanup, verify
+  that cleanup removes it, and verify that the wrapper log shows the expected
+  image or tarball reload decision on the fresh restart.
+7. Only after the above, treat the issue as a generic runtime failure rather
+  than a wrapper/site-config mismatch.
 
 ## See Also
 
