@@ -136,6 +136,29 @@ Review:
   `VLLM_API_KEY`, `UMRS_RAG_LLM_MODEL`); a future native server restart without
   those overrides will fall back to the static default QA backend settings.
 
+#### rccs-cloud QA Backend Hardening (2026-04-09)
+- [x] HQA1 Teach `rag_service` to resolve QA LLM endpoints dynamically from the
+      endpoint registry instead of binding a single `VLLM_BASE_URL` at startup.
+- [x] HQA2 Strip model reasoning blocks (`<think>...</think>`) from rewritten
+      queries and final QA answers before returning API responses.
+- [x] HQA3 Add focused tests for dynamic LLM candidate selection and reasoning
+      block cleanup.
+- [x] HQA4 Re-run local validation, then re-verify `/rag/qa` on rccs-cloud
+      without the manual QA base-url override.
+
+Review:
+- `src/umrs/api/rag_service.py` now resolves QA backends per request from the
+      endpoint registry, still honoring explicit env overrides first but no longer
+      depending on a single startup-bound `VLLM_BASE_URL`.
+- Query rewrites and final answers now strip model reasoning blocks before the
+      API responds, so `/rag/qa` no longer leaks `<think>...</think>` output.
+- Focused local validation passed in the repo virtualenv via
+      `PYTHONPATH=src .venv/bin/pytest tests/test_rag_service_llm_resolution.py`.
+- Live rccs-cloud validation passed after a plain `deploy/rccs-cloud/start.sh
+      --server` restart: `/rag/qa` returned a generated answer without the manual
+      QA base-url override, even though the persisted registry row for the active
+      `Qwen/Qwen3-0.6B` backend was still lagging in `status=starting`.
+
 ### User-Defined Model Workflows
 - [ ] U-200: Finalize UDM design document and review with stakeholder
 
