@@ -108,13 +108,10 @@ PY
 rag_search() {
     local query="$1"
     shift
-    local extra=""
-    if [[ $# -gt 0 ]]; then
-        extra=", $*"
-    fi
+    local extra_json="${1:-}"
 
     local json_payload
-    json_payload=$(build_payload "$query" 3 "$extra")
+    json_payload=$(build_payload "$query" 3 "$extra_json")
 
     log "  Query: \"$query\""
     local response
@@ -130,13 +127,10 @@ rag_search() {
 rag_qa() {
     local query="$1"
     shift
-    local extra=""
-    if [[ $# -gt 0 ]]; then
-        extra=", $*"
-    fi
+    local extra_json="${1:-}"
 
     local json_payload
-    json_payload=$(build_payload "$query" 5 "$extra")
+    json_payload=$(build_payload "$query" 5 "$extra_json")
 
     log "  Query: \"$query\""
     local response
