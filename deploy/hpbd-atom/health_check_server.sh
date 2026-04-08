@@ -12,8 +12,50 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PID_FILE="${SCRIPT_DIR}/server.pid"
 LOG_FILE="${SCRIPT_DIR}/logs/server.log"
+SITE_CONFIG_PATH="${SCRIPT_DIR}/site.yaml"
+VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python"
+
+resolve_model_layout() {
+    if [[ -n "${MODEL_DIR:-}" ]]; then
+        printf '%s\n%s\n%s\n' \
+            "$MODEL_DIR" \
+            "$MODEL_DIR/hf" \
+            "$MODEL_DIR/sentence_transformers"
+        return 0
+    fi
+
+    if [[ -x "$VENV_PYTHON" && -f "$SITE_CONFIG_PATH" ]]; then
+        if PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" \
+            "$VENV_PYTHON" - <<'PY' 2>/dev/null
+from pathlib import Path
+from umrs.orchestrator.site_config import load_site_config
+
+default_root = Path("/home/mnagaso/workspace/umrs_models")
+try:
+    cfg = load_site_config()
+    hf_cache = Path(cfg.storage.model_cache_dir) if cfg.storage.model_cache_dir else default_root / "hf"
+except Exception:
+    hf_cache = default_root / "hf"
+
+model_root = hf_cache.parent
+print(model_root)
+print(hf_cache)
+print(model_root / "sentence_transformers")
+PY
+        then
+            return 0
+        fi
+    fi
+
+    printf '%s\n%s\n%s\n' \
+        "/home/mnagaso/workspace/umrs_models" \
+        "/home/mnagaso/workspace/umrs_models/hf" \
+        "/home/mnagaso/workspace/umrs_models/sentence_transformers"
+}
 
 # Load .env if present (for POSTGRES_USER, POSTGRES_PASSWORD etc.)
 if [[ -f "$SCRIPT_DIR/.env" ]]; then
@@ -48,6 +90,26 @@ fi
 
 log "Checking hpbd-atom UMRS services (hybrid mode)..."
 echo
+
+# ─── Site config ─────────────────────────────────────────────────────────────
+if [[ -f "$SITE_CONFIG_PATH" ]]; then
+    ok "site config file present"
+else
+    fail "site config file present"
+fi
+
+if [[ -x "$VENV_PYTHON" ]] && \
+    PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" "$VENV_PYTHON" - <<'PY' >/dev/null 2>&1
+from umrs.orchestrator.site_config import load_site_config
+
+load_site_config()
+PY
+then
+    ok "site config loads via project venv"
+else
+    fail "site config loads via project venv"
+fi
 
 # ─── Container status (infrastructure only) ─────────────────────────────────
 check "postgres container running"    podman inspect --format '{{.State.Running}}' umrs-postgres
@@ -115,12 +177,22 @@ else
     log "   Slurm check skipped (sinfo not found)"
 fi
 
-# ─── Model cache directory ───
-MODEL_DIR="${MODEL_DIR:-/home/mnagaso/workspace/umrs_models}"
+# ─── Model cache directories ───
+{
+    IFS= read -r MODEL_DIR
+    IFS= read -r HF_CACHE_DIR
+    IFS= read -r _SENTENCE_TRANSFORMERS_DIR
+} < <(resolve_model_layout)
 if [[ -d "$MODEL_DIR" ]]; then
-    ok "Model cache directory exists ($MODEL_DIR)"
+    ok "Model cache root exists ($MODEL_DIR)"
 else
-    warn "Model cache directory missing: $MODEL_DIR"
+    warn "Model cache root missing: $MODEL_DIR"
+fi
+
+if [[ -d "$HF_CACHE_DIR" ]]; then
+    ok "HF cache directory exists ($HF_CACHE_DIR)"
+else
+    warn "HF cache directory missing: $HF_CACHE_DIR"
 fi
 
 echo

@@ -214,7 +214,7 @@ Common values to adjust:
 | `MINIO_BIND` | `127.0.0.1` | MinIO listens on localhost only.  Compute nodes use the SSH tunnel. |
 | `UMRS_SITE_CONFIG` | `~/.config/umrs/site.yaml` | Optional override for the canonical site config path |
 | `RIVAULT_SLURM_SCRIPT` | `~/.config/umrs/rivault_data/serve-model.slurm` | Optional override for the site-specific Slurm wrapper |
-| `MODEL_DIR` | unset by default | Optional local override for `site.yaml` `storage.model_cache_dir` |
+| `MODEL_DIR` | unset by default | Optional local override for the shared model root; otherwise `HF_HOME` comes from `site.yaml` `storage.model_cache_dir` |
 
 Do not duplicate scheduler partitions, `RIVAULT_PROFILES`, LiteLLM port, or
 model-serving paths in `.env` unless you are intentionally overriding
@@ -260,7 +260,7 @@ The script will:
 1. Auto-create `.env` from `env.example` if not present (prompts you to edit it).
 2. Resolve `UMRS_SITE_CONFIG` from `~/.config/umrs/site.yaml` (or fallback to the
   checked-in `deploy/rccs-cloud/site.yaml`).
-3. Create the model cache directories from `site.yaml` (or `MODEL_DIR` if you explicitly override it).
+3. Create the shared model root and HF cache directories from `site.yaml` (or `MODEL_DIR` if you explicitly override the shared root).
 4. Start postgres and minio containers via `podman compose up -d`.
 5. Wait for postgres and minio to become healthy.
 6. Launch `server_umrs.py` **natively** (outside any container) with the correct
@@ -282,7 +282,7 @@ To restart only the server (e.g. after a code change), keeping containers runnin
 If the native server is already running, use `./stop.sh --server` first.
 
 The first launch will:
-- Download embedding model weights to the configured model cache directory (`site.yaml` `storage.model_cache_dir`, or `MODEL_DIR` when explicitly overridden).
+- Download embedding model weights into the configured HF cache (`site.yaml` `storage.model_cache_dir`, or `${MODEL_DIR}/hf` when `MODEL_DIR` is explicitly overridden).
 - Auto-create MinIO buckets and PostgreSQL databases for each configured user.
 
 ---

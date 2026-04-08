@@ -41,23 +41,43 @@ finally:
 PY
 }
 
-resolve_model_dir() {
+resolve_model_layout() {
     if [[ -n "${MODEL_DIR:-}" ]]; then
-        printf '%s\n' "$MODEL_DIR"
+        printf '%s\n%s\n%s\n' \
+            "$MODEL_DIR" \
+            "$MODEL_DIR/hf" \
+            "$MODEL_DIR/sentence_transformers"
         return 0
     fi
 
     if [[ -x "${VENV_DIR}/bin/python" && -f "${UMRS_SITE_CONFIG:-}" ]]; then
-        UMRS_SITE_CONFIG="$UMRS_SITE_CONFIG" "${VENV_DIR}/bin/python" - <<'PY' 2>/dev/null || true
+        if PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            UMRS_SITE_CONFIG="$UMRS_SITE_CONFIG" \
+            "${VENV_DIR}/bin/python" - <<'PY' 2>/dev/null
+from pathlib import Path
 from umrs.orchestrator.site_config import load_site_config
 
-cfg = load_site_config()
-print(cfg.storage.model_cache_dir or "", end="")
+default_root = Path("/lvs0/rccs-dmp/mnagaso/umrs_models")
+try:
+    cfg = load_site_config()
+    hf_cache = Path(cfg.storage.model_cache_dir) if cfg.storage.model_cache_dir else default_root / "hf"
+except Exception:
+    hf_cache = default_root / "hf"
+
+model_root = hf_cache.parent
+print(model_root)
+print(hf_cache)
+print(model_root / "sentence_transformers")
 PY
-        return 0
+        then
+            return 0
+        fi
     fi
 
-    printf '%s\n' "/lvs0/rccs-dmp/mnagaso/umrs_models"
+    printf '%s\n%s\n%s\n' \
+        "/lvs0/rccs-dmp/mnagaso/umrs_models" \
+        "/lvs0/rccs-dmp/mnagaso/umrs_models/hf" \
+        "/lvs0/rccs-dmp/mnagaso/umrs_models/sentence_transformers"
 }
 
 # ─── Guard: must run on a Linux host where podman is available ───────────────
@@ -116,12 +136,17 @@ if [[ ! -e "$DEFAULT_RIVAULT_SLURM_SCRIPT" ]]; then
     DEFAULT_RIVAULT_SLURM_SCRIPT="${SCRIPT_DIR}/serve-model.slurm"
 fi
 
-# ─── Create model directory (skip if path is not writable) ───────────────────
-MODEL_DIR="$(resolve_model_dir)"
-if mkdir -p "${MODEL_DIR}/sentence_transformers" "${MODEL_DIR}/hf" 2>/dev/null; then
-    echo "Model cache: ${MODEL_DIR}"
+# ─── Create model cache directories (skip if path is not writable) ──────────
+{
+    IFS= read -r MODEL_DIR
+    IFS= read -r HF_CACHE_DIR
+    IFS= read -r SENTENCE_TRANSFORMERS_DIR
+} < <(resolve_model_layout)
+if mkdir -p "${SENTENCE_TRANSFORMERS_DIR}" "${HF_CACHE_DIR}" 2>/dev/null; then
+    echo "Model cache root: ${MODEL_DIR}"
+    echo "HF cache: ${HF_CACHE_DIR}"
 else
-    echo "WARNING: Could not create MODEL_DIR '${MODEL_DIR}' — ensure it exists."
+    echo "WARNING: Could not create model cache directories under '${MODEL_DIR}' — ensure they exist."
 fi
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
@@ -198,8 +223,8 @@ export S3_PRESIGN_ENDPOINT="${S3_PRESIGN_ENDPOINT:-http://localhost:9000}"
 # immediately available to GPU containers (vLLM, BentoML).  These env vars
 # also enable the optional CPU-only fallback (sentence-transformers) on the
 # login node if model_type is set to TransformerEncoder/SentenceTransformer.
-export SENTENCE_TRANSFORMERS_HOME="${MODEL_DIR}/sentence_transformers"
-export HF_HOME="${MODEL_DIR}/hf"
+export SENTENCE_TRANSFORMERS_HOME="${SENTENCE_TRANSFORMERS_DIR}"
+export HF_HOME="${HF_CACHE_DIR}"
 export UMRS_MODEL_STAGING_ROOT="${MODEL_DIR}"
 
 # Slurm wrapper script — site-specific (sets RIVAULT_DIR, model paths, profiles).
@@ -254,7 +279,8 @@ echo "  minio:       localhost:9000      (container, console: localhost:9001)"
 echo "  umrs-server: localhost:5555      (native, PID $SERVER_PID)"
 echo ""
 echo "  Presigned URL endpoint: ${S3_PRESIGN_ENDPOINT}"
-echo "  Model cache: ${MODEL_DIR}"
+echo "  Model root:  ${MODEL_DIR}"
+echo "  HF cache:    ${HF_CACHE_DIR}"
 echo ""
 echo "Check logs:  tail -f ${LOG_FILE}"
 echo "Stop:        ./stop.sh"

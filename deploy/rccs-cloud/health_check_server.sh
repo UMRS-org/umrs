@@ -12,6 +12,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PID_FILE="${SCRIPT_DIR}/server.pid"
 LOG_FILE="${SCRIPT_DIR}/logs/server.log"
 VENV_PYTHON="${SCRIPT_DIR}/.venv/bin/python"
@@ -32,23 +33,43 @@ finally:
 PY
 }
 
-resolve_model_dir() {
+resolve_model_layout() {
     if [[ -n "${MODEL_DIR:-}" ]]; then
-        printf '%s\n' "$MODEL_DIR"
+        printf '%s\n%s\n%s\n' \
+            "$MODEL_DIR" \
+            "$MODEL_DIR/hf" \
+            "$MODEL_DIR/sentence_transformers"
         return 0
     fi
 
     if [[ -x "$VENV_PYTHON" && -f "$SITE_CONFIG_PATH" ]]; then
-        UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" "$VENV_PYTHON" - <<'PY' 2>/dev/null || true
+        if PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" \
+            "$VENV_PYTHON" - <<'PY' 2>/dev/null
+from pathlib import Path
 from umrs.orchestrator.site_config import load_site_config
 
-cfg = load_site_config()
-print(cfg.storage.model_cache_dir or "", end="")
+default_root = Path("/lvs0/rccs-dmp/mnagaso/umrs_models")
+try:
+    cfg = load_site_config()
+    hf_cache = Path(cfg.storage.model_cache_dir) if cfg.storage.model_cache_dir else default_root / "hf"
+except Exception:
+    hf_cache = default_root / "hf"
+
+model_root = hf_cache.parent
+print(model_root)
+print(hf_cache)
+print(model_root / "sentence_transformers")
 PY
-        return 0
+        then
+            return 0
+        fi
     fi
 
-    printf '%s\n' "/lvs0/rccs-dmp/mnagaso/umrs_models"
+    printf '%s\n%s\n%s\n' \
+        "/lvs0/rccs-dmp/mnagaso/umrs_models" \
+        "/lvs0/rccs-dmp/mnagaso/umrs_models/hf" \
+        "/lvs0/rccs-dmp/mnagaso/umrs_models/sentence_transformers"
 }
 
 # Load .env if present (for POSTGRES_USER, POSTGRES_PASSWORD etc.)
@@ -180,12 +201,22 @@ else
     log "   Slurm check skipped (sinfo not found)"
 fi
 
-# ─── Model cache directory ───
-MODEL_DIR="$(resolve_model_dir)"
+# ─── Model cache directories ───
+{
+    IFS= read -r MODEL_DIR
+    IFS= read -r HF_CACHE_DIR
+    IFS= read -r _SENTENCE_TRANSFORMERS_DIR
+} < <(resolve_model_layout)
 if [[ -d "$MODEL_DIR" ]]; then
-    ok "Model cache directory exists ($MODEL_DIR)"
+    ok "Model cache root exists ($MODEL_DIR)"
 else
-    warn "Model cache directory missing: $MODEL_DIR"
+    warn "Model cache root missing: $MODEL_DIR"
+fi
+
+if [[ -d "$HF_CACHE_DIR" ]]; then
+    ok "HF cache directory exists ($HF_CACHE_DIR)"
+else
+    warn "HF cache directory missing: $HF_CACHE_DIR"
 fi
 
 echo
