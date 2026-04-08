@@ -6,7 +6,7 @@ Demonstrates UMRS RAG (Retrieval-Augmented Generation) search over embedded text
 
 1. UMRS server running and reachable
 2. Embeddings computed → `demos/02_text_embedding/`
-3. RAG service enabled: set `UMRS_RAG_ENABLE=1` in `demos/slurm-dev/.env` before starting services
+3. RAG service enabled in the deployment environment before startup; on native site deployments, set `UMRS_RAG_ENABLE=true` in `deploy/<site>/.env` and restart the site stack with `./start.sh`.
 
 ## What it does
 
@@ -27,12 +27,14 @@ bash run_demo.sh
 
 ## RAG API
 
-The RAG service runs inside the `ai-login` container on port **8081**.
+The RAG service listens on port **8081**. On native site deployments it runs
+as a managed login-node process; on containerized local dev it may run inside
+the compose stack.
 
 ### `/rag/search` — Semantic search (no LLM needed)
 
 ```bash
-podman exec ai-login curl -s -X POST http://localhost:8081/rag/search \
+curl -s -X POST http://localhost:8081/rag/search \
   -H 'Content-Type: application/json' \
   -d '{"query": "seismic wave propagation methods", "top_k": 5}'
 ```
@@ -47,7 +49,7 @@ Parameters:
 ### `/rag/qa` — Question answering (requires LLM)
 
 ```bash
-podman exec ai-login curl -s -X POST http://localhost:8081/rag/qa \
+curl -s -X POST http://localhost:8081/rag/qa \
   -H 'Content-Type: application/json' \
   -d '{"query": "How is ML used in geophysics?", "top_k": 5}'
 ```
@@ -70,7 +72,7 @@ Open `http://localhost:8081/docs` in a browser (or via port-forward) for the Swa
 User query
   │
   ▼
-RAG Service (ai-login:8081)
+RAG Service (port 8081)
   │
   ├─ /rag/search ─── Embed query (SentenceTransformer or vLLM)
   │                    │

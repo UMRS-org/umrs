@@ -81,7 +81,7 @@ unified orchestration using the existing (but unused) infrastructure in
 ### rccs-cloud Demo Execution
 - [x] Demo 00: health check (SSH tunnels + UMRS ping)
 - [x] Demo 01: text embedding (upload texts, wait for embeddings)
-- [ ] Demo 02: RAG search (vector + hybrid + Q&A) — needs UMRS_RAG_ENABLE=1
+- [ ] Demo 02: RAG search (vector + hybrid + Q&A) — `UMRS_RAG_ENABLE=true` is now live on rccs-cloud, but `text_embedding_usr1_text.text_file` still stays empty after Demo 02 ingestion so search returns no results
 - [x] Demo 03: SAM3 segmentation (upload images, download results)
 - [x] Demo 04: HMAE inference (upload CT images, download results)
 
@@ -338,6 +338,16 @@ Each moved file gets a **compatibility wrapper** at the old path.
 - [x] PH2-1–PH2-8: LIST_WORKFLOWS command, workflow catalog, auto-register, CLI subcommand, extends field
 </details>
 - [x] PH2-9: Write unit tests in `tests/test_workflow_registry.py` (21/21 pass)
+
+<details>
+<summary>RAG service lifecycle follow-up (2026-04-08)</summary>
+
+- [x] `UMRS_RAG_ENABLE` now controls native `rag-service` lifecycle in both `deploy/rccs-cloud/` and `deploy/hpbd-atom/` (`start.sh`, `stop.sh`, `health_check_server.sh`).
+- [x] Demo docs no longer point to stale `slurm-dev` / `ai-login` guidance for Demo 05.
+- [x] Live rccs-cloud enablement completed: remote `.env` now has `UMRS_RAG_ENABLE=true`, `./start.sh --server` launches native `rag-service`, and `./health_check_server.sh` reports 16 passed / 0 failed with `RAG service docs respond on 8081`.
+- [x] Fixed RiVault OpenAI config drift so site client configs (and hpbd-atom server-side user config) use `rivault://openai://http://localhost:{LOCAL_PORT}/v1`, matching the launcher’s dynamic SSH tunnel port handling.
+- [ ] Live Demo 05 remains blocked on rccs-cloud: Demo 05 reaches `http://localhost:8081` successfully, but even after Demo 02 text ingestion reaches `PROCESS_OBJECTS=Done`, `text_embedding_usr1_text.text_file` still contains `0` rows, so vector/hybrid/reranked queries all return no results.
+</details>
 
 ## Phase 3: Unified Plugin + Step Model (2026-04-10)
 

@@ -911,8 +911,9 @@ squeue -u $USER
 
 ### RAG service not available
 
-The RAG service is optional. It requires `UMRS_RAG_ENABLE=1` in the server
-environment. Check with your admin.
+The RAG service is optional. It requires `UMRS_RAG_ENABLE=true` (or `1`) in
+the deployment environment before the site stack is started or restarted.
+Check with your admin if you do not control the deployment.
 
 ---
 
