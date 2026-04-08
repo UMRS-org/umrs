@@ -107,6 +107,9 @@ For the rccs-cloud deployment, configuration ownership is split on purpose:
   model-serving ports, and shared storage paths.
   On rccs-cloud, `scheduler.kind` should stay `slurm-podman` so durable
   endpoint jobs use the wrapper-backed Slurm/Podman launch path.
+  Its `database.registry_dsn` also keeps the endpoint registry persistent
+  across native server restarts, so legacy upload-triggered RiVault launches
+  can reattach to already-running Slurm jobs instead of submitting duplicates.
   The active `ng-dgx-m*` partitions also require `scheduler.memory` to stay
   empty today because Slurm rejects explicit `--mem` requests there.
   They likewise require `scheduler.gpus: 0` because those partitions reject

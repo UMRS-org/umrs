@@ -28,6 +28,21 @@ logger = logging.getLogger(__name__)
 # These will be imported at runtime
 
 
+def _resolve_backend_type(backend_type: Optional[str] = None) -> str:
+    """Resolve the registry backend type from explicit input or environment."""
+    if backend_type:
+        return backend_type.lower()
+
+    explicit_backend = os.environ.get("UMRS_REGISTRY_BACKEND")
+    if explicit_backend:
+        return explicit_backend.lower()
+
+    if os.environ.get("UMRS_REGISTRY_POSTGRES_DSN"):
+        return "postgres"
+
+    return "memory"
+
+
 def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
     """Parse ISO format datetime string."""
     if not value:
@@ -418,10 +433,7 @@ def get_backend(backend_type: Optional[str] = None) -> RegistryBackend:
     Returns:
         Configured registry backend.
     """
-    if backend_type is None:
-        backend_type = os.environ.get("UMRS_REGISTRY_BACKEND", "memory")
-
-    backend_type = backend_type.lower()
+    backend_type = _resolve_backend_type(backend_type)
 
     if backend_type == "memory":
         logger.info("Using in-memory registry backend")

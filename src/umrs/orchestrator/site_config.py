@@ -216,6 +216,7 @@ class SiteConfig:
         if self.database.user_password:
             env["DB_USER_PASSWORD"] = self.database.user_password
         if self.database.registry_dsn:
+            env["UMRS_REGISTRY_BACKEND"] = "postgres"
             env["UMRS_REGISTRY_POSTGRES_DSN"] = self.database.registry_dsn
 
         return {k: v for k, v in env.items() if v}

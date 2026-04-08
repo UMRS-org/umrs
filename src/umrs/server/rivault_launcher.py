@@ -158,8 +158,28 @@ def is_slurm_job_running(job_id):
     state = get_slurm_job_state(job_id)
     return state == "RUNNING"
 
-def wait_for_running(job_id, timeout=300):
+
+def get_rivault_startup_timeout_sec(default=600):
+    """Return the configured RiVault startup timeout, falling back safely."""
+    raw_timeout = os.environ.get("RIVAULT_STARTUP_TIMEOUT_SEC")
+    if not raw_timeout:
+        return default
+
+    try:
+        return max(int(raw_timeout), 1)
+    except ValueError:
+        print(
+            "Invalid RIVAULT_STARTUP_TIMEOUT_SEC="
+            f"{raw_timeout!r}; falling back to {default}s"
+        )
+        return default
+
+
+def wait_for_running(job_id, timeout=None):
     """Wait until a Slurm job reaches RUNNING state, with timeout."""
+    if timeout is None:
+        timeout = get_rivault_startup_timeout_sec()
+
     start = time.time()
     while True:
         state = get_slurm_job_state(job_id)
@@ -263,8 +283,12 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
                 job_id = int(match.group(1))
                 print("Job submitted with ID:", job_id)
                 _cache_job(model_type_key, job_id)  # persist immediately
-                if not wait_for_running(job_id):
-                    raise ValueError(f"Job {job_id} did not start running. Current state: {get_slurm_job_state(job_id)}")
+                startup_timeout = get_rivault_startup_timeout_sec()
+                if not wait_for_running(job_id, timeout=startup_timeout):
+                    raise ValueError(
+                        f"Job {job_id} did not start running within "
+                        f"{startup_timeout}s. Current state: {get_slurm_job_state(job_id)}"
+                    )
         if job_id is None:
             raise ValueError(
                 f"Could not parse job ID from sbatch output: "

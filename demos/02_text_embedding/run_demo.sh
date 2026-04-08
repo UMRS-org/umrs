@@ -26,6 +26,46 @@ echo "Bucket alias : ${BUCKET_ALIAS}"
 echo "Sample data  : ${SAMPLE_DIR}"
 echo ""
 
+wait_for_embeddings_csv() {
+    local max="${1:-60}" sleep_sec="${2:-10}"
+    local out_file="${RESULTS_DIR}/embeddings.csv"
+    local tmp_file="${RESULTS_DIR}/.embeddings.partial.csv"
+
+    mkdir -p "$RESULTS_DIR"
+    rm -f "$tmp_file"
+
+    for i in $(seq 1 "$max"); do
+        local status_raw
+        status_raw="$($CLIENT --output text status process_objects 2>/dev/null || true)"
+        if echo "$status_raw" | grep -qi "error\|failed\|aborted"; then
+            warn "PROCESS_OBJECTS reported an error:"
+            while IFS= read -r line; do
+                [[ -n "$line" ]] && warn "  $line"
+            done <<< "$status_raw"
+            rm -f "$tmp_file"
+            return 1
+        fi
+
+        if $CLIENT export_embeddings "$BUCKET_ALIAS" "$tmp_file" --format csv >/dev/null 2>&1; then
+            if [[ -f "$tmp_file" ]]; then
+                local lines
+                lines=$(wc -l < "$tmp_file" | tr -d ' ')
+                if [[ "$lines" -gt 1 ]]; then
+                    mv "$tmp_file" "$out_file"
+                    log "  embeddings ready after ${i} poll(s)"
+                    return 0
+                fi
+            fi
+        fi
+
+        [[ $((i % 6)) -eq 0 ]] && log "  waiting... ($i/$max)"
+        sleep "$sleep_sec"
+    done
+
+    rm -f "$tmp_file"
+    return 1
+}
+
 # ---------- Step 1: Pre-flight ----------
 log "Step 1: Pre-flight checks..."
 preflight
@@ -49,14 +89,12 @@ ok "Text files uploaded"
 
 # ---------- Step 4: Wait for embeddings ----------
 log ""
-log "Step 4: Waiting for embedding tasks (timeout: 10 min)..."
-wait_tasks 60 10
+log "Step 4: Waiting for embedding rows (timeout: 10 min)..."
+wait_for_embeddings_csv 60 10 || die "Timed out waiting for non-empty exported embeddings."
 
 # ---------- Step 5: Verify & Export ----------
 log ""
-log "Step 5: Exporting embeddings to CSV..."
-mkdir -p "$RESULTS_DIR"
-$CLIENT export_embeddings "$BUCKET_ALIAS" "${RESULTS_DIR}/embeddings.csv" --format csv
+log "Step 5: Verifying exported embeddings CSV..."
 ok "Embeddings exported to ${RESULTS_DIR}/embeddings.csv"
 if [[ -f "${RESULTS_DIR}/embeddings.csv" ]]; then
     LINES=$(wc -l < "${RESULTS_DIR}/embeddings.csv")

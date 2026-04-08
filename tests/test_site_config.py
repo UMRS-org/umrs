@@ -4,7 +4,6 @@ Unit tests for SiteConfig (YAML-based site configuration).
 
 import os
 import textwrap
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -13,7 +12,6 @@ from umrs.orchestrator.site_config import (
     SiteConfig,
     SchedulerConfig,
     RuntimeConfig,
-    StorageConfig,
     NetworkConfig,
     VllmConfig,
     DatabaseConfig,
@@ -264,6 +262,19 @@ class TestToEnv:
         assert env["VLLM_DOCKER_TAG"] == "nightly"
         assert env["VLLM_GPU_MEM_UTIL"] == "0.85"
 
+    def test_to_env_enables_postgres_registry_when_dsn_present(self):
+        cfg = SiteConfig(
+            database=DatabaseConfig(
+                registry_dsn="postgres://umrs:umrs_rccs@localhost:5432/umrs_db"
+            )
+        )
+        env = cfg.to_env()
+        assert env["UMRS_REGISTRY_BACKEND"] == "postgres"
+        assert (
+            env["UMRS_REGISTRY_POSTGRES_DSN"]
+            == "postgres://umrs:umrs_rccs@localhost:5432/umrs_db"
+        )
+
     def test_to_env_omits_empty_values(self):
         cfg = SiteConfig()  # all defaults
         env = cfg.to_env()
@@ -292,13 +303,13 @@ class TestDefaultSiteConfig:
     """Test env-var-only fallback path."""
 
     def test_reads_env_vars(self, monkeypatch):
-        monkeypatch.setenv("SLURM_PARTITION", "env-part")
-        monkeypatch.setenv("RIVAULT_REMOTE_PORT", "9999")
-        monkeypatch.setenv("VLLM_MODEL", "custom-model")
-        monkeypatch.delenv("DB_SUPERUSER", raising=False)
-        monkeypatch.setenv("POSTGRES_USER", "pg_user_env")
+        with patch.dict(os.environ, {}, clear=True):
+            monkeypatch.setenv("SLURM_PARTITION", "env-part")
+            monkeypatch.setenv("RIVAULT_REMOTE_PORT", "9999")
+            monkeypatch.setenv("VLLM_MODEL", "custom-model")
+            monkeypatch.setenv("POSTGRES_USER", "pg_user_env")
 
-        cfg = default_site_config()
+            cfg = default_site_config()
         assert cfg.name == "env-fallback"
         assert cfg.scheduler.partition == "env-part"
         assert cfg.vllm.model == "custom-model"

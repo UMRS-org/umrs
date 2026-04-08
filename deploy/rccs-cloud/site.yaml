@@ -73,4 +73,4 @@ database:
   superuser: umrs
   superuser_password: umrs_rccs
   user_password: ""
-  registry_dsn: ""                       # set to postgres://umrs:umrs_rccs@localhost:5432/umrs_db to enable PG-backed registry
+  registry_dsn: postgres://umrs:umrs_rccs@localhost:5432/umrs_db

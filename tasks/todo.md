@@ -85,6 +85,12 @@ unified orchestration using the existing (but unused) infrastructure in
 - [x] Demo 03: SAM3 segmentation (upload images, download results)
 - [x] Demo 04: HMAE inference (upload CT images, download results)
 
+#### rccs-cloud Demo 02 recovery (2026-04-08)
+- [ ] D2.1 Persist the RiVault endpoint registry across native server restarts so legacy upload-triggered paths can reattach to existing Slurm jobs.
+- [ ] D2.2 Make the legacy RiVault launcher honor `RIVAULT_STARTUP_TIMEOUT_SEC` instead of a fixed 300 second wait.
+- [ ] D2.3 Make Demo 02 wait for exported embeddings to contain real rows instead of any generic completed status.
+- [ ] D2.4 Re-run Demo 02 and Demo 05 on rccs-cloud, then push and pull the fix so the remote checkout matches git.
+
 #### rccs-cloud Lifecycle Follow-up (2026-04-08)
 - [x] L1 Fix `deploy/rccs-cloud/stop.sh --server` so it does not stop
       containers or cancel Slurm jobs during a native server restart.
