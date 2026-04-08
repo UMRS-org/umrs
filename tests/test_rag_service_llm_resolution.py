@@ -49,6 +49,20 @@ def _ready_endpoint(project_id, model, job_id, host, port, minutes_ago=1):
     )
 
 
+def _starting_endpoint(project_id, model, job_id, host, port, minutes_ago=1):
+    created_at = datetime.now(UTC) - timedelta(minutes=minutes_ago)
+    return RegisteredEndpoint(
+        project_id=project_id,
+        model=model,
+        job_id=job_id,
+        host=host,
+        port=port,
+        status=EndpointStatus.STARTING,
+        created_at=created_at,
+        backend="slurm-podman",
+    )
+
+
 def test_strip_reasoning_blocks_removes_think_sections():
     raw = "<think>internal chain</think>Final answer"
 
@@ -115,6 +129,60 @@ def test_build_llm_candidates_prefers_registry_chat_endpoint(monkeypatch):
     assert candidates[0].model_name == "Qwen/Qwen3-0.6B"
     assert candidates[0].base_url == "http://ng-dgx-m0-09:8001/v1"
     assert candidates[0].job_id == "job-chat"
+    assert all(candidate.model_name != "intfloat/e5-base-v2" for candidate in candidates[:-1])
+
+
+def test_build_llm_candidates_uses_starting_chat_endpoint_when_ready_state_lags(monkeypatch):
+    registry = FakeRegistry(
+        [
+            _starting_endpoint(
+                project_id="rag-qa-chat",
+                model="Qwen/Qwen3-0.6B",
+                job_id="job-chat",
+                host="ng-dgx-m0-09",
+                port=8001,
+                minutes_ago=1,
+            ),
+            _starting_endpoint(
+                project_id="rag-qa-warmup",
+                model="intfloat/e5-base-v2",
+                job_id="job-embed",
+                host="ng-dgx-m0-08",
+                port=8001,
+                minutes_ago=2,
+            ),
+        ]
+    )
+
+    monkeypatch.delenv("VLLM_BASE_URL", raising=False)
+    monkeypatch.delenv("UMRS_RAG_LLM_PROJECT_ID", raising=False)
+    monkeypatch.delenv("UMRS_RAG_LLM_MODEL", raising=False)
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-live")
+    monkeypatch.setattr(rag_service, "get_registry", lambda: registry)
+    monkeypatch.setattr(
+        rag_service,
+        "get_site_config",
+        lambda: SimpleNamespace(
+            inject_env=lambda overwrite=False: None,
+            network=SimpleNamespace(litellm_master_key=""),
+        ),
+    )
+    monkeypatch.setattr(
+        rag_service,
+        "DB_MODEL_STORE",
+        {
+            "text-entry": {
+                "store_embeddings_flag": True,
+                "model": {"model_name": "intfloat/e5-base-v2"},
+            }
+        },
+    )
+
+    candidates = rag_service._build_llm_candidates()
+
+    assert candidates[0].model_name == "Qwen/Qwen3-0.6B"
+    assert candidates[0].base_url == "http://ng-dgx-m0-09:8001/v1"
+    assert candidates[0].source == "registry-stale-fallback"
     assert all(candidate.model_name != "intfloat/e5-base-v2" for candidate in candidates[:-1])
 
 
