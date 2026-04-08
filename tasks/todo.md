@@ -119,11 +119,11 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
  startup conventions.
 
 #### Phase 1 — Canonical Contract
-- [ ] H1  Define canonical ownership for harness defaults:
+- [x] H1  Define canonical ownership for harness defaults:
       `site.yaml`, source `serve-model.slurm`, deploy wrappers, and docs
-- [ ] H2  Decide which profile sets are officially supported by default:
+- [x] H2  Decide which profile sets are officially supported by default:
       `harness`, `harness vllm`, `harness vllm vision-bentoml`, optional `rag`
-- [ ] H3  Document invariants for `RIVAULT_PROFILES`, host/container paths,
+- [x] H3  Document invariants for `RIVAULT_PROFILES`, host/container paths,
       health readiness, and image reload behavior
 
 #### Phase 2 — Wrapper Convergence
@@ -173,13 +173,12 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
       `UMRS_SITE_CONFIG` or another discoverable `site.yaml` is available, so
       source-launch defaults and wrapper-launch defaults converge on the same
       site-config export path instead of diverging silently.
-- Profile defaults are intentionally divergent today:
-      rccs-cloud defaults to `harness vllm vision-bentoml`, while hpbd-atom
-      defaults to `harness vision-bentoml`, and source Mini-Rivault still defaults
-      to `harness vllm` when no site config is present.
-- This means remaining profile divergence is now intentional site policy when a
-      site config exists, with the generic source fallback only used outside a
-      site-configured deployment.
+- Profile defaults are intentionally divergent by site policy today:
+      rccs-cloud defaults to `harness vllm vision-bentoml`, hpbd-atom defaults
+      to `harness vision-bentoml`, and source Mini-Rivault keeps `harness vllm`
+      as the generic no-site-config fallback.
+- This means profile ownership is now canonical for site-configured deployments;
+      remaining divergence is documented site policy rather than hidden drift.
 
 ---
 
