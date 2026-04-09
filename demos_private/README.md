@@ -5,10 +5,10 @@ or engines.  **Do not commit this directory to the public repository.**
 
 | # | Demo | Dependency |
 |---|------|------------|
-| 04 | HMAE Inference | HMAE model checkpoint (`tmp/hmae-infer/`) |
+| 04 | HMAE Inference | Site-provided HMAE checkpoint and vision runtime |
 | 09 | Defect Analysis | HMAE + SAM3 combined pipeline |
 | 10 | HMAE Full Pipeline | HMAE reconstruct + MAE + features |
-| 14 | Opossum Analysis | Opossum video analysis engine (`tmp/opossum/`) |
+| 14 | Opossum Analysis | External opossum video analysis engine |
 
 ## Usage
 

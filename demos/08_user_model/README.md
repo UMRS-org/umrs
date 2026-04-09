@@ -572,8 +572,8 @@ for a complete working example.
 
 ## See also
 
-- [Demo 09: Defect Analysis](../09_defect_analysis/README.md) — 4-step pipeline: SAM3 → region crop → HMAE → clustering
-- [Demo 10: HMAE Full](../10_hmae_full_pipeline/README.md) — all 3 HMAE modes as Step pipeline
+- [Demo 09: Multi-Step Vision Pipeline](../09_multistep_vision_pipeline/README.md) — public multi-step image workflow
+- [Demo 10: Vision Multi-Mode](../10_vision_multi_mode/README.md) — branched workflow with multiple output modes
 - [Step ABC source](../../src/umrs/pipeline_sdk/step.py)
 - [WorkflowPipeline source](../../src/umrs/pipeline_sdk/workflow.py)
 - [VisionModelAdapter base](../../src/umrs/vision_service/adapters/base.py)

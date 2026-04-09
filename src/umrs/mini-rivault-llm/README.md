@@ -1,134 +1,100 @@
-# Mini-RiVault
+# Mini-RiVault LLM + Vision Runtime
 
-**vLLM + LiteLLM + NGINX inference runtime** for the AI-for-Science Platform.
+This directory contains the canonical runtime assets used by UMRS to launch
+GPU inference stacks on Slurm-managed compute nodes. The stack is profile-
+driven and is designed to support text inference through vLLM/LiteLLM and
+vision inference through BentoML.
 
-## Overview
+## What lives here
 
-Mini-RiVault is a self-contained inference stack that runs:
-- **vLLM** — High-performance LLM/embedding inference engine (:8000)
-- **LiteLLM** — OpenAI-compatible API routing layer (:11434)
-- **NGINX** — Reverse proxy and TLS termination (published port)
+- `serve-model.yaml` — the main compose definition.
+- `serve-model.slurm` — the source-side Slurm launcher used on compute nodes.
+- `x_nvidia-override.yaml` / `x_rocm-override.yaml` — runtime-specific GPU overrides.
+- `litellm_fs/`, `nginx_fs/`, `coredns_fs/`, `mcpo_fs/` — service configuration fragments.
+- `tests/` — focused runtime tests and helpers.
 
-Each Slurm job or Kubernetes pod runs its own Mini-RiVault instance with
-pre-staged model weights. UMRS discovers the endpoint via Slurm job info
-and opens an SSH tunnel for remote access.
+Site-specific deploy wrappers under `deploy/*/serve-model.slurm` normally call
+into this source tree after loading `site.yaml`-derived configuration.
 
-## Architecture
+## Runtime Profiles
 
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  Mini-RiVault Container (Singularity/Podman)                            │
-│                                                                         │
-│  ┌─────────────────────────────────────────────────────────────────┐    │
-│  │  LiteLLM (:11434)                         ← Gateway Target      │    │
-│  │  • OpenAI-compatible API                                       │    │
-│  │  • Model name mapping                                          │    │
-│  │  • Static model name: rivault-gpt-oss-static                   │    │
-│  └──────────────────────────┬──────────────────────────────────────┘    │
-│                             │                                           │
-│  ┌──────────────────────────▼──────────────────────────────────────┐    │
-│  │  vLLM (:8000)                              ← Private, not exposed│    │
-│  │  • Tensor parallel inference                                    │    │
-│  │  • Tool calling support                                         │    │
-│  │  • Model: /models/... (pre-staged)                             │    │
-│  └─────────────────────────────────────────────────────────────────┘    │
-│                                                                         │
-│  Mount Points:                                                          │
-│    /models/      ← Pre-staged model weights (read-only)                │
-│    /scratch/     ← Ephemeral workspace (read-write)                    │
-└─────────────────────────────────────────────────────────────────────────┘
-```
+The compose stack is profile-based. The most important profiles are:
 
-## Usage
+- `harness` — shared infrastructure inside the job, including NGINX and support services.
+- `vllm` — text/embedding inference through vLLM + LiteLLM.
+- `vision-bentoml` — vision inference through the BentoML service.
 
-### HPC (Slurm + Singularity)
+The deployed wrapper usually exports:
 
 ```bash
-# Submit inference job
-sbatch --time=01:00:00 -N 1 -p a100 serve-model.slurm
-
-# Check endpoint
-MODEL_ENDPOINT=$(scontrol show job $SLURM_JOB_ID | grep NodeList | awk -F'=' '{print $2}')
-curl -H "Authorization: Bearer $LITELLM_KEY" \
-     "http://${MODEL_ENDPOINT}:11434/v1/models"
+RIVAULT_PROFILES="harness vllm vision-bentoml"
 ```
 
-### Local Development (Docker Compose)
+## Launch Flow
+
+For the normal Slurm+Podman deployment path:
+
+1. A site wrapper in `deploy/<site>/serve-model.slurm` loads `site.yaml` and
+      site-specific defaults.
+2. The wrapper exports the resolved runtime variables such as profile set,
+      model cache paths, LiteLLM auth token, and output-log location.
+3. The wrapper executes this directory's `serve-model.slurm`.
+4. `serve-model.slurm` chooses the appropriate override file and runs the
+      profile set from `serve-model.yaml` through Podman Compose.
+
+The preferred orchestrator path for this branch is
+`src/umrs/orchestrator/slurm_podman_backend.py`.
+
+## Main Services
+
+| Component | Purpose |
+|---|---|
+| vLLM | text/embedding model serving |
+| LiteLLM | OpenAI-compatible API layer in front of vLLM |
+| BentoML vision service | generic vision inference endpoint (`sam3`, `hmae`, custom adapters) |
+| NGINX | front door for LiteLLM and `/vision/` routes |
+| CoreDNS / support services | internal service discovery and runtime support |
+
+## Important Environment Inputs
+
+These are normally exported by the deploy wrapper or `site.yaml` bridge:
+
+- `RIVAULT_DIR`
+- `RIVAULT_PROFILES`
+- `VLLM_PATH_TO_HUGGINGFACE`
+- `VLLM_MODEL`
+- `VLLM_DOCKER_TAG`
+- `LITELLM_MASTER_KEY`
+- `SAM3_MODEL_PATH`
+- `HMAE_MODEL_PATH`
+- `HMAE_CONFIG_PATH`
+- `HMAE_CHECKPOINT`
+
+## Direct Source Launch
+
+For debugging on a machine that already has the required container runtime and
+site configuration available:
 
 ```bash
-# Set model path
-export MODEL_PATH=/path/to/models/Qwen2.5-7B-Instruct
-
-# Start with GPU
-docker compose --env-file env.mini-rivault \
-    -f compose.yaml \
-    -f compose.nvidia.yaml \
-    up -d
-
-# Test
-curl -H "Authorization: Bearer sk-demo-key" \
-     http://localhost:11434/v1/models
+cd src/umrs/mini-rivault-llm
+export UMRS_SITE_CONFIG=/path/to/site.yaml
+bash serve-model.slurm
 ```
 
-## Configuration
+The source launcher now honors `UMRS_SITE_CONFIG` via `site_config.py` instead
+of relying only on generic fallback values.
 
-### Environment Variables
+## Notes
 
-```bash
-# vLLM
-VLLM_MAX_MODEL_LEN=4096        # Max context length
-VLLM_MAX_NUM_SEQS=4            # Max concurrent sequences
-VLLM_ENABLE_TOOL_CALLING=true  # Enable function calling
-VLLM_TENSOR_PARALLEL_SIZE=1    # GPU parallelism
-VLLM_MODEL_PATH=/models/...    # Pre-staged model path
-VLLM_PORT=8000                 # Internal port
-
-# LiteLLM
-LITELLM_MASTER_KEY=sk-ll-xxxx  # Auth key
-LITELLM_PORT=11434             # API port
-
-# Offline mode (REQUIRED for inference containers)
-TRANSFORMERS_OFFLINE=1
-HF_HUB_OFFLINE=1
-```
-
-### Model Configuration (litellm_fs/litellm_config.yaml)
-
-```yaml
-model_list:
-  - model_name: rivault-gpt-oss-static
-    litellm_params:
-      model: openai/local
-      api_base: http://127.0.0.1:8000/v1
-```
-
-## Files
-
-| File | Purpose |
-|------|---------|
-| `serve-model.slurm` | Slurm batch script for HPC |
-| `serve-model.yaml` | Configuration template |
-| `compose.yaml` | Docker Compose base |
-| `compose.nvidia.yaml` | NVIDIA GPU override |
-| `litellm_fs/` | LiteLLM configuration |
-| `coredns_fs/` | CoreDNS for service discovery |
-| `nginx_fs/` | Optional NGINX layer |
-
-## Key Invariants
-
-1. **No model downloads** — Models must be pre-staged at `$VLLM_MODEL_PATH`
-2. **Offline mode** — Set `TRANSFORMERS_OFFLINE=1` to fail fast on network access
-3. **Static model name** — Always use `rivault-gpt-oss-static` for consistency
-4. **Gateway access only** — Users access via Platform Gateway, never directly
-5. **No `--internal` networks** — Podman networks must NOT use `--internal` or host→container data relay will hang
-
-## Known Issues
-
-- **arm64 (NVIDIA GB10)**: LiteLLM container lacks `schema-engine-linux-arm64-openssl-3.0.x`, so Prisma migrations fail silently. LiteLLM still works for inference thanks to `allow_requests_on_db_unavailable: True`.
-- **LiteLLM strips vLLM fields**: `/v1/models` responses via LiteLLM proxy lack `max_model_len` and `context_length` fields. UMRS falls back to `tokenizer.model_max_length`.
+- This directory is the source of truth for the Mini-RiVault runtime assets.
+- The deploy wrappers are expected to remain thin and site-specific.
+- The vision service source code itself lives under
+     `src/umrs/vision_service/`.
+- Public deploy guidance lives under `deploy/rccs-cloud/README.md` and
+     `doc/admin_guide.md`.
 
 ## See Also
 
-- [../ARCHITECTURE.md](../ARCHITECTURE.md) - Platform architecture
-- [../demos/](../demos/) - Demo scripts
-- [../gateway/](../gateway/) - Platform Gateway
+- [../../../deploy/rccs-cloud/README.md](../../../deploy/rccs-cloud/README.md)
+- [../../../doc/admin_guide.md](../../../doc/admin_guide.md)
+- [../vision_service/service.py](../vision_service/service.py)

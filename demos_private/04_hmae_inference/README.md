@@ -1,143 +1,60 @@
-# Demo 04: HMAE Inference
+# Demo 04: HMAE Inference (Private)
 
-Run HMAE (Hierarchical Masked Auto-Encoder) reconstruction on volume images
-using the UMRS server's built-in `PROCESS_OBJECTS` / `WAIT_OUTPUT` flow.
+This private demo exercises an HMAE-backed image reconstruction experience on a
+site where the HMAE model checkpoint and BentoML vision runtime are already
+available.
 
-The HMAE inference engine lives at **`tmp/hmae-infer`** in the repo root.
-See [`tmp/hmae-infer/README.md`](../../tmp/hmae-infer/README.md) for the
-standalone inference tool (configs, model architecture, CLI arguments).
+Unlike the public [demos/04_vision_inference](../../demos/04_vision_inference/README.md),
+this demo assumes a private or site-specific HMAE setup.
 
-## Prerequisites
+## What the current script does
 
-| Requirement | How to check |
-|-------------|--------------|
-| UMRS server running | `umrs-client -c $CONF ping` |
-| SSH tunnels active | `nc -z localhost 5555 && nc -z localhost 9000` |
-| BentoML vision service running on HPC | Server log shows `Slurm job … started` for HMAE |
-| HMAE checkpoint registered | `umrs-client -c $CONF model-list` shows `HMAE ViT-B` |
+`run_demo.sh` performs a small, practical flow:
 
-## Experience Config (user1)
-
-| Field | Value |
-|-------|-------|
-| Experience | HMAE Inference |
-| Modality | `image` (task: `reconstruction`) |
-| Input bucket | `user1.hmae-inference.user1-hmae` |
-| Output bucket | `user1.hmae-inference.user1-hmae-output` |
-| Model | `HMAE ViT-B` via BentoML adapter (`rivault://bentoml://…`) |
-| SQL table | `hmae_infer` (embeddings not stored) |
+1. Runs the standard pre-flight checks.
+2. Optionally registers a local HMAE model directory if `HMAE_LOCAL_MODEL_DIR`
+   is set.
+3. Uploads PNG slice images to the configured HMAE bucket (`user1-hmae` by default).
+4. Downloads the reconstruction outputs after server-side processing completes.
 
 ## Quick Start
 
 ```bash
-cd demos/04_hmae_inference
+cd demos_private/04_hmae_inference
 bash run_demo.sh
 ```
 
-## Step-by-step
-
-### 1. Upload volume images to S3
-
-Place `.png` volume slices in the input bucket:
+To use a custom image directory:
 
 ```bash
-CONF=~/.config/umrs/users/user1.json
-
-# Upload a directory of volume slices
-umrs-client -c "$CONF" upload-dir ./sample_images/ \
-  --experience "HMAE Inference" \
-  --modality image
+bash run_demo.sh /path/to/volume_slices
 ```
 
-The server auto-detects the `user1-hmae` bucket alias and uploads to
-`s3://user1.hmae-inference.user1-hmae/`.
-
-### 2. Process objects (trigger HMAE inference)
+To register a local checkpoint directory before running:
 
 ```bash
-umrs-client -c "$CONF" process-objects \
-  --experience "HMAE Inference"
+HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir bash run_demo.sh
 ```
 
-This sends `PROCESS_OBJECTS` to the server, which:
-1. Launches a Slurm job on a GPU node (if not already running)
-2. Submits each image to the BentoML HMAE service
-3. Runs quadtree decomposition → encoder → decoder (see `tmp/hmae-infer/engine/hmae.py`)
-4. Uploads reconstruction PNGs to the output bucket
+## Defaults Used By The Script
 
-### 3. Wait for results
+| Setting | Default |
+|---|---|
+| Bucket alias | `user1-hmae` |
+| Default image dir | `../03_sam3_segmentation/test_data_full` |
+| Result dir | `results/` |
 
-```bash
-umrs-client -c "$CONF" wait-output \
-  --experience "HMAE Inference"
-```
+## Notes
 
-Polls with exponential back-off until all images are processed.
-
-### 4. Download results
-
-```bash
-umrs-client -c "$CONF" download-results \
-  --experience "HMAE Inference" \
-  -o ./results/
-```
-
-This downloads the `*_recon.png` files from the output bucket.
-
-### 5. Check status
-
-```bash
-umrs-client -c "$CONF" status
-```
-
-## Optional: Upload HMAE Model
-
-If the HMAE model checkpoint is not yet registered on the server:
-
-```bash
-# Register a model from the HPC filesystem
-umrs-client -c "$CONF" model-register \
-  --name "hmae-pretrained" \
-  --path "/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae" \
-  --model-type embedding \
-  --scope system \
-  --description "HMAE ViT pretrained checkpoint (s8d-1k)"
-
-# Or upload a local checkpoint directory
-umrs-client -c "$CONF" model-upload \
-  --name "hmae-pretrained" \
-  --local-dir ~/Downloads/hmae_checkpoint/
-```
-
-## HMAE Inference Engine
-
-The HMAE inference code is at **`tmp/hmae-infer/`**:
-
-```
-tmp/hmae-infer/
-├── configs/infer_hmae_vit_b.yaml   # Model config (ViT-B, patch_size=32, img_size=1024)
-├── engine/hmae.py                  # Quadtree decomposition engine
-├── model/hvit.py                   # HMAE-ViT architecture (Base/Large/XLarge)
-├── infer.py                        # Main inference entry point
-├── scripts/run_infer.sh            # Quick-start shell script
-└── README.md                       # Full documentation
-```
-
-### Standalone inference (outside UMRS)
-
-```bash
-cd tmp/hmae-infer
-conda run -n gdt python infer.py \
-  --config configs/infer_hmae_vit_b.yaml \
-  --image_dir /path/to/volume_slices/ \
-  --checkpoint /path/to/latest_checkpoint.pth \
-  --mode reconstruct
-```
-
-Modes: `reconstruct` (full), `mae` (masked 50%), `features` (encoder-only → `.pt` files).
+- The repo-contained HMAE implementation used by the current branch lives under
+  `src/umrs/inference/` and the BentoML adapter path under
+  `src/umrs/vision_service/default_adapters/`.
+- This README intentionally avoids the older `process-objects` / `wait-output`
+  command flow because the current demo script uses the modern upload +
+  download-results path.
 
 ## Related Demos
 
-- **Demo 03**: [SAM3 Segmentation](../03_sam3_segmentation/) — similar vision pipeline via BentoML
-- **Demo 10**: [HMAE Full Pipeline](../10_hmae_full_pipeline/) — multi-step DAG: reconstruct + MAE + features in parallel
-- **Demo 12**: [Pipeline SDK](../12_pipeline_sdk/) — custom Step pipelines
+- Public generic vision demo: [../../demos/04_vision_inference/README.md](../../demos/04_vision_inference/README.md)
+- Private HMAE pipeline reference: [../10_hmae_full_pipeline/README.md](../10_hmae_full_pipeline/README.md)
+- Public workflow docs: [../../demos/12_pipeline_sdk/README.md](../../demos/12_pipeline_sdk/README.md)
