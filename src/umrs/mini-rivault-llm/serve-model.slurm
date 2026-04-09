@@ -130,10 +130,14 @@ VLLM_RCCL_MEM_LIMIT=8G
 EOF
 
 GPUoverride=()
+_GPU_OVERRIDE_FILE=""
+if [[ -n "${RIVAULT_GPU_OVERRIDE_FILE:-}" && -f "${RIVAULT_GPU_OVERRIDE_FILE}" ]]; then
+    _GPU_OVERRIDE_FILE="${RIVAULT_GPU_OVERRIDE_FILE}"
+fi
 if /bin/nvidia-smi --list-gpus | /bin/grep -qi '^GPU 0:' ; then
-	GPUoverride+=("--file" "./x_nvidia-override.yaml")
+    GPUoverride+=("--file" "${_GPU_OVERRIDE_FILE:-./x_nvidia-override.yaml}")
 elif /bin/rocm-smi -i | /bin/grep -qi '^GPU\[0\]' ; then
-	GPUoverride+=("--file" "./x_rocm-override.yaml")
+    GPUoverride+=("--file" "${_GPU_OVERRIDE_FILE:-./x_rocm-override.yaml}")
 fi
 
 # Ensure podman-compose >= 1.2.0 (needed for --profile support)
@@ -186,6 +190,7 @@ echo "[rivault]   litellm key: $(mask_secret_state "${LITELLM_MASTER_KEY:-}")"
 echo "[rivault]   hf cache: ${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}"
 echo "[rivault]   sam3 path: ${SAM3_MODEL_PATH:-./models/sam3}"
 echo "[rivault]   hmae path: ${HMAE_MODEL_PATH:-./models/hmae}"
+echo "[rivault]   gpu override: ${_GPU_OVERRIDE_FILE:-embedded default}"
 
 # start
 # Tear down any leftovers from previous jobs: remove all containers that are
@@ -289,6 +294,9 @@ cleanup_stack() {
                --file "./serve-model.yaml" ${GPUoverride[@]} \
                down >/dev/null 2>&1 || true
     podman network rm -f genai-private-net >/dev/null 2>&1 || true
+    if [[ "${RIVAULT_GPU_OVERRIDE_GENERATED:-0}" == "1" && -n "${RIVAULT_GPU_OVERRIDE_FILE:-}" ]]; then
+        rm -f "${RIVAULT_GPU_OVERRIDE_FILE}" >/dev/null 2>&1 || true
+    fi
     rm -f "./env.${uuid}" \
           "./nginx_fs/out-nginx.conf.${uuid}" \
           "./coredns_fs/coredns.conf.${uuid}" \
