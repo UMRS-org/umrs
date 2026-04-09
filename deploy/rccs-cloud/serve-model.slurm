@@ -209,8 +209,15 @@ loginctl enable-linger "$(whoami)" 2>/dev/null || true
 # Prefer CDI (nvidia-ctk) when available — it handles both device nodes AND
 # host driver library mounts automatically. Fall back to raw device mapping
 # (which may require manual library volume mounts for containers like vLLM).
+# Generate the override in a runtime path rather than rewriting the tracked
+# source file under ${RIVAULT_DIR}; that keeps shared repo checkouts clean for
+# deploy/update cycles.
 if ls /dev/nvidia[0-9]* >/dev/null 2>&1; then
-    _OVERRIDE="${RIVAULT_DIR}/x_nvidia-override.yaml"
+    _OVERRIDE_DIR="${RIVAULT_GPU_OVERRIDE_DIR:-${TMPDIR:-/tmp}}"
+    mkdir -p "${_OVERRIDE_DIR}"
+    _OVERRIDE="${RIVAULT_GPU_OVERRIDE_FILE:-${_OVERRIDE_DIR%/}/umrs-x_nvidia-override-${SLURM_JOB_ID:-$$}.yaml}"
+    export RIVAULT_GPU_OVERRIDE_FILE="${_OVERRIDE}"
+    export RIVAULT_GPU_OVERRIDE_GENERATED=1
     if nvidia-ctk cdi list 2>/dev/null | grep -q 'nvidia.com/gpu=all'; then
         echo "[wrapper] CDI available — generating CDI-based GPU override: ${_OVERRIDE}"
         cat > "${_OVERRIDE}" <<GPUEOF
@@ -256,6 +263,8 @@ GPUEOF
     fi
     echo "[wrapper] GPU override written."
 else
+    unset RIVAULT_GPU_OVERRIDE_FILE || true
+    unset RIVAULT_GPU_OVERRIDE_GENERATED || true
     echo "[wrapper] No NVIDIA GPUs detected at /dev/nvidia*"
 fi
 

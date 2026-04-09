@@ -23,6 +23,9 @@ src/umrs/mini-rivault-llm/coredns_fs/coredns.conf.*-*-*-*-*
 src/umrs/mini-rivault-llm/litellm_fs/config.yaml.*-*-*-*-*
 src/umrs/mini-rivault-llm/env.*-*-*-*-*
 
+# Ignore site-local deploy logs generated on login nodes
+deploy/*/logs/
+
 # Ignore model binaries and large model caches
 /data/models/
 /docker/data/models/
