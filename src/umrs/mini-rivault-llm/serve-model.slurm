@@ -270,6 +270,36 @@ for _p in $RIVAULT_PROFILES; do
 	_profile_flags="${_profile_flags} --profile ${_p}"
 done
 
+_cleanup_started=0
+cleanup_stack() {
+    local reason="${1:-exit}"
+    local rc="${2:-0}"
+
+    if [[ "${_cleanup_started}" -ne 0 ]]; then
+        return
+    fi
+    _cleanup_started=1
+    trap - EXIT TERM INT
+
+    echo "[rivault] Cleaning up stack (${reason})..."
+    podman-compose --env-file "./env.${uuid}" \
+               --file "./userdata-access.yaml" \
+               down >/dev/null 2>&1 || true
+    podman-compose --env-file "./env.${uuid}" \
+               --file "./serve-model.yaml" ${GPUoverride[@]} \
+               down >/dev/null 2>&1 || true
+    podman network rm -f genai-private-net >/dev/null 2>&1 || true
+    rm -f "./env.${uuid}" \
+          "./nginx_fs/out-nginx.conf.${uuid}" \
+          "./coredns_fs/coredns.conf.${uuid}" \
+          "./litellm_fs/config.yaml.${uuid}" >/dev/null 2>&1 || true
+    return "$rc"
+}
+
+trap 'cleanup_stack "signal:TERM" 143; exit 143' TERM
+trap 'cleanup_stack "signal:INT" 130; exit 130' INT
+trap 'cleanup_stack "exit" "$?"' EXIT
+
 podman-compose --env-file "./env.${uuid}" \
                --file "./serve-model.yaml" ${GPUoverride[@]} \
                ${_profile_flags} \
@@ -285,8 +315,8 @@ podman-compose --env-file "./env.${uuid}" \
 ip a
 
 # Keep job alive while containers are running; exit on idle timeout (safety net).
-# UMRS server will also call `scancel` once all embedding threads are done, which
-# stops the containers and causes this loop to exit cleanly.
+# Slurm cancellation or an explicit signal should now run the cleanup trap
+# above so the compose stack is torn down promptly.
 RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-7200}   # default 2 h; override via sbatch --export
 INTERVAL=30
 ELAPSED=0

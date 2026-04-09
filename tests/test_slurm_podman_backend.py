@@ -364,9 +364,7 @@ class TestCleanup:
             _run(backend.cleanup("12345"))
 
         args = mock_exec.call_args.args if mock_exec.call_args.args else mock_exec.call_args[0]
-        assert "scancel" in args
-        assert "--signal=TERM" in args
-        assert "12345" in args
+        assert args == ("scancel", "-Q", "12345")
 
     def test_cleanup_force_uses_kill(self, backend):
         mock_proc = AsyncMock()
@@ -377,7 +375,10 @@ class TestCleanup:
             _run(backend.cleanup("12345", force=True))
 
         args = mock_exec.call_args.args if mock_exec.call_args.args else mock_exec.call_args[0]
+        assert args[0:2] == ("scancel", "-Q")
+        assert "--full" in args
         assert "--signal=KILL" in args
+        assert args[-1] == "12345"
 
     def test_cleanup_preserves_retained_slurm_logs(self, backend, output_dir):
         (output_dir / "slurm-12345.out").write_text("output")
@@ -405,10 +406,11 @@ class TestMapSlurmState:
         ("PENDING", JobStatus.PENDING),
         ("CONFIGURING", JobStatus.PENDING),
         ("RUNNING", JobStatus.STARTING),
-        ("COMPLETING", JobStatus.RUNNING),
+        ("COMPLETING", JobStatus.STOPPED),
         ("COMPLETED", JobStatus.STOPPED),
         ("FAILED", JobStatus.FAILED),
         ("CANCELLED", JobStatus.STOPPED),
+        ("CANCELLED+", JobStatus.STOPPED),
         ("TIMEOUT", JobStatus.FAILED),
         ("NODE_FAIL", JobStatus.FAILED),
         ("PREEMPTED", JobStatus.FAILED),

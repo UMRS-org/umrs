@@ -314,14 +314,31 @@ class SlurmPodmanBackend(OrchestratorBackend):
     # ------------------------------------------------------------------
 
     async def cleanup(self, job_id: str, force: bool = False) -> None:
-        """Cancel a Slurm job (SIGTERM or SIGKILL)."""
-        signal = "KILL" if force else "TERM"
+        """Cancel a Slurm job.
+
+        Graceful cleanup must cancel the job itself so Slurm signals the batch
+        shell and applies its normal KillWait handling. Forced cleanup must
+        still reach the batch shell, not only child steps.
+        """
+        cmd = ["scancel", "-Q"]
+        if force:
+            cmd.extend(["--full", "--signal=KILL"])
+
+        cmd.append(job_id)
         proc = await asyncio.create_subprocess_exec(
-            "scancel", f"--signal={signal}", job_id,
+            *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc.communicate()
+        _stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            logger.warning(
+                "scancel failed for %s (force=%s, rc=%s): %s",
+                job_id,
+                force,
+                proc.returncode,
+                stderr.decode().strip(),
+            )
 
     async def list_jobs(
         self,
@@ -510,12 +527,12 @@ class SlurmPodmanBackend(OrchestratorBackend):
     @staticmethod
     def _map_slurm_state(state: str) -> JobStatus:
         """Map a Slurm state string to :class:`JobStatus`."""
-        s = state.upper().split()[0] if state else ""
+        s = re.split(r"[ +]", state.upper(), maxsplit=1)[0] if state else ""
         mapping = {
             "PENDING": JobStatus.PENDING,
             "CONFIGURING": JobStatus.PENDING,
             "RUNNING": JobStatus.STARTING,  # may not be ready yet
-            "COMPLETING": JobStatus.RUNNING,
+            "COMPLETING": JobStatus.STOPPED,
             "COMPLETED": JobStatus.STOPPED,
             "FAILED": JobStatus.FAILED,
             "CANCELLED": JobStatus.STOPPED,
