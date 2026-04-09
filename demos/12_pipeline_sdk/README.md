@@ -88,5 +88,6 @@ def compute(self, config, items):
 ## Related
 
 - Pipeline SDK source: `src/umrs/pipeline_sdk/`
-- Step workflows: `demos/10_hmae_full_pipeline/` (alternative to Pipeline SDK)
+- JSON workflow example: `demos/16_custom_workflow/`
+- DAG workflow example: `demos/15_complex_dag/`
 - Model registry: `demos/07_model_registry/`

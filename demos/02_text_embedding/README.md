@@ -31,37 +31,45 @@ If you prefer to run steps individually:
 
 ```bash
 # 1. Check server
-umrs-client -c conf_umrs.json ping
+umrs-client ping
 
-# 2. Upload text files
-umrs-client -c conf_umrs.json upload_dir ./test_data/text/ rivault-demo-bucket
+# 2. Ensure the embedding model is available to the server
+umrs-client model download intfloat/e5-base-v2 --scope system --server-side
 
-# 3. Monitor progress
-umrs-client -c conf_umrs.json --output text status all
+# 3. Upload the bundled sample files
+umrs-client upload_dir ../sample_data/texts user1-textfiles
 
-# 4. Once all tasks show "Done", export embeddings
-umrs-client -c conf_umrs.json export_embeddings rivault-demo-bucket ./embeddings.csv
+# 4. Monitor progress
+umrs-client --output text status process_objects
+
+# 5. Once processing is done, export embeddings
+umrs-client export_embeddings user1-textfiles ./results/embeddings.csv --format csv
 ```
 
 ## Test Data
 
-Sample text files in `test_data/text/` (symlinked from `demos/slurm-dev/test_data/text/`):
+Sample text files live in `../sample_data/texts/`:
 
 | File | Topic |
 |------|-------|
 | `hpc_computing.txt` | High-performance computing |
-| `ml_geophysics.txt` | Machine learning in geophysics |
-| `numerical_methods.txt` | Numerical methods |
+| `ml_materials.txt` | Machine learning for materials science |
+| `containers_hpc.txt` | Containers on HPC systems |
 | `rivault_platform.txt` | Rivault platform description |
 | `seismic_waves.txt` | Seismic wave analysis |
 
 ## Configuration
 
-The demo uses the Rivault demo config (`conf_umrs.json`), which defines:
-- Username: `rivault_user`
-- Bucket: `rivault-demo-bucket`
+The demo script assumes a configured UMRS client and uses:
+- Bucket alias: `user1-textfiles`
 - Model: `intfloat/e5-base-v2` (768-d embeddings via vLLM in Mini-Rivault)
 - Modality: `text`
+
+If your site uses a different bucket alias, override it with:
+
+```bash
+TEXT_BUCKET=my-text-bucket bash run_demo.sh
+```
 
 ## Expected Output
 

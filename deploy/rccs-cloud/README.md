@@ -485,7 +485,7 @@ requested — no manual GPU setup is needed.
 
 ### Prerequisites
 
-1. Mini-rivault stack configured (see `demos/slurm-dev/`).
+1. Mini-RiVault runtime assets configured (see `src/umrs/mini-rivault-llm/` and this deploy directory's `site.yaml`).
 2. `serve-model.slurm` wrapper linked (done by `setup_server.sh`).
 3. Passwordless SSH between login and compute nodes ([Step 0b](#step-0b--enable-compute--login-ssh-required-for-slurm-jobs)).
 

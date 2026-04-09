@@ -1,40 +1,55 @@
 # UMRS Configuration Examples
 
-## Deploying configuration file
-`./deploy_cfg.sh` to deploy example configuration files to `~/.config/umrs`: 
+This directory contains example JSON configuration files for UMRS server and
+user setups. These files are references and starting points; they are **not**
+deployed automatically.
 
-The directory is as follow: 
+The older `deploy_cfg.sh` helper is no longer part of the current branch.
+Today, configuration is usually installed by site-specific setup scripts such
+as `deploy/rccs-cloud/setup_client.sh` or copied manually into
+`~/.config/umrs/`.
 
-``` 
-umrs/
-├── conf_umrs_full.json
-├── conf_umrs_spring8.json
-├── conf_umrs.json
-├── tmp
-└── users
-    ├── spring8.json
-    ├── user1.json
-    └── user2.json
+## Typical Target Layout
+
+```text
+~/.config/umrs/
+  conf_umrs.json
+  users/
+    user1.json
+    user2.json
+    spring8.json
+  tmp/
 ```
- 
 
-The root folder `umrs/` mainly contains JSON configuration files and two directories:
+## What These Examples Cover
 
-- **UMRS Configuration Files**
-  - `conf_umrs.json`: default general configuration, used for deployments of user1 and user2.
-  - `conf_umrs_spring8.json`: configuration specific to the Spring-8 context, used only for spring8 user model.
-  - `conf_umrs_simple.json`: simpler configuration used only for user1.
+- `conf_umrs*.json` files show server-side configuration patterns.
+- `umrs/users/*.json` files show per-user experiences, bucket aliases,
+  modality configuration, and model settings.
+- The examples include both general-purpose users and more specialized
+  tomography/HMAE-oriented configurations.
 
-- **`tmp/` directory**
-  - Used to store temporary files, logs, or intermediate data during the service execution.
+## Recommended Usage
 
-- **`users/` directory**
-  - Contains user profiles or personalized configurations.
-  - `spring8.json`: configuration for the Spring-8 user with two tomography pipelines: the legacy MAE embedding model (`tomography_embedding`) and the HMAE (Hierarchical MAE) reconstruction and feature extraction models (`tomography_reconstruction`, `tomography_mae_reconstruction`, `tomography_features_extraction`).
-  - `user1.json` and `user2.json`: profiles and specific configurations for different users.
+### Manual copy
+
+Copy the example files you want to adapt into your config directory and edit
+them there:
+
+```bash
+mkdir -p ~/.config/umrs/users
+cp src/umrs_cfg_example/umrs/conf_umrs.json ~/.config/umrs/conf_umrs.json
+cp src/umrs_cfg_example/umrs/users/user1.json ~/.config/umrs/users/user1.json
+```
+
+### Site setup scripts
+
+For real deployments, prefer the setup scripts under `deploy/` because they
+install configs that match the deployment wrapper, tunnel, and site defaults.
 
 ## See Also
 
-- [UMRS Overview](../../doc/umrs_overview.md) — Full description of the configuration model
-- [Multi-User Guide](../../doc/multi_users.md) — How to configure multiple users
+- [../../doc/umrs_overview.md](../../doc/umrs_overview.md)
+- [../../doc/multi_users.md](../../doc/multi_users.md)
+- [../../deploy/rccs-cloud/README.md](../../deploy/rccs-cloud/README.md)
 

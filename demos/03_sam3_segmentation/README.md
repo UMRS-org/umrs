@@ -50,15 +50,14 @@ bash run_demo.sh
 # 1. Ensure vision profile is active
 export RIVAULT_PROFILES="harness vllm vision-bentoml"
 
-# 2. Upload images
-umrs-client -c conf_umrs.json upload_dir ./test_data/ alice-images
+# 2. Ensure the SAM3 model is available to the server
+umrs-client model download facebook/sam2-hiera-small --name sam3 --scope system --server-side
 
-# 3. Use the demo Python script directly
-python3 ../../demos/slurm-dev/scripts/demo_sam3_segmentation.py \
-    --bentoml-url http://localhost:$LOCAL_PORT/vision \
-    --s3-endpoint http://localhost:19000 \
-    --image-path ./test_data/sample.jpg \
-    --prompt "crack"
+# 3. Upload images
+umrs-client upload_dir ./test_data_full user1-sam3
+
+# 4. Download results once processing completes
+umrs-client download_results user1-sam3 ./results --force-overwrite
 ```
 
 ## Configuration
@@ -85,7 +84,8 @@ The model is registered in `vision_models.json`:
   "model": {
     "model_name": "facebook/sam3",
     "vector_size": "256",
-    "model_type": "bentoml://http://localhost:{LOCAL_PORT}/vision/submit",
+    "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+    "vision_model_type": "sam3",
     "return_type": "file"
   }
 }
@@ -110,15 +110,15 @@ in `VISION_ADAPTERS_DIR` (colon-separated, e.g. `/adapters/system:/adapters/user
 and auto-registers every `VisionModelAdapter` subclass it finds.
 
 ```
-/adapters/system/sam3_adapter.py   → model_type="sam3_adapter"
-/adapters/system/hmae_adapter.py   → model_type="hmae_adapter"
+/adapters/system/sam3_adapter.py   → model_type="sam3"
+/adapters/system/hmae_adapter.py   → model_type="hmae"
 /adapters/user/my_model.py         → model_type="my_model"  (user-provided)
 ```
 
-Built-in adapters (SAM3, HMAE) ship as `.py` files in `rivault/default_adapters/`
-and are loaded via the same mechanism. Users can add their own adapters by placing
-`.py` files in `USER_ADAPTERS_DIR` and optionally including a `requirements.txt`
-for extra dependencies.
+Built-in adapters ship from `src/umrs/vision_service/default_adapters/` and are
+mounted into the BentoML container under `/adapters/system`. Users can add their
+own adapters by placing `.py` files in an adapter directory and optionally adding
+a `requirements.txt` file for extra dependencies.
 
 See [Demo 08: User-Defined Model](../08_user_model/README.md) for details on
 writing your own adapter.
@@ -147,6 +147,6 @@ All endpoints are accessed through NGINX's `/vision/` prefix via the SSH tunnel.
 ## See Also
 
 - [Admin Guide](../../doc/admin_guide.md) — deploying vision models
-- [Demo 04: HMAE](../04_hmae_inference/README.md) — feature extraction demo
+- [Demo 04: Vision Inference](../04_vision_inference/README.md) — generic BentoML vision inference
 - [Demo 08: User-Defined Model](../08_user_model/README.md) — custom adapters and pipelines
 - [Mini-Rivault README](../../src/umrs/mini-rivault-llm/README.md) — inference stack details
