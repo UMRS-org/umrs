@@ -50,7 +50,7 @@ class MessageQueue:
 
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
                  max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None,
-                 status_store=None, tunnel_mode=None):
+                 status_store=None, tunnel_mode=None, prefer_env_server_host=True):
         """
         Initializes the MessageQueue.
 
@@ -72,7 +72,7 @@ class MessageQueue:
         self.type = queue_type.lower()
         self.tunnel_mode = self._env_flag("UMRS_TUNNEL_MODE", False) if tunnel_mode is None else bool(tunnel_mode)
         # Determine server_ip: prefer explicit env var so other containers/hosts can connect
-        env_server_host = os.environ.get("UMRS_SERVER_HOST")
+        env_server_host = os.environ.get("UMRS_SERVER_HOST") if prefer_env_server_host else None
         remote_server_ip = env_server_host if env_server_host else server_ip
         self.server_ip = "127.0.0.1" if self.tunnel_mode else remote_server_ip
         self.context = zmq.Context()

@@ -1,0 +1,41 @@
+{
+  "name": "hpbd-atom",
+  "mode": "ssh_tunnel",
+  "zmq": {
+    "host": "127.0.0.1",
+    "control_port": 5555,
+    "data_base_port": 15556,
+    "tunnel_mode": true,
+    "health_check_timeout_ms": 5000
+  },
+  "services": {
+    "minio_url": "http://127.0.0.1:9000",
+    "rag_url": "http://127.0.0.1:8081"
+  },
+  "ssh": {
+    "host": "atop-0-tmp",
+    "command_hint": "cd deploy/hpbd-atom && ./ssh_tunnel.sh",
+    "local_forwards": [
+      {
+        "local_port": 5555,
+        "remote_host": "localhost",
+        "remote_port": 5555
+      },
+      {
+        "local_port": 15556,
+        "remote_host": "localhost",
+        "remote_port": 15556
+      },
+      {
+        "local_port": 9000,
+        "remote_host": "localhost",
+        "remote_port": 9000
+      },
+      {
+        "local_port": 8081,
+        "remote_host": "localhost",
+        "remote_port": 8081
+      }
+    ]
+  }
+}

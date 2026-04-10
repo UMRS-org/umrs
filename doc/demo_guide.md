@@ -76,7 +76,26 @@ Your admin will provide instructions. The server needs to expose these ports:
 | 9000 | MinIO S3 | Yes |
 | 8081 | RAG service | Only for RAG demos (05, 19) |
 
-### 3. Set up SSH tunnels (remote servers only)
+### 3. Select the connection you want to use
+
+If your admin provides a site setup script, run that first. It installs the
+user config and the site connection profile:
+
+```bash
+cd deploy/<site>
+./setup_client.sh
+umrs-client --output text profile show
+```
+
+To import a profile manually:
+
+```bash
+umrs-client profile import deploy/<site>/client/connections/<site>.json
+umrs-client profile use <site>
+umrs-client --output text profile show
+```
+
+### 4. Set up SSH tunnels (remote servers only)
 
 If the server is on a remote machine, tunnel the required ports:
 
@@ -91,11 +110,14 @@ ssh -N \
 
 Site-specific tunnel scripts may exist at `deploy/<site>/ssh_tunnel.sh`.
 
-### 4. Set up the server configuration
+If `umrs-client --output text profile show` reports `tunnel_mode=true`, you
+must start the matching tunnel before running the demos.
 
-Make sure you have a server config file. The default location is:
+### 5. Set up the user configuration
+
+Make sure you have a user config file. The default location is:
 ```
-~/.config/umrs/conf_umrs.json
+~/.config/umrs/users/user1.json
 ```
 
 Site-specific `setup_client.sh` scripts create this. If running locally
@@ -105,10 +127,10 @@ mkdir -p ~/.config/umrs/users
 cp docker/user_files/user1.json ~/.config/umrs/users/user1.json
 ```
 
-### 5. Verify connectivity
+### 6. Verify connectivity
 
 ```bash
-umrs-client -c ~/.config/umrs/conf_umrs.json ping
+umrs-client ping
 # Expected: server responds with "ready"
 ```
 
@@ -136,13 +158,13 @@ nc -z localhost 5556 && echo "ZMQ data OK"    || echo "ZMQ data not bound (OK)"
 curl -sf http://localhost:9000/minio/health/live && echo "MinIO OK" || echo "MinIO FAILED"
 
 # 2. Ping the UMRS server
-umrs-client -c ~/.config/umrs/conf_umrs.json ping
+umrs-client ping
 
 # 3. Check RAG service (optional)
 curl -sf http://localhost:8081/docs && echo "RAG OK" || echo "RAG not available"
 
 # 4. List configured buckets
-umrs-client -c ~/.config/umrs/conf_umrs.json list_buckets
+umrs-client list_buckets
 ```
 
 ### Expected output

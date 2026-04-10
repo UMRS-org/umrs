@@ -9,8 +9,77 @@
 
 # --- Default configuration ---
 REPO_ROOT="${REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
-CONF="${UMRS_CONF:-${UMRS_USER_CONF:-${HOME}/.config/umrs/conf_umrs.json}}"
-CLIENT="umrs-client -c ${CONF}"
+
+_apply_umrs_profile_defaults() {
+    command -v umrs-client >/dev/null 2>&1 || return 0
+
+    local connection_args=()
+    if [[ -n "${UMRS_PROFILE:-}" ]]; then
+        connection_args+=(--profile "${UMRS_PROFILE}")
+    fi
+    if [[ -n "${UMRS_ZMQ_HOST:-}" ]]; then
+        connection_args+=(--server-ip "${UMRS_ZMQ_HOST}")
+    fi
+    if [[ -n "${UMRS_ZMQ_PORT:-}" ]]; then
+        connection_args+=(--control-port "${UMRS_ZMQ_PORT}")
+    fi
+
+    local profile_json
+    if ! profile_json="$(umrs-client "${connection_args[@]}" --output json profile show 2>/dev/null)"; then
+        return 0
+    fi
+
+    eval "$(PROFILE_JSON="${profile_json}" python - <<'PY'
+import json
+import os
+import shlex
+from urllib.parse import urlparse
+
+payload = json.loads(os.environ["PROFILE_JSON"])
+connection = payload.get("connection") or {}
+
+minio = urlparse(connection.get("minio_url") or "http://127.0.0.1:9000")
+rag = urlparse(connection.get("rag_url") or "http://127.0.0.1:8081")
+
+exports = {
+    "UMRS_ZMQ_HOST": connection.get("server_host") or "127.0.0.1",
+    "UMRS_ZMQ_PORT": str(connection.get("control_port") or 5555),
+    "UMRS_ZMQ_DATA_PORT": str(connection.get("data_base_port") or 5556),
+    "UMRS_MINIO_HOST": minio.hostname or "127.0.0.1",
+    "UMRS_MINIO_PORT": str(minio.port or 9000),
+    "RAG_URL": connection.get("rag_url") or "http://127.0.0.1:8081",
+}
+
+for key, value in exports.items():
+    print(f"export {key}={shlex.quote(value)}")
+PY
+)"
+}
+
+_apply_umrs_profile_defaults
+
+if [[ -n "${UMRS_CONF:-}" ]]; then
+    CONF="${UMRS_CONF}"
+elif [[ -n "${UMRS_USER_CONF:-}" ]]; then
+    CONF="${UMRS_USER_CONF}"
+elif [[ -f "${HOME}/.config/umrs/users/user1.json" ]]; then
+    CONF="${HOME}/.config/umrs/users/user1.json"
+else
+    CONF="${HOME}/.config/umrs/conf_umrs.json"
+fi
+
+CLIENT_ARGS=(umrs-client)
+if [[ -n "${UMRS_PROFILE:-}" ]]; then
+    CLIENT_ARGS+=(--profile "${UMRS_PROFILE}")
+fi
+if [[ -n "${UMRS_ZMQ_HOST:-}" ]]; then
+    CLIENT_ARGS+=(--server-ip "${UMRS_ZMQ_HOST}")
+fi
+if [[ -n "${UMRS_ZMQ_PORT:-}" ]]; then
+    CLIENT_ARGS+=(--control-port "${UMRS_ZMQ_PORT}")
+fi
+CLIENT_ARGS+=(-c "${CONF}")
+CLIENT="${CLIENT_ARGS[*]}"
 
 # --- Logging helpers ---
 _TAG="${DEMO_TAG:-demo}"
