@@ -17,6 +17,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+UMRS_USER_CONF="${UMRS_USER_CONF:-${HOME}/.config/umrs/users/user1.json}"
 DEMO_TAG="health_check" source "${SCRIPT_DIR}/../lib/common.sh"
 
 # Configurable host/ports (defaults to localhost for tunneled setups)

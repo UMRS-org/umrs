@@ -17,21 +17,16 @@ All demos (except 08, 12, 13 which run locally) require:
    - Docker Compose (local dev): `docker compose up` from `docker/`
    - HPC/cloud: follow the deployment guide for your site
 
-2. **Network connectivity** to the UMRS server. If the server is remote,
-   set up SSH tunnels for the required ports:
-   ```bash
-   # Example: tunnel from your local machine to the remote server
-   ssh -N \
-       -L 5555:localhost:5555 \
-       -L 5556:localhost:5556 \
-       -L 9000:localhost:9000 \
-       -L 8081:localhost:8081 \
-       <your-server-host>
-   ```
-   Ports: **5555** (ZMQ control), **5556** (ZMQ data), **9000** (MinIO S3),
-   **8081** (RAG service — optional).
+2. **Connection selected** for the deployment you want to use.
 
-   Site-specific tunnel scripts may be available under `deploy/<site>/ssh_tunnel.sh`.
+  Check the active connection profile with:
+  ```bash
+  umrs-client --output text profile show
+  ```
+
+  If the profile reports `tunnel_mode=true`, start the matching SSH tunnel
+  before running demos. Site-specific tunnel scripts are available under
+  `deploy/<site>/ssh_tunnel.sh`.
 
 3. **Python venv** with `umrs-client` installed.
 
@@ -39,11 +34,11 @@ All demos (except 08, 12, 13 which run locally) require:
    Install it once if you haven't already (`brew install uv` on macOS, or
    `curl -LsSf https://astral.sh/uv/install.sh | sh`).
 
-   **Option A — site-specific setup script (recommended):**
+  **Option A — site-specific setup script (recommended):**
    ```bash
    cd deploy/<site>/
-   ./setup_client.sh            # installs configs + umrs package
-   source .venv/bin/activate    # activate the venv created by the script
+  ./setup_client.sh            # installs user config, connection profile, and umrs package
+  umrs-client --output text profile show
    ```
 
    **Option B — manual:**
@@ -54,8 +49,15 @@ All demos (except 08, 12, 13 which run locally) require:
    which umrs-client            # verify it's in PATH
    ```
 
-4. **Server config** at `~/.config/umrs/conf_umrs.json` with S3, users, and
-   experience definitions. Site-specific `setup_client.sh` scripts create this for you.
+4. **User config** at `~/.config/umrs/users/user1.json` and, optionally, a
+  **connection profile** under `~/.config/umrs/connections/`. Site-specific
+  `setup_client.sh` scripts create both for you.
+
+  To import an additional site profile manually:
+  ```bash
+  umrs-client profile import deploy/<site>/client/connections/<site>.json
+  umrs-client profile use <site>
+  ```
 
 All demos source `lib/common.sh` which provides the `$CLIENT` command,
 `preflight()`, `wait_tasks()`, `banner()`, `log()`, `ok()`, `warn()`, `die()`.
@@ -202,7 +204,9 @@ Want a live TUI dashboard?
 
 | Variable | Used by | Description |
 |----------|---------|-------------|
-| `UMRS_CONF` | all | Path to server config JSON (default: `~/.config/umrs/conf_umrs.json`) |
+| `UMRS_PROFILE` | all | Named connection profile to use for the demo commands |
+| `UMRS_USER_CONF` | all | Path to the user config JSON (default: `~/.config/umrs/users/user1.json`) |
+| `UMRS_CONF` | all | Explicit config override used by the demo helper (legacy/manual override) |
 | `FORCE_RECOMPUTE` | 03 | Set to `1` to trigger full recompute after upload |
 | `MAX_IMAGES` | 03, 09, 10 | Limit number of images to upload (default: 2-3) |
 | `HMAE_LOCAL_MODEL_DIR` | 04 | Path to HMAE checkpoint dir for model registration |

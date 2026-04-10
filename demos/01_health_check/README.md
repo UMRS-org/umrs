@@ -6,7 +6,8 @@ Quick connectivity check for the UMRS server. Works with any deployment
 ## Prerequisites
 
 - UMRS server running (any deployment)
-- Network connectivity (SSH tunnels if remote)
+- Selected connection profile (`umrs-client --output text profile show`)
+- Network connectivity (SSH tunnels if the selected profile uses tunnel mode)
 - `umrs-client` installed and in PATH
 - User config at `~/.config/umrs/users/user1.json`
 
@@ -38,15 +39,18 @@ bash run_demo.sh
 ## Running Manually
 
 ```bash
+# Inspect the effective connection first
+umrs-client --output text profile show
+
 # Check port connectivity
 nc -z localhost 5555 && echo "ZMQ OK"
 curl -sf http://localhost:9000/minio/health/live && echo "MinIO OK"
 
 # Ping the UMRS server
-umrs-client -c ~/.config/umrs/users/user1.json ping
+umrs-client ping
 
 # List configured buckets
-umrs-client -c ~/.config/umrs/users/user1.json list_buckets
+umrs-client list_buckets
 ```
 
 ## Expected Output
@@ -61,4 +65,4 @@ umrs-client -c ~/.config/umrs/users/user1.json list_buckets
 If checks fail, verify that:
 - The UMRS server is running
 - SSH tunnels are active (if remote): ports 5555, 5556, 9000, 8081
-- Your config file has the correct server settings
+- The selected connection profile matches the deployment you are targeting

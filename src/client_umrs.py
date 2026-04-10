@@ -8,9 +8,19 @@ from umrs.core.MessageQueue import MessageQueue
 from umrs.client.metadata import check_and_build_metadata
 from umrs.shared.modality import *
 from umrs.shared.modality import resolve_modality_task
+from umrs.shared.connection_profiles import (
+    discover_connection_profiles,
+    import_connection_profile,
+    resolve_connection,
+    set_current_profile_name,
+)
 from umrs.shared.json_config import load_client_cfg_file
 from umrs.shared.pretty_print import pretty_print_user_cfg
-from umrs.shared.config import get_default_docker_s3cfg
+from umrs.shared.config import (
+    get_default_docker_s3cfg,
+    get_resolved_umrs_cfg_dir,
+    get_users_default_cfg_subdir,
+)
 from glob import glob
 import argparse
 from collections import defaultdict
@@ -25,15 +35,17 @@ STATUS_CHOICES = TaskCmd.status_cmd()
 
 # ======================= Config file auto-discovery =======================
 # Search paths in priority order (first match wins).
+_DEFAULT_CFG_DIR = get_resolved_umrs_cfg_dir()
 _CONFIG_SEARCH_PATHS = [
     "./conf_umrs.json",
-    os.path.expanduser("~/.config/umrs/conf_umrs.json"),
-    os.path.expanduser("~/.config/umrs/users/user_rivault.json"),
+    os.path.join(_DEFAULT_CFG_DIR, get_users_default_cfg_subdir(), "user1.json"),
+    os.path.join(_DEFAULT_CFG_DIR, get_users_default_cfg_subdir(), "user_rivault.json"),
+    os.path.join(_DEFAULT_CFG_DIR, "conf_umrs.json"),
 ]
 
 # Glob for any user JSON in the users directory
 _CONFIG_SEARCH_GLOBS = [
-    os.path.expanduser("~/.config/umrs/users/*.json"),
+    os.path.join(_DEFAULT_CFG_DIR, get_users_default_cfg_subdir(), "*.json"),
 ]
 
 
@@ -47,6 +59,97 @@ def _find_config():
         if matches:
             return matches[0]
     return None
+
+
+def _format_profile_text(connection, selected_profile, errors):
+    lines = [
+        f"mode={connection.mode}",
+        f"server_host={connection.server_host}",
+        f"control_port={connection.control_port}",
+        f"data_base_port={connection.data_base_port}",
+        f"tunnel_mode={str(connection.tunnel_mode).lower()}",
+        f"minio_url={connection.minio_url}",
+        f"rag_url={connection.rag_url}",
+    ]
+    if selected_profile:
+        lines.insert(0, f"profile={selected_profile}")
+    if connection.profile_path:
+        lines.append(f"profile_path={connection.profile_path}")
+    if connection.command_hint:
+        lines.append(f"command_hint={connection.command_hint}")
+    if errors:
+        lines.append(f"profile_errors={len(errors)}")
+    return "\n".join(lines)
+
+
+def _handle_profile_command(args):
+    if args.profile_action == 'list':
+        profiles, errors = discover_connection_profiles()
+        current = None
+        try:
+            connection = resolve_connection(explicit_profile_name=args.profile)
+            current = connection.profile_name
+        except Exception:
+            current = None
+
+        payload = {
+            "profiles": [
+                {
+                    "name": profile.name,
+                    "mode": profile.mode,
+                    "path": profile.path,
+                    "current": profile.name == current,
+                }
+                for profile in profiles
+            ],
+            "errors": errors,
+        }
+        if args.output == 'json':
+            print(api_json(**payload, output_format=args.output))
+        else:
+            if profiles:
+                for profile in profiles:
+                    marker = "*" if profile.name == current else " "
+                    print(f"{marker} {profile.name:20s} {profile.mode:10s} {profile.path}")
+            else:
+                print("No connection profiles found.")
+            for entry in errors:
+                print(f"! {entry['name']}: {entry['error']}")
+        return 0
+
+    if args.profile_action == 'use':
+        path = set_current_profile_name(args.name)
+        if args.output == 'json':
+            print(api_json(message=f"Current connection profile set to '{args.name}'", path=str(path), output_format=args.output))
+        else:
+            print(f"Current connection profile set to '{args.name}'")
+            print(f"path={path}")
+        return 0
+
+    if args.profile_action == 'import':
+        profile = import_connection_profile(args.file, overwrite=args.force)
+        payload = {
+            "message": f"Imported connection profile '{profile.name}'",
+            "name": profile.name,
+            "path": profile.path,
+        }
+        if args.output == 'json':
+            print(api_json(**payload, output_format=args.output))
+        else:
+            print(payload["message"])
+            print(f"path={payload['path']}")
+        return 0
+
+    connection = resolve_connection(explicit_profile_name=args.profile, explicit_server_ip=args.server_ip, explicit_control_port=args.control_port)
+    payload = {
+        "connection": connection.to_dict(),
+        "selected_profile": connection.profile_name,
+    }
+    if args.output == 'json':
+        print(api_json(**payload, output_format=args.output))
+    else:
+        print(_format_profile_text(connection, connection.profile_name, []))
+    return 0
 
 
 # ======================= Helper / API abstractions (new) =======================
@@ -166,8 +269,8 @@ def format_status_text(response_payload, default_key):
 
     return "\n".join(lines)
 
-def action_ping(control_mq, output_format):
-    ready = control_mq.is_server_ready(timeout_ms=2000)
+def action_ping(control_mq, output_format, timeout_ms=2000):
+    ready = control_mq.is_server_ready(timeout_ms=timeout_ms)
     return api_json(server_ready=ready, output_format=output_format)
 
 def action_list_buckets(bucket_cfg, username, output_format):
@@ -215,9 +318,11 @@ def main():
     # Global / legacy flags
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
     parser.add_argument('-c', '--conf', default=None, help='Config file path (auto-discovered from ~/.config/umrs/ if omitted)')
+    parser.add_argument('--profile', default=None, help='Named connection profile to use from the UMRS config directory')
     parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
     parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
-    parser.add_argument('--server-ip', default='127.0.0.1', help='Server IP for ZeroMQ control channel')
+    parser.add_argument('--server-ip', default=None, help='Server IP for ZeroMQ control channel')
+    parser.add_argument('--control-port', type=int, default=None, help='Control port for the ZeroMQ control channel')
     parser.add_argument('--output', choices=['json','text'], default='json', help='Output format for API actions')
     # Removed deprecated auto-add-columns behavior; metadata must be declared in server config
 
@@ -397,15 +502,45 @@ def main():
     mon_p.add_argument('--once', action='store_true', default=False,
                        help='Print dashboard once and exit (no live refresh)')
 
+    profile_p = subparsers.add_parser('profile', help='Connection profile commands (list, show, use, import)')
+    profile_sub = profile_p.add_subparsers(dest='profile_action', required=True)
+    profile_sub.add_parser('list', help='List available connection profiles')
+    profile_sub.add_parser('show', help='Show the effective connection resolved from profile/env/flags')
+    pu_p = profile_sub.add_parser('use', help='Set the current default connection profile')
+    pu_p.add_argument('name', help='Profile name to persist as the current default')
+    pi_p = profile_sub.add_parser('import', help='Import a connection profile JSON file into the UMRS config directory')
+    pi_p.add_argument('file', help='Path to a connection profile JSON file')
+    pi_p.add_argument('--force', action='store_true', default=False, help='Overwrite an existing profile with the same name')
+
 
     args = parser.parse_args()
 
+    if args.action == 'profile':
+        try:
+            sys.exit(_handle_profile_command(args))
+        except Exception as e:
+            print(api_json(status='error', message=str(e), output_format=args.output))
+            sys.exit(1)
+
+    connection = resolve_connection(
+        explicit_profile_name=args.profile,
+        explicit_server_ip=args.server_ip,
+        explicit_control_port=args.control_port,
+    )
+
 
     # Connect to message queue
-    control_mq = MessageQueue(role = "client", queue_type = 'control', server_ip=args.server_ip)
+    control_mq = MessageQueue(
+        role = "client",
+        queue_type = 'control',
+        server_ip=connection.server_host,
+        port=connection.control_port,
+        tunnel_mode=connection.tunnel_mode,
+        prefer_env_server_host=False,
+    )
 
     if not args.no_check_server:
-        if not control_mq.is_server_ready(timeout_ms=5000):
+        if not control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms):
             sys.exit("Server connection timeout...\n"
                      "Cannot continue!"
                      )
@@ -456,7 +591,7 @@ def main():
         # API mode: pre-initialize a data queue for the provided username in action args (if any)
         # Some actions require username (upload_*), ping does not.
         if args.action == 'ping':
-            print(action_ping(control_mq, args.output))
+            print(action_ping(control_mq, args.output, timeout_ms=connection.health_check_timeout_ms))
             control_mq.close()
             sys.exit(0)
         if args.action == 'model':
