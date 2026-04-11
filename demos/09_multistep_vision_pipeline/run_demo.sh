@@ -24,17 +24,19 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="vision_pipeline" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${PIPELINE_BUCKET:-user1-sam3}"
+BUCKET_ALIAS="${PIPELINE_BUCKET:-user1-pipeline}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 IMAGE_DIR="${1:-${SCRIPT_DIR}/../sample_data/images}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
-WORKFLOW_DIR="${SCRIPT_DIR}"
+WORKFLOW_SOURCE_DIR="${SCRIPT_DIR}"
+WORKFLOW_UPLOAD_DIR="$(prepare_workflow_upload_dir "${WORKFLOW_SOURCE_DIR}")"
+trap 'rm -rf "${WORKFLOW_UPLOAD_DIR:-}"' EXIT
 
 banner "Demo 09: Multi-Step Vision Pipeline"
 echo "Config        : ${CONF}"
 echo "Bucket alias  : ${BUCKET_ALIAS}"
 echo "Image dir     : ${IMAGE_DIR}"
-echo "Workflow dir  : ${WORKFLOW_DIR}"
+echo "Workflow dir  : ${WORKFLOW_SOURCE_DIR}"
 echo ""
 
 # ---------- Step 1: Pre-flight ----------
@@ -44,11 +46,8 @@ preflight
 # ---------- Step 2: Upload workflow ----------
 log ""
 log "Step 2: Uploading workflow definition..."
-if $CLIENT upload-workflow "${WORKFLOW_DIR}" 2>/dev/null; then
-    ok "Workflow uploaded"
-else
-    warn "upload-workflow returned non-zero — continuing with existing workflow"
-fi
+$CLIENT upload-workflow "${WORKFLOW_UPLOAD_DIR}" --name "vision-pipeline-demo" 2>&1 | while IFS= read -r line; do log "  $line"; done
+ok "Workflow uploaded"
 
 # Reload to pick up the new workflow
 log "Reloading server configuration..."
@@ -94,6 +93,7 @@ log "    3. Image Statistics – compute per-patch metrics + aggregate report"
 log ""
 log "  This may take several minutes on first run."
 START=$SECONDS
+rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 $CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite
 ELAPSED=$(( SECONDS - START ))

@@ -25,8 +25,14 @@ _apply_umrs_profile_defaults() {
     fi
 
     local profile_json
-    if ! profile_json="$(umrs-client "${connection_args[@]}" --output json profile show 2>/dev/null)"; then
-        return 0
+    if [[ ${#connection_args[@]} -gt 0 ]]; then
+        if ! profile_json="$(umrs-client "${connection_args[@]}" --output json profile show 2>/dev/null)"; then
+            return 0
+        fi
+    else
+        if ! profile_json="$(umrs-client --output json profile show 2>/dev/null)"; then
+            return 0
+        fi
     fi
 
     eval "$(PROFILE_JSON="${profile_json}" python - <<'PY'
@@ -87,6 +93,35 @@ log()  { echo "[${_TAG}] $*"; }
 ok()   { echo "[${_TAG}]   ✓ $1"; }
 warn() { echo "[${_TAG}] WARNING: $*"; }
 die()  { echo "[${_TAG}] ERROR: $*" >&2; exit 1; }
+
+prepare_workflow_upload_dir() {
+    local source_dir="$1"
+    shift || true
+
+    [[ -d "$source_dir" ]] || die "Workflow directory not found: $source_dir"
+    [[ -f "$source_dir/workflow.json" ]] || die "workflow.json not found in $source_dir"
+
+    local staging_dir
+    staging_dir="$(mktemp -d "${TMPDIR:-/tmp}/umrs-workflow.XXXXXX")"
+
+    cp "$source_dir/workflow.json" "$staging_dir/"
+
+    if [[ -d "$source_dir/steps" ]]; then
+        cp -R "$source_dir/steps" "$staging_dir/"
+    fi
+
+    while IFS= read -r -d '' py_file; do
+        cp "$py_file" "$staging_dir/"
+    done < <(find "$source_dir" -maxdepth 1 -type f -name "*.py" -print0)
+
+    local entry
+    for entry in "$@"; do
+        [[ -e "$source_dir/$entry" ]] || die "Workflow asset not found: $source_dir/$entry"
+        cp -R "$source_dir/$entry" "$staging_dir/"
+    done
+
+    printf '%s\n' "$staging_dir"
+}
 
 # --- Banner ---
 banner() {

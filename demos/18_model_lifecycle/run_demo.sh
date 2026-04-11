@@ -17,6 +17,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="model_life" source "${SCRIPT_DIR}/../lib/common.sh"
 
 RESULTS_DIR="${SCRIPT_DIR}/results"
+DEMO_LOCAL_MODEL_UPLOAD="${DEMO_LOCAL_MODEL_UPLOAD:-0}"
 
 banner "Demo 18: Model Lifecycle"
 echo "Config       : ${CONF}"
@@ -51,11 +52,14 @@ ok "Model download requested: $MODEL_REPO"
 # ---------- Step 4: Register a user-scope model ----------
 log ""
 log "Step 4: Registering a user-scope model..."
-
-# Create a minimal model directory
-MODEL_DIR="${RESULTS_DIR}/my_custom_model"
-mkdir -p "$MODEL_DIR"
-cat > "${MODEL_DIR}/config.json" << 'JSON_EOF'
+USER_MODEL_REGISTERED=0
+if [[ "$DEMO_LOCAL_MODEL_UPLOAD" != "1" ]]; then
+    log "  Skipping by default — local model upload requires client/server shared storage."
+    log "  Set DEMO_LOCAL_MODEL_UPLOAD=1 to enable this step when the staging path is shared."
+else
+    MODEL_DIR="${RESULTS_DIR}/my_custom_model"
+    mkdir -p "$MODEL_DIR"
+    cat > "${MODEL_DIR}/config.json" << 'JSON_EOF'
 {
   "model_type": "custom_embedding",
   "hidden_size": 768,
@@ -63,16 +67,18 @@ cat > "${MODEL_DIR}/config.json" << 'JSON_EOF'
   "description": "Demo custom model for lifecycle test"
 }
 JSON_EOF
-echo "dummy model weights" > "${MODEL_DIR}/model.bin"
+    echo "dummy model weights" > "${MODEL_DIR}/model.bin"
 
-$CLIENT model upload "$MODEL_DIR" \
-    --name "demo-custom-model" \
-    --type embedding \
-    --scope user \
-    --description "Custom model for lifecycle demo" \
-    --force 2>&1 \
-    | while IFS= read -r line; do log "  $line"; done
-ok "User model registered: demo-custom-model"
+    $CLIENT model upload "$MODEL_DIR" \
+        --name "demo-custom-model" \
+        --type embedding \
+        --scope user \
+        --description "Custom model for lifecycle demo" \
+        --force 2>&1 \
+        | while IFS= read -r line; do log "  $line"; done
+    ok "User model registered: demo-custom-model"
+    USER_MODEL_REGISTERED=1
+fi
 
 # ---------- Step 5: Verify registration ----------
 log ""
@@ -81,10 +87,12 @@ $CLIENT model list --scope user 2>&1 \
     | while IFS= read -r line; do log "  $line"; done
 
 # Check if our model appears
-if $CLIENT model list --scope user 2>&1 | grep -qi "demo-custom-model"; then
-    ok "demo-custom-model found in user registry"
-else
-    warn "demo-custom-model not found — may need time to index"
+if [[ "$USER_MODEL_REGISTERED" = "1" ]]; then
+    if $CLIENT model list --scope user 2>&1 | grep -qi "demo-custom-model"; then
+        ok "demo-custom-model found in user registry"
+    else
+        warn "demo-custom-model not found — may need time to index"
+    fi
 fi
 
 # ---------- Step 6: Use model for inference (via text embedding) ----------
@@ -115,7 +123,11 @@ log ""
 log "Summary of model lifecycle:"
 log "  ✓ Listed existing system and user models"
 log "  ✓ Downloaded system-scope model: ${MODEL_REPO}"
-log "  ✓ Registered user-scope model: demo-custom-model"
+if [[ "$USER_MODEL_REGISTERED" = "1" ]]; then
+    log "  ✓ Registered user-scope model: demo-custom-model"
+else
+    log "  • Skipped user-scope upload (set DEMO_LOCAL_MODEL_UPLOAD=1 to enable)"
+fi
 log "  ✓ Triggered inference with system model"
 log "  ✓ Verified model registry state"
 

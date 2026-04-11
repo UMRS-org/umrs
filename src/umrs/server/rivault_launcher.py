@@ -80,12 +80,12 @@ def release_backend_job(model_type_key):
         try:
             proc_tunnel.terminate()
             proc_tunnel.wait(timeout=10)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[lifecycle] Warning: failed to terminate SSH tunnel process for '{model_type_key}': {e}")
         try:
             thread_tunnel.join(timeout=5)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[lifecycle] Warning: failed to join SSH tunnel thread for '{model_type_key}': {e}")
     if job_id is not None:
         try:
             subprocess.run(
@@ -488,8 +488,8 @@ def launch_rivault_model(model_cfg):
     try:
         from umrs.orchestrator.site_config import get_site_config
         get_site_config().inject_env(overwrite=False)
-    except Exception:
-        pass  # No site.yaml → existing env vars / script defaults used
+    except Exception as e:
+        print(f"Warning: failed to inject site config: {e}")  # No site.yaml → existing env vars / script defaults used
 
     model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"]
     # --- 0. Check cache ---

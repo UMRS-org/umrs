@@ -12,7 +12,7 @@
       "name": "segment",
       "entrypoint": "segment:SegmentStep",
       "config": {
-        "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
+        "bentoml_url": "http://localhost:11434",
         "prompt": "object",
         "threshold": 0.5,
         "timeout": 600
@@ -44,7 +44,7 @@
     }
   },
   "output": {
-    "return_type": "raw",
+    "return_type": "file",
     "embedding_vector_size": 0
   }
 }

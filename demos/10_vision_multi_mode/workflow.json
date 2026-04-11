@@ -12,7 +12,7 @@
       "name": "segment",
       "entrypoint": "segment_mode:SegmentModeStep",
       "config": {
-        "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
+        "bentoml_url": "http://localhost:11434",
         "model_type": "sam3",
         "prompt": "object",
         "threshold": 0.5,
@@ -23,8 +23,8 @@
       "name": "features",
       "entrypoint": "feature_mode:FeatureModeStep",
       "config": {
-        "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
-        "model_type": "sam3",
+        "bentoml_url": "http://localhost:11434",
+        "model_type": "hmae",
         "feature_layer": "encoder",
         "timeout": 600
       }
@@ -51,7 +51,7 @@
     }
   },
   "output": {
-    "return_type": "raw",
+    "return_type": "file",
     "embedding_vector_size": 0
   }
 }

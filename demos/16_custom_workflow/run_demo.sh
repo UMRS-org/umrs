@@ -3,7 +3,7 @@
 # Demo 16: Custom Server-Side Workflow
 # =============================================================================
 # Demonstrates uploading a custom workflow (workflow.json + step scripts)
-# to the UMRS server, then triggering server-side execution.
+# to the UMRS server and running it through a workflow-backed bucket alias.
 #
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
@@ -17,9 +17,11 @@ DEMO_TAG="custom_wf" source "${SCRIPT_DIR}/../lib/common.sh"
 
 WORKFLOW_DIR="${SCRIPT_DIR}/workflow"
 RESULTS_DIR="${SCRIPT_DIR}/results"
+BUCKET_ALIAS="${TEXT_BUCKET:-user1-custom-text}"
 
 banner "Demo 16: Custom Server-Side Workflow"
 echo "Config       : ${CONF}"
+echo "Bucket alias : ${BUCKET_ALIAS}"
 echo ""
 
 # ---------- Step 1: Pre-flight ----------
@@ -96,7 +98,9 @@ ok "Workflow files created"
 # ---------- Step 3: Upload workflow ----------
 log ""
 log "Step 3: Uploading custom workflow to server..."
-$CLIENT upload-workflow "$WORKFLOW_DIR" --name "custom-text-counter" 2>&1 \
+WORKFLOW_UPLOAD_DIR="$(prepare_workflow_upload_dir "$WORKFLOW_DIR")"
+trap 'rm -rf "${WORKFLOW_UPLOAD_DIR:-}"' EXIT
+$CLIENT upload-workflow "$WORKFLOW_UPLOAD_DIR" --name "custom-text-counter" 2>&1 \
     | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
 
@@ -104,7 +108,6 @@ ok "Workflow uploaded"
 log ""
 log "Step 4: Uploading sample text data..."
 SAMPLE_DIR="${SCRIPT_DIR}/../sample_data/texts"
-BUCKET_ALIAS="${TEXT_BUCKET:-user1-textfiles}"
 
 if [[ -d "$SAMPLE_DIR" ]]; then
     FILE_COUNT=$(find "$SAMPLE_DIR" -maxdepth 1 -type f -name "*.txt" | wc -l | tr -d ' ')
@@ -115,21 +118,12 @@ else
     warn "No sample text data found at $SAMPLE_DIR — using existing bucket data"
 fi
 
-# ---------- Step 5: Trigger workflow execution ----------
+# ---------- Step 5: Wait and collect results ----------
 log ""
-log "Step 5: Triggering server-side workflow execution..."
-$CLIENT run-workflow "custom-text-counter" --bucket "$BUCKET_ALIAS" 2>&1 \
-    | while IFS= read -r line; do log "  $line"; done
-ok "Workflow execution triggered"
-
-# ---------- Step 6: Wait and collect results ----------
-log ""
-log "Step 6: Waiting for workflow to complete..."
-wait_tasks 20 5
-
-log ""
-log "Step 7: Retrieving results..."
-$CLIENT download "$BUCKET_ALIAS" "word_count_results.json" "${RESULTS_DIR}/" 2>/dev/null \
+log "Step 5: Waiting for workflow outputs..."
+rm -rf "$RESULTS_DIR"
+mkdir -p "$RESULTS_DIR"
+$CLIENT download_results "$BUCKET_ALIAS" "${RESULTS_DIR}/" --force-overwrite 2>/dev/null \
     && ok "Results downloaded to ${RESULTS_DIR}/" \
     || warn "Could not download results — check server logs"
 

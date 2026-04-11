@@ -59,8 +59,10 @@ logger = logging.getLogger(__name__)
 # Regex: "module_name:ClassName" — no whitespace, no shell chars.
 _ENTRYPOINT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
 
-# Thread-safe cache for imported step classes: (module_name, script_dir) → class
-_step_class_cache: Dict[Tuple[str, str], Type[Step]] = {}
+# Thread-safe cache for imported step classes.
+# Include the resolved module path and mtime so a workflow re-upload to the
+# same directory invalidates the stale class definition automatically.
+_step_class_cache: Dict[Tuple[str, str, str, Optional[int]], Type[Step]] = {}
 _step_cache_lock = threading.Lock()
 
 
@@ -402,12 +404,6 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> Type[Step]:
 
     module_name, class_name = ep.split(":", 1)
     str_dir = str(script_dir)
-    cache_key = (ep, str_dir)
-
-    with _step_cache_lock:
-        cached = _step_class_cache.get(cache_key)
-        if cached is not None:
-            return cached
 
     # Resolve the module file on disk
     # Support dotted modules: "pkg.sub.mod" -> pkg/sub/mod.py
@@ -416,6 +412,20 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> Type[Step]:
     if not module_file.is_file():
         # Try as a package: pkg/sub/mod/__init__.py
         module_file = script_dir / rel_parts / "__init__.py"
+
+    if module_file.is_file():
+        resolved_module = str(module_file.resolve())
+        module_mtime = module_file.stat().st_mtime_ns
+    else:
+        resolved_module = module_name
+        module_mtime = None
+
+    cache_key = (ep, str_dir, resolved_module, module_mtime)
+
+    with _step_cache_lock:
+        cached = _step_class_cache.get(cache_key)
+        if cached is not None:
+            return cached
 
     if module_file.is_file():
         # Use importlib.util for thread-safe import without sys.path mutation
@@ -462,8 +472,6 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> Type[Step]:
 
     with _step_cache_lock:
         _step_class_cache[cache_key] = cls
-
-    return cls
 
     return cls
 
