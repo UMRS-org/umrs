@@ -102,3 +102,24 @@ def test_active_endpoints_served_model_name_lookup_still_matches_single_endpoint
     payload = response.json()
     assert payload["total"] == 1
     assert payload["endpoints"][0]["job_id"] == "job-1"
+
+
+def test_health_route_is_not_shadowed_by_job_id_route():
+    registry = EndpointRegistry()
+
+    def _get_registry() -> EndpointRegistry:
+        return registry
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _get_registry
+
+    with TestClient(app) as client:
+        response = client.get("/umrs/endpoints/health")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "healthy"
+    assert payload["registry_ok"] is True
