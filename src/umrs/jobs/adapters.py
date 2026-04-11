@@ -114,15 +114,17 @@ class EndpointProvisionBackend(OrchestratorBackend):
             model_entry = _resolve_registered_model(model_name)
             if model_entry:
                 model_path = model_entry.get("storage_ref")
+                served_model_name = model_entry.get("huggingface_id") or model_name
                 requested_env = dict(requested_env)
                 requested_env.setdefault(
                     "VLLM_SERVED_MODEL_NAME",
-                    model_entry.get("huggingface_id") or model_name,
+                    served_model_name,
                 )
                 logger.info(
-                    "Resolved endpoint model %s to %s",
+                    "Resolved endpoint model %s to %s (served as %s)",
                     model_name,
                     model_path,
+                    served_model_name,
                 )
 
         # Determine target host
@@ -169,6 +171,16 @@ class EndpointProvisionBackend(OrchestratorBackend):
 
             # Register endpoint in registry (status=provisioning)
             # Use attempt_id as endpoint ID for correlation
+            endpoint_metadata = {
+                "durable_job_id": job.job_id,
+                "attempt_id": attempt.attempt_id,
+                "attempt_no": attempt.attempt_no,
+            }
+            # Store the served model name so the gateway can discover by either name
+            env_served_name = submit_env.get("VLLM_SERVED_MODEL_NAME")
+            if env_served_name and env_served_name != model_name:
+                endpoint_metadata["served_model_name"] = env_served_name
+
             self.registry.register(
                 project_id=project_id,
                 model=model_name,
@@ -177,11 +189,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 port=port,
                 backend=self.backend_name,
                 ttl_sec=ttl_sec,
-                metadata={
-                    "durable_job_id": job.job_id,
-                    "attempt_id": attempt.attempt_id,
-                    "attempt_no": attempt.attempt_no,
-                },
+                metadata=endpoint_metadata,
             )
 
             logger.info(

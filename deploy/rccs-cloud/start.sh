@@ -353,6 +353,7 @@ echo "=== UMRS stack running ==="
 echo "  postgres:    localhost:5432      (container)"
 echo "  minio:       localhost:9000      (container, console: localhost:9001)"
 echo "  umrs-server: localhost:5555      (native, PID $SERVER_PID)"
+echo "  umrs-http:   localhost:${UMRS_HTTP_PORT:-8082}      (sidecar for endpoint discovery)"
 if [[ "$RAG_ENABLED" = true ]]; then
     echo "  rag-service: localhost:8081      (native, PID $RAG_PID)"
 else
