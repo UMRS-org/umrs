@@ -158,7 +158,11 @@ services:
         source: ${VLLM_PATH_TO_HUGGINGFACE:?}/modules/
         target: /root/.cache/huggingface/modules/
         read_only: false
-    command: ${VLLM_MODEL:?} --served-model-name ${VLLM_MODEL:?} --api-key ${VLLM_API_KEY:?} -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95} --enforce-eager
+      - type: bind
+        source: ${VLLM_HOST_MODEL_PATH:?}
+        target: ${VLLM_CONTAINER_MODEL_PATH:?}
+        read_only: true
+    command: ${VLLM_MODEL_REF:?} --served-model-name ${VLLM_SERVED_MODEL_NAME:?} --api-key ${VLLM_API_KEY:?} -tp ${VLLM_TP:?} -pp ${VLLM_PP:?} --max-model-len ${VLLM_MAX_MODEL_LEN:-4096} --gpu-memory-utilization ${VLLM_GPU_MEM_UTIL:-0.95} --enforce-eager
     environment:
       ##TORCH_USE_RTLD_GLOBAL: 1
       ##VLLM_USE_TRTLLM_ATTENTION: 1

@@ -9,7 +9,7 @@ it can be used instead.
 Supported commands (via TaskCmd):
   MODEL_REGISTER  — register a local model path
   MODEL_LIST      — list all registered models
-  MODEL_DOWNLOAD  — download from HuggingFace in a background thread, then register
+    MODEL_DOWNLOAD  — download from HuggingFace in a background thread, then register
 
 model download has two modes:
   - Client-side (default):  client downloads locally, then sends MODEL_REGISTER
@@ -143,6 +143,7 @@ def _handle_download(client_id: str, payload_str: str) -> str:
 
     repo_id = payload.get("repo_id", "").strip()
     target_name = payload.get("name", "").strip()
+    model_type = payload.get("model_type", "embedding")
     scope = payload.get("scope", "system")
 
     if not repo_id:
@@ -174,7 +175,7 @@ def _handle_download(client_id: str, payload_str: str) -> str:
             register_payload = json.dumps({
                 "name": target_name,
                 "path": os.path.abspath(target_path),
-                "model_type": "embedding",
+                "model_type": model_type,
                 "scope": scope,
                 "huggingface_id": repo_id,
                 "description": f"Downloaded from {repo_id}",

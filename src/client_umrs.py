@@ -434,6 +434,7 @@ def main():
     md_p = model_sub.add_parser('download', help='Download model from HuggingFace and register with UMRS')
     md_p.add_argument('repo_id', help='HuggingFace repository ID (e.g., intfloat/e5-base-v2)')
     md_p.add_argument('--name', default=None, help='Local name (defaults to repo basename)')
+    md_p.add_argument('--type', choices=['llm', 'embedding'], default='embedding', dest='model_type', help='Model type for registration')
     md_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
     md_p.add_argument('--staging-dir', default=None,
                        help='Directory to store downloaded model (default: ~/.config/umrs/models/ or UMRS_MODEL_STAGING_ROOT)')
@@ -620,6 +621,7 @@ def main():
                         payload = _json.dumps({
                             'repo_id': args.repo_id,
                             'name': target_name,
+                            'model_type': args.model_type,
                             'scope': args.scope,
                         })
                         raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_DOWNLOAD, payload)
@@ -654,7 +656,7 @@ def main():
                         payload = _json.dumps({
                             'name': target_name,
                             'path': os.path.abspath(target_path),
-                            'model_type': 'embedding',
+                            'model_type': args.model_type,
                             'scope': args.scope,
                             'huggingface_id': args.repo_id,
                             'description': f'Downloaded from {args.repo_id}',

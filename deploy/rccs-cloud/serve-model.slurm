@@ -124,11 +124,11 @@ export USER_MODEL_PATH="${USER_MODEL_PATH:-/tmp}"
 # VLLM_PATH_TO_HUGGINGFACE: HuggingFace hub cache on Lustre (shared with login)
 # VLLM_MODEL: model to serve via vLLM (must be in HF cache)
 # VLLM_DOCKER_TAG: vLLM image tag for Blackwell GPU (aarch64 + CUDA 13.0)
-# VLLM_GPU_MEM_UTIL: low memory fraction — keep room for BentoML vision
+# VLLM_GPU_MEM_UTIL: reserve headroom for BentoML vision while keeping enough KV cache for 4k-token LLM endpoints
 export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/rccs-dmp/mnagaso/umrs_models/hf}"
 export VLLM_MODEL="${VLLM_MODEL:-intfloat/e5-base-v2}"
 export VLLM_DOCKER_TAG="${VLLM_DOCKER_TAG:-cu130-nightly-aarch64}"
-export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.10}"
+export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.78}"
 
 # ─── Fix HOME (container sets HOME=/root, but job runs as actual user) ────────
 # Inside the umrs-server container HOME=/root. When sbatch is submitted,
@@ -160,11 +160,14 @@ echo "[wrapper] podman-compose ready: $(which podman-compose) — $(podman-compo
 # use $(whoami) to reliably get the current user name.
 _WHOAMI="$(whoami)"
 export USER="${_WHOAMI}"           # inner serve-model.slurm uses ${USER} in storage.conf
-mkdir -p "${HOME}/.config/containers/"
+# Use a STABLE per-user runroot so Podman's graphroot lock never goes stale
+# across Slurm jobs ($XDG_RUNTIME_DIR changes per job, which desyncs the lock).
+_PODMAN_RUNROOT="/tmp/podman-runroot-${_WHOAMI}"
+mkdir -p "${_PODMAN_RUNROOT}" "${HOME}/.config/containers/"
 cat <<EOF > "${HOME}/.config/containers/storage.conf"
 [storage]
 driver="overlay"
-runroot = "${XDG_RUNTIME_DIR}/containers/storage"
+runroot = "${_PODMAN_RUNROOT}"
 rootless_storage_path="/var/tmp/podman_${_WHOAMI}/storage"
 graphroot = "/var/tmp/podman_${_WHOAMI}/storage"
 [storage.options]
@@ -172,6 +175,9 @@ mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
 mountopt="nodev,metacopy=on"
 EOF
+# Migrate Podman's internal DB to match the new storage.conf (lightweight,
+# updates BoltDB without destroying images or layers).
+podman system migrate 2>/dev/null || true
 
 # ─── Vision container image (build on compute node, cache on Lustre) ─────────
 # Use a local image name so podman-compose never tries to pull from GHCR.

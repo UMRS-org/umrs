@@ -62,7 +62,9 @@ network:
 vllm:
   model: intfloat/e5-base-v2
   docker_tag: cu130-nightly-aarch64
-  gpu_mem_util: 0.10
+  # GB10 nodes have 121.63 GiB VRAM; ~97 GiB free after harness services and
+  # vision sidecar initialise CUDA.  0.78 keeps us just under the free ceiling.
+  gpu_mem_util: 0.78
   max_model_len: 4096
   max_num_seqs: 4
   tensor_parallel_size: 1
