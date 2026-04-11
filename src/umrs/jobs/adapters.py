@@ -12,7 +12,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
@@ -24,6 +24,24 @@ if TYPE_CHECKING:
     from umrs.orchestrator.readiness import ReadinessPoller
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_registered_model(model_name: str) -> Optional[Dict[str, Any]]:
+    """Resolve a model name from the native UMRS catalog when no path is supplied."""
+    try:
+        from umrs.server.model_registry_handler import _load_catalog
+    except Exception:
+        logger.debug("Native model catalog unavailable while resolving %s", model_name)
+        return None
+
+    models = _load_catalog().get("models", [])
+    scope_order = {"system": 0, "project": 1, "user": 2}
+    matches = [entry for entry in models if entry.get("name") == model_name]
+    if not matches:
+        return None
+
+    matches.sort(key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99))
+    return matches[0]
 
 
 class EndpointProvisionBackend(OrchestratorBackend):
@@ -91,6 +109,21 @@ class EndpointProvisionBackend(OrchestratorBackend):
         max_model_len = spec.get("max_model_len", 4096)
         ttl_sec = spec.get("ttl_sec", 3600)
         requested_env = spec.get("env_vars") or {}
+
+        if not model_path and model_name:
+            model_entry = _resolve_registered_model(model_name)
+            if model_entry:
+                model_path = model_entry.get("storage_ref")
+                requested_env = dict(requested_env)
+                requested_env.setdefault(
+                    "VLLM_SERVED_MODEL_NAME",
+                    model_entry.get("huggingface_id") or model_name,
+                )
+                logger.info(
+                    "Resolved endpoint model %s to %s",
+                    model_name,
+                    model_path,
+                )
 
         # Determine target host
         target_host = self._determine_target_host()
@@ -276,11 +309,13 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                     models,
                 )
                 self._clear_readiness_tracking(backend_ref)
+                # Transition the endpoint registry status to READY
+                self.registry.mark_ready(backend_ref)
                 return AttemptCheckResult.succeeded(
                     metrics={
                         "host": endpoint.host,
                         "port": endpoint.port,
-                        "endpoint_status": endpoint.status.value,
+                        "endpoint_status": "ready",
                     },
                 )
 

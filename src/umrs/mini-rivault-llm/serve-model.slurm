@@ -56,10 +56,15 @@ mask_secret_state() {
 
 mkdir -p "${HOME}/.config/containers/"
 
+# Use a STABLE per-user runroot so Podman's graphroot lock never goes stale
+# across Slurm jobs.  $XDG_RUNTIME_DIR changes per Slurm job, which causes
+# a runroot / graphroot mismatch and IPAM lease collisions.
+_PODMAN_RUNROOT="/tmp/podman-runroot-${USER}"
+mkdir -p "${_PODMAN_RUNROOT}"
 cat <<EOF > "${HOME}/.config/containers/storage.conf"
 [storage]
 driver="overlay"
-runroot = "${XDG_RUNTIME_DIR}/containers/storage"
+runroot = "${_PODMAN_RUNROOT}"
 rootless_storage_path="/var/tmp/podman_${USER}/storage"
 graphroot = "/var/tmp/podman_${USER}/storage"           # Note: local non-NFS path so overlay works and images persist across jobs
 [storage.options]
@@ -67,11 +72,19 @@ mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
 mountopt="nodev,metacopy=on"
 EOF
+# Migrate Podman's internal DB to match the new storage.conf (lightweight).
+podman system migrate 2>/dev/null || true
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
 cat <<EOF > "./env.${uuid}"
 ###MANDATORY
 VLLM_MODEL=${VLLM_MODEL:-Qwen/Qwen3-0.6B}
+VLLM_MODEL_PATH=${VLLM_MODEL_PATH:-}
+VLLM_MODEL_REF=${VLLM_MODEL_REF:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}
+VLLM_HOST_MODEL_PATH=${VLLM_HOST_MODEL_PATH:-${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}}
+VLLM_CONTAINER_MODEL_PATH=${VLLM_CONTAINER_MODEL_PATH:-/models/user-model}
+VLLM_SERVED_MODEL_NAME=${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}
+VLLM_MAX_MODEL_LEN=${VLLM_MAX_MODEL_LEN:-4096}
 VLLM_PATH_TO_HUGGINGFACE=${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}
 SAM3_MODEL=${SAM3_MODEL:-facebook/sam2-hiera-small}
 VISION_MODEL_PATH=${VISION_MODEL_PATH:-./models/sam3}
@@ -128,6 +141,37 @@ VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
 VLLM_NCCL_MEM_LIMIT=8G
 VLLM_RCCL_MEM_LIMIT=8G
 EOF
+
+if [[ -n "${VLLM_MODEL_PATH:-}" ]]; then
+    python3 - <<'PY' "./env.${uuid}"
+from pathlib import Path
+import sys
+
+env_path = Path(sys.argv[1])
+lines = env_path.read_text().splitlines()
+values = {}
+for line in lines:
+    if not line or line.startswith('#') or '=' not in line:
+        continue
+    key, value = line.split('=', 1)
+    values[key] = value
+
+host_model_path = values.get('VLLM_MODEL_PATH', '')
+if host_model_path:
+    values['VLLM_HOST_MODEL_PATH'] = host_model_path
+    values['VLLM_MODEL_REF'] = values.get('VLLM_CONTAINER_MODEL_PATH', '/models/user-model')
+
+updated = []
+for line in lines:
+    if not line or line.startswith('#') or '=' not in line:
+        updated.append(line)
+        continue
+    key, _ = line.split('=', 1)
+    updated.append(f"{key}={values.get(key, '')}")
+
+env_path.write_text("\n".join(updated) + "\n")
+PY
+fi
 
 GPUoverride=()
 _GPU_OVERRIDE_FILE=""
@@ -214,6 +258,30 @@ if podman network exists genai-private-net 2>/dev/null; then
 	podman network rm -f genai-private-net || { echo "[rivault] ERROR: cannot remove genai-private-net"; exit 1; }
 fi
 
+# Purge stale rootless Podman IPAM leases so newly created containers can bind
+# their fixed IPs without collisions from dead containers.
+# In Slurm environments, the runRoot Podman actually uses may differ from
+# $XDG_RUNTIME_DIR because the graphRoot lock caches the path from a previous
+# job.  To be safe, delete ALL ipam.db files owned by us under /tmp/run-user-*.
+_ipam_cleaned=0
+for _db in /tmp/run-user-*/containers/storage/networks/ipam.db; do
+	[[ -f "$_db" ]] || continue
+	if [[ -O "$_db" ]]; then
+		echo "[rivault] removing stale IPAM lease database: $_db"
+		rm -f "$_db"
+		(( _ipam_cleaned++ )) || true
+	fi
+done
+# Also check the runRoot Podman actually reports (belt-and-suspenders)
+_actual_runroot="$(podman info --format '{{.Store.RunRoot}}' 2>/dev/null || true)"
+if [[ -n "$_actual_runroot" && -f "${_actual_runroot%/}/networks/ipam.db" ]]; then
+	echo "[rivault] removing IPAM at actual runRoot: ${_actual_runroot%/}/networks/ipam.db"
+	rm -f "${_actual_runroot%/}/networks/ipam.db"
+	(( _ipam_cleaned++ )) || true
+fi
+[[ $_ipam_cleaned -gt 0 ]] && echo "[rivault] cleaned $_ipam_cleaned IPAM lease file(s)" \
+                            || echo "[rivault] no stale IPAM lease files found"
+
 # Create a fresh genai-private-net, trying candidate subnets until one works
 # NOTE: do NOT use --internal here; rootful podman's conmon port-forwarder
 # cannot relay data across an internal bridge (TCP connects but hangs).
@@ -261,7 +329,7 @@ sed	-e "s@UMRS_S3_BUCKET_PORT@$(/bin/grep '^UMRS_S3_BUCKET_PORT=' "./env.${uuid}
 sed     -e "s@UMRS_S3_BUCKET_HOST@$(/bin/grep '^UMRS_S3_BUCKET_HOST=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	-e "s@CONTAINER_RUNTIME_DNS@$(/bin/grep '^CONTAINER_RUNTIME_DNS=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	"./coredns_fs/coredns.conf" > "./coredns_fs/coredns.conf.${uuid}"
-sed	-e "s@VLLM_MODEL_PLACEHOLDER@$(/bin/grep '^VLLM_MODEL=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
+sed	-e "s@VLLM_SERVED_MODEL_NAME_PLACEHOLDER@$(/bin/grep '^VLLM_SERVED_MODEL_NAME=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
 	"./litellm_fs/config.yaml" > "./litellm_fs/config.yaml.${uuid}"
 
 # Profiles to activate (override via RIVAULT_PROFILES env var)

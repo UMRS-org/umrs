@@ -235,6 +235,24 @@ class TestSubmitJob:
         assert env["RIVAULT_PROFILES"] == "harness vision-bentoml"
         assert env["CUSTOM_FLAG"] == "7"
 
+    def test_submit_separates_model_path_from_served_name(self, backend):
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"77777\n", b"")
+        mock_proc.returncode = 0
+
+        with patch("asyncio.create_subprocess_exec", return_value=mock_proc) as mock_exec:
+            _run(
+                backend.submit_job(
+                    model_path="/models/qwen3-8b",
+                    env={"MODEL_NAME": "Qwen/Qwen3-8B"},
+                )
+            )
+
+        env = mock_exec.call_args.kwargs["env"]
+        assert env["VLLM_MODEL_PATH"] == "/models/qwen3-8b"
+        assert env["VLLM_SERVED_MODEL_NAME"] == "Qwen/Qwen3-8B"
+        assert env["VLLM_MODEL"] == "Qwen/Qwen3-8B"
+
     def test_submit_selects_one_active_partition_from_candidates(self, slurm_script, output_dir):
         site = SiteConfig(
             name="test-site",

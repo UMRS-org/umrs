@@ -206,7 +206,14 @@ class SlurmPodmanBackend(OrchestratorBackend):
                 }
             )
         if model_path:
+            # The RCCS wrapper needs a filesystem path for offline model loading,
+            # while LiteLLM should still expose a stable user-facing model name.
+            served_model_name = env_overrides.get("VLLM_SERVED_MODEL_NAME") or env_overrides.get(
+                "MODEL_NAME"
+            ) or model_path
             env_overrides["VLLM_MODEL_PATH"] = model_path
+            env_overrides["VLLM_SERVED_MODEL_NAME"] = served_model_name
+            env_overrides["VLLM_MODEL"] = served_model_name
         if selected_partition:
             env_overrides["SLURM_PARTITION"] = selected_partition
         env_overrides.update(
