@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/endpoints", tags=["endpoints"])
 
+_DEFAULT_PROVISION_MODEL_PATH = "/models/rivault-gpt-oss"
+
 
 # =============================================================================
 # Request/Response Models
@@ -106,7 +108,10 @@ class ProvisionRequest(BaseModel):
 
     project_id: str = Field(..., description="Project/tenant identifier")
     model: str = Field(..., description="Model name")
-    model_path: str = Field("/models/rivault-gpt-oss", description="Path to model files")
+    model_path: Optional[str] = Field(
+        None,
+        description="Optional path to model files. If omitted, resolve from the registered model catalog.",
+    )
     ttl_sec: int = Field(3600, ge=60, description="TTL in seconds")
     gpu_count: int = Field(1, ge=1, description="Number of GPUs")
     max_model_len: int = Field(4096, ge=512, description="Max context length")
@@ -207,20 +212,66 @@ def get_project_id_optional(
     return None
 
 
-def _resolve_served_model_name(model_name: str) -> Optional[str]:
+def _resolve_served_model_name(
+    model_name: str,
+    model_entry: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     """Resolve served_model_name from model catalog (huggingface_id)."""
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    if entry:
+        return entry.get("huggingface_id")
+    return None
+
+
+def _resolve_registered_model_entry(model_name: str) -> Optional[Dict[str, Any]]:
+    """Resolve a registered model entry from the UMRS catalog."""
     try:
         from umrs.server.model_registry_handler import _load_catalog
 
-        catalog = _load_catalog()
-        for entry in catalog.get("models", []):
-            if entry.get("name") == model_name:
-                hf_id = entry.get("huggingface_id")
-                if hf_id:
-                    return hf_id
+        matches = [
+            entry for entry in _load_catalog().get("models", []) if entry.get("name") == model_name
+        ]
+        if not matches:
+            return None
+
+        scope_order = {"system": 0, "project": 1, "user": 2}
+        matches.sort(key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99))
+        return matches[0]
     except Exception as e:
-        logger.debug(f"Failed to resolve served_model_name for {model_name}: {e}")
+        logger.debug(f"Failed to resolve model entry for {model_name}: {e}")
     return None
+
+
+def _resolve_requested_model_path(
+    model_name: str,
+    model_path: Optional[str],
+    model_entry: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Resolve the actual model storage path for endpoint provisioning."""
+    normalized_path = model_path.strip() if model_path else None
+    if normalized_path and normalized_path != _DEFAULT_PROVISION_MODEL_PATH:
+        return normalized_path
+
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    if entry and entry.get("storage_ref"):
+        return entry["storage_ref"]
+
+    if model_name.startswith("/"):
+        return model_name
+
+    return None
+
+
+def _resolve_readiness_probe_mode(
+    model_name: str,
+    model_entry: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Resolve the readiness probe mode for a provisioned endpoint."""
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    model_type = str(entry.get("model_type", "")).lower() if entry else ""
+    if model_type == "llm":
+        return "chat"
+    return "models"
 
 
 def _enrich_endpoint_response(ep_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -230,6 +281,13 @@ def _enrich_endpoint_response(ep_dict: Dict[str, Any]) -> Dict[str, Any]:
         if served:
             ep_dict["served_model_name"] = served
     return ep_dict
+
+
+def _is_all_models_query(model: Optional[str]) -> bool:
+    """Return True when the caller is requesting all visible models."""
+    if model is None:
+        return True
+    return model.strip() in {"", "*"}
 
 
 # =============================================================================
@@ -260,9 +318,11 @@ async def get_active_endpoints(
 ) -> EndpointsListResponse:
     """Get active (ready) endpoints for the project."""
 
+    normalized_model = model.strip() if model else None
+
     # If specific model requested, try to get that endpoint
-    if model:
-        endpoint = registry.get(project_id, model, prefer_warm=True)
+    if not _is_all_models_query(normalized_model):
+        endpoint = registry.get(project_id, normalized_model, prefer_warm=True)
         if not endpoint:
             # Try matching by served_model_name in metadata
             all_eps = registry.list_all(
@@ -273,7 +333,7 @@ async def get_active_endpoints(
                 served = ep.metadata.get("served_model_name")
                 if not served:
                     served = _resolve_served_model_name(ep.model)
-                if served == model:
+                if served == normalized_model:
                     endpoint = ep
                     break
         if endpoint:
@@ -629,16 +689,44 @@ async def provision_endpoint(
 
     # Trigger new provisioning
     service = get_orchestration_service()
+    model_entry = _resolve_registered_model_entry(request.model)
+    resolved_model_path = _resolve_requested_model_path(
+        request.model,
+        request.model_path,
+        model_entry=model_entry,
+    )
+    if not resolved_model_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unable to resolve model path for '{request.model}'. "
+                "Register the model in the catalog or provide model_path explicitly."
+            ),
+        )
+
+    request_metadata: Dict[str, Any] = {
+        "readiness_probe": _resolve_readiness_probe_mode(
+            request.model,
+            model_entry=model_entry,
+        )
+    }
+    served_model_name = _resolve_served_model_name(
+        request.model,
+        model_entry=model_entry,
+    )
+    if served_model_name and served_model_name != request.model:
+        request_metadata["served_model_name"] = served_model_name
 
     # Create provision request
     service_request = ServiceProvisionRequest(
         project_id=request.project_id,
         model=request.model,
-        model_path=request.model_path,
+        model_path=resolved_model_path,
         ttl_sec=request.ttl_sec,
         gpu_count=request.gpu_count,
         max_model_len=request.max_model_len,
         prefer_warm=request.prefer_warm,
+        metadata=request_metadata,
     )
 
     try:

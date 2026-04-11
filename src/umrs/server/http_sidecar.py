@@ -26,7 +26,7 @@ def _create_app():
     """Create a minimal FastAPI app mounting endpoint-related routers."""
     from fastapi import FastAPI
 
-    from umrs.api import endpoints_router
+    from umrs.api import endpoints_router, jobs_router
 
     app = FastAPI(
         title="UMRS Endpoint Discovery API",
@@ -36,6 +36,19 @@ def _create_app():
     )
 
     app.include_router(endpoints_router)
+    app.include_router(jobs_router)
+
+    # Initialize the job store so the jobs router can serve requests.
+    try:
+        from umrs.api.jobs import set_job_store
+        from umrs.jobs.store import JobStore
+        from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
+
+        db_pool = build_durable_job_db_pool_from_env()
+        set_job_store(JobStore(db_pool))
+        logger.info("Job store initialized for HTTP sidecar")
+    except Exception:
+        logger.warning("Job store unavailable in HTTP sidecar — /umrs/jobs/* will return 503")
 
     @app.get("/health")
     async def health():
