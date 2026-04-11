@@ -24,11 +24,13 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="vision_multi" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${MULTI_BUCKET:-user1-sam3}"
+BUCKET_ALIAS="${MULTI_BUCKET:-user1-multi}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 IMAGE_DIR="${1:-${SCRIPT_DIR}/../sample_data/images}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
-WORKFLOW_DIR="${SCRIPT_DIR}"
+WORKFLOW_SOURCE_DIR="${SCRIPT_DIR}"
+WORKFLOW_UPLOAD_DIR="$(prepare_workflow_upload_dir "${WORKFLOW_SOURCE_DIR}")"
+trap 'rm -rf "${WORKFLOW_UPLOAD_DIR:-}"' EXIT
 
 banner "Demo 10: Multi-Mode Vision Pipeline"
 echo "Config        : ${CONF}"
@@ -43,11 +45,8 @@ preflight
 # ---------- Step 2: Upload workflow ----------
 log ""
 log "Step 2: Uploading workflow definition..."
-if $CLIENT upload-workflow "${WORKFLOW_DIR}" 2>/dev/null; then
-    ok "Workflow uploaded"
-else
-    warn "upload-workflow returned non-zero — continuing with existing workflow"
-fi
+$CLIENT upload-workflow "${WORKFLOW_UPLOAD_DIR}" --name "vision-multi-mode" 2>&1 | while IFS= read -r line; do log "  $line"; done
+ok "Workflow uploaded"
 
 $CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
 sleep 3
@@ -89,6 +88,7 @@ log "    • features  — embedding extraction (GPU)"
 log "    • thumbnails — image resizing (CPU)"
 log ""
 START=$SECONDS
+rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 $CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite
 ELAPSED=$(( SECONDS - START ))
@@ -101,7 +101,12 @@ banner "Demo 10 Complete"
 
 log "Output structure:"
 for subdir in segment features thumbnails; do
-    count=$(find "${RESULTS_DIR}/${subdir}" -type f 2>/dev/null | wc -l | tr -d ' ')
+    subdir_path="${RESULTS_DIR}/${subdir}"
+    if [[ -d "$subdir_path" ]]; then
+        count=$(find "$subdir_path" -type f | wc -l | tr -d ' ')
+    else
+        count=0
+    fi
     log "  ${subdir}/ — ${count} files"
 done
 

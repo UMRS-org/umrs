@@ -250,6 +250,8 @@ def _handle_maintenance_command(active_threads, cmd, client_id, buckets_cfg, dev
     elif cmd == TaskCmd.RELOAD:
         outcome = reload_configuration(configure_file, buckets_cfg, user_config_map, log_output=ENABLE_PRETTY_PRINT)
         filter_outcome(active_threads, outcome, buckets_cfg, key)
+        if "error" in outcome:
+            return False  # Signal error to caller
         return None
     else:
         print(f"====> Error: unknown command '{cmd}' returned by maintenance handler")
@@ -311,9 +313,9 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
             filtered_store = buckets_cfg.build_dict_for_user(client_id)
             summary = pretty_print_cfg({"buckets_cfg": filtered_store}, print_output=False)
             return {"summary": summary}
-    except Exception:
+    except Exception as e:
         # If filtering fails for any reason, fall back to original outcome but do not raise
-        pass
+        print(f"Warning: failed to filter outcome for client '{client_id}': {e}")
     return outcome
 
 
@@ -353,9 +355,9 @@ def perform_initial_config(configure_file, status_store):
     # Align MessageQueue debug with server pretty-print setting (off by default)
     try:
         control_mq.set_debug(ENABLE_PRETTY_PRINT)
-    except Exception:
-        # Debug flag is optional; ignore failures setting it
-        pass
+    except Exception as e:
+        # Debug flag is optional; log but do not raise
+        print(f"Warning: failed to set debug mode on control queue: {e}")
     print ("Subscribed to zeroMQ message queue")
 
     for user in users:
@@ -387,8 +389,8 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
                 conn = entry.s3_connection
                 if conn:
                     conn.close()
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"Warning: failed to close S3 connection during reload: {e}")
 
         for u in new_users:
             create_s3_sql_users(u, new_admin_s3_cfg)
@@ -523,7 +525,7 @@ def _handle_upload_workflow(client_id, zip_path, workflow_name):
             wf_entry = candidates[0]
             try:
                 wf_data = json.loads(zf.read(wf_entry))
-                wf = WorkflowDefinition.from_dict(wf_data)
+                WorkflowDefinition.from_dict(wf_data)
                 # Override source to UPLOADED type pointing to dest_dir
                 # (validation of original source is skipped — we rewrite it)
             except (json.JSONDecodeError, KeyError, ValueError) as e:
@@ -554,7 +556,21 @@ def _handle_upload_workflow(client_id, zip_path, workflow_name):
         if os.path.isfile(actual_wf):
             with open(actual_wf, "r", encoding="utf-8") as fh:
                 wf_data = json.load(fh)
-            wf_data["source"] = {"type": "uploaded", "path": dest_dir}
+
+            source_cfg = wf_data.get("source") or {}
+            source_path = source_cfg.get("path") or "."
+            if os.path.isabs(source_path):
+                resolved_source = os.path.realpath(source_path)
+            else:
+                resolved_source = os.path.realpath(os.path.join(dest_dir, source_path))
+
+            dest_root = os.path.realpath(dest_dir)
+            if not resolved_source.startswith(dest_root):
+                return False, None, f"Workflow source path escapes extracted directory: {source_path}"
+            if not os.path.isdir(resolved_source):
+                return False, None, f"Workflow source directory missing after extraction: {resolved_source}"
+
+            wf_data["source"] = {"type": "uploaded", "path": resolved_source}
             with open(actual_wf, "w", encoding="utf-8") as fh:
                 json.dump(wf_data, fh, indent=2)
     except zipfile.BadZipFile:
@@ -565,8 +581,8 @@ def _handle_upload_workflow(client_id, zip_path, workflow_name):
         # Clean up the uploaded temp zip
         try:
             os.remove(zip_path)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: failed to clean up zip file '{zip_path}': {e}")
 
     print(f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}")
     return True, dest_dir, None
@@ -622,8 +638,8 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
         # Remove original temp upload
         try:
             os.remove(tmp_path)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: failed to clean up temp file '{tmp_path}': {e}")
         print(f"Stored updated user config for '{username}' at '{dest_path}'")
     except Exception as e:
         print(f"Warning: failed to persist uploaded config to '{dest_path}': {e}")
@@ -683,7 +699,11 @@ def process_s3_objects(active_threads, s3_objects, buckets_cfg, device, embeddin
 
 
         with reentrant_lock:
-            should_process = store_embeddings_flag or (model is not None and getattr(model, 'return_type', None) == 'file')
+            should_process = (
+                store_embeddings_flag
+                or (model is not None and getattr(model, 'return_type', None) == 'file')
+                or (model is not None and getattr(model, 'type', None) in ('user_script', 'user_workflow'))
+            )
             if should_process:
                 if exit_status != TaskStatus.ERROR:
                     if update_status_callback:
@@ -803,6 +823,8 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                                                             update_status_callback=update_status_func)
                 if thread_ident is None:
                     update_status_func(TaskStatus.COMPLETED)
+                elif thread_ident is False:
+                    update_status_func(TaskStatus.ERROR)
                 else:
                     task_manager.associate_thread_with_task(thread_ident, task_id)
 
@@ -938,8 +960,8 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
             task_manager.active_threads.close()
             task_manager.tasks_status.close()
             control_mq.close()
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"Warning: error during shutdown cleanup: {e}")
         sys.exit(1)
 
 def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_backend, configure_file, server_cfg):

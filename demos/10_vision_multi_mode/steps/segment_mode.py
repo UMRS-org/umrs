@@ -15,33 +15,44 @@ Config:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
-import time
+import sys
+from pathlib import Path
 from typing import Any, Dict, List
-
-import bentoml
 
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
+_HELPER_MODULE_NAME = "_umrs_demo10_rivault_vision"
+_helper = sys.modules.get(_HELPER_MODULE_NAME)
+if _helper is None:
+    _helper_path = Path(__file__).with_name("_rivault_vision.py")
+    _helper_spec = importlib.util.spec_from_file_location(
+        _HELPER_MODULE_NAME,
+        _helper_path,
+    )
+    if _helper_spec is None or _helper_spec.loader is None:
+        raise ImportError(f"Cannot load helper module from {_helper_path}")
+    _helper = importlib.util.module_from_spec(_helper_spec)
+    sys.modules[_HELPER_MODULE_NAME] = _helper
+    _helper_spec.loader.exec_module(_helper)
+
+get_rivault_model = _helper.get_rivault_model
+
 
 class SegmentModeStep(Step):
-    """Run segmentation model for object detection."""
+    """Run segmentation through the RiVault-backed SAM3 adapter."""
 
     name = "segment_mode"
 
     def setup(self, config: Dict[str, Any]) -> None:
-        self.client = bentoml.SyncHTTPClient(
-            config["bentoml_url"].rstrip("/"),
-            server_ready_timeout=60,
-        )
         self.model_type = config.get("model_type", "sam3")
         self.prompt = config.get("prompt", "object")
         self.threshold = config.get("threshold", 0.5)
-        self.poll_interval = config.get("poll_interval", 2.0)
-        self.timeout = config.get("timeout", 300)
+        self._model = None
 
     def run(self, ctx: StepContext) -> StepResult:
         output_keys: List[str] = []
@@ -51,26 +62,7 @@ class SegmentModeStep(Step):
         for idx, key in enumerate(ctx.input_keys):
             logger.info("[%d/%d] Segment mode: %s", idx + 1, len(ctx.input_keys), key)
 
-            image_url = f"s3://{ctx.input_bucket}/{key}"
-            task = self.client.infer.submit(
-                model_type=self.model_type,
-                inference_config={"prompt": self.prompt, "threshold": self.threshold},
-                image_url=image_url,
-            )
-
-            deadline = time.time() + self.timeout
-            while time.time() < deadline:
-                status = task.get_status()
-                if status.state in ("SUCCESS", "FAILED"):
-                    break
-                time.sleep(self.poll_interval)
-
-            result = {}
-            if status.state == "SUCCESS":
-                raw = task.get()
-                result = raw if isinstance(raw, dict) else {"raw": str(raw)}
-            else:
-                result = {"error": f"Task {status.state} after {self.timeout}s"}
+            result, checksum = self._run_inference(ctx, key)
 
             base = key.rsplit(".", 1)[0] if "." in key else key
             meta = {
@@ -91,7 +83,7 @@ class SegmentModeStep(Step):
             )
             output_keys.append(out_key)
             metadata_list.append(meta)
-            checksums.append("")
+            checksums.append(checksum)
 
         return StepResult(
             output_keys=output_keys,
@@ -99,3 +91,34 @@ class SegmentModeStep(Step):
             metadata=metadata_list,
             extra={"mode": "segment", "total_images": len(ctx.input_keys)},
         )
+
+    def _get_model(self):
+        if self._model is None:
+            self._model = get_rivault_model(
+                self.model_type,
+                model_name="SAM3 Segmentation",
+                model_config={
+                    "prompt": self.prompt,
+                    "threshold": self.threshold,
+                },
+            )
+        return self._model
+
+    def _run_inference(self, ctx: StepContext, key: str) -> tuple[Dict[str, Any], str]:
+        try:
+            results, checksums, _, _ = self._get_model().compute_embeddings(
+                ctx.s3,
+                [key],
+                ctx.input_bucket,
+                ctx.output_bucket,
+                skip_existing=False,
+            )
+        except Exception as exc:
+            logger.exception("Segment mode failed for %s", key)
+            return {"error": str(exc)}, ""
+
+        result = results[0] if results else {}
+        if not isinstance(result, dict):
+            result = {"raw": str(result)}
+        checksum = checksums[0] if checksums else ""
+        return result, checksum

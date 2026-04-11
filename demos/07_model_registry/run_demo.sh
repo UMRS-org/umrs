@@ -30,6 +30,7 @@ DEMO_TAG="model_reg" source "${SCRIPT_DIR}/../lib/common.sh"
 # Server-side path where models are stored
 STAGING_ROOT="${UMRS_MODEL_STAGING_ROOT:-/shared/models}"
 REMOTE_HMAE_MODEL_PATH="${UMRS_REMOTE_HMAE_MODEL_PATH:-/shared/models/hmae}"
+DEMO_LOCAL_MODEL_UPLOAD="${DEMO_LOCAL_MODEL_UPLOAD:-0}"
 
 banner "Demo 07: Model Registration & Staging"
 echo ""
@@ -78,19 +79,24 @@ echo ""
 
 # Step 3b: Upload a small test model (created locally)
 log "Step 3b: Uploading a test model via 'model upload'..."
-TEST_MODEL_DIR="${SCRIPT_DIR}/.test_model"
-rm -rf "$TEST_MODEL_DIR"
-mkdir -p "$TEST_MODEL_DIR"
-echo '{"model_type": "test", "framework": "demo"}' > "$TEST_MODEL_DIR/config.json"
-echo "dummy weights" > "$TEST_MODEL_DIR/model.bin"
+if [[ "$DEMO_LOCAL_MODEL_UPLOAD" != "1" ]]; then
+    log "  Skipping by default — local model upload requires client/server shared storage."
+    log "  Set DEMO_LOCAL_MODEL_UPLOAD=1 to enable on deployments where the staging path is shared."
+else
+    TEST_MODEL_DIR="${SCRIPT_DIR}/.test_model"
+    rm -rf "$TEST_MODEL_DIR"
+    mkdir -p "$TEST_MODEL_DIR"
+    echo '{"model_type": "test", "framework": "demo"}' > "$TEST_MODEL_DIR/config.json"
+    echo "dummy weights" > "$TEST_MODEL_DIR/model.bin"
 
-$CLIENT model upload "$TEST_MODEL_DIR" \
-    --name "test-upload-model" \
-    --type embedding --scope user \
-    --description "Demo model uploaded via model upload" \
-    --force
-ok "Test model upload complete"
-rm -rf "$TEST_MODEL_DIR"
+    $CLIENT model upload "$TEST_MODEL_DIR" \
+        --name "test-upload-model" \
+        --type embedding --scope user \
+        --description "Demo model uploaded via model upload" \
+        --force
+    ok "Test model upload complete"
+    rm -rf "$TEST_MODEL_DIR"
+fi
 echo ""
 
 # Step 4: List models again to verify

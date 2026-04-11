@@ -77,7 +77,8 @@ def _tar_model_cache(model_name: str, tmp_root: str) -> Optional[str]:
         with tarfile.open(tar_path, "w:gz") as tar:
             tar.add(cache_entry.path, arcname=arcname)
         return tar_path
-    except Exception:
+    except Exception as e:
+        print(f"Warning: failed to create weights tar for '{model_name}': {e}")
         return None
 
 
@@ -93,7 +94,8 @@ def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
         head_resp = requests.head(weights_url, timeout=5)
         if head_resp.status_code == 200:
             return
-    except Exception:
+    except Exception as e:
+        print(f"Warning: failed to check weights endpoint for '{model_name}': {e}")
         return
 
     tar_path = _tar_model_cache(model_name, tmp_root)
@@ -105,7 +107,8 @@ def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
             files = {"file": ("weights.tar", handle, "application/octet-stream")}
             resp = requests.put(weights_url, files=files, timeout=600)
             resp.raise_for_status()
-    except Exception:
+    except Exception as e:
+        print(f"Warning: failed to upload weights for '{model_name}': {e}")
         return
 
 
@@ -232,8 +235,8 @@ def _configure_modality_bucket(
             model_cfg.get("model_name"),
             os.path.dirname(user_cfg["config_file_path"]),
         )
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"Warning: failed to upload weights to RiVault for model '{model_cfg.get('model_name', '?')}': {e}")
 
     if model.return_type == "file":
         assert need_output_bucket

@@ -93,7 +93,10 @@ class UMRSThreads:
 
         thread.start()
 
-        self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
+        try:
+            self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
+        except RuntimeError as exc:
+            print(f"WARNING: Thread {thread.ident} did not register in time for '{key}': {exc}")
         self.thread_list.append(thread)
         return thread.ident
 
@@ -229,7 +232,9 @@ class UMRSThreads:
             }
 
         # print(f"{thread_ident=}\n\t{thread_id=}\n\t{ThreadStatus.RUNNING}" )
-        self.record_status_for_users_by_key([user], key)
+        users = sorted({work["user"] for work in array_of_works if work.get("user")})
+        if users:
+            self.record_status_for_users_by_key(users, key)
 
     def is_worker_thread(self):
         current_thread = threading.current_thread()

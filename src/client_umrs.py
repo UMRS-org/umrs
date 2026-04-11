@@ -598,6 +598,7 @@ def main():
             # Model registry commands — no config file required, uses ZMQ directly
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
             model_action = args.model_action
+            exit_code = 0
             try:
                 if model_action == 'register':
                     payload = _json.dumps({
@@ -698,6 +699,12 @@ def main():
 
                 if args.output == 'json':
                     print(raw)
+                    try:
+                        parsed = _json.loads(raw)
+                        if parsed.get('status') != 'ok':
+                            exit_code = 1
+                    except Exception:
+                        exit_code = 1
                 else:
                     parsed = _json.loads(raw)
                     if parsed.get('status') == 'ok':
@@ -713,17 +720,20 @@ def main():
                             print(f"OK: {parsed.get('message', '')}")
                     else:
                         print(f"Error: {parsed.get('message', 'unknown error')}")
+                        exit_code = 1
             except Exception as e:
+                exit_code = 1
                 print(api_json(status='error', action='model', message=str(e), output_format=args.output))
                 if args.verbose:
                     traceback.print_exc()
             finally:
                 control_mq.close()
-            sys.exit(0)
+            sys.exit(exit_code)
         if args.action == 'job':
             # Job tracking commands — no config file required
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
             job_action = args.job_action
+            exit_code = 0
             try:
                 if job_action == 'submit':
                     try:
@@ -748,19 +758,27 @@ def main():
 
                 if args.output == 'json':
                     print(raw)
+                    try:
+                        parsed = _json.loads(raw)
+                        if parsed.get('status') != 'ok':
+                            exit_code = 1
+                    except Exception:
+                        exit_code = 1
                 else:
                     parsed = _json.loads(raw)
                     if parsed.get('status') == 'ok':
                         print(f"OK: {parsed.get('message', '')}")
                     else:
                         print(f"Error: {parsed.get('message', 'unknown error')}")
+                        exit_code = 1
             except Exception as e:
+                exit_code = 1
                 print(api_json(status='error', action='job', message=str(e), output_format=args.output))
                 if args.verbose:
                     traceback.print_exc()
             finally:
                 control_mq.close()
-            sys.exit(0)
+            sys.exit(exit_code)
         if args.action == 'monitor':
             # TUI jobs dashboard — no config file required
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
@@ -790,6 +808,7 @@ def main():
             # Workflow registry commands — no config file required
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
             wf_action = args.workflow_action
+            exit_code = 0
             try:
                 if wf_action == 'list':
                     filter_payload = {}
@@ -808,6 +827,12 @@ def main():
 
                 if args.output == 'json':
                     print(raw)
+                    try:
+                        parsed = _json.loads(raw)
+                        if parsed.get('status') != 'ok':
+                            exit_code = 1
+                    except Exception:
+                        exit_code = 1
                 else:
                     parsed = _json.loads(raw)
                     if parsed.get('status') == 'ok':
@@ -820,16 +845,19 @@ def main():
                                 print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps} step(s)  {w.get('description','')}")
                     else:
                         print(f"Error: {parsed.get('message', 'unknown error')}")
+                        exit_code = 1
             except Exception as e:
+                exit_code = 1
                 print(api_json(status='error', action='workflow', message=str(e), output_format=args.output))
                 if args.verbose:
                     traceback.print_exc()
             finally:
                 control_mq.close()
-            sys.exit(0)
+            sys.exit(exit_code)
         if args.action == 'upload-workflow':
             import tempfile
             import zipfile
+            exit_code = 0
             # Use the config username when available so the data-queue port
             # matches the one allocated for upload_dir (critical for SSH tunnels
             # that only forward a single data port).
@@ -859,18 +887,25 @@ def main():
                             abs_path = os.path.join(root, f)
                             arc_name = os.path.relpath(abs_path, src_path)
                             zf.write(abs_path, arc_name)
-                # Establish data channel and send the zip
+                # Establish data channel, notify the server to begin receiving,
+                # then stream the zip over the data socket.
                 data_mq = control_mq.get_data_queue(client_id)
                 try:
+                    control_mq.set_timeouts(120_000, 120_000)
+                    control_mq.send_string(f"{TaskCmd.UPLOAD_WORKFLOW}:{client_id}:{workflow_name}")
                     data_mq.send_file(tmp_zip_path)
-                    control_mq.notify_server(client_id, TaskCmd.UPLOAD_WORKFLOW, workflow_name)
+                    _, reply = control_mq.recv_string()
+                    if reply != "ACKNOWLEDGE":
+                        raise RuntimeError(f"Unexpected reply from server during workflow upload: {reply}")
                     print(api_json(action='upload-workflow', workflow_name=workflow_name, accepted=True, output_format=args.output))
                 finally:
+                    control_mq.set_timeouts(control_mq.timeout, control_mq.timeout)
                     try:
                         data_mq.close()
                     except Exception:
                         pass
             except Exception as e:
+                exit_code = 1
                 print(api_json(status='error', action='upload-workflow', message=str(e), output_format=args.output))
                 if args.verbose:
                     traceback.print_exc()
@@ -880,13 +915,14 @@ def main():
                 except Exception:
                     pass
                 control_mq.close()
-            sys.exit(0)
+            sys.exit(exit_code)
         if args.action == 'run-workflow':
             if user and isinstance(user, dict) and user.get('username'):
                 client_id = user['username']
             else:
                 client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
             workflow_name = args.workflow_name
+            exit_code = 0
             try:
                 params = _json.loads(args.params) if args.params else {}
             except _json.JSONDecodeError:
@@ -899,14 +935,29 @@ def main():
             })
             try:
                 raw = control_mq.request_model_command(client_id, TaskCmd.RUN_WORKFLOW, payload)
-                print(raw)
+                if args.output == 'json':
+                    print(raw)
+                    try:
+                        parsed = _json.loads(raw)
+                        if parsed.get('status') != 'ok':
+                            exit_code = 1
+                    except Exception:
+                        exit_code = 1
+                else:
+                    parsed = _json.loads(raw)
+                    if parsed.get('status') == 'ok':
+                        print(f"OK: {parsed.get('message', '')}")
+                    else:
+                        print(f"Error: {parsed.get('message', 'unknown error')}")
+                        exit_code = 1
             except Exception as e:
+                exit_code = 1
                 print(api_json(status='error', action='run-workflow', message=str(e), output_format=args.output))
                 if args.verbose:
                     traceback.print_exc()
             finally:
                 control_mq.close()
-            sys.exit(0)
+            sys.exit(exit_code)
         if args.action == 'list_buckets':
             effective_username = args.username or (user.get('username') if isinstance(user, dict) else None)
             if not effective_username:

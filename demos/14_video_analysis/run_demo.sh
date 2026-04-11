@@ -16,7 +16,7 @@
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - opencv-python-headless and numpy installed (for test video generation)
 #   - A bucket alias with 'movie' modality and 'need_output_bucket: true'
-#     configured in your user config (user1-videos by default).
+#     configured in your user config (user1-video by default).
 #
 # Usage:
 #   bash run_demo.sh                           # generate + analyse test videos
@@ -28,11 +28,13 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="video_analysis" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${VIDEO_BUCKET:-user1-videos}"
+BUCKET_ALIAS="${VIDEO_BUCKET:-user1-video}"
 MAX_VIDEOS="${MAX_VIDEOS:-6}"
 VIDEO_DIR="${1:-}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
-WORKFLOW_DIR="${SCRIPT_DIR}/video_workflow"
+WORKFLOW_SOURCE_DIR="${SCRIPT_DIR}/video_workflow"
+WORKFLOW_UPLOAD_DIR="$(prepare_workflow_upload_dir "${WORKFLOW_SOURCE_DIR}")"
+trap 'rm -rf "${WORKFLOW_UPLOAD_DIR:-}"' EXIT
 
 banner "Demo 14: Video Motion Analysis"
 echo "Config        : ${CONF}"
@@ -83,11 +85,8 @@ fi
 # ---------- Step 3: Upload workflow ----------
 log ""
 log "Step 3: Uploading video analysis workflow..."
-if $CLIENT upload-workflow "${WORKFLOW_DIR}" 2>/dev/null; then
-    ok "Workflow uploaded"
-else
-    warn "upload-workflow returned non-zero — continuing with existing workflow"
-fi
+$CLIENT upload-workflow "${WORKFLOW_UPLOAD_DIR}" --name "video-motion-analysis" 2>&1 | while IFS= read -r line; do log "  $line"; done
+ok "Workflow uploaded"
 $CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
 sleep 3
 
@@ -102,6 +101,7 @@ log ""
 log "Step 5: Waiting for motion analysis to complete..."
 log "  (Frame differencing — CPU only, should be fast)"
 START=$SECONDS
+rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 $CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite
 ELAPSED=$(( SECONDS - START ))

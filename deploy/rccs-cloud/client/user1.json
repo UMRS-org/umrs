@@ -122,6 +122,88 @@
           }
         }
       ]
+    },
+    {
+      "xp_name": "Workflow Demos",
+      "sql_username": "usr1_workflow",
+      "modalities": [
+        {
+          "modality_name": "image",
+          "s3": {
+            "bucket_alias": "user1-pipeline",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "image/jpeg" }
+          },
+          "model": {
+            "model_name": "Vision Pipeline Demo",
+            "vector_size": "0",
+            "model_type": "user_script://vision-pipeline-demo/workflow.json",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "vision_pipeline",
+            "meta_data": []
+          }
+        },
+        {
+          "modality_name": "image",
+          "s3": {
+            "bucket_alias": "user1-multi",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "image/jpeg" }
+          },
+          "model": {
+            "model_name": "Vision Multi-Mode Demo",
+            "vector_size": "0",
+            "model_type": "user_script://vision-multi-mode/workflow.json",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "vision_multi",
+            "meta_data": []
+          }
+        },
+        {
+          "modality_name": "movie",
+          "s3": {
+            "bucket_alias": "user1-video",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "video/mp4" }
+          },
+          "model": {
+            "model_name": "Video Motion Analysis",
+            "vector_size": "0",
+            "model_type": "user_script://video-motion-analysis/workflow.json",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "video_motion",
+            "meta_data": []
+          }
+        },
+        {
+          "modality_name": "text file",
+          "s3": {
+            "bucket_alias": "user1-custom-text",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "text/plain" }
+          },
+          "model": {
+            "model_name": "Custom Text Counter",
+            "vector_size": "0",
+            "model_type": "user_script://custom-text-counter/workflow.json",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "custom_text_workflow",
+            "meta_data": []
+          }
+        }
+      ]
     }
   ]
 }

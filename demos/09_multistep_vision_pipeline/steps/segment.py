@@ -20,32 +20,44 @@ Config:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
-import time
+import sys
+from pathlib import Path
 from typing import Any, Dict, List
-
-import bentoml
 
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
 
+_HELPER_MODULE_NAME = "_umrs_demo09_rivault_vision"
+_helper = sys.modules.get(_HELPER_MODULE_NAME)
+if _helper is None:
+    _helper_path = Path(__file__).with_name("_rivault_vision.py")
+    _helper_spec = importlib.util.spec_from_file_location(
+        _HELPER_MODULE_NAME,
+        _helper_path,
+    )
+    if _helper_spec is None or _helper_spec.loader is None:
+        raise ImportError(f"Cannot load helper module from {_helper_path}")
+    _helper = importlib.util.module_from_spec(_helper_spec)
+    sys.modules[_HELPER_MODULE_NAME] = _helper
+    _helper_spec.loader.exec_module(_helper)
+
+get_rivault_model = _helper.get_rivault_model
+
 
 class SegmentStep(Step):
-    """Detect regions via BentoML vision model."""
+    """Detect regions via a lazily launched RiVault vision model."""
 
     name = "segment"
 
     def setup(self, config: Dict[str, Any]) -> None:
-        self.client = bentoml.SyncHTTPClient(
-            config["bentoml_url"].rstrip("/"),
-            server_ready_timeout=60,
-        )
+        self.model_type = config.get("model_type", "sam3")
         self.prompt = config.get("prompt", "object")
         self.threshold = config.get("threshold", 0.5)
-        self.poll_interval = config.get("poll_interval", 2.0)
-        self.timeout = config.get("timeout", 300)
+        self._model = None
 
     def run(self, ctx: StepContext) -> StepResult:
         output_keys: List[str] = []
@@ -58,8 +70,7 @@ class SegmentStep(Step):
                 idx + 1, len(ctx.input_keys), key, self.prompt,
             )
 
-            image_url = f"s3://{ctx.input_bucket}/{key}"
-            result = self._submit_and_poll(image_url)
+            result, checksum = self._run_inference(ctx, key)
 
             base = key.rsplit(".", 1)[0] if "." in key else key
             meta = {
@@ -80,12 +91,7 @@ class SegmentStep(Step):
             )
             output_keys.append(meta_key)
             metadata_list.append(meta)
-
-            try:
-                head = ctx.head_object(key)
-                checksums.append(head.get("ETag", "").strip('"'))
-            except Exception:
-                checksums.append("")
+            checksums.append(checksum)
 
             logger.info("  → %d objects detected", meta["num_objects"])
 
@@ -101,30 +107,33 @@ class SegmentStep(Step):
             },
         )
 
-    def _submit_and_poll(self, image_url: str) -> Dict[str, Any]:
-        """Submit vision task and poll until completion."""
-        try:
-            task = self.client.infer.submit(
-                model_type="sam3",
-                inference_config={
+    def _get_model(self):
+        if self._model is None:
+            self._model = get_rivault_model(
+                self.model_type,
+                model_name="SAM3 Segmentation",
+                model_config={
                     "prompt": self.prompt,
                     "threshold": self.threshold,
                 },
-                image_url=image_url,
+            )
+        return self._model
+
+    def _run_inference(self, ctx: StepContext, key: str) -> tuple[Dict[str, Any], str]:
+        try:
+            results, checksums, _, _ = self._get_model().compute_embeddings(
+                ctx.s3,
+                [key],
+                ctx.input_bucket,
+                ctx.output_bucket,
+                skip_existing=False,
             )
         except Exception as exc:
-            return {"error": str(exc)}
+            logger.exception("Segmentation failed for %s", key)
+            return {"error": str(exc)}, ""
 
-        deadline = time.monotonic() + self.timeout
-        while time.monotonic() < deadline:
-            try:
-                status = task.get_status()
-                if status.value == "success":
-                    return task.get()
-                if status.value in ("failure", "cancelled"):
-                    return {"error": f"Task {task.id} {status.value}"}
-            except Exception as exc:
-                return {"error": str(exc)}
-            time.sleep(self.poll_interval)
-
-        return {"error": f"Task timed out after {self.timeout}s"}
+        result = results[0] if results else {}
+        if not isinstance(result, dict):
+            result = {"raw": str(result)}
+        checksum = checksums[0] if checksums else ""
+        return result, checksum
