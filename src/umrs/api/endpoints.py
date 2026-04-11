@@ -414,27 +414,6 @@ async def register_endpoint(
     return EndpointResponse(**endpoint.to_dict())
 
 
-@router.get(
-    "/{job_id}",
-    response_model=EndpointResponse,
-    summary="Get endpoint by job_id",
-)
-async def get_endpoint(
-    job_id: str,
-    registry: EndpointRegistry = Depends(get_registry),
-) -> EndpointResponse:
-    """Get endpoint details by job_id."""
-
-    endpoint = registry.get_by_job_id(job_id)
-    if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
-        )
-
-    return EndpointResponse(**endpoint.to_dict())
-
-
 @router.put(
     "/{job_id}/status",
     response_model=EndpointResponse,
@@ -613,6 +592,27 @@ async def health_check(
         endpoints=endpoint_details if include_details else [],
         message=message,
     )
+
+
+@router.get(
+    "/{job_id}",
+    response_model=EndpointResponse,
+    summary="Get endpoint by job_id",
+)
+async def get_endpoint(
+    job_id: str,
+    registry: EndpointRegistry = Depends(get_registry),
+) -> EndpointResponse:
+    """Get endpoint details by job_id."""
+
+    endpoint = registry.get_by_job_id(job_id)
+    if not endpoint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Endpoint not found: {job_id}",
+        )
+
+    return EndpointResponse(**endpoint.to_dict())
 
 
 # =============================================================================
