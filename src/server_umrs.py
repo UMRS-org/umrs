@@ -28,6 +28,7 @@ from umrs.inference.embedding_backend import LocalEmbeddingBackend
 from umrs.server.model_registry_handler import handle_model_command
 from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
+from umrs.server.http_sidecar import start_http_sidecar
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env, handle_job_command
 from umrs.shared.config import *
 from umrs.server.config import *
@@ -1102,6 +1103,7 @@ def main():
     task_manager.active_threads.record_status("system", "config", {"summary": cfg_summary})
 
     print("Server is ready to process tasks.")
+    http_thread = start_http_sidecar()
     try:
         server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file, job_command_backend=job_command_backend)
     finally:

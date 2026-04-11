@@ -52,6 +52,7 @@ class EndpointResponse(BaseModel):
     backend: str
     error_message: Optional[str] = None
     litellm_url: str
+    served_model_name: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -206,6 +207,31 @@ def get_project_id_optional(
     return None
 
 
+def _resolve_served_model_name(model_name: str) -> Optional[str]:
+    """Resolve served_model_name from model catalog (huggingface_id)."""
+    try:
+        from umrs.server.model_registry_handler import _load_catalog
+
+        catalog = _load_catalog()
+        for entry in catalog.get("models", []):
+            if entry.get("name") == model_name:
+                hf_id = entry.get("huggingface_id")
+                if hf_id:
+                    return hf_id
+    except Exception as e:
+        logger.debug(f"Failed to resolve served_model_name for {model_name}: {e}")
+    return None
+
+
+def _enrich_endpoint_response(ep_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Add served_model_name to endpoint dict if not already present."""
+    if not ep_dict.get("served_model_name"):
+        served = _resolve_served_model_name(ep_dict["model"])
+        if served:
+            ep_dict["served_model_name"] = served
+    return ep_dict
+
+
 # =============================================================================
 # Endpoints
 # =============================================================================
@@ -228,7 +254,7 @@ def get_project_id_optional(
     """,
 )
 async def get_active_endpoints(
-    model: Optional[str] = Query(None, description="Filter by model name"),
+    model: Optional[str] = Query(None, description="Filter by model name (catalog or served name)"),
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointsListResponse:
@@ -237,9 +263,23 @@ async def get_active_endpoints(
     # If specific model requested, try to get that endpoint
     if model:
         endpoint = registry.get(project_id, model, prefer_warm=True)
+        if not endpoint:
+            # Try matching by served_model_name in metadata
+            all_eps = registry.list_all(
+                project_id=project_id,
+                status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+            )
+            for ep in all_eps:
+                served = ep.metadata.get("served_model_name")
+                if not served:
+                    served = _resolve_served_model_name(ep.model)
+                if served == model:
+                    endpoint = ep
+                    break
         if endpoint:
+            ep_dict = _enrich_endpoint_response(endpoint.to_dict())
             return EndpointsListResponse(
-                endpoints=[EndpointResponse(**endpoint.to_dict())],
+                endpoints=[EndpointResponse(**ep_dict)],
                 total=1,
             )
         return EndpointsListResponse(endpoints=[], total=0)
@@ -251,7 +291,7 @@ async def get_active_endpoints(
     )
 
     return EndpointsListResponse(
-        endpoints=[EndpointResponse(**e.to_dict()) for e in endpoints],
+        endpoints=[EndpointResponse(**_enrich_endpoint_response(e.to_dict())) for e in endpoints],
         total=len(endpoints),
     )
 
