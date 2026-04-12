@@ -2,7 +2,7 @@
 model_list:
   - model_name: VLLM_SERVED_MODEL_NAME_PLACEHOLDER
     litellm_params:
-      model: hosted_vllm/VLLM_SERVED_MODEL_NAME_PLACEHOLDER
+      model: openai/VLLM_SERVED_MODEL_NAME_PLACEHOLDER
       api_key: os.environ/VLLM_API_KEY  # Must match VLLM_API_KEY in serve-model.yaml
       api_base: http://vllm:8000/v1
       keep_alive: 60m

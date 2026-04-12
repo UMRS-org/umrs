@@ -216,15 +216,43 @@ def _resolve_served_model_name(
     model_name: str,
     model_entry: Optional[Dict[str, Any]] = None,
 ) -> Optional[str]:
-    """Resolve served_model_name from model catalog (huggingface_id)."""
+    """Resolve served_model_name from model catalog metadata."""
     entry = model_entry or _resolve_registered_model_entry(model_name)
-    if entry:
-        return entry.get("huggingface_id")
-    return None
+    if not entry:
+        return model_name
+
+    serving_profile = entry.get("serving_profile") or {}
+    served_model_name = serving_profile.get("served_model_name")
+    if served_model_name:
+        return str(served_model_name)
+
+    # Default to the catalog alias. Hugging Face IDs identify the source model,
+    # not necessarily the runtime API name exposed by vLLM.
+    return model_name
 
 
 def _resolve_registered_model_entry(model_name: str) -> Optional[Dict[str, Any]]:
-    """Resolve a registered model entry from the UMRS catalog."""
+    """Resolve a registered model entry from the authoritative UMRS catalog."""
+    try:
+        from ..model_registry.store import AccessContext
+        from .models import get_model_store
+
+        store = get_model_store()
+        matches = [
+            entry.to_dict()
+            for entry in store.list_models(
+                AccessContext(user_id="", is_admin=True),
+                limit=500,
+            )
+            if entry.name == model_name
+        ]
+        if matches:
+            scope_order = {"system": 0, "project": 1, "user": 2}
+            matches.sort(key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99))
+            return matches[0]
+    except Exception as e:
+        logger.debug(f"Failed to resolve model entry from model store for {model_name}: {e}")
+
     try:
         from umrs.server.model_registry_handler import _load_catalog
 
@@ -269,9 +297,9 @@ def _resolve_readiness_probe_mode(
     """Resolve the readiness probe mode for a provisioned endpoint."""
     entry = model_entry or _resolve_registered_model_entry(model_name)
     model_type = str(entry.get("model_type", "")).lower() if entry else ""
-    if model_type == "llm":
-        return "chat"
-    return "models"
+    if model_type == "embedding":
+        return "models"
+    return "chat"
 
 
 def _enrich_endpoint_response(ep_dict: Dict[str, Any]) -> Dict[str, Any]:
@@ -705,10 +733,9 @@ async def provision_endpoint(
         )
 
     request_metadata: Dict[str, Any] = {
-        "readiness_probe": _resolve_readiness_probe_mode(
-            request.model,
-            model_entry=model_entry,
-        )
+        # This route provisions interactive inference endpoints. Require a
+        # successful chat path before exposing the endpoint as ready.
+        "readiness_probe": "chat"
     }
     served_model_name = _resolve_served_model_name(
         request.model,

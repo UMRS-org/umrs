@@ -411,7 +411,7 @@ class OrchestrationService:
             # 6. Wait for readiness (authoritative)
             remaining_timeout = max(1, int(deadline - asyncio.get_running_loop().time()))
             progress("waiting_for_ready", {"timeout": remaining_timeout})
-            readiness_probe = str(request.metadata.get("readiness_probe") or "models")
+            readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
 
             readiness_result = await self._wait_for_ready_with_budget(
                 job_id=job_id,
