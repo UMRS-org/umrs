@@ -218,6 +218,20 @@ class TestLoadSiteConfig:
             cfg = load_site_config()
             assert cfg.name == "test-site"
 
+    def test_search_path_uses_resolved_umrs_config_dir(self, tmp_path, monkeypatch):
+        xdg_root = tmp_path / "xdg"
+        p = xdg_root / "umrs" / "site.yaml"
+        p.parent.mkdir(parents=True)
+        p.write_text(MINIMAL_YAML)
+
+        monkeypatch.delenv("UMRS_SITE_CONFIG", raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_root))
+        monkeypatch.chdir(tmp_path)
+
+        cfg = load_site_config()
+
+        assert cfg.name == "test-site"
+
     def test_search_path_cwd(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "site.yaml").write_text(MINIMAL_YAML)

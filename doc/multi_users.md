@@ -21,6 +21,7 @@ There is a master configuration file that lists all individual user files:
 ```
 	{
       "admin_s3_configuration_file": "~/.s3cfg",
+  "user_files_dir": "json",
       "users": [
         "json/user1.json",
         "json/user2.json"
@@ -131,6 +132,7 @@ To add a new user with their own set of experiments and modalities:
    ```
    {
      "admin_s3_configuration_file": "~/.s3cfg",
+     "user_files_dir": "users_json",
      "users": [
        "users_json/user1.json",
        "users_json/user2.json",

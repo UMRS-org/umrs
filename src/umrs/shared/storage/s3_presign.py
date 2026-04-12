@@ -12,10 +12,11 @@ from __future__ import annotations
 import logging
 import os
 import urllib.request
-from typing import Any, Dict, Optional, Sequence
+from typing import Any, Dict, Sequence
 
 import boto3
 from botocore.config import Config as BotoConfig
+from umrs.shared.config import get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -42,14 +43,14 @@ def _get_presign_endpoint():
 
     Checks (in order):
       1. ``S3_PRESIGN_ENDPOINT`` environment variable
-      2. ``~/.config/umrs/s3_presign_endpoint`` file (first non-empty line)
+            2. ``<resolved UMRS config dir>/s3_presign_endpoint`` file (first non-empty line)
     """
     endpoint = os.environ.get("S3_PRESIGN_ENDPOINT", "")
     if endpoint:
         return endpoint
     # Fallback: read from config file (allows runtime injection without
     # restarting the server process).
-    config_file = os.path.expanduser("~/.config/umrs/s3_presign_endpoint")
+    config_file = get_resolved_umrs_subdir("s3_presign_endpoint")
     try:
         with open(config_file) as f:
             endpoint = f.readline().strip()

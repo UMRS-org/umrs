@@ -1,5 +1,6 @@
 {
    "admin_s3_configuration_file": "~/.s3cfg",
+    "user_files_dir": "~/.config/umrs/users",
     "users": [
     "~/.config/umrs/users/user1.json"
     ]

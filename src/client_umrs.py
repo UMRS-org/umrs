@@ -15,7 +15,6 @@ from umrs.shared.connection_profiles import (
     set_current_profile_name,
 )
 from umrs.shared.json_config import load_client_cfg_file
-from umrs.shared.pretty_print import pretty_print_user_cfg
 from umrs.shared.config import (
     get_default_docker_s3cfg,
     get_resolved_umrs_cfg_dir,
@@ -23,7 +22,6 @@ from umrs.shared.config import (
 )
 from glob import glob
 import argparse
-from collections import defaultdict
 import traceback
 import json as _json
 import time
@@ -285,16 +283,6 @@ def action_list_buckets(bucket_cfg, username, output_format):
             })
     return api_json(buckets=buckets, output_format=output_format)
 
-def perform_upload_text(s3, full_bucket_name, text, data_mq, metadata_args):
-    s3_key = s3_store_txt(s3, full_bucket_name, text, data_mq, metadata_args)
-    return s3_key
-
-def perform_upload_image(s3, full_bucket_name, file_path, data_mq, metadata_args):
-    return s3_store_image(s3, full_bucket_name, file_path, data_mq, metadata_args)
-
-def perform_upload_textfile(s3, full_bucket_name, file_path, data_mq, metadata_args):
-    return s3_store_text_file(s3, full_bucket_name, file_path, data_mq, metadata_args)
-
 def resolve_bucket(bucket_store, bucket_alias):
     entry = find_bucket_entry(bucket_store, bucket_alias)
     return (entry['path_to_bucket'], entry['username'], entry['xp_name'], entry['modality_name'],
@@ -317,7 +305,7 @@ def main():
 
     # Global / legacy flags
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
-    parser.add_argument('-c', '--conf', default=None, help='Config file path (auto-discovered from ~/.config/umrs/ if omitted)')
+    parser.add_argument('-c', '--conf', default=None, help='Config file path (auto-discovered from the resolved UMRS config directory if omitted)')
     parser.add_argument('--profile', default=None, help='Named connection profile to use from the UMRS config directory')
     parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
     parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
@@ -327,7 +315,7 @@ def main():
     # Removed deprecated auto-add-columns behavior; metadata must be declared in server config
 
     # API subcommands
-    ping_p = subparsers.add_parser('ping', help='Check server readiness')
+    subparsers.add_parser('ping', help='Check server readiness')
 
     ui_p = subparsers.add_parser('upload_file', help="Upload file to a bucket (ommit empty lines in case of 'text' modality)")
     ui_p.add_argument('file_path')
@@ -392,7 +380,7 @@ def main():
     subparsers.add_parser('recompute', help='Recompute all embeddings for all buckets (server-side)')
     subparsers.add_parser('update', help='Update embeddings only for missing/mismatched entries (server-side)')
     subparsers.add_parser('check', help='Check consistency between S3 objects and DB (server-side)')
-    rl_p = subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
+    subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
 
     # Export embeddings from pgvector (server-mediated)
     ee_p = subparsers.add_parser('export_embeddings', help='Export computed embeddings to a local file (via server)')
@@ -437,7 +425,7 @@ def main():
     md_p.add_argument('--type', choices=['llm', 'embedding'], default='embedding', dest='model_type', help='Model type for registration')
     md_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
     md_p.add_argument('--staging-dir', default=None,
-                       help='Directory to store downloaded model (default: ~/.config/umrs/models/ or UMRS_MODEL_STAGING_ROOT)')
+                       help='Directory to store downloaded model (default: UMRS_MODEL_STAGING_ROOT or the resolved UMRS models directory)')
     md_p.add_argument('--server-side', action='store_true', default=False,
                        help='Download on the server machine instead of locally (requires server internet access)')
 
@@ -449,7 +437,7 @@ def main():
     mu_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
     mu_p.add_argument('--description', default=None, help='Model description')
     mu_p.add_argument('--staging-dir', default=None,
-                       help='Staging root directory (default: UMRS_MODEL_STAGING_ROOT or ~/.config/umrs/models/)')
+                       help='Staging root directory (default: UMRS_MODEL_STAGING_ROOT or the resolved UMRS models directory)')
     mu_p.add_argument('--register-path', default=None,
                        help='Server-side path to register (use when client and server have different filesystems, e.g. Mac → HPC)')
     mu_p.add_argument('--force', action='store_true', default=False,
@@ -629,8 +617,8 @@ def main():
                         # Client-side download: runs on the login node, then registers with server
                         staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
                         if not staging_root:
-                            from umrs.shared.config import get_default_umrs_cfg_dir
-                            staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
+                            from umrs.shared.config import get_resolved_model_staging_root
+                            staging_root = get_resolved_model_staging_root()
                         target_path = os.path.join(staging_root, target_name)
 
                         # Step 1: Download locally
@@ -671,8 +659,8 @@ def main():
                         sys.exit(1)
                     staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
                     if not staging_root:
-                        from umrs.shared.config import get_default_umrs_cfg_dir
-                        staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
+                        from umrs.shared.config import get_resolved_model_staging_root
+                        staging_root = get_resolved_model_staging_root()
                     target_path = os.path.join(staging_root, args.name)
                     if os.path.exists(target_path):
                         if args.force:
@@ -884,7 +872,7 @@ def main():
                 tmp_zip_path = tmp_zip.name
                 tmp_zip.close()
                 with zipfile.ZipFile(tmp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for root, dirs, files in os.walk(src_path):
+                    for root, _dirs, files in os.walk(src_path):
                         for f in files:
                             abs_path = os.path.join(root, f)
                             arc_name = os.path.relpath(abs_path, src_path)
@@ -1134,7 +1122,7 @@ def main():
     if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
         expanded_cfg = default_docker_s3cfg
 
-    s3, bucket_location = connect_to_s3(expanded_cfg)
+    s3, _ = connect_to_s3(expanded_cfg)
 
     if args.action == "download_results":
         full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
@@ -1160,9 +1148,6 @@ def main():
     if args.verbose :
        action = "Retreiving" if args.action == "download_results" else "Storing"
        print(f"{action} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
-
-    server_notify_result = None
-
 
     def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=True):
         if not os.path.isfile(file_path):
@@ -1319,7 +1304,7 @@ def main():
         # print("Done. Final check...")
         # Do it one more time in case the server finished after the last check
         # get the list of objects on s3 server
-        objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+        objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
         #down load these object talink into account if we force overwrite or not
         downloaded_files, _ = download_objects(s3, objects_list, checksums, args.local_path,
                             files_allready_received=objects_received,
@@ -1343,7 +1328,7 @@ def main():
     action = args.action
     try:
         if action == "upload_file":
-            s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, args.file_path, modality, data_mq, metadata_args, username, notify_server=True)
+            s3_key, _ = process_file(s3, full_bucket_name, subdir, args.file_path, modality, data_mq, metadata_args, username, notify_server=True)
             if s3_key:
                 print(api_json(s3_key=s3_key, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
             else:

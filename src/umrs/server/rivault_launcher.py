@@ -540,7 +540,7 @@ def launch_rivault_model(model_cfg):
     vision_stack = os.environ.get("VISION_STACK", VISION_STACK)
 
     if model_cfg["model_type"].startswith("bentoml://") and vision_stack == "jens":
-        rivault_slurm_script = JENS_RIVAULT_SLURM_SCRIPT
+        rivault_slurm_script = get_jens_rivault_slurm_script()
         print(f"[VISION_STACK=jens] Using Jens's standalone stack: {rivault_slurm_script}")
     else:
         rivault_slurm_script = get_slurm_script_from_host()

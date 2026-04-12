@@ -26,7 +26,7 @@ import threading
 from datetime import datetime
 from typing import Any, Dict
 
-from umrs.shared.config import get_default_umrs_cfg_dir
+from umrs.shared.config import get_resolved_model_staging_root, get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +35,7 @@ _CATALOG_LOCK = threading.Lock()
 
 def _catalog_path() -> str:
     """Return path to the JSON model catalog file."""
-    cfg_dir = get_default_umrs_cfg_dir()
-    return os.path.join(cfg_dir, "model_catalog.json")
+    return get_resolved_umrs_subdir("model_catalog.json")
 
 
 def _load_catalog() -> Dict[str, Any]:
@@ -153,7 +152,7 @@ def _handle_download(client_id: str, payload_str: str) -> str:
 
     staging_root = os.environ.get("UMRS_MODEL_STAGING_ROOT")
     if not staging_root:
-        staging_root = os.path.join(get_default_umrs_cfg_dir(), "models")
+        staging_root = get_resolved_model_staging_root()
     target_path = os.path.join(staging_root, target_name)
 
     def _bg_download():

@@ -133,12 +133,13 @@ Embedding models and GPU model checkpoints are stored in `$MODEL_DIR`.
 This directory must be readable from **both** the login node and all compute
 nodes.  On HPC systems, this is typically a parallel filesystem (Lustre, GPFS).
 
-### Rule 5 — conf_umrs.json paths are relative to CWD
+### Rule 5 — conf_umrs.json paths are relative to the config file
 
-User JSON file paths in `conf_umrs.json` are resolved relative to the working
-directory of the server process.  When running natively, CWD is the
-`deploy/<site>/` directory (set by `start.sh`).  Use `./user_files/...`
-rather than absolute paths.
+`admin_s3_configuration_file`, `user_files_dir`, and each entry in `users`
+are resolved relative to the location of `conf_umrs.json`, not the working
+directory of the server process.  For site deployments, keep using
+`./user_files/...` in the config file and declare `"user_files_dir": "./user_files"`
+so uploaded user JSONs land in the same canonical directory.
 
 ### Rule 6 — Do not containerize the server on Slurm-managed nodes
 
