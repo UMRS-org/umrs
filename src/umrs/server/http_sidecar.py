@@ -26,19 +26,22 @@ def _create_app():
     """Create a minimal FastAPI app mounting the Gateway-facing UMRS routers."""
     from fastapi import FastAPI
 
-    from umrs.api import endpoints_router, jobs_router, models_router, policy_router
+    from umrs.api import endpoints_router, jobs_router, llm_router, mcp_router, models_router, policy_router, rag_router
 
     app = FastAPI(
         title="UMRS Endpoint Discovery API",
-        description="HTTP sidecar for Gateway endpoint discovery",
-        version="0.1.0",
+        description="HTTP sidecar for Gateway endpoint discovery, LLM/RAG/MCP proxy",
+        version="0.3.0",
         docs_url="/docs",
     )
 
     app.include_router(endpoints_router)
     app.include_router(jobs_router)
+    app.include_router(llm_router)
+    app.include_router(mcp_router)
     app.include_router(models_router)
     app.include_router(policy_router)
+    app.include_router(rag_router)
 
     db_pool = None
 
@@ -74,6 +77,20 @@ def _create_app():
             logger.info("Model store initialized for HTTP sidecar")
         except Exception:
             logger.warning("Model store unavailable in HTTP sidecar — /umrs/models/* will return 503")
+
+        try:
+            from umrs.api.mcp import set_mcp_store
+            from umrs.mcp import ensure_schema as ensure_mcp_schema
+            from umrs.mcp.store import MCPServerStore
+
+            mcp_conn = db_pool.getconn()
+            ensure_mcp_schema(mcp_conn)
+            mcp_conn.commit()
+            app.state.umrs_mcp_store_conn = mcp_conn
+            set_mcp_store(MCPServerStore(mcp_conn))
+            logger.info("MCP server store initialized for HTTP sidecar")
+        except Exception:
+            logger.warning("MCP store unavailable in HTTP sidecar — /umrs/mcp/* will return 503")
 
     @app.get("/health")
     async def health():

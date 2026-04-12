@@ -90,11 +90,13 @@ of relying only on generic fallback values.
 - The deploy wrappers are expected to remain thin and site-specific.
 - The vision service source code itself lives under
      `src/umrs/vision_service/`.
-- Public deploy guidance lives under `deploy/rccs-cloud/README.md` and
-     `doc/admin_guide.md`.
+- Public deploy guidance lives under the site deployment docs in `deploy/`
+      (for example `deploy/rccs-cloud/README.md`) and in
+      `doc/admin_guide.md`.
 
 ## See Also
 
 - [../../../deploy/rccs-cloud/README.md](../../../deploy/rccs-cloud/README.md)
+- [../../../deploy/hpbd-atom/README.md](../../../deploy/hpbd-atom/README.md)
 - [../../../doc/admin_guide.md](../../../doc/admin_guide.md)
 - [../vision_service/service.py](../vision_service/service.py)

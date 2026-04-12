@@ -20,7 +20,7 @@ from umrs.shared.sql_helpers import create_db_name
 from umrs.core.MessageQueue import MessageQueue
 from umrs.shared.pretty_print import pretty_print_cfg, pretty_print_recompute, pretty_print_check, pretty_print_thread_status
 
-from umrs.server.json_config import load_server_cfg_file, load_client_cfg_file
+from umrs.server.json_config import load_server_cfg_file, load_server_cfg_json, load_client_cfg_file
 from umrs.core.TaskManager import TaskManager
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
@@ -336,13 +336,48 @@ def check_duplicated_database(users):
             databases_name_dict[db_name] = username
 
 
+def _ensure_server_user_config_dir(configure_file, server_cfg_json, users):
+    return ensure_private_directory(
+        resolve_server_user_files_dir(
+            configure_file,
+            server_cfg=server_cfg_json,
+            user_config_map={user["username"]: user.get("config_file_path") for user in users},
+        )
+    )
+
+
+def _close_bucket_s3_connections(buckets_cfg):
+    for entry in buckets_cfg.values():
+        try:
+            conn = entry.s3_connection
+            if conn:
+                conn.close()
+        except Exception as e:
+            print(f"Warning: failed to close S3 connection during reload: {e}")
+
+
+def _build_server_cfg_from_users(users, admin_s3_configuration_file):
+    for user in users:
+        create_s3_sql_users(user, admin_s3_configuration_file)
+
+    server_cfg = ServerCfg()
+    for user in users:
+        configure_user(user, server_cfg)
+    return server_cfg
+
+
 def perform_initial_config(configure_file, status_store):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
     admin_s3_configuration_file, users, server_cfg = load_server_cfg_file(configure_file)
     check_duplicated_database(users)
+    try:
+        user_files_dir = _ensure_server_user_config_dir(configure_file, server_cfg, users)
+    except OSError as e:
+        sys.exit(f"Invalid user files directory for '{configure_file}': {e}")
     print("Configuration loaded successfully.")
+    print(f"User config directory: {user_files_dir}")
 
     # Get the directory containing configure_file
     umrs_dir = os.path.dirname(configure_file)
@@ -361,12 +396,7 @@ def perform_initial_config(configure_file, status_store):
         print(f"Warning: failed to set debug mode on control queue: {e}")
     print ("Subscribed to zeroMQ message queue")
 
-    for user in users:
-        create_s3_sql_users(user, admin_s3_configuration_file)
-
-    server_cfg = ServerCfg()
-    for user in users:
-        configure_user(user, server_cfg)
+    server_cfg = _build_server_cfg_from_users(users, admin_s3_configuration_file)
 
     import torch
 
@@ -383,22 +413,12 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
     if log_output:
         print("\n######################\nReloading configuration...\n######################\n")
     try:
-        new_admin_s3_cfg, new_users, _ = load_server_cfg_file(configure_file)
+        new_admin_s3_cfg, new_users, new_server_cfg_json = load_server_cfg_file(configure_file)
         check_duplicated_database(new_users)
-        for entry in buckets_cfg.values():
-            try:
-                conn = entry.s3_connection
-                if conn:
-                    conn.close()
-            except Exception as e:
-                print(f"Warning: failed to close S3 connection during reload: {e}")
+        _ensure_server_user_config_dir(configure_file, new_server_cfg_json, new_users)
+        _close_bucket_s3_connections(buckets_cfg)
 
-        for u in new_users:
-            create_s3_sql_users(u, new_admin_s3_cfg)
-
-        new_server_cfg = ServerCfg()
-        for u in new_users:
-            configure_user(u, new_server_cfg)
+        new_server_cfg = _build_server_cfg_from_users(new_users, new_admin_s3_cfg)
 
         buckets_cfg.replace_cfg(new_server_cfg.buckets_cfg)
         user_config_map.clear()
@@ -415,6 +435,58 @@ def reload_configuration(configure_file, buckets_cfg, user_config_map, log_outpu
         return {"summary": error_msg, "error": str(e)}
 
 
+def _read_user_config_username(config_path):
+    try:
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f).get('username')
+    except Exception:
+        return None
+
+
+def _canonicalize_user_conf_entries(conf_path, username, canonical_user_path, users):
+    new_users = []
+    removed = []
+    for entry in users:
+        resolved_path = resolve_config_path(entry, config_file=conf_path)
+        if resolved_path == canonical_user_path:
+            if resolved_path not in new_users:
+                new_users.append(resolved_path)
+            continue
+        if _read_user_config_username(resolved_path) == username:
+            removed.append(resolved_path)
+            continue
+        if resolved_path not in new_users:
+            new_users.append(resolved_path)
+
+    if canonical_user_path not in new_users:
+        new_users.append(canonical_user_path)
+    return new_users, removed
+
+
+def _write_conf_users(conf_path, conf, username, canonical_user_path, new_users):
+    home = os.path.expanduser('~')
+    conf['users'] = [path.replace(home, '~', 1) for path in new_users]
+    try:
+        with open(conf_path, 'w', encoding='utf-8') as f:
+            json.dump(conf, f, indent=2)
+        print(f"Updated server conf: ensured unique config for '{username}' -> {canonical_user_path}")
+        return True
+    except Exception as e:
+        print(f"Warning: failed to update conf '{conf_path}': {e}")
+        return False
+
+
+def _cleanup_stale_user_configs(canonical_user_path, removed):
+    user_cfg_path = os.path.dirname(canonical_user_path)
+    for stale in removed:
+        try:
+            if stale.startswith(user_cfg_path) and stale != canonical_user_path and os.path.isfile(stale):
+                os.remove(stale)
+                print(f"Deleted stale user config file: {stale}")
+        except Exception as e:
+            print(f"Warning: failed to delete stale user config '{stale}': {e}")
+
+
 def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     canonical_user_path = os.path.expanduser(canonical_user_path)
 
@@ -427,59 +499,16 @@ def _ensure_user_file_in_conf(conf_path, username, canonical_user_path):
 
     users = conf.get('users', [])
 
-    # Build a new list that keeps only one entry for this username (the canonical path)
-    new_users = []
-    removed = []
-    for p in users:
-        p = os.path.expanduser(p)
-        if p == canonical_user_path:
-            # keep canonical path if already present
-            if p not in new_users:
-                new_users.append(p)
-            continue
-        # Try to read file and inspect username; if mismatch or file missing, keep as-is
-        try:
-            with open(p, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            u = data.get('username')
-        except Exception:
-            u = None
-        if u == username:
-            # Another config for the same user; drop it
-            removed.append(p)
-            continue
-        # Different user or unreadable -> keep entry
-        if p not in new_users:
-            new_users.append(p)
-
-    # Ensure canonical path present
-    if canonical_user_path not in new_users:
-        new_users.append(canonical_user_path)
+    new_users, removed = _canonicalize_user_conf_entries(
+        conf_path, username, canonical_user_path, users
+    )
 
     if removed:
         print(f"Updated server conf: removed {len(removed)} stale user config(s) for '{username}': {removed}")
 
-    # change absolute path to '~' if possible
-    home = os.path.expanduser('~')
-    new_users = [path.replace(home, '~',1) for path in new_users]
-
-    conf['users'] = new_users
-    try:
-        with open(conf_path, 'w', encoding='utf-8') as f:
-            json.dump(conf, f, indent=2)
-        print(f"Updated server conf: ensured unique config for '{username}' -> {canonical_user_path}")
-    except Exception as e:
-        print(f"Warning: failed to update conf '{conf_path}': {e}")
+    if not _write_conf_users(conf_path, conf, username, canonical_user_path, new_users):
         return False
-    # Best-effort cleanup: remove pruned files under user_cfg_path only
-    user_cfg_path = os.path.join(os.path.dirname(conf_path), get_users_default_cfg_subdir())
-    for stale in removed:
-        try:
-            if stale.startswith(user_cfg_path) and stale != canonical_user_path and os.path.isfile(stale):
-                os.remove(stale)
-                print(f"Deleted stale user config file: {stale}")
-        except Exception as e:
-            print(f"Warning: failed to delete stale user config '{stale}': {e}")
+    _cleanup_stale_user_configs(canonical_user_path, removed)
     return True
 
 
@@ -589,6 +618,31 @@ def _handle_upload_workflow(client_id, zip_path, workflow_name):
     return True, dest_dir, None
 
 
+def _resolve_uploaded_user_config_destination(configure_file, user_config_map, username):
+    server_cfg_json = load_server_cfg_json(configure_file)
+    user_dir = ensure_private_directory(
+        resolve_server_user_files_dir(
+            configure_file,
+            server_cfg=server_cfg_json,
+            user_config_map=user_config_map,
+        )
+    )
+    return os.path.join(user_dir, f"{username}.json")
+
+
+def _store_uploaded_user_config(tmp_path, dest_path):
+    with open(tmp_path, 'r', encoding='utf-8') as src:
+        content = src.read()
+    tmp_out = dest_path + ".tmp"
+    with open(tmp_out, 'w', encoding='utf-8') as out:
+        out.write(content)
+    os.replace(tmp_out, dest_path)
+    try:
+        os.remove(tmp_path)
+    except Exception as e:
+        print(f"Warning: failed to clean up temp file '{tmp_path}': {e}")
+
+
 def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, expected_username=None):
     """Persist an uploaded user config JSON: replace create the dir and file and ensure listed in conf.
 
@@ -612,35 +666,17 @@ def _persist_uploaded_user_config(tmp_path, configure_file, user_config_map, exp
         print(f"Warning: cannot parse uploaded config '{tmp_path}': {e}")
         return False, None, None
 
-    # look up existing users configuration path
-    dest_path = user_config_map.get(username, None)
-
-    if not dest_path:
-        # Destination path (canonical)
-        umrs_dir = os.path.dirname(configure_file)
-        user_dir = os.path.join(umrs_dir, get_users_default_cfg_subdir())
-        try:
-            os.makedirs(user_dir, exist_ok=True)
-        except Exception as e:
-            print(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
-            return False, username, None
-        dest_path = os.path.join(user_dir, f"{username}.json")
-
-    dest_path = os.path.expanduser(dest_path)
+    try:
+        dest_path = _resolve_uploaded_user_config_destination(
+            configure_file, user_config_map, username
+        )
+    except (OSError, SystemExit) as e:
+        print(f"Warning: cannot resolve uploaded user config destination for '{configure_file}': {e}")
+        return False, username, None
 
     # Atomically replace the destination file
     try:
-        with open(tmp_path, 'r', encoding='utf-8') as src:
-            content = src.read()
-        tmp_out = dest_path + ".tmp"
-        with open(tmp_out, 'w', encoding='utf-8') as out:
-            out.write(content)
-        os.replace(tmp_out, dest_path)
-        # Remove original temp upload
-        try:
-            os.remove(tmp_path)
-        except Exception as e:
-            print(f"Warning: failed to clean up temp file '{tmp_path}': {e}")
+        _store_uploaded_user_config(tmp_path, dest_path)
         print(f"Stored updated user config for '{username}' at '{dest_path}'")
     except Exception as e:
         print(f"Warning: failed to persist uploaded config to '{dest_path}': {e}")
@@ -1029,19 +1065,10 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
                 print("\tNothing to do for command of type {cmd}")
 
 def check_umrs_config_directory():
-    umrs_config_dir = os.getenv(get_umrs_cfg_env_var_name())
-
-    if umrs_config_dir:
-        if os.path.isdir(umrs_config_dir):
-            return umrs_config_dir
-        else:
-            return None
-    else:
-        default_dir = get_default_umrs_cfg_dir()
-        if os.path.isdir(default_dir):
-            return default_dir
-        else:
-            return None
+    umrs_config_dir = get_resolved_umrs_cfg_dir()
+    if os.path.isdir(umrs_config_dir):
+        return umrs_config_dir
+    return None
 # ---------------------------------- CLI ------------------------------------
 
 def main():
@@ -1052,10 +1079,22 @@ def main():
     if umrs_cfg_dir:
         default_json_server_path = f"{umrs_cfg_dir}/{get_default_json_server_file()}"
     else:
-        sys.exit(f"No valid UMRS configuration directory. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}. Check it exists.")
+        sys.exit(
+            "No valid UMRS configuration directory. "
+            f"Checked {get_resolved_umrs_cfg_dir()} via {get_umrs_cfg_env_var_name()} / XDG_CONFIG_HOME."
+        )
 
     parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('-c', '--conf', required=(default_json_server_path is None), default=default_json_server_path, help=f"Config file path. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}.")
+    parser.add_argument(
+        '-c',
+        '--conf',
+        required=(default_json_server_path is None),
+        default=default_json_server_path,
+        help=(
+            f"Config file path. Default directory resolves to {get_resolved_umrs_cfg_dir()} "
+            f"via {get_umrs_cfg_env_var_name()} or XDG_CONFIG_HOME."
+        ),
+    )
     parser.add_argument('--force-recompute', action='store_true', help='Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.')
     parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')

@@ -8,7 +8,13 @@ import subprocess
 import time
 from typing import Dict, List, Optional
 
+from umrs.shared.config import get_resolved_umrs_subdir, get_users_default_cfg_subdir
+
 logger = logging.getLogger(__name__)
+
+
+def _default_user_config_path() -> str:
+    return get_resolved_umrs_subdir(get_users_default_cfg_subdir(), "user_rivault.json")
 
 
 class UMRSClientConnector:
@@ -29,11 +35,11 @@ class UMRSClientConnector:
     """
 
     def __init__(self, client_bin: str = "/opt/umrs/client_umrs.py",
-                 user_config: str = "/root/.config/umrs/users/user_rivault.json",
+                 user_config: Optional[str] = None,
                  server_ip: Optional[str] = None,
                  container: Optional[str] = None):
         self.client_bin = client_bin
-        self.user_config = user_config
+        self.user_config = user_config or _default_user_config_path()
         self.server_ip = server_ip
         self.container = container
 

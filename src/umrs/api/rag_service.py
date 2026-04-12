@@ -20,9 +20,7 @@ from umrs.rag.search import HybridSearcher, CrossEncoderReranker, SearchResult
 
 from umrs.server.runtime import ServerCfg, configure_user
 from umrs.shared.config import (
-    get_default_json_server_file,
-    get_default_umrs_cfg_dir,
-    get_umrs_cfg_env_var_name,
+    get_resolved_json_server_path,
 )
 from umrs.server.json_config import load_server_cfg_file
 from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint, get_registry
@@ -130,17 +128,12 @@ def _resolve_server_config_path() -> str:
     This mirrors the logic in server_umrs.main() but without depending on CLI.
     """
 
-    umrs_cfg_dir = os.getenv(get_umrs_cfg_env_var_name())
-    if umrs_cfg_dir and os.path.isdir(umrs_cfg_dir):
-        return os.path.join(umrs_cfg_dir, get_default_json_server_file())
-
-    default_dir = get_default_umrs_cfg_dir()
-    if os.path.isdir(default_dir):
-        return os.path.join(default_dir, get_default_json_server_file())
+    config_path = get_resolved_json_server_path()
+    if os.path.isfile(config_path):
+        return config_path
 
     raise RuntimeError(
-        f"No valid UMRS configuration directory. Expected either {default_dir} "
-        f"or the directory pointed to by {get_umrs_cfg_env_var_name()}"
+        f"No valid UMRS server config file found at {config_path}"
     )
 
 

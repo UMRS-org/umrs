@@ -80,10 +80,11 @@ the canonical in-container CLI invocation is still `python src/client_umrs.py`.
 ## Notes And Limitations
 
 - This stack is for local development; it is not the same runtime path as the
-   `deploy/rccs-cloud/` Slurm+Podman deployment.
+   site-specific Slurm+Podman deployments under `deploy/`.
 - The Docker image starts the server with `python src/server_umrs.py -c /root/conf_umrs.json`.
-- For site deployments, use [../deploy/rccs-cloud/README.md](../deploy/rccs-cloud/README.md)
-   or the admin guide instead of copying Docker commands.
+- For site deployments, use the matching guide under `../deploy/` (for example
+   [../deploy/rccs-cloud/README.md](../deploy/rccs-cloud/README.md)) or the
+   admin guide instead of copying Docker commands.
 
 ## See Also
 

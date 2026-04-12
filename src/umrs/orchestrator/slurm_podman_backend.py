@@ -3,16 +3,18 @@ Slurm + Podman-Compose orchestrator backend.
 
 Unlike :class:`SlurmBackend` (which generates a Singularity-based sbatch
 script), this backend delegates to the site's existing ``serve-model.slurm``
-wrapper.  The wrapper handles GPU detection, podman-compose profiles, image
-loading, and container lifecycle — all parameterised via environment variables
+wrapper. The wrapper handles GPU detection, podman-compose profiles, image
+loading, and container lifecycle, all parameterised via environment variables
 that :class:`SiteConfig` exports.
 
-Designed for the rccs-cloud deployment pattern:
+This backend is intended for any deployment where UMRS runs on a service or
+login node and submits a site-owned Slurm wrapper to compute nodes. RCCS is
+one example, not the only target:
 
-    login node (UMRS)  ──sbatch──▸  compute node (serve-model.slurm)
-                                         │
-                                    podman-compose up
-                                    (profiles: harness, vllm, vision-bentoml)
+    service/login node (UMRS)  ──sbatch──▸  compute node (serve-model.slurm)
+                                                  │
+                                             podman-compose up
+                                             (site-selected profiles)
 
 Job discovery uses squeue/sacct plus the Slurm output file to extract the
 compute-node hostname.
@@ -36,7 +38,7 @@ from .base import (
     OrchestratorConfig,
 )
 from .site_config import SiteConfig, get_site_config
-from umrs.shared.config import get_default_tmp_subdir, get_default_umrs_cfg_dir
+from umrs.shared.config import get_default_tmp_subdir, get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -104,7 +106,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         # Fallback to RIVAULT_SLURM_SCRIPT env
         return os.environ.get(
             "RIVAULT_SLURM_SCRIPT",
-            str(Path.home() / ".config" / "umrs" / "serve-model.slurm"),
+            get_resolved_umrs_subdir("serve-model.slurm"),
         )
 
     @property
@@ -148,7 +150,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
                 / "slurm"
             )
 
-        return Path(get_default_umrs_cfg_dir()).expanduser() / get_default_tmp_subdir()
+        return Path(get_resolved_umrs_subdir(get_default_tmp_subdir()))
 
     # ------------------------------------------------------------------
     # Job submission

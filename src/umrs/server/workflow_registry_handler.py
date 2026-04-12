@@ -10,7 +10,7 @@ Supported commands (via TaskCmd):
 
 Also provides register_workflow() for internal use (auto-registration on upload).
 
-Catalog file: ~/.config/umrs/workflow_catalog.json
+Catalog file: <resolved UMRS config dir>/workflow_catalog.json
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from umrs.shared.config import get_default_umrs_cfg_dir
+from umrs.shared.config import get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -31,8 +31,7 @@ _CATALOG_LOCK = threading.Lock()
 
 def _catalog_path() -> str:
     """Return path to the JSON workflow catalog file."""
-    cfg_dir = get_default_umrs_cfg_dir()
-    return os.path.join(cfg_dir, "workflow_catalog.json")
+    return get_resolved_umrs_subdir("workflow_catalog.json")
 
 
 def _load_catalog() -> Dict[str, Any]:
