@@ -285,7 +285,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
 
         # Check if endpoint is ready
         try:
-            readiness_probe = str(endpoint.metadata.get("readiness_probe") or "models")
+            readiness_probe = str(endpoint.metadata.get("readiness_probe") or "chat")
             is_ready, models, error = await self.readiness_poller.check_ready_detail(
                 endpoint.host,
                 endpoint.port,
