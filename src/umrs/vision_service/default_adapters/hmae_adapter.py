@@ -12,8 +12,18 @@ import torch
 from PIL import Image
 
 from umrs.vision_service.adapters.base import VisionModelAdapter
+from umrs.vision_service.output_specs import (
+    describe_output_artifacts,
+    resolve_hmae_task,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _require_presigned_urls() -> bool:
+    return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 def _upload_result(s3, dst_bucket, out_key, data, content_type,
@@ -32,12 +42,17 @@ def _upload_result(s3, dst_bucket, out_key, data, content_type,
         )
         urllib.request.urlopen(req, timeout=120)  # noqa: S310
     else:
+        if _require_presigned_urls() or s3 is None:
+            raise RuntimeError(f"Missing presigned PUT URL for {out_key}")
         s3.put_object(Bucket=dst_bucket, Key=out_key,
                       Body=data, ContentType=content_type)
 
 
 class HMAEAdapter(VisionModelAdapter):
     """Load and run HMAE inference (reconstruction / mae_reconstruction / feature_extraction)."""
+
+    def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
+        return describe_output_artifacts("hmae", key, config)
 
     def cache_key(self, config: Dict[str, Any]) -> str:
         cfg_path = config.get(
@@ -89,12 +104,7 @@ class HMAEAdapter(VisionModelAdapter):
 
         # Accept both "task" and "mode" keys for backward compatibility.
         # The demo scripts historically used "mode" while the adapter expected "task".
-        _MODE_TO_TASK = {
-            "reconstruct": "reconstruction",
-            "mae": "mae_reconstruction",
-            "features": "feature_extraction",
-        }
-        task = config.get("task") or _MODE_TO_TASK.get(config.get("mode", ""), "") or "reconstruction"
+        task = resolve_hmae_task(config)
         logger.info("[HMAE] infer: bucket=%s key=%s task=%s "
                     "output_bucket=%s s3=%s presigned_output_urls=%s",
                     bucket, key, task, output_bucket, s3 is not None,
@@ -120,7 +130,7 @@ class HMAEAdapter(VisionModelAdapter):
             patch_size=model_cfg["patch_size"],
         )
 
-        base = key.rsplit(".", 1)[0] if "." in key else key
+        described_outputs = self.describe_outputs(key, config)
         dst_bucket = output_bucket or bucket
         response: Dict[str, Any] = {
             "source_image": f"s3://{bucket}/{key}",
@@ -131,7 +141,7 @@ class HMAEAdapter(VisionModelAdapter):
             pred = infer_reconstruct(model["model"], data, device,
                                      hmae_config, use_bf16)
             png_bytes = visualize_reconstruction(data, pred, hmae_config)
-            out_key = f"{base}_recon.png"
+            out_key = next(iter(described_outputs))
             _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
                            presigned_output_urls)
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
@@ -141,7 +151,7 @@ class HMAEAdapter(VisionModelAdapter):
                                          hmae_config, use_bf16)
             png_bytes = visualize_reconstruction(data, pred, hmae_config,
                                                  mask=mask, loss=loss)
-            out_key = f"{base}_mae.png"
+            out_key = next(iter(described_outputs))
             _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
                            presigned_output_urls)
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
@@ -153,7 +163,7 @@ class HMAEAdapter(VisionModelAdapter):
             cls_token = features[:, 0, :]
             patch_tokens = features[:, 1:, :]
 
-            out_key = f"{base}_features.pt"
+            out_key = next(iter(described_outputs))
             feat_buf = io.BytesIO()
             torch.save({"cls": cls_token, "patches": patch_tokens,
                         "coords": data["coords"]}, feat_buf)

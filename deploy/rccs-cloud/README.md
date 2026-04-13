@@ -242,6 +242,8 @@ Common values to adjust:
 | `POSTGRES_PASSWORD` | `umrs_rccs` | Change in production |
 | `MINIO_ROOT_PASSWORD` | `minioadmin` | Change in production |
 | `S3_PRESIGN_ENDPOINT` | `http://localhost:9000` | Compute nodes access MinIO via an SSH tunnel (see below).  The Slurm script opens `localhost:9000` → login node MinIO automatically. |
+| `VISION_S3_PRESIGN_ENDPOINT` | `http://minio-host:19000` | BentoML vision runs inside a compute-node container, so presigned URLs for vision tasks must target the host-gateway alias rather than `localhost`. |
+| `VISION_REQUIRE_PRESIGNED_URLS` | `true` | Disables direct S3 fallback in the BentoML vision service so the container no longer needs S3 secrets. |
 | `MINIO_BIND` | `127.0.0.1` | MinIO listens on localhost only.  Compute nodes use the SSH tunnel. |
 | `UMRS_SITE_CONFIG` | `~/.config/umrs/site.yaml` | Optional override for the canonical site config path |
 | `RIVAULT_SLURM_SCRIPT` | `./serve-model.slurm` | Optional override for the site-specific Slurm wrapper; the legacy `~/.config/umrs/rivault_data/serve-model.slurm` path is only a fallback |
@@ -680,6 +682,11 @@ Compute nodes access MinIO via an SSH tunnel (`localhost:9000`), not directly.
 2. Test self-SSH on the login node: `ssh -o BatchMode=yes localhost echo ok`
 3. Run the verification in [Step 2.5](#step-25--verify-minio-reachability-from-slurm-jobs-via-ssh-tunnel).
 4. Check that `S3_PRESIGN_ENDPOINT=http://localhost:9000` in `.env`.
+5. For BentoML vision tasks, check that `VISION_S3_PRESIGN_ENDPOINT=http://minio-host:19000`
+  and `VISION_REQUIRE_PRESIGNED_URLS=true` in `.env`.
+
+In the strict vision path the BentoML container uploads via presigned PUT URLs,
+so it no longer receives MinIO access keys or secret keys.
 
 ### Server fails to connect to postgres
 

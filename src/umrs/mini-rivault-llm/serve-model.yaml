@@ -460,9 +460,7 @@ services:
       HMAE_CONFIG_PATH: /models/hmae/infer_hmae_vit_b.yaml
       HMAE_CHECKPOINT: /models/hmae/latest_checkpoint.pth
       USER_MODEL_PATH: /models/user
-      S3_ENDPOINT_URL: http://minio-host:${BENTOML_MINIO_HOST_PORT:-19000}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-minioadmin}
-      S3_SECRET_KEY: ${S3_SECRET_KEY:-minioadmin}
+      VISION_REQUIRE_PRESIGNED_URLS: ${VISION_REQUIRE_PRESIGNED_URLS:-true}
       MAX_VISION_MODELS: ${MAX_VISION_MODELS:-3}
       VISION_ADAPTERS_DIR: /adapters/system:/adapters/user
       VISION_ADAPTERS: ${VISION_ADAPTERS:-}
