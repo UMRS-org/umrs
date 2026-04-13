@@ -9,13 +9,25 @@ To add a new vision model to the BentoML service:
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 from PIL import Image
 
 
 class VisionModelAdapter(abc.ABC):
     """Interface that every vision model adapter must implement."""
+
+    @abc.abstractmethod
+    def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
+        """Describe deterministic output artifacts for a given source object.
+
+        Returns:
+            Dict mapping output S3 key -> content type.
+
+        Notes:
+            This contract is used by the UMRS server to pre-generate
+            presigned PUT URLs before the Bento task runs.
+        """
 
     @abc.abstractmethod
     def load(self, config: Dict[str, Any]) -> Any:

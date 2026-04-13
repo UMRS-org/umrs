@@ -8,6 +8,7 @@ The generic factory ``make_bentoml_vision_compute`` creates a closure for
 """
 
 import logging
+import os
 import time
 
 import bentoml
@@ -16,6 +17,7 @@ from umrs.shared.storage.s3_presign import (
     generate_presigned_get,
     generate_presigned_put,
 )
+from umrs.vision_service.output_specs import describe_output_artifacts
 
 logger = logging.getLogger(__name__)
 
@@ -44,28 +46,28 @@ def _copy_to_output_bucket(s3, s3_uri, output_bucket):
     return new_uri
 
 
-def _predict_output_keys(s3_key, model_type, model_config, task=None):
-    """Predict output S3 keys based on adapter naming conventions.
+def _require_presigned_urls() -> bool:
+    return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
+        "1", "true", "yes", "on",
+    }
 
-    Each adapter uses deterministic naming for result artifacts.
-    Returns a dict mapping output_key -> content_type.
-    """
-    base = s3_key.rsplit(".", 1)[0] if "." in s3_key else s3_key
-    outputs = {}
 
-    if model_type == "sam3":
-        outputs[f"{base}_sam3_seg.png"] = "image/png"
+def _presigned_ttl_sec() -> int:
+    raw = os.environ.get("VISION_PRESIGNED_URL_TTL_SEC", "3600")
+    try:
+        ttl = int(raw)
+    except ValueError:
+        logger.warning(
+            "Invalid VISION_PRESIGNED_URL_TTL_SEC=%s; falling back to 3600",
+            raw,
+        )
+        return 3600
+    return max(ttl, 1)
 
-    elif model_type == "hmae":
-        task_resolved = task or "reconstruction"
-        if task_resolved == "reconstruction":
-            outputs[f"{base}_recon.png"] = "image/png"
-        elif task_resolved == "mae_reconstruction":
-            outputs[f"{base}_mae.png"] = "image/png"
-        elif task_resolved == "feature_extraction":
-            outputs[f"{base}_features.pt"] = "application/octet-stream"
-    # For unknown model types, return empty — service will fall back to direct S3
-    return outputs
+
+def _vision_presign_endpoint():
+    endpoint = os.environ.get("VISION_S3_PRESIGN_ENDPOINT", "").strip()
+    return endpoint or None
 
 
 def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, model_config,
@@ -107,9 +109,19 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
             checksums.append(obj["ETag"].strip('"'))
             metadata_list.append(obj.get("Metadata", {}))
 
+            predicted = describe_output_artifacts(
+                model_type,
+                s3_key,
+                effective_config,
+            )
+            if _require_presigned_urls() and not predicted:
+                raise RuntimeError(
+                    "Strict presigned vision mode requires declared output "
+                    f"artifacts for model_type '{model_type}'"
+                )
+
             # Skip if output already exists in the output bucket
             if skip_existing and output_bucket:
-                predicted = _predict_output_keys(s3_key, model_type, effective_config, task)
                 if predicted:
                     all_exist = True
                     first_key = None
@@ -130,30 +142,41 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
                         continue
 
             image_url = f"s3://{path_to_bucket}/{s3_key}"
-
-            # SKIP presigned URLs — force BentoML service to use its own S3
-            # client (S3_ENDPOINT_URL=http://minio-host:19000 in compose)
-            # which is reachable via the host-gateway SSH tunnel.
-            presigned_input_url = None
-            presigned_output_urls = {}
-            logger.warning(
-                "[DEBUG-ADAPTER] Skipping presigned URLs; BentoML service "
-                "will use direct S3 (S3_ENDPOINT_URL in container env)"
+            target_bucket = output_bucket or path_to_bucket
+            presign_endpoint = _vision_presign_endpoint()
+            presigned_input_url = generate_presigned_get(
+                s3,
+                path_to_bucket,
+                s3_key,
+                ttl=_presigned_ttl_sec(),
+                endpoint_override=presign_endpoint,
             )
+            presigned_output_urls = {
+                out_key: generate_presigned_put(
+                    s3,
+                    target_bucket,
+                    out_key,
+                    content_type=content_type,
+                    ttl=_presigned_ttl_sec(),
+                    endpoint_override=presign_endpoint,
+                )
+                for out_key, content_type in predicted.items()
+            }
 
             logger.warning(
                 "[DEBUG-ADAPTER] Submitting task: model_type=%s image_url=%s "
-                "presigned_input_url=%s presigned_output_urls=%s",
+                "presigned_input=%s presigned_output_keys=%s endpoint=%s",
                 model_type, image_url,
-                presigned_input_url or "(empty)",
+                bool(presigned_input_url),
                 list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
+                presign_endpoint or "(default)",
             )
 
             bento_task = client.infer.submit(
                 model_type=model_type,
                 inference_config=effective_config,
                 image_url=image_url,
-                output_bucket=output_bucket,
+                output_bucket=target_bucket,
                 presigned_input_url=presigned_input_url or "",
                 presigned_output_urls=presigned_output_urls,
             )

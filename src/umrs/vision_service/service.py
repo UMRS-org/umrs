@@ -20,9 +20,13 @@ Request payload for ``/infer/submit``::
     }
 
 Environment variables:
-    S3_ENDPOINT_URL      — MinIO/S3 endpoint
-    S3_ACCESS_KEY        — S3 access key
-    S3_SECRET_KEY        — S3 secret key
+        S3_ENDPOINT_URL      — MinIO/S3 endpoint for optional direct fallback
+        S3_ACCESS_KEY        — S3 access key for optional direct fallback
+        S3_SECRET_KEY        — S3 secret key for optional direct fallback
+        VISION_REQUIRE_PRESIGNED_URLS
+                                                — Require presigned GET for input and presigned PUT
+                                                    for all declared outputs. Direct S3 fallback is
+                                                    disabled when true.
     MAX_VISION_MODELS    — LRU model cache capacity (default 3)
     VISION_ADAPTERS_DIR  — colon-separated directories of custom adapter .py
                            files (default /adapters).  Each directory may also
@@ -45,8 +49,19 @@ from umrs.vision_service.model_cache import ModelCache
 logger = logging.getLogger(__name__)
 
 
+def _require_presigned_urls() -> bool:
+    return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _get_s3_client():
     """Create a boto3 S3 client from environment variables."""
+    if _require_presigned_urls():
+        raise RuntimeError(
+            "Direct S3 access is disabled when VISION_REQUIRE_PRESIGNED_URLS=true"
+        )
+
     import boto3
 
     endpoint_url = os.environ.get("S3_ENDPOINT_URL", "http://localhost:9000")
@@ -152,9 +167,9 @@ class VisionModelService:
         """
         logger.warning(
             "[DEBUG-INFER] model_type=%s image_url=%s output_bucket=%s "
-            "presigned_input_url=%s presigned_output_urls=%s",
+            "presigned_input=%s presigned_output_keys=%s",
             model_type, image_url, output_bucket,
-            presigned_input_url[:80] if presigned_input_url else "(empty)",
+            bool(presigned_input_url),
             list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
         )
 
@@ -170,22 +185,44 @@ class VisionModelService:
             }
 
         try:
+            if _require_presigned_urls() and not presigned_input_url:
+                return {
+                    "error": (
+                        "presigned_input_url is required when "
+                        "VISION_REQUIRE_PRESIGNED_URLS=true"
+                    ),
+                    "source_image": image_url,
+                }
+
             # Download input image: prefer presigned URL, fall back to direct S3
             if presigned_input_url:
-                logger.warning("[DEBUG-INFER] Downloading via presigned URL: %s...",
-                               presigned_input_url[:120])
+                logger.warning("[DEBUG-INFER] Downloading via presigned URL")
                 image, bucket, key = _download_image_from_presigned_url(
                     presigned_input_url, image_url,
                 )
-                # Still initialise S3 client as fallback for adapters that
-                # don't have presigned output URLs
-                s3 = self._ensure_s3() if not presigned_output_urls else None
+                s3 = None if (_require_presigned_urls() or presigned_output_urls) else self._ensure_s3()
             else:
                 logger.warning("[DEBUG-INFER] Downloading via direct S3: %s", image_url)
                 s3 = self._ensure_s3()
                 logger.warning("[DEBUG-INFER] S3 endpoint: %s",
                                os.environ.get('S3_ENDPOINT_URL', '(not set)'))
                 image, bucket, key = _download_image_from_s3(s3, image_url)
+
+            expected_outputs = adapter.describe_outputs(key, inference_config)
+            if _require_presigned_urls():
+                missing = sorted(
+                    out_key
+                    for out_key in expected_outputs
+                    if out_key not in (presigned_output_urls or {})
+                )
+                if missing:
+                    return {
+                        "error": (
+                            "Missing presigned output URLs for "
+                            + ", ".join(missing)
+                        ),
+                        "source_image": image_url,
+                    }
 
             logger.warning("[DEBUG-INFER] Image downloaded: bucket=%s key=%s size=%s",
                            bucket, key, image.size)
