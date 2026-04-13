@@ -104,6 +104,7 @@ UMRS_S3_BUCKET_PORT=${UMRS_S3_BUCKET_PORT:-9000}
 PRIV_IP1TO3=${PRIV_IP1TO3:-192.168.4}
 CONTAINER_RUNTIME_DNS=${CONTAINER_RUNTIME_DNS:-/etc/resolv.conf}			# Note: docker uses 127.0.0.11 while podman forces me to use /etc/resolv.conf
 UUID=00000000-0000-0000-0000-000000000000
+RIVAULT_USERNS_MODE=${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}
 ###OPTIONAL
 VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-nightly}
 VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
@@ -177,11 +178,17 @@ GPUoverride=()
 _GPU_OVERRIDE_FILE=""
 if [[ -n "${RIVAULT_GPU_OVERRIDE_FILE:-}" && -f "${RIVAULT_GPU_OVERRIDE_FILE}" ]]; then
     _GPU_OVERRIDE_FILE="${RIVAULT_GPU_OVERRIDE_FILE}"
-fi
-if /bin/nvidia-smi --list-gpus | /bin/grep -qi '^GPU 0:' ; then
-    GPUoverride+=("--file" "${_GPU_OVERRIDE_FILE:-./x_nvidia-override.yaml}")
-elif /bin/rocm-smi -i | /bin/grep -qi '^GPU\[0\]' ; then
-    GPUoverride+=("--file" "${_GPU_OVERRIDE_FILE:-./x_rocm-override.yaml}")
+    # Outer wrapper already validated GPU presence and generated the override;
+    # trust it directly — nvidia-smi may be invisible inside the cgroup/userns
+    # that the wrapper sets up.
+    GPUoverride+=("--file" "${_GPU_OVERRIDE_FILE}")
+    echo "[rivault] GPU override provided by wrapper: ${_GPU_OVERRIDE_FILE}"
+elif /bin/nvidia-smi --list-gpus 2>/dev/null | /bin/grep -qi '^GPU 0:' ; then
+    GPUoverride+=("--file" "./x_nvidia-override.yaml")
+    echo "[rivault] NVIDIA GPU detected via nvidia-smi"
+elif /bin/rocm-smi -i 2>/dev/null | /bin/grep -qi '^GPU\[0\]' ; then
+    GPUoverride+=("--file" "./x_rocm-override.yaml")
+    echo "[rivault] ROCm GPU detected via rocm-smi"
 fi
 
 # Ensure podman-compose >= 1.2.0 (needed for --profile support)
@@ -221,8 +228,19 @@ fi
 ########	echo "[rivault] SAM3 model already present at '${_vision_path}', skipping download."
 ########fi
 
-# fix some cgroup stuff
+# fix some cgroup/podman stuff on some nodes — full systemd bootstrap
+# from upstream reference. Needed on nodes where user session is not pre-started.
 loginctl enable-linger $(whoami)
+if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
+    mkdir -p "$XDG_RUNTIME_DIR"
+    chmod 700 "$XDG_RUNTIME_DIR"
+fi
+if command -v systemctl >/dev/null 2>&1; then
+    systemd --user &
+    sleep 5
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable --now podman.socket 2>/dev/null || true
+fi
 
 echo "[rivault] Launch context:"
 echo "[rivault]   site config: ${UMRS_SITE_CONFIG:-<none>}"
@@ -247,15 +265,19 @@ podman ps -qa --filter 'name=rivault_' --format '{{.ID}}' 2>/dev/null | \
 podman network rm -f genai-private-net 2>/dev/null || true
 
 # Verify the network is actually gone (belt-and-suspenders)
-# When containers have dependency chains (e.g. --volumes-from), the filtered
-# removal above may miss dependents.  Nuke ALL containers as a last resort.
+# When containers from a prior Slurm job are orphaned (crun state files gone
+# after $XDG_RUNTIME_DIR cleanup), podman can't stop them normally.
+# Fix: cleanup --rm clears metadata; pkill conmon kills any survivors.
 if podman network exists genai-private-net 2>/dev/null; then
-	echo "[rivault] WARN: genai-private-net still exists after rm; force-removing lingering containers..."
-	podman ps -aq --filter network=genai-private-net 2>/dev/null | xargs -r podman rm -f 2>/dev/null || true
-	# Also remove any remaining containers that may block network deletion
-	# (e.g. dependent containers not caught by the network filter)
-	podman ps -aq 2>/dev/null | xargs -r podman rm -f 2>/dev/null || true
-	podman network rm -f genai-private-net || { echo "[rivault] ERROR: cannot remove genai-private-net"; exit 1; }
+	echo "[rivault] WARN: genai-private-net still exists; cleaning orphaned containers..."
+	pkill -9 conmon 2>/dev/null || true
+	sleep 1
+	podman container cleanup --rm --all 2>/dev/null || true
+	podman rm -af 2>/dev/null || true
+	podman network rm -f genai-private-net 2>/dev/null || true
+	if podman network exists genai-private-net 2>/dev/null; then
+		echo "[rivault] ERROR: cannot remove genai-private-net"; exit 1
+	fi
 fi
 
 # Purge stale rootless Podman IPAM leases so newly created containers can bind
@@ -282,13 +304,24 @@ fi
 [[ $_ipam_cleaned -gt 0 ]] && echo "[rivault] cleaned $_ipam_cleaned IPAM lease file(s)" \
                             || echo "[rivault] no stale IPAM lease files found"
 
-# Create a fresh genai-private-net, trying candidate subnets until one works
+# Create a fresh genai-private-net, trying candidate subnets until one works.
+# Prefer a configurable subnet first and avoid reusing 192.168.4 by default,
+# because stale rootless IPAM allocations on crashed jobs have repeatedly
+# poisoned that range on RCCS Cloud.
 # NOTE: do NOT use --internal here; rootful podman's conmon port-forwarder
 # cannot relay data across an internal bridge (TCP connects but hangs).
 # The published port (NGINX_LITELLM_DOCKER_PORT) must be reachable from the
 # host so the SSH tunnel from the control-plane container can reach it.
 _net_created=0
-for IP1TO3 in '192.168.4' '172.16.4' '10.0.4'; do
+_preferred_ip1to3="${PRIV_IP1TO3:-172.16.4}"
+_candidate_subnets=()
+for _candidate in "${_preferred_ip1to3}" '172.16.4' '10.0.4' '192.168.4'; do
+    if [[ " ${_candidate_subnets[*]} " == *" ${_candidate} "* ]]; then
+        continue
+    fi
+    _candidate_subnets+=("${_candidate}")
+done
+for IP1TO3 in "${_candidate_subnets[@]}"; do
 	# Note: --disable-dns needed because infra lacks dns, but we need fixed ips
 	if podman network create --disable-dns --subnet "${IP1TO3}.0/24" genai-private-net 2>/dev/null; then
 		_net_created=1
@@ -319,6 +352,16 @@ ssh -fN -L "127.0.0.1:${UMRS_S3_TUNNEL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "
     -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes 2>&1 \
     && echo "[rivault] SSH tunnel: localhost:${UMRS_S3_TUNNEL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} (for host)" \
     || echo "[rivault] WARNING: SSH tunnel (host) already bound or failed (OK if port ${UMRS_S3_TUNNEL_PORT} == ${_S3_LOCAL_PORT})"
+
+# SELinux context for bind-mounted dirs (safe no-op when SELinux is disabled)
+for _sel_path in \
+    "./nginx_fs/umrs.conf" \
+    "./litellm_fs/config.yaml" \
+    "./nginx_fs/out-conf.d/" \
+    "./coredns_fs/" \
+    "./bento/"; do
+    [[ -e "$_sel_path" ]] && chcon -Rt svirt_sandbox_file_t "$_sel_path" 2>/dev/null || true
+done
 
 sed -i  -e "s@^\(PRIV_IP1TO3=\).*@\1${IP1TO3}@g" \
 	-e "s@^\(UUID=\).*@\1${uuid}@g" \
@@ -355,10 +398,12 @@ cleanup_stack() {
     trap - EXIT TERM INT
 
     echo "[rivault] Cleaning up stack (${reason})..."
-    podman-compose --env-file "./env.${uuid}" \
+    podman-compose --project-name "exit" --in-pod false \
+               --env-file "./env.${uuid}" \
                --file "./userdata-access.yaml" \
                down >/dev/null 2>&1 || true
-    podman-compose --env-file "./env.${uuid}" \
+    podman-compose --project-name "rivault" --in-pod false \
+               --env-file "./env.${uuid}" \
                --file "./serve-model.yaml" ${GPUoverride[@]} \
                down >/dev/null 2>&1 || true
     podman network rm -f genai-private-net >/dev/null 2>&1 || true
@@ -376,13 +421,15 @@ trap 'cleanup_stack "signal:TERM" 143; exit 143' TERM
 trap 'cleanup_stack "signal:INT" 130; exit 130' INT
 trap 'cleanup_stack "exit" "$?"' EXIT
 
-podman-compose --env-file "./env.${uuid}" \
+podman-compose --project-name "rivault" --in-pod false \
+               --env-file "./env.${uuid}" \
                --file "./serve-model.yaml" ${GPUoverride[@]} \
                ${_profile_flags} \
                up \
 	       --remove-orphans --detach
 
-podman-compose --env-file "./env.${uuid}" \
+podman-compose --project-name "exit" --in-pod false \
+               --env-file "./env.${uuid}" \
                --file "./userdata-access.yaml" \
                --profile harness \
                up \

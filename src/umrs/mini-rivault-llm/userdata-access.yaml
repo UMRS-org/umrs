@@ -35,6 +35,7 @@ services:
     pull_policy: missing
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, chown, dac_override, setgid, setuid ]  #net_bind_service
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: ${NGINX_REPLICAS:-1}
@@ -72,6 +73,7 @@ services:
     pull_policy: missing
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, net_bind_service ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: ${COREDNS_REPLICAS:-1}
