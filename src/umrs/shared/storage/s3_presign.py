@@ -37,13 +37,17 @@ DEFAULT_TTL_SEC = 3600
 _presign_clients: Dict[str, Any] = {}
 
 
-def _get_presign_endpoint():
+def _get_presign_endpoint(endpoint_override: Optional[str] = None):
     """Read the presign endpoint from env or config file.
 
     Checks (in order):
+      0. explicit ``endpoint_override`` argument
       1. ``S3_PRESIGN_ENDPOINT`` environment variable
       2. ``~/.config/umrs/s3_presign_endpoint`` file (first non-empty line)
     """
+    if endpoint_override:
+        return endpoint_override
+
     endpoint = os.environ.get("S3_PRESIGN_ENDPOINT", "")
     if endpoint:
         return endpoint
@@ -58,14 +62,14 @@ def _get_presign_endpoint():
     return endpoint
 
 
-def _get_presign_client(s3_client):
+def _get_presign_client(s3_client, endpoint_override: Optional[str] = None):
     """Return a boto3 S3 client configured for external presigned URLs.
 
     If ``S3_PRESIGN_ENDPOINT`` is set (env or config file), creates a
     new client with that endpoint using the same credentials as
     *s3_client*.  Otherwise returns *s3_client* unchanged.
     """
-    endpoint = _get_presign_endpoint()
+    endpoint = _get_presign_endpoint(endpoint_override=endpoint_override)
     if not endpoint:
         return s3_client
 
@@ -95,6 +99,7 @@ def generate_presigned_get(
     key: str,
     ttl: int = DEFAULT_TTL_SEC,
     use_external_endpoint: bool = True,
+    endpoint_override: Optional[str] = None,
 ) -> str:
     """Generate a presigned GET URL for downloading an S3 object.
 
@@ -110,7 +115,11 @@ def generate_presigned_get(
     Returns:
         Presigned URL string.
     """
-    client = _get_presign_client(s3_client) if use_external_endpoint else s3_client
+    client = (
+        _get_presign_client(s3_client, endpoint_override=endpoint_override)
+        if use_external_endpoint
+        else s3_client
+    )
     return client.generate_presigned_url(
         ClientMethod="get_object",
         Params={"Bucket": bucket, "Key": key},
@@ -125,6 +134,7 @@ def generate_presigned_put(
     content_type: str = "application/octet-stream",
     ttl: int = DEFAULT_TTL_SEC,
     use_external_endpoint: bool = True,
+    endpoint_override: Optional[str] = None,
 ) -> str:
     """Generate a presigned PUT URL for uploading an S3 object.
 
@@ -141,7 +151,11 @@ def generate_presigned_put(
     Returns:
         Presigned URL string.
     """
-    client = _get_presign_client(s3_client) if use_external_endpoint else s3_client
+    client = (
+        _get_presign_client(s3_client, endpoint_override=endpoint_override)
+        if use_external_endpoint
+        else s3_client
+    )
     return client.generate_presigned_url(
         ClientMethod="put_object",
         Params={
@@ -161,6 +175,7 @@ def generate_presigned_urls_for_keys(
     content_type: str = "application/octet-stream",
     ttl: int = DEFAULT_TTL_SEC,
     use_external_endpoint: bool = True,
+    endpoint_override: Optional[str] = None,
 ) -> Dict[str, str]:
     """Generate presigned URLs for a batch of S3 keys.
 
@@ -186,11 +201,13 @@ def generate_presigned_urls_for_keys(
                 s3_client, bucket, key,
                 content_type=content_type, ttl=ttl,
                 use_external_endpoint=use_external_endpoint,
+                endpoint_override=endpoint_override,
             )
         else:
             result[key] = gen(
                 s3_client, bucket, key, ttl=ttl,
                 use_external_endpoint=use_external_endpoint,
+                endpoint_override=endpoint_override,
             )
     return result
 

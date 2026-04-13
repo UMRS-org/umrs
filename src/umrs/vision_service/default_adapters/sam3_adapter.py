@@ -8,16 +8,25 @@ import os
 import urllib.request
 from typing import Any, Dict
 
-import torch
 from PIL import Image
 
 from umrs.vision_service.adapters.base import VisionModelAdapter
+from umrs.vision_service.output_specs import describe_output_artifacts
 
 logger = logging.getLogger(__name__)
 
 
+def _require_presigned_urls() -> bool:
+    return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 class SAM3Adapter(VisionModelAdapter):
     """Load and run SAM3 text-prompted segmentation."""
+
+    def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
+        return describe_output_artifacts("sam3", key, config)
 
     def cache_key(self, config: Dict[str, Any]) -> str:
         checkpoint = config.get("checkpoint",
@@ -74,8 +83,7 @@ class SAM3Adapter(VisionModelAdapter):
         # Upload overlay visualisation
         if result["num_objects"] > 0:
             overlay = overlay_masks_on_image(image, result["masks"])
-            base = key.rsplit(".", 1)[0] if "." in key else key
-            overlay_key = f"{base}_sam3_seg.png"
+            overlay_key = next(iter(self.describe_outputs(key, config)))
             buf = io.BytesIO()
             overlay.save(buf, format="PNG")
             buf.seek(0)
@@ -98,6 +106,10 @@ class SAM3Adapter(VisionModelAdapter):
                 )
                 urllib.request.urlopen(req, timeout=120)  # noqa: S310
             else:
+                if _require_presigned_urls() or s3 is None:
+                    raise RuntimeError(
+                        f"Missing presigned PUT URL for {overlay_key}"
+                    )
                 s3.put_object(Bucket=dst_bucket, Key=overlay_key,
                               Body=png_data, ContentType="image/png")
             response["overlay_s3_key"] = f"s3://{dst_bucket}/{overlay_key}"
