@@ -28,6 +28,7 @@ services:
       HIP_VISIBLE_DEVICES: ""
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, chown, dac_override, setgid, setuid, net_bind_service ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"  # crun needs keep-id for Lustre; runc needs "host"
     deploy:
       mode: replicated
       replicas: ${NGINX_REPLICAS:-1}
@@ -89,6 +90,7 @@ services:
     #  start_period: 40s
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: ${LITELLM_REPLICAS:-1}
@@ -129,6 +131,7 @@ services:
     #  retries: 10
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, setuid, setgid, chown, dac_override, fowner ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: ${POSTGRES_REPLICAS:-1}
@@ -181,6 +184,7 @@ services:
       TZ: ${GENAI_TZ:-Asia/Tokyo}
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: ${VLLM_REPLICAS:-1}
@@ -275,6 +279,7 @@ services:
       # Note: CUDA_VISIBLE_DEVICES not set to allow GPU access
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: ${MCP_VISION_REPLICAS:-1}
@@ -317,6 +322,7 @@ services:
       HIP_VISIBLE_DEVICES: ""
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, net_bind_service ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: 1
@@ -356,6 +362,7 @@ services:
       - egress-guard
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: 1
@@ -400,6 +407,7 @@ services:
       - vllm
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: 1
@@ -438,7 +446,7 @@ services:
         target: /tmp/vision_outputs
       # Built-in adapters (SAM3, HMAE) — shipped with the source tree
       - type: bind
-        source: ${DEFAULT_ADAPTERS_DIR:-./default_adapters}
+        source: ${DEFAULT_ADAPTERS_DIR:-../vision_service/default_adapters}
         target: /adapters/system
         read_only: true
       # User-provided adapters (drop .py + optional requirements.txt here)
@@ -465,6 +473,7 @@ services:
       TZ: ${GENAI_TZ:-Asia/Tokyo}
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
+    userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
     deploy:
       mode: replicated
       replicas: 1

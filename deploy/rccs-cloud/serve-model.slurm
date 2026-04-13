@@ -80,7 +80,10 @@ mask_secret_state() {
 # Points to mini-rivault-llm/ inside the umrs repo on Lustre so that all
 # serve-model.yaml, nginx_fs/, coredns_fs/, litellm_fs/ etc. are accessible
 # from compute nodes. Override via RIVAULT_DIR env var.
-RIVAULT_DIR="${RIVAULT_DIR:-/lvs0/dne1/rccs-dmp/mnagaso/umrs/src/umrs/mini-rivault-llm}"
+# Prefer SLURM_SUBMIT_DIR (the cwd of the sbatch invocation) so the
+# inner script is always picked from the same worktree as the wrapper.
+_DEFAULT_REPO="${SLURM_SUBMIT_DIR:-/lvs0/dne1/rccs-dmp/mnagaso/umrs}"
+RIVAULT_DIR="${RIVAULT_DIR:-${_DEFAULT_REPO}/src/umrs/mini-rivault-llm}"
 
 if [[ ! -d "$RIVAULT_DIR" ]]; then
     echo "ERROR: RIVAULT_DIR not found: $RIVAULT_DIR"
@@ -123,11 +126,19 @@ export USER_MODEL_PATH="${USER_MODEL_PATH:-/tmp}"
 # ─── vLLM configuration (embedding model on GPU) ─────────────────────────────
 # VLLM_PATH_TO_HUGGINGFACE: HuggingFace hub cache on Lustre (shared with login)
 # VLLM_MODEL: model to serve via vLLM (must be in HF cache)
-# VLLM_DOCKER_TAG: vLLM image tag for Blackwell GPU (aarch64 + CUDA 13.0)
+# VLLM_DOCKER_TAG: vLLM image tag — auto-selected per arch if not overridden
+#   aarch64 → cu130-nightly-aarch64   (Blackwell, GB10)
+#   x86_64  → cu130-nightly-x86_64    (H200, L40S, etc.)
 # VLLM_GPU_MEM_UTIL: low memory fraction — keep room for BentoML vision
 export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/rccs-dmp/mnagaso/umrs_models/hf}"
 export VLLM_MODEL="${VLLM_MODEL:-intfloat/e5-base-v2}"
-export VLLM_DOCKER_TAG="${VLLM_DOCKER_TAG:-cu130-nightly-aarch64}"
+if [[ -z "${VLLM_DOCKER_TAG:-}" ]]; then
+    case "$(uname -m)" in
+        aarch64|arm64) VLLM_DOCKER_TAG="cu130-nightly-aarch64" ;;
+        *)             VLLM_DOCKER_TAG="cu130-nightly-x86_64"  ;;
+    esac
+fi
+export VLLM_DOCKER_TAG
 export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.10}"
 
 # ─── Fix HOME (container sets HOME=/root, but job runs as actual user) ────────
@@ -175,15 +186,30 @@ EOF
 
 # ─── Vision container image (build on compute node, cache on Lustre) ─────────
 # Use a local image name so podman-compose never tries to pull from GHCR.
-# Build natively on the compute node (aarch64) to match the GPU hardware.
+# Build natively on the compute node to match the target architecture.
 #
 # Cache hierarchy:
 #   1. podman local store (/var/tmp/podman_$USER/storage) — survives across jobs on same node
-#   2. Lustre tarball — shared across all compute nodes
+#   2. Lustre tarball (per-arch) — shared across all compute nodes of same arch
 #   3. Build from source — first time only, then saved to Lustre
+#
+# Per-arch tarballs:
+#   VISION_TARBALL is treated as a base path. The wrapper appends -<arch>.tar:
+#     /lvs0/.../umrs-vision-arm64.tar   (for aarch64 nodes: ng-dgx-m*)
+#     /lvs0/.../umrs-vision-amd64.tar   (for x86_64 nodes: ai-h200-brc, ai-l40s, genoa, etc.)
+#   This avoids cross-arch overwrites when jobs run on different node types.
 _VISION_IMAGE="${BENTOML_VISION_IMAGE:-umrs-vision:latest}"
-_VISION_TARBALL="${VISION_TARBALL:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar}"
-_UMRS_REPO="${UMRS_REPO:-/lvs0/dne1/rccs-dmp/mnagaso/umrs}"
+_VISION_TARBALL_BASE="${VISION_TARBALL:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar}"
+_UMRS_REPO="${UMRS_REPO:-${_DEFAULT_REPO}}"
+
+# Derive per-arch tarball path from base
+# Strip .tar suffix, append -<arch>.tar
+case "$(uname -m)" in
+    aarch64|arm64) _VISION_HOST_ARCH="arm64" ;;
+    x86_64|amd64)  _VISION_HOST_ARCH="amd64" ;;
+    *)             _VISION_HOST_ARCH="$(uname -m)" ;;
+esac
+_VISION_TARBALL="${_VISION_TARBALL_BASE%.tar}-${_VISION_HOST_ARCH}.tar"
 
 export BENTOML_VISION_IMAGE="${_VISION_IMAGE}"
 
@@ -199,7 +225,7 @@ echo "[wrapper]   hf cache: ${VLLM_PATH_TO_HUGGINGFACE}"
 echo "[wrapper]   sam3 path: ${SAM3_MODEL_PATH}"
 echo "[wrapper]   hmae path: ${HMAE_MODEL_PATH}"
 echo "[wrapper]   vision image: ${BENTOML_VISION_IMAGE}"
-echo "[wrapper]   vision tarball: ${_VISION_TARBALL}"
+echo "[wrapper]   vision tarball: ${_VISION_TARBALL} (arch=${_VISION_HOST_ARCH})"
 
 # Fix cgroup manager for Slurm compute nodes (no systemd user session)
 export CONTAINERS_CGROUP_MANAGER=cgroupfs
@@ -274,7 +300,37 @@ fi
 # NOTE: We intentionally KEEP the image cache (/var/tmp/podman_$USER/storage)
 # so that large images (vLLM ~10GB, vision ~5GB) don't need to be re-pulled
 # or re-loaded on every job.
+
+# ─── OCI runtime detection (userns_mode compatibility) ───────────────────────
+# crun supports "keep-id:uid=0,gid=0" which rootless Lustre bind-mounts need.
+# runc (<= 1.3.x, found on aarch64 ng-dgx nodes) does NOT support keep-id
+# and fails with: "runc create failed: can't get final child's PID from pipe".
+# For runc nodes, fall back to "host" userns_mode which skips user namespace
+# remapping and works with both runc and Lustre mounts.
+if [[ -z "${RIVAULT_USERNS_MODE:-}" ]]; then
+    _oci_runtime="$(podman info --format '{{.Host.OCIRuntime.Name}}' 2>/dev/null || echo unknown)"
+    echo "[wrapper] Detected OCI runtime: ${_oci_runtime}"
+    case "${_oci_runtime}" in
+        crun*)
+            export RIVAULT_USERNS_MODE="keep-id:uid=0,gid=0"
+            ;;
+        runc*|*)
+            # runc and unknown runtimes: use host userns (safe default)
+            export RIVAULT_USERNS_MODE="host"
+            ;;
+    esac
+    echo "[wrapper] userns_mode set to: ${RIVAULT_USERNS_MODE}"
+fi
+
 podman pod rm -af 2>/dev/null || true
+# Clean orphaned containers from previous Slurm jobs.
+# When a prior job's $XDG_RUNTIME_DIR was cleaned by Slurm, the crun state
+# files vanish but container metadata persists in graphroot. Normal
+# podman rm can't stop containers whose runtime state is gone.
+# "container cleanup --rm --all" cleans metadata without deleting images.
+pkill -9 conmon 2>/dev/null || true
+sleep 1
+podman container cleanup --rm --all 2>/dev/null || true
 podman rm -af 2>/dev/null || true
 podman network prune -f 2>/dev/null || true
 
@@ -285,22 +341,31 @@ if [[ -d "/var/tmp/podman_/storage" ]]; then
     rm -rf "/var/tmp/podman_/storage"
 fi
 
-# ─── Load or build the vision image ─────────────────────────────────────────
-if [[ -f "${_VISION_TARBALL}" ]]; then
-    echo "[wrapper] Loading vision image from Lustre tarball: ${_VISION_TARBALL}"
-    podman load -i "${_VISION_TARBALL}"
-    echo "[wrapper] Vision image loaded."
-else
-    echo "[wrapper] Building vision image on compute node (first time — may take several minutes)..."
+_build_vision_image() {
+    echo "[wrapper] Building vision image on compute node (may take several minutes)..."
     if podman build --cgroup-manager=cgroupfs -t "${_VISION_IMAGE}" \
          -f "${_UMRS_REPO}/src/umrs/vision_service/Dockerfile" "${_UMRS_REPO}"; then
         echo "[wrapper] Saving tarball to Lustre: ${_VISION_TARBALL}"
         mkdir -p "$(dirname "${_VISION_TARBALL}")"
         podman save "${_VISION_IMAGE}" -o "${_VISION_TARBALL}.tmp" && mv "${_VISION_TARBALL}.tmp" "${_VISION_TARBALL}"
-        echo "[wrapper] Vision image built and cached."
-    else
-        echo "[wrapper] ERROR: podman build failed (exit $?). Vision service will not be available."
+        echo "[wrapper] Vision image built and cached (${_VISION_HOST_ARCH})."
+        return 0
     fi
+
+    echo "[wrapper] ERROR: podman build failed (exit $?). Vision service will not be available."
+    return 1
+}
+
+# ─── Load or build the vision image ─────────────────────────────────────────
+# The tarball path already includes the host arch suffix, so no cross-arch
+# mismatch check is needed — each arch loads its own tarball.
+if [[ -f "${_VISION_TARBALL}" ]]; then
+    echo "[wrapper] Loading vision image from Lustre tarball: ${_VISION_TARBALL}"
+    podman load -i "${_VISION_TARBALL}"
+    echo "[wrapper] Vision image loaded (${_VISION_HOST_ARCH})."
+else
+    echo "[wrapper] No tarball at ${_VISION_TARBALL}; building natively..."
+    _build_vision_image || true
 fi
 
 # ─── Delegate to the main serve-model.slurm in RIVAULT_DIR ───────────────────
