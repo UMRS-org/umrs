@@ -270,6 +270,11 @@ export DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD:-umrs_rccs}"
 # (localhost:9000 on compute → login node MinIO).
 export S3_PRESIGN_ENDPOINT="${S3_PRESIGN_ENDPOINT:-http://localhost:9000}"
 
+# BentoML vision runs inside a container on the compute node, so presigned
+# URLs for vision tasks must use the host-gateway alias instead of localhost.
+export VISION_S3_PRESIGN_ENDPOINT="${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}"
+export VISION_REQUIRE_PRESIGNED_URLS="${VISION_REQUIRE_PRESIGNED_URLS:-true}"
+
 # Model cache on Lustre — shared between login node and compute nodes.
 # Compute nodes mount the same Lustre path, so models downloaded here are
 # immediately available to GPU containers (vLLM, BentoML).  These env vars
