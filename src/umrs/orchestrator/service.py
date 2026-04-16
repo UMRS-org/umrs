@@ -52,6 +52,8 @@ class ProvisionRequest:
     min_ttl_for_reuse_sec: int = 60  # Min TTL remaining for reuse
     env_vars: Dict[str, str] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    partition_override: Optional[str] = None  # Override site partition for this request
+    nodelist_hint: Optional[str] = None  # Slurm --nodelist hint (e.g. "ai-h200-brc-00")
 
 
 @dataclass
@@ -349,6 +351,8 @@ class OrchestrationService:
                 model_path=request.model_path,
                 env=submit_env,
                 gpu_count=request.gpu_count,
+                partition_override=request.partition_override,
+                nodelist_hint=request.nodelist_hint,
             )
 
             if not job_info or not job_info.job_id:

@@ -3,6 +3,35 @@ description: my_instruction
 # applyTo: 'Describe when these instructions should be loaded' # when provided, instructions will automatically be added to the request context when the pattern matches an attached file
 ---
 
+## ABSOLUTE RULE: Client Runs LOCALLY — Never on Remote
+
+UMRS is a **local-client / remote-server** architecture. The `umrs-client`
+CLI and ALL demo scripts (`demos/`, `demos_private/`) MUST run on the
+**local Mac**, NEVER via SSH on rccs-cloud.
+
+- ❌ NEVER: `ssh rccs-cloud 'bash demos/…/run_demo.sh'`
+- ❌ NEVER: `ssh rccs-cloud 'source .venv/bin/activate && …'`
+- ❌ NEVER: Run any demo, client command, or test via SSH on the remote
+- ✅ ALWAYS: `source .venv/bin/activate && bash demos/…/run_demo.sh` (locally)
+- ✅ ALWAYS: Use the local `.venv/` at repo root (NOT `deploy/rccs-cloud/.venv/`)
+- ✅ ALWAYS: Ensure SSH tunnel (`deploy/rccs-cloud/ssh_tunnel.sh`) is running first
+
+The only operations that run on rccs-cloud are:
+- `rsync` to sync source code
+- `podman build` / `podman save` to rebuild container images
+- `server_umrs.py` management (start/stop/restart via deploy scripts)
+- Slurm job management (`squeue`, `scancel`)
+
+If you are about to run a demo or client command, STOP and verify it runs locally.
+
+## SSH Connection to rccs-cloud
+
+- SSH alias: `rccs-cloud`
+- Hostname: `login.cloud.r-ccs.riken.jp`
+- Login node: `login1.cloud.r-ccs.riken.jp`
+- User: `masaru.nagaso`
+- SSH tunnel script: `deploy/rccs-cloud/ssh_tunnel.sh` (ports 5555, 5556, 9000, 8081)
+
 ## Workflow Orchestration
 
 ### 1. Plan Mode Default

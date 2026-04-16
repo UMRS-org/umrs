@@ -66,6 +66,7 @@ class RuntimeConfig:
     cdi_spec: str = "/var/run/cdi/nvidia.yaml"  # CDI spec path (if gpu_passthrough=cdi)
     cgroup_manager: str = "cgroupfs"
     storage_root: str = ""                      # podman graphroot override
+    vision_stack: str = "umrs"                    # umrs | jens — selects VisionModelService or VisionFrontend
 
 
 @dataclass
@@ -107,6 +108,25 @@ class VllmConfig:
 
 
 @dataclass
+class PartitionProfile:
+    """Declarative per-partition hardware and runtime profile.
+
+    Eliminates fragile runtime detection of OCI runtime, userns_mode,
+    network backend, and GPU vendor.  The wrapper looks up the profile
+    for the assigned Slurm partition and applies the values directly.
+    """
+
+    arch: str = "x86_64"                        # x86_64 | aarch64
+    gpu_vendor: str = "nvidia"                  # nvidia | amd | none
+    oci_runtime: str = "crun"                   # crun | runc
+    userns_mode: str = "keep-id:uid=0,gid=0"   # keep-id:uid=0,gid=0 | host
+    network_backend: str = "netavark"           # netavark | cni
+    vllm_docker_tag: str = ""                   # override per partition (empty → use site default)
+    gpus: int = 1                               # Slurm --gpus count
+    needs_netavark_switch: bool = True          # force netavark backend file on startup
+
+
+@dataclass
 class DatabaseConfig:
     """PostgreSQL connection settings."""
 
@@ -134,9 +154,40 @@ class SiteConfig:
     network: NetworkConfig = field(default_factory=NetworkConfig)
     vllm: VllmConfig = field(default_factory=VllmConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    partition_profiles: Dict[str, PartitionProfile] = field(default_factory=dict)
     extra: Dict[str, Any] = field(default_factory=dict)
 
     # --- helpers -----------------------------------------------------------
+
+    def get_partition_profile(self, partition: str) -> Optional[PartitionProfile]:
+        """Look up a partition profile by name.
+
+        Returns ``None`` when no profile is registered for *partition*.
+        """
+        return self.partition_profiles.get(partition)
+
+    def partition_env(self, partition: str) -> Dict[str, str]:
+        """Return env vars for a specific partition profile.
+
+        Useful for the wrapper to apply declarative overrides
+        (userns_mode, OCI runtime, docker_tag, etc.) without runtime detection.
+        Returns an empty dict when no profile is registered.
+        """
+        pp = self.get_partition_profile(partition)
+        if pp is None:
+            return {}
+        env: Dict[str, str] = {
+            "RIVAULT_PARTITION_ARCH": pp.arch,
+            "RIVAULT_PARTITION_GPU_VENDOR": pp.gpu_vendor,
+            "RIVAULT_PARTITION_OCI_RUNTIME": pp.oci_runtime,
+            "RIVAULT_USERNS_MODE": pp.userns_mode,
+            "RIVAULT_PARTITION_NETWORK_BACKEND": pp.network_backend,
+            "RIVAULT_PARTITION_GPUS": str(pp.gpus),
+            "RIVAULT_PARTITION_NEEDS_NETAVARK": "1" if pp.needs_netavark_switch else "0",
+        }
+        if pp.vllm_docker_tag:
+            env["VLLM_DOCKER_TAG"] = pp.vllm_docker_tag
+        return env
 
     def to_env(self) -> Dict[str, str]:
         """Export SiteConfig as a flat dict of environment variables.
@@ -167,6 +218,8 @@ class SiteConfig:
             env["BENTOML_VISION_IMAGE"] = self.runtime.vision_image
         if self.runtime.profiles:
             env["RIVAULT_PROFILES"] = " ".join(self.runtime.profiles)
+        if self.runtime.vision_stack and self.runtime.vision_stack != "umrs":
+            env["VISION_STACK"] = self.runtime.vision_stack
 
         # Storage
         if self.storage.model_cache_dir:
@@ -305,6 +358,13 @@ def load_site_config(path: Optional[str] = None) -> SiteConfig:
 
 def _parse_raw(raw: Dict[str, Any]) -> SiteConfig:
     """Turn a raw YAML dict into a :class:`SiteConfig`."""
+    pp_raw = raw.get("partition_profiles", {})
+    profiles: Dict[str, PartitionProfile] = {}
+    if isinstance(pp_raw, dict):
+        for name, pdata in pp_raw.items():
+            if isinstance(pdata, dict):
+                profiles[name] = _dict_to_dataclass(PartitionProfile, pdata)
+
     return SiteConfig(
         name=raw.get("name", "default"),
         description=raw.get("description", ""),
@@ -314,6 +374,7 @@ def _parse_raw(raw: Dict[str, Any]) -> SiteConfig:
         network=_dict_to_dataclass(NetworkConfig, raw.get("network", {})),
         vllm=_dict_to_dataclass(VllmConfig, raw.get("vllm", {})),
         database=_dict_to_dataclass(DatabaseConfig, raw.get("database", {})),
+        partition_profiles=profiles,
         extra=raw.get("extra", {}),
     )
 
@@ -341,6 +402,7 @@ def default_site_config() -> SiteConfig:
     profiles = os.getenv("RIVAULT_PROFILES", "")
     if profiles:
         cfg.runtime.profiles = profiles.split()
+    cfg.runtime.vision_stack = os.getenv("VISION_STACK", "umrs")
 
     # Storage
     cfg.storage.model_cache_dir = os.getenv("VLLM_PATH_TO_HUGGINGFACE", "")

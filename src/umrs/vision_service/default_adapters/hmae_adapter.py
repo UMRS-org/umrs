@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import pickle
 import urllib.request
 from typing import Any, Dict
 
@@ -145,6 +146,22 @@ class HMAEAdapter(VisionModelAdapter):
             _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
                            presigned_output_urls)
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
+            response["prediction"] = pred
+
+            # Upload pickled result arrays
+            pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
+            pkl_data = pickle.dumps(
+                {
+                    "prediction": pred,
+                    "coords": data["coords"],
+                    "patches": data["patches"],
+                    "depths": data["depths"],
+                },
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+            _upload_result(s3, dst_bucket, pkl_key, pkl_data,
+                           "application/octet-stream", presigned_output_urls)
+            response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
         elif task == "mae_reconstruction":
             pred, mask, loss = infer_mae(model["model"], data, device,
@@ -156,6 +173,25 @@ class HMAEAdapter(VisionModelAdapter):
                            presigned_output_urls)
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
             response["mae_loss"] = loss
+            response["prediction"] = pred
+            response["mae_mask"] = mask
+
+            # Upload pickled result arrays
+            pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
+            pkl_data = pickle.dumps(
+                {
+                    "prediction": pred,
+                    "mask": mask,
+                    "loss": loss,
+                    "coords": data["coords"],
+                    "patches": data["patches"],
+                    "depths": data["depths"],
+                },
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+            _upload_result(s3, dst_bucket, pkl_key, pkl_data,
+                           "application/octet-stream", presigned_output_urls)
+            response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
         elif task == "feature_extraction":
             features = infer_features(model["model"], data, device,
@@ -174,6 +210,23 @@ class HMAEAdapter(VisionModelAdapter):
             response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
             response["cls_shape"] = list(cls_token.shape)
             response["patch_shape"] = list(patch_tokens.shape)
+            response["cls_token"] = cls_token
+            response["patch_tokens"] = patch_tokens
+            response["coords"] = data["coords"]
+
+            # Upload pickled result arrays
+            pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
+            pkl_data = pickle.dumps(
+                {
+                    "cls_token": cls_token,
+                    "patch_tokens": patch_tokens,
+                    "coords": data["coords"],
+                },
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
+            _upload_result(s3, dst_bucket, pkl_key, pkl_data,
+                           "application/octet-stream", presigned_output_urls)
+            response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
         else:
             raise ValueError(

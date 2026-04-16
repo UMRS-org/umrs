@@ -78,7 +78,7 @@ if [[ "$VIDEO_COUNT" -gt "$MAX_VIDEOS" ]]; then
     rm -rf "$UPLOAD_DIR"
     mkdir -p "$UPLOAD_DIR"
     find "$VIDEO_DIR" -maxdepth 1 -type f \( -name "*.mp4" -o -name "*.avi" -o -name "*.mov" \) \
-        | head -n "$MAX_VIDEOS" | while read -r f; do ln -s "$f" "$UPLOAD_DIR/"; done
+        | head -n "$MAX_VIDEOS" | while read -r f; do ln -s "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "$UPLOAD_DIR/"; done
     log "  Staged ${MAX_VIDEOS} of ${VIDEO_COUNT} videos"
 fi
 

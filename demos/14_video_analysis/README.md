@@ -50,6 +50,37 @@ python generate_test_videos.py -o sample_videos/ --count 8 --fps 30
 5. **Wait & download** — poll until analysis completes, download results
 6. **Show summary** — print aggregate motion report
 
+## Running Manually
+
+```bash
+# 1. Verify server connectivity
+umrs-client ping
+
+# 2. (Optional) Generate synthetic test videos
+#    Creates short MP4 files with a moving white rectangle.
+#    Every 3rd video is static (no motion) for negative test cases.
+python3 generate_test_videos.py -o sample_videos/ --count 4 --fps 15
+
+# 3. Upload the motion detection workflow to the server
+#    The workflow contains a MotionDetectStep that analyzes
+#    consecutive frames for pixel intensity changes and reports
+#    motion events with timestamps.
+umrs-client upload-workflow video_workflow/ --name "video-motion"
+
+# 4. Reload server configuration
+umrs-client reload
+
+# 5. Upload videos to the analysis bucket
+#    Each video will be processed by the MotionDetectStep,
+#    producing a per-video JSON report with motion events.
+umrs-client upload_dir ./sample_videos user1-video
+
+# 6. Download analysis results
+#    Results include per-video motion reports and an aggregate
+#    summary.json with total events across all videos.
+umrs-client download_results user1-video ./results --force-overwrite
+```
+
 ## Configuration
 
 ### Environment Variables

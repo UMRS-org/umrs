@@ -1,5 +1,17 @@
 # TODO
 
+## Vision Presigned S3 Hardening (2026-04-13)
+
+**Goal:** Remove direct S3 credentials from the BentoML vision runtime by
+switching vision input download and result upload to presigned URLs generated
+by the UMRS server.
+
+- [ ] P1 Add shared vision output artifact descriptors for built-in adapters
+- [ ] P2 Generate presigned GET/PUT URLs in the Bento task submission path
+- [ ] P3 Enforce strict presigned-only mode in the Bento vision service
+- [ ] P4 Remove S3 secret injection from the Bento deployment path
+- [ ] P5 Add focused validation for built-in SAM3 and HMAE output descriptors
+
 ## Robust Orchestration — Converge & Harden (2026-07-01)
 
 **Goal:** Replace fragile rivault_launcher + site-specific shell wrapper with
@@ -158,6 +170,46 @@ Review:
       --server` restart: `/rag/qa` returned a generated answer without the manual
       QA base-url override, even though the persisted registry row for the active
       `Qwen/Qwen3-0.6B` backend was still lagging in `status=starting`.
+
+### Harness Hardening — Multi-Partition Stability (2026-04-15)
+
+**Goal:** Eliminate runtime detection fragility across 12+ GPU partitions by
+adding declarative per-partition profiles, removing duplicated cleanup, fixing
+the httpx readiness poller, and tightening the probe script.
+
+Target partitions: a100, ai-h100l, ai-h200-brc, ai-l40s, ng-dgx-m0–m3,
+qc-mi250, mi100, ai-h100l-pu, qc-a100, qc-gh200, fs-mi300a, fs-mi300x
+
+#### 1 — Partition Profile Table (site_config.py + site.yaml)
+- [x] HP1 Add `PartitionProfile` dataclass to `site_config.py` with fields:
+      arch, gpu_vendor, oci_runtime, userns_mode, network_backend,
+      vllm_docker_tag, gpus, needs_netavark_switch
+- [x] HP2 Extend `SiteConfig` with `partition_profiles: Dict[str, PartitionProfile]`
+- [x] HP3 Add `get_partition_profile(partition)` helper for wrapper lookup
+- [x] HP4 Update `site-config.schema.json` with `partition_profiles` definition
+- [x] HP5 Add per-partition profiles to `deploy/rccs-cloud/site.yaml`
+
+#### 2 — Wrapper Profile-Driven Refactor
+- [x] HP6 Refactor wrapper `deploy/rccs-cloud/serve-model.slurm` to look up
+      `PartitionProfile` from site.yaml instead of runtime-detecting:
+      OCI runtime, userns_mode, netavark switch, vLLM docker tag, GPU count
+- [x] HP7 Add preflight gate: fail fast if partition profile is missing and
+      runtime detection would be needed
+
+#### 3 — Kill Dual Cleanup
+- [x] HP8 Remove the duplicated podman state recovery block from inner
+      `src/umrs/mini-rivault-llm/serve-model.slurm` (keep only the wrapper's)
+- [x] HP9 Guard inner script recovery to only trigger when NOT called from
+      the wrapper (direct/source launches)
+
+#### 4 — Fix httpx Readiness Poller
+- [x] HP10 Add `trust_env=False` to httpx.AsyncClient in readiness.py to
+      bypass proxy env vars that break compute-node connectivity
+- [x] HP11 Add `no_proxy` env var injection in wrapper for readiness polling
+
+#### 5 — Probe Script Enhancements
+- [x] HP12 Add OCI runtime and CDI device count to harness_probe.sh output
+- [x] HP13 Add netavark/CNI backend detection to probe output
 
 ### User-Defined Model Workflows
 - [ ] U-200: Finalize UDM design document and review with stakeholder

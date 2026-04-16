@@ -36,6 +36,30 @@ To register a local checkpoint directory before running:
 HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir bash run_demo.sh
 ```
 
+## Running Manually
+
+```bash
+# 1. Verify server connectivity
+umrs-client ping
+
+# 2. (Optional) Register a local HMAE model checkpoint
+#    Use this when you have pre-downloaded HMAE weights and want to
+#    register them as a system-scoped model for the server to use.
+umrs-client model register "hmae-pretrained" /path/to/hmae_checkpoint_dir \
+    --type embedding --scope system \
+    --description "HMAE ViT pretrained checkpoint"
+
+# 3. Upload volume slice images to the HMAE bucket
+#    The server will automatically dispatch images to the BentoML
+#    vision service running HMAE on GPU via Slurm.
+umrs-client upload_dir ../03_sam3_segmentation/test_data_full user1-hmae
+
+# 4. Download reconstruction results
+#    Waits for server-side HMAE processing and retrieves output
+#    files (reconstructed images, metadata) to the local results/ directory.
+umrs-client download_results user1-hmae ./results --force-overwrite
+```
+
 ## Defaults Used By The Script
 
 | Setting | Default |

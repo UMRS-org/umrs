@@ -4,6 +4,7 @@ Thin convenience layer on top of ``bentoml.SyncHTTPClient`` for the
 submit → poll → get workflow used throughout UMRS.
 """
 
+import pickle
 import time
 import logging
 
@@ -55,7 +56,13 @@ def submit_and_wait(client: bentoml.SyncHTTPClient, endpoint_name: str,
                       task_id, status.value, elapsed)
 
         if status.value == "success":
-            return task.get()
+            raw = task.get()
+            # Service returns pickle-serialised bytes; deserialise back
+            # to the original result dict.  Falls back to raw value
+            # when it is already a dict (e.g. older service).
+            if isinstance(raw, bytes):
+                return pickle.loads(raw)  # noqa: S301 — trusted internal service
+            return raw
         elif status.value == "failure":
             raise RuntimeError(f"Task {task_id} failed")
         elif status.value == "cancelled":

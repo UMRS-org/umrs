@@ -63,6 +63,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
         # and readiness clues survive normal cleanup.
         self._output_dir = self._resolve_output_dir()
         self._output_dir.mkdir(parents=True, exist_ok=True)
+        self._control_dir = self._output_dir / "control"
+        self._control_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def site(self) -> SiteConfig:
@@ -150,6 +152,24 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
         return Path(get_default_umrs_cfg_dir()).expanduser() / get_default_tmp_subdir()
 
+    def _stop_request_path(self, job_id: str) -> Path:
+        """Return the shared control file used for graceful stop requests."""
+        return self._control_dir / f"stop-{job_id}.request"
+
+    async def _wait_for_job_exit(self, job_id: str, timeout_sec: int) -> bool:
+        """Wait briefly for a job to leave the queue after a graceful stop request."""
+        elapsed = 0
+        poll_interval = 1
+
+        while elapsed < timeout_sec:
+            job = await self.get_job_status(job_id)
+            if job.status in (JobStatus.STOPPED, JobStatus.FAILED, JobStatus.UNKNOWN):
+                return True
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+        return False
+
     # ------------------------------------------------------------------
     # Job submission
     # ------------------------------------------------------------------
@@ -165,7 +185,24 @@ class SlurmPodmanBackend(OrchestratorBackend):
             raise FileNotFoundError(f"Slurm script not found: {script}")
 
         site = self.site
-        selected_partition = await self._select_submission_partition()
+
+        # Per-request partition override: validate against site candidates
+        partition_override = kwargs.pop("partition_override", None)
+        nodelist_hint = kwargs.pop("nodelist_hint", None)
+
+        if partition_override:
+            allowed = self._partition_candidates(site.scheduler.partition)
+            if allowed and partition_override not in allowed:
+                raise ValueError(
+                    f"Partition '{partition_override}' is not in site-configured "
+                    f"candidates: {allowed}"
+                )
+            selected_partition = partition_override
+            logger.info(
+                "Using per-request partition override: %s", selected_partition,
+            )
+        else:
+            selected_partition = await self._select_submission_partition()
 
         # Build sbatch arguments from site config
         sbatch_args = [
@@ -177,6 +214,9 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
         if selected_partition:
             sbatch_args.append(f"--partition={selected_partition}")
+        if nodelist_hint:
+            sbatch_args.append(f"--nodelist={nodelist_hint}")
+            logger.info("Using per-request nodelist hint: %s", nodelist_hint)
         if site.scheduler.time_limit:
             sbatch_args.append(f"--time={site.scheduler.time_limit}")
         if site.scheduler.gpus:
@@ -209,6 +249,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
             env_overrides["VLLM_MODEL_PATH"] = model_path
         if selected_partition:
             env_overrides["SLURM_PARTITION"] = selected_partition
+        env_overrides.setdefault("RIVAULT_CONTROL_DIR", str(self._control_dir))
         env_overrides.update(
             {
                 key: str(value)
@@ -320,6 +361,26 @@ class SlurmPodmanBackend(OrchestratorBackend):
         shell and applies its normal KillWait handling. Forced cleanup must
         still reach the batch shell, not only child steps.
         """
+        stop_request = self._stop_request_path(job_id)
+
+        if not force:
+            try:
+                stop_request.touch()
+            except OSError as exc:
+                logger.warning(
+                    "failed to create graceful stop request for %s: %s", job_id, exc
+                )
+            else:
+                graceful_timeout = int(os.environ.get("RIVAULT_GRACEFUL_STOP_TIMEOUT", "20"))
+                logger.info(
+                    "requested graceful compute-node stop for %s via %s",
+                    job_id,
+                    stop_request,
+                )
+                if await self._wait_for_job_exit(job_id, graceful_timeout):
+                    stop_request.unlink(missing_ok=True)
+                    return
+
         cmd = ["scancel", "-Q"]
         if force:
             cmd.extend(["--full", "--signal=KILL"])
@@ -339,6 +400,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
                 proc.returncode,
                 stderr.decode().strip(),
             )
+        if stop_request.exists():
+            stop_request.unlink(missing_ok=True)
 
     async def list_jobs(
         self,

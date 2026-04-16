@@ -32,6 +32,30 @@ python3 text_analysis_pipeline.py --input-dir ../../data/file_of_texts
 python3 text_analysis_pipeline.py --input-dir /your/text/dir --top-n 5
 ```
 
+## Running Manually
+
+This demo runs locally and does not require `umrs-client` for the default
+LOCAL backend. You can run the 6-phase pipeline step by step:
+
+```bash
+# 1. Run the text analysis pipeline on sample data
+#    The pipeline internally executes 6 phases:
+#    configure → ingest → compute → collect → verify → present
+python3 text_analysis_pipeline.py --input-dir ../../data/file_of_texts
+
+# 2. Run with custom parameters
+#    --top-n controls how many top words to report per file
+python3 text_analysis_pipeline.py --input-dir /your/text/dir --top-n 5
+
+# 3. To use the UMRS backend instead of LOCAL, modify configure()
+#    in text_analysis_pipeline.py to set:
+#      compute_backend=ComputeBackend.UMRS_EMBEDDING
+#    Then the pipeline uses these umrs-client commands internally:
+#      umrs-client upload_dir <input-dir> <bucket>     # ingest phase
+#      umrs-client status process_objects               # compute phase
+#      umrs-client download_results <bucket> <output>   # collect phase
+```
+
 ## Pipeline Phases Explained
 
 | Phase | Method | What It Does |

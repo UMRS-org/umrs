@@ -3,7 +3,7 @@ Segment Mode — object detection / segmentation via BentoML.
 
 Identical to demo 09's SegmentStep but packaged as an independent
 parallel branch.  Outputs per-image JSON metadata with bounding boxes
-and confidence scores.
+and confidence scores, plus compressed mask arrays when available.
 
 Config:
   - ``bentoml_url``:  BentoML vision service base URL
@@ -16,11 +16,14 @@ Config:
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
+import numpy as np
 
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 
@@ -82,6 +85,25 @@ class SegmentModeStep(Step):
                 content_type="application/json",
             )
             output_keys.append(out_key)
+
+            # Save per-object masks as compressed NPZ when available
+            masks = result.get("masks")
+            if masks and len(masks) > 0:
+                npz_buf = io.BytesIO()
+                np.savez_compressed(
+                    npz_buf,
+                    **{f"mask_{i}": m for i, m in enumerate(masks)},
+                )
+                npz_buf.seek(0)
+                masks_key = f"segment/{base}_segment_masks.npz"
+                ctx.upload_bytes(
+                    masks_key,
+                    npz_buf.getvalue(),
+                    content_type="application/octet-stream",
+                )
+                output_keys.append(masks_key)
+                logger.info("  → saved %d masks to %s", len(masks), masks_key)
+
             metadata_list.append(meta)
             checksums.append(checksum)
 

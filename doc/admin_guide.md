@@ -446,3 +446,109 @@ curl http://localhost:$NGINX_PORT/vision/healthz
 - [UMRS Overview](umrs_overview.md) — architecture details
 - [RAG Implementation](rag_implementation.md) — RAG pipeline setup
 - [Mini-Rivault README](../src/umrs/mini-rivault-llm/README.md) — inference stack details
+
+---
+
+## Troubleshooting: BentoML Vision Service
+
+### Common Failure Patterns
+
+#### 1. Container starts but service never becomes ready
+
+**Symptom:** `podman ps` shows `bentoml-vision` running, but `/readyz` never
+returns 200. Inference requests fail with "connection refused".
+
+**Root causes:**
+- Adapter `.py` files in `/adapters/system` or `/adapters/user` have import
+  errors (missing dependencies, syntax errors).
+- Model weight files are missing or corrupted at mount paths
+  (`SAM3_MODEL_PATH`, `HMAE_MODEL_PATH`).
+- GPU is not visible inside the container (CDI misconfiguration).
+
+**Diagnosis:**
+```bash
+podman logs rivault_bentoml-vision_1 2>&1 | grep -iE "error|failed|exception"
+podman logs rivault_bentoml-vision_1 2>&1 | grep "adapter"
+```
+
+**Fix:** Verify model paths exist and are readable. Check adapter `.py` files
+for import errors. Rebuild vision tarball if needed.
+
+#### 2. Podman state corruption ("invalid internal status")
+
+**Symptom:** `podman info` fails with "invalid internal status, try resetting
+the pause process". Compose-up fails immediately.
+
+**Root cause:** Prior Slurm job left stale pause-process references in the
+podman GraphRoot (`/var/tmp/podman_$USER/storage/`). Slurm cleaned
+`$XDG_RUNTIME_DIR` but not the persistent storage.
+
+**Diagnosis:**
+```bash
+podman info  # Will show the error message
+ls /var/tmp/podman_$USER/storage/libpod/  # Stale state files
+```
+
+**Fix:** The `serve-model.slurm` script has automatic recovery. If recovery
+fails, manual intervention:
+```bash
+podman system reset --force
+```
+
+#### 3. SSH tunnel failure (S3/MinIO unreachable)
+
+**Symptom:** BentoML service starts but inference fails with S3 connection
+errors. `urllib.error.URLError` or boto3 `ConnectionError`.
+
+**Root cause:** SSH tunnel from compute node to login node died or was never
+established. Port `19000` (container access) or `9000` (host access) not
+forwarding.
+
+**Diagnosis:**
+```bash
+# On compute node:
+ss -tlnp | grep 19000
+ss -tlnp | grep 9000
+# Try probe:
+bash -c "echo > /dev/tcp/127.0.0.1/19000"
+```
+
+**Fix:** Re-establish the tunnel manually or restart the Slurm job. The
+serve-model.slurm now verifies tunnel liveness at startup and logs warnings.
+
+#### 4. IPAM subnet poisoning
+
+**Symptom:** `podman network create` fails with "subnet already in use" for
+all candidate subnets. Stack cannot start.
+
+**Root cause:** Stale rootless IPAM allocations from crashed jobs persist
+across sessions.
+
+**Diagnosis:**
+```bash
+podman network ls
+cat /var/tmp/podman_$USER/storage/networks/*.json
+```
+
+**Fix:** Remove all podman networks and retry:
+```bash
+podman network rm -f genai-private-net
+podman network prune -f
+```
+
+#### 5. GPU memory exhausted (LRU cache pressure)
+
+**Symptom:** `CUDA out of memory` errors during inference. May affect
+subsequent requests even after the failing request completes.
+
+**Root cause:** Multiple models loaded concurrently exceed GPU VRAM.
+`torch.cuda.empty_cache()` does not free all memory on eviction.
+
+**Diagnosis:**
+```bash
+# Inside container:
+python3 -c "import torch; print(torch.cuda.memory_summary())"
+```
+
+**Fix:** Reduce `MAX_VISION_MODELS` (default: 3) or increase GPU VRAM.
+Restart the container to clear all cached models.

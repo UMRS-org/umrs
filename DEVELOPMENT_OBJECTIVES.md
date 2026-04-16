@@ -363,3 +363,41 @@ All phases run in parallel where possible.
 
 All 10 library modules (B1–B10) and 7 demo scripts (15–21) are implemented.
 **170 unit tests** across 10 test files pass (pytest, no external deps).
+
+---
+
+## F. Rich Vision Results — Serialisation Strategy
+
+**Current (Plan A — Pickle inline)**: The BentoML vision service
+`infer()` endpoint returns `pickle.dumps(result_dict)`.  Adapters
+include heavy objects (numpy mask arrays, torch tensors) directly in the
+result dict.  The UMRS server-side client (`bentoml_adapter.py`,
+`bentoml_client.py`) deserialises with `pickle.loads()`.
+
+**Trade-offs**:
+- Simple, zero-copy on the adapter side.
+- Transfer is **mandatory** — callers that only need boxes/scores still
+  receive the full mask payload.
+- For large images (8192×8192) with many detected objects the pickled
+  response can reach hundreds of MiB, which adds latency to the BentoML
+  task-queue result retrieval.
+
+**Future migration (Plan B — Sidecar artifacts)**:
+Upload heavy data (masks as compressed `.npz`, features as `.pt`) to S3
+inside the adapter, return only lightweight S3 URIs in the result dict.
+The result dict stays JSON-serialisable and small (<1 KiB).  The
+`output_specs.py` artifact declarations and presigned-URL infrastructure
+already support multiple outputs per adapter.
+
+Key changes for Plan B:
+1. Extend `output_specs.py` so SAM3 declares three outputs:
+   `{base}_sam3_seg.png`, `{base}_sam3_masks.npz`, `{base}_sam3_meta.json`.
+2. In `sam3_adapter.py`, upload masks via `np.savez_compressed` → presigned PUT.
+3. Return S3 keys in the response dict; remove raw arrays.
+4. Revert `service.py` return type from `bytes` back to `dict`.
+5. Remove `pickle.loads` in `bentoml_adapter.py` / `bentoml_client.py`.
+
+**Plan C (Hybrid threshold)**: Return small results inline (pickle),
+upload large ones as sidecars based on a configurable byte threshold.
+Combines the simplicity of Plan A for small payloads with the lazy
+transfer of Plan B for large ones.

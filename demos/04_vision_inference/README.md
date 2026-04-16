@@ -20,20 +20,34 @@ cd demos/04_vision_inference
 bash run_demo.sh
 ```
 
-## Manual Steps
+## Running Manually
 
 ```bash
-# 1. Ping server + reload config
-umrs-client -c ~/.config/umrs/conf_umrs.json ping
-umrs-client -c ~/.config/umrs/conf_umrs.json reload
+# 1. Verify server connectivity
+#    Sends a ZMQ ping to confirm the server is alive.
+umrs-client ping
 
-# 2. Upload images
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    upload_dir ../sample_data/images user1-sam3
+# 2. Reload server configuration
+#    Ensures the server picks up any recent config changes
+#    (e.g. new vision experience, bucket alias, model path).
+umrs-client reload
 
-# 3. Wait for processing and download results
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    download_results user1-sam3 results/ --force-overwrite
+# 3. Upload images to the vision bucket
+#    Images are stored in S3 and the server dispatches each one
+#    to the BentoML vision model running on HPC via Slurm.
+#    The first upload may trigger a cold start (Slurm job launch).
+umrs-client upload_dir ../sample_data/images user1-sam3
+
+# 4. Download inference results
+#    Polls the server until processing completes, then retrieves
+#    all output files (JSON metadata, overlay images, etc.) to
+#    the local results/ directory.
+umrs-client download_results user1-sam3 results/ --force-overwrite
+
+# 5. (Optional) Force re-processing of all images
+#    Useful after changing the model or config. Recomputes embeddings
+#    and inference for every object in the bucket.
+umrs-client recompute
 ```
 
 ## Plugging in a Different Vision Model

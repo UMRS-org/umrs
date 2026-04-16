@@ -119,7 +119,11 @@ class HMAEReconstructStep(Step):
             try:
                 status = task.get_status()
                 if status.value == "success":
-                    return task.get()
+                    raw = task.get()
+                    if isinstance(raw, bytes):
+                        import pickle
+                        return pickle.loads(raw)  # noqa: S301
+                    return raw
                 if status.value in ("failure", "cancelled"):
                     return {"error": f"Reconstruct task {task.id} {status.value}"}
             except Exception as exc:

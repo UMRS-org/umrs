@@ -110,6 +110,8 @@ class ProvisionRequest(BaseModel):
     gpu_count: int = Field(1, ge=1, description="Number of GPUs")
     max_model_len: int = Field(4096, ge=512, description="Max context length")
     prefer_warm: bool = Field(True, description="Prefer reusing existing endpoint")
+    partition: Optional[str] = Field(None, description="Override Slurm partition (must be in site candidates)")
+    nodelist: Optional[str] = Field(None, description="Slurm --nodelist hint (e.g. 'ai-h200-brc-00')")
 
 
 class ProvisionResponse(BaseModel):
@@ -599,6 +601,8 @@ async def provision_endpoint(
         gpu_count=request.gpu_count,
         max_model_len=request.max_model_len,
         prefer_warm=request.prefer_warm,
+        partition_override=request.partition,
+        nodelist_hint=request.nodelist,
     )
 
     try:

@@ -178,12 +178,35 @@ def _load_adapters_from_env(env_value: str) -> None:
 # VISION_ADAPTERS_DIR supports colon-separated paths (like $PATH), e.g.
 #   /adapters/system:/adapters/user
 # Each directory is scanned for *.py adapter files.
-_adapters_dir = os.environ.get("VISION_ADAPTERS_DIR", "/adapters")
-for _dir in _adapters_dir.split(":"):
-    _dir = _dir.strip()
-    if _dir:
-        _load_adapters_from_dir(_dir)
+def _default_adapter_dirs() -> str:
+    candidate_dirs = []
+    for adapter_dir in ("/adapters/system", "/adapters/user"):
+        if Path(adapter_dir).is_dir():
+            candidate_dirs.append(adapter_dir)
+    if candidate_dirs:
+        return ":".join(candidate_dirs)
+    return "/adapters"
 
-_adapters_env = os.environ.get("VISION_ADAPTERS", "")
-if _adapters_env:
-    _load_adapters_from_env(_adapters_env)
+
+try:
+    _adapters_dir = os.environ.get("VISION_ADAPTERS_DIR") or _default_adapter_dirs()
+    for _dir in _adapters_dir.split(":"):
+        _dir = _dir.strip()
+        if _dir:
+            _load_adapters_from_dir(_dir)
+
+    _adapters_env = os.environ.get("VISION_ADAPTERS", "")
+    if _adapters_env:
+        _load_adapters_from_env(_adapters_env)
+except Exception:
+    logger.exception(
+        "Adapter auto-discovery failed — service will start but reject "
+        "all infer requests until adapters are loaded"
+    )
+
+if not ADAPTER_REGISTRY:
+    logger.warning(
+        "No vision adapters loaded. The service will reject all infer "
+        "requests with 'Unknown model_type'. Check VISION_ADAPTERS_DIR "
+        "and VISION_ADAPTERS environment variables."
+    )

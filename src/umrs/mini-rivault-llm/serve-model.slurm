@@ -65,7 +65,8 @@ graphroot = "/var/tmp/podman_${USER}/storage"           # Note: local non-NFS pa
 [storage.options]
 mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
-mountopt="nodev,metacopy=on"
+mountopt="xattr_permissions=2,threaded=1"
+force_mask="700"
 EOF
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
@@ -186,16 +187,26 @@ fi
 
 # fix some cgroup/podman stuff on some nodes — full systemd bootstrap
 # from upstream reference. Needed on nodes where user session is not pre-started.
-loginctl enable-linger $(whoami)
+loginctl enable-linger $(whoami) 2>/dev/null || true
 if [[ -n "${XDG_RUNTIME_DIR:-}" ]]; then
     mkdir -p "$XDG_RUNTIME_DIR"
     chmod 700 "$XDG_RUNTIME_DIR"
 fi
-if command -v systemctl >/dev/null 2>&1; then
+# Only attempt systemd user session bootstrap when BOTH systemctl and systemd
+# binaries exist. On ai-l40s / x86_64 nodes systemctl is present but systemd
+# is not, causing "systemd: command not found" and leaving the podman socket
+# non-existent. Setting DOCKER_HOST to a missing socket then causes
+# podman-compose to fail with "External network does not exists".
+if command -v systemctl >/dev/null 2>&1 && command -v systemd >/dev/null 2>&1; then
     systemd --user &
     sleep 5
     systemctl --user daemon-reload 2>/dev/null || true
     systemctl --user enable --now podman.socket 2>/dev/null || true
+    # Only export DOCKER_HOST when the socket was actually created
+    _podman_sock="unix:///run/user/$(id -u)/podman/podman.sock"
+    if [[ -S "/run/user/$(id -u)/podman/podman.sock" ]]; then
+        export DOCKER_HOST="${_podman_sock}"
+    fi
 fi
 
 echo "[rivault] Launch context:"
@@ -209,6 +220,58 @@ echo "[rivault]   hf cache: ${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingfac
 echo "[rivault]   sam3 path: ${SAM3_MODEL_PATH:-./models/sam3}"
 echo "[rivault]   hmae path: ${HMAE_MODEL_PATH:-./models/hmae}"
 echo "[rivault]   gpu override: ${_GPU_OVERRIDE_FILE:-embedded default}"
+
+# ─── Recover corrupt rootless podman state ──────────────────────────────────
+# When a prior Slurm job ends, its $XDG_RUNTIME_DIR is cleaned by Slurm but
+# podman's GraphRoot in /var/tmp keeps stale pause-process references, causing
+# "invalid internal status, try resetting the pause process" errors.
+# Fix: stop stale systemd scopes, delete libpod state DB (not the overlays —
+# those have UID-mapped files that rm can't remove), then migrate.
+#
+# SKIP when running from the deploy wrapper — the wrapper already handles
+# cleanup before delegating here (RIVAULT_WRAPPER_CLEANUP=1 is set by it).
+if [[ "${RIVAULT_WRAPPER_CLEANUP:-0}" != "1" ]] && ! podman info >/dev/null 2>&1; then
+    echo "[rivault] WARN: podman state corrupt — recovering..."
+    _graph_parent="/var/tmp/podman_$(whoami)"
+    # 1. Stop stale systemd scopes left by prior Slurm jobs
+    for _scope in $(systemctl --user list-units --type=scope --no-legend 2>/dev/null \
+                    | grep podman | awk '{print $1}'); do
+        systemctl --user stop "$_scope" 2>/dev/null || true
+    done
+    # 2. Kill stale container runtime processes
+    for _proc in conmon crun catatonit; do
+        pids=$(pgrep -u "$(whoami)" -x "$_proc" 2>/dev/null || true)
+        [ -n "$pids" ] && kill -9 $pids 2>/dev/null || true
+    done
+    # 3. Delete libpod state DB and container metadata (NOT overlays — they
+    #    have UID-mapped files owned by sub-UIDs that plain rm can't remove)
+    rm -rf "${_graph_parent}/storage/libpod" 2>/dev/null || true
+    rm -rf "${_graph_parent}/storage/overlay-containers" 2>/dev/null || true
+    rm -rf "${_graph_parent}/storage/networks" 2>/dev/null || true
+    rm -rf "${_graph_parent}/storage/volumes" 2>/dev/null || true
+    rm -f  "${_graph_parent}/storage/db.sql" 2>/dev/null || true
+    rm -f  "${_graph_parent}/storage/defaultNetworkBackend" 2>/dev/null || true
+    rm -f "/run/user/$(id -u)/systemd/transient/podman-pause-"*.scope 2>/dev/null || true
+    systemctl --user daemon-reload 2>/dev/null || true
+    # 3b. Clear /tmp/run-user-* runtime state (podman uses this on some nodes
+    #     for container network and IPAM state outside XDG_RUNTIME_DIR)
+    rm -rf "/tmp/run-user-$(id -u)/containers" 2>/dev/null || true
+    rm -rf "/tmp/run-user-$(id -u)/libpod/tmp" 2>/dev/null || true
+    # 4. Migrate to rebuild internal state
+    podman system migrate 2>/dev/null || true
+    sleep 1
+    if podman info >/dev/null 2>&1; then
+        echo "[rivault] Podman state recovered."
+    else
+        echo "[rivault] ERROR: podman recovery failed — trying full reset..."
+        podman system reset --force 2>/dev/null || true
+        sleep 2
+        if ! podman info >/dev/null 2>&1; then
+            echo "[rivault] FATAL: podman is unusable after full reset. Cannot proceed."
+            exit 1
+        fi
+    fi
+fi
 
 # start
 # Tear down any leftovers from previous jobs: remove all containers that are
@@ -266,6 +329,25 @@ if [ "$_net_created" -ne 1 ]; then
 fi
 echo "[rivault] genai-private-net created with subnet ${IP1TO3}.0/24"
 
+# Verify network is visible to podman (catches netavark storage issues)
+if ! podman network exists genai-private-net 2>/dev/null; then
+	echo "[rivault] WARN: network exists check failed after create; running system migrate..."
+	podman system migrate 2>/dev/null || true
+	if ! podman network exists genai-private-net 2>/dev/null; then
+		echo "[rivault] ERROR: genai-private-net not visible after migrate"
+		echo "[rivault] DEBUG: network ls output:"
+		podman network ls 2>&1
+		echo "[rivault] DEBUG: network backend:"
+		cat "/var/tmp/podman_$(whoami)/storage/defaultNetworkBackend" 2>/dev/null
+		echo ""
+		echo "[rivault] DEBUG: network files:"
+		find "/var/tmp/podman_$(whoami)/storage" -name "*genai*" 2>/dev/null
+		find "${XDG_DATA_HOME:-$HOME/.local/share}/containers/storage" -name "*genai*" 2>/dev/null
+		find "$HOME/.config/containers/networks" -name "*genai*" 2>/dev/null
+		exit 1
+	fi
+fi
+
 # ─── SSH tunnel: forward MinIO from login node to compute node ────────────────
 # The BentoML container accesses S3 via minio-host:19000 (-> host-gateway:19000).
 # Bind to 0.0.0.0 so containers (via host-gateway) can reach MinIO,
@@ -284,6 +366,25 @@ ssh -fN -L "127.0.0.1:${UMRS_S3_TUNNEL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "
     -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes 2>&1 \
     && echo "[rivault] SSH tunnel: localhost:${UMRS_S3_TUNNEL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} (for host)" \
     || echo "[rivault] WARNING: SSH tunnel (host) already bound or failed (OK if port ${UMRS_S3_TUNNEL_PORT} == ${_S3_LOCAL_PORT})"
+
+# ─── Verify SSH tunnel liveness ─────────────────────────────────────────────
+# Wait briefly then probe the forwarded port to catch silent tunnel failures
+# early rather than discovering them on the first inference request.
+_tunnel_ok=0
+for _attempt in 1 2 3; do
+    sleep 2
+    if bash -c "echo > /dev/tcp/127.0.0.1/${_S3_LOCAL_PORT}" 2>/dev/null; then
+        _tunnel_ok=1
+        break
+    fi
+    echo "[rivault] SSH tunnel probe attempt ${_attempt}/3 failed, retrying..."
+done
+if [ "$_tunnel_ok" -eq 1 ]; then
+    echo "[rivault] SSH tunnel verified: port ${_S3_LOCAL_PORT} is reachable"
+else
+    echo "[rivault] WARNING: SSH tunnel port ${_S3_LOCAL_PORT} not reachable after 3 probes."
+    echo "[rivault]          S3/MinIO access may fail. Check tunnel host and login node."
+fi
 
 # SELinux context for bind-mounted dirs (safe no-op when SELinux is disabled)
 for _sel_path in \
@@ -319,6 +420,13 @@ for _p in $RIVAULT_PROFILES; do
 done
 
 _cleanup_started=0
+RIVAULT_CONTROL_DIR="${RIVAULT_CONTROL_DIR:-}"
+RIVAULT_STOP_REQUEST_FILE=""
+if [[ -n "${RIVAULT_CONTROL_DIR}" && -n "${SLURM_JOB_ID:-}" ]]; then
+    mkdir -p "${RIVAULT_CONTROL_DIR}" 2>/dev/null || true
+    RIVAULT_STOP_REQUEST_FILE="${RIVAULT_CONTROL_DIR%/}/stop-${SLURM_JOB_ID}.request"
+fi
+
 cleanup_stack() {
     local reason="${1:-exit}"
     local rc="${2:-0}"
@@ -339,6 +447,12 @@ cleanup_stack() {
                --file "./serve-model.yaml" ${GPUoverride[@]} \
                down >/dev/null 2>&1 || true
     podman network rm -f genai-private-net >/dev/null 2>&1 || true
+    # Clear /tmp/run-user-* runtime state left by podman
+    rm -rf "/tmp/run-user-$(id -u)/containers" 2>/dev/null || true
+    rm -rf "/tmp/run-user-$(id -u)/libpod/tmp" 2>/dev/null || true
+    if [[ -n "${RIVAULT_STOP_REQUEST_FILE}" ]]; then
+        rm -f "${RIVAULT_STOP_REQUEST_FILE}" >/dev/null 2>&1 || true
+    fi
     if [[ "${RIVAULT_GPU_OVERRIDE_GENERATED:-0}" == "1" && -n "${RIVAULT_GPU_OVERRIDE_FILE:-}" ]]; then
         rm -f "${RIVAULT_GPU_OVERRIDE_FILE}" >/dev/null 2>&1 || true
     fi
@@ -369,14 +483,53 @@ podman-compose --project-name "exit" --in-pod false \
 
 ip a
 
+# ─── Vision service readiness gate ──────────────────────────────────────────
+# If vision-bentoml profile is active, wait for BentoML to actually be ready
+# (port 3000 bound AND /readyz returning 200) before declaring the stack up.
+# This catches cases where the container starts but the service fails to load.
+if echo "${RIVAULT_PROFILES}" | grep -q "vision-bentoml"; then
+    _BENTOML_IP="${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}"
+    _VISION_READY=0
+    _VISION_TIMEOUT=${RIVAULT_VISION_READY_TIMEOUT:-180}  # 3 min default
+    _VISION_ELAPSED=0
+    echo "[rivault] Waiting for BentoML vision service readiness (timeout=${_VISION_TIMEOUT}s)..."
+    while [ "$_VISION_ELAPSED" -lt "$_VISION_TIMEOUT" ]; do
+        # Check if container is still running
+        if ! podman ps --filter "name=bentoml-vision" --format '{{.Names}}' 2>/dev/null | grep -q bentoml-vision; then
+            echo "[rivault] WARNING: bentoml-vision container is not running. Checking restart..."
+            sleep 5
+            _VISION_ELAPSED=$(( _VISION_ELAPSED + 5 ))
+            continue
+        fi
+        # Probe readiness endpoint
+        if curl -sf -o /dev/null -w '' "http://${_BENTOML_IP}:3000/readyz" 2>/dev/null; then
+            _VISION_READY=1
+            break
+        fi
+        sleep 5
+        _VISION_ELAPSED=$(( _VISION_ELAPSED + 5 ))
+    done
+    if [ "$_VISION_READY" -eq 1 ]; then
+        echo "[rivault] BentoML vision service is READY (took ~${_VISION_ELAPSED}s)"
+    else
+        echo "[rivault] WARNING: BentoML vision service did NOT become ready within ${_VISION_TIMEOUT}s"
+        echo "[rivault]          Vision inference requests may fail. Check container logs:"
+        echo "[rivault]          podman logs rivault_bentoml-vision_1"
+    fi
+fi
+
 # Keep job alive while containers are running; exit on idle timeout (safety net).
 # Slurm cancellation or an explicit signal should now run the cleanup trap
 # above so the compose stack is torn down promptly.
 RIVAULT_JOB_TIMEOUT=${RIVAULT_JOB_TIMEOUT:-7200}   # default 2 h; override via sbatch --export
-INTERVAL=30
+INTERVAL=${RIVAULT_JOB_POLL_INTERVAL:-5}
 ELAPSED=0
 echo "[rivault] Stack is up. Monitoring containers (timeout=${RIVAULT_JOB_TIMEOUT}s)..."
 while [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
+    if [[ -n "${RIVAULT_STOP_REQUEST_FILE}" && -f "${RIVAULT_STOP_REQUEST_FILE}" ]]; then
+        echo "[rivault] Graceful stop requested via ${RIVAULT_STOP_REQUEST_FILE}. Exiting monitor loop."
+        exit 0
+    fi
     RUNNING=$(podman ps -q --filter "network=genai-private-net" 2>/dev/null | wc -l)
     if [ "$RUNNING" -eq 0 ]; then
         echo "[rivault] All containers stopped. Exiting."

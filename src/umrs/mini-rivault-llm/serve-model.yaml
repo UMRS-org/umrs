@@ -15,7 +15,6 @@ services:
         source: ./nginx_fs/umrs.conf
         target: /etc/nginx/conf.d/default.conf
         read_only: true
-        bind: { selinux: "Z" }
       #- type: bind #TODO
       #  source: ./nginx_fs/ssl/
       #  target: /etc/nginx/ssl
@@ -58,7 +57,6 @@ services:
         source: ./litellm_fs/config.yaml.${UUID:?}
         target: /config.yaml
         read_only: true
-        bind: { selinux: "Z" }
     depends_on:
       - ll-postgres
       #- vllm   # only available when 'vllm' profile is active
@@ -419,12 +417,21 @@ services:
     profiles: [ vision-bentoml ]
     image: ${BENTOML_VISION_IMAGE:-ghcr.io/riken-rccs/umrs-vision:latest}
     command: bentoml serve umrs.vision_service.service:VisionModelService --port 3000
+    restart: on-failure
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}
     extra_hosts:
       - ${UMRS_S3_BUCKET_HOST:?}:${PRIV_IP1TO3:-10.0.0}.${NGINX_OUT_IP4:-252}
       - minio-host:host-gateway
+    depends_on:
+      - nginx
+    healthcheck:
+      test: ["CMD-SHELL", "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:3000/readyz', timeout=5)\" || exit 1"]
+      start_period: 120s
+      interval: 30s
+      timeout: 10s
+      retries: 5
     volumes:
       # SAM3 model weights
       - type: bind
@@ -458,6 +465,17 @@ services:
       - type: bind
         source: ${VISION_SERVICE_SOURCE:-../vision_service/service.py}
         target: /app/umrs/vision_service/service.py
+        read_only: true
+      # Hot-patch output_specs.py so new artifact declarations take effect
+      # without rebuilding the container image.
+      - type: bind
+        source: ${VISION_OUTPUT_SPECS_SOURCE:-../vision_service/output_specs.py}
+        target: /app/umrs/vision_service/output_specs.py
+        read_only: true
+      # Hot-patch inference modules from source tree
+      - type: bind
+        source: ${INFERENCE_SAM3_SOURCE:-../inference/sam3_segmentation.py}
+        target: /app/umrs/inference/sam3_segmentation.py
         read_only: true
     environment:
       SAM3_MODEL_PATH: /models/sam3

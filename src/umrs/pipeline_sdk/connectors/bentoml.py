@@ -47,7 +47,12 @@ def submit_batch(client: bentoml.SyncHTTPClient, endpoint: str,
                 )
             status = task.get_status()
             if status.value == "success":
-                results.append(task.get())
+                raw = task.get()
+                if isinstance(raw, bytes):
+                    import pickle
+                    results.append(pickle.loads(raw))  # noqa: S301
+                else:
+                    results.append(raw)
                 break
             elif status.value in ("failure", "cancelled"):
                 raise RuntimeError(f"Task {task.id} {status.value}")

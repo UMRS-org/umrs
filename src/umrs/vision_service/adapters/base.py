@@ -70,7 +70,9 @@ class VisionModelAdapter(abc.ABC):
                     results via HTTP PUT instead of ``s3.put_object()``.
 
         Returns:
-            JSON-serialisable result dict.
+            Result dict.  May contain non-JSON-serialisable objects
+            (numpy arrays, torch tensors) — the service layer handles
+            pickle serialization before returning to the client.
         """
 
     @abc.abstractmethod
