@@ -70,7 +70,7 @@ if [[ "$IMAGE_COUNT" -gt "$MAX_IMAGES" ]]; then
     rm -rf "$UPLOAD_DIR"
     mkdir -p "$UPLOAD_DIR"
     find "$IMAGE_DIR" -maxdepth 1 -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.tiff" \) \
-        | head -n "$MAX_IMAGES" | while read -r f; do ln -s "$f" "$UPLOAD_DIR/"; done
+        | head -n "$MAX_IMAGES" | while read -r f; do ln -s "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "$UPLOAD_DIR/"; done
     log "  Staged ${MAX_IMAGES} of ${IMAGE_COUNT} images for upload"
 fi
 
@@ -113,5 +113,6 @@ done
 log ""
 log "Key outputs:"
 log "  segment/    — *_segment.json  (bounding boxes + scores)"
+log "  segment/    — *_segment_masks.npz  (per-object binary masks)"
 log "  features/   — *_features.json (embedding vectors)"
 log "  thumbnails/ — *_128px.jpg, *_256px.jpg (resized variants)"

@@ -54,6 +54,10 @@ class DurableProvisionRequest:
     gpu_count: int = 1
     max_model_len: int = 4096
 
+    # Compute node selection
+    partition_override: Optional[str] = None
+    nodelist_hint: Optional[str] = None
+
     # Job settings
     priority: int = 0
     max_attempts: int = 3
@@ -214,6 +218,10 @@ class DurableOrchestrationService:
             "gpu_count": request.gpu_count,
             "max_model_len": request.max_model_len,
         }
+        if request.partition_override:
+            spec["partition_override"] = request.partition_override
+        if request.nodelist_hint:
+            spec["nodelist_hint"] = request.nodelist_hint
 
         # Submit to job service
         job_id = self._job_service.submit_endpoint_provision(

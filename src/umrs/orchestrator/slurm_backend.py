@@ -66,15 +66,19 @@ class SlurmBackend(OrchestratorBackend):
         cfg = self.config
 
         # Allow kwargs to override config
-        partition = kwargs.get("partition", cfg.slurm_partition)
+        partition_override = kwargs.pop("partition_override", None)
+        partition = partition_override or kwargs.get("partition", cfg.slurm_partition)
+        nodelist_hint = kwargs.pop("nodelist_hint", None)
         time_limit = kwargs.get("time", cfg.slurm_time)
         gpus = kwargs.get("gpus", cfg.slurm_gpus)
         cpus = kwargs.get("cpus", cfg.slurm_cpus)
         mem = kwargs.get("mem", cfg.slurm_mem)
 
+        nodelist_directive = f"\n#SBATCH --nodelist={nodelist_hint}" if nodelist_hint else ""
+
         script = f"""#!/bin/bash
 #SBATCH --job-name=mini-rivault
-#SBATCH --partition={partition}
+#SBATCH --partition={partition}{nodelist_directive}
 #SBATCH --time={time_limit}
 #SBATCH --gres=gpu:{gpus}
 #SBATCH --cpus-per-task={cpus}

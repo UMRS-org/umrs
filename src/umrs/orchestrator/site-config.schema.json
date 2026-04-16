@@ -31,6 +31,13 @@
     },
     "extra": {
       "type": "object"
+    },
+    "partition_profiles": {
+      "type": "object",
+      "description": "Declarative per-partition hardware and runtime profiles. Keys are partition names.",
+      "additionalProperties": {
+        "$ref": "#/$defs/partition_profile"
+      }
     }
   },
   "required": [
@@ -122,6 +129,21 @@
         "superuser_password": { "type": "string" },
         "user_password": { "type": "string" },
         "registry_dsn": { "type": "string" }
+      }
+    },
+    "partition_profile": {
+      "type": "object",
+      "description": "Declarative hardware/runtime profile for a specific Slurm partition.",
+      "additionalProperties": false,
+      "properties": {
+        "arch": { "type": "string", "enum": ["x86_64", "aarch64"] },
+        "gpu_vendor": { "type": "string", "enum": ["nvidia", "amd", "none"] },
+        "oci_runtime": { "type": "string", "enum": ["crun", "runc"] },
+        "userns_mode": { "type": "string" },
+        "network_backend": { "type": "string", "enum": ["netavark", "cni"] },
+        "vllm_docker_tag": { "type": "string" },
+        "gpus": { "type": "integer", "minimum": 0 },
+        "needs_netavark_switch": { "type": "boolean" }
       }
     }
   }

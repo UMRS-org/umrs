@@ -5,7 +5,9 @@ __pycache__/
 
 # Demo result/output images (auto-generated, not source)
 demos/*/results/
+demos_private/*/results/
 demos/*/.upload_staging/
+demos_private/*/.upload_staging/
 demos/14_opossum_analysis/sample_videos/
 # Demo test data images (large CT scans — stage only .gitkeep)
 demos/*/test_data/*.png

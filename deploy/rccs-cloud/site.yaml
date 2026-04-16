@@ -47,7 +47,7 @@ storage:
   hmae_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae
   hmae_config_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/infer_hmae_vit_b.yaml
   hmae_checkpoint: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/latest_checkpoint.pth
-  vision_tarball: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar
+  vision_tarball: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar  # base path; wrapper appends -arm64.tar or -amd64.tar
   user_model_path: /tmp
   s3_tunnel_host: ""                     # auto-set to $SLURM_SUBMIT_HOST
   s3_tunnel_port: 9000
@@ -74,3 +74,153 @@ database:
   superuser_password: umrs_rccs
   user_password: ""
   registry_dsn: postgres://umrs:umrs_rccs@localhost:5432/umrs_db
+
+# ─────────────────────────────────────────────────────────────
+# Per-partition profiles — eliminates fragile runtime detection
+# of OCI runtime, userns_mode, network backend, and GPU vendor.
+#
+# The wrapper looks up the profile for the assigned Slurm
+# partition and applies the values directly instead of probing
+# podman info / nvidia-smi / rocm-smi on every job startup.
+# ─────────────────────────────────────────────────────────────
+partition_profiles:
+  # ── aarch64 NVIDIA (GB10 Blackwell) ──
+  ng-dgx-m0:
+    arch: aarch64
+    gpu_vendor: nvidia
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0                    # ng-dgx-m* partitions reject --gpus
+    needs_netavark_switch: false
+  ng-dgx-m1:
+    arch: aarch64
+    gpu_vendor: nvidia
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
+  ng-dgx-m2:
+    arch: aarch64
+    gpu_vendor: nvidia
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
+  ng-dgx-m3:
+    arch: aarch64
+    gpu_vendor: nvidia
+    oci_runtime: runc
+    userns_mode: host
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-aarch64
+    gpus: 0
+    needs_netavark_switch: false
+
+  # ── x86_64 NVIDIA ──
+  a100:
+    arch: x86_64
+    gpu_vendor: nvidia
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  ai-h100l:
+    arch: x86_64
+    gpu_vendor: nvidia
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  ai-h100l-pu:
+    arch: x86_64
+    gpu_vendor: nvidia
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  ai-h200-brc:
+    arch: x86_64
+    gpu_vendor: nvidia
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  ai-l40s:
+    arch: x86_64
+    gpu_vendor: nvidia
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  qc-a100:
+    arch: x86_64
+    gpu_vendor: nvidia
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+  qc-gh200:
+    arch: x86_64
+    gpu_vendor: nvidia
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: cu130-nightly-x86_64
+    gpus: 1
+    needs_netavark_switch: true
+
+  # ── x86_64 AMD (ROCm) ──
+  qc-mi250:
+    arch: x86_64
+    gpu_vendor: amd
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""        # ROCm vLLM images TBD
+    gpus: 1
+    needs_netavark_switch: true
+  mi100:
+    arch: x86_64
+    gpu_vendor: amd
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""
+    gpus: 1
+    needs_netavark_switch: true
+  fs-mi300a:
+    arch: x86_64
+    gpu_vendor: amd
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""
+    gpus: 1
+    needs_netavark_switch: true
+  fs-mi300x:
+    arch: x86_64
+    gpu_vendor: amd
+    oci_runtime: crun
+    userns_mode: "keep-id:uid=0,gid=0"
+    network_backend: netavark
+    vllm_docker_tag: ""
+    gpus: 1
+    needs_netavark_switch: true

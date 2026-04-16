@@ -3,13 +3,16 @@ Step 1: Segmentation — detect objects/regions in images.
 
 Submits each input image to the BentoML vision model task-queue endpoint,
 polls for completion, and writes segmentation metadata (bounding boxes,
-scores) as JSON to S3.
+scores) as JSON to S3.  When the result includes per-object masks (numpy
+arrays delivered via pickle), they are saved as a compressed ``.npz``
+archive alongside the JSON metadata.
 
 This step demonstrates the BentoML task-queue pattern used by all UMRS
 vision models.  Replace `model_type` and `inference_config` to use a
 different model.
 
 Output keys:  ``<basename>_segment_meta.json`` per input image
+              ``<basename>_segment_masks.npz`` per image (when masks present)
 
 Config:
   - ``bentoml_url``: BentoML vision service URL
@@ -21,11 +24,14 @@ Config:
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import logging
 import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
+import numpy as np
 
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 
@@ -90,6 +96,25 @@ class SegmentStep(Step):
                 content_type="application/json",
             )
             output_keys.append(meta_key)
+
+            # Save per-object masks as compressed NPZ when available
+            masks = result.get("masks")
+            if masks and len(masks) > 0:
+                npz_buf = io.BytesIO()
+                np.savez_compressed(
+                    npz_buf,
+                    **{f"mask_{i}": m for i, m in enumerate(masks)},
+                )
+                npz_buf.seek(0)
+                masks_key = f"{base}_segment_masks.npz"
+                ctx.upload_bytes(
+                    masks_key,
+                    npz_buf.getvalue(),
+                    content_type="application/octet-stream",
+                )
+                output_keys.append(masks_key)
+                logger.info("  → saved %d masks to %s", len(masks), masks_key)
+
             metadata_list.append(meta)
             checksums.append(checksum)
 

@@ -466,6 +466,10 @@ def main():
     js_p.add_argument('--max-attempts', type=int, default=3, help='Max retry attempts')
     js_p.add_argument('--keep-alive', action='store_true', default=False,
                        help='Keep backend Slurm/K8s endpoint running after task completes (for endpoint_provision; default: auto-release)')
+    js_p.add_argument('--partition', default=None,
+                       help='Override Slurm partition for this job (must be in site-configured candidates)')
+    js_p.add_argument('--node', default=None,
+                       help='Slurm nodelist hint (e.g. "ai-h200-brc-00"); passed as --nodelist to sbatch')
 
     # job cancel
     jc_p = job_sub.add_parser('cancel', help='Cancel a running job')
@@ -740,6 +744,10 @@ def main():
                         spec = _json.loads(args.spec)
                     except _json.JSONDecodeError:
                         spec = {}
+                    if getattr(args, 'partition', None):
+                        spec["partition_override"] = args.partition
+                    if getattr(args, 'node', None):
+                        spec["nodelist_hint"] = args.node
                     payload = _json.dumps({
                         "job_type": args.job_type,
                         "spec": spec,

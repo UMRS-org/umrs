@@ -262,12 +262,19 @@ class SimpleBackendAdapter:
             project_id = job.project_id
 
             # The orchestrator returns a JobInfo with job_id
+            extra_kwargs = {}
+            if job.spec.get("partition_override"):
+                extra_kwargs["partition_override"] = job.spec["partition_override"]
+            if job.spec.get("nodelist_hint"):
+                extra_kwargs["nodelist_hint"] = job.spec["nodelist_hint"]
+
             job_info = await asyncio.get_event_loop().run_in_executor(
                 None,
                 lambda: self._orchestrator.submit_job(
                     model_path=model_path,
                     project_id=project_id,
                     env_vars=job.spec.get("env_vars", {}),
+                    **extra_kwargs,
                 )
             )
 

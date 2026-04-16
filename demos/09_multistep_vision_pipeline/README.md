@@ -38,6 +38,33 @@ bash 09_multistep_vision_pipeline/run_demo.sh /path/to/images
    downloads all results
 5. **Show report** — prints the aggregate analysis report
 
+## Running Manually
+
+```bash
+# 1. Verify server connectivity
+umrs-client ping
+
+# 2. Upload the workflow definition to the server
+#    This packages workflow.json + steps/ directory and sends them
+#    to the server. The server stores the pipeline definition and
+#    will execute it when data arrives in the associated bucket.
+umrs-client upload-workflow . --name "vision-pipeline-demo"
+
+# 3. Reload server configuration
+#    Tells the server to pick up the newly uploaded workflow.
+umrs-client reload
+
+# 4. Upload images to the pipeline's bucket
+#    Images uploaded here will trigger the 3-step pipeline:
+#    segment → crop → stats. Each step's output feeds into the next.
+umrs-client upload_dir ../sample_data/images user1-pipeline
+
+# 5. Download results once all 3 steps complete
+#    Results include segmentation metadata, cropped patches, and
+#    per-patch statistics. The download blocks until processing finishes.
+umrs-client download_results user1-pipeline ./results --force-overwrite
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |

@@ -45,6 +45,32 @@ IMAGE_DIR=/path/to/real/images bash run_demo.sh
 DEFECT_BUCKET=my-segmentation-bucket bash run_demo.sh
 ```
 
+## Running Manually
+
+```bash
+# 1. Verify server connectivity
+umrs-client ping
+
+# 2. Reload server configuration
+#    Ensures the server has the latest bucket aliases and
+#    output buckets created for the SAM3 experience.
+umrs-client reload
+
+# 3. Download/stage the SAM3 model
+#    Server-side download from HuggingFace. Required on first run.
+umrs-client model download facebook/sam2-hiera-small --name sam3 --scope system --server-side
+
+# 4. Upload images for defect analysis
+#    Images are dispatched to SAM3 segmentation on the GPU node.
+#    The segmentation model detects structural features and defects
+#    using text-prompted segmentation.
+umrs-client upload_dir ../03_sam3_segmentation/test_data_full user1-sam3
+
+# 5. Download segmentation results
+#    Retrieves bounding boxes, masks, scores, and overlay images.
+umrs-client download_results user1-sam3 ./results --force-overwrite
+```
+
 ## Script Defaults
 
 | Setting | Default |

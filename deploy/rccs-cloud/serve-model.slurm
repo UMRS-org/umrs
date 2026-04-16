@@ -13,7 +13,7 @@
 # =============================================================================
 
 #SBATCH --job-name=umrs-rivault
-#SBATCH --partition=ng-dgx-m0
+##SBATCH --partition=ng-dgx-m0  # disabled — partition set by orchestrator via --partition CLI arg
 #SBATCH --nodes=1
 #SBATCH --time=4:00:00
 
@@ -67,6 +67,55 @@ PY
 
 export UMRS_SITE_CONFIG="$SITE_CONFIG_PATH"
 load_site_env_defaults
+
+# ─── Partition profile lookup ────────────────────────────────────────────────
+# Resolve the Slurm partition for this job and export per-partition profile
+# vars (userns_mode, OCI runtime, network backend, vLLM docker tag, etc.)
+# from site.yaml, eliminating fragile runtime detection.
+_PARTITION_PROFILE_LOADED=0
+load_partition_profile() {
+    local python_bin
+    local rendered_exports
+    local partition="${1:-}"
+
+    [[ -n "$partition" ]] || return 0
+    python_bin="$(command -v python3 || true)"
+    [[ -n "$python_bin" && -f "$SITE_CONFIG_PATH" ]] || return 0
+
+    rendered_exports="$({
+        PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+            UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" \
+            _PARTITION="$partition" \
+            "$python_bin" - <<'PY'
+import os
+import shlex
+
+from umrs.orchestrator.site_config import load_site_config
+
+cfg = load_site_config(os.environ["UMRS_SITE_CONFIG"])
+part = os.environ.get("_PARTITION", "")
+env = cfg.partition_env(part)
+if env:
+    for key, value in sorted(env.items()):
+        print(f"export {key}={shlex.quote(value)}")
+PY
+    } 2>/dev/null)" || return 0
+
+    if [[ -n "$rendered_exports" ]]; then
+        eval "$rendered_exports"
+        _PARTITION_PROFILE_LOADED=1
+        echo "[wrapper] Partition profile loaded for: ${partition}"
+    fi
+}
+
+# Resolve which partition this job landed on.  SLURM_JOB_PARTITION is set by
+# Slurm on the compute node.  If it contains a comma-separated list (multi-
+# partition submission), take the first one.
+_ACTIVE_PARTITION="${SLURM_JOB_PARTITION%%,*}"
+if [[ -z "$_ACTIVE_PARTITION" ]]; then
+    _ACTIVE_PARTITION="${SLURM_PARTITION:-}"
+fi
+load_partition_profile "$_ACTIVE_PARTITION"
 
 mask_secret_state() {
     if [[ -n "${1:-}" ]]; then
@@ -132,6 +181,7 @@ export USER_MODEL_PATH="${USER_MODEL_PATH:-/tmp}"
 # VLLM_GPU_MEM_UTIL: low memory fraction — keep room for BentoML vision
 export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/rccs-dmp/mnagaso/umrs_models/hf}"
 export VLLM_MODEL="${VLLM_MODEL:-intfloat/e5-base-v2}"
+# VLLM_DOCKER_TAG: prefer partition profile value; fall back to arch auto-detect.
 if [[ -z "${VLLM_DOCKER_TAG:-}" ]]; then
     case "$(uname -m)" in
         aarch64|arm64) VLLM_DOCKER_TAG="cu130-nightly-aarch64" ;;
@@ -181,8 +231,100 @@ graphroot = "/var/tmp/podman_${_WHOAMI}/storage"
 [storage.options]
 mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
-mountopt="nodev,metacopy=on"
+mountopt="xattr_permissions=2,threaded=1"
+force_mask="700"
 EOF
+
+# ─── Clean up stale podman state from previous runs ──────────────────────────
+# Each Slurm job starts fresh: remove all containers, pods, and networks so
+# that lock-corrupted state from previous failed jobs never blocks startup.
+# NOTE: We intentionally KEEP the image cache (/var/tmp/podman_$USER/storage)
+# so that large images (vLLM ~10GB, vision ~5GB) don't need to be re-pulled
+# or re-loaded on every job.
+# IMPORTANT: This block MUST run BEFORE the netavark switch below. podman
+# system migrate resets the network backend to the system default ("cni");
+# the netavark switch then overrides it to "netavark" and runs its own
+# targeted migrate.
+
+# Step 1: Kill ALL container runtime processes so nothing is running
+pkill -9 -u "$_WHOAMI" conmon 2>/dev/null || true
+pkill -9 -u "$_WHOAMI" crun   2>/dev/null || true
+sleep 2
+# Step 2: Stop any stale systemd transient scopes that podman uses to track
+# containers. These survive Slurm job boundaries and cause podman to
+# re-discover dead containers even after their metadata is removed.
+systemctl --user reset-failed 2>/dev/null || true
+systemctl --user list-units --type=scope --state=running --no-legend 2>/dev/null \
+  | awk '/libpod/{print $1}' \
+  | xargs -r systemctl --user stop 2>/dev/null || true
+# Step 3: Clear stale runroot container storage from earlier Slurm jobs.
+# Must happen BEFORE graphroot cleanup because podman reads runroot state.
+_GRAPHROOT_CLEANUP="/var/tmp/podman_${_WHOAMI}/storage"
+_MY_JOB="job-${SLURM_JOB_ID}"
+find /tmp/ -maxdepth 1 -name "job-*" -not -name "${_MY_JOB}" -user "$_WHOAMI" 2>/dev/null \
+  | while read -r _jd; do rm -rf "${_jd}/xdg/containers" 2>/dev/null; done || true
+# Step 4: Clear stale container metadata from the graphroot.
+# Containers stuck in "stopping" state survive across Slurm jobs because
+# overlay-containers/containers.json persists in the graphroot while the
+# per-job runroot is lost.  Clearing these entries lets podman start fresh.
+# Image layers (overlay-images, overlay-layers) are preserved so large
+# images don't need re-loading.
+if [[ -f "${_GRAPHROOT_CLEANUP}/overlay-containers/containers.json" ]]; then
+    echo "[wrapper] Clearing stale container entries from graphroot"
+    printf '[]' > "${_GRAPHROOT_CLEANUP}/overlay-containers/containers.json"
+    # Remove per-container metadata dirs (layer mounts, userdata, etc.)
+    find "${_GRAPHROOT_CLEANUP}/overlay-containers/" -mindepth 1 -maxdepth 1 \
+         -type d -exec rm -rf {} + 2>/dev/null || true
+fi
+# Podman 5.x uses a SQLite DB (db.sql) at the graphroot root, NOT the
+# old BoltDB (libpod/bolt_state.db).  Delete BOTH to cover all versions.
+rm -f "${_GRAPHROOT_CLEANUP}/db.sql" 2>/dev/null || true
+# Also wipe the entire libpod state directory (legacy bolt DB, tmp)
+rm -rf "${_GRAPHROOT_CLEANUP}/libpod" 2>/dev/null || true
+mkdir -p "${_GRAPHROOT_CLEANUP}/libpod"
+# Clear runtime libpod state (pause pid, transient scopes)
+rm -rf "/run/user/$(id -u)/libpod" 2>/dev/null || true
+# Clear /tmp/run-user-* runtime state (podman uses this on some nodes for
+# container storage and network state outside the XDG_RUNTIME_DIR tree)
+rm -rf "/tmp/run-user-$(id -u)/containers" 2>/dev/null || true
+rm -rf "/tmp/run-user-$(id -u)/libpod/tmp" 2>/dev/null || true
+# Step 5: Run migrate to reinitialize (creates fresh state DB)
+podman system migrate 2>/dev/null || true
+echo "[wrapper] Post-cleanup: $(podman ps -aq 2>/dev/null | wc -l | tr -d ' ') containers remaining"
+# Step 6: Clean up any remaining resources
+podman network prune -f 2>/dev/null || true
+# Also remove stale CNI conflist files that cause validation warnings
+rm -rf "${HOME}/.config/cni/net.d/"*.conflist 2>/dev/null || true
+
+# ─── Force netavark network backend ─────────────────────────────────────────
+# Prefer the partition profile's needs_netavark_switch flag.  Fall back to
+# runtime detection when no profile is loaded (backwards compatible).
+_GRAPHROOT="/var/tmp/podman_${_WHOAMI}/storage"
+_NET_BACKEND_FILE="${_GRAPHROOT}/defaultNetworkBackend"
+_need_netavark_switch=0
+if [[ "${RIVAULT_PARTITION_NEEDS_NETAVARK:-}" == "1" ]]; then
+    _need_netavark_switch=1
+elif [[ "${RIVAULT_PARTITION_NEEDS_NETAVARK:-}" == "0" ]]; then
+    _need_netavark_switch=0
+elif [[ -x /usr/libexec/podman/netavark ]]; then
+    # No profile loaded — fall back to runtime detection
+    if [[ ! -x /usr/libexec/cni/bridge ]] && [[ ! -x /usr/lib/cni/bridge ]] && [[ ! -x /opt/cni/bin/bridge ]]; then
+        _need_netavark_switch=1
+    fi
+fi
+if [[ "${_need_netavark_switch}" -eq 1 ]]; then
+    echo "[wrapper] Forcing netavark network backend (CNI plugins missing, netavark available)"
+    mkdir -p "${_GRAPHROOT}"
+    printf '%s' "netavark" > "${_NET_BACKEND_FILE}"
+    # Remove stale CNI network configs that won't work with netavark
+    rm -rf "${HOME}/.config/cni/net.d/"*.conflist 2>/dev/null || true
+    # Clean network state so migrate works cleanly
+    rm -rf "${_GRAPHROOT}/networks" 2>/dev/null || true
+    rm -rf "${_GRAPHROOT}/libpod" 2>/dev/null || true
+    # Migrate podman state for the new backend
+    podman system migrate 2>/dev/null || true
+    echo "[wrapper] Network backend: $(cat "${_NET_BACKEND_FILE}" 2>/dev/null)"
+fi
 
 # ─── Vision container image (build on compute node, cache on Lustre) ─────────
 # Use a local image name so podman-compose never tries to pull from GHCR.
@@ -212,12 +354,26 @@ esac
 _VISION_TARBALL="${_VISION_TARBALL_BASE%.tar}-${_VISION_HOST_ARCH}.tar"
 
 export BENTOML_VISION_IMAGE="${_VISION_IMAGE}"
+export DEFAULT_ADAPTERS_DIR="${DEFAULT_ADAPTERS_DIR:-${_UMRS_REPO}/src/umrs/vision_service/default_adapters}"
+export USER_ADAPTERS_DIR="${USER_ADAPTERS_DIR:-${RIVAULT_DIR}/user_adapters}"
+
+# Some podman-compose builds on rccs-cloud resolve the bentoml adapter bind
+# from ${RIVAULT_DIR}/default_adapters even when serve-model.yaml points at
+# ${DEFAULT_ADAPTERS_DIR}. Ensure that path exists and mirrors the real
+# adapter directory before the inner compose launcher starts.
+if [[ "$(readlink "${RIVAULT_DIR}/default_adapters" 2>/dev/null || true)" != "${DEFAULT_ADAPTERS_DIR}" ]]; then
+    rm -rf "${RIVAULT_DIR}/default_adapters"
+    ln -s "${DEFAULT_ADAPTERS_DIR}" "${RIVAULT_DIR}/default_adapters"
+fi
 
 echo "[wrapper] Launch context:"
 echo "[wrapper]   site config: ${UMRS_SITE_CONFIG:-<none>}"
+echo "[wrapper]   partition: ${_ACTIVE_PARTITION:-<unknown>} (profile=${_PARTITION_PROFILE_LOADED})"
 echo "[wrapper]   profiles: ${RIVAULT_PROFILES}"
 echo "[wrapper]   rivault dir: ${RIVAULT_DIR}"
 echo "[wrapper]   repo root: ${_UMRS_REPO}"
+echo "[wrapper]   default adapters dir: ${DEFAULT_ADAPTERS_DIR}"
+echo "[wrapper]   user adapters dir: ${USER_ADAPTERS_DIR}"
 echo "[wrapper]   compose files: ${RIVAULT_DIR}/serve-model.yaml ; ${RIVAULT_DIR}/userdata-access.yaml"
 echo "[wrapper]   litellm port: ${NGINX_LITELLM_DOCKER_PORT}"
 echo "[wrapper]   litellm key: $(mask_secret_state "${LITELLM_MASTER_KEY:-}")"
@@ -302,35 +458,31 @@ fi
 # or re-loaded on every job.
 
 # ─── OCI runtime detection (userns_mode compatibility) ───────────────────────
-# crun supports "keep-id:uid=0,gid=0" which rootless Lustre bind-mounts need.
-# runc (<= 1.3.x, found on aarch64 ng-dgx nodes) does NOT support keep-id
-# and fails with: "runc create failed: can't get final child's PID from pipe".
-# For runc nodes, fall back to "host" userns_mode which skips user namespace
-# remapping and works with both runc and Lustre mounts.
+# Prefer the partition profile's userns_mode.  Fall back to runtime detection
+# via podman info when no profile is loaded (backwards compatible).
 if [[ -z "${RIVAULT_USERNS_MODE:-}" ]]; then
-    _oci_runtime="$(podman info --format '{{.Host.OCIRuntime.Name}}' 2>/dev/null || echo unknown)"
-    echo "[wrapper] Detected OCI runtime: ${_oci_runtime}"
-    case "${_oci_runtime}" in
-        crun*)
-            export RIVAULT_USERNS_MODE="keep-id:uid=0,gid=0"
-            ;;
-        runc*|*)
-            # runc and unknown runtimes: use host userns (safe default)
-            export RIVAULT_USERNS_MODE="host"
-            ;;
-    esac
-    echo "[wrapper] userns_mode set to: ${RIVAULT_USERNS_MODE}"
+    if [[ "${_PARTITION_PROFILE_LOADED}" -eq 1 ]]; then
+        echo "[wrapper] userns_mode already set from partition profile"
+    else
+        _oci_runtime="$(podman info --format '{{.Host.OCIRuntime.Name}}' 2>/dev/null || echo unknown)"
+        echo "[wrapper] Detected OCI runtime: ${_oci_runtime} (no partition profile)"
+        case "${_oci_runtime}" in
+            crun*)
+                export RIVAULT_USERNS_MODE="keep-id:uid=0,gid=0"
+                ;;
+            runc*|*)
+                export RIVAULT_USERNS_MODE="host"
+                ;;
+        esac
+    fi
 fi
+echo "[wrapper] userns_mode: ${RIVAULT_USERNS_MODE:-<unset>}"
 
 podman pod rm -af 2>/dev/null || true
 # Clean orphaned containers from previous Slurm jobs.
-# When a prior job's $XDG_RUNTIME_DIR was cleaned by Slurm, the crun state
-# files vanish but container metadata persists in graphroot. Normal
-# podman rm can't stop containers whose runtime state is gone.
-# "container cleanup --rm --all" cleans metadata without deleting images.
-pkill -9 conmon 2>/dev/null || true
-sleep 1
-podman container cleanup --rm --all 2>/dev/null || true
+# (Primary cleanup runs earlier in the script before the netavark switch;
+# this second pass catches anything created by OCI runtime detection or
+# GPU override generation.)
 podman rm -af 2>/dev/null || true
 podman network prune -f 2>/dev/null || true
 
@@ -371,5 +523,8 @@ fi
 # ─── Delegate to the main serve-model.slurm in RIVAULT_DIR ───────────────────
 # Use --norc --noprofile so .bashrc doesn't reset PATH (which would hide the
 # venv podman-compose we just installed above).
+# Mark that the wrapper already handled cleanup so the inner script skips its
+# duplicate recovery block.
+export RIVAULT_WRAPPER_CLEANUP=1
 cd "$RIVAULT_DIR"
 exec bash --norc --noprofile ./serve-model.slurm

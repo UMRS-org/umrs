@@ -253,6 +253,25 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
     # output_file, error_file = extract_files_from_slurm_script(slurm_script, default_output=default_output_file, default_error=default_error_file)
 
     sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
+
+    # Inject partition from site config when the Slurm script lacks its own
+    # #SBATCH --partition directive (avoids the "No partition specified" error).
+    try:
+        from umrs.orchestrator.site_config import get_site_config
+        _site = get_site_config()
+        _partition = getattr(_site.scheduler, "partition", "")
+        if _partition:
+            # Pick the first candidate; full selection logic lives in the
+            # async orchestrator backend — here we just need *any* valid value.
+            _first = _partition.split(",")[0].strip()
+            if _first:
+                sbatch_extra_args.append(f"--partition={_first}")
+        _gpus = getattr(_site.scheduler, "gpus", 0)
+        if _gpus:
+            sbatch_extra_args.append(f"--gres=gpu:{_gpus}")
+    except Exception:
+        pass  # site config unavailable — let #SBATCH directives or Slurm default decide
+
     if sbatch_env:
         env_pairs = ",".join(f"{k}={v}" for k, v in sbatch_env.items())
         sbatch_extra_args.append(f"--export=ALL,{env_pairs}")

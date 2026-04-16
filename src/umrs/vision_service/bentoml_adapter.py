@@ -9,6 +9,7 @@ The generic factory ``make_bentoml_vision_compute`` creates a closure for
 
 import logging
 import os
+import pickle
 import time
 
 import bentoml
@@ -193,7 +194,14 @@ def make_bentoml_vision_compute(client: bentoml.SyncHTTPClient, model_type, mode
                 logger.warning("[DEBUG-ADAPTER] Task %s status=%s (%.1fs elapsed)",
                                bento_task.id, status.value, elapsed)
                 if status.value == "completed":
-                    result = bento_task.get()
+                    raw_result = bento_task.get()
+                    # Service returns pickle-serialised bytes; deserialise
+                    # back to the original result dict.  Falls back to raw
+                    # value when it is already a dict (e.g. older service).
+                    if isinstance(raw_result, bytes):
+                        result = pickle.loads(raw_result)  # noqa: S301 — trusted internal service
+                    else:
+                        result = raw_result
                     logger.warning("[DEBUG-ADAPTER] Task %s result keys=%s",
                                    bento_task.id, list(result.keys()) if isinstance(result, dict) else type(result))
                     break
@@ -239,8 +247,6 @@ def make_jens_vision_compute(client: bentoml.SyncHTTPClient, model_type, model_c
 
     Returns pickled dicts.
     """
-    import pickle
-
     task_param = task or "reconstruction"
 
     def _compute(self, s3, s3_keys, path_to_bucket, output_bucket):

@@ -24,10 +24,12 @@ from __future__ import annotations
 import io
 import json
 import logging
+import pickle
 import time
 from typing import Any, Dict, List
 
 import bentoml
+import numpy as np
 
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 
@@ -94,6 +96,24 @@ class SAM3SegmentationStep(Step):
             output_keys.append(meta_key)
             metadata_list.append(meta)
 
+            # Save per-object masks as compressed NPZ when available
+            masks = result.get("masks")
+            if masks and len(masks) > 0:
+                npz_buf = io.BytesIO()
+                np.savez_compressed(
+                    npz_buf,
+                    **{f"mask_{i}": m for i, m in enumerate(masks)},
+                )
+                npz_buf.seek(0)
+                masks_key = f"{base}_sam3_masks.npz"
+                ctx.upload_bytes(
+                    masks_key,
+                    npz_buf.getvalue(),
+                    content_type="application/octet-stream",
+                )
+                output_keys.append(masks_key)
+                logger.info("  → saved %d masks to %s", len(masks), masks_key)
+
             # Retrieve checksum of the original image
             try:
                 head = ctx.head_object(key)
@@ -138,7 +158,10 @@ class SAM3SegmentationStep(Step):
             try:
                 status = task.get_status()
                 if status.value == "success":
-                    return task.get()
+                    raw = task.get()
+                    if isinstance(raw, bytes):
+                        return pickle.loads(raw)  # noqa: S301
+                    return raw
                 if status.value in ("failure", "cancelled"):
                     return {"error": f"SAM3 task {task.id} {status.value}"}
             except Exception as exc:

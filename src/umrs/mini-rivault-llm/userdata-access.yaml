@@ -19,12 +19,10 @@ services:
         source: ./nginx_fs/out-conf.d/
         target: /etc/nginx/conf.d/
         read_only: true
-        bind: { selinux: "Z" }
       - type: bind
         source: ./nginx_fs/out-nginx.conf.${UUID:?}
         target: /etc/nginx/nginx.conf
         read_only: true
-        bind: { selinux: "Z" }
     depends_on:
       - coredns
     environment:
@@ -62,7 +60,6 @@ services:
         source: ./coredns_fs/coredns.conf.${UUID:?}
         target: /etc/coredns/corefile
         read_only: true
-        bind: { selinux: "Z" }
     user: "0:0"
     command: -conf /etc/coredns/corefile
     environment:

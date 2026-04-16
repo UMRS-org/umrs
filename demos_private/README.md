@@ -8,6 +8,8 @@ or engines.  **Do not commit this directory to the public repository.**
 | 04 | HMAE Inference | Site-provided HMAE checkpoint and vision runtime |
 | 09 | Defect Analysis | HMAE + SAM3 combined pipeline |
 | 10 | HMAE Full Pipeline | HMAE reconstruct + MAE + features |
+| 11 | SAM3 Jens Direct | Jens VisionFrontend + SAM3 model (direct BentoML) |
+| 12 | HMAE Jens Direct | Jens VisionFrontend + HMAE model (direct BentoML) |
 | 14 | Opossum Analysis | External opossum video analysis engine |
 
 ## Usage

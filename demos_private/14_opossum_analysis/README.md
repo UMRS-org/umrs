@@ -42,6 +42,32 @@ bash run_demo.sh /path/to/videos
 6. If an external opossum engine checkout is available, it also runs a local
    fallback analysis and writes `results/motion_events.tsv`.
 
+## Running Manually
+
+```bash
+# 1. Verify server connectivity
+umrs-client ping
+
+# 2. (Optional) Generate synthetic test videos
+#    Creates short MP4 files with simulated motion for testing.
+python3 generate_test_videos.py --output-dir sample_videos/ --num-videos 4
+
+# 3. Upload the opossum workflow to the server
+#    The workflow wraps the opossum motion analysis engine as a
+#    Pipeline SDK step for server-side execution via Slurm.
+umrs-client upload-workflow opossum_workflow/ --name opossum-analysis
+
+# 4. Upload videos for analysis
+#    Each video is analyzed for motion events by comparing
+#    consecutive frames using the opossum engine.
+umrs-client upload_dir ./sample_videos user1-textfiles
+
+# 5. Download analysis results
+#    Results include motion_events.tsv with start/end timestamps
+#    for each detected motion period.
+umrs-client download_results user1-textfiles ./results --force-overwrite
+```
+
 ## Defaults Used By The Script
 
 | Setting | Default |

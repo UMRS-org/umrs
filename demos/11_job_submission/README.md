@@ -130,6 +130,46 @@ Current UMRS deployments use the durable PostgreSQL-backed store from
 `jobs/store.py`, with advisory locks, crash reconciliation, and
 multi-instance support.
 
+## Running Manually
+
+```bash
+# 1. Verify server connectivity
+umrs-client ping
+
+# 2. Pre-warm a compute endpoint (avoid cold-start on first upload)
+#    The endpoint stays warm until you cancel it or TTL expires.
+#    Use this before batch upload sessions.
+umrs-client job submit endpoint_provision \
+    --spec '{"model": "sam3"}' \
+    --project my-project
+
+# 3. Upload data (uses the warm endpoint — no cold start)
+umrs-client upload_dir /data/images/batch-1/ user1-sam3
+umrs-client upload_dir /data/images/batch-2/ user1-sam3
+
+# 4. When done processing, release the endpoint
+#    Replace <job_id> with the ID returned in step 2.
+umrs-client job cancel <job_id>
+
+# 5. Rebuild RAG index after bulk inserts
+#    After large ingestions, the pgvector IVFFlat index benefits from
+#    re-clustering for optimal search performance.
+umrs-client job submit index_build \
+    --spec '{"database": "xp_spring8", "table": "image_embeddings"}' \
+    --project spring8
+
+# 6. Clean up stale resources
+#    Force-remove endpoints, S3 objects, or database tables immediately
+#    (instead of waiting for TTL-based janitor cleanup).
+umrs-client job submit cleanup \
+    --spec '{"target": "endpoint", "job_id": "job-abc123"}' \
+    --project my-project
+
+# 7. Monitor job status
+umrs-client monitor --once
+umrs-client status all
+```
+
 ## Run Demo
 
 ```bash

@@ -38,8 +38,12 @@ Environment variables:
 import io
 import logging
 import os
+import pickle
+import time
 import urllib.request
+import urllib.error
 
+import cv2  # noqa: F401 — preload before torch/sam3 to prevent libpng conflicts
 import bentoml
 from PIL import Image
 
@@ -96,6 +100,8 @@ def _download_image_from_s3(s3, image_url):
 def _download_image_from_presigned_url(presigned_url, image_url):
     """Download an image via presigned GET URL (no S3 credentials needed).
 
+    Retries up to 3 times with exponential backoff for transient failures.
+
     Returns the same 3-tuple as ``_download_image_from_s3``:
     ``(PIL.Image, bucket, key)`` — bucket/key are parsed from ``image_url``
     so that downstream code can still construct output keys.
@@ -109,15 +115,35 @@ def _download_image_from_presigned_url(presigned_url, image_url):
         raise ValueError(f"Invalid S3 image URL: {image_url}")
     bucket, key = parts
 
-    req = urllib.request.Request(presigned_url, method="GET")
-    with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
-        image_bytes = resp.read()
-    return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key
+    max_retries = 3
+    last_exc = None
+    for attempt in range(max_retries):
+        try:
+            req = urllib.request.Request(presigned_url, method="GET")
+            with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
+                image_bytes = resp.read()
+            return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key
+        except (urllib.error.URLError, OSError) as exc:
+            last_exc = exc
+            if attempt < max_retries - 1:
+                backoff = 2 ** attempt
+                logger.warning(
+                    "Presigned URL download attempt %d/%d failed: %s. "
+                    "Retrying in %ds...",
+                    attempt + 1, max_retries, exc, backoff,
+                )
+                time.sleep(backoff)
+            else:
+                logger.error(
+                    "Presigned URL download failed after %d attempts: %s",
+                    max_retries, exc,
+                )
+    raise last_exc  # type: ignore[misc]
 
 
 @bentoml.service(
     resources={"gpu": 1},
-    traffic={"timeout": 600},
+    traffic={"timeout": 3600, "max_concurrency": 64},
 )
 class VisionModelService:
     """Generic vision model service with pluggable adapters.
@@ -144,7 +170,7 @@ class VisionModelService:
         output_bucket: str = "",
         presigned_input_url: str = "",
         presigned_output_urls: dict | None = None,
-    ) -> dict:
+    ) -> bytes:
         """Run vision-model inference on a single image.
 
         Args:
@@ -163,7 +189,9 @@ class VisionModelService:
                                    HTTP PUT instead of ``s3.put_object()``.
 
         Returns:
-            dict with adapter-specific results and output S3 keys.
+            Pickle-serialised bytes containing the adapter result dict.
+            The dict may include numpy arrays and torch tensors.
+            Clients must ``pickle.loads()`` the return value.
         """
         logger.warning(
             "[DEBUG-INFER] model_type=%s image_url=%s output_bucket=%s "
@@ -177,22 +205,22 @@ class VisionModelService:
         if adapter is None:
             logger.error("[DEBUG-INFER] Unknown model_type '%s'. Available: %s",
                          model_type, sorted(ADAPTER_REGISTRY))
-            return {
+            return pickle.dumps({
                 "error": (
                     f"Unknown model_type '{model_type}'. "
                     f"Available: {sorted(ADAPTER_REGISTRY)}"
                 ),
-            }
+            }, protocol=pickle.HIGHEST_PROTOCOL)
 
         try:
             if _require_presigned_urls() and not presigned_input_url:
-                return {
+                return pickle.dumps({
                     "error": (
                         "presigned_input_url is required when "
                         "VISION_REQUIRE_PRESIGNED_URLS=true"
                     ),
                     "source_image": image_url,
-                }
+                }, protocol=pickle.HIGHEST_PROTOCOL)
 
             # Download input image: prefer presigned URL, fall back to direct S3
             if presigned_input_url:
@@ -216,13 +244,13 @@ class VisionModelService:
                     if out_key not in (presigned_output_urls or {})
                 )
                 if missing:
-                    return {
+                    return pickle.dumps({
                         "error": (
                             "Missing presigned output URLs for "
                             + ", ".join(missing)
                         ),
                         "source_image": image_url,
-                    }
+                    }, protocol=pickle.HIGHEST_PROTOCOL)
 
             logger.warning("[DEBUG-INFER] Image downloaded: bucket=%s key=%s size=%s",
                            bucket, key, image.size)
@@ -236,10 +264,10 @@ class VisionModelService:
                 inference_config, s3, output_bucket or bucket,
                 presigned_output_urls=presigned_output_urls or {},
             )
-            logger.warning("[DEBUG-INFER] Adapter returned: %s",
-                           {k: v for k, v in result.items() if k != 'error'} if isinstance(result, dict) else result)
-            return result
+            logger.warning("[DEBUG-INFER] Adapter returned keys: %s",
+                           list(result.keys()) if isinstance(result, dict) else type(result))
+            return pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:
             logger.exception("[DEBUG-INFER] infer FAILED (model_type=%s): %s",
                              model_type, exc)
-            return {"error": str(exc), "source_image": image_url}
+            return pickle.dumps({"error": str(exc), "source_image": image_url}, protocol=pickle.HIGHEST_PROTOCOL)

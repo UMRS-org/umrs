@@ -106,8 +106,14 @@ deploy/rccs-cloud/           ← Production deployment (RCCS Cloud login node)
     00_health_check.sh … 10_opossum_analysis.sh
   docker-compose.yml         ← MinIO + PostgreSQL (podman, rootless)
   serve-model.slurm          ← Model serving Slurm wrapper
-  ssh_tunnel.sh              ← SSH tunnel management
+  ssh_tunnel.sh              ← SSH tunnel management (ports 5555, 5556, 9000, 8081)
   start.sh / stop.sh         ← Service lifecycle
+
+### SSH Connection
+- SSH alias: `rccs-cloud` → `login.cloud.r-ccs.riken.jp`
+- Login node: `login1.cloud.r-ccs.riken.jp`
+- User: `masaru.nagaso`
+- Tunnelled ports: 5555 (ZMQ control), 5556 (ZMQ data), 9000 (MinIO/S3), 8081 (RAG service)
 ```
 
 ---

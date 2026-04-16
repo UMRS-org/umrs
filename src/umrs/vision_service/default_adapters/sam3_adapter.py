@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import logging
 import os
+import pickle
 import urllib.request
 from typing import Any, Dict
 
@@ -113,6 +114,37 @@ class SAM3Adapter(VisionModelAdapter):
                 s3.put_object(Bucket=dst_bucket, Key=overlay_key,
                               Body=png_data, ContentType="image/png")
             response["overlay_s3_key"] = f"s3://{dst_bucket}/{overlay_key}"
+
+        # Upload pickled result arrays (masks, boxes, scores)
+        described = self.describe_outputs(key, config)
+        pkl_key = next(k for k in described if k.endswith(".pkl"))
+        dst_bucket = output_bucket or bucket
+        pkl_data = pickle.dumps(
+            {
+                "masks": result["masks"],
+                "boxes": result["boxes"],
+                "scores": result["scores"],
+                "num_objects": result["num_objects"],
+            },
+            protocol=pickle.HIGHEST_PROTOCOL,
+        )
+        presigned_url = (presigned_output_urls or {}).get(pkl_key)
+        if presigned_url:
+            req = urllib.request.Request(
+                presigned_url,
+                data=pkl_data,
+                method="PUT",
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            urllib.request.urlopen(req, timeout=120)  # noqa: S310
+        else:
+            if _require_presigned_urls() or s3 is None:
+                raise RuntimeError(
+                    f"Missing presigned PUT URL for {pkl_key}"
+                )
+            s3.put_object(Bucket=dst_bucket, Key=pkl_key,
+                          Body=pkl_data, ContentType="application/octet-stream")
+        response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
         logger.info("SAM3 segmentation: found %d objects for prompt '%s'",
                      result["num_objects"], prompt)

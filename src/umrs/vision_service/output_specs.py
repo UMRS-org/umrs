@@ -31,15 +31,27 @@ def describe_output_artifacts(model_type: str, key: str, config: dict) -> Dict[s
     base = key.rsplit(".", 1)[0] if "." in key else key
 
     if model_type == "sam3":
-        return {f"{base}_sam3_seg.png": "image/png"}
+        return {
+            f"{base}_sam3_seg.png": "image/png",
+            f"{base}_sam3_results.pkl": "application/octet-stream",
+        }
 
     if model_type == "hmae":
         task = resolve_hmae_task(config)
         if task == "reconstruction":
-            return {f"{base}_recon.png": "image/png"}
+            return {
+                f"{base}_recon.png": "image/png",
+                f"{base}_recon_results.pkl": "application/octet-stream",
+            }
         if task == "mae_reconstruction":
-            return {f"{base}_mae.png": "image/png"}
+            return {
+                f"{base}_mae.png": "image/png",
+                f"{base}_mae_results.pkl": "application/octet-stream",
+            }
         if task == "feature_extraction":
-            return {f"{base}_features.pt": "application/octet-stream"}
+            return {
+                f"{base}_features.pt": "application/octet-stream",
+                f"{base}_features_results.pkl": "application/octet-stream",
+            }
 
     return {}

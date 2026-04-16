@@ -56,6 +56,36 @@ Steps listed in `parallel` receive the **same input keys** and run
 concurrently.  Each branch writes to its own output prefix so there
 are no conflicts.
 
+## Running Manually
+
+```bash
+# 1. Verify server connectivity
+umrs-client ping
+
+# 2. Upload the multi-mode workflow to the server
+#    The workflow.json defines 3 parallel branches (segment, features,
+#    thumbnails). Each branch processes the same input images independently.
+umrs-client upload-workflow . --name "vision-multi-mode"
+
+# 3. Reload server configuration
+#    Picks up the newly uploaded workflow definition.
+umrs-client reload
+
+# 4. Upload images to the multi-mode bucket
+#    All 3 branches receive the same images simultaneously:
+#    - segment:    runs GPU-based segmentation (bounding boxes)
+#    - features:   runs GPU-based feature extraction (embedding vectors)
+#    - thumbnails: runs CPU-based thumbnail generation (128px, 256px)
+umrs-client upload_dir ../sample_data/images user1-multi
+
+# 5. Download results from all 3 branches
+#    Results are organized by branch in the output:
+#    results/segment/   — segmentation JSON files
+#    results/features/  — feature vector JSON files
+#    results/thumbnails/ — resized JPEG thumbnails
+umrs-client download_results user1-multi ./results --force-overwrite
+```
+
 ## Environment Variables
 
 | Variable | Default | Description |

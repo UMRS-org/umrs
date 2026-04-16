@@ -41,6 +41,39 @@ IMAGE_DIR=/path/to/volume_slices bash run_demo.sh
 HMAE_BUCKET=my-hmae-bucket bash run_demo.sh
 ```
 
+## Running Manually
+
+The full pipeline runs 3 HMAE tasks sequentially, each using a different
+bucket alias configured in `user1.json`:
+
+```bash
+# 1. Verify server connectivity and reload config
+umrs-client ping
+umrs-client reload
+
+# 2. Task 1: Reconstruction (bucket: user1-hmae)
+#    Full image reconstruction — the model reconstructs the input image
+#    and outputs the reconstructed version as PNG + pkl.
+umrs-client upload_dir ../../demos/03_sam3_segmentation/test_data_full user1-hmae
+umrs-client download_results user1-hmae ./results/reconstruction --force-overwrite
+
+# 3. Task 2: MAE Reconstruction (bucket: user1-hmae-mae)
+#    Masked autoencoder reconstruction — the model masks random patches,
+#    reconstructs them, and reports the reconstruction loss (anomaly score).
+umrs-client upload_dir ../../demos/03_sam3_segmentation/test_data_full user1-hmae-mae
+umrs-client download_results user1-hmae-mae ./results/mae_reconstruction --force-overwrite
+
+# 4. Task 3: Feature Extraction (bucket: user1-hmae-features)
+#    Extracts CLS and patch-level feature vectors for downstream analysis.
+#    Outputs .pt (PyTorch tensor) files plus pkl metadata.
+umrs-client upload_dir ../../demos/03_sam3_segmentation/test_data_full user1-hmae-features
+umrs-client download_results user1-hmae-features ./results/feature_extraction --force-overwrite
+```
+
+> **Note**: Running all 3 tasks sequentially may cause CUDA out-of-memory on
+> the third task if the GPU does not release memory between tasks. If this
+> happens, restart the BentoML service or run tasks individually.
+
 ## Script Defaults
 
 | Setting | Default |

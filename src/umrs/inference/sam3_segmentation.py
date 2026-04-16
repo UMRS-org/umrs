@@ -365,6 +365,8 @@ def overlay_masks_on_image(image, masks, alpha=0.5):
     for mask, color in zip(masks, colors):
         mask_uint8 = (255 * mask.astype(np.uint8))
         mask_img = Image.fromarray(mask_uint8)
+        if mask_img.size != image.size:
+            mask_img = mask_img.resize(image.size, Image.NEAREST)
         overlay = Image.new("RGBA", image.size, color + (0,))
         alpha_mask = mask_img.point(lambda v: int(v * alpha))
         overlay.putalpha(alpha_mask)

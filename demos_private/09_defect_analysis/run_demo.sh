@@ -42,7 +42,7 @@ preflight
 
 # Reload config so the server creates output buckets
 $CLIENT reload 2>/dev/null || warn "reload returned non-zero"
-sleep 3
+sleep 30  # server needs time to restart after reload
 
 # ──────────────────────────────────────────────────────────────────────────
 log ""
@@ -70,7 +70,7 @@ if [[ "$IMAGE_COUNT" -gt "$MAX_IMAGES" ]]; then
     rm -rf "$UPLOAD_DIR"
     mkdir -p "$UPLOAD_DIR"
     find "$IMAGE_DIR" -maxdepth 1 -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.tiff" \) \
-        | head -n "$MAX_IMAGES" | while read -r f; do ln -s "$f" "$UPLOAD_DIR/"; done
+        | head -n "$MAX_IMAGES" | while read -r f; do ln -s "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "$UPLOAD_DIR/"; done
     log "  Staged ${MAX_IMAGES} of ${IMAGE_COUNT} images for upload"
 else
     log "  Using all ${IMAGE_COUNT} images"

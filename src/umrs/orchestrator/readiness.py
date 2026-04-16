@@ -137,7 +137,13 @@ class ReadinessPoller:
         self._active_polls: Dict[str, asyncio.Task] = {}
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
+        """Get or create HTTP client.
+
+        ``trust_env=False`` is critical: proxy environment variables
+        (http_proxy, https_proxy, no_proxy) can prevent direct connections
+        to Slurm compute nodes.  The readiness poller always connects
+        directly to the target host:port.
+        """
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(
@@ -146,6 +152,7 @@ class ReadinessPoller:
                     write=5.0,
                     pool=5.0,
                 ),
+                trust_env=False,
             )
         return self._client
 
