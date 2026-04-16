@@ -30,7 +30,6 @@ class KeyReader:
     # ------------------------------------------------------------------
     def _run(self) -> None:
         try:
-            import tty
             import termios
         except ImportError:
             # Windows — no raw mode; dashboard still works via auto-refresh
@@ -39,7 +38,14 @@ class KeyReader:
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:
-            tty.setraw(fd)
+            # Use cbreak-like mode that preserves output processing (OPOST)
+            # so Rich's terminal rendering is not corrupted.  Disable ISIG
+            # so Ctrl+C is readable as '\x03' instead of raising SIGINT.
+            new = termios.tcgetattr(fd)
+            new[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG)
+            new[6][termios.VMIN] = 1
+            new[6][termios.VTIME] = 0
+            termios.tcsetattr(fd, termios.TCSADRAIN, new)
             while not self._stop.is_set():
                 ch = sys.stdin.read(1)
                 if not ch:

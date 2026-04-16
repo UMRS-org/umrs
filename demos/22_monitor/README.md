@@ -1,8 +1,8 @@
-# Demo 22: Jobs Monitor (TUI Dashboard)
+# Demo 22: UMRS Monitor (Multi-Tab TUI Dashboard)
 
-Demonstrates the **live-refreshing terminal dashboard** for monitoring
-UMRS jobs. Uses the `rich` library to render a table of job statuses
-with optional filtering and interactive controls.
+Multi-tab **live-refreshing terminal dashboard** for monitoring the
+entire UMRS system. Uses the `rich` library to render tabbed views
+for jobs, server status, models, workflows, and connection health.
 
 ## Prerequisites
 
@@ -21,10 +21,24 @@ bash run_demo.sh
 
 1. **Pre-flight** — verifies server connectivity and `rich` library
 2. **Seed sample jobs** — submits `index_build` and `cleanup` jobs so the
-   dashboard has data to display
-3. **One-shot dashboard** — prints a single snapshot of all jobs
-4. **Filtered view** — prints only jobs with `queued` status
-5. **Interactive usage guide** — explains how to use the live dashboard
+   Jobs tab has data to display
+3. **Jobs tab** — one-shot snapshot of all jobs
+4. **Filtered Jobs view** — only `queued` jobs
+5. **Status tab** — server task summaries (recompute, update, check, etc.)
+6. **Models tab** — registered model catalog
+7. **Workflows tab** — registered workflow registry
+8. **Connection tab** — connection profile details and server health ping
+9. **Interactive usage guide** — explains all tabs, keys, and options
+
+## Tabs
+
+| Tab | Key | Content |
+|-----|-----|---------|
+| **Jobs** | `1` | Durable job queue with status, attempts, detail expansion |
+| **Status** | `2` | Server task summaries with pending/completed counts |
+| **Models** | `3` | Registered model catalog with detail view |
+| **Workflows** | `4` | Registered workflows with step details |
+| **Connection** | `5` | Active connection profile, server health, ping latency |
 
 ## Running Manually
 
@@ -33,56 +47,74 @@ bash run_demo.sh
 umrs-client ping
 
 # 2. Verify the rich library is installed
-#    The monitor requires rich>=13.0 for the TUI rendering.
 python3 -c "import rich; print(rich.__version__)"
 
-# 3. Submit some sample jobs (so the dashboard has data)
-#    These are optional — the dashboard works with any existing jobs.
+# 3. Submit some sample jobs (optional — dashboard works with any existing jobs)
 umrs-client job submit index_build \
     --spec '{"database": "demo_db", "table": "embeddings"}' \
     --project demo
 
-umrs-client job submit cleanup \
-    --spec '{"target": "stale_objects"}' \
-    --project demo
-
-# 4. Print a one-shot dashboard snapshot
-#    The --once flag renders the table once and exits immediately
-#    (no live refresh loop). Shows all jobs with their current status.
+# 4. One-shot snapshot — Jobs tab (default)
 umrs-client monitor --once
 
-# 5. Print filtered view — only queued jobs
-#    The --status flag filters the display to show only jobs
-#    matching the specified status.
+# 5. One-shot snapshot — specific tabs
+umrs-client monitor --once --tab status
+umrs-client monitor --once --tab models
+umrs-client monitor --once --tab workflows
+umrs-client monitor --once --tab connection
+
+# 6. Filtered jobs view
 umrs-client monitor --once --status queued
 
-# 6. Launch the live-refreshing dashboard (interactive)
-#    Without --once, the monitor enters a live loop that refreshes
-#    the table every 3 seconds (configurable with --interval).
+# 7. Launch the live-refreshing interactive dashboard
 umrs-client monitor
 
-# 7. Other useful monitor options:
-#    Refresh every 5 seconds:
-umrs-client monitor --interval 5
+# 8. Start on a specific tab
+umrs-client monitor --tab connection
 
-#    Filter by project:
-umrs-client monitor --project myproject
+# 9. Mount a config file (enables in-TUI reload via R key)
+umrs-client monitor -c ~/.config/umrs/users/user1.json
 
-#    Filter by status:
-umrs-client monitor --status running
+# 10. Other options
+umrs-client monitor --interval 5         # refresh every 5 seconds
+umrs-client monitor --project myproject  # filter jobs by project
 ```
 
-## Dashboard Keyboard Shortcuts (Live Mode)
+## Keyboard Shortcuts (Live Mode)
+
+### Global
 
 | Key | Action |
 |-----|--------|
-| `q` | Quit the dashboard |
+| `1`-`5` | Switch tab |
+| `q` / `Ctrl+C` | Quit |
 | `r` | Force refresh |
+| `?` | Toggle help overlay |
+
+### Jobs Tab
+
+| Key | Action |
+|-----|--------|
 | `j` / `↓` | Move selection down |
 | `k` / `↑` | Move selection up |
-| `Enter` | Toggle job detail view (shows attempts) |
-| `f` | Cycle status filter |
+| `Enter` | Toggle job detail view (shows attempts + spec) |
+| `f` | Cycle status filter (all → running → failed → completed → ...) |
 | `/` | Toggle compact / wide table |
+| `c` | Cancel selected job |
+
+### Status Tab
+
+| Key | Action |
+|-----|--------|
+| `R` | Trigger server reload (requires `--conf` / `-c`) |
+
+### Models / Workflows Tabs
+
+| Key | Action |
+|-----|--------|
+| `j` / `↓` | Move selection down |
+| `k` / `↑` | Move selection up |
+| `Enter` | Toggle detail panel |
 
 ## Monitor Command Reference
 
@@ -90,11 +122,21 @@ umrs-client monitor --status running
 umrs-client monitor [OPTIONS]
 
 Options:
-  --once              Print once and exit (no live loop)
-  --interval SECONDS  Refresh interval (default: 3)
-  --status STATUS     Filter by job status (queued, running, completed, failed, cancelled)
-  --project NAME      Filter by project name
+  --once                   Print once and exit (no live loop)
+  --interval SECONDS       Refresh interval (default: 3)
+  --tab TAB                Start tab: jobs, status, models, workflows, connection
+  --status STATUS          Filter jobs by status (Jobs tab)
+  --project NAME           Filter jobs by project (Jobs tab)
+  -c / --conf PATH         Mount config file (enables in-TUI reload)
 ```
+
+## Config File Mounting
+
+When you pass `-c` / `--conf` pointing to a user config JSON file:
+- The **Status tab** shows the config filename and enables the `R` key
+- Pressing `R` uploads the config to the server and triggers a RELOAD
+- This is equivalent to running `umrs-client reload -c <file>` but from
+  within the dashboard
 
 ## Expected Output (One-Shot)
 
