@@ -223,6 +223,271 @@ class TestJobModels:
 class TestAdapters:
     """Tests for backend adapters."""
 
+    def test_index_build_backend_submit(self):
+        """IndexBuildBackend should perform pgvector maintenance synchronously."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import IndexBuildBackend
+
+        spec = {
+            "database": "xp_demo",
+            "table": "text_embeddings",
+            "rebuild": True,
+        }
+        job = Job(
+            job_id="job-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.INDEX_BUILD,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=compute_idempotency_key(
+                project_id="proj-1",
+                user_id="user-1",
+                job_type=JobType.INDEX_BUILD,
+                spec=spec,
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        attempt = JobAttempt(
+            attempt_id="att-123",
+            job_id="job-123",
+            attempt_no=1,
+            backend="index_build",
+            status=AttemptStatus.CREATED,
+            created_at=datetime.utcnow(),
+        )
+
+        backend = IndexBuildBackend()
+        with patch("umrs.jobs.adapters.maintain_pgvector_index") as mock_maintain:
+            mock_maintain.return_value = {
+                "database": "xp_demo",
+                "table": "text_embeddings",
+                "index_name": "idx_text_embeddings_embedding_hnsw",
+                "action": "reindexed",
+            }
+            backend_ref = asyncio.run(backend.submit_job(job, attempt))
+
+        assert "index_build|database=xp_demo|table=text_embeddings" in backend_ref
+        mock_maintain.assert_called_once_with(
+            "xp_demo",
+            "text_embeddings",
+            rebuild=True,
+            index_name=None,
+        )
+
+    def test_cleanup_backend_submit_endpoint(self):
+        """CleanupBackend should teardown an endpoint target."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import CleanupBackend
+
+        spec = {
+            "target": "endpoint",
+            "job_id": "slurm-123",
+            "force": True,
+        }
+        job = Job(
+            job_id="job-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.CLEANUP,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=compute_idempotency_key(
+                project_id="proj-1",
+                user_id="user-1",
+                job_type=JobType.CLEANUP,
+                spec=spec,
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        attempt = JobAttempt(
+            attempt_id="att-123",
+            job_id="job-123",
+            attempt_no=1,
+            backend="cleanup",
+            status=AttemptStatus.CREATED,
+            created_at=datetime.utcnow(),
+        )
+
+        mock_orchestrator = AsyncMock()
+        mock_registry = MagicMock()
+        mock_registry.get_by_job_id.return_value = MagicMock(job_id="slurm-123")
+        backend = CleanupBackend(mock_orchestrator, mock_registry)
+
+        backend_ref = asyncio.run(backend.submit_job(job, attempt))
+
+        assert backend_ref == "cleanup|target=endpoint|job_id=slurm-123|force=1"
+        mock_orchestrator.cleanup.assert_awaited_once_with("slurm-123", force=True)
+        mock_registry.remove.assert_called_once_with("slurm-123")
+
+    def test_cleanup_backend_resolves_durable_endpoint_job_id(self):
+        """CleanupBackend should resolve durable endpoint job IDs to backend refs."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import CleanupBackend
+
+        spec = {
+            "target": "endpoint",
+            "job_id": "job-endpoint-123",
+        }
+        job = Job(
+            job_id="job-cleanup-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.CLEANUP,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=compute_idempotency_key(
+                project_id="proj-1",
+                user_id="user-1",
+                job_type=JobType.CLEANUP,
+                spec=spec,
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        attempt = JobAttempt(
+            attempt_id="att-cleanup-123",
+            job_id="job-cleanup-123",
+            attempt_no=1,
+            backend="cleanup",
+            status=AttemptStatus.CREATED,
+            created_at=datetime.utcnow(),
+        )
+        provision_job = Job(
+            job_id="job-endpoint-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            status=JobStatus.COMPLETED,
+            spec={"model": "sam3"},
+            idempotency_key=compute_idempotency_key(
+                project_id="proj-1",
+                user_id="user-1",
+                job_type=JobType.ENDPOINT_PROVISION,
+                spec={"model": "sam3"},
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        provision_attempt = JobAttempt(
+            attempt_id="att-endpoint-123",
+            job_id="job-endpoint-123",
+            attempt_no=1,
+            backend="slurm-podman",
+            backend_ref="slurm-123",
+            status=AttemptStatus.SUCCEEDED,
+            created_at=datetime.utcnow(),
+        )
+
+        mock_orchestrator = AsyncMock()
+        mock_registry = MagicMock()
+        mock_registry.get_by_job_id.side_effect = lambda job_id: (
+            None if job_id == "job-endpoint-123" else MagicMock(job_id=job_id)
+        )
+        backend = CleanupBackend(
+            mock_orchestrator,
+            mock_registry,
+            get_job_with_attempts=lambda _job_id: (provision_job, [provision_attempt]),
+        )
+
+        backend_ref = asyncio.run(backend.submit_job(job, attempt))
+
+        assert (
+            backend_ref
+            == "cleanup|target=endpoint|job_id=slurm-123|requested_job_id=job-endpoint-123|force=0"
+        )
+        mock_orchestrator.cleanup.assert_awaited_once_with("slurm-123", force=False)
+        mock_registry.remove.assert_called_once_with("slurm-123")
+
+    def test_cleanup_status_checker_succeeds_when_endpoint_is_absent(self):
+        """Cleanup status should succeed once the target endpoint is gone."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import CleanupStatusChecker
+
+        spec = {"target": "endpoint", "job_id": "slurm-123"}
+        job = Job(
+            job_id="job-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.CLEANUP,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=compute_idempotency_key(
+                project_id="proj-1",
+                user_id="user-1",
+                job_type=JobType.CLEANUP,
+                spec=spec,
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        attempt = JobAttempt(
+            attempt_id="att-123",
+            job_id="job-123",
+            attempt_no=1,
+            backend="cleanup",
+            backend_ref="cleanup|target=endpoint|job_id=slurm-123|force=0",
+            status=AttemptStatus.SUBMITTED,
+            created_at=datetime.utcnow(),
+        )
+
+        mock_registry = MagicMock()
+        mock_registry.get_by_job_id.return_value = None
+        checker = CleanupStatusChecker(mock_registry)
+
+        result = asyncio.run(checker.check_status(attempt, job))
+
+        assert result.status == "succeeded"
+        assert result.should_commit is False
+        assert result.metrics["target_job_id"] == "slurm-123"
+
+    def test_cleanup_status_checker_reports_requested_job_id(self):
+        """Cleanup status should preserve the original durable endpoint job ID in metrics."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import CleanupStatusChecker
+
+        spec = {"target": "endpoint", "job_id": "job-endpoint-123"}
+        job = Job(
+            job_id="job-cleanup-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.CLEANUP,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=compute_idempotency_key(
+                project_id="proj-1",
+                user_id="user-1",
+                job_type=JobType.CLEANUP,
+                spec=spec,
+            ),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        attempt = JobAttempt(
+            attempt_id="att-cleanup-123",
+            job_id="job-cleanup-123",
+            attempt_no=1,
+            backend="cleanup",
+            backend_ref=(
+                "cleanup|target=endpoint|job_id=slurm-123"
+                "|requested_job_id=job-endpoint-123|force=0"
+            ),
+            status=AttemptStatus.SUBMITTED,
+            created_at=datetime.utcnow(),
+        )
+
+        mock_registry = MagicMock()
+        mock_registry.get_by_job_id.return_value = None
+        checker = CleanupStatusChecker(mock_registry)
+
+        result = asyncio.run(checker.check_status(attempt, job))
+
+        assert result.status == "succeeded"
+        assert result.metrics["target_job_id"] == "slurm-123"
+        assert result.metrics["requested_job_id"] == "job-endpoint-123"
+
     def test_endpoint_provision_backend_submit(self):
         """Test EndpointProvisionBackend submit_job."""
         from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
@@ -441,7 +706,9 @@ class TestAdapters:
         mock_registry.mark_failed.return_value = endpoint
 
         mock_readiness = MagicMock()
-        mock_readiness.check_ready = AsyncMock(return_value=True)
+        mock_readiness.check_ready_detail = AsyncMock(
+            return_value=(True, ["test-model"], None)
+        )
 
         mock_orchestrator = MagicMock()
         mock_orchestrator.get_job_status = AsyncMock(
@@ -465,7 +732,7 @@ class TestAdapters:
         assert endpoint.host == "gpu-node-1"
         assert result.metrics["host"] == "gpu-node-1"
         mock_orchestrator.get_job_status.assert_awaited_once_with("slurm-123")
-        mock_readiness.check_ready.assert_awaited_once_with("gpu-node-1", 11434)
+        mock_readiness.check_ready_detail.assert_awaited_once_with("gpu-node-1", 11434)
 
     def test_backend_factory_creation(self):
         """Test create_backend_factory."""
@@ -481,15 +748,14 @@ class TestAdapters:
             orchestrator=mock_orchestrator,
             registry=mock_registry,
             port_manager=mock_port_manager,
+            get_job_with_attempts=MagicMock(),
         )
 
         # Get endpoint provision backend
         backend = factory(JobType.ENDPOINT_PROVISION)
         assert backend is not None
-
-        # Index build should fail without worker
-        with pytest.raises(RuntimeError):
-            factory(JobType.INDEX_BUILD)
+        assert factory(JobType.INDEX_BUILD) is not None
+        assert factory(JobType.CLEANUP) is not None
 
         checker = create_status_checker(
             readiness_poller=mock_readiness_poller,
@@ -497,6 +763,8 @@ class TestAdapters:
             include_model_download=False,
         )
         assert JobType.ENDPOINT_PROVISION in checker._checkers
+        assert JobType.INDEX_BUILD in checker._checkers
+        assert JobType.CLEANUP in checker._checkers
 
 
 class TestScheduler:

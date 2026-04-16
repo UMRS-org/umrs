@@ -12,11 +12,12 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Callable, Dict, Optional
 
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
 from .scheduler import OrchestratorBackend
+from ..server.sql import maintain_pgvector_index
 
 if TYPE_CHECKING:
     from umrs.orchestrator.base import OrchestratorBackend as BaseOrchestrator
@@ -24,6 +25,20 @@ if TYPE_CHECKING:
     from umrs.orchestrator.readiness import ReadinessPoller
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_backend_ref(backend_ref: str) -> Dict[str, str]:
+    parts = backend_ref.split("|")
+    if len(parts) < 2:
+        raise ValueError(f"Malformed backend reference: {backend_ref}")
+
+    parsed: Dict[str, str] = {"kind": parts[0]}
+    for item in parts[1:]:
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        parsed[key] = value
+    return parsed
 
 
 class EndpointProvisionBackend(OrchestratorBackend):
@@ -387,81 +402,53 @@ class IndexBuildBackend(OrchestratorBackend):
     """
     Backend adapter for index build jobs.
 
-    Submits vector index build tasks to workers.
-    Uses attempt-scoped S3 paths for output isolation.
+    Executes pgvector/HNSW index maintenance synchronously against the target
+    database using the same admin connection settings as the server runtime.
     """
-
-    def __init__(
-        self,
-        embedding_worker,
-        s3_client,
-    ):
-        """
-        Initialize adapter.
-
-        Args:
-            embedding_worker: Worker for embedding/indexing
-            s3_client: S3 client for path management
-        """
-        self.embedding_worker = embedding_worker
-        self.s3_client = s3_client
 
     @property
     def backend_name(self) -> str:
-        return "index_builder"
+        return "index_build"
 
     async def submit_job(
         self,
         job: Job,
         attempt: JobAttempt,
     ) -> str:
-        """
-        Submit index build to embedding worker.
-
-        Writes output to attempt-scoped S3 path.
-        """
         spec = job.spec
+        database = (spec.get("database") or "").strip()
+        table = (spec.get("table") or "").strip()
+        if not database:
+            raise ValueError("index_build requires spec.database")
+        if not table:
+            raise ValueError("index_build requires spec.table")
 
-        # Attempt-scoped output path
-        # s3://bucket/jobs/<job_id>/attempt_<n>/index/
-        output_path = (
-            f"s3://rivault/jobs/{job.job_id}/"
-            f"attempt_{attempt.attempt_no}/index/"
-        )
-
-        # Submit to worker
-        task_id = await self.embedding_worker.submit_index_build(
-            project_id=job.project_id,
-            user_id=job.user_id,
-            collection_name=spec.get("collection_name"),
-            input_path=spec.get("input_path"),
-            output_path=output_path,
-            embedding_model=spec.get("embedding_model", "default"),
+        rebuild = bool(spec.get("rebuild", False))
+        index_name = spec.get("index_name") or None
+        metrics = maintain_pgvector_index(
+            database,
+            table,
+            rebuild=rebuild,
+            index_name=index_name,
         )
 
         logger.info(
-            f"Submitted index build: job={job.job_id} "
-            f"attempt={attempt.attempt_id} task_id={task_id}"
+            "Completed index maintenance: job=%s attempt=%s db=%s table=%s action=%s",
+            job.job_id,
+            attempt.attempt_id,
+            database,
+            table,
+            metrics.get("action", "unknown"),
         )
 
-        return task_id
+        return (
+            f"index_build|database={database}|table={table}|"
+            f"index={metrics['index_name']}|action={metrics['action']}"
+        )
 
 
 class IndexBuildStatusChecker(BackendStatusChecker):
-    """
-    Status checker for index build jobs.
-
-    Polls worker for task completion status.
-    """
-
-    def __init__(self, embedding_worker):
-        """
-        Initialize checker.
-
-        Args:
-            embedding_worker: Worker to query for status
-        """
-        self.embedding_worker = embedding_worker
+    """Status checker for synchronous index-build jobs."""
 
     @property
     def job_type(self) -> JobType:
@@ -472,32 +459,187 @@ class IndexBuildStatusChecker(BackendStatusChecker):
         attempt: JobAttempt,
         job: Job,
     ) -> AttemptCheckResult:
-        """Check status of an index build attempt."""
-        task_id = attempt.backend_ref
-        if not task_id:
-            return AttemptCheckResult.failed("No task ID")
+        backend_ref = attempt.backend_ref
+        if not backend_ref:
+            return AttemptCheckResult.failed("No backend reference")
 
         try:
-            task_status = await self.embedding_worker.get_task_status(task_id)
+            parsed = _parse_backend_ref(backend_ref)
+        except ValueError as exc:
+            return AttemptCheckResult.failed(str(exc))
 
-            if task_status.completed:
-                if task_status.success:
-                    return AttemptCheckResult.succeeded(metrics=task_status.metrics)
+        database = parsed.get("database") or job.spec.get("database")
+        table = parsed.get("table") or job.spec.get("table")
+        if not database or not table:
+            return AttemptCheckResult.failed("Missing database/table metadata")
 
-                return AttemptCheckResult.failed(task_status.error)
+        try:
+            metrics = maintain_pgvector_index(
+                database,
+                table,
+                rebuild=False,
+                index_name=parsed.get("index"),
+            )
+        except Exception as exc:
+            return AttemptCheckResult.failed(str(exc))
 
-            return AttemptCheckResult.running("running")
-
-        except Exception as e:
-            logger.warning(f"Failed to check task status {task_id}: {e}")
-            return AttemptCheckResult.running("running")
+        metrics["verified_after_submit"] = True
+        return AttemptCheckResult.succeeded(metrics=metrics)
 
     async def check_attempt(
         self,
         attempt: JobAttempt,
         job: Job,
     ) -> AttemptCheckResult:
-        """Backward-compatible wrapper for older tests/callers."""
+        return await self.check_status(attempt, job)
+
+
+class CleanupBackend(OrchestratorBackend):
+    """Backend adapter for explicit durable cleanup jobs."""
+
+    def __init__(
+        self,
+        orchestrator,
+        registry: "EndpointRegistry",
+        get_job_with_attempts: Optional[Callable[[str], tuple[Job, list[JobAttempt]]]] = None,
+    ):
+        self.orchestrator = orchestrator
+        self.registry = registry
+        self.get_job_with_attempts = get_job_with_attempts
+
+    @property
+    def backend_name(self) -> str:
+        return "cleanup"
+
+    def _resolve_endpoint_job_id(self, target_job_id: str) -> str:
+        endpoint = self.registry.get_by_job_id(target_job_id)
+        if endpoint is not None:
+            return target_job_id
+
+        if self.get_job_with_attempts is None:
+            return target_job_id
+
+        try:
+            target_job, attempts = self.get_job_with_attempts(target_job_id)
+        except Exception:
+            return target_job_id
+
+        if target_job.job_type != JobType.ENDPOINT_PROVISION:
+            raise ValueError(
+                "cleanup target=endpoint requires an endpoint_provision job_id "
+                "or a backend endpoint job id"
+            )
+
+        for prior_attempt in reversed(attempts):
+            if prior_attempt.backend_ref:
+                return prior_attempt.backend_ref
+
+        raise ValueError(
+            f"cleanup target job {target_job_id} has no provisioned backend reference yet"
+        )
+
+    async def submit_job(
+        self,
+        job: Job,
+        attempt: JobAttempt,
+    ) -> str:
+        spec = job.spec
+        target = (spec.get("target") or "").strip().lower()
+        if target != "endpoint":
+            raise ValueError(
+                f"Unsupported cleanup target: {target or '<missing>'}. "
+                "Supported targets: ['endpoint']"
+            )
+
+        target_job_id = (spec.get("job_id") or "").strip()
+        if not target_job_id:
+            raise ValueError("cleanup target=endpoint requires spec.job_id")
+
+        resolved_job_id = self._resolve_endpoint_job_id(target_job_id)
+        force = bool(spec.get("force", False))
+        endpoint = self.registry.get_by_job_id(resolved_job_id)
+        if endpoint is None:
+            logger.info(
+                "Cleanup job %s treated endpoint %s (requested=%s) as already absent",
+                job.job_id,
+                resolved_job_id,
+                target_job_id,
+            )
+        else:
+            await self.orchestrator.cleanup(resolved_job_id, force=force)
+            self.registry.remove(resolved_job_id)
+
+        logger.info(
+            "Completed cleanup: job=%s attempt=%s target=%s resolved_target=%s force=%s",
+            job.job_id,
+            attempt.attempt_id,
+            target_job_id,
+            resolved_job_id,
+            force,
+        )
+        backend_ref = f"cleanup|target=endpoint|job_id={resolved_job_id}"
+        if resolved_job_id != target_job_id:
+            backend_ref += f"|requested_job_id={target_job_id}"
+        backend_ref += f"|force={int(force)}"
+        return backend_ref
+
+
+class CleanupStatusChecker(BackendStatusChecker):
+    """Status checker for synchronous cleanup jobs."""
+
+    def __init__(self, registry: "EndpointRegistry"):
+        self.registry = registry
+
+    @property
+    def job_type(self) -> JobType:
+        return JobType.CLEANUP
+
+    async def check_status(
+        self,
+        attempt: JobAttempt,
+        job: Job,
+    ) -> AttemptCheckResult:
+        backend_ref = attempt.backend_ref
+        if not backend_ref:
+            return AttemptCheckResult.failed("No backend reference")
+
+        try:
+            parsed = _parse_backend_ref(backend_ref)
+        except ValueError as exc:
+            return AttemptCheckResult.failed(str(exc))
+
+        target = parsed.get("target") or (job.spec.get("target") or "")
+        if target != "endpoint":
+            return AttemptCheckResult.failed(
+                f"Unsupported cleanup target in backend state: {target or '<missing>'}"
+            )
+
+        target_job_id = parsed.get("job_id") or job.spec.get("job_id")
+        if not target_job_id:
+            return AttemptCheckResult.failed("Missing cleanup target job_id")
+
+        if self.registry.get_by_job_id(target_job_id) is None:
+            metrics = {
+                "target": "endpoint",
+                "target_job_id": target_job_id,
+            }
+            requested_job_id = parsed.get("requested_job_id")
+            if requested_job_id:
+                metrics["requested_job_id"] = requested_job_id
+            return AttemptCheckResult.succeeded(
+                metrics=metrics,
+                commit=False,
+            )
+
+        return AttemptCheckResult.failed(
+            f"Cleanup target still present after submit: {target_job_id}"
+        )
+
+    async def check_attempt(
+        self,
+        attempt: JobAttempt,
+        job: Job,
+    ) -> AttemptCheckResult:
         return await self.check_status(attempt, job)
 
 
@@ -505,6 +647,7 @@ def create_backend_factory(
     orchestrator: "BaseOrchestrator",
     registry: "EndpointRegistry",
     port_manager,
+    get_job_with_attempts: Optional[Callable[[str], tuple[Job, list[JobAttempt]]]] = None,
     embedding_worker=None,
     s3_client=None,
     model_store=None,
@@ -531,13 +674,12 @@ def create_backend_factory(
         registry=registry,
         port_manager=port_manager,
     )
-
-    index_backend = None
-    if embedding_worker and s3_client:
-        index_backend = IndexBuildBackend(
-            embedding_worker=embedding_worker,
-            s3_client=s3_client,
-        )
+    index_backend = IndexBuildBackend()
+    cleanup_backend = CleanupBackend(
+        orchestrator=orchestrator,
+        registry=registry,
+        get_job_with_attempts=get_job_with_attempts,
+    )
 
     model_download_backend = None
     if model_store and path_validator:
@@ -552,9 +694,9 @@ def create_backend_factory(
         if job_type == JobType.ENDPOINT_PROVISION:
             return endpoint_backend
         elif job_type == JobType.INDEX_BUILD:
-            if index_backend is None:
-                raise RuntimeError("Index build backend not configured")
             return index_backend
+        elif job_type == JobType.CLEANUP:
+            return cleanup_backend
         elif job_type == JobType.MODEL_DOWNLOAD:
             if model_download_backend is None:
                 raise RuntimeError(
@@ -599,12 +741,8 @@ def create_status_checker(
             orchestrator=orchestrator,
         ),
     )
-
-    if embedding_worker:
-        checker.register(
-            JobType.INDEX_BUILD,
-            IndexBuildStatusChecker(embedding_worker=embedding_worker),
-        )
+    checker.register(JobType.INDEX_BUILD, IndexBuildStatusChecker())
+    checker.register(JobType.CLEANUP, CleanupStatusChecker(registry=registry))
 
     if include_model_download:
         from .model_download import ModelDownloadStatusChecker

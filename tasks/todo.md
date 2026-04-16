@@ -258,6 +258,41 @@ Mini-Rivault, and site-specific wrappers instead of a set of partially-aligned
       exported env overrides, selected compose files, and readiness failures
 - [x] H11 Create a repeatable debugging order for wrapper issues,
       site-config mismatches, tunnel issues, and stale tarball/image problems
+
+### Durable Job Backend Recovery (2026-04-16)
+
+**Goal:** Make the documented durable `index_build` and `cleanup` job types
+actually executable on rccs-cloud instead of accepting them and failing later
+inside the scheduler.
+
+- [ ] DJ1 Define the canonical durable job specs and reject unsupported inputs
+      before enqueueing work.
+- [ ] DJ2 Replace the dead `embedding_worker`-style `index_build` path with
+      database-native pgvector index maintenance.
+- [ ] DJ3 Add a real durable `cleanup` backend for endpoint teardown using the
+      existing orchestration deprovision path.
+- [ ] DJ4 Wire durable startup/status-checker registration to the implemented
+      backends instead of advertising unsupported capability.
+- [ ] DJ5 Update durable-job tests and demos to match the supported contract.
+- [ ] DJ6 Re-validate locally, then clear or re-run the bad durable rows on
+      rccs-cloud so scheduler errors stop recurring.
+
+Review:
+- [x] DJ1 Define the canonical durable job specs and reject unsupported inputs
+      before enqueueing work.
+- [x] DJ2 Replace the dead `embedding_worker`-style `index_build` path with
+      database-native pgvector index maintenance.
+- [x] DJ3 Add a real durable `cleanup` backend for endpoint teardown using the
+      existing orchestration deprovision path.
+- [x] DJ4 Wire durable startup/status-checker registration to the implemented
+      backends instead of advertising unsupported capability.
+- [x] DJ5 Update durable-job tests and demos to match the supported contract.
+- [ ] DJ6 Re-validate locally, then clear or re-run the bad durable rows on
+      rccs-cloud so scheduler errors stop recurring.
+
+- Local validation: `PYTHONPATH=src .venv/bin/python -m pytest tests/test_durable_orchestration.py tests/test_job_tracking_handler_durable.py -q` passed (`32 passed`).
+- Durable `index_build` now uses direct pgvector/HNSW maintenance through `umrs.server.sql` and validates `spec.database` + `spec.table` before enqueue.
+- Durable `cleanup` now supports explicit endpoint teardown only and rejects unsupported targets such as S3 cleanup at command submission time.
 - [x] H12 Align operator docs and demos with the canonical harness behavior
 
 #### Review — Harness Ownership Audit (2026-04-07)

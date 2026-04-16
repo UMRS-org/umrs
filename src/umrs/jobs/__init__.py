@@ -42,6 +42,8 @@ from .monitor import (
 )
 from .service import JobService, create_job_service
 from .adapters import (
+    CleanupBackend,
+    CleanupStatusChecker,
     EndpointProvisionBackend,
     EndpointProvisionStatusChecker,
     IndexBuildBackend,
@@ -100,6 +102,8 @@ __all__ = [
     "JobService",
     "create_job_service",
     # Adapters
+    "CleanupBackend",
+    "CleanupStatusChecker",
     "EndpointProvisionBackend",
     "EndpointProvisionStatusChecker",
     "IndexBuildBackend",

@@ -59,9 +59,8 @@ umrs-client job submit index_build \
 
 ### 3. `cleanup` — Teardown resources explicitly
 
-Force-clean endpoints, stale S3 objects, or database tables. The janitor
-handles TTL-based cleanup automatically, but sometimes you want immediate
-teardown:
+Force-clean endpoints explicitly. The janitor handles TTL-based cleanup
+automatically, but sometimes you want immediate teardown:
 
 ```bash
 # Teardown a specific endpoint:
@@ -69,10 +68,8 @@ umrs-client job submit cleanup \
     --spec '{"target": "endpoint", "job_id": "job-abc123"}' \
     --project my-project
 
-# Clean stale S3 objects:
-umrs-client job submit cleanup \
-    --spec '{"target": "s3", "bucket": "old-experiment"}' \
-    --project my-project
+# Additional cleanup targets may be added later, but the durable backend
+# currently supports only endpoint teardown.
 ```
 
 ### Cancel a job

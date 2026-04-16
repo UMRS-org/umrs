@@ -153,6 +153,7 @@ class DurableOrchestrationService:
             orchestrator=orch.backend,
             registry=orch.registry,
             port_manager=orch.port_manager,
+            get_job_with_attempts=self._job_service.get_job_with_attempts,
         )
         self._job_service.set_backend_factory(backend_factory)
 
