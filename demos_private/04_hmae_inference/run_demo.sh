@@ -27,10 +27,44 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="hmae_demo" source "${SCRIPT_DIR}/../lib/common.sh"
 
 BUCKET_ALIAS="${HMAE_BUCKET:-user1-hmae}"
+FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
+
+# S3 bucket names (derived from user1.json naming convention)
+INPUT_S3_BUCKET="user1.hmae-inference.${BUCKET_ALIAS}"
+OUTPUT_S3_BUCKET="user1.hmae-inference.${BUCKET_ALIAS}-output"
 
 # Default image dir: use SAM3 demo's test_data_full (shared volume slices)
 IMAGE_DIR="${1:-${SCRIPT_DIR}/../03_sam3_segmentation/test_data_full}"
+
+# Helper: clear all objects from an S3 bucket (via local boto3 + s3cfg)
+clear_s3_bucket() {
+    local bucket="$1"
+    python3 - "$bucket" <<'PY'
+import sys, configparser, os, boto3
+bucket = sys.argv[1]
+cfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+s3cfg = os.path.expanduser("~/.config/umrs/s3cfg")
+cfg.read(s3cfg)
+protocol = "https" if cfg.getboolean("default", "use_https", fallback=False) else "http"
+endpoint = f"{protocol}://{cfg.get('default', 'host_base')}"
+s3 = boto3.client("s3", endpoint_url=endpoint,
+    aws_access_key_id=cfg.get("default", "access_key"),
+    aws_secret_access_key=cfg.get("default", "secret_key"))
+try:
+    objs = []
+    paginator = s3.get_paginator("list_objects_v2")
+    for page in paginator.paginate(Bucket=bucket):
+        objs.extend(page.get("Contents", []))
+    if objs:
+        s3.delete_objects(Bucket=bucket, Delete={"Objects": [{"Key": o["Key"]} for o in objs]})
+    print(f"Cleared {len(objs)} object(s) from {bucket}")
+except s3.exceptions.NoSuchBucket:
+    print(f"Bucket {bucket} does not exist yet (will be created on first upload)")
+except Exception as e:
+    print(f"Warning: could not clear {bucket}: {e}")
+PY
+}
 
 banner "Demo 04: HMAE Inference"
 echo "User config  : ${CONF}"
@@ -69,17 +103,27 @@ if [[ "${PNG_COUNT}" -eq 0 ]]; then
 fi
 log "  Found ${PNG_COUNT} PNG file(s)"
 
-# ---------- Step 4: Upload images ----------
+# ---------- Step 4: Clear stale results & Upload images ----------
 log ""
-log "Step 4: Uploading volume slices to bucket '${BUCKET_ALIAS}'..."
+log "Step 4a: Clearing S3 buckets for fresh computation..."
+clear_s3_bucket "$OUTPUT_S3_BUCKET"
+clear_s3_bucket "$INPUT_S3_BUCKET"
+
+log "Step 4b: Uploading volume slices to bucket '${BUCKET_ALIAS}'..."
 $CLIENT upload_dir "${IMAGE_DIR}" "$BUCKET_ALIAS"
 ok "Images uploaded — server will process automatically"
+
+if [[ -n "$FORCE_RECOMPUTE" ]]; then
+    log "FORCE_RECOMPUTE set — triggering full recompute..."
+    $CLIENT recompute || warn "recompute returned non-zero"
+fi
 UPLOAD_DONE=$SECONDS
 
 # ---------- Step 5: Wait & Download results ----------
 log ""
 log "Step 5: Waiting for HMAE processing and downloading results..."
 log "  (This may take several minutes for model loading + inference)"
+rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
 $CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite
 DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))

@@ -45,6 +45,7 @@ class GrayscaleAdapter(VisionModelAdapter):
         s3,
         output_bucket: str,
         presigned_output_urls: Dict[str, str] | None = None,
+        raw_image_bytes: bytes | None = None,
     ) -> Dict[str, Any]:
         # Convert to grayscale
         gray = image.convert("L")

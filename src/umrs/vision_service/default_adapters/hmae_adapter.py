@@ -94,6 +94,7 @@ class HMAEAdapter(VisionModelAdapter):
         s3,
         output_bucket: str,
         presigned_output_urls: Dict[str, str] | None = None,
+        raw_image_bytes: bytes | None = None,
     ) -> Dict[str, Any]:
         from umrs.inference.hmae_inference import (
             preprocess_image_from_bytes,
@@ -118,10 +119,16 @@ class HMAEAdapter(VisionModelAdapter):
         if str(model["device"]) == "cpu":
             use_bf16 = False
 
-        # Serialise image to PNG bytes for preprocessing
-        buf = io.BytesIO()
-        image.save(buf, format="PNG")
-        image_bytes = buf.getvalue()
+        # Use raw S3 bytes when available (matches reference cv2.imread path).
+        # Fall back to PIL re-serialisation only when raw bytes are missing.
+        if raw_image_bytes is not None:
+            image_bytes = raw_image_bytes
+        else:
+            in_ch = model_cfg.get("in_channels", 1)
+            image_conv = image.convert("L") if in_ch == 1 else image.convert("RGB")
+            buf = io.BytesIO()
+            image_conv.save(buf, format="PNG")
+            image_bytes = buf.getvalue()
 
         data = preprocess_image_from_bytes(
             image_bytes,
