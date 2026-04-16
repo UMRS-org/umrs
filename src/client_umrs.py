@@ -497,14 +497,17 @@ def main():
     wl_p.add_argument('--name', default=None, help='Filter by workflow name (substring match)')
 
     # --- Monitor (TUI dashboard) ---
-    mon_p = subparsers.add_parser('monitor', help='Live-refreshing jobs dashboard (TUI)')
+    mon_p = subparsers.add_parser('monitor', help='Live-refreshing multi-tab system monitor (TUI)')
     mon_p.add_argument('--interval', type=float, default=3.0, help='Refresh interval in seconds')
     mon_p.add_argument('--status', default=None,
                        choices=['running', 'queued', 'planned', 'completed', 'failed', 'cancelled'],
-                       help='Initial status filter')
-    mon_p.add_argument('--project', default=None, help='Filter by project ID')
+                       help='Initial status filter (Jobs tab)')
+    mon_p.add_argument('--project', default=None, help='Filter by project ID (Jobs tab)')
     mon_p.add_argument('--once', action='store_true', default=False,
                        help='Print dashboard once and exit (no live refresh)')
+    mon_p.add_argument('--tab', default='jobs',
+                       choices=['jobs', 'status', 'models', 'workflows', 'connection'],
+                       help='Tab to display on startup (default: jobs)')
 
     profile_p = subparsers.add_parser('profile', help='Connection profile commands (list, show, use, import)')
     profile_sub = profile_p.add_subparsers(dest='profile_action', required=True)
@@ -788,13 +791,19 @@ def main():
                 control_mq.close()
             sys.exit(exit_code)
         if args.action == 'monitor':
-            # TUI jobs dashboard — no config file required
+            # Multi-tab TUI system monitor — config file optional (enables reload)
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            if isinstance(user, dict) and user.get('username'):
+                client_id = user['username']
             try:
                 from umrs.tui.dashboard import Dashboard
             except ImportError:
                 sys.exit("The 'rich' library is required for the monitor dashboard.\n"
                          "Install it with: pip install 'rich>=13.0'")
+            try:
+                conn_info = connection.to_dict() if connection else {}
+            except Exception:
+                conn_info = {}
             try:
                 dash = Dashboard(
                     control_mq=control_mq,
@@ -802,6 +811,10 @@ def main():
                     interval=args.interval,
                     status_filter=args.status,
                     project_filter=args.project,
+                    initial_tab=args.tab,
+                    config_path=configure_file if configure_file and os.path.isfile(configure_file) else None,
+                    user_cfg=user if isinstance(user, dict) else None,
+                    connection_info=conn_info,
                 )
                 if args.once:
                     dash.render_once()
