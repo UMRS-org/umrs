@@ -52,6 +52,7 @@ class SAM3Adapter(VisionModelAdapter):
         s3,
         output_bucket: str,
         presigned_output_urls: Dict[str, str] | None = None,
+        raw_image_bytes: bytes | None = None,
     ) -> Dict[str, Any]:
         from umrs.inference.sam3_segmentation import (
             segment_image_with_text,

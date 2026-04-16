@@ -52,6 +52,7 @@ class VisionModelAdapter(abc.ABC):
         s3,
         output_bucket: str,
         presigned_output_urls: Dict[str, str] | None = None,
+        raw_image_bytes: bytes | None = None,
     ) -> Dict[str, Any]:
         """Run inference on a single image.
 
@@ -68,6 +69,10 @@ class VisionModelAdapter(abc.ABC):
             presigned_output_urls: Optional dict mapping output_key ->
                     presigned PUT URL.  When provided, adapters should upload
                     results via HTTP PUT instead of ``s3.put_object()``.
+            raw_image_bytes: Original undecoded image bytes from S3.
+                    Adapters that need the raw file (e.g. for OpenCV
+                    grayscale decoding) should prefer these over
+                    re-serialising the PIL image.
 
         Returns:
             Result dict.  May contain non-JSON-serialisable objects

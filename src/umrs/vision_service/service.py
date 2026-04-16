@@ -94,7 +94,7 @@ def _download_image_from_s3(s3, image_url):
 
     obj = s3.get_object(Bucket=bucket, Key=key)
     image_bytes = obj["Body"].read()
-    return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key
+    return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key, image_bytes
 
 
 def _download_image_from_presigned_url(presigned_url, image_url):
@@ -122,7 +122,7 @@ def _download_image_from_presigned_url(presigned_url, image_url):
             req = urllib.request.Request(presigned_url, method="GET")
             with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
                 image_bytes = resp.read()
-            return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key
+            return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key, image_bytes
         except (urllib.error.URLError, OSError) as exc:
             last_exc = exc
             if attempt < max_retries - 1:
@@ -225,7 +225,7 @@ class VisionModelService:
             # Download input image: prefer presigned URL, fall back to direct S3
             if presigned_input_url:
                 logger.warning("[DEBUG-INFER] Downloading via presigned URL")
-                image, bucket, key = _download_image_from_presigned_url(
+                image, bucket, key, raw_image_bytes = _download_image_from_presigned_url(
                     presigned_input_url, image_url,
                 )
                 s3 = None if (_require_presigned_urls() or presigned_output_urls) else self._ensure_s3()
@@ -234,7 +234,7 @@ class VisionModelService:
                 s3 = self._ensure_s3()
                 logger.warning("[DEBUG-INFER] S3 endpoint: %s",
                                os.environ.get('S3_ENDPOINT_URL', '(not set)'))
-                image, bucket, key = _download_image_from_s3(s3, image_url)
+                image, bucket, key, raw_image_bytes = _download_image_from_s3(s3, image_url)
 
             expected_outputs = adapter.describe_outputs(key, inference_config)
             if _require_presigned_urls():
@@ -263,6 +263,7 @@ class VisionModelService:
                 model, image, bucket, key,
                 inference_config, s3, output_bucket or bucket,
                 presigned_output_urls=presigned_output_urls or {},
+                raw_image_bytes=raw_image_bytes,
             )
             logger.warning("[DEBUG-INFER] Adapter returned keys: %s",
                            list(result.keys()) if isinstance(result, dict) else type(result))

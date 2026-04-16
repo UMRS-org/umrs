@@ -510,7 +510,12 @@ def launch_rivault_model(model_cfg):
     except Exception as e:
         print(f"Warning: failed to inject site config: {e}")  # No site.yaml → existing env vars / script defaults used
 
-    model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"]
+    # Include vision_model_config task in cache key so different HMAE tasks
+    # (reconstruction, mae_reconstruction, feature_extraction) get separate
+    # model closures with the correct effective_config.
+    vmc = model_cfg.get("vision_model_config", {})
+    task_suffix = ":" + vmc["task"] if vmc.get("task") else ""
+    model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"] + task_suffix
     # --- 0. Check cache ---
     job_id = _get_cached_job(model_type_key)
     if job_id is not None:
