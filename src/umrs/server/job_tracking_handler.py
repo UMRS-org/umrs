@@ -39,7 +39,7 @@ VALID_STATUSES = {"planned", "queued", "running", "completed", "failed", "cancel
 # Only job types that genuinely need explicit submission (not triggered by file uploads).
 # - endpoint_provision: pre-warm Slurm/K8s service before uploads arrive
 # - index_build: rebuild RAG index (pgvector IVFFlat re-cluster) after bulk inserts
-# - cleanup: teardown endpoints, stale S3 objects, or database tables
+# - cleanup: teardown endpoints explicitly (endpoint target only for now)
 #
 # Excluded because they have dedicated paths:
 # - model_download → MODEL_DOWNLOAD ZMQ command
@@ -83,6 +83,33 @@ def _parse_restart_policy(restart_policy: str) -> RestartPolicy:
         ) from exc
 
 
+def _require_string(spec: Dict[str, Any], key: str, label: str) -> str:
+    value = spec.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{label} is required")
+    return value.strip()
+
+
+def _validate_job_spec(job_type: JobType, spec: Any) -> Dict[str, Any]:
+    if not isinstance(spec, dict):
+        raise ValueError("spec must be a JSON object")
+
+    if job_type == JobType.INDEX_BUILD:
+        _require_string(spec, "database", "index_build spec.database")
+        _require_string(spec, "table", "index_build spec.table")
+        if "rebuild" in spec and not isinstance(spec["rebuild"], bool):
+            raise ValueError("index_build spec.rebuild must be a boolean")
+    elif job_type == JobType.CLEANUP:
+        target = _require_string(spec, "target", "cleanup spec.target").lower()
+        if target != "endpoint":
+            raise ValueError(
+                "cleanup currently supports only spec.target='endpoint'"
+            )
+        _require_string(spec, "job_id", "cleanup spec.job_id")
+
+    return spec
+
+
 def _serialize_attempt(attempt) -> Dict[str, Any]:
     data = attempt.to_dict()
     data.setdefault("exit_reason", None)
@@ -115,7 +142,7 @@ class DurableJobCommandBackend:
         try:
             job_type = _parse_job_type((payload.get("job_type") or "").strip())
             project_id = payload.get("project_id", "default")
-            spec = payload.get("spec", {})
+            spec = _validate_job_spec(job_type, payload.get("spec", {}))
             priority = int(payload.get("priority", 0))
             max_attempts = int(payload.get("max_attempts", 3))
             restart_policy = _parse_restart_policy(payload.get("restart_policy", "on_crash"))

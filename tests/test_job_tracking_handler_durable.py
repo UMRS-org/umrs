@@ -168,6 +168,46 @@ def test_handle_job_command_dispatches_to_durable_backend():
     assert result["job"]["status"] == "queued"
 
 
+def test_durable_backend_rejects_invalid_index_build_spec():
+    backend = DurableJobCommandBackend(FakeJobStore())
+
+    result = json.loads(
+        backend.submit(
+            "testuser",
+            json.dumps(
+                {
+                    "project_id": "default",
+                    "job_type": "index_build",
+                    "spec": {"table": "embeddings"},
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert "index_build spec.database is required" in result["message"]
+
+
+def test_durable_backend_rejects_unsupported_cleanup_target():
+    backend = DurableJobCommandBackend(FakeJobStore())
+
+    result = json.loads(
+        backend.submit(
+            "testuser",
+            json.dumps(
+                {
+                    "project_id": "default",
+                    "job_type": "cleanup",
+                    "spec": {"target": "s3", "bucket": "old-experiment"},
+                }
+            ),
+        )
+    )
+
+    assert result["status"] == "error"
+    assert "cleanup currently supports only spec.target='endpoint'" in result["message"]
+
+
 def test_build_durable_job_db_pool_reads_env(monkeypatch):
     connect_kwargs = {}
     pool_kwargs = {}
