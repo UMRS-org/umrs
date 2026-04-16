@@ -98,6 +98,80 @@ VLLM_NCCL_MEM_LIMIT=8G
 VLLM_RCCL_MEM_LIMIT=8G
 EOF
 
+_cleanup_started=0
+_ssh_tunnel_pids=()
+
+start_managed_ssh_tunnel() {
+    local bind_spec="$1"
+    local remote_host="$2"
+    local ssh_pid
+
+    ssh -nNT -L "$bind_spec" "$remote_host" \
+        -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes \
+        </dev/null >/dev/null 2>&1 &
+    ssh_pid=$!
+
+    sleep 1
+    if kill -0 "$ssh_pid" 2>/dev/null; then
+        _ssh_tunnel_pids+=("$ssh_pid")
+        return 0
+    fi
+
+    wait "$ssh_pid"
+    return $?
+}
+
+cleanup_ssh_tunnels() {
+    local ssh_pid
+
+    if [[ ${#_ssh_tunnel_pids[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    for ssh_pid in "${_ssh_tunnel_pids[@]}"; do
+        kill "$ssh_pid" 2>/dev/null || true
+    done
+    sleep 1
+    for ssh_pid in "${_ssh_tunnel_pids[@]}"; do
+        if kill -0 "$ssh_pid" 2>/dev/null; then
+            kill -9 "$ssh_pid" 2>/dev/null || true
+        fi
+    done
+    for ssh_pid in "${_ssh_tunnel_pids[@]}"; do
+        wait "$ssh_pid" 2>/dev/null || true
+    done
+    _ssh_tunnel_pids=()
+}
+
+cleanup_stack() {
+    local reason="${1:-exit}"
+    local rc="${2:-0}"
+
+    if [[ "${_cleanup_started}" -ne 0 ]]; then
+        return
+    fi
+    _cleanup_started=1
+    trap - EXIT TERM INT
+
+    echo "Cleaning up Jens stack (${reason})..."
+    cleanup_ssh_tunnels
+    podman-compose --project-name "exit" \
+        --env-file "./env.${uuid}" --file "./userdata-access.yaml" \
+        down >/dev/null 2>&1 || true
+    podman-compose --project-name "rivault" \
+        --env-file "./env.${uuid}" --file "./serve-model.yaml" "${GPUoverride[@]}" \
+        down >/dev/null 2>&1 || true
+    podman network rm -f genai-private-net >/dev/null 2>&1 || true
+    rm -f "./env.${uuid}" \
+        "./nginx_fs/out-nginx.conf.${uuid}" \
+        "./coredns_fs/coredns.conf.${uuid}" >/dev/null 2>&1 || true
+    return "$rc"
+}
+
+trap 'cleanup_stack "signal:TERM" 143; exit 143' TERM
+trap 'cleanup_stack "signal:INT" 130; exit 130' INT
+trap 'cleanup_stack "exit" "$?"' EXIT
+
 # ── GPU detection ───────────────────────────────────────────────────────
 GPUoverride=()
 HAVE_GPU="none"
@@ -165,7 +239,7 @@ if [[ "x${_S3_HOST_FILE}" == "xsshforwarded" ]]; then
         sed -i -e "s@LOCAL_IP_FOR_SSH_FORWARDING@${LOCAL_IP}@g" "./coredns_fs/coredns.conf.${uuid}"
     fi
 
-    ssh -NTf -L "${LOCAL_IP}:${_S3_PORT_FILE}:localhost:${_S3_PORT_FILE}" rccscloud
+    start_managed_ssh_tunnel "${LOCAL_IP}:${_S3_PORT_FILE}:localhost:${_S3_PORT_FILE}" rccscloud
 
     # Verify tunnel
     _TUNNEL_OK=0
