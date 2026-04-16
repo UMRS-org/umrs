@@ -355,15 +355,57 @@ fi
 UMRS_S3_TUNNEL_PORT=${UMRS_S3_TUNNEL_PORT:-9000}
 UMRS_S3_TUNNEL_HOST=${UMRS_S3_TUNNEL_HOST:-${SLURM_SUBMIT_HOST:-localhost}}
 _S3_LOCAL_PORT="${BENTOML_MINIO_HOST_PORT:-19000}"
+_ssh_tunnel_pids=()
+
+start_managed_ssh_tunnel() {
+    local bind_spec="$1"
+    local remote_host="$2"
+    local ssh_pid
+
+    ssh -nNT -L "$bind_spec" "$remote_host" \
+        -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes \
+        </dev/null >/dev/null 2>&1 &
+    ssh_pid=$!
+
+    sleep 1
+    if kill -0 "$ssh_pid" 2>/dev/null; then
+        _ssh_tunnel_pids+=("$ssh_pid")
+        return 0
+    fi
+
+    wait "$ssh_pid"
+    return $?
+}
+
+cleanup_ssh_tunnels() {
+    local ssh_pid
+
+    if [[ ${#_ssh_tunnel_pids[@]} -eq 0 ]]; then
+        return 0
+    fi
+
+    for ssh_pid in "${_ssh_tunnel_pids[@]}"; do
+        kill "$ssh_pid" 2>/dev/null || true
+    done
+    sleep 1
+    for ssh_pid in "${_ssh_tunnel_pids[@]}"; do
+        if kill -0 "$ssh_pid" 2>/dev/null; then
+            kill -9 "$ssh_pid" 2>/dev/null || true
+        fi
+    done
+    for ssh_pid in "${_ssh_tunnel_pids[@]}"; do
+        wait "$ssh_pid" 2>/dev/null || true
+    done
+    _ssh_tunnel_pids=()
+}
+
 echo "[rivault] Setting up SSH tunnels for S3 (MinIO) access..."
 # Tunnel 1: 0.0.0.0:19000 → login:9000 (for containers via host-gateway)
-ssh -fN -L "0.0.0.0:${_S3_LOCAL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
-    -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes 2>&1 \
+start_managed_ssh_tunnel "0.0.0.0:${_S3_LOCAL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
     && echo "[rivault] SSH tunnel: 0.0.0.0:${_S3_LOCAL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} (for containers)" \
     || echo "[rivault] WARNING: SSH tunnel (container) to ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} failed"
 # Tunnel 2: localhost:9000 → login:9000 (for host-level presigned URL access)
-ssh -fN -L "127.0.0.1:${UMRS_S3_TUNNEL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
-    -o StrictHostKeyChecking=no -o ExitOnForwardFailure=yes 2>&1 \
+start_managed_ssh_tunnel "127.0.0.1:${UMRS_S3_TUNNEL_PORT}:127.0.0.1:${UMRS_S3_TUNNEL_PORT}" "${UMRS_S3_TUNNEL_HOST}" \
     && echo "[rivault] SSH tunnel: localhost:${UMRS_S3_TUNNEL_PORT} → ${UMRS_S3_TUNNEL_HOST}:${UMRS_S3_TUNNEL_PORT} (for host)" \
     || echo "[rivault] WARNING: SSH tunnel (host) already bound or failed (OK if port ${UMRS_S3_TUNNEL_PORT} == ${_S3_LOCAL_PORT})"
 
@@ -438,6 +480,7 @@ cleanup_stack() {
     trap - EXIT TERM INT
 
     echo "[rivault] Cleaning up stack (${reason})..."
+    cleanup_ssh_tunnels
     podman-compose --project-name "exit" --in-pod false \
                --env-file "./env.${uuid}" \
                --file "./userdata-access.yaml" \
