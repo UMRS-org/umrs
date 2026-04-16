@@ -14,12 +14,19 @@ from umrs.shared.connection_profiles import (
     resolve_connection,
     set_current_profile_name,
 )
+from umrs.shared.loaded_config_profiles import (
+    apply_s3_config_override,
+    discover_loaded_config_profiles,
+    get_user_config_search_locations,
+    resolve_loaded_config,
+    set_current_s3_config,
+    set_current_server_config,
+    set_current_user_config,
+)
 from umrs.shared.json_config import load_client_cfg_file
 from umrs.shared.pretty_print import pretty_print_user_cfg
 from umrs.shared.config import (
     get_default_docker_s3cfg,
-    get_resolved_umrs_cfg_dir,
-    get_users_default_cfg_subdir,
 )
 from glob import glob
 import argparse
@@ -32,33 +39,6 @@ from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
 
 
 STATUS_CHOICES = TaskCmd.status_cmd()
-
-# ======================= Config file auto-discovery =======================
-# Search paths in priority order (first match wins).
-_DEFAULT_CFG_DIR = get_resolved_umrs_cfg_dir()
-_CONFIG_SEARCH_PATHS = [
-    "./conf_umrs.json",
-    os.path.join(_DEFAULT_CFG_DIR, get_users_default_cfg_subdir(), "user1.json"),
-    os.path.join(_DEFAULT_CFG_DIR, get_users_default_cfg_subdir(), "user_rivault.json"),
-    os.path.join(_DEFAULT_CFG_DIR, "conf_umrs.json"),
-]
-
-# Glob for any user JSON in the users directory
-_CONFIG_SEARCH_GLOBS = [
-    os.path.join(_DEFAULT_CFG_DIR, get_users_default_cfg_subdir(), "*.json"),
-]
-
-
-def _find_config():
-    """Return the first config file found in the search paths, or None."""
-    for p in _CONFIG_SEARCH_PATHS:
-        if os.path.isfile(p):
-            return p
-    for pattern in _CONFIG_SEARCH_GLOBS:
-        matches = sorted(glob(pattern))
-        if matches:
-            return matches[0]
-    return None
 
 
 def _format_profile_text(connection, selected_profile, errors):
@@ -80,6 +60,95 @@ def _format_profile_text(connection, selected_profile, errors):
     if errors:
         lines.append(f"profile_errors={len(errors)}")
     return "\n".join(lines)
+
+
+def _format_config_text(resolved):
+    lines = []
+    for key in ("server", "user", "s3"):
+        layer = getattr(resolved, key)
+        lines.append(f"{key}_config={layer.path or ''}")
+        lines.append(f"{key}_source={layer.source or ''}")
+        lines.append(f"{key}_exists={str(layer.exists).lower()}")
+        lines.append(f"{key}_valid={str(layer.valid).lower()}")
+        if layer.error:
+            lines.append(f"{key}_error={layer.error}")
+        for detail_key, detail_value in sorted(layer.details.items()):
+            if isinstance(detail_value, list):
+                rendered = ", ".join(str(item) for item in detail_value)
+            else:
+                rendered = detail_value
+            lines.append(f"{key}_{detail_key}={rendered}")
+    lines.append(f"warnings={len(resolved.warnings)}")
+    for index, warning in enumerate(resolved.warnings, start=1):
+        lines.append(f"warning_{index}={warning}")
+    return "\n".join(lines)
+
+
+def _print_config_candidates_text(discovered):
+    headings = {
+        "server": "Server Configs",
+        "user": "User Configs",
+        "s3": "S3 Configs",
+    }
+    for key in ("server", "user", "s3"):
+        print(f"[{headings[key]}]")
+        candidates = discovered.get(key) or []
+        if not candidates:
+            print("(none)")
+            print("")
+            continue
+        for candidate in candidates:
+            marker = "*" if candidate.current else " "
+            state = "ok" if candidate.valid else "invalid"
+            print(f"{marker} {state:7s} {candidate.path}")
+            if candidate.error:
+                print(f"  error={candidate.error}")
+        print("")
+
+
+def _handle_config_command(args):
+    if args.config_action == 'list':
+        discovered = discover_loaded_config_profiles()
+        payload = {
+            key: [candidate.to_dict() for candidate in value]
+            for key, value in discovered.items()
+        }
+        if args.output == 'json':
+            print(api_json(configs=payload, output_format=args.output))
+        else:
+            _print_config_candidates_text(discovered)
+        return 0
+
+    if args.config_action == 'use':
+        if not any((args.server, args.user, args.s3)):
+            raise ValueError("Provide at least one of --server, --user, or --s3.")
+
+        updates = {}
+        if args.server:
+            updates['server'] = str(set_current_server_config(args.server))
+        if args.user:
+            updates['user'] = str(set_current_user_config(args.user))
+        if args.s3:
+            updates['s3'] = str(set_current_s3_config(args.s3))
+
+        if args.output == 'json':
+            print(api_json(message="Current config selections updated", updates=updates, output_format=args.output))
+        else:
+            print("Current config selections updated")
+            for key, value in updates.items():
+                print(f"{key}={value}")
+        return 0
+
+    resolved = resolve_loaded_config(
+        explicit_server_config_path=args.server_conf,
+        explicit_user_config_path=args.conf,
+        explicit_s3_config_path=args.s3cfg,
+    )
+    if args.output == 'json':
+        print(api_json(config=resolved.to_dict(), output_format=args.output))
+    else:
+        print(_format_config_text(resolved))
+    return 0
 
 
 def _handle_profile_command(args):
@@ -296,9 +365,20 @@ def perform_upload_textfile(s3, full_bucket_name, file_path, data_mq, metadata_a
     return s3_store_text_file(s3, full_bucket_name, file_path, data_mq, metadata_args)
 
 def resolve_bucket(bucket_store, bucket_alias):
-    entry = find_bucket_entry(bucket_store, bucket_alias)
-    return (entry['path_to_bucket'], entry['username'], entry['xp_name'], entry['modality_name'],
-            entry['s3_configuration_file'], entry['metadata'])
+    entry = bucket_store.get(
+        bucket_alias,
+        fields=[
+            "path_to_bucket",
+            "username",
+            "xp_name",
+            "modality_name",
+            "s3_configuration_file",
+            "metadata",
+        ],
+    )
+    if entry is None:
+        raise KeyError(f"Bucket alias not found: {bucket_alias}")
+    return entry
 
 
 def send_files_to_server(username, file_path_list, control_mq, data_mq):
@@ -317,7 +397,9 @@ def main():
 
     # Global / legacy flags
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
-    parser.add_argument('-c', '--conf', default=None, help='Config file path (auto-discovered from ~/.config/umrs/ if omitted)')
+    parser.add_argument('-c', '--conf', default=None, help='User config JSON path for this invocation (overrides the selected user*.json file)')
+    parser.add_argument('--server-conf', default=None, help='Server config JSON path for this invocation (overrides the selected conf_umrs.json file)')
+    parser.add_argument('--s3cfg', default=None, help='S3 config file path for this invocation (overrides the selected s3cfg file)')
     parser.add_argument('--profile', default=None, help='Named connection profile to use from the UMRS config directory')
     parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
     parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
@@ -519,12 +601,28 @@ def main():
     pi_p.add_argument('file', help='Path to a connection profile JSON file')
     pi_p.add_argument('--force', action='store_true', default=False, help='Overwrite an existing profile with the same name')
 
+    config_p = subparsers.add_parser('config', help='Loaded config file commands (list, show, use)')
+    config_sub = config_p.add_subparsers(dest='config_action', required=True)
+    config_sub.add_parser('list', help='List discovered conf_umrs.json, user*.json, and s3cfg candidates')
+    config_sub.add_parser('show', help='Show the resolved config stack for server, user, and s3 files')
+    cu_p = config_sub.add_parser('use', help='Persist the current server/user/s3 config selections')
+    cu_p.add_argument('--server', default=None, help='Server config file path or unique basename to select')
+    cu_p.add_argument('--user', default=None, help='User config file path or unique basename to select')
+    cu_p.add_argument('--s3', default=None, help='S3 config file path or unique basename to select')
+
 
     args = parser.parse_args()
 
     if args.action == 'profile':
         try:
             sys.exit(_handle_profile_command(args))
+        except Exception as e:
+            print(api_json(status='error', message=str(e), output_format=args.output))
+            sys.exit(1)
+
+    if args.action == 'config':
+        try:
+            sys.exit(_handle_config_command(args))
         except Exception as e:
             print(api_json(status='error', message=str(e), output_format=args.output))
             sys.exit(1)
@@ -556,10 +654,12 @@ def main():
 
     # Deprecated 'auto_add_columns' flag removed
 
-    # Path to the configuration file (only required for config-backed actions)
-    configure_file = args.conf
-    if configure_file is None:
-        configure_file = _find_config()
+    config_state = resolve_loaded_config(
+        explicit_server_config_path=args.server_conf,
+        explicit_user_config_path=args.conf,
+        explicit_s3_config_path=args.s3cfg,
+    )
+    configure_file = config_state.user.path if config_state.user.path else None
 
     # Only enforce config file for legacy mode or actions that need bucket/user config
     status_needs_config = args.action == 'status' and not getattr(args, 'username', None)
@@ -568,11 +668,26 @@ def main():
         "recompute", "update", "reload", "export_embeddings"
     } or status_needs_config
 
-    if requires_config and (configure_file is None or not os.path.exists(configure_file)):
-        search_locations = "\n  ".join(_CONFIG_SEARCH_PATHS + [g for g in _CONFIG_SEARCH_GLOBS])
+    explicit_s3_selected = bool(
+        config_state.s3.source and not str(config_state.s3.source).startswith('user:')
+    )
+
+    if requires_config and not config_state.user.valid:
+        if configure_file:
+            sys.exit(
+                f"Configuration file not usable: {configure_file}\n"
+                f"{config_state.user.error}"
+            )
+        search_locations = "\n  ".join(get_user_config_search_locations())
         sys.exit(
             f"Configuration file not found.\n"
             f"Provide one with -c/--conf or place it in one of:\n  {search_locations}"
+        )
+
+    if requires_config and explicit_s3_selected and config_state.s3.path and not config_state.s3.valid:
+        sys.exit(
+            f"S3 config file not usable: {config_state.s3.path}\n"
+            f"{config_state.s3.error}"
         )
 
     user = None
@@ -581,14 +696,18 @@ def main():
         if args.verbose or args.conf is None:
             print(f"Using config: {configure_file}")
         user = load_client_cfg_file(configure_file)
+        if config_state.s3.valid and config_state.s3.path:
+            user = apply_s3_config_override(user, config_state.s3.path)
         buckets_cfg = build_buckets_cfg(user)
         if args.verbose:
             print("Configuration loaded successfully.")
-    elif configure_file and os.path.exists(configure_file):
+    elif configure_file and config_state.user.valid:
         # Opportunistically load config for commands that benefit from
         # knowing the username (e.g. upload-workflow) but don't require it.
         try:
             user = load_client_cfg_file(configure_file)
+            if config_state.s3.valid and config_state.s3.path:
+                user = apply_s3_config_override(user, config_state.s3.path)
         except (Exception, SystemExit):
             pass
 
@@ -812,7 +931,7 @@ def main():
                     status_filter=args.status,
                     project_filter=args.project,
                     initial_tab=args.tab,
-                    config_path=configure_file if configure_file and os.path.isfile(configure_file) else None,
+                    config_path=configure_file if configure_file and config_state.user.valid else None,
                     user_cfg=user if isinstance(user, dict) else None,
                     connection_info=conn_info,
                 )
@@ -1023,7 +1142,7 @@ def main():
                 # Special handling for reload with a user-config file: push file first, then RELOAD
                 if args.action == 'reload':
                     # If -c points to an existing user.json, upload it first so the server persists and reloads it
-                    cfg_path = args.conf if getattr(args, 'conf', None) else None
+                    cfg_path = configure_file if configure_file and os.path.isfile(configure_file) else None
                     if cfg_path and os.path.isfile(cfg_path):
                         try:
                             with open(cfg_path, 'r', encoding='utf-8') as f:
