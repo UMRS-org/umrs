@@ -20,6 +20,7 @@ from umrs.server.json_config import load_server_cfg_file
 from umrs.core.TaskManager import TaskManager
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.core.thread_pool import ServerOverloadedError, ThreadPoolManager, PoolConfig
+from umrs.shared.auth import AuthContext, AuthorizationError
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 
 from umrs.server.model_registry_handler import handle_model_command
@@ -135,6 +136,28 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
         logger.warning("Rejecting task %s: %s", task_id, exc)
         update_status_func(TaskStatus.ERROR)
 
+    def _authorize(cmd, client_id, zmq_sender_id=None):
+        """Check authorization for *cmd* by *client_id*.
+
+        Returns the ``AuthContext`` on success.
+        On failure, sends an ``UNAUTHORIZED`` reply (if *zmq_sender_id* is
+        provided) and returns ``None``.
+        """
+        auth_ctx = control_mq.get_auth_context(client_id)
+        if auth_ctx.can_execute_command(cmd, target_user=client_id):
+            return auth_ctx
+        # Denied
+        logger.warning(
+            "UNAUTHORIZED: user=%s role=%s cmd=%s",
+            client_id, auth_ctx.role.value, cmd,
+        )
+        if zmq_sender_id is not None:
+            try:
+                control_mq.send_string(f"UNAUTHORIZED:{cmd}", zmq_sender_id)
+            except RuntimeError:
+                pass
+        return None
+
     try:
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######", flush=True)
@@ -167,18 +190,24 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 client_id, s3_objects = payload
-                try:
-                    thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
-                                                                                 buckets_cfg, device, embedding_backend,
-                                                                                 cmd.lower(),
-                                                                                 update_status_callback=update_status_func)
-                    task_manager.associate_thread_with_task(thread_ident, task_id)
-                except ServerOverloadedError as exc:
-                    _reject_overloaded(task_id, update_status_func, exc)
+                if _authorize(cmd, client_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                else:
+                    try:
+                        thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
+                                                                                     buckets_cfg, device, embedding_backend,
+                                                                                     cmd.lower(),
+                                                                                     update_status_callback=update_status_func)
+                        task_manager.associate_thread_with_task(thread_ident, task_id)
+                    except ServerOverloadedError as exc:
+                        _reject_overloaded(task_id, update_status_func, exc)
 
             elif cmd == TaskCmd.FILE:
                 if payload:
                     client_id, files = payload if isinstance(payload, tuple) else (None, payload)
+                    if _authorize(cmd, client_id) is None:
+                        update_status_func(TaskStatus.ERROR)
+                        continue
                     for file in files:
                         print(f"Received file: {file}")
                         ok, uname, dest = _persist_uploaded_user_config(file, configure_file, user_config_map, expected_username=client_id)
@@ -191,6 +220,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 update_status_func(TaskStatus.COMPLETED)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
                 client_id = payload
+                if _authorize(cmd, client_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
                 try:
                     thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
                                                                 device, embedding_backend, configure_file, user_config_map, cmd.lower(),
@@ -206,6 +238,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             elif cmd == TaskCmd.UPLOAD_WORKFLOW:
                 client_id, files, workflow_name = payload
+                if _authorize(cmd, client_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
                 if not files:
                     print("Warning: UPLOAD_WORKFLOW received with no files")
                     update_status_func(TaskStatus.ERROR)
@@ -238,6 +273,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             elif cmd == TaskCmd.LIST_WORKFLOWS:
                 client_id, payload_str, zmq_sender_id = payload
+                if _authorize(cmd, client_id, zmq_sender_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
                 response_json = handle_workflow_command(cmd, client_id, payload_str)
                 try:
                     control_mq.send_string(response_json, zmq_sender_id)
@@ -247,6 +285,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             elif cmd == TaskCmd.WAIT_OUTPUT : # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
                 client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
+                if _authorize(cmd, client_id, zmq_sender_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
 
                 path_to_bucket, entry = buckets_cfg.find_by_output_path(output_path_to_bucket)
                 if entry is None:
@@ -268,6 +309,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                             pass
             elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
                 client_id, export_args, zmq_sender_id = payload
+                if _authorize(cmd, client_id, zmq_sender_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
                 try:
                     thread_ident = task_manager.active_threads.launch_export_embeddings(client_id, export_args, buckets_cfg, control_mq, zmq_sender_id, cmd.lower(), update_status_callback=update_status_func)
                     task_manager.associate_thread_with_task(thread_ident, task_id)
@@ -280,6 +324,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST):
                 client_id, payload_str, zmq_sender_id = payload
+                if _authorize(cmd, client_id, zmq_sender_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
                 response_json = handle_model_command(cmd, client_id, payload_str)
                 try:
                     control_mq.send_string(response_json, zmq_sender_id)
@@ -290,6 +337,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
             elif cmd == TaskCmd.MODEL_DOWNLOAD:
                 # Server-side download: reply immediately, run download in background thread
                 client_id, payload_str, zmq_sender_id = payload
+                if _authorize(cmd, client_id, zmq_sender_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
                 ack = handle_model_command(cmd, client_id, payload_str)
                 try:
                     control_mq.send_string(ack, zmq_sender_id)
@@ -301,6 +351,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST):
                 client_id, payload_str, zmq_sender_id = payload
+                if _authorize(cmd, client_id, zmq_sender_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
                 response_json = handle_job_command(cmd, client_id, payload_str, backend=job_command_backend)
                 try:
                     control_mq.send_string(response_json, zmq_sender_id)
@@ -310,6 +363,9 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             elif cmd == TaskCmd.RUN_WORKFLOW:
                 client_id, payload_str, zmq_sender_id = payload
+                if _authorize(cmd, client_id, zmq_sender_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
                 response_json = handle_workflow_command(cmd, client_id, payload_str)
                 try:
                     control_mq.send_string(response_json, zmq_sender_id)

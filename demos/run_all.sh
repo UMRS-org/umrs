@@ -100,6 +100,12 @@ run_demo "16" "Custom Workflow"      "16_custom_workflow/run_demo.sh"
 run_demo "18" "Model Lifecycle"      "18_model_lifecycle/run_demo.sh"
 run_demo "20" "Durable Jobs"         "20_durable_jobs/run_demo.sh"
 
+# Auth enforcement (local token management; server-side auth requires UMRS_ADMIN_TOKEN)
+run_demo "23" "Auth Enforcement"     "23_auth_enforcement/run_demo.sh"
+
+# Thread pool metrics (read-only status query)
+run_demo "24" "Thread Pool"          "24_thread_pool/run_demo.sh"
+
 # Video analysis (requires opencv — CPU only)
 run_demo "14" "Video Analysis"       "14_video_analysis/run_demo.sh"
 

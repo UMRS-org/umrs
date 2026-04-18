@@ -265,6 +265,27 @@ def _quote_braced_option(command_line: str, option_name: str) -> str:
         start = value_idx + len(quoted)
 
 
+def configure_admin_token_parser(
+    parser: argparse.ArgumentParser,
+    *,
+    add_help: bool = False,
+) -> None:
+    """Add ``admin token {generate,list,revoke}`` subparsers."""
+    token_sub = parser.add_subparsers(dest="token_action", required=True)
+
+    gen_p = token_sub.add_parser("generate", add_help=add_help,
+                                  help="Generate a new admin token")
+    gen_p.add_argument("name", help="Token name (for identification)")
+    gen_p.add_argument("--description", default="", help="Optional description")
+
+    token_sub.add_parser("list", add_help=add_help,
+                          help="List existing admin tokens")
+
+    rev_p = token_sub.add_parser("revoke", add_help=add_help,
+                                  help="Revoke an admin token by name")
+    rev_p.add_argument("name", help="Token name to revoke")
+
+
 __all__ = [
     "JOB_MAX_ATTEMPTS_DEFAULT",
     "JOB_PROJECT_DEFAULT",
@@ -280,6 +301,7 @@ __all__ = [
     "WORKFLOW_PARAMS_DEFAULT",
     "WORKFLOW_SCOPE_CHOICES",
     "build_control_command_parser",
+    "configure_admin_token_parser",
     "configure_job_cancel_parser",
     "configure_job_submit_parser",
     "configure_maintenance_parser",

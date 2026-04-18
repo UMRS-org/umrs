@@ -2,11 +2,15 @@ import os
 import tempfile
 import time
 import json
+import logging
 from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.shared.auth import AuthContext, UserRole, create_auth_context_from_request
 try:
     import zmq
 except ImportError as e:
     raise ImportError("Cannot find zeroMQ module") from e
+
+logger = logging.getLogger(__name__)
 
 BASE_PORT = 5555
 _data_port_raw = os.environ.get("UMRS_DATA_BASE_PORT")
@@ -84,6 +88,7 @@ class MessageQueue:
         self.task_manager = task_manager
         self.status_store = status_store
         self.debug = False  # disable noisy send/recv logs by default
+        self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
 
         # Initialize the selected queue type
         if self.type == "control":
@@ -321,6 +326,22 @@ class MessageQueue:
                         pass
                     continue
                 client_id = splited_msg[1]
+
+                # Optional admin token in third field (backward compatible)
+                token = splited_msg[2] if len(splited_msg) > 2 else None
+                try:
+                    auth_ctx = create_auth_context_from_request(client_id, token=token)
+                except Exception as e:
+                    logger.warning("Failed to create auth context for %s: %s", client_id, e)
+                    auth_ctx = AuthContext(
+                        user_id=client_id, username=client_id, role=UserRole.USER,
+                    )
+                self._auth_sessions[client_id] = auth_ctx
+                logger.info(
+                    "Auth session created: user=%s role=%s",
+                    client_id, auth_ctx.role.value,
+                )
+
                 if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
                     port = self.client_dictionary[client_id]["port"]
                 else:
@@ -605,7 +626,7 @@ class MessageQueue:
         finally:
             self.set_timeouts(self.timeout, self.timeout) # always reset timeout before exiting
 
-    def get_data_queue(self, client_id, tunnel_mode=None):
+    def get_data_queue(self, client_id, tunnel_mode=None, admin_token=None):
         """Request a client data queue.
 
         Args:
@@ -613,11 +634,16 @@ class MessageQueue:
             tunnel_mode (bool | None): Override the control queue tunnel_mode for
                 the returned data queue. In tunnel mode, localhost is used so the
                 data channel can traverse an SSH tunnel.
+            admin_token (str | None): Optional admin token. When provided the
+                server grants ``UserRole.ADMIN`` for this session.
         """
         if self.role != "client":
             raise PermissionError(f"Only client can call 'get_data_queue'")
 
-        request_str = f"CREATE_DATA_QUEUE:{client_id}"
+        if admin_token:
+            request_str = f"CREATE_DATA_QUEUE:{client_id}:{admin_token}"
+        else:
+            request_str = f"CREATE_DATA_QUEUE:{client_id}"
         self.send_string(request_str)
 
         effective_tunnel_mode = self.tunnel_mode if tunnel_mode is None else bool(tunnel_mode)
@@ -744,6 +770,40 @@ class MessageQueue:
 
     def set_debug(self, enabled: bool):
         self.debug = bool(enabled)
+
+    def get_auth_context(self, client_id: str) -> AuthContext:
+        """Return the AuthContext for *client_id*.
+
+        If the client has not yet authenticated via CREATE_DATA_QUEUE the
+        default role is ``UserRole.USER`` (backward compatible).
+        """
+        ctx = self._auth_sessions.get(client_id)
+        if ctx is not None:
+            return ctx
+        # Create a default USER context for clients that connected before
+        # auth enforcement was deployed (backward compatibility).
+        return AuthContext(
+            user_id=client_id or "",
+            username=client_id or "",
+            role=UserRole.USER,
+        )
+
+    def get_auth_context(self, client_id: str) -> AuthContext:
+        """Return the AuthContext for *client_id*.
+
+        If the client has not yet authenticated via CREATE_DATA_QUEUE the
+        default role is ``UserRole.USER`` (backward compatible).
+        """
+        ctx = self._auth_sessions.get(client_id)
+        if ctx is not None:
+            return ctx
+        # Create a default USER context for clients that connected before
+        # auth enforcement was deployed (backward compatibility).
+        return AuthContext(
+            user_id=client_id or "",
+            username=client_id or "",
+            role=UserRole.USER,
+        )
 
     def _get_status_payload(self, client_id, status_key):
         store = self.status_store or {}
