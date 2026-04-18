@@ -6,6 +6,22 @@ from umrs.shared.sql_helpers import create_db_name, metadata_dict
 from umrs.shared.storage.s3 import *
 from umrs.core.MessageQueue import MessageQueue
 from umrs.client.metadata import check_and_build_metadata
+from umrs.client.control_api import UMRSControlAPI
+from umrs.client.control_commands import (
+    MODEL_SCOPE_CHOICES,
+    MODEL_TYPE_CHOICES,
+    STATUS_CHOICES,
+    configure_job_cancel_parser,
+    configure_job_submit_parser,
+    configure_model_download_parser,
+    configure_model_list_parser,
+    configure_model_register_parser,
+    configure_ping_parser,
+    configure_status_parser,
+    configure_workflow_list_parser,
+    configure_workflow_run_parser,
+    parse_json_object_arg,
+)
 from umrs.shared.modality import *
 from umrs.shared.modality import resolve_modality_task
 from umrs.shared.connection_profiles import (
@@ -36,9 +52,6 @@ import json as _json
 import time
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
-
-
-STATUS_CHOICES = TaskCmd.status_cmd()
 
 
 def _format_profile_text(connection, selected_profile, errors):
@@ -410,6 +423,7 @@ def main():
 
     # API subcommands
     ping_p = subparsers.add_parser('ping', help='Check server readiness')
+    configure_ping_parser(ping_p)
 
     ui_p = subparsers.add_parser('upload_file', help="Upload file to a bucket (ommit empty lines in case of 'text' modality)")
     ui_p.add_argument('file_path')
@@ -467,8 +481,7 @@ def main():
     lb_p.add_argument('username', nargs='?', help='Username to filter buckets (defaults to config if omitted)')
 
     status_p = subparsers.add_parser('status', help='Fetch the latest server summary for maintenance commands')
-    status_p.add_argument('target', choices=STATUS_CHOICES, metavar='key', nargs='?', default='all', help=f'Summary to fetch (options: {", ".join(STATUS_CHOICES)}; defaults to all)')#help='Summary to fetch (defaults to all available summaries)')
-    status_p.add_argument('--username', help='User whose summary should be retrieved (defaults to config if omitted)')
+    configure_status_parser(status_p, include_username=True)
 
     # Embedding maintenance actions
     subparsers.add_parser('recompute', help='Recompute all embeddings for all buckets (server-side)')
@@ -501,22 +514,15 @@ def main():
 
     # model register
     mr_p = model_sub.add_parser('register', help='Register a local model with UMRS')
-    mr_p.add_argument('name', help='Model name (e.g., e5-base-v2)')
-    mr_p.add_argument('path', help='Filesystem path to model weights')
-    mr_p.add_argument('--type', choices=['llm', 'embedding'], default='embedding', dest='model_type', help='Model type')
-    mr_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
-    mr_p.add_argument('--description', default=None, help='Model description')
-    mr_p.add_argument('--huggingface-id', default=None, help='HuggingFace repo ID (for reference)')
+    configure_model_register_parser(mr_p)
 
     # model list
     ml_p = model_sub.add_parser('list', help='List registered models')
-    ml_p.add_argument('--scope', default=None, choices=['system', 'project', 'user'], help='Filter by scope')
+    configure_model_list_parser(ml_p)
 
     # model download (default: client-side; --server-side sends to server as background task)
     md_p = model_sub.add_parser('download', help='Download model from HuggingFace and register with UMRS')
-    md_p.add_argument('repo_id', help='HuggingFace repository ID (e.g., intfloat/e5-base-v2)')
-    md_p.add_argument('--name', default=None, help='Local name (defaults to repo basename)')
-    md_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
+    configure_model_download_parser(md_p)
     md_p.add_argument('--staging-dir', default=None,
                        help='Directory to store downloaded model (default: ~/.config/umrs/models/ or UMRS_MODEL_STAGING_ROOT)')
     md_p.add_argument('--server-side', action='store_true', default=False,
@@ -526,8 +532,8 @@ def main():
     mu_p = model_sub.add_parser('upload', help='Copy a local model directory to the staging root and register with UMRS')
     mu_p.add_argument('path', help='Local directory containing model files')
     mu_p.add_argument('--name', required=True, help='Model name for registration')
-    mu_p.add_argument('--type', choices=['llm', 'embedding'], default='embedding', dest='model_type', help='Model type')
-    mu_p.add_argument('--scope', choices=['system', 'project', 'user'], default='system', help='Model scope')
+    mu_p.add_argument('--type', choices=MODEL_TYPE_CHOICES, default='embedding', dest='model_type', help='Model type')
+    mu_p.add_argument('--scope', choices=MODEL_SCOPE_CHOICES, default='system', help='Model scope')
     mu_p.add_argument('--description', default=None, help='Model description')
     mu_p.add_argument('--staging-dir', default=None,
                        help='Staging root directory (default: UMRS_MODEL_STAGING_ROOT or ~/.config/umrs/models/)')
@@ -542,20 +548,11 @@ def main():
 
     # job submit
     js_p = job_sub.add_parser('submit', help='Submit a new job')
-    js_p.add_argument('job_type', choices=['endpoint_provision', 'index_build', 'cleanup'], help='Job type')
-    js_p.add_argument('--spec', default='{}', help='Job spec as JSON string')
-    js_p.add_argument('--project', default='default', help='Project ID')
-    js_p.add_argument('--max-attempts', type=int, default=3, help='Max retry attempts')
-    js_p.add_argument('--keep-alive', action='store_true', default=False,
-                       help='Keep backend Slurm/K8s endpoint running after task completes (for endpoint_provision; default: auto-release)')
-    js_p.add_argument('--partition', default=None,
-                       help='Override Slurm partition for this job (must be in site-configured candidates)')
-    js_p.add_argument('--node', default=None,
-                       help='Slurm nodelist hint (e.g. "ai-h200-brc-00"); passed as --nodelist to sbatch')
+    configure_job_submit_parser(js_p)
 
     # job cancel
     jc_p = job_sub.add_parser('cancel', help='Cancel a running job')
-    jc_p.add_argument('job_id', help='Job ID to cancel')
+    configure_job_cancel_parser(jc_p)
 
     # --- Workflow upload command ---
     uw_p = subparsers.add_parser('upload-workflow', help='Upload a workflow directory (with workflow.json + step scripts) to the server')
@@ -564,9 +561,7 @@ def main():
 
     # --- Run workflow command ---
     rw_p = subparsers.add_parser('run-workflow', help='Trigger execution of a registered workflow on the server')
-    rw_p.add_argument('workflow_name', help='Name of the registered workflow to execute')
-    rw_p.add_argument('--bucket', default=None, help='Bucket alias to use as input data source')
-    rw_p.add_argument('--params', default='{}', help='JSON string of additional parameters')
+    configure_workflow_run_parser(rw_p)
 
     # --- Workflow registry commands ---
     wf_p = subparsers.add_parser('workflow', help='Workflow registry commands (list)')
@@ -574,9 +569,7 @@ def main():
 
     # workflow list
     wl_p = wf_sub.add_parser('list', help='List registered workflows')
-    wl_p.add_argument('--scope', default=None, choices=['system', 'user'], help='Filter by scope')
-    wl_p.add_argument('--user', default=None, help='Filter by owner user ID')
-    wl_p.add_argument('--name', default=None, help='Filter by workflow name (substring match)')
+    configure_workflow_list_parser(wl_p)
 
     # --- Monitor (TUI dashboard) ---
     mon_p = subparsers.add_parser('monitor', help='Live-refreshing multi-tab system monitor (TUI)')
@@ -717,38 +710,36 @@ def main():
         # API mode: pre-initialize a data queue for the provided username in action args (if any)
         # Some actions require username (upload_*), ping does not.
         if args.action == 'ping':
-            print(action_ping(control_mq, args.output, timeout_ms=connection.health_check_timeout_ms))
+            api = UMRSControlAPI(control_mq, os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_')))
+            print(api_json(output_format=args.output, **api.ping(timeout_ms=connection.health_check_timeout_ms)))
             control_mq.close()
             sys.exit(0)
         if args.action == 'model':
             # Model registry commands — no config file required, uses ZMQ directly
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            api = UMRSControlAPI(control_mq, client_id)
             model_action = args.model_action
             exit_code = 0
             try:
                 if model_action == 'register':
-                    payload = _json.dumps({
-                        "name": args.name,
-                        "path": os.path.abspath(args.path),
-                        "model_type": args.model_type,
-                        "scope": args.scope,
-                        "description": args.description,
-                        "huggingface_id": args.huggingface_id,
-                    })
-                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
+                    parsed = api.register_model(
+                        name=args.name,
+                        path=args.path,
+                        model_type=args.model_type,
+                        scope=args.scope,
+                        description=args.description,
+                        huggingface_id=args.huggingface_id,
+                    )
                 elif model_action == 'list':
-                    payload = _json.dumps({'scope': args.scope}) if args.scope else ''
-                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_LIST, payload)
+                    parsed = api.list_models(scope=args.scope)
                 elif model_action == 'download':
                     target_name = args.name or args.repo_id.split('/')[-1]
                     if args.server_side:
-                        # Server-side download: server downloads in a background thread
-                        payload = _json.dumps({
-                            'repo_id': args.repo_id,
-                            'name': target_name,
-                            'scope': args.scope,
-                        })
-                        raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_DOWNLOAD, payload)
+                        parsed = api.download_model_server_side(
+                            repo_id=args.repo_id,
+                            name=target_name,
+                            scope=args.scope,
+                        )
                     else:
                         # Client-side download: runs on the login node, then registers with server
                         staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
@@ -777,15 +768,14 @@ def main():
                             print(f'Download complete: {target_path}')
 
                         # Step 2: Register with server via ZMQ
-                        payload = _json.dumps({
-                            'name': target_name,
-                            'path': os.path.abspath(target_path),
-                            'model_type': 'embedding',
-                            'scope': args.scope,
-                            'huggingface_id': args.repo_id,
-                            'description': f'Downloaded from {args.repo_id}',
-                        })
-                        raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
+                        parsed = api.register_model(
+                            name=target_name,
+                            path=target_path,
+                            model_type='embedding',
+                            scope=args.scope,
+                            huggingface_id=args.repo_id,
+                            description=f'Downloaded from {args.repo_id}',
+                        )
                 elif model_action == 'upload':
                     import shutil
                     src_path = os.path.abspath(args.path)
@@ -810,29 +800,23 @@ def main():
                     shutil.copytree(src_path, target_path)
                     print(f'Copy complete. Registering model ...')
                     register_path = args.register_path or os.path.abspath(target_path)
-                    payload = _json.dumps({
-                        'name': args.name,
-                        'path': register_path,
-                        'model_type': args.model_type,
-                        'scope': args.scope,
-                        'description': args.description,
-                    })
-                    raw = control_mq.request_model_command(client_id, TaskCmd.MODEL_REGISTER, payload)
+                    parsed = api.register_model(
+                        name=args.name,
+                        path=register_path,
+                        model_type=args.model_type,
+                        scope=args.scope,
+                        description=args.description,
+                    )
                 else:
                     print(api_json(status='error', message=f'Unknown model action: {model_action}', output_format=args.output))
                     control_mq.close()
                     sys.exit(1)
 
                 if args.output == 'json':
-                    print(raw)
-                    try:
-                        parsed = _json.loads(raw)
-                        if parsed.get('status') != 'ok':
-                            exit_code = 1
-                    except Exception:
+                    print(_json.dumps(parsed, ensure_ascii=False))
+                    if parsed.get('status') != 'ok':
                         exit_code = 1
                 else:
-                    parsed = _json.loads(raw)
                     if parsed.get('status') == 'ok':
                         if model_action == 'list':
                             models = parsed.get('models', [])
@@ -858,44 +842,33 @@ def main():
         if args.action == 'job':
             # Job tracking commands — no config file required
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            api = UMRSControlAPI(control_mq, client_id)
             job_action = args.job_action
             exit_code = 0
             try:
                 if job_action == 'submit':
-                    try:
-                        spec = _json.loads(args.spec)
-                    except _json.JSONDecodeError:
-                        spec = {}
-                    if getattr(args, 'partition', None):
-                        spec["partition_override"] = args.partition
-                    if getattr(args, 'node', None):
-                        spec["nodelist_hint"] = args.node
-                    payload = _json.dumps({
-                        "job_type": args.job_type,
-                        "spec": spec,
-                        "project_id": args.project,
-                        "max_attempts": args.max_attempts,
-                        "keep_alive": args.keep_alive,
-                    })
-                    raw = control_mq.request_model_command(client_id, TaskCmd.JOB_SUBMIT, payload)
+                    spec = parse_json_object_arg(args.spec, field_name='spec') if args.spec else {}
+                    parsed = api.submit_job(
+                        job_type=args.job_type,
+                        spec=spec,
+                        project=args.project,
+                        max_attempts=args.max_attempts,
+                        keep_alive=args.keep_alive,
+                        partition=getattr(args, 'partition', None),
+                        node=getattr(args, 'node', None),
+                    )
                 elif job_action == 'cancel':
-                    payload = _json.dumps({"job_id": args.job_id})
-                    raw = control_mq.request_model_command(client_id, TaskCmd.JOB_CANCEL, payload)
+                    parsed = api.cancel_job(args.job_id)
                 else:
                     print(api_json(status='error', message=f'Unknown job action: {job_action}', output_format=args.output))
                     control_mq.close()
                     sys.exit(1)
 
                 if args.output == 'json':
-                    print(raw)
-                    try:
-                        parsed = _json.loads(raw)
-                        if parsed.get('status') != 'ok':
-                            exit_code = 1
-                    except Exception:
+                    print(_json.dumps(parsed, ensure_ascii=False))
+                    if parsed.get('status') != 'ok':
                         exit_code = 1
                 else:
-                    parsed = _json.loads(raw)
                     if parsed.get('status') == 'ok':
                         print(f"OK: {parsed.get('message', '')}")
                     else:
@@ -947,34 +920,22 @@ def main():
         if args.action == 'workflow':
             # Workflow registry commands — no config file required
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            api = UMRSControlAPI(control_mq, client_id)
             wf_action = args.workflow_action
             exit_code = 0
             try:
                 if wf_action == 'list':
-                    filter_payload = {}
-                    if args.scope:
-                        filter_payload['scope'] = args.scope
-                    if args.user:
-                        filter_payload['user_id'] = args.user
-                    if args.name:
-                        filter_payload['name'] = args.name
-                    payload = _json.dumps(filter_payload) if filter_payload else ''
-                    raw = control_mq.request_model_command(client_id, TaskCmd.LIST_WORKFLOWS, payload)
+                    parsed = api.list_workflows(scope=args.scope, user=args.user, name=args.name)
                 else:
                     print(api_json(status='error', message=f'Unknown workflow action: {wf_action}', output_format=args.output))
                     control_mq.close()
                     sys.exit(1)
 
                 if args.output == 'json':
-                    print(raw)
-                    try:
-                        parsed = _json.loads(raw)
-                        if parsed.get('status') != 'ok':
-                            exit_code = 1
-                    except Exception:
+                    print(_json.dumps(parsed, ensure_ascii=False))
+                    if parsed.get('status') != 'ok':
                         exit_code = 1
                 else:
-                    parsed = _json.loads(raw)
                     if parsed.get('status') == 'ok':
                         workflows = parsed.get('workflows', [])
                         if not workflows:
@@ -1061,30 +1022,17 @@ def main():
                 client_id = user['username']
             else:
                 client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            api = UMRSControlAPI(control_mq, client_id)
             workflow_name = args.workflow_name
             exit_code = 0
             try:
-                params = _json.loads(args.params) if args.params else {}
-            except _json.JSONDecodeError:
-                params = {}
-            if args.bucket:
-                params['bucket'] = args.bucket
-            payload = _json.dumps({
-                'workflow_name': workflow_name,
-                'params': params,
-            })
-            try:
-                raw = control_mq.request_model_command(client_id, TaskCmd.RUN_WORKFLOW, payload)
+                params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
+                parsed = api.run_workflow(workflow_name=workflow_name, params=params)
                 if args.output == 'json':
-                    print(raw)
-                    try:
-                        parsed = _json.loads(raw)
-                        if parsed.get('status') != 'ok':
-                            exit_code = 1
-                    except Exception:
+                    print(_json.dumps(parsed, ensure_ascii=False))
+                    if parsed.get('status') != 'ok':
                         exit_code = 1
                 else:
-                    parsed = _json.loads(raw)
                     if parsed.get('status') == 'ok':
                         print(f"OK: {parsed.get('message', '')}")
                     else:
@@ -1115,17 +1063,12 @@ def main():
                 print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
                 control_mq.close()
                 sys.exit(1)
+            api = UMRSControlAPI(control_mq, effective_username)
             try:
-                raw_response = control_mq.request_status(effective_username, args.target)
+                parsed = api.request_status(args.target)
                 if args.output == 'json':
-                    print(raw_response)
+                    print(_json.dumps(parsed, ensure_ascii=False))
                 else:
-                    try:
-                        parsed = _json.loads(raw_response)
-                    except Exception as exc:
-                        print(api_json(status='error', message=f'Invalid status payload: {exc}', output_format=args.output))
-                        control_mq.close()
-                        sys.exit(1)
                     print(format_status_text(parsed, args.target))
             except Exception as e:
                 print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
@@ -1137,34 +1080,13 @@ def main():
             # Use configured username as client id for control plane
             # Determine a stable client id for control-plane requests
             client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', '_')
-            cmd = {'recompute': TaskCmd.RECOMPUTE, 'update': TaskCmd.UPDATE, 'check': TaskCmd.CHECK, 'reload': TaskCmd.RELOAD}[args.action]
+            api = UMRSControlAPI(control_mq, client_id, configure_file if configure_file and config_state.user.valid else None)
             try:
-                # Special handling for reload with a user-config file: push file first, then RELOAD
-                if args.action == 'reload':
-                    # If -c points to an existing user.json, upload it first so the server persists and reloads it
-                    cfg_path = configure_file if configure_file and os.path.isfile(configure_file) else None
-                    if cfg_path and os.path.isfile(cfg_path):
-                        try:
-                            with open(cfg_path, 'r', encoding='utf-8') as f:
-                                cfg_json = _json.load(f)
-                            upload_user = cfg_json.get('username') or client_id
-                        except Exception:
-                            upload_user = client_id
-                        data_mq = control_mq.get_data_queue(upload_user)
-                        try:
-                            data_mq.send_file(cfg_path)
-                            control_mq.notify_server(upload_user, TaskCmd.FILE, 1)
-                        finally:
-                            try:
-                                data_mq.close()
-                            except Exception:
-                                pass
-                # Now send the control-plane command
-                ok = control_mq.notify_server(client_id, cmd, 0)
-                if ok:
+                parsed = api.maintenance(args.action)
+                if parsed.get('status') == 'ok':
                     print(api_json(action=args.action, accepted=True, output_format=args.output))
                 else:
-                    print(api_json(status='error', action=args.action, accepted=False, output_format=args.output))
+                    print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format=args.output))
             except Exception as e:
                 print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
             finally:
@@ -1276,9 +1198,14 @@ def main():
 
     if args.action == "download_results":
         full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
-        if not success or full_bucket_name != path_to_bucket:
+        if full_bucket_name != path_to_bucket:
                 sys.exit(f"Error:\tNo output bucket for {bucket_alias} for  modality {modality} and for user {username}\n"
                          f"\tCheck that this modality has 'need_output_bucket' set to 'true'")
+        if not success:
+            # Output bucket may not exist yet if the workflow/processing hasn't started.
+            # Proceed anyway — download_results will poll and wait for server completion.
+            if args.verbose:
+                print(f"Note: Output bucket '{full_bucket_name}' does not exist yet on S3 — will wait for server.")
     else :
         full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, indent=False)
         if not success or full_bucket_name != path_to_bucket:
