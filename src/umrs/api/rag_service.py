@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
@@ -18,7 +20,7 @@ from langchain_openai import ChatOpenAI
 from umrs.shared.utils import add_query_prefix, add_document_prefix
 from umrs.rag.search import HybridSearcher, CrossEncoderReranker, SearchResult
 
-from umrs.server.runtime import ServerCfg, configure_user
+from umrs.server.provisioning import ServerCfg, configure_user
 from umrs.shared.config import (
     get_default_json_server_file,
     get_default_umrs_cfg_dir,
