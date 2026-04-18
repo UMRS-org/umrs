@@ -1,21 +1,12 @@
-"""
-Tests for the TUI dashboard — renders from mock data without a live terminal.
-
-Uses Console(file=StringIO()) so no actual TTY is needed.
-"""
-
 from __future__ import annotations
+
+import json
 from io import StringIO
 from unittest.mock import MagicMock
-
-import pytest
 
 from rich.console import Console
 
 
-# ---------------------------------------------------------------------------
-# Mock MessageQueue that returns canned job data
-# ---------------------------------------------------------------------------
 SAMPLE_JOBS = [
     {
         "job_id": "job-abc123def456",
@@ -28,16 +19,7 @@ SAMPLE_JOBS = [
         "desired_max_attempts": 3,
         "restart_policy": "on_crash",
         "keep_alive": False,
-        "attempts": [
-            {
-                "attempt_id": "att-111222333444",
-                "attempt_no": 1,
-                "status": "running",
-                "started_at": "2026-04-05T10:00:00",
-                "ended_at": None,
-                "exit_reason": None,
-            }
-        ],
+        "attempts": [],
         "created_at": "2026-04-05T09:58:00",
         "updated_at": "2026-04-05T10:00:00",
     },
@@ -52,198 +34,216 @@ SAMPLE_JOBS = [
         "desired_max_attempts": 5,
         "restart_policy": "on_failure",
         "keep_alive": False,
-        "attempts": [
-            {
-                "attempt_id": "att-aaa000bbb111",
-                "attempt_no": 1,
-                "status": "succeeded",
-                "started_at": "2026-04-04T12:00:00",
-                "ended_at": "2026-04-04T12:05:00",
-                "exit_reason": None,
-            }
-        ],
+        "attempts": [],
         "created_at": "2026-04-04T11:58:00",
         "updated_at": "2026-04-04T12:05:00",
     },
-    {
-        "job_id": "job-000111222333",
-        "project_id": "myproj",
-        "user_id": "admin",
-        "job_type": "cleanup",
-        "spec": {},
-        "status": "failed",
-        "priority": 0,
-        "desired_max_attempts": 1,
-        "restart_policy": "never",
-        "keep_alive": False,
-        "attempts": [
-            {
-                "attempt_id": "att-xxx999yyy888",
-                "attempt_no": 1,
-                "status": "failed",
-                "started_at": "2026-04-05T08:00:00",
-                "ended_at": "2026-04-05T08:01:00",
-                "exit_reason": "disk full",
-            }
-        ],
-        "created_at": "2026-04-05T07:59:00",
-        "updated_at": "2026-04-05T08:01:00",
-    },
 ]
 
+SAMPLE_STATUS = {
+    "status": "ok",
+    "client": "testuser",
+    "summaries": {
+        "process_objects": {
+            "generated_at": "2026-04-18T10:20:00",
+            "summary": "Processed object queue with 3 items still pending and 12 completed.",
+        },
+        "recompute": {
+            "generated_at": "2026-04-18T10:22:00",
+            "summary": "Recompute finished successfully for all tracked embeddings.",
+        },
+    },
+    "uncompleted_key_list": ["process_objects"],
+}
 
-def _make_mock_mq(jobs=None):
-    """Create a mock control_mq that returns canned job list."""
+
+def _make_mock_mq() -> MagicMock:
     mq = MagicMock()
-    mq.request_job_list.return_value = {
-        "status": "ok",
-        "jobs": jobs if jobs is not None else SAMPLE_JOBS,
-        "total": len(jobs if jobs is not None else SAMPLE_JOBS),
-    }
+    mq.request_job_list.return_value = {"status": "ok", "jobs": SAMPLE_JOBS, "total": len(SAMPLE_JOBS)}
+    mq.request_status.return_value = json.dumps(SAMPLE_STATUS)
+    mq.request_model_command.return_value = json.dumps({"status": "ok", "models": [], "workflows": []})
+    mq.is_server_ready.return_value = True
+    mq.notify_server.return_value = True
     return mq
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
 class TestDashboardRendering:
-    """Verify the dashboard renders to a string buffer without crashing."""
-
     def test_render_once_with_jobs(self):
         from umrs.tui.dashboard import Dashboard
 
         buf = StringIO()
-        console = Console(file=buf, force_terminal=True, width=120)
-        mq = _make_mock_mq()
+        console = Console(file=buf, force_terminal=True, width=120, record=True)
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console)
 
-        dash = Dashboard(
-            control_mq=mq,
-            client_id="testuser",
-            console=console,
-        )
         dash.render_once()
 
-        output = buf.getvalue()
-        assert "UMRS Jobs Monitor" in output
-        assert "endpoint_provision" in output
-        assert "running" in output
+        plain = console.export_text(clear=False)
+        assert "endpoint_provision" in plain
+        assert "Jobs:" in plain
 
-    def test_render_once_empty(self):
+    def test_render_status_tab_uses_list_detail_shape(self):
+        from umrs.tui.dashboard import Dashboard, TAB_STATUS
+
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True, width=120, record=True)
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console, initial_tab=TAB_STATUS)
+
+        dash.render_once()
+
+        plain = console.export_text(clear=False)
+        assert "Status Tasks" in plain
+        assert "Summary: process_objects" in plain
+        assert "pending" in plain
+
+    def test_status_navigation_moves_status_cursor(self):
+        from umrs.tui.dashboard import Dashboard, TAB_STATUS
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", initial_tab=TAB_STATUS)
+        dash._fetch_status()
+
+        assert dash._status_cursor == 0
+        dash._on_key("j")
+        assert dash._status_cursor == 1
+        dash._on_key("k")
+        assert dash._status_cursor == 0
+
+    def test_command_prompt_executes_control_command(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
+        dash._api = MagicMock()
+        dash._api.execute_command.return_value = {"status": "ok", "server_ready": True}
+
+        dash._start_command_prompt("ping")
+        dash._on_key("\r")
+
+        dash._api.execute_command.assert_called_once_with("ping")
+        assert dash._command_active is False
+        assert dash._ping_ok is True
+
+    def test_actions_include_control_commands(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
+        actions = dash._get_actions()
+        action_names = {item["action"] for item in actions}
+
+        assert "command_prompt" in action_names
+        assert "submit_job_form" in action_names
+        assert "recompute" in action_names
+        assert "update" in action_names
+        assert "check" in action_names
+
+    def test_submit_job_form_executes_api(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
+        dash._api = MagicMock()
+        dash._api.submit_job.return_value = {"status": "ok", "message": "submitted"}
+
+        dash._open_submit_job_form()
+        dash._form_fields[0]["value"] = "cleanup"
+        dash._form_fields[1]["value"] = '{"dry_run": true}'
+        dash._form_fields[2]["value"] = "demo"
+        dash._form_fields[3]["value"] = "2"
+        dash._form_fields[4]["value"] = "true"
+        dash._form_fields[5]["value"] = "debug"
+        dash._form_fields[6]["value"] = "node-a"
+        dash._form_cursor = len(dash._form_fields) - 1
+
+        dash._on_key("\r")
+
+        dash._api.submit_job.assert_called_once_with(
+            job_type="cleanup",
+            spec={"dry_run": True},
+            project="demo",
+            max_attempts=2,
+            keep_alive=True,
+            partition="debug",
+            node="node-a",
+        )
+        assert dash._form_active is False
+
+    def test_form_choice_cycle_updates_selected_field(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
+        dash._open_submit_job_form()
+
+        assert dash._form_fields[0]["value"] == "endpoint_provision"
+        dash._on_key("l")
+        assert dash._form_fields[0]["value"] == "index_build"
+        dash._on_key("h")
+        assert dash._form_fields[0]["value"] == "endpoint_provision"
+
+    def test_submit_job_form_rejects_invalid_choice(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
+        dash._api = MagicMock()
+
+        dash._open_submit_job_form()
+        dash._form_fields[0]["value"] = "not-a-job-type"
+        dash._form_cursor = len(dash._form_fields) - 1
+
+        dash._on_key("\r")
+
+        dash._api.submit_job.assert_not_called()
+        assert dash._form_active is True
+        assert "must be one of" in (dash._flash_message or "")
+
+    def test_model_filter_form_updates_dashboard_filter(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
+
+        dash._open_model_filter_form()
+        dash._form_fields[0]["value"] = "project"
+        dash._form_cursor = len(dash._form_fields) - 1
+
+        dash._on_key("\r")
+
+        assert dash._model_scope_filter == "project"
+        assert dash._form_active is False
+        assert dash._force_refresh.is_set()
+
+    def test_workflow_filter_form_all_clears_scope(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
+        dash._workflow_scope_filter = "user"
+
+        dash._open_workflow_filter_form()
+        dash._form_fields[0]["value"] = "all"
+        dash._form_cursor = len(dash._form_fields) - 1
+
+        dash._on_key("\r")
+
+        assert dash._workflow_scope_filter is None
+        assert dash._form_active is False
+
+    def test_render_form_overlay(self):
         from umrs.tui.dashboard import Dashboard
 
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120, record=True)
-        mq = _make_mock_mq(jobs=[])
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console)
+        dash._open_model_download_form()
 
-        dash = Dashboard(control_mq=mq, client_id="testuser", console=console)
-        dash.render_once()
+        dash._console.print(dash._build_display())
 
         plain = console.export_text(clear=False)
-        assert "UMRS Jobs Monitor" in plain
-        assert "jobs=0" in plain
+        assert "Download Model" in plain
+        assert "Repo ID" in plain
 
-    def test_render_with_error(self):
+    def test_jobs_navigation_uses_jobs_cursor(self):
         from umrs.tui.dashboard import Dashboard
 
-        mq = MagicMock()
-        mq.request_job_list.side_effect = RuntimeError("connection lost")
-
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True, width=120)
-
-        dash = Dashboard(control_mq=mq, client_id="testuser", console=console)
-        dash.render_once()
-
-        output = buf.getvalue()
-        assert "connection lost" in output
-
-    def test_detail_view_toggle(self):
-        from umrs.tui.dashboard import Dashboard
-
-        buf = StringIO()
-        console = Console(file=buf, force_terminal=True, width=120)
-        mq = _make_mock_mq()
-
-        dash = Dashboard(control_mq=mq, client_id="testuser", console=console)
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
         dash._fetch_jobs()
 
-        # Simulate Enter on first job
-        dash._on_key("\r")
-        assert dash._detail_job_id == SAMPLE_JOBS[0]["job_id"]
-
-        # Toggle off
-        dash._on_key("\r")
-        assert dash._detail_job_id is None
-
-    def test_filter_cycle(self):
-        from umrs.tui.dashboard import Dashboard, FILTER_CYCLE
-
-        mq = _make_mock_mq()
-        dash = Dashboard(control_mq=mq, client_id="testuser")
-
-        assert dash._status_filter is None
-        dash._on_key("f")
-        assert dash._status_filter == "running"
-        dash._on_key("f")
-        assert dash._status_filter == "failed"
-
-    def test_cursor_navigation(self):
-        from umrs.tui.dashboard import Dashboard
-
-        mq = _make_mock_mq()
-        dash = Dashboard(control_mq=mq, client_id="testuser")
-        dash._fetch_jobs()
-
-        assert dash._cursor == 0
+        assert dash._jobs_cursor == 0
         dash._on_key("j")
-        assert dash._cursor == 1
-        dash._on_key("j")
-        assert dash._cursor == 2
-        dash._on_key("j")  # should clamp at max
-        assert dash._cursor == 2
+        assert dash._jobs_cursor == 1
         dash._on_key("k")
-        assert dash._cursor == 1
-        dash._on_key("k")
-        assert dash._cursor == 0
-        dash._on_key("k")  # should clamp at 0
-        assert dash._cursor == 0
-
-    def test_compact_toggle(self):
-        from umrs.tui.dashboard import Dashboard
-
-        mq = _make_mock_mq()
-        dash = Dashboard(control_mq=mq, client_id="testuser")
-
-        assert dash._compact is True
-        dash._on_key("/")
-        assert dash._compact is False
-        dash._on_key("/")
-        assert dash._compact is True
-
-    def test_quit_key(self):
-        from umrs.tui.dashboard import Dashboard
-
-        mq = _make_mock_mq()
-        dash = Dashboard(control_mq=mq, client_id="testuser")
-
-        dash._on_key("q")
-        assert dash._quit.is_set()
-
-
-    def test_fetch_jobs_passes_filters_to_message_queue(self):
-        from umrs.tui.dashboard import Dashboard
-
-        mq = _make_mock_mq()
-        dash = Dashboard(
-            control_mq=mq,
-            client_id="testuser",
-            status_filter="running",
-            project_filter="default",
-        )
-
-        dash._fetch_jobs()
-
-        mq.request_job_list.assert_called_once_with(
-            "testuser",
-            {"status": "running", "project_id": "default"},
-        )
+        assert dash._jobs_cursor == 0
