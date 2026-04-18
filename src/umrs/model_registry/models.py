@@ -3,7 +3,7 @@ Model Registry data models and enums.
 
 Defines:
 - ModelScope: system, project, user
-- ModelType: llm, embedding
+- ModelType: llm, embedding, vision
 - ModelStatus: staging, available, deprecated
 - ExecutionAuthority: slurm, k8s, compose (U-807)
 - ModelRefType: filesystem_path, pvc_ref, s3_ref, hf_repo_ref (U-808)
@@ -43,10 +43,12 @@ class ModelType(Enum):
 
     - LLM: Large language model for text generation (vLLM)
     - EMBEDDING: Embedding model for vector representations
+    - VISION: Vision model for image analysis (SAM3, HMAE, etc.)
     """
 
     LLM = "llm"
     EMBEDDING = "embedding"
+    VISION = "vision"
 
 
 class ModelStatus(Enum):

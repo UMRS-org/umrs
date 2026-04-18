@@ -253,12 +253,16 @@ def build_durable_job_db_pool_from_env():
         os.environ.get("POSTGRES_PASSWORD", "postgres"),
     )
 
+    # sslmode=disable: local container doesn't support SSL and the default
+    # 'prefer' mode can fail during early startup with "error response during
+    # SSL exchange".
     admin_conn = psycopg2.connect(
         dbname="postgres",
         user=db_user,
         password=db_password,
         host=db_host,
         port=db_port,
+        sslmode="disable",
     )
     admin_conn.autocommit = True
     try:
@@ -281,6 +285,7 @@ def build_durable_job_db_pool_from_env():
         password=db_password,
         host=db_host,
         port=db_port,
+        sslmode="disable",
     )
     logger.info(
         "Durable jobs database pool ready (db=%s host=%s port=%s)",

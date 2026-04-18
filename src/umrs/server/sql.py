@@ -269,7 +269,7 @@ def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq
 
 
 def wait_table_modification_on_db(active_threads, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id, update_status_callback=None):
-    from umrs.server.runtime import ENABLE_PRETTY_PRINT
+    from umrs.server.config import ENABLE_PRETTY_PRINT
     from umrs.shared.pretty_print import pretty_print_thread_status
 
     if update_status_callback:
