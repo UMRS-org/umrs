@@ -2,7 +2,6 @@
 # (models are bind-mounted at runtime via compose volumes)
 src/umrs/mini-rivault-llm/images/
 src/umrs/mini-rivault-llm/models/
-src/umrs/mini-rivault-vision/images/
 data/
 XP/
 docker/ssl/

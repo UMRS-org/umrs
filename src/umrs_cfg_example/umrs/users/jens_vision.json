@@ -1,0 +1,63 @@
+{
+  "username": "jens_vision",
+  "fullname": "Jens VisionFrontend User",
+  "s3_configuration_file": "~/.config/umrs/s3cfg",
+  "_comment_": "This config works with VISION_STACK=jens (site.yaml: vision_stack: jens). The model_type remains the same bentoml:// URI — the launcher automatically switches between UMRS VisionModelService and Jens VisionFrontend based on the VISION_STACK env var.",
+  "experiences": [
+    {
+      "xp_name": "SAM3 Segmentation (Jens Stack)",
+      "sql_username": "usr_sam3",
+      "modalities": [
+        {
+          "modality_name": "segmentation",
+          "s3": {
+            "bucket_alias": "jens-sam3",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "image/png" }
+          },
+          "model": {
+            "model_name": "facebook/sam2-hiera-small",
+            "vector_size": "256",
+            "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "sam3",
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "sam3_seg",
+            "meta_data": []
+          }
+        }
+      ]
+    },
+    {
+      "xp_name": "HMAE Inference (Jens Stack)",
+      "sql_username": "usr_hmae",
+      "modalities": [
+        {
+          "modality_name": "reconstruction",
+          "modality": "image",
+          "task": "reconstruction",
+          "s3": {
+            "bucket_alias": "jens-hmae",
+            "need_output_bucket": true,
+            "data": { "type": "file", "mime_type": "image/png" }
+          },
+          "model": {
+            "model_name": "HMAE ViT-B",
+            "vector_size": "768",
+            "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+            "vision_model_type": "hmae",
+            "vision_model_config": { "task": "reconstruction" },
+            "return_type": "file"
+          },
+          "sql": {
+            "store_embeddings": "no",
+            "table_name": "hmae_infer",
+            "meta_data": []
+          }
+        }
+      ]
+    }
+  ]
+}

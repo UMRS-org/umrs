@@ -552,3 +552,100 @@ python3 -c "import torch; print(torch.cuda.memory_summary())"
 
 **Fix:** Reduce `MAX_VISION_MODELS` (default: 3) or increase GPU VRAM.
 Restart the container to clear all cached models.
+
+---
+
+## Using Jens's VisionFrontend Stack
+
+UMRS supports an alternative vision backend: Jens's standalone BentoML
+VisionFrontend (`tmp/jens_stack/internal_genAI/`). This provides SAM3 and HMAE
+inference through the same `rivault://bentoml://` model type interface
+but uses a separate compose stack and Slurm wrapper.
+
+### Switching Backends
+
+The backend is selected by `vision_stack` in `site.yaml`:
+
+```yaml
+runtime:
+  vision_stack: jens        # use Jens's VisionFrontend
+  # vision_stack: umrs      # default — UMRS generic VisionModelService
+```
+
+Or via environment variable:
+
+```bash
+export VISION_STACK=jens
+```
+
+When `VISION_STACK=jens`, the UMRS server:
+1. Submits Jens's `serve-model.slurm` directly (from `jens_stack/internal_genAI/`)
+2. Creates a BentoML client talking to `/vision_task` (instead of `/infer`)
+3. Uses `make_jens_vision_compute()` adapter (pickle protocol)
+
+### Deployment
+
+UMRS runs Jens's original `serve-model.slurm` directly — no separate
+wrapper is needed. The script has been minimally patched to accept
+UMRS env var overrides (port, key, S3 host) and print the hostname
+marker that `extract_node_address()` requires.
+
+Deploy the `jens_stack/internal_genAI/` directory to the UMRS config area:
+
+```bash
+# Default location (from JENS_RIVAULT_SLURM_SCRIPT config):
+~/.config/umrs/rivault_data/jens_stack/internal_genAI/serve-model.slurm
+
+# Or override via environment variable:
+export JENS_RIVAULT_SLURM_SCRIPT=/path/to/jens_stack/internal_genAI/serve-model.slurm
+```
+
+### Port and Key Configuration
+
+Jens's script uses `${VAR:-random_default}` for these values. When UMRS
+exports them via `site_config.py`, the pinned values are used instead of
+random ones:
+
+| Variable | site.yaml path | Default (standalone) |
+|---|---|---|
+| `NGINX_LITELLM_DOCKER_PORT` | `network.litellm_port` | random port |
+| `LITELLM_MASTER_KEY` | `network.litellm_master_key` | random hex |
+| `UMRS_S3_BUCKET_HOST` | `storage.s3_tunnel_host` | localhost |
+| `UMRS_S3_BUCKET_PORT` | `storage.s3_tunnel_port` | 9000 |
+
+### S3 and SSH Tunnel
+
+Jens's script manages the S3 SSH tunnel itself. The SSH alias is
+configurable via `UMRS_SSH_ALIAS` (default: `rccscloud`). Ensure that
+alias resolves to the login node in `~/.ssh/config` on compute nodes.
+
+### User Config
+
+No changes needed in user JSON configs. The same `model_type` works for
+both stacks:
+
+```json
+{
+  "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+  "vision_model_type": "sam3"
+}
+```
+
+An example user config is at `src/umrs_cfg_example/umrs/users/jens_vision.json`.
+
+### Verification
+
+```bash
+# 1. Check vision_stack propagation
+VISION_STACK=jens python3 -c "
+from umrs.orchestrator.site_config import load_site_config
+cfg = load_site_config()
+print('vision_stack:', cfg.runtime.vision_stack)
+env = cfg.to_env()
+print('VISION_STACK:', env.get('VISION_STACK', '(not set — using default umrs)'))
+"
+
+# 2. Run SAM3 demo (from local Mac, with UMRS server using Jens stack)
+source .venv/bin/activate
+bash demos/03_sam3_segmentation/run_demo.sh
+```
