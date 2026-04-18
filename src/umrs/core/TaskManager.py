@@ -5,8 +5,8 @@ import threading
 
 
 class TaskManager:
-    def __init__(self, status_store, thread_dict,  db_path):
-        self.active_threads = UMRSThreads(status_store, thread_dict)
+    def __init__(self, status_store, thread_dict, db_path, pool=None):
+        self.active_threads = UMRSThreads(status_store, thread_dict, pool=pool)
         self.tasks_status = UMRSTask(db_path)
         self.task_to_thread = {}    # UMRSTask_id -> thread_ident
         self.thread_to_task = {}    # thread_ident -> UMRSTask_id

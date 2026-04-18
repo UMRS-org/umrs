@@ -757,12 +757,22 @@ class MessageQueue:
         if self.task_manager is not None:
             uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(client_id, status_key)
 
+        # Collect pool metrics when available
+        pool_metrics = None
+        if self.task_manager is not None:
+            try:
+                pool_metrics = self.task_manager.active_threads.pool.metrics().to_dict()
+            except Exception:
+                pass
+
         client_store = store.get(client_id, {})
         if key in ("all", "*"):
             if not client_store:
                 payload = {"status": "error", "message": "No status entries", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
             else:
                 payload = {"status": "ok", "client": client_id, "summaries": client_store, "uncompleted_key_list": uncompleted_key_list}
+            if pool_metrics is not None:
+                payload["pool"] = pool_metrics
             return json.dumps(payload, ensure_ascii=False)
 
         entry = client_store.get(key)
@@ -770,6 +780,8 @@ class MessageQueue:
             payload = {"status": "error", "message": f"No status for '{key}'", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
         else:
             payload = {"status": "ok", "client": client_id, "summary": entry, "uncompleted_key_list": uncompleted_key_list}
+        if pool_metrics is not None:
+            payload["pool"] = pool_metrics
         return json.dumps(payload, ensure_ascii=False)
 
     def notify_s3(self, s3_object):

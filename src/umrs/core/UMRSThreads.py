@@ -1,5 +1,6 @@
 # A class to manage server threads
 
+import logging
 import threading
 import time
 from umrs.shared.pretty_print import pretty_print_thread_status
@@ -7,6 +8,9 @@ from datetime import datetime
 import sys
 from diskcache import Cache
 from umrs.core.TaskCmdStatus import TaskStatus
+from umrs.core.thread_pool import ThreadPoolManager, PoolConfig, ServerOverloadedError
+
+logger = logging.getLogger(__name__)
 
 class ThreadStatus:
     RUNNING = "Running"
@@ -52,7 +56,7 @@ class UMRSThreads:
     - `threading` and `time` for thread execution and synchronization.
     - Database query helpers (`query_db_model`) and pretty-print helpers (`pretty_print_thread_status`).
     """
-    def __init__(self, status_store, thread_dict):
+    def __init__(self, status_store, thread_dict, pool=None):
 
         if not isinstance(status_store, Cache) or not isinstance(thread_dict, Cache) :
             sys.exit("Passed variables of UMRSThreads constructor must be Cache objects")
@@ -70,6 +74,12 @@ class UMRSThreads:
         self.thread_dict = thread_dict
         self.status_store = status_store # shared with ZeroMQ. Here we write. ZerMQ reads it
 
+        # Thread pool for bounded concurrency (falls back to unbounded threads if None)
+        if pool is None:
+            self.pool = ThreadPoolManager()
+        else:
+            self.pool = pool
+
 
     def _wait_for_key_in_dict(self, cache, key, check_interval=0.05, timeout=60):
         start = time.time()
@@ -82,120 +92,149 @@ class UMRSThreads:
             time.sleep(check_interval)  # wait for 50ms before checking again
         # key is now valid in dictionary
 
+    def _submit_to_pool(self, target, args, key, update_status_callback=None):
+        """Submit *target* to the thread pool and do standard bookkeeping.
+
+        Returns the ``thread_ident`` of the worker thread (available after
+        the task starts executing inside the pool).
+
+        Raises ``ServerOverloadedError`` if the pool is saturated.
+        """
+        if update_status_callback is not None:
+            update_status_callback(TaskStatus.LAUNCHED)
+
+        # We need the worker thread's ident for the existing bookkeeping.
+        # Wrap *target* so the first thing the worker does is publish its
+        # ident into a threading.Event we can wait on.
+        ident_holder: dict = {}
+        ident_ready = threading.Event()
+
+        def _wrapper(*a, **kw):
+            ident_holder["ident"] = threading.current_thread().ident
+            ident_ready.set()
+            return target(*a, **kw)
+
+        future = self.pool.submit(_wrapper, *args)
+
+        # Wait for the worker to start so we know its ident.
+        if not ident_ready.wait(timeout=60):
+            raise RuntimeError(f"Pool worker did not start within 60 s for '{key}'")
+
+        thread_ident = ident_holder["ident"]
+
+        # Keep a reference so waitall / clean_finished_threads still works.
+        with self.lock:
+            self.thread_list.append(future)
+
+        return thread_ident, future
+
 
     def launch_s3_threads(self, s3_objects, buckets_cfg, device,  embedding_backend, key, update_status_callback=None):
         from umrs.server.processing import process_s3_objects
 
-        thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, buckets_cfg, device,  embedding_backend, key, True, update_status_callback))
-
-        if update_status_callback is not None:
-            update_status_callback(TaskStatus.LAUNCHED)
-
-        thread.start()
+        thread_ident, future = self._submit_to_pool(
+            process_s3_objects,
+            (self, s3_objects, buckets_cfg, device, embedding_backend, key, True, update_status_callback),
+            key,
+            update_status_callback=update_status_callback,
+        )
 
         try:
-            self._wait_for_key_in_dict(self.thread_dict, thread.ident) # wait for the thread status to be updated
+            self._wait_for_key_in_dict(self.thread_dict, thread_ident) # wait for the thread status to be updated
         except RuntimeError as exc:
-            print(f"WARNING: Thread {thread.ident} did not register in time for '{key}': {exc}")
-        self.thread_list.append(thread)
-        return thread.ident
+            print(f"WARNING: Thread {thread_ident} did not register in time for '{key}': {exc}")
+        return thread_ident
 
 
     def launch_export_embeddings(self, user, export_args, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback=None):
         from umrs.server.sql import export_embeddings
 
-        thread = threading.Thread(target=export_embeddings,
-                                  args=(self, user, export_args, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback))
-
-        if update_status_callback is not None:
-            update_status_callback(TaskStatus.LAUNCHED)
-
-        thread.start()
+        thread_ident, future = self._submit_to_pool(
+            export_embeddings,
+            (self, user, export_args, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback),
+            key,
+            update_status_callback=update_status_callback,
+        )
 
         # `export_args`` is ``"path_to_bucket;format"
         path_to_bucket = export_args.split(";", 1)[0]
         keys_per_bucket = {}
         keys_per_bucket[path_to_bucket] = None
 
-        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
-        self.thread_list.append(thread)
-        return thread.ident
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident)
+        return thread_ident
 
     def launch_wait_table_modification_on_db(self, path_to_bucket, buckets_cfg, user, data_base, table_name, timeout, control_mq, zmq_sender_id, key, update_status_callback=None):
         from umrs.server.sql import wait_table_modification_on_db
 
-        thread = threading.Thread(target=wait_table_modification_on_db, args=(self, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id, update_status_callback))
+        thread_ident, future = self._submit_to_pool(
+            wait_table_modification_on_db,
+            (self, user, key, data_base, table_name, timeout, control_mq, zmq_sender_id, update_status_callback),
+            key,
+            update_status_callback=update_status_callback,
+        )
 
-        if update_status_callback is not None:
-            update_status_callback(TaskStatus.LAUNCHED)
-
-        thread.start()
         keys_per_bucket = {}
         keys_per_bucket[path_to_bucket] = None
 
-        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident)
 
-        self.thread_list.append(thread)
-        return thread.ident
+        return thread_ident
 
     def launch_check_objects(self, buckets_cfg, key, verbose, log_output, update_status_callback=None) :
         from umrs.server.maintenance import check_objects
 
-        thread = threading.Thread(target=check_objects, args=(self, buckets_cfg, key, verbose, log_output, update_status_callback))
-
-        if update_status_callback is not None:
-            update_status_callback(TaskStatus.LAUNCHED)
-
-        thread.start()
+        thread_ident, future = self._submit_to_pool(
+            check_objects,
+            (self, buckets_cfg, key, verbose, log_output, update_status_callback),
+            key,
+            update_status_callback=update_status_callback,
+        )
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
             keys_per_bucket[path_to_bucket] = entry.num_objects
 
-        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident)
 
-        self.thread_list.append(thread)
-        return thread.ident
+        return thread_ident
 
     def launch_update_objects(self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, update_status_callback=None) :
         from umrs.server.maintenance import update_objects
 
-
-        thread = threading.Thread(target=update_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, update_status_callback))
-
-        if update_status_callback is not None:
-            update_status_callback(TaskStatus.LAUNCHED)
-
-        thread.start()
+        thread_ident, future = self._submit_to_pool(
+            update_objects,
+            (self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, update_status_callback),
+            key,
+            update_status_callback=update_status_callback,
+        )
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
             keys_per_bucket[path_to_bucket] = entry.num_objects
 
-        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident)
 
-        self.thread_list.append(thread)
-        return thread.ident
+        return thread_ident
 
 
     def launch_recompute_all_objects(self, client_id,  buckets_cfg, device, embedding_backend, key, log_output, update_status_callback=None):
         from umrs.server.maintenance import recompute_all_objects
 
-        thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, log_output, update_status_callback))
-
-        if update_status_callback is not None:
-            update_status_callback(TaskStatus.LAUNCHED)
-
-        thread.start()
+        thread_ident, future = self._submit_to_pool(
+            recompute_all_objects,
+            (self, client_id, buckets_cfg, device, embedding_backend, key, log_output, update_status_callback),
+            key,
+            update_status_callback=update_status_callback,
+        )
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
             keys_per_bucket[path_to_bucket] = entry.num_objects
 
-        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread.ident)
+        self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident)
 
-        self.thread_list.append(thread)
-        return thread.ident
+        return thread_ident
 
 
     def update_thread_dict(self, buckets_cfg, keys_per_bucket, key, thread_ident = "self"):
@@ -242,10 +281,8 @@ class UMRSThreads:
         return thread_ident in self.thread_dict
 
     def remove_from_running_list(self):
-        current_thread = threading.current_thread()
-        with self.lock:
-            if current_thread in self.thread_list:
-                self.thread_list.remove(current_thread)
+        # No-op: pool-managed futures are cleaned up by clean_finished_threads.
+        pass
 
     def update_status_to_done(self):
         current_thread = threading.current_thread()
@@ -263,28 +300,47 @@ class UMRSThreads:
     def clean_finished_threads(self):
         from umrs.server.config import ENABLE_PRETTY_PRINT
         with self.lock:
-            running_threads = []
-            finished_threads = []
-            for thread in self.thread_list:
-                print(f"{thread.ident=}")
-                if not thread.is_alive():
-                    finished_threads.append(thread.ident)
-                    thread.join()
-                else:
-                    running_threads.append(thread)
-            print (f"==> Running threads: {len(running_threads)}")
-            # No need to cleanup old entries as we use diskcache to cache them on dsk if necessary
+            running = []
+            finished_idents = []
+            for item in self.thread_list:
+                if hasattr(item, 'done'):  # concurrent.futures.Future
+                    if item.done():
+                        # Propagate exceptions so they are logged
+                        exc = item.exception()
+                        if exc is not None:
+                            logger.error("Pool task raised: %s", exc)
+                        finished_idents.append(id(item))
+                    else:
+                        running.append(item)
+                else:  # legacy threading.Thread
+                    print(f"{item.ident=}")
+                    if not item.is_alive():
+                        finished_idents.append(item.ident)
+                        item.join()
+                    else:
+                        running.append(item)
+            print(f"==> Running threads: {len(running)}")
             pretty_print_thread_status(self.thread_dict, running_only=True, print_output=ENABLE_PRETTY_PRINT)
-            self.thread_list = running_threads
-            return finished_threads
+            self.thread_list = running
+            return finished_idents
 
     def waitall(self):
-        finish_threads = []
-        for thread in self.thread_list:
-            finish_threads.append(thread.ident)
-            thread.join()
-            self.thread_list.remove(thread)
-        return finish_threads
+        finished_idents = []
+        remaining = []
+        with self.lock:
+            items = list(self.thread_list)
+            self.thread_list.clear()
+        for item in items:
+            if hasattr(item, 'result'):  # concurrent.futures.Future
+                try:
+                    item.result()  # blocks until done
+                except Exception as e:
+                    logger.error("Pool task raised during waitall: %s", e)
+                finished_idents.append(id(item))
+            else:  # legacy threading.Thread
+                finished_idents.append(item.ident)
+                item.join()
+        return finished_idents
 
 
     def filter_thread_status_for_user(self, client_id, key):
@@ -373,6 +429,10 @@ class UMRSThreads:
 
 
     def close(self):
+        try:
+            self.pool.shutdown(wait=True)
+        except Exception as e:
+            print(f"Warning: pool shutdown error: {e}")
         try:
             # if using diskcache.Cache
             self.thread_dict.close()   # closes the cache
