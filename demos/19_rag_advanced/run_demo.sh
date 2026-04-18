@@ -22,10 +22,17 @@ DEMO_TAG="rag_adv" source "${SCRIPT_DIR}/../lib/common.sh"
 RAG_URL="${RAG_URL:-http://localhost:8081}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 QUERY="${1:-What is the main topic of the documents?}"
+RAG_USER="${RAG_USER:-user1}"
+RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-user1-textfiles}"
+RAG_MODALITY="${RAG_MODALITY:-text_file}"
+RAG_XP_NAME="${RAG_XP_NAME:-}"
 
 banner "Demo 19: RAG Advanced — Search Mode Comparison"
 echo "RAG endpoint : ${RAG_URL}"
 echo "Query        : ${QUERY}"
+echo "User         : ${RAG_USER}"
+echo "Bucket alias : ${RAG_BUCKET_ALIAS}"
+echo "Modality     : ${RAG_MODALITY}"
 echo ""
 
 # ---------- Step 1: Pre-flight ----------
@@ -51,9 +58,34 @@ rag_search() {
     log "--- ${label} ---"
 
     local payload
-    payload=$(cat <<JEOF
-{"query": "${QUERY}", "top_k": 3${extra_params}}
-JEOF
+    payload=$(QUERY="$QUERY" \
+        RAG_USER="$RAG_USER" \
+        RAG_BUCKET_ALIAS="$RAG_BUCKET_ALIAS" \
+        RAG_MODALITY="$RAG_MODALITY" \
+        RAG_XP_NAME="$RAG_XP_NAME" \
+        EXTRA_JSON="$extra_params" \
+        python3 - <<'PYEOF'
+import json
+import os
+
+payload = {
+    "query": os.environ["QUERY"],
+    "top_k": 3,
+    "user": os.environ["RAG_USER"],
+    "bucket_alias": os.environ["RAG_BUCKET_ALIAS"],
+    "modality": os.environ["RAG_MODALITY"],
+}
+
+xp_name = os.environ.get("RAG_XP_NAME", "").strip()
+if xp_name:
+    payload["xp_name"] = xp_name
+
+extra_json = os.environ.get("EXTRA_JSON", "").strip()
+if extra_json:
+    payload.update(json.loads("{" + extra_json.lstrip(', ').strip() + "}"))
+
+print(json.dumps(payload))
+PYEOF
     )
 
     local response
@@ -86,26 +118,23 @@ except Exception as e:
 # ---------- Step 2: Vector-only search ----------
 rag_search "vector" "Vector-Only Search" ""
 
-# ---------- Step 3: BM25 keyword search ----------
-rag_search "bm25" "BM25 Keyword Search" ', "search_method": "bm25"'
-
-# ---------- Step 4: Hybrid search (RRF) ----------
+# ---------- Step 3: Hybrid search (RRF) ----------
 rag_search "hybrid" "Hybrid Search (RRF Fusion)" ', "search_method": "hybrid"'
 
-# ---------- Step 5: Reranked hybrid search ----------
+# ---------- Step 4: Reranked hybrid search ----------
 rag_search "reranked" "Reranked Hybrid Search" ', "search_method": "hybrid", "enable_reranking": true'
 
-# ---------- Step 6: Compare results ----------
+# ---------- Step 5: Compare results ----------
 log ""
-log "Step 6: Comparing retrieval modes..."
+log "Step 5: Comparing retrieval modes..."
 
 python3 - "$RESULTS_DIR" << 'PYEOF'
 import json, sys
 from pathlib import Path
 
 results_dir = Path(sys.argv[1])
-modes = ["vector", "bm25", "hybrid", "reranked"]
-labels = ["Vector-Only", "BM25", "Hybrid (RRF)", "Reranked"]
+modes = ["vector", "hybrid", "reranked"]
+labels = ["Vector-Only", "Hybrid (RRF)", "Reranked"]
 
 print("\n╔══════════════════════════════════════════════╗")
 print("║       Search Mode Comparison Summary         ║")
