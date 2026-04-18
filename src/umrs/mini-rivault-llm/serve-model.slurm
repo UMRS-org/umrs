@@ -10,6 +10,10 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 
+# ─── GOMAXPROCS: prevent Go-based services from NPROC exhaustion ─────────────
+# Default to 1 if not already set by the outer wrapper or environment.
+export GOMAXPROCS="${GOMAXPROCS:-1}"
+
 load_site_env_defaults() {
     local python_bin
     local rendered_exports
@@ -66,7 +70,6 @@ graphroot = "/var/tmp/podman_${USER}/storage"           # Note: local non-NFS pa
 mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
 mountopt="xattr_permissions=2,threaded=1"
-force_mask="700"
 EOF
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
@@ -510,19 +513,25 @@ trap 'cleanup_stack "signal:TERM" 143; exit 143' TERM
 trap 'cleanup_stack "signal:INT" 130; exit 130' INT
 trap 'cleanup_stack "exit" "$?"' EXIT
 
-podman-compose --project-name "rivault" --in-pod false \
-               --env-file "./env.${uuid}" \
-               --file "./serve-model.yaml" ${GPUoverride[@]} \
-               ${_profile_flags} \
-               up \
-	       --remove-orphans --detach
+if ! podman-compose --project-name "rivault" --in-pod false \
+         --env-file "./env.${uuid}" \
+         --file "./serve-model.yaml" ${GPUoverride[@]} \
+         ${_profile_flags} \
+         up \
+	       --remove-orphans --detach; then
+	echo "[rivault] ERROR: failed to start rivault compose stack"
+	exit 1
+fi
 
-podman-compose --project-name "exit" --in-pod false \
-               --env-file "./env.${uuid}" \
-               --file "./userdata-access.yaml" \
-               --profile harness \
-               up \
-	       --remove-orphans --detach
+if ! podman-compose --project-name "exit" --in-pod false \
+         --env-file "./env.${uuid}" \
+         --file "./userdata-access.yaml" \
+         --profile harness \
+         up \
+	       --remove-orphans --detach; then
+	echo "[rivault] ERROR: failed to start exit compose stack"
+	exit 1
+fi
 
 ip a
 
@@ -581,8 +590,10 @@ while [ "$ELAPSED" -lt "$RIVAULT_JOB_TIMEOUT" ]; do
     sleep "$INTERVAL"
     ELAPSED=$(( ELAPSED + INTERVAL ))
 done
-[ "$ELAPSED" -ge "$RIVAULT_JOB_TIMEOUT" ] && \
-    echo "[rivault] Timeout ${RIVAULT_JOB_TIMEOUT}s reached. Exiting."
+if [ "$ELAPSED" -ge "$RIVAULT_JOB_TIMEOUT" ]; then
+	echo "[rivault] Timeout ${RIVAULT_JOB_TIMEOUT}s reached. Exiting."
+	exit 124
+fi
 
 # test
 #curl -H "Authorization: Bearer $(/bin/grep '^LITELLM_MASTER_KEY=' "./env.${uuid}" |/bin/cut -d'=' -f2)" \
