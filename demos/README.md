@@ -130,6 +130,8 @@ Complex DAG pipelines, multi-user isolation, durable jobs, and extensibility.
 | 20 | [Durable Jobs](20_durable_jobs/) | Job submit, poll, idempotent resubmit, cancel |
 | 21 | [Remote Plugins](21_remote_plugins/) | Plugin spec definition, validation, execution, audit log |
 | 22 | [Monitor (TUI)](22_monitor/) | Live-refreshing jobs dashboard with keyboard navigation |
+| 23 | [Auth Enforcement](23_auth_enforcement/) | Admin token management, role-based command authorization |
+| 24 | [Thread Pool](24_thread_pool/) | Bounded thread pool metrics, backpressure indicator |
 
 ## Quick Reference
 

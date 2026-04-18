@@ -41,6 +41,8 @@ class UMRSControlAPI:
     def list_models(self, scope: Optional[str] = None) -> Dict[str, Any]:
         payload = json.dumps({"scope": scope}) if scope else ""
         raw = self._mq.request_model_command(self._client_id, TaskCmd.MODEL_LIST, payload)
+        if raw.startswith("UNAUTHORIZED:"):
+            return {"status": "error", "message": "Authorization denied for MODEL_LIST", "code": "UNAUTHORIZED"}
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return {"status": "ok", "models": parsed}
@@ -212,6 +214,8 @@ class UMRSControlAPI:
 
     def _request_json(self, task_cmd: str, payload: str) -> Dict[str, Any]:
         raw = self._mq.request_model_command(self._client_id, task_cmd, payload)
+        if raw.startswith("UNAUTHORIZED:"):
+            return {"status": "error", "message": f"Authorization denied for {task_cmd}", "code": "UNAUTHORIZED"}
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return {"status": "ok", "items": parsed}

@@ -11,6 +11,7 @@ from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
     MODEL_TYPE_CHOICES,
     STATUS_CHOICES,
+    configure_admin_token_parser,
     configure_job_cancel_parser,
     configure_job_submit_parser,
     configure_model_download_parser,
@@ -162,6 +163,54 @@ def _handle_config_command(args):
     else:
         print(_format_config_text(resolved))
     return 0
+
+
+def _handle_admin_command(args):
+    """Handle ``admin token {generate,list,revoke}`` — purely local."""
+    from umrs.shared.auth import AdminTokenManager
+
+    if args.admin_action != 'token':
+        raise ValueError(f"Unknown admin action: {args.admin_action}")
+
+    mgr = AdminTokenManager()
+
+    if args.token_action == 'generate':
+        token = mgr.generate_token(args.name, description=args.description)
+        if args.output == 'json':
+            print(api_json(action='token_generate', name=args.name, token=token, output_format=args.output))
+        else:
+            print(f"Token generated for '{args.name}':")
+            print(f"  {token}")
+            print("")
+            print("Save this token — it cannot be retrieved later.")
+        return 0
+
+    if args.token_action == 'list':
+        tokens = mgr.list_tokens()
+        if args.output == 'json':
+            print(api_json(action='token_list', tokens=tokens, output_format=args.output))
+        else:
+            if tokens:
+                print(f"{'Name':20s} {'Description':30s} {'Created':25s}")
+                print("-" * 75)
+                for t in tokens:
+                    print(f"{t['name']:20s} {t.get('description', ''):30s} {t.get('created_at', ''):25s}")
+            else:
+                print("No admin tokens configured.")
+        return 0
+
+    if args.token_action == 'revoke':
+        ok = mgr.revoke_token(args.name)
+        if args.output == 'json':
+            print(api_json(action='token_revoke', name=args.name, revoked=ok, output_format=args.output))
+        else:
+            if ok:
+                print(f"Token '{args.name}' revoked.")
+            else:
+                print(f"Token '{args.name}' not found.")
+        return 0 if ok else 1
+
+    raise ValueError(f"Unknown token action: {args.token_action}")
 
 
 def _handle_profile_command(args):
@@ -419,6 +468,8 @@ def main():
     parser.add_argument('--server-ip', default=None, help='Server IP for ZeroMQ control channel')
     parser.add_argument('--control-port', type=int, default=None, help='Control port for the ZeroMQ control channel')
     parser.add_argument('--output', choices=['json','text'], default='json', help='Output format for API actions')
+    parser.add_argument('--admin-token', default=None,
+                        help='Admin token for privileged commands (or set UMRS_ADMIN_TOKEN)')
     # Removed deprecated auto-add-columns behavior; metadata must be declared in server config
 
     # API subcommands
@@ -584,6 +635,12 @@ def main():
                        choices=['jobs', 'status', 'models', 'workflows', 'connection'],
                        help='Tab to display on startup (default: jobs)')
 
+    # --- Admin token management (local-only, no server connection needed) ---
+    admin_p = subparsers.add_parser('admin', help='Admin token management (generate, list, revoke)')
+    admin_sub = admin_p.add_subparsers(dest='admin_action', required=True)
+    token_p = admin_sub.add_parser('token', help='Manage admin API tokens')
+    configure_admin_token_parser(token_p)
+
     profile_p = subparsers.add_parser('profile', help='Connection profile commands (list, show, use, import)')
     profile_sub = profile_p.add_subparsers(dest='profile_action', required=True)
     profile_sub.add_parser('list', help='List available connection profiles')
@@ -620,6 +677,13 @@ def main():
             print(api_json(status='error', message=str(e), output_format=args.output))
             sys.exit(1)
 
+    if args.action == 'admin':
+        try:
+            sys.exit(_handle_admin_command(args))
+        except Exception as e:
+            print(api_json(status='error', message=str(e), output_format=args.output))
+            sys.exit(1)
+
     connection = resolve_connection(
         explicit_profile_name=args.profile,
         explicit_server_ip=args.server_ip,
@@ -644,6 +708,9 @@ def main():
                      )
 
     print (f"Server ready.\nConnected to zeroMQ message queue'")
+
+    # Resolve admin token from CLI flag or environment
+    admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
 
     # Deprecated 'auto_add_columns' flag removed
 
@@ -990,7 +1057,7 @@ def main():
                             zf.write(abs_path, arc_name)
                 # Establish data channel, notify the server to begin receiving,
                 # then stream the zip over the data socket.
-                data_mq = control_mq.get_data_queue(client_id)
+                data_mq = control_mq.get_data_queue(client_id, admin_token=admin_token)
                 try:
                     control_mq.set_timeouts(120_000, 120_000)
                     control_mq.send_string(f"{TaskCmd.UPLOAD_WORKFLOW}:{client_id}:{workflow_name}")
@@ -1180,7 +1247,7 @@ def main():
         username_arg = getattr(args, 'username', None)
         username = username_arg or username
 
-        data_mq = control_mq.get_data_queue(username)
+        data_mq = control_mq.get_data_queue(username, admin_token=admin_token)
     except Exception as e:
         print(api_json(status="error", message=str(e), output_format=args.output))
         if args.verbose:
