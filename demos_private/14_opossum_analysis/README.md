@@ -7,8 +7,8 @@ in the local environment.
 
 ## What is in this directory
 
-- `opossum_workflow/opossum_step.py` — the Pipeline SDK step wrapper.
-- `opossum_workflow/workflow.json` — single-step workflow spec.
+- `workflow/opossum_step.py` — the Pipeline SDK step wrapper.
+- `workflow/workflow.json` — single-step workflow spec.
 - `generate_test_videos.py` — synthetic test-video generator.
 - `run_demo.sh` — shell entrypoint for upload, workflow upload, and result collection.
 
@@ -36,7 +36,7 @@ bash run_demo.sh /path/to/videos
 
 1. Runs the standard UMRS pre-flight checks.
 2. Optionally generates synthetic `.mp4` files.
-3. Uploads the workflow from `opossum_workflow/` to the server.
+3. Uploads the workflow from `workflow/` to the server.
 4. Uploads videos to the selected bucket.
 5. Attempts to download server-side results.
 6. If an external opossum engine checkout is available, it also runs a local
@@ -55,7 +55,7 @@ python3 generate_test_videos.py --output-dir sample_videos/ --num-videos 4
 # 3. Upload the opossum workflow to the server
 #    The workflow wraps the opossum motion analysis engine as a
 #    Pipeline SDK step for server-side execution via Slurm.
-umrs-client upload-workflow opossum_workflow/ --name opossum-analysis
+umrs-client upload-workflow workflow/ --name opossum-analysis
 
 # 4. Upload videos for analysis
 #    Each video is analyzed for motion events by comparing
@@ -92,4 +92,4 @@ The public replacement for a generic video-analysis workflow is:
 ## Related Docs
 
 - [../../demos/12_pipeline_sdk/README.md](../../demos/12_pipeline_sdk/README.md)
-- [opossum_workflow/workflow.json](opossum_workflow/workflow.json)
+- [workflow/workflow.json](workflow/workflow.json)

@@ -98,9 +98,7 @@ ok "Workflow files created"
 # ---------- Step 3: Upload workflow ----------
 log ""
 log "Step 3: Uploading custom workflow to server..."
-WORKFLOW_UPLOAD_DIR="$(prepare_workflow_upload_dir "$WORKFLOW_DIR")"
-trap 'rm -rf "${WORKFLOW_UPLOAD_DIR:-}"' EXIT
-$CLIENT upload-workflow "$WORKFLOW_UPLOAD_DIR" --name "custom-text-counter" 2>&1 \
+$CLIENT upload-workflow "$WORKFLOW_DIR" --name "custom-text-counter" 2>&1 \
     | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
 
@@ -123,7 +121,7 @@ log ""
 log "Step 5: Waiting for workflow outputs..."
 rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
-$CLIENT download_results "$BUCKET_ALIAS" "${RESULTS_DIR}/" --force-overwrite 2>/dev/null \
+$CLIENT download_results "$BUCKET_ALIAS" "${RESULTS_DIR}/" --force-overwrite \
     && ok "Results downloaded to ${RESULTS_DIR}/" \
     || warn "Could not download results — check server logs"
 

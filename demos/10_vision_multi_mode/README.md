@@ -63,9 +63,10 @@ are no conflicts.
 umrs-client ping
 
 # 2. Upload the multi-mode workflow to the server
-#    The workflow.json defines 3 parallel branches (segment, features,
+#    The upload-ready bundle lives under workflow/. Its workflow.json defines
+#    3 parallel branches (segment, features,
 #    thumbnails). Each branch processes the same input images independently.
-umrs-client upload-workflow . --name "vision-multi-mode"
+umrs-client upload-workflow workflow/ --name "vision-multi-mode"
 
 # 3. Reload server configuration
 #    Picks up the newly uploaded workflow definition.
@@ -96,7 +97,7 @@ umrs-client download_results user1-multi ./results --force-overwrite
 
 ## Using Different Models
 
-Swap the vision model in `workflow.json`:
+Swap the vision model in `workflow/workflow.json`:
 
 ```json
 {

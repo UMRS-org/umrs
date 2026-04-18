@@ -5,7 +5,7 @@
 # Uploads volume slice images → server runs HMAE via BentoML on Slurm →
 # downloads reconstruction results.
 #
-# HMAE inference engine: tmp/hmae-infer/ (see tmp/hmae-infer/README.md)
+# HMAE inference engine: tmp/jens_stack/hmae-infer/ (see tmp/jens_stack/hmae-infer/README.md)
 #
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
@@ -35,7 +35,7 @@ INPUT_S3_BUCKET="user1.hmae-inference.${BUCKET_ALIAS}"
 OUTPUT_S3_BUCKET="user1.hmae-inference.${BUCKET_ALIAS}-output"
 
 # Default image dir: use SAM3 demo's test_data_full (shared volume slices)
-IMAGE_DIR="${1:-${SCRIPT_DIR}/../03_sam3_segmentation/test_data_full}"
+IMAGE_DIR="${1:-${SCRIPT_DIR}/../../demos/03_sam3_segmentation/test_data_full}"
 
 # Helper: clear all objects from an S3 bucket (via local boto3 + s3cfg)
 clear_s3_bucket() {
