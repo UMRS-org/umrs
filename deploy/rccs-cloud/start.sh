@@ -18,6 +18,15 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# ─── Work around HPC login-node thread limit for Go/Podman ──────────────────
+# Go's runtime defaults GOMAXPROCS to the number of CPUs visible via nproc.
+# On large HPC login nodes (e.g. 64 cores) the Go runtime tries to create 64+
+# OS threads at startup, which can exceed per-session thread-creation limits
+# imposed by the system (systemd TasksMax, PAM, cgroup, or RLIMIT_NPROC).
+# Capping GOMAXPROCS to a small value prevents the pthread_create EAGAIN crash
+# that otherwise makes podman (and any Go binary) unusable.
+export GOMAXPROCS="${GOMAXPROCS:-4}"
+
 SCRIPT_DIR="$(pwd)"
 REPO_ROOT="$(cd ../.. && pwd)"
 VENV_DIR="${SCRIPT_DIR}/.venv"
