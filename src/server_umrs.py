@@ -19,6 +19,7 @@ from umrs.shared.pretty_print import pretty_print_cfg
 from umrs.server.json_config import load_server_cfg_file
 from umrs.core.TaskManager import TaskManager
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
+from umrs.core.thread_pool import ServerOverloadedError, ThreadPoolManager, PoolConfig
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 
 from umrs.server.model_registry_handler import handle_model_command
@@ -129,10 +130,27 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
     assert status_store is not None
     assert status_store == task_manager.active_threads.get_status_store()
 
+    def _reject_overloaded(task_id, update_status_func, exc):
+        """Mark the task as rejected and log the overload."""
+        logger.warning("Rejecting task %s: %s", task_id, exc)
+        update_status_func(TaskStatus.ERROR)
+
     try:
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######", flush=True)
             task_manager.tasks_status.pretty_print_tasks(limit=20)
+
+            # Log pool metrics once per iteration
+            try:
+                metrics = task_manager.active_threads.pool.metrics()
+                logger.debug(
+                    "Pool: active=%d pending=%d (max %d/%d)",
+                    metrics.active_count, metrics.pending_count,
+                    metrics.max_workers, metrics.max_pending,
+                )
+            except Exception:
+                pass
+
             try:
                 result = control_mq.server_control_queue_loop()
             except Exception as e:
@@ -149,11 +167,14 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 client_id, s3_objects = payload
-                thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
-                                                                             buckets_cfg, device, embedding_backend,
-                                                                             cmd.lower(),
-                                                                             update_status_callback=update_status_func)
-                task_manager.associate_thread_with_task(thread_ident, task_id)
+                try:
+                    thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
+                                                                                 buckets_cfg, device, embedding_backend,
+                                                                                 cmd.lower(),
+                                                                                 update_status_callback=update_status_func)
+                    task_manager.associate_thread_with_task(thread_ident, task_id)
+                except ServerOverloadedError as exc:
+                    _reject_overloaded(task_id, update_status_func, exc)
 
             elif cmd == TaskCmd.FILE:
                 if payload:
@@ -170,15 +191,18 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 update_status_func(TaskStatus.COMPLETED)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
                 client_id = payload
-                thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
-                                                            device, embedding_backend, configure_file, user_config_map, cmd.lower(),
-                                                            update_status_callback=update_status_func)
-                if thread_ident is None:
-                    update_status_func(TaskStatus.COMPLETED)
-                elif thread_ident is False:
-                    update_status_func(TaskStatus.ERROR)
-                else:
-                    task_manager.associate_thread_with_task(thread_ident, task_id)
+                try:
+                    thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
+                                                                device, embedding_backend, configure_file, user_config_map, cmd.lower(),
+                                                                update_status_callback=update_status_func)
+                    if thread_ident is None:
+                        update_status_func(TaskStatus.COMPLETED)
+                    elif thread_ident is False:
+                        update_status_func(TaskStatus.ERROR)
+                    else:
+                        task_manager.associate_thread_with_task(thread_ident, task_id)
+                except ServerOverloadedError as exc:
+                    _reject_overloaded(task_id, update_status_func, exc)
 
             elif cmd == TaskCmd.UPLOAD_WORKFLOW:
                 client_id, files, workflow_name = payload
@@ -230,15 +254,29 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                     control_mq.send_string(msg, zmq_sender_id)
                     update_status_func(TaskStatus.NO_SUCH_BUCKET)
                 else:
-                    thread_ident = task_manager.active_threads.launch_wait_table_modification_on_db(path_to_bucket, buckets_cfg, client_id,
-                                                                      entry.data_base, entry.table_name,
-                                                                     timeout, control_mq, zmq_sender_id, cmd.lower(),
-                                                                     update_status_callback=update_status_func)
-                    task_manager.associate_thread_with_task(thread_ident, task_id)
+                    try:
+                        thread_ident = task_manager.active_threads.launch_wait_table_modification_on_db(path_to_bucket, buckets_cfg, client_id,
+                                                                          entry.data_base, entry.table_name,
+                                                                         timeout, control_mq, zmq_sender_id, cmd.lower(),
+                                                                         update_status_callback=update_status_func)
+                        task_manager.associate_thread_with_task(thread_ident, task_id)
+                    except ServerOverloadedError as exc:
+                        _reject_overloaded(task_id, update_status_func, exc)
+                        try:
+                            control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
+                        except RuntimeError:
+                            pass
             elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
                 client_id, export_args, zmq_sender_id = payload
-                thread_ident = task_manager.active_threads.launch_export_embeddings(client_id, export_args, buckets_cfg, control_mq, zmq_sender_id, cmd.lower(), update_status_callback=update_status_func)
-                task_manager.associate_thread_with_task(thread_ident, task_id)
+                try:
+                    thread_ident = task_manager.active_threads.launch_export_embeddings(client_id, export_args, buckets_cfg, control_mq, zmq_sender_id, cmd.lower(), update_status_callback=update_status_func)
+                    task_manager.associate_thread_with_task(thread_ident, task_id)
+                except ServerOverloadedError as exc:
+                    _reject_overloaded(task_id, update_status_func, exc)
+                    try:
+                        control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
+                    except RuntimeError:
+                        pass
 
             elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST):
                 client_id, payload_str, zmq_sender_id = payload
@@ -412,6 +450,10 @@ def main():
     parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
     parser.add_argument('--pretty-print', action='store_true', help='Enable server-side pretty-printed tables and summaries (default: off)')
     parser.add_argument('--check-incomplete-command', action='store_true', help='Force checking for incomplete commands after a crash (default: off)')
+    parser.add_argument('--pool-max-workers', type=int, default=None,
+                        help='Max worker threads in the pool (default: UMRS_POOL_MAX_WORKERS or 16)')
+    parser.add_argument('--pool-max-pending', type=int, default=None,
+                        help='Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)')
     args = parser.parse_args()
     configure_file = args.conf
 
@@ -427,7 +469,16 @@ def main():
     thread_dict = diskcache.Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
 
     print("Initialized thread dictionary")
-    task_manager = TaskManager(status_store, thread_dict, f"{get_default_db_subdir()}/tasks.db")
+
+    # Build thread pool with optional CLI overrides
+    pool_kwargs = {}
+    if args.pool_max_workers is not None:
+        pool_kwargs["max_workers"] = args.pool_max_workers
+    if args.pool_max_pending is not None:
+        pool_kwargs["max_pending"] = args.pool_max_pending
+    pool = ThreadPoolManager(PoolConfig(**pool_kwargs)) if pool_kwargs else ThreadPoolManager()
+
+    task_manager = TaskManager(status_store, thread_dict, f"{get_default_db_subdir()}/tasks.db", pool=pool)
 
     print("Performing initial configuration...")
     control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store)
