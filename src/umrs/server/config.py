@@ -2,17 +2,14 @@ import os
 
 from umrs.shared.config import DEFAULT_UMRS_CFG_DIR
 
+ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
+
 DEFAULT_DB_SUBDIR = f"{DEFAULT_UMRS_CFG_DIR}/tasks_database"
 DEFAULT_RIVAULT_SLURM_SCRIPT = os.environ.get(
     "RIVAULT_SLURM_SCRIPT",
     f"{DEFAULT_UMRS_CFG_DIR}/rivault_data/serve-model.slurm",
 )
 PLAFRIM_RIVAULT_SLURM_SCRIPT = f"{DEFAULT_UMRS_CFG_DIR}/rivault_data/serve-model-plafrim.slurm"
-JENS_RIVAULT_SLURM_SCRIPT = os.environ.get(
-    "JENS_RIVAULT_SLURM_SCRIPT",
-    f"{DEFAULT_UMRS_CFG_DIR}/rivault_data/serve-model-jens.slurm",
-)
-VISION_STACK = os.environ.get("VISION_STACK", "umrs")
 RIVAULT_REMOTE_PORT = int(os.environ.get("RIVAULT_REMOTE_PORT", -1))
 
 
@@ -42,11 +39,10 @@ def get_rivault_remote_port():
 
 
 __all__ = [
+    "ENABLE_PRETTY_PRINT",
     "DEFAULT_DB_SUBDIR",
     "DEFAULT_RIVAULT_SLURM_SCRIPT",
     "PLAFRIM_RIVAULT_SLURM_SCRIPT",
-    "JENS_RIVAULT_SLURM_SCRIPT",
-    "VISION_STACK",
     "RIVAULT_REMOTE_PORT",
     "get_default_db_subdir",
     "get_rivault_slurm_script",

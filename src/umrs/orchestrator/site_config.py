@@ -66,7 +66,6 @@ class RuntimeConfig:
     cdi_spec: str = "/var/run/cdi/nvidia.yaml"  # CDI spec path (if gpu_passthrough=cdi)
     cgroup_manager: str = "cgroupfs"
     storage_root: str = ""                      # podman graphroot override
-    vision_stack: str = "umrs"                    # umrs | jens — selects VisionModelService or VisionFrontend
 
 
 @dataclass
@@ -218,8 +217,7 @@ class SiteConfig:
             env["BENTOML_VISION_IMAGE"] = self.runtime.vision_image
         if self.runtime.profiles:
             env["RIVAULT_PROFILES"] = " ".join(self.runtime.profiles)
-        if self.runtime.vision_stack and self.runtime.vision_stack != "umrs":
-            env["VISION_STACK"] = self.runtime.vision_stack
+
 
         # Storage
         if self.storage.model_cache_dir:
@@ -402,8 +400,6 @@ def default_site_config() -> SiteConfig:
     profiles = os.getenv("RIVAULT_PROFILES", "")
     if profiles:
         cfg.runtime.profiles = profiles.split()
-    cfg.runtime.vision_stack = os.getenv("VISION_STACK", "umrs")
-
     # Storage
     cfg.storage.model_cache_dir = os.getenv("VLLM_PATH_TO_HUGGINGFACE", "")
     cfg.storage.sam3_model_path = os.getenv("SAM3_MODEL_PATH", "")

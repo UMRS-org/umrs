@@ -84,7 +84,7 @@ class UMRSThreads:
 
 
     def launch_s3_threads(self, s3_objects, buckets_cfg, device,  embedding_backend, key, update_status_callback=None):
-        from umrs.server.runtime import process_s3_objects
+        from umrs.server.processing import process_s3_objects
 
         thread = threading.Thread(target=process_s3_objects, args=(self, s3_objects, buckets_cfg, device,  embedding_backend, key, True, update_status_callback))
 
@@ -139,7 +139,7 @@ class UMRSThreads:
         return thread.ident
 
     def launch_check_objects(self, buckets_cfg, key, verbose, log_output, update_status_callback=None) :
-        from umrs.server.runtime import check_objects
+        from umrs.server.maintenance import check_objects
 
         thread = threading.Thread(target=check_objects, args=(self, buckets_cfg, key, verbose, log_output, update_status_callback))
 
@@ -158,7 +158,7 @@ class UMRSThreads:
         return thread.ident
 
     def launch_update_objects(self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, update_status_callback=None) :
-        from umrs.server.runtime import update_objects
+        from umrs.server.maintenance import update_objects
 
 
         thread = threading.Thread(target=update_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, verbose, log_output, update_status_callback))
@@ -179,7 +179,7 @@ class UMRSThreads:
 
 
     def launch_recompute_all_objects(self, client_id,  buckets_cfg, device, embedding_backend, key, log_output, update_status_callback=None):
-        from umrs.server.runtime import recompute_all_objects
+        from umrs.server.maintenance import recompute_all_objects
 
         thread = threading.Thread(target=recompute_all_objects, args=(self, client_id, buckets_cfg, device, embedding_backend, key, log_output, update_status_callback))
 
@@ -261,7 +261,7 @@ class UMRSThreads:
                 print(f"Error: cannot find '{thread_ident}' entry for {self.thread_dict=}")
 
     def clean_finished_threads(self):
-        from umrs.server.runtime import ENABLE_PRETTY_PRINT
+        from umrs.server.config import ENABLE_PRETTY_PRINT
         with self.lock:
             running_threads = []
             finished_threads = []

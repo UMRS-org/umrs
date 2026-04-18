@@ -501,6 +501,141 @@ def warmup_embedding_model(openai_url, model_name, api_key=None, timeout=120.0, 
         time.sleep(interval)
 
 
+def _resolve_remote_port(model_cfg):
+    """Determine the remote port for SSH tunnel based on model type."""
+    if model_cfg["model_type"].startswith("bentoml://"):
+        # BentoML vision models use a dedicated NGINX port (no path prefix)
+        # to avoid httpx absolute-path resolution issues with /readyz etc.
+        port = os.environ.get("BENTOML_VISION_DOCKER_PORT")
+        return int(port or 3001)
+
+    remote_port = get_rivault_remote_port()
+    if remote_port < 0:
+        remote_port = model_cfg.get("server_port")
+        if remote_port is None:
+            raise ValueError(
+                "Remote port for RivaULT not specified. "
+                "Please set the RIVAULT_REMOTE_PORT environment variable "
+                "or specify 'server_port' in the model configuration."
+            )
+    return remote_port
+
+
+def _check_bentoml_health(service_url: str, ready_timeout: int = 300):
+    """Block until the BentoML service is ready (``/readyz`` returns 200)."""
+    import httpx
+
+    start_time = time.monotonic()
+    while True:
+        remaining = ready_timeout - (time.monotonic() - start_time)
+        if remaining <= 0:
+            raise TimeoutError(
+                f"BentoML service at {service_url} not ready "
+                f"after {ready_timeout}s"
+            )
+        try:
+            resp = httpx.get(f"{service_url}/readyz", timeout=10)
+            if resp.status_code == 200:
+                return
+        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError):
+            pass
+        time.sleep(5)
+
+
+def _build_bentoml_model(model_cfg, local_port):
+    """Build an EmbeddingModel backed by a BentoML vision service."""
+    service_url = f"http://localhost:{local_port}"
+    print(f"Configuring BentoML vision service at: {service_url}...")
+
+    _check_bentoml_health(service_url)
+    print(f"BentoML vision service is healthy at {service_url}")
+
+    vision_model_type = model_cfg.get("vision_model_type", "")
+    if not vision_model_type:
+        raise ValueError(
+            "Model config requires 'vision_model_type' field "
+            "(e.g. 'sam3', 'hmae', or a custom adapter name). "
+            f"Config: {model_cfg}"
+        )
+
+    vision_model_config = dict(model_cfg.get("vision_model_config", {}))
+    task = model_cfg.get("_task")
+
+    from umrs.vision_service.bentoml_adapter import make_bentoml_vision_compute
+    compute_func = make_bentoml_vision_compute(
+        service_url, vision_model_type, vision_model_config,
+        task=task,
+    )
+
+    return load_model_as_bentoml(
+        model_cfg["model_name"],
+        model_cfg.get("return_type", "file"),
+        model_cfg.get("vector_size", "768"),
+        model_cfg.get("input_type", "image"),
+        compute_func,
+        model_cfg.get("_modality", ""),
+    )
+
+
+def _build_openai_model(model_cfg, local_port, nginx_port, master_key):
+    """Build an EmbeddingModel backed by an OpenAI-compatible endpoint."""
+    model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(nginx_port))
+    model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
+    wait_for_model(model_cfg["model_type"], model_cfg["model_name"], api_key=master_key)
+    warmup_embedding_model(model_cfg["model_type"], model_cfg["model_name"], api_key=master_key)
+    print(f"Configuring: {model_cfg['model_type']}...")
+    model_cfg["api_key"] = master_key
+    return load_model(model_cfg, "")
+
+
+def _check_cache_or_reuse_job(model_type_key, model_cfg):
+    """Check cache for existing job/model, clean up stale entries.
+
+    Returns (model, job_id):
+    - model is set if a loaded model can be reused (caller should return it).
+    - job_id is the running Slurm job to reuse, or None if a new job is needed.
+    """
+    job_id = _get_cached_job(model_type_key)
+
+    if job_id is not None:
+        print(f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running...")
+        if wait_for_running(job_id):
+            if model_type_key in model_cache:
+                model, _, _ = model_cache[model_type_key]
+                print("===> Found a running job and a loaded model in cache. Reusing it.")
+                return model, job_id
+            print("===> Found a running job in cache but no in memory model. "
+                  "This can happen if the server has restarted. Will try to load it again.")
+        else:
+            print("===> Found a job_id in cache but the job is not running. "
+                  "Cleaning up cache and launching a new job.")
+            _remove_cached_job(model_type_key)
+            if model_type_key in model_cache:
+                _, thread_tunnel, proc_tunnel = model_cache.pop(model_type_key)
+                proc_tunnel.terminate()
+                proc_tunnel.wait()
+                thread_tunnel.join()
+            job_id = None
+
+    # BentoML models share a single Rivault stack. If another BentoML
+    # model already has a running job, reuse it instead of submitting
+    # a second Slurm job that would just PEND forever.
+    if job_id is None and model_cfg["model_type"].startswith("bentoml://"):
+        for cached_key in _list_cached_keys():
+            if cached_key == model_type_key:
+                continue
+            if ":bentoml://" not in str(cached_key):
+                continue
+            cached_job_id = _get_cached_job(cached_key)
+            if cached_job_id is not None and is_slurm_job_running(cached_job_id):
+                print(f"===> Reusing running BentoML Rivault job {cached_job_id} "
+                      f"from '{cached_key}' for '{model_type_key}'.")
+                job_id = cached_job_id
+                break
+
+    return None, job_id
+
+
 def launch_rivault_model(model_cfg):
     # Inject site.yaml values into os.environ so they propagate via sbatch
     # to serve-model.slurm (which uses ${VAR:-default} patterns).
@@ -508,7 +643,7 @@ def launch_rivault_model(model_cfg):
         from umrs.orchestrator.site_config import get_site_config
         get_site_config().inject_env(overwrite=False)
     except Exception as e:
-        print(f"Warning: failed to inject site config: {e}")  # No site.yaml → existing env vars / script defaults used
+        print(f"Warning: failed to inject site config: {e}")
 
     # Include vision_model_config task in cache key so different HMAE tasks
     # (reconstruction, mae_reconstruction, feature_extraction) get separate
@@ -516,217 +651,39 @@ def launch_rivault_model(model_cfg):
     vmc = model_cfg.get("vision_model_config", {})
     task_suffix = ":" + vmc["task"] if vmc.get("task") else ""
     model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"] + task_suffix
-    # --- 0. Check cache ---
-    job_id = _get_cached_job(model_type_key)
-    if job_id is not None:
-        print(f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running...")
-        if wait_for_running(job_id):
-            # job is running. Is the model in memory?
-            if model_type_key in model_cache:
-                model, _, _ = model_cache[model_type_key]
-                print("===> Found a running job and a loaded model in cache. Reusing it.")
-                return model
-            else:
-                print("===> Found a running job in cache but no in memory model. This can happen if the server has restarted. Will try to load it again.")
-        else:
-            # Job not runnning
-            print("===> Found a job_id in cache but the job is not running. Cleaning up cache and launching a new job.")
-            _remove_cached_job(model_type_key)
-            if model_type_key in model_cache:
-                _, thread_tunnel, proc_tunnel = model_cache.pop(model_type_key)
-                # Terminate the SSH subprocess
-                proc_tunnel.terminate()   # sends SIGTERM
-                proc_tunnel.wait()        # wait for it to exit
 
-                # Thread will exit automatically once the subprocess ends
-                thread_tunnel.join()      # wait for thread to finish cleanly
+    # --- 0. Check cache / reuse running job ---
+    cached_model, job_id = _check_cache_or_reuse_job(model_type_key, model_cfg)
+    if cached_model is not None:
+        return cached_model
 
-            job_id = None
+    # --- 1. Select slurm script and get a node ---
+    rivault_slurm_script = get_slurm_script_from_host()
 
-    # --- 0b. BentoML models share a single Rivault stack. If another BentoML
-    #          model already has a running job, reuse it instead of submitting
-    #          a second Slurm job that would just PEND forever. ---
-    if job_id is None and model_cfg["model_type"].startswith("bentoml://"):
-        for cached_key in _list_cached_keys():
-            if cached_key == model_type_key:
-                continue
-            # Only reuse jobs from other BentoML models (same Rivault stack)
-            if ":bentoml://" not in str(cached_key):
-                continue
-            cached_job_id = _get_cached_job(cached_key)
-            if cached_job_id is not None and is_slurm_job_running(cached_job_id):
-                print(f"===> Reusing running BentoML Rivault job {cached_job_id} from '{cached_key}' for '{model_type_key}'.")
-                job_id = cached_job_id
-                break
-
-    # --- 1. get a node form SLURM ---
-    # Select slurm script based on VISION_STACK setting.
-    vision_stack = os.environ.get("VISION_STACK", VISION_STACK)
-
-    if model_cfg["model_type"].startswith("bentoml://") and vision_stack == "jens":
-        rivault_slurm_script = JENS_RIVAULT_SLURM_SCRIPT
-        print(f"[VISION_STACK=jens] Using Jens's standalone stack: {rivault_slurm_script}")
-    else:
-        rivault_slurm_script = get_slurm_script_from_host()
-
-    # Compute RIVAULT_DIR is handled by the wrapper scripts themselves:
-    # they auto-discover from the Python package or use the slurmd-exported value.
-    # We only pass extra sbatch env if explicitly needed.
-    sbatch_env = None
-
-    output_file, error_file, job_id = get_slurm_node(rivault_slurm_script, model_type_key, job_id_to_use=job_id, sbatch_env=sbatch_env)
-
+    output_file, error_file, job_id = get_slurm_node(
+        rivault_slurm_script, model_type_key,
+        job_id_to_use=job_id, sbatch_env=None,
+    )
     print(f"{output_file=} {job_id=}")
 
     # --- 2. Extract compute node address and create SSH tunnel ---
     server_address = extract_node_address(output_file) if output_file else "localhost"
-
-    # BentoML vision models use a dedicated NGINX port (no path prefix)
-    # to avoid httpx absolute-path resolution issues with /readyz etc.
-    if model_cfg["model_type"].startswith("bentoml://"):
-        if vision_stack == "jens":
-            # Jens's stack: NGINX publishes on NGINX_LITELLM_DOCKER_PORT → BentoML:4000.
-            # The port is written into env.<uuid> by serve-model.slurm; for now
-            # we fall back to reading it from the UMRS env or default to 3001.
-            remote_port = int(os.environ.get("BENTOML_VISION_DOCKER_PORT",
-                                             os.environ.get("NGINX_LITELLM_DOCKER_PORT", 3001)))
-        else:
-            remote_port = int(os.environ.get("BENTOML_VISION_DOCKER_PORT", 3001))
-    else:
-        remote_port = get_rivault_remote_port()
-        if remote_port < 0:
-            remote_port = model_cfg.get("server_port", None)
-            if remote_port is None:
-                raise ValueError("Remote port for RivaULT not specified. Please set the RIVAULT_REMOTE_PORT environment variable or specify 'server_port' in the model configuration.")
-
+    remote_port = _resolve_remote_port(model_cfg)
     local_port, thread_tunnel, proc_tunnel = ssh_tunnel_forward_to_remote(server_address, remote_port)
+
     NGINX_PORT = os.getenv("NGINX_LITELLM_DOCKER_PORT")
     MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
 
-    # model_type = "https:.....:{NGINX_PORT}"
-
-     # --- 3. Build the OpenAI-compatible model or BentoML vision model ---
+    # --- 3. Build model (BentoML vision or OpenAI embedding) ---
     if model_cfg["model_type"].startswith("bentoml://"):
-        # BentoML vision service: connect via the dedicated NGINX port
-        # (BENTOML_VISION_DOCKER_PORT, default 3001) which proxies to
-        # bentoml-vision:3000 at root path.  This avoids the path-prefix
-        # issues that arise with /vision/ location blocks — BentoML's
-        # SyncHTTPClient uses absolute paths (/readyz, /schema.json,
-        # /infer/submit) which would bypass the /vision/ location.
-        service_base_url = f"http://localhost:{local_port}"
-        print(f"Configuring BentoML vision service at: {service_base_url}...")
-
-        import bentoml
-        import httpx
-
-        # BentoML's wait_until_server_ready only catches TimeoutException and
-        # ConnectError.  During cold start the proxy may accept connections
-        # then reset them (ReadError), which crashes the health-check loop.
-        # Retry the entire client construction on transient read errors.
-        ready_timeout = 300
-        start_time = __import__("time").monotonic()
-        while True:
-            remaining = ready_timeout - (__import__("time").monotonic() - start_time)
-            if remaining <= 0:
-                raise TimeoutError(
-                    f"BentoML service at {service_base_url} not ready "
-                    f"after {ready_timeout}s"
-                )
-            try:
-                # Jens's VisionFrontend checks AUTH_TOKEN via Bearer header;
-                # pass the token so the BentoML client sends it on every request.
-                token = MASTER_KEY if (vision_stack == "jens" and MASTER_KEY) else None
-                client = bentoml.SyncHTTPClient(
-                    service_base_url, server_ready_timeout=remaining,
-                    token=token,
-                )
-                break
-            except (httpx.ReadError, httpx.RemoteProtocolError):
-                __import__("time").sleep(5)
-                continue
-
-        print(f"BentoML vision service is healthy at {service_base_url}")
-
-        # BentoML 1.4.x bug: _submit() references self._opened_files but it
-        # lives on self._file_manager._opened_files.  Alias it so submit works.
-        if not hasattr(client, "_opened_files") and hasattr(client, "_file_manager"):
-            client._opened_files = client._file_manager._opened_files
-
-        from umrs.vision_service.bentoml_adapter import make_bentoml_vision_compute
-
-        # Build model_config for the generic /infer endpoint.
-        # vision_model_type must be set explicitly in the model config
-        # (e.g. "sam3", "hmae", or any custom adapter name).
-        vision_model_type = model_cfg.get("vision_model_type", "")
-        if not vision_model_type:
-            raise ValueError(
-                "Model config requires 'vision_model_type' field "
-                "(e.g. 'sam3', 'hmae', or a custom adapter name). "
-                f"Config: {model_cfg}"
-            )
-
-        vision_model_config = dict(model_cfg.get("vision_model_config", {}))
-        task = model_cfg.get("_task")
-
-        if vision_stack == "jens":
-            # Jens's standalone stack: /vision_task endpoint with pickle protocol.
-            from umrs.vision_service.bentoml_adapter import make_jens_vision_compute
-            compute_func = make_jens_vision_compute(
-                client, vision_model_type, vision_model_config,
-                task=task, auth_token=MASTER_KEY,
-            )
-        else:
-            # UMRS generic stack: /infer endpoint with JSON protocol.
-            compute_func = make_bentoml_vision_compute(
-                client, vision_model_type, vision_model_config,
-                task=task,
-            )
-
-        model_name = model_cfg["model_name"]
-        vector_size = model_cfg.get("vector_size", "768")
-        return_type = model_cfg.get("return_type", "file")
-        modality = model_cfg.get("_modality", "")
-        input_type = model_cfg.get("input_type", "image")
-
-        model = load_model_as_bentoml(model_name, return_type, vector_size, input_type, compute_func, modality)
-
-        model_cache[model_type_key] = (model, thread_tunnel, proc_tunnel)
-        _cache_job(model_type_key, job_id, host=server_address, port=local_port)
-        return model
-
+        model = _build_bentoml_model(model_cfg, local_port)
     elif model_cfg["model_type"].startswith("openai://"):
-        # replace a placeholder {NGINX_PORT} with the actual value
-        model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(NGINX_PORT))
-        # if you also want to replace a placeholder {local_port} with a variable 'local_port'
-        model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
-        wait_for_model(model_cfg["model_type"], model_cfg["model_name"], api_key=MASTER_KEY)
-        warmup_embedding_model(model_cfg["model_type"], model_cfg["model_name"], api_key=MASTER_KEY)
-        print(f"Configuring: {model_cfg['model_type']}...")
-        # Store the API key in model_cfg so load_model can forward it
-        model_cfg["api_key"] = MASTER_KEY
-        # Load the model
-        model = load_model(model_cfg, "")
-
-         # --- 4. Cache the loaded model and job_id ---
-        model_cache[model_type_key] = (model,  thread_tunnel, proc_tunnel)
-        _cache_job(model_type_key, job_id, host=server_address, port=local_port)
-        return model
+        model = _build_openai_model(model_cfg, local_port, NGINX_PORT, MASTER_KEY)
     else:
-        raise RuntimeError(f"Do not know what to do with model type {model_cfg['model_type']}")
+        raise RuntimeError(f"Unknown model type: {model_cfg['model_type']}")
 
-
-if __name__ == "__main__":
-    output_file, error_file = extract_files_from_slurm_script("~/tmp/myslurm.slurm")
-    print(f"{output_file=} {error_file=}")
-    exit(0)
-
-    # --- 1. get a node from SLURM ---
-    rivault_slurm_script = get_slurm_script_from_host()
-    output_file, error_file, job_id = get_slurm_node(rivault_slurm_script)
-    print(f"{output_file=} {job_id=}")
-    server_adress = extract_node_address(output_file) if output_file else "localhost"
-    print(f"{server_adress=}")
-    remote_port = get_rivault_remote_port()
-    local_port = forward_to_remote(server_adress, remote_port)
-    print(f"{local_port=}")
+    # --- 4. Cache the loaded model and job_id ---
+    model_cache[model_type_key] = (model, thread_tunnel, proc_tunnel)
+    _cache_job(model_type_key, job_id, host=server_address, port=local_port)
+    return model
 

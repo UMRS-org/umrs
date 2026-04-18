@@ -1,5 +1,6 @@
 import os
 import tempfile
+import time
 import json
 from umrs.core.TaskCmdStatus import TaskCmd
 try:
@@ -458,15 +459,32 @@ class MessageQueue:
                     pass
                 continue
 
-    def wait_for_s3_events(self, nb_objects, debug=False):
-        """Block until new messages arrive, then read all available messages."""
+    def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
+        """Block until new messages arrive, then read all available messages.
+
+        Args:
+            nb_objects: Number of S3 event messages to collect.
+            debug: Enable debug printing.
+            timeout_s: Maximum wall-clock seconds to wait before returning
+                       with whatever messages have been collected so far.
+                       Default 60s.  Set to 0 or None for no limit.
+
+        Returns:
+            List of received message strings (may be shorter than nb_objects
+            if the timeout fires).
+        """
         if self.role != 'server':
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
 
         messages = []
-        print(f"Listening for {nb_objects} new messages...")
+        print(f"Listening for {nb_objects} new messages (timeout={timeout_s}s)...")
         nb_received = 0
+        start = time.time()
         while nb_received < nb_objects:
+            if timeout_s and (time.time() - start) > timeout_s:
+                print(f"wait_for_s3_events: timeout after {timeout_s}s "
+                      f"({nb_received}/{nb_objects} received)")
+                break
             _, message = self.recv_string()
             if message:
                 print("Received :", message)
@@ -516,11 +534,15 @@ class MessageQueue:
     def _process_object_cmd(self, client_id, nb_objects, zmq_sender_id):
         if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
             data_queue = self.client_dictionary[client_id]["data_queue"]
-            objects =  data_queue.wait_for_s3_events(nb_objects)
+            # ACK immediately so the client doesn't timeout while we collect S3 events
             try:
                 self.send_string("ACKNOWLEDGE", zmq_sender_id)
             except RuntimeError as e:
-                print(f"Error in sending acknowleding client: {e}")
+                print(f"Error in sending acknowledging client: {e}")
+            objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
+            if len(objects) < nb_objects:
+                print(f"Warning: received {len(objects)}/{nb_objects} S3 events "
+                      f"for client={client_id} (timeout)")
             return TaskCmd.PROCESS_OBJECTS, (client_id, objects)
         else:
             print(f"Warning: no data queue for client={client_id}")

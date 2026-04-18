@@ -9,12 +9,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from umrs.server.runtime import ServerCfg as ServerCfg  # noqa: F401
+    from umrs.server.provisioning import ServerCfg as ServerCfg  # noqa: F401
 
 
 def __getattr__(name: str):
     if name == "ServerCfg":
-        from umrs.server.runtime import ServerCfg
+        from umrs.server.provisioning import ServerCfg
         return ServerCfg
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
