@@ -52,6 +52,8 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+from umrs.client.control_api import MAINTENANCE_ACTIONS, UMRSControlAPI
+
 from .keybindings import KeyReader
 
 # ── Tab constants ─────────────────────────────────────────────────────
@@ -60,15 +62,50 @@ TAB_STATUS = "status"
 TAB_MODELS = "models"
 TAB_WORKFLOWS = "workflows"
 TAB_CONNECTION = "connection"
+TAB_LOGS = "logs"
 
-TAB_ORDER = [TAB_JOBS, TAB_STATUS, TAB_MODELS, TAB_WORKFLOWS, TAB_CONNECTION]
+TAB_ORDER = [TAB_JOBS, TAB_STATUS, TAB_MODELS, TAB_WORKFLOWS, TAB_CONNECTION, TAB_LOGS]
 TAB_LABELS = {
     TAB_JOBS: "Jobs",
     TAB_STATUS: "Status",
     TAB_MODELS: "Models",
     TAB_WORKFLOWS: "Workflows",
     TAB_CONNECTION: "Connection",
+    TAB_LOGS: "Logs",
 }
+
+# ── Maximum activity log entries ─────────────────────────────────────
+MAX_LOG_ENTRIES = 200
+
+# ── Spinner frames (braille dots, cycles at ~6.7 fps) ────────────────
+SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
+
+# ── ASCII art logo ──────────────────────────────────────────────────
+# UMRS text + compact warp pipe
+UMRS_ART = r"""
+ ██╗   ██╗███╗   ███╗██████╗ ███████╗
+ ██║   ██║████╗ ████║██╔══██╗██╔════╝
+ ██║   ██║██╔████╔██║██████╔╝███████╗
+ ██║   ██║██║╚██╔╝██║██╔══██╗╚════██║
+ ╚██████╔╝██║ ╚═╝ ██║██║  ██║███████║
+  ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝
+ Bring your AI4S workflow to Stage 1-2
+"""
+
+PIPE_ART = r"""
+███████████████████
+█▒▒    ░▒  ▒▒░▒▒▒░█
+█░▒    ░▒  ▒▒░▒▒▒░█
+█░▒    ░▒  ▒▒░▒▒▒░█
+  █░▒   ░▒  ▒▒▒░█
+  █░▒   ░▒  ▒▒▒░█
+  █░▒   ░▒  ▒▒▒░█
+"""
+
+LOGO_HEIGHT = max(
+        len(UMRS_ART.strip("\n").split("\n")),
+        len(PIPE_ART.strip("\n").split("\n")),
+) + 2
 
 # ── Status colour mapping ────────────────────────────────────────────
 STATUS_STYLES: Dict[str, str] = {
@@ -81,6 +118,14 @@ STATUS_STYLES: Dict[str, str] = {
 }
 
 FILTER_CYCLE = [None, "running", "failed", "completed", "queued", "planned", "cancelled"]
+STATUS_TASK_ORDER = ["process_objects", "wait_output", "recompute", "update", "check", "reload"]
+JOB_TYPE_CHOICES = ["endpoint_provision", "index_build", "cleanup"]
+MODEL_TYPE_CHOICES = ["llm", "embedding", "vision"]
+MODEL_SCOPE_CHOICES = ["user", "project", "system"]
+MODEL_FILTER_SCOPE_CHOICES = ["all", "user", "project", "system"]
+WORKFLOW_SCOPE_CHOICES = ["user", "system"]
+WORKFLOW_FILTER_SCOPE_CHOICES = ["all", "user", "system"]
+BOOL_CHOICES = ["false", "true"]
 
 
 def _style_status(status: str) -> Text:
@@ -123,6 +168,18 @@ def _ts_short(ts: Optional[float]) -> str:
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
+def _one_line(text: Optional[str], *, limit: int = 72) -> str:
+    """Collapse multiline text into a single preview line."""
+    collapsed = " ".join((text or "").split()) or "(no summary)"
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[: limit - 1] + "…"
+
+
+def _bool_from_text(raw: str) -> bool:
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 # ── Dashboard ────────────────────────────────────────────────────────
 class Dashboard:
     """Multi-tab live-refreshing UMRS monitor."""
@@ -142,6 +199,7 @@ class Dashboard:
         connection_info: Optional[Dict[str, Any]] = None,
     ):
         self._mq = control_mq
+        self._api = UMRSControlAPI(control_mq, client_id, config_path)
         self._client_id = client_id
         self._interval = interval
         self._status_filter = status_filter
@@ -167,16 +225,22 @@ class Dashboard:
 
         # Status
         self._status_data: Dict[str, Any] = {}
+        self._status_items: List[Dict[str, Any]] = []
+        self._status_cursor = 0
 
         # Models
         self._models: List[Dict[str, Any]] = []
         self._models_cursor = 0
         self._model_detail_name: Optional[str] = None
+        self._model_scope_filter: Optional[str] = None
 
         # Workflows
         self._workflows: List[Dict[str, Any]] = []
         self._wf_cursor = 0
         self._wf_detail_name: Optional[str] = None
+        self._workflow_scope_filter: Optional[str] = None
+        self._workflow_user_filter: Optional[str] = None
+        self._workflow_name_filter: Optional[str] = None
 
         # Connection
         self._ping_ok: Optional[bool] = None
@@ -194,11 +258,43 @@ class Dashboard:
         # Track which tabs have been fetched at least once
         self._fetched: Dict[str, bool] = {}
 
+        # Spinner animation frame counter
+        self._spinner_frame = 0
+        self._is_fetching = False
+
+        # Activity log (client-side event capture)
+        self._log_entries: List[Dict[str, str]] = []
+        self._log_cursor = 0
+        self._log_auto_scroll = True
+
+        # Quick Actions overlay
+        self._show_actions = False
+        self._action_cursor = 0
+
+        # Stats summary cache
+        self._stats: Dict[str, Any] = {}
+
+        # Text search state
+        self._search_active = False
+        self._search_query = ""
+
+        # Command prompt state
+        self._command_active = False
+        self._command_query = ""
+
+        # Structured form overlay state
+        self._form_active = False
+        self._form_title = ""
+        self._form_submit_action = ""
+        self._form_fields: List[Dict[str, Any]] = []
+        self._form_cursor = 0
+
     # ==================================================================
     # Data fetching — per tab
     # ==================================================================
     def _fetch_active_tab(self) -> None:
         """Fetch data only for the currently active tab."""
+        self._is_fetching = True
         try:
             if self._tab == TAB_JOBS:
                 self._fetch_jobs()
@@ -212,8 +308,11 @@ class Dashboard:
                 self._fetch_connection()
         except Exception as e:
             self._last_error = str(e)
+            self._log("ERROR", f"Fetch {self._tab}: {e}")
         self._last_refresh = time.time()
         self._fetched[self._tab] = True
+        self._is_fetching = False
+        self._update_stats()
 
     def _fetch_jobs(self) -> None:
         filters: Dict[str, Any] = {}
@@ -226,6 +325,7 @@ class Dashboard:
             if resp.get("status") == "ok":
                 self._jobs = resp.get("jobs", [])
                 self._last_error = None
+                self._log("INFO", f"Fetched {len(self._jobs)} jobs")
             else:
                 self._last_error = resp.get("message", "unknown error")
         except Exception as e:
@@ -237,10 +337,14 @@ class Dashboard:
 
     def _fetch_status(self) -> None:
         try:
-            raw = self._mq.request_status(self._client_id, "all")
-            parsed = json.loads(raw)
+            parsed = self._api.request_status("all")
             if parsed.get("status") == "ok":
                 self._status_data = parsed
+                self._status_items = self._build_status_items(parsed)
+                if self._status_items:
+                    self._status_cursor = max(0, min(self._status_cursor, len(self._status_items) - 1))
+                else:
+                    self._status_cursor = 0
                 self._last_error = None
             else:
                 self._last_error = parsed.get("message", "status unavailable")
@@ -248,21 +352,10 @@ class Dashboard:
             self._last_error = str(e)
 
     def _fetch_models(self) -> None:
-        from umrs.core.TaskCmdStatus import TaskCmd
         try:
-            raw = self._mq.request_model_command(self._client_id, TaskCmd.MODEL_LIST, "")
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                self._models = parsed
-                self._last_error = None
-            elif isinstance(parsed, dict):
-                self._models = parsed.get("models", []) if "models" in parsed else []
-                if parsed.get("status") == "error":
-                    self._last_error = parsed.get("message")
-                else:
-                    self._last_error = None
-            else:
-                self._models = []
+            parsed = self._api.list_models(scope=self._model_scope_filter)
+            self._models = parsed.get("models", [])
+            self._last_error = parsed.get("message") if parsed.get("status") == "error" else None
         except Exception as e:
             self._last_error = str(e)
         if self._models:
@@ -271,18 +364,14 @@ class Dashboard:
             self._models_cursor = 0
 
     def _fetch_workflows(self) -> None:
-        from umrs.core.TaskCmdStatus import TaskCmd
         try:
-            raw = self._mq.request_model_command(self._client_id, TaskCmd.LIST_WORKFLOWS, "")
-            parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                self._workflows = parsed.get("workflows", [])
-                self._last_error = None
-            elif isinstance(parsed, list):
-                self._workflows = parsed
-                self._last_error = None
-            else:
-                self._workflows = []
+            parsed = self._api.list_workflows(
+                scope=self._workflow_scope_filter,
+                user=self._workflow_user_filter,
+                name=self._workflow_name_filter,
+            )
+            self._workflows = parsed.get("workflows", [])
+            self._last_error = parsed.get("message") if parsed.get("status") == "error" else None
         except Exception as e:
             self._last_error = str(e)
         if self._workflows:
@@ -313,16 +402,14 @@ class Dashboard:
         if status in ("completed", "failed", "cancelled"):
             self._set_flash(f"Job {_short_id(jid)} already {status}")
             return
-        from umrs.core.TaskCmdStatus import TaskCmd
         try:
-            raw = self._mq.request_model_command(
-                self._client_id, TaskCmd.JOB_CANCEL, json.dumps({"job_id": jid})
-            )
-            parsed = json.loads(raw)
+            parsed = self._api.cancel_job(jid)
             if parsed.get("status") == "ok":
                 self._set_flash(f"Cancelled job {_short_id(jid)}")
+                self._log("INFO", f"Cancelled job {_short_id(jid)}")
             else:
                 self._set_flash(f"Cancel failed: {parsed.get('message', '?')}")
+                self._log("WARN", f"Cancel failed: {parsed.get('message', '?')}")
         except Exception as e:
             self._set_flash(f"Cancel error: {e}")
         self._force_refresh.set()
@@ -331,37 +418,388 @@ class Dashboard:
         if not self._config_path or not os.path.isfile(self._config_path):
             self._set_flash("No config file (use --conf/-c to enable reload)")
             return
-        from umrs.core.TaskCmdStatus import TaskCmd
         try:
-            with open(self._config_path, "r", encoding="utf-8") as f:
-                cfg_json = json.load(f)
-            upload_user = cfg_json.get("username") or self._client_id
-        except Exception:
-            upload_user = self._client_id
-
-        try:
-            data_mq = self._mq.get_data_queue(upload_user)
-            try:
-                data_mq.send_file(self._config_path)
-                self._mq.notify_server(upload_user, TaskCmd.FILE, 1)
-            finally:
-                try:
-                    data_mq.close()
-                except Exception:
-                    pass
-
-            ok = self._mq.notify_server(self._client_id, TaskCmd.RELOAD, 0)
-            if ok:
+            parsed = self._api.maintenance("reload")
+            if parsed.get("status") == "ok":
                 self._set_flash("Reload triggered successfully")
+                self._log("INFO", "Server reload triggered")
             else:
                 self._set_flash("Reload command rejected by server")
+                self._log("WARN", "Server reload rejected")
         except Exception as e:
             self._set_flash(f"Reload error: {e}")
         self._force_refresh.set()
 
+    def _run_maintenance(self, action: str) -> None:
+        try:
+            parsed = self._api.maintenance(action)
+            if parsed.get("status") == "ok":
+                self._set_flash(f"{action.title()} triggered")
+                self._log("INFO", f"Triggered {action}")
+            else:
+                self._set_flash(f"{action.title()} failed: {parsed.get('message', '?')}")
+                self._log("WARN", f"{action} failed: {parsed.get('message', '?')}")
+        except Exception as e:
+            self._set_flash(f"{action.title()} error: {e}")
+            self._log("ERROR", f"{action} error: {e}")
+        self._force_refresh.set()
+
+    def _ping_server(self) -> None:
+        try:
+            parsed = self._api.ping(timeout_ms=3000)
+            ready = bool(parsed.get("server_ready"))
+            self._ping_ok = ready
+            self._set_flash("Server is ready" if ready else "Server is unreachable")
+            self._log("INFO", f"Ping result: {'ready' if ready else 'unreachable'}")
+        except Exception as e:
+            self._ping_ok = False
+            self._set_flash(f"Ping error: {e}")
+            self._log("ERROR", f"Ping error: {e}")
+
+    def _run_selected_workflow(self) -> None:
+        if not self._workflows:
+            self._set_flash("No workflow selected")
+            return
+        workflow_name = self._workflows[self._wf_cursor].get("name")
+        if not workflow_name:
+            self._set_flash("Selected workflow has no name")
+            return
+        try:
+            parsed = self._api.run_workflow(workflow_name=workflow_name, params={})
+            if parsed.get("status") == "ok":
+                self._set_flash(f"Workflow {workflow_name} started")
+                self._log("INFO", f"Started workflow {workflow_name}")
+            else:
+                self._set_flash(f"Workflow failed: {parsed.get('message', '?')}")
+                self._log("WARN", f"Workflow failed: {parsed.get('message', '?')}")
+        except Exception as e:
+            self._set_flash(f"Workflow error: {e}")
+            self._log("ERROR", f"Workflow error: {e}")
+        self._force_refresh.set()
+
+    def _build_status_items(self, parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+        summaries = parsed.get("summaries") or {}
+        pending = set(parsed.get("uncompleted_key_list") or [])
+        items: List[Dict[str, Any]] = []
+        seen = set()
+        for task_key in STATUS_TASK_ORDER:
+            entry = summaries.get(task_key)
+            if isinstance(entry, dict):
+                seen.add(task_key)
+                items.append(self._make_status_item(task_key, entry, pending))
+        for task_key in sorted(summaries.keys()):
+            if task_key in seen:
+                continue
+            entry = summaries.get(task_key)
+            if isinstance(entry, dict):
+                items.append(self._make_status_item(task_key, entry, pending))
+        return items
+
+    def _make_status_item(self, task_key: str, entry: Dict[str, Any], pending: set[str]) -> Dict[str, Any]:
+        generated_at = entry.get("generated_at")
+        summary = entry.get("summary") or "(no summary)"
+        return {
+            "key": task_key,
+            "generated_at": generated_at,
+            "generated_label": str(generated_at or "—"),
+            "age": _ago(generated_at),
+            "summary": summary,
+            "preview": _one_line(summary),
+            "pending": task_key in pending,
+        }
+
+    def _refresh_selected_status(self) -> None:
+        if not self._status_items:
+            self._force_refresh.set()
+            return
+        selected = self._status_items[self._status_cursor]
+        key = selected["key"]
+        try:
+            parsed = self._api.request_status(key)
+            if parsed.get("status") != "ok":
+                self._set_flash(f"Status refresh failed: {parsed.get('message', '?')}")
+                return
+            summaries = self._status_data.setdefault("summaries", {})
+            if "summary" in parsed:
+                summaries[key] = parsed["summary"]
+            self._status_items = self._build_status_items(self._status_data)
+            self._set_flash(f"Refreshed status: {key}")
+            self._log("INFO", f"Refreshed status: {key}")
+        except Exception as e:
+            self._set_flash(f"Status refresh error: {e}")
+            self._log("ERROR", f"Status refresh error: {e}")
+
+    def _apply_control_result(self, command_text: str, parsed: Dict[str, Any]) -> None:
+        normalized = command_text.strip().lower()
+        if parsed.get("status") == "ok":
+            self._set_flash(f"Executed: {command_text}")
+            self._log("INFO", f"Command ok: {command_text}")
+        else:
+            self._set_flash(f"Command failed: {parsed.get('message', '?')}")
+            self._log("WARN", f"Command failed: {command_text} -> {parsed.get('message', '?')}")
+
+        if "server_ready" in parsed:
+            self._ping_ok = bool(parsed.get("server_ready"))
+        if "summaries" in parsed or "summary" in parsed:
+            if "summaries" in parsed:
+                self._status_data = parsed
+            elif self._status_items and "summary" in parsed:
+                key = self._status_items[self._status_cursor]["key"]
+                self._status_data.setdefault("summaries", {})[key] = parsed["summary"]
+            self._status_items = self._build_status_items(self._status_data)
+            self._switch_tab(TAB_STATUS)
+        if "models" in parsed:
+            self._models = parsed.get("models", [])
+            self._models_cursor = min(self._models_cursor, max(len(self._models) - 1, 0))
+            self._switch_tab(TAB_MODELS)
+        if "workflows" in parsed:
+            self._workflows = parsed.get("workflows", [])
+            self._wf_cursor = min(self._wf_cursor, max(len(self._workflows) - 1, 0))
+            self._switch_tab(TAB_WORKFLOWS)
+        if normalized.startswith(("maintenance ", "job ", "workflow run", "model register", "model download")):
+            self._force_refresh.set()
+
+    def _start_command_prompt(self, default: str = "") -> None:
+        self._command_active = True
+        self._command_query = default
+
+    def _start_form(self, title: str, submit_action: str, fields: List[Dict[str, Any]]) -> None:
+        self._form_active = True
+        self._form_title = title
+        self._form_submit_action = submit_action
+        self._form_fields = [dict(field) for field in fields]
+        self._form_cursor = 0
+
+    def _close_form(self) -> None:
+        self._form_active = False
+        self._form_title = ""
+        self._form_submit_action = ""
+        self._form_fields = []
+        self._form_cursor = 0
+
+    def _cycle_form_choice(self, delta: int) -> None:
+        if not self._form_fields:
+            return
+        field = self._form_fields[self._form_cursor]
+        choices = field.get("choices") or []
+        if not choices:
+            return
+        current = str(field.get("value", choices[0]))
+        try:
+            idx = choices.index(current)
+        except ValueError:
+            idx = 0
+        field["value"] = choices[(idx + delta) % len(choices)]
+
+    def _validate_required_fields(self, values: Dict[str, str]) -> None:
+        for field in self._form_fields:
+            name = field["name"]
+            if field.get("required") and not values.get(name, ""):
+                raise ValueError(f"{field.get('label', name)} is required")
+            choices = field.get("choices") or []
+            if values.get(name, "") and choices and values[name] not in choices:
+                raise ValueError(
+                    f"{field.get('label', name)} must be one of: {', '.join(choices)}"
+                )
+
+    def _execute_form(self) -> None:
+        values = {
+            field["name"]: str(field.get("value", "")).strip()
+            for field in self._form_fields
+        }
+        try:
+            self._validate_required_fields(values)
+            if self._form_submit_action == "submit_job_form":
+                spec_raw = values.get("spec", "")
+                spec = json.loads(spec_raw) if spec_raw else {}
+                if spec and not isinstance(spec, dict):
+                    raise ValueError("spec must be a JSON object")
+                parsed = self._api.submit_job(
+                    job_type=values["job_type"],
+                    spec=spec,
+                    project=values.get("project") or None,
+                    max_attempts=int(values.get("max_attempts") or 3),
+                    keep_alive=_bool_from_text(values.get("keep_alive", "false")),
+                    partition=values.get("partition") or None,
+                    node=values.get("node") or None,
+                )
+                self._apply_control_result(f"job submit {values['job_type']}", parsed)
+            elif self._form_submit_action == "model_filter_form":
+                scope = values.get("scope") or "all"
+                self._model_scope_filter = None if scope == "all" else scope
+                self._switch_tab(TAB_MODELS)
+                self._force_refresh.set()
+                self._set_flash("Updated model filters")
+                self._log("INFO", f"Model filter scope={self._model_scope_filter or 'all'}")
+            elif self._form_submit_action == "workflow_filter_form":
+                scope = values.get("scope") or "all"
+                self._workflow_scope_filter = None if scope == "all" else scope
+                self._workflow_user_filter = values.get("user") or None
+                self._workflow_name_filter = values.get("name") or None
+                self._switch_tab(TAB_WORKFLOWS)
+                self._force_refresh.set()
+                self._set_flash("Updated workflow filters")
+                self._log(
+                    "INFO",
+                    "Workflow filters updated"
+                    f" scope={self._workflow_scope_filter or 'all'}"
+                    f" user={self._workflow_user_filter or '*'}"
+                    f" name={self._workflow_name_filter or '*'}",
+                )
+            elif self._form_submit_action == "run_workflow_form":
+                params_raw = values.get("params", "")
+                params = json.loads(params_raw) if params_raw else {}
+                if params and not isinstance(params, dict):
+                    raise ValueError("params must be a JSON object")
+                parsed = self._api.run_workflow(
+                    workflow_name=values["workflow_name"],
+                    params=params,
+                    bucket=values.get("bucket") or None,
+                )
+                self._apply_control_result(f"workflow run {values['workflow_name']}", parsed)
+            elif self._form_submit_action == "model_download_form":
+                parsed = self._api.download_model_server_side(
+                    repo_id=values["repo_id"],
+                    name=values.get("name") or None,
+                    scope=values.get("scope") or "user",
+                )
+                self._apply_control_result(f"model download {values['repo_id']}", parsed)
+            elif self._form_submit_action == "model_register_form":
+                parsed = self._api.register_model(
+                    name=values["name"],
+                    path=values["path"],
+                    model_type=values.get("model_type") or "embedding",
+                    scope=values.get("scope") or "user",
+                    description=values.get("description") or None,
+                    huggingface_id=values.get("huggingface_id") or None,
+                )
+                self._apply_control_result(f"model register {values['name']}", parsed)
+            else:
+                raise ValueError(f"Unknown form action: {self._form_submit_action}")
+            self._close_form()
+        except Exception as e:
+            self._set_flash(f"Form error: {e}")
+            self._log("ERROR", f"Form error ({self._form_submit_action}): {e}")
+
+    def _open_submit_job_form(self) -> None:
+        self._start_form(
+            "Submit Job",
+            "submit_job_form",
+            [
+                {"name": "job_type", "label": "Job Type", "value": "endpoint_provision", "required": True, "choices": JOB_TYPE_CHOICES},
+                {"name": "spec", "label": "Spec JSON", "value": "{}", "required": False},
+                {"name": "project", "label": "Project", "value": "", "required": False},
+                {"name": "max_attempts", "label": "Max Attempts", "value": "3", "required": False},
+                {"name": "keep_alive", "label": "Keep Alive", "value": "false", "required": False, "choices": BOOL_CHOICES},
+                {"name": "partition", "label": "Partition", "value": "", "required": False},
+                {"name": "node", "label": "Node", "value": "", "required": False},
+            ],
+        )
+
+    def _open_run_workflow_form(self) -> None:
+        workflow_name = ""
+        if self._workflows:
+            workflow_name = self._workflows[self._wf_cursor].get("name", "")
+        self._start_form(
+            "Run Workflow",
+            "run_workflow_form",
+            [
+                {"name": "workflow_name", "label": "Workflow", "value": workflow_name, "required": True},
+                {"name": "params", "label": "Params JSON", "value": "{}", "required": False},
+                {"name": "bucket", "label": "Bucket", "value": "", "required": False},
+            ],
+        )
+
+    def _open_model_download_form(self) -> None:
+        self._start_form(
+            "Download Model",
+            "model_download_form",
+            [
+                {"name": "repo_id", "label": "Repo ID", "value": "", "required": True},
+                {"name": "name", "label": "Name", "value": "", "required": False},
+                {"name": "scope", "label": "Scope", "value": "user", "required": False, "choices": MODEL_SCOPE_CHOICES},
+            ],
+        )
+
+    def _open_model_register_form(self) -> None:
+        default_name = ""
+        if self._models:
+            default_name = self._models[self._models_cursor].get("name", "")
+        self._start_form(
+            "Register Model",
+            "model_register_form",
+            [
+                {"name": "name", "label": "Name", "value": default_name, "required": True},
+                {"name": "path", "label": "Path", "value": "", "required": True},
+                {"name": "model_type", "label": "Type", "value": "embedding", "required": False, "choices": MODEL_TYPE_CHOICES},
+                {"name": "scope", "label": "Scope", "value": "user", "required": False, "choices": MODEL_SCOPE_CHOICES},
+                {"name": "description", "label": "Description", "value": "", "required": False},
+                {"name": "huggingface_id", "label": "HF ID", "value": "", "required": False},
+            ],
+        )
+
+    def _open_model_filter_form(self) -> None:
+        self._start_form(
+            "Filter Models",
+            "model_filter_form",
+            [
+                {
+                    "name": "scope",
+                    "label": "Scope",
+                    "value": self._model_scope_filter or "all",
+                    "required": False,
+                    "choices": MODEL_FILTER_SCOPE_CHOICES,
+                },
+            ],
+        )
+
+    def _open_workflow_filter_form(self) -> None:
+        self._start_form(
+            "Filter Workflows",
+            "workflow_filter_form",
+            [
+                {
+                    "name": "scope",
+                    "label": "Scope",
+                    "value": self._workflow_scope_filter or "all",
+                    "required": False,
+                    "choices": WORKFLOW_FILTER_SCOPE_CHOICES,
+                },
+                {"name": "user", "label": "User", "value": self._workflow_user_filter or "", "required": False},
+                {"name": "name", "label": "Name", "value": self._workflow_name_filter or "", "required": False},
+            ],
+        )
+
     def _set_flash(self, msg: str, duration: float = 5.0) -> None:
         self._flash_message = msg
         self._flash_expire = time.time() + duration
+
+    def _log(self, level: str, message: str) -> None:
+        """Append an entry to the activity log."""
+        entry = {
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "message": message,
+        }
+        self._log_entries.append(entry)
+        if len(self._log_entries) > MAX_LOG_ENTRIES:
+            self._log_entries = self._log_entries[-MAX_LOG_ENTRIES:]
+        if self._log_auto_scroll:
+            self._log_cursor = max(len(self._log_entries) - 1, 0)
+
+    def _update_stats(self) -> None:
+        """Compute summary stats from cached data."""
+        job_counts: Dict[str, int] = {}
+        for j in self._jobs:
+            s = j.get("status", "unknown")
+            job_counts[s] = job_counts.get(s, 0) + 1
+        self._stats = {
+            "total_jobs": len(self._jobs),
+            "job_counts": job_counts,
+            "total_models": len(self._models),
+            "total_workflows": len(self._workflows),
+            "connected": self._ping_ok,
+        }
 
     # ==================================================================
     # Keyboard handler
@@ -369,18 +807,28 @@ class Dashboard:
     def _move_down(self) -> None:
         if self._tab == TAB_JOBS:
             self._jobs_cursor = min(self._jobs_cursor + 1, max(len(self._jobs) - 1, 0))
+        elif self._tab == TAB_STATUS:
+            self._status_cursor = min(self._status_cursor + 1, max(len(self._status_items) - 1, 0))
         elif self._tab == TAB_MODELS:
             self._models_cursor = min(self._models_cursor + 1, max(len(self._models) - 1, 0))
         elif self._tab == TAB_WORKFLOWS:
             self._wf_cursor = min(self._wf_cursor + 1, max(len(self._workflows) - 1, 0))
+        elif self._tab == TAB_LOGS:
+            self._log_auto_scroll = False
+            self._log_cursor = min(self._log_cursor + 1, max(len(self._log_entries) - 1, 0))
 
     def _move_up(self) -> None:
         if self._tab == TAB_JOBS:
             self._jobs_cursor = max(self._jobs_cursor - 1, 0)
+        elif self._tab == TAB_STATUS:
+            self._status_cursor = max(self._status_cursor - 1, 0)
         elif self._tab == TAB_MODELS:
             self._models_cursor = max(self._models_cursor - 1, 0)
         elif self._tab == TAB_WORKFLOWS:
             self._wf_cursor = max(self._wf_cursor - 1, 0)
+        elif self._tab == TAB_LOGS:
+            self._log_auto_scroll = False
+            self._log_cursor = max(self._log_cursor - 1, 0)
 
     def _toggle_detail(self) -> None:
         if self._tab == TAB_JOBS and self._jobs:
@@ -406,8 +854,81 @@ class Dashboard:
                 self._force_refresh.set()
 
     def _on_key(self, key: str) -> None:
+        # If search is active, handle search input
+        if self._search_active:
+            if key in ("\r", "\n", "\x1b"):
+                self._search_active = False
+            elif key == "\x7f":  # backspace
+                self._search_query = self._search_query[:-1]
+            elif len(key) == 1 and key.isprintable():
+                self._search_query += key
+            return
+
+        if self._command_active:
+            if key in ("\r", "\n"):
+                command_text = self._command_query.strip()
+                self._command_active = False
+                self._command_query = ""
+                if command_text:
+                    try:
+                        parsed = self._api.execute_command(command_text)
+                        self._apply_control_result(command_text, parsed)
+                    except Exception as e:
+                        self._set_flash(f"Command error: {e}")
+                        self._log("ERROR", f"Command error: {command_text} -> {e}")
+            elif key == "\x1b":
+                self._command_active = False
+                self._command_query = ""
+            elif key == "\x7f":
+                self._command_query = self._command_query[:-1]
+            elif len(key) == 1 and key.isprintable():
+                self._command_query += key
+            return
+
+        if self._form_active:
+            if key == "\x1b":
+                self._close_form()
+            elif key in ("l", "right", "]"):
+                self._cycle_form_choice(1)
+            elif key in ("h", "left", "["):
+                self._cycle_form_choice(-1)
+            elif key in ("j", "down", "\t"):
+                self._form_cursor = min(self._form_cursor + 1, len(self._form_fields) - 1)
+            elif key in ("k", "up"):
+                self._form_cursor = max(self._form_cursor - 1, 0)
+            elif key in ("\r", "\n"):
+                if self._form_cursor == len(self._form_fields) - 1:
+                    self._execute_form()
+                else:
+                    self._form_cursor = min(self._form_cursor + 1, len(self._form_fields) - 1)
+            elif key == "\x7f":
+                if self._form_fields:
+                    value = str(self._form_fields[self._form_cursor].get("value", ""))
+                    self._form_fields[self._form_cursor]["value"] = value[:-1]
+            elif len(key) == 1 and key.isprintable():
+                if self._form_fields:
+                    value = str(self._form_fields[self._form_cursor].get("value", ""))
+                    self._form_fields[self._form_cursor]["value"] = value + key
+            return
+
+        # If quick actions overlay is open, handle it
+        if self._show_actions:
+            if key in ("\x1b", "a", "q"):
+                self._show_actions = False
+            elif key in ("j", "down"):
+                self._action_cursor = min(self._action_cursor + 1, len(self._get_actions()) - 1)
+            elif key in ("k", "up"):
+                self._action_cursor = max(self._action_cursor - 1, 0)
+            elif key in ("\r", "\n"):
+                self._execute_action(self._action_cursor)
+                self._show_actions = False
+            return
+
         # Tab switching via number keys
-        tab_keys = {"1": TAB_JOBS, "2": TAB_STATUS, "3": TAB_MODELS, "4": TAB_WORKFLOWS, "5": TAB_CONNECTION}
+        tab_keys = {
+            "1": TAB_JOBS, "2": TAB_STATUS, "3": TAB_MODELS,
+            "4": TAB_WORKFLOWS, "5": TAB_CONNECTION, "6": TAB_LOGS,
+        }
         if key in tab_keys:
             self._switch_tab(tab_keys[key])
             return
@@ -419,6 +940,9 @@ class Dashboard:
             "\x03": lambda: self._quit.set(),
             "r": lambda: self._force_refresh.set(),
             "?": lambda: setattr(self, "_show_help", not self._show_help),
+            "a": lambda: self._toggle_actions(),
+            "s": lambda: self._start_search(),
+            ":": lambda: self._start_command_prompt(),
         }
         action = global_actions.get(key)
         if action:
@@ -442,7 +966,13 @@ class Dashboard:
             if act:
                 act()
         elif self._tab == TAB_STATUS:
-            if key == "R":
+            if key in ("j", "down"):
+                self._move_down()
+            elif key in ("k", "up"):
+                self._move_up()
+            elif key in ("\r", "\n"):
+                self._refresh_selected_status()
+            elif key == "R":
                 self._do_reload()
         elif self._tab in (TAB_MODELS, TAB_WORKFLOWS):
             nav_actions = {
@@ -452,16 +982,162 @@ class Dashboard:
                 "up": self._move_up,
                 "\r": self._toggle_detail,
                 "\n": self._toggle_detail,
+                "/": lambda: setattr(self, "_compact", not self._compact),
             }
             act = nav_actions.get(key)
             if act:
                 act()
+        elif self._tab == TAB_LOGS:
+            log_actions = {
+                "j": self._move_down,
+                "down": self._move_down,
+                "k": self._move_up,
+                "up": self._move_up,
+                "G": lambda: self._log_scroll_end(),
+                "g": lambda: self._log_scroll_top(),
+            }
+            act = log_actions.get(key)
+            if act:
+                act()
+
+    def _toggle_actions(self) -> None:
+        self._show_actions = not self._show_actions
+        self._action_cursor = 0
+
+    def _start_search(self) -> None:
+        self._search_active = True
+        self._search_query = ""
+
+    def _log_scroll_end(self) -> None:
+        self._log_cursor = max(len(self._log_entries) - 1, 0)
+        self._log_auto_scroll = True
+
+    def _log_scroll_top(self) -> None:
+        self._log_cursor = 0
+        self._log_auto_scroll = False
+
+    def _get_actions(self) -> List[Dict[str, str]]:
+        """Return available command actions for current context."""
+        actions = [
+            {"label": "Force Refresh", "key": "r", "action": "refresh"},
+            {"label": "Ping Server", "key": "", "action": "ping"},
+            {"label": "Toggle Help", "key": "?", "action": "help"},
+            {"label": "Run Control Command...", "key": ":", "action": "command_prompt"},
+            {"label": "Submit Job...", "key": "", "action": "submit_job_form"},
+            {"label": "Trigger Recompute", "key": "", "action": "recompute"},
+            {"label": "Trigger Update", "key": "", "action": "update"},
+            {"label": "Run Consistency Check", "key": "", "action": "check"},
+            {"label": "Download Model...", "key": "", "action": "model_download_form"},
+            {"label": "Register Model...", "key": "", "action": "model_register_form"},
+        ]
+        if self._config_path:
+            actions.append({"label": "Reload Server Config", "key": "R", "action": "reload"})
+        if self._tab == TAB_STATUS and self._status_items:
+            actions.append({"label": f"Refresh Status {self._status_items[self._status_cursor]['key']}", "key": "Enter", "action": "refresh_status"})
+        if self._tab == TAB_JOBS and self._jobs:
+            job = self._jobs[self._jobs_cursor]
+            if job.get("status") in ("running", "queued", "planned"):
+                actions.append({"label": f"Cancel Job {_short_id(job.get('job_id', ''))}", "key": "c", "action": "cancel_job"})
+        if self._tab == TAB_WORKFLOWS and self._workflows:
+            workflow_name = self._workflows[self._wf_cursor].get("name", "selected")
+            actions.append({"label": f"Run Workflow {workflow_name}", "key": "", "action": "run_selected_workflow"})
+            actions.append({"label": f"Run Workflow {workflow_name} With Params...", "key": "", "action": "run_workflow_form"})
+        if self._tab == TAB_MODELS:
+            actions.append({"label": "Filter Models...", "key": "", "action": "model_filter_form"})
+        if self._tab == TAB_WORKFLOWS:
+            actions.append({"label": "Filter Workflows...", "key": "", "action": "workflow_filter_form"})
+        actions.extend([
+            {"label": "Show Jobs Tab", "key": "1", "action": "show_jobs"},
+            {"label": "Show Status Tab", "key": "2", "action": "show_status"},
+            {"label": "Show Models Tab", "key": "3", "action": "show_models"},
+            {"label": "Show Workflows Tab", "key": "4", "action": "show_workflows"},
+            {"label": "Show Connection Tab", "key": "5", "action": "show_connection"},
+            {"label": "Show Logs Tab", "key": "6", "action": "show_logs"},
+        ])
+        actions.append({"label": "Clear Log", "key": "", "action": "clear_log"})
+        return actions
+
+    def _execute_action(self, idx: int) -> None:
+        """Execute a quick action by index."""
+        actions = self._get_actions()
+        if idx < 0 or idx >= len(actions):
+            return
+        action = actions[idx]["action"]
+        if action == "refresh":
+            self._force_refresh.set()
+        elif action == "ping":
+            self._ping_server()
+        elif action == "help":
+            self._show_help = not self._show_help
+        elif action == "command_prompt":
+            self._start_command_prompt()
+        elif action == "submit_job_form":
+            self._open_submit_job_form()
+        elif action in MAINTENANCE_ACTIONS:
+            self._run_maintenance(action)
+        elif action == "reload":
+            self._do_reload()
+        elif action == "run_workflow_form":
+            self._open_run_workflow_form()
+        elif action == "refresh_status":
+            self._refresh_selected_status()
+        elif action == "cancel_job":
+            self._cancel_selected_job()
+        elif action == "model_download_form":
+            self._open_model_download_form()
+        elif action == "model_register_form":
+            self._open_model_register_form()
+        elif action == "model_filter_form":
+            self._open_model_filter_form()
+        elif action == "workflow_filter_form":
+            self._open_workflow_filter_form()
+        elif action == "run_selected_workflow":
+            self._run_selected_workflow()
+        elif action == "show_jobs":
+            self._switch_tab(TAB_JOBS)
+        elif action == "show_status":
+            self._switch_tab(TAB_STATUS)
+        elif action == "show_models":
+            self._switch_tab(TAB_MODELS)
+        elif action == "show_workflows":
+            self._switch_tab(TAB_WORKFLOWS)
+        elif action == "show_connection":
+            self._switch_tab(TAB_CONNECTION)
+        elif action == "show_logs":
+            self._switch_tab(TAB_LOGS)
+        elif action == "clear_log":
+            self._log_entries.clear()
+            self._log_cursor = 0
+            self._set_flash("Activity log cleared")
 
     # ==================================================================
     # Rendering — Header and Footer
     # ==================================================================
+    def _build_logo(self) -> Text:
+        """Render the UMRS ASCII-art logo with a compact pipe."""
+        logo = Text()
+        umrs_lines = UMRS_ART.strip("\n").split("\n")
+        pipe_lines = PIPE_ART.strip("\n").split("\n")
+        umrs_width = max(len(line) for line in umrs_lines)
+        total_lines = max(len(umrs_lines), len(pipe_lines))
+
+        for index in range(total_lines):
+            umrs_line = umrs_lines[index] if index < len(umrs_lines) else ""
+            pipe_line = pipe_lines[index] if index < len(pipe_lines) else ""
+            logo.append(umrs_line.ljust(umrs_width + 4), style="bold bright_cyan")
+            logo.append(pipe_line, style="bold green")
+            logo.append("\n")
+        return logo
+
     def _build_tab_bar(self) -> Text:
         bar = Text()
+        # Animated spinner
+        frame = SPINNER_FRAMES[self._spinner_frame % len(SPINNER_FRAMES)]
+        self._spinner_frame += 1
+        if self._is_fetching:
+            bar.append(f" {frame} ", style="bold bright_cyan")
+        else:
+            bar.append(f" {frame} ", style="dim cyan")
         for i, tab_id in enumerate(TAB_ORDER):
             key = str(i + 1)
             label = TAB_LABELS[tab_id]
@@ -498,26 +1174,54 @@ class Dashboard:
         return bar
 
     def _build_footer(self) -> Text:
+        if self._search_active:
+            return Text.from_markup(
+                f"[bold cyan]Search:[/bold cyan] {self._search_query}[blink]_[/blink]  "
+                "[dim]Enter[/dim] confirm  [dim]Esc[/dim] cancel"
+            )
+
+        if self._command_active:
+            return Text.from_markup(
+                f"[bold yellow]Command:[/bold yellow] {self._command_query}[blink]_[/blink]  "
+                "[dim]Enter[/dim] run  [dim]Esc[/dim] cancel"
+            )
+
+        if self._form_active:
+            field = self._form_fields[self._form_cursor] if self._form_fields else {"label": "field"}
+            choices = field.get("choices") or []
+            choice_hint = f"  [dim]choices[/dim]={','.join(choices)}  [dim]h/l[/dim] cycle" if choices else ""
+            return Text.from_markup(
+                f"[bold magenta]Form:[/bold magenta] {self._form_title}  "
+                f"[dim]field[/dim]={field.get('label', '?')}  "
+                "[dim]j/k/Tab[/dim] move  [dim]Enter[/dim] next-submit  [dim]Esc[/dim] cancel"
+                f"{choice_hint}"
+            )
+
+        common = "[dim]a[/dim] actions  [dim]s[/dim] search  [dim]:[/dim] command  [dim]1-6[/dim] tabs  [dim]?[/dim] help"
         if self._tab == TAB_JOBS:
             return Text.from_markup(
                 "[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  "
                 "[dim]Enter[/dim] detail  [dim]f[/dim] filter  [dim]/[/dim] compact  "
-                "[dim]c[/dim] cancel  [dim]1-5[/dim] tabs  [dim]?[/dim] help"
+                f"[dim]c[/dim] cancel  {common}"
             )
         elif self._tab == TAB_STATUS:
             reload_hint = "[dim]R[/dim] reload" if self._config_path else "[dim strikethrough]R reload (no --conf)[/dim strikethrough]"
             return Text.from_markup(
-                f"[dim]q[/dim] quit  [dim]r[/dim] refresh  {reload_hint}  "
-                "[dim]1-5[/dim] tabs  [dim]?[/dim] help"
+                f"[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  [dim]Enter[/dim] refresh item  {reload_hint}  {common}"
             )
         elif self._tab in (TAB_MODELS, TAB_WORKFLOWS):
             return Text.from_markup(
                 "[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  "
-                "[dim]Enter[/dim] detail  [dim]1-5[/dim] tabs  [dim]?[/dim] help"
+                f"[dim]Enter[/dim] detail  [dim]/[/dim] compact  {common}"
+            )
+        elif self._tab == TAB_LOGS:
+            return Text.from_markup(
+                "[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] scroll  "
+                f"[dim]g[/dim] top  [dim]G[/dim] bottom  {common}"
             )
         else:
             return Text.from_markup(
-                "[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]1-5[/dim] tabs  [dim]?[/dim] help"
+                f"[dim]q[/dim] quit  [dim]r[/dim] refresh  {common}"
             )
 
     # ==================================================================
@@ -529,18 +1233,25 @@ class Dashboard:
         t.add_column("Action")
         t.add_column("Tab", style="dim")
 
-        t.add_row("1-5", "Switch tab", "Global")
+        t.add_row("1-6", "Switch tab", "Global")
         t.add_row("q / Ctrl+C", "Quit", "Global")
         t.add_row("r", "Force refresh", "Global")
+        t.add_row("a", "Quick actions menu", "Global")
+        t.add_row("s", "Text search", "Global")
+        t.add_row(":", "Control command prompt", "Global")
+        t.add_row("Tab", "Move to next form field", "Forms")
+        t.add_row("h / l", "Cycle form choices", "Forms")
         t.add_row("?", "Toggle this help", "Global")
         t.add_row("", "", "")
-        t.add_row("j / ↓", "Move selection down", "Jobs, Models, Workflows")
-        t.add_row("k / ↑", "Move selection up", "Jobs, Models, Workflows")
+        t.add_row("j / ↓", "Move selection down", "Jobs, Status, Models, Workflows, Logs")
+        t.add_row("k / ↑", "Move selection up", "Jobs, Status, Models, Workflows, Logs")
         t.add_row("Enter", "Toggle detail view", "Jobs, Models, Workflows")
+        t.add_row("Enter", "Refresh selected status", "Status")
         t.add_row("f", "Cycle status filter", "Jobs")
-        t.add_row("/", "Toggle compact/wide", "Jobs")
+        t.add_row("/", "Toggle compact/wide", "Jobs, Models, Workflows")
         t.add_row("c", "Cancel selected job", "Jobs")
         t.add_row("R", "Trigger server reload", "Status (requires --conf)")
+        t.add_row("g / G", "Scroll to top / bottom", "Logs")
 
         return Panel(t, title="[bold]Keyboard Shortcuts[/bold]", border_style="bright_cyan", padding=(1, 2))
 
@@ -682,31 +1393,7 @@ class Dashboard:
             return layout
 
         client_label = self._status_data.get("client", "")
-        summaries = self._status_data.get("summaries", {})
-        uncompleted = self._status_data.get("uncompleted_key_list")
-
-        table = Table(expand=True, show_lines=True, padding=(0, 1), header_style="bold bright_white")
-        table.add_column("Task", min_width=16, style="bold")
-        table.add_column("Generated At", min_width=18)
-        table.add_column("Summary", ratio=1)
-
-        task_order = ["process_objects", "wait_output", "recompute", "update", "check", "reload"]
-        seen = set()
-        for task_key in task_order:
-            entry = summaries.get(task_key)
-            if entry:
-                seen.add(task_key)
-                gen_at = entry.get("generated_at", "—")
-                summary_text = entry.get("summary", "(no summary)")
-                table.add_row(task_key, str(gen_at), summary_text)
-        for k, v in summaries.items():
-            if k not in seen and isinstance(v, dict):
-                gen_at = v.get("generated_at", "—")
-                summary_text = v.get("summary", "(no summary)")
-                table.add_row(k, str(gen_at), summary_text)
-
-        if not summaries:
-            table.add_row("—", "—", "(no status entries available)")
+        uncompleted = self._status_data.get("uncompleted_key_list") or []
 
         info_parts = []
         if client_label:
@@ -723,22 +1410,73 @@ class Dashboard:
 
         header = Text.from_markup(f"  {'  '.join(info_parts)}{reload_hint}")
 
-        parts: list = [
-            Layout(header, size=1),
-            Layout(Panel(table, title="[bold]Task Summaries[/bold]", border_style="bright_white"), ratio=2),
-        ]
+        if not self._status_items:
+            layout.split_column(
+                Layout(header, size=1),
+                Layout(Panel(Text("No status entries available.", style="dim"), border_style="dim"), ratio=1),
+            )
+            return layout
 
-        if uncompleted:
-            uc_table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold")
-            uc_table.add_column("Uncompleted Task", style="yellow")
-            for item in uncompleted:
-                uc_table.add_row(str(item))
-            parts.append(
-                Layout(Panel(uc_table, title="[bold]Pending Tasks[/bold]", border_style="yellow"), ratio=1)
+        selected = self._status_items[self._status_cursor]
+
+        list_table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+        list_table.add_column("#", width=3, justify="right")
+        list_table.add_column("Task", min_width=14, style="bold")
+        list_table.add_column("Age", width=10)
+        list_table.add_column("State", width=9)
+        list_table.add_column("Preview", ratio=1)
+
+        for idx, item in enumerate(self._status_items):
+            row_style = "reverse" if idx == self._status_cursor else ""
+            state = "pending" if item["pending"] else "ready"
+            state_style = "yellow" if item["pending"] else "green"
+            list_table.add_row(
+                str(idx + 1),
+                item["key"],
+                item["age"],
+                Text(state, style=state_style),
+                item["preview"],
+                style=row_style,
             )
 
-        layout.split_column(*parts)
+        meta_table = Table(show_header=False, expand=True, padding=(0, 2))
+        meta_table.add_column("Field", style="bold", width=14)
+        meta_table.add_column("Value", ratio=1)
+        meta_table.add_row("Task", selected["key"])
+        meta_table.add_row("Generated", selected["generated_label"])
+        meta_table.add_row("Age", selected["age"])
+        meta_table.add_row("State", "pending" if selected["pending"] else "ready")
+        if client_label:
+            meta_table.add_row("Client", client_label)
+
+        detail_group = [meta_table, Text(""), Text(selected["summary"])]
+        if uncompleted:
+            detail_group.extend([
+                Text(""),
+                Text(f"Pending tasks: {', '.join(map(str, uncompleted))}", style="yellow"),
+            ])
+
+        body = Layout()
+        body.split_row(
+            Layout(Panel(list_table, title="[bold]Status Tasks[/bold]", border_style="bright_white"), ratio=2),
+            Layout(Panel(Group(*detail_group), title=f"[bold]Summary: {selected['key']}[/bold]", border_style="bright_blue"), ratio=3),
+        )
+
+        layout.split_column(
+            Layout(header, size=1),
+            Layout(body, ratio=1),
+        )
         return layout
+
+    # ==================================================================
+    # Helpers — Models tab
+    # ==================================================================
+    @staticmethod
+    def _colorize_model_type(model_type: str) -> str:
+        """Return Rich-markup colored model type string."""
+        colors = {"llm": "bright_green", "embedding": "bright_cyan", "vision": "bright_magenta"}
+        color = colors.get(model_type, "white")
+        return f"[{color}]{model_type}[/{color}]"
 
     # ==================================================================
     # Rendering — Models tab
@@ -761,7 +1499,7 @@ class Dashboard:
             table.add_row(
                 str(idx + 1),
                 m.get("name", "?"),
-                m.get("model_type", m.get("type", "?")),
+                self._colorize_model_type(m.get("model_type", m.get("type", "?"))),
                 m.get("scope", "?"),
                 m.get("huggingface_id", "—"),
                 m.get("registered_by", "—"),
@@ -770,6 +1508,8 @@ class Dashboard:
             )
 
         summary = Text.from_markup(f"  total=[yellow]{len(self._models)}[/yellow]")
+        if self._model_scope_filter:
+            summary.append(f"  scope={self._model_scope_filter}")
         detail = self._build_model_detail_panel()
 
         if not self._models:
@@ -854,6 +1594,12 @@ class Dashboard:
             )
 
         summary = Text.from_markup(f"  total=[yellow]{len(self._workflows)}[/yellow]")
+        if self._workflow_scope_filter:
+            summary.append(f"  scope={self._workflow_scope_filter}")
+        if self._workflow_user_filter:
+            summary.append(f"  user={self._workflow_user_filter}")
+        if self._workflow_name_filter:
+            summary.append(f"  name={self._workflow_name_filter}")
         detail = self._build_workflow_detail_panel()
 
         if not self._workflows:
@@ -1003,13 +1749,140 @@ class Dashboard:
         return layout
 
     # ==================================================================
+    # Rendering — Logs tab (3A: Activity log viewer)
+    # ==================================================================
+    def _build_logs_tab(self) -> Layout:
+        layout = Layout()
+
+        LOG_LEVEL_STYLES = {"INFO": "green", "WARN": "yellow", "ERROR": "bold red", "DEBUG": "dim"}
+
+        table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+        table.add_column("Time", width=10, style="dim")
+        table.add_column("Level", width=7)
+        table.add_column("Message", ratio=1)
+
+        entries = self._log_entries
+        # Apply search filter if active
+        if self._search_query:
+            q = self._search_query.lower()
+            entries = [e for e in entries if q in e.get("message", "").lower()]
+
+        for idx, entry in enumerate(entries):
+            is_selected = idx == self._log_cursor
+            level = entry.get("level", "INFO")
+            level_style = LOG_LEVEL_STYLES.get(level, "")
+            row_style = "reverse" if is_selected else ""
+            table.add_row(
+                entry.get("time", ""),
+                Text(level, style=level_style),
+                entry.get("message", ""),
+                style=row_style,
+            )
+
+        count = len(entries)
+        scroll_hint = "[dim]auto-scroll[/dim]" if self._log_auto_scroll else f"[dim]{self._log_cursor + 1}/{count}[/dim]"
+        summary = Text.from_markup(f"  entries=[yellow]{count}[/yellow]  {scroll_hint}")
+
+        if not entries:
+            empty = Panel(
+                Text("No activity logged yet. Events will appear here as you interact.", style="dim"),
+                border_style="dim",
+            )
+            layout.split_column(
+                Layout(summary, size=1),
+                Layout(empty, ratio=1),
+            )
+        else:
+            layout.split_column(
+                Layout(summary, size=1),
+                Layout(Panel(table, border_style="bright_white"), ratio=1),
+            )
+        return layout
+
+    # ==================================================================
+    # Rendering — Quick Actions overlay (3B)
+    # ==================================================================
+    def _build_actions_overlay(self) -> Panel:
+        actions = self._get_actions()
+        t = Table(show_header=False, expand=True, padding=(0, 2))
+        t.add_column("", width=3)
+        t.add_column("Action", ratio=1)
+        t.add_column("Key", width=8, style="dim cyan")
+
+        for idx, act in enumerate(actions):
+            marker = "▸" if idx == self._action_cursor else " "
+            style = "bold white" if idx == self._action_cursor else ""
+            t.add_row(marker, act["label"], act.get("key", ""), style=style)
+
+        return Panel(
+            t,
+            title="[bold]Command Actions[/bold]  [dim]j/k navigate, Enter select, a/Esc close[/dim]",
+            border_style="bright_yellow",
+            padding=(1, 2),
+        )
+
+    def _build_form_overlay(self) -> Panel:
+        form_table = Table(show_header=False, expand=True, padding=(0, 2))
+        form_table.add_column("", width=3)
+        form_table.add_column("Field", width=16, style="bold")
+        form_table.add_column("Value", ratio=1)
+
+        for idx, field in enumerate(self._form_fields):
+            marker = "▸" if idx == self._form_cursor else " "
+            style = "bold white" if idx == self._form_cursor else ""
+            suffix = " *" if field.get("required") else ""
+            value = str(field.get("value", ""))
+            if idx == self._form_cursor:
+                value = value + "_"
+            form_table.add_row(marker, f"{field.get('label', field['name'])}{suffix}", value, style=style)
+
+        return Panel(
+            form_table,
+            title=f"[bold]{self._form_title}[/bold]  [dim]Enter moves/submit, Tab next, Esc close[/dim]",
+            border_style="bright_magenta",
+            padding=(1, 2),
+        )
+
+    # ==================================================================
+    # Rendering — Stats bar (3C: persistent summary)
+    # ==================================================================
+    def _build_stats_bar(self) -> Text:
+        bar = Text()
+        s = self._stats
+        if not s:
+            return bar
+
+        bar.append("  ")
+        # Jobs summary
+        total_jobs = s.get("total_jobs", 0)
+        counts = s.get("job_counts", {})
+        running = counts.get("running", 0)
+        failed = counts.get("failed", 0)
+        bar.append(f"Jobs: {total_jobs}", style="bold")
+        if running:
+            bar.append(f" ({running} running)", style="yellow")
+        if failed:
+            bar.append(f" ({failed} failed)", style="red")
+
+        bar.append("  │  ", style="dim")
+        # Models
+        bar.append(f"Models: {s.get('total_models', 0)}", style="bold")
+        bar.append("  │  ", style="dim")
+        # Workflows
+        bar.append(f"Workflows: {s.get('total_workflows', 0)}", style="bold")
+
+        return bar
+
+    # ==================================================================
     # Rendering — Display compositor
     # ==================================================================
     def _build_display(self) -> Layout:
         layout = Layout()
 
+        logo = self._build_logo()
         tab_bar = self._build_tab_bar()
         footer = self._build_footer()
+        stats_bar = self._build_stats_bar()
 
         if self._tab == TAB_JOBS:
             content = self._build_jobs_tab()
@@ -1021,19 +1894,43 @@ class Dashboard:
             content = self._build_workflows_tab()
         elif self._tab == TAB_CONNECTION:
             content = self._build_connection_tab()
+        elif self._tab == TAB_LOGS:
+            content = self._build_logs_tab()
         else:
             content = Layout(Text("Unknown tab", style="red"))
 
-        if self._show_help:
+        if self._show_actions:
+            actions_panel = self._build_actions_overlay()
+            layout.split_column(
+                Layout(logo, size=LOGO_HEIGHT),
+                Layout(tab_bar, size=1),
+                Layout(stats_bar, size=1),
+                Layout(actions_panel, ratio=1),
+                Layout(footer, size=1),
+            )
+        elif self._form_active:
+            form_panel = self._build_form_overlay()
+            layout.split_column(
+                Layout(logo, size=LOGO_HEIGHT),
+                Layout(tab_bar, size=1),
+                Layout(stats_bar, size=1),
+                Layout(form_panel, ratio=1),
+                Layout(footer, size=1),
+            )
+        elif self._show_help:
             help_panel = self._build_help_panel()
             layout.split_column(
+                Layout(logo, size=LOGO_HEIGHT),
                 Layout(tab_bar, size=1),
+                Layout(stats_bar, size=1),
                 Layout(help_panel, ratio=1),
                 Layout(footer, size=1),
             )
         else:
             layout.split_column(
+                Layout(logo, size=LOGO_HEIGHT),
                 Layout(tab_bar, size=1),
+                Layout(stats_bar, size=1),
                 Layout(content, ratio=1),
                 Layout(footer, size=1),
             )
