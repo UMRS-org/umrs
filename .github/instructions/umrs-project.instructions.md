@@ -209,7 +209,7 @@ Config:  rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit
 
 ### Adapter Discovery
 Adapters are loaded at service startup from directories listed in `VISION_ADAPTERS_DIR` (colon-separated, like `$PATH`):
-- `/adapters/system` — built-in adapters (SAM3, HMAE) from `mini-rivault-vision/default_adapters/`
+- `/adapters/system` — built-in adapters (SAM3, HMAE) from `src/umrs/vision_service/default_adapters/`
 - `/adapters/user` — user-provided custom adapters
 
 Each `.py` file is scanned for a `VisionModelAdapter` subclass and registered under the filename stem.
