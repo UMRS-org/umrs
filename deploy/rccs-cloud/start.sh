@@ -334,6 +334,7 @@ if [[ "$RAG_ENABLED" = true ]]; then
     echo "  Log:       ${RAG_LOG_FILE}"
     echo "  PID file:  ${RAG_PID_FILE}"
 
+    OPENBLAS_NUM_THREADS=1 \
     PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
         nohup python -m umrs.api.rag_service \
         >> "$RAG_LOG_FILE" 2>&1 &

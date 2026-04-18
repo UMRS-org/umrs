@@ -40,6 +40,7 @@ runtime:
   cdi_spec: /var/run/cdi/nvidia.yaml
   cgroup_manager: cgroupfs
   storage_root: ""                       # auto-set to /var/tmp/podman_$USER/storage
+  # vision_stack: jens                   # uncomment to use Jens's VisionFrontend stack (tmp/jens_stack/internal_genAI/)
 
 storage:
   model_cache_dir: /lvs0/rccs-dmp/mnagaso/umrs_models/hf

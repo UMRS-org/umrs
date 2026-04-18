@@ -16,6 +16,7 @@
 ##SBATCH --partition=ng-dgx-m0  # disabled — partition set by orchestrator via --partition CLI arg
 #SBATCH --nodes=1
 #SBATCH --time=4:00:00
+#SBATCH --signal=B:TERM@120
 
 # ─── Output FQDN header (required by rivault_launcher.extract_node_address) ───
 echo "=============================="
@@ -232,7 +233,6 @@ graphroot = "/var/tmp/podman_${_WHOAMI}/storage"
 mount_program = "/usr/bin/fuse-overlayfs"
 [storage.options.overlay]
 mountopt="xattr_permissions=2,threaded=1"
-force_mask="700"
 EOF
 
 # ─── Clean up stale podman state from previous runs ──────────────────────────
@@ -495,6 +495,8 @@ fi
 
 _build_vision_image() {
     echo "[wrapper] Building vision image on compute node (may take several minutes)..."
+    local build_status
+
     if podman build --cgroup-manager=cgroupfs -t "${_VISION_IMAGE}" \
          -f "${_UMRS_REPO}/src/umrs/vision_service/Dockerfile" "${_UMRS_REPO}"; then
         echo "[wrapper] Saving tarball to Lustre: ${_VISION_TARBALL}"
@@ -504,8 +506,10 @@ _build_vision_image() {
         return 0
     fi
 
-    echo "[wrapper] ERROR: podman build failed (exit $?). Vision service will not be available."
-    return 1
+    build_status=$?
+
+    echo "[wrapper] ERROR: podman build failed (exit ${build_status}). Vision service will not be available."
+    return "${build_status}"
 }
 
 # ─── Load or build the vision image ─────────────────────────────────────────
@@ -526,5 +530,15 @@ fi
 # Mark that the wrapper already handled cleanup so the inner script skips its
 # duplicate recovery block.
 export RIVAULT_WRAPPER_CLEANUP=1
+
+# ─── GOMAXPROCS: prevent Go-based services from NPROC exhaustion ─────────────
+# On rccs-cloud the per-user NPROC ulimit is low (~4096). Go runtime's default
+# goroutine scheduling creates one OS thread per available CPU core, which
+# combined with podman's conmon processes quickly exceeds the limit.
+# Setting GOMAXPROCS=1 restricts Go services (BentoML, MinIO proxy, etc.)
+# to a single OS thread per goroutine group, keeping total thread count safe.
+export GOMAXPROCS="${GOMAXPROCS:-1}"
+echo "[wrapper] GOMAXPROCS=${GOMAXPROCS}"
+
 cd "$RIVAULT_DIR"
 exec bash --norc --noprofile ./serve-model.slurm
