@@ -6,15 +6,19 @@ structure clustering.
 
 ## What is in this directory
 
-- `steps/` contains the step implementations:
+- `workflow/` contains the upload-ready in-process workflow bundle:
+  - `workflow/workflow.json`
+  - `workflow/steps/`
+- `workflow_slurm/` contains the upload-ready Slurm-oriented bundle:
+  - `workflow_slurm/workflow.json`
+  - `workflow_slurm/steps/`
+- `workflow/steps/` contains the step implementations:
   - `sam3_segmentation.py`
   - `region_extraction.py`
   - `hmae_analysis.py`
   - `hmae_features.py`
   - `anomaly_detection.py`
   - `structure_discovery.py`
-- `workflow.json` and `workflow_slurm.json` capture the intended multi-step
-  workflow shape.
 - `run_demo.sh` provides a practical shell demo that reuses the configured
   SAM3 experience to exercise upload, server-side processing, and result
   download.
@@ -26,9 +30,9 @@ private multi-step workflow. It currently reuses the public SAM3-style bucket
 flow (`user1-sam3` by default) so the data path can still be exercised even if
 the full private workflow is not wired into the current site config.
 
-If you want to use `workflow.json` directly, update the `source.path` values to
-match your checkout path under `demos_private/09_defect_analysis/steps` before
-uploading or registering the workflow.
+If you want to upload the full workflow, use `workflow/` or `workflow_slurm/`
+directly with `umrs-client upload-workflow ...`. Those bundle directories are
+already shaped to match the current CLI contract.
 
 ## Quick Start
 
@@ -60,6 +64,12 @@ umrs-client reload
 #    Server-side download from HuggingFace. Required on first run.
 umrs-client model download facebook/sam2-hiera-small --name sam3 --scope system --server-side
 
+# Optional: upload the full defect-analysis workflow bundle instead of using
+# the simpler SAM3-only shell path.
+umrs-client upload-workflow workflow/ --name structural-defect-analysis
+# or the Slurm-oriented variant:
+# umrs-client upload-workflow workflow_slurm/ --name defect-analysis-slurm
+
 # 4. Upload images for defect analysis
 #    Images are dispatched to SAM3 segmentation on the GPU node.
 #    The segmentation model detects structural features and defects
@@ -87,6 +97,6 @@ The public replacement for a generic multi-step image workflow is:
 
 ## Related Files
 
-- [workflow.json](workflow.json)
-- [workflow_slurm.json](workflow_slurm.json)
-- [steps/](steps/)
+- [workflow/workflow.json](workflow/workflow.json)
+- [workflow_slurm/workflow.json](workflow_slurm/workflow.json)
+- [workflow/steps/](workflow/steps/)

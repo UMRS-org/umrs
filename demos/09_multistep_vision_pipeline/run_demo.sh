@@ -28,9 +28,7 @@ BUCKET_ALIAS="${PIPELINE_BUCKET:-user1-pipeline}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 IMAGE_DIR="${1:-${SCRIPT_DIR}/../sample_data/images}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
-WORKFLOW_SOURCE_DIR="${SCRIPT_DIR}"
-WORKFLOW_UPLOAD_DIR="$(prepare_workflow_upload_dir "${WORKFLOW_SOURCE_DIR}")"
-trap 'rm -rf "${WORKFLOW_UPLOAD_DIR:-}"' EXIT
+WORKFLOW_SOURCE_DIR="${SCRIPT_DIR}/workflow"
 
 banner "Demo 09: Multi-Step Vision Pipeline"
 echo "Config        : ${CONF}"
@@ -46,7 +44,7 @@ preflight
 # ---------- Step 2: Upload workflow ----------
 log ""
 log "Step 2: Uploading workflow definition..."
-$CLIENT upload-workflow "${WORKFLOW_UPLOAD_DIR}" --name "vision-pipeline-demo" 2>&1 | while IFS= read -r line; do log "  $line"; done
+$CLIENT upload-workflow "${WORKFLOW_SOURCE_DIR}" --name "vision-pipeline-demo" 2>&1 | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
 
 # Reload to pick up the new workflow

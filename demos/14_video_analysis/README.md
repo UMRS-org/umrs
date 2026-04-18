@@ -45,7 +45,7 @@ python generate_test_videos.py -o sample_videos/ --count 8 --fps 30
 
 1. **Pre-flight** — verify server connectivity
 2. **Prepare videos** — generate synthetic data or locate user-supplied files
-3. **Upload workflow** — push `video_workflow/` to the server
+3. **Upload workflow** — push `workflow/` to the server
 4. **Upload videos** — send MP4 files to the configured bucket
 5. **Wait & download** — poll until analysis completes, download results
 6. **Show summary** — print aggregate motion report
@@ -65,7 +65,7 @@ python3 generate_test_videos.py -o sample_videos/ --count 4 --fps 15
 #    The workflow contains a MotionDetectStep that analyzes
 #    consecutive frames for pixel intensity changes and reports
 #    motion events with timestamps.
-umrs-client upload-workflow video_workflow/ --name "video-motion"
+umrs-client upload-workflow workflow/ --name "video-motion-analysis"
 
 # 4. Reload server configuration
 umrs-client reload
@@ -91,7 +91,7 @@ umrs-client download_results user1-video ./results --force-overwrite
 | `MAX_VIDEOS` | `6` | Max videos to upload |
 | `UMRS_CONF` | `~/.config/umrs/conf_umrs.json` | Server config |
 
-### workflow.json Tuning
+### workflow/workflow.json Tuning
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -136,9 +136,9 @@ Each `*_motion.json` contains:
 
 To add a second analysis pass (e.g. optical flow, object tracking):
 
-1. Create `video_workflow/optical_flow_step.py`
-2. Add a second entry to `workflow.json → steps[]`
-3. Re-upload: `umrs-client upload-workflow video_workflow/`
+1. Create `workflow/optical_flow_step.py`
+2. Add a second entry to `workflow/workflow.json → steps[]`
+3. Re-upload: `umrs-client upload-workflow workflow/`
 
 ## See Also
 

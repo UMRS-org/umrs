@@ -52,7 +52,8 @@ echo ""
 # Step 4: Cancel the pre-warmed endpoint (release node hours)
 if [ -n "${JOB_ID}" ]; then
     log "Step 4: Cancel pre-warmed endpoint ${JOB_ID}..."
-    $CLIENT job cancel "${JOB_ID}"
+    CANCEL_OUT=$($CLIENT job cancel "${JOB_ID}" 2>&1) || true
+    echo "${CANCEL_OUT}"
     echo ""
 else
     log "Step 4: Skipped (could not extract job_id)"

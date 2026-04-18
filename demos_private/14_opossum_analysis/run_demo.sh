@@ -85,7 +85,7 @@ log "  Found ${VIDEO_COUNT} video file(s) (recursive)"
 # ---------- Step 3: Upload opossum workflow ----------
 log ""
 log "Step 3: Uploading opossum workflow to server..."
-WORKFLOW_DIR="${SCRIPT_DIR}/opossum_workflow"
+WORKFLOW_DIR="${SCRIPT_DIR}/workflow"
 if [[ -d "${WORKFLOW_DIR}" ]] && [[ -f "${WORKFLOW_DIR}/workflow.json" ]]; then
     $CLIENT upload-workflow "${WORKFLOW_DIR}" --name opossum-analysis || warn "workflow upload returned non-zero"
     ok "Workflow uploaded"

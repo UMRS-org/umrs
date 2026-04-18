@@ -32,7 +32,7 @@ bash 09_multistep_vision_pipeline/run_demo.sh /path/to/images
 ## What the Script Does
 
 1. **Pre-flight** — verifies `umrs-client` can reach the server
-2. **Upload workflow** — pushes `workflow.json` + `steps/` to the server
+2. **Upload workflow** — pushes the upload-ready `workflow/` bundle to the server
 3. **Upload images** — sends images to the configured bucket
 4. **Wait & download** — polls until the 3-step pipeline completes, then
    downloads all results
@@ -45,10 +45,11 @@ bash 09_multistep_vision_pipeline/run_demo.sh /path/to/images
 umrs-client ping
 
 # 2. Upload the workflow definition to the server
-#    This packages workflow.json + steps/ directory and sends them
+#    The upload-ready bundle lives under workflow/ and already contains
+#    workflow.json plus the referenced step modules.
 #    to the server. The server stores the pipeline definition and
 #    will execute it when data arrives in the associated bucket.
-umrs-client upload-workflow . --name "vision-pipeline-demo"
+umrs-client upload-workflow workflow/ --name "vision-pipeline-demo"
 
 # 3. Reload server configuration
 #    Tells the server to pick up the newly uploaded workflow.
@@ -90,8 +91,8 @@ Edit `workflow.json` → `steps[0].config`:
 ### Add a new step
 
 1. Create `steps/my_step.py` implementing `Step`
-2. Add an entry to `workflow.json → steps[]`
-3. Re-upload the workflow: `umrs-client upload-workflow .`
+2. Add an entry to `workflow/workflow.json → steps[]`
+3. Re-upload the workflow: `umrs-client upload-workflow workflow/`
 
 ## Output
 

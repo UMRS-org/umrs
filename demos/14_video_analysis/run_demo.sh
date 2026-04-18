@@ -10,7 +10,7 @@
 #   b) Your own video files passed as an argument
 #
 # Workflow submitted to UMRS:
-#   video_workflow/workflow.json → MotionDetectStep
+#   workflow/workflow.json → MotionDetectStep
 #
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
@@ -32,9 +32,7 @@ BUCKET_ALIAS="${VIDEO_BUCKET:-user1-video}"
 MAX_VIDEOS="${MAX_VIDEOS:-6}"
 VIDEO_DIR="${1:-}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
-WORKFLOW_SOURCE_DIR="${SCRIPT_DIR}/video_workflow"
-WORKFLOW_UPLOAD_DIR="$(prepare_workflow_upload_dir "${WORKFLOW_SOURCE_DIR}")"
-trap 'rm -rf "${WORKFLOW_UPLOAD_DIR:-}"' EXIT
+WORKFLOW_SOURCE_DIR="${SCRIPT_DIR}/workflow"
 
 banner "Demo 14: Video Motion Analysis"
 echo "Config        : ${CONF}"
@@ -85,7 +83,7 @@ fi
 # ---------- Step 3: Upload workflow ----------
 log ""
 log "Step 3: Uploading video analysis workflow..."
-$CLIENT upload-workflow "${WORKFLOW_UPLOAD_DIR}" --name "video-motion-analysis" 2>&1 | while IFS= read -r line; do log "  $line"; done
+$CLIENT upload-workflow "${WORKFLOW_SOURCE_DIR}" --name "video-motion-analysis" 2>&1 | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
 $CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
 sleep 3
