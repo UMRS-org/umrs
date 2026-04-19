@@ -77,6 +77,11 @@ def configure_model_register_parser(parser: argparse.ArgumentParser) -> None:
         default=MODEL_REGISTER_SCOPE_DEFAULT,
         help="Model scope",
     )
+    parser.add_argument(
+        "--project-id",
+        default=None,
+        help="Project identifier (required for project scope)",
+    )
     parser.add_argument("--description", default=None, help="Model description")
     parser.add_argument(
         "--huggingface-id",
@@ -105,6 +110,11 @@ def configure_model_download_parser(parser: argparse.ArgumentParser) -> None:
         choices=MODEL_SCOPE_CHOICES,
         default=MODEL_DOWNLOAD_SCOPE_DEFAULT,
         help="Model scope",
+    )
+    parser.add_argument(
+        "--project-id",
+        default=None,
+        help="Project identifier (required for project scope)",
     )
 
 

@@ -18,10 +18,17 @@ from umrs.client.control_commands import (
 class UMRSControlAPI:
     """Reusable control-plane client operations backed by MessageQueue."""
 
-    def __init__(self, control_mq: Any, client_id: str, config_path: Optional[str] = None):
+    def __init__(
+        self,
+        control_mq: Any,
+        client_id: str,
+        config_path: Optional[str] = None,
+        admin_token: Optional[str] = None,
+    ):
         self._mq = control_mq
         self._client_id = client_id
         self._config_path = config_path
+        self._admin_token = admin_token
 
     @property
     def client_id(self) -> str:
@@ -57,19 +64,22 @@ class UMRSControlAPI:
         path: str,
         model_type: str,
         scope: str = "user",
+        project_id: Optional[str] = None,
         description: Optional[str] = None,
         huggingface_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        payload = json.dumps(
-            {
-                "name": name,
-                "path": os.path.abspath(path),
-                "model_type": model_type,
-                "scope": scope,
-                "description": description,
-                "huggingface_id": huggingface_id,
-            }
-        )
+        body = {
+            "name": name,
+            "path": os.path.abspath(path),
+            "model_type": model_type,
+            "scope": scope,
+            "project_id": project_id,
+            "description": description,
+            "huggingface_id": huggingface_id,
+        }
+        if self._admin_token:
+            body["admin_token"] = self._admin_token
+        payload = json.dumps(body)
         return self._request_json(TaskCmd.MODEL_REGISTER, payload)
 
     def download_model_server_side(
@@ -78,14 +88,19 @@ class UMRSControlAPI:
         repo_id: str,
         scope: str = "user",
         name: Optional[str] = None,
+        project_id: Optional[str] = None,
+        staging_dir: Optional[str] = None,
     ) -> Dict[str, Any]:
-        payload = json.dumps(
-            {
-                "repo_id": repo_id,
-                "name": name or repo_id.split("/")[-1],
-                "scope": scope,
-            }
-        )
+        body = {
+            "repo_id": repo_id,
+            "name": name or repo_id.split("/")[-1],
+            "scope": scope,
+            "project_id": project_id,
+            "staging_dir": staging_dir,
+        }
+        if self._admin_token:
+            body["admin_token"] = self._admin_token
+        payload = json.dumps(body)
         return self._request_json(TaskCmd.MODEL_DOWNLOAD, payload)
 
     def submit_job(
@@ -180,6 +195,7 @@ class UMRSControlAPI:
                     path=args.path,
                     model_type=args.model_type,
                     scope=args.scope,
+                    project_id=getattr(args, "project_id", None),
                     description=args.description,
                     huggingface_id=args.huggingface_id,
                 )
@@ -188,6 +204,8 @@ class UMRSControlAPI:
                     repo_id=args.repo_id,
                     scope=args.scope,
                     name=args.name,
+                    project_id=getattr(args, "project_id", None),
+                    staging_dir=getattr(args, "staging_dir", None),
                 )
         if args.action == "job":
             if args.job_action == "cancel":

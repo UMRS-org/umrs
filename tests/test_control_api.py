@@ -69,6 +69,50 @@ def test_maintenance_variants_notify_server():
         api._mq.notify_server.assert_called_once_with("tester", expected_cmd, 0)
 
 
+def test_register_model_includes_project_id_and_admin_token():
+    mq = MagicMock()
+    mq.request_model_command.return_value = json.dumps({"status": "ok"})
+
+    api = UMRSControlAPI(mq, "tester", admin_token="secret-token")
+    result = api.register_model(
+        name="demo-model",
+        path="/tmp/model",
+        model_type="embedding",
+        scope="project",
+        project_id="proj-123",
+    )
+
+    assert result == {"status": "ok"}
+    _, task_cmd, payload = mq.request_model_command.call_args.args
+    assert task_cmd == "MODEL_REGISTER"
+    parsed_payload = json.loads(payload)
+    assert parsed_payload["scope"] == "project"
+    assert parsed_payload["project_id"] == "proj-123"
+    assert parsed_payload["admin_token"] == "secret-token"
+
+
+def test_download_model_server_side_includes_project_id_and_staging_dir():
+    mq = MagicMock()
+    mq.request_model_command.return_value = json.dumps({"status": "ok"})
+
+    api = UMRSControlAPI(mq, "tester", admin_token="secret-token")
+    result = api.download_model_server_side(
+        repo_id="org/demo-model",
+        scope="project",
+        name="demo-model",
+        project_id="proj-123",
+        staging_dir="/shared/projects/proj-123/models/experimental",
+    )
+
+    assert result == {"status": "ok"}
+    _, task_cmd, payload = mq.request_model_command.call_args.args
+    assert task_cmd == "MODEL_DOWNLOAD"
+    parsed_payload = json.loads(payload)
+    assert parsed_payload["project_id"] == "proj-123"
+    assert parsed_payload["staging_dir"] == "/shared/projects/proj-123/models/experimental"
+    assert parsed_payload["admin_token"] == "secret-token"
+
+
 def test_execute_command_supports_job_submit_with_nested_spec_and_hints():
     mq = MagicMock()
     mq.request_model_command.return_value = json.dumps({"status": "ok", "message": "submitted"})
