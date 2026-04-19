@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+from datetime import datetime
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -169,6 +170,7 @@ def reconcile_status_on_startup(active_threads, buckets_cfg):
     for username, entries in user_entries.items():
         synthetic_thread_status = {}
         works = []
+        snapshot_time = datetime.utcnow().isoformat() + "Z"
         for path_to_bucket, entry in entries:
             works.append(
                 {
@@ -184,8 +186,9 @@ def reconcile_status_on_startup(active_threads, buckets_cfg):
         if not works:
             continue
         synthetic_thread_status["startup"] = {
-            "thread_id": -1,
+            "thread_id": "snapshot",
             "status": "Done" if any(work["nb_objects"] > 0 for work in works) else "Idle",
+            "updated_at": snapshot_time,
             "work": works,
         }
         summary = pretty_print_thread_status(
@@ -197,12 +200,12 @@ def reconcile_status_on_startup(active_threads, buckets_cfg):
         active_threads.record_status(
             username,
             TaskCmd.PROCESS_OBJECTS.lower(),
-            {"summary": summary, "data": json_safe},
+            {"summary": summary, "data": json_safe, "last_updated_at": snapshot_time},
         )
         active_threads.record_status(
             username,
             TaskCmd.PROCESS_OBJECTS,
-            {"summary": summary, "data": json_safe},
+            {"summary": summary, "data": json_safe, "last_updated_at": snapshot_time},
         )
     print("Status store reconciled with pgvector counts.")
 

@@ -80,6 +80,9 @@ class UMRSThreads:
         else:
             self.pool = pool
 
+    def _now_iso(self):
+        return datetime.utcnow().isoformat() + "Z"
+
 
     def _wait_for_key_in_dict(self, cache, key, check_interval=0.05, timeout=60):
         start = time.time()
@@ -268,6 +271,7 @@ class UMRSThreads:
                 "thread_id" : thread_id,
                 "work": array_of_works,
                 "status": ThreadStatus.RUNNING,
+                "updated_at": self._now_iso(),
             }
 
         # print(f"{thread_ident=}\n\t{thread_id=}\n\t{ThreadStatus.RUNNING}" )
@@ -292,6 +296,7 @@ class UMRSThreads:
             if thread_ident in self.thread_dict:
                 entry = self.thread_dict.pop(thread_ident)  # remove  get the full dict
                 entry["status"] = ThreadStatus.DONE    # modify it
+                entry["updated_at"] = self._now_iso()
                 new_key = f"{thread_ident}-{entry['thread_id']}" # done thread keys are prepended with their ID
                 self.thread_dict[new_key] = entry    # reassign back to cache
             else:
@@ -356,6 +361,7 @@ class UMRSThreads:
                     filtered[thread_ident] = {
                         "thread_id": info.get("thread_id"),
                         "status": info.get("status"),
+                        "updated_at": info.get("updated_at"),
                         "work": user_works,
                     }
         return filtered
@@ -385,8 +391,10 @@ class UMRSThreads:
         owner = client_id or "system"
         entry = {
             "summary": payload.get("summary", ""),
-            "generated_at": datetime.utcnow().isoformat() + "Z"
+            "generated_at": self._now_iso(),
         }
+        if "last_updated_at" in payload:
+            entry["last_updated_at"] = payload["last_updated_at"]
         if "data" in payload:
             entry["data"] = _sanitize_status_data(payload["data"])
         if "requires_update" in payload:
@@ -409,9 +417,14 @@ class UMRSThreads:
             safe.append({
                 "thread_id": info.get("thread_id"),
                 "status": info.get("status"),
+                "updated_at": info.get("updated_at"),
                 "work": info.get("work", []),
             })
         return safe
+
+    def _derive_last_updated_at(self, data):
+        timestamps = [entry.get("updated_at") for entry in data if entry.get("updated_at")]
+        return max(timestamps) if timestamps else None
 
 
 
@@ -423,9 +436,12 @@ class UMRSThreads:
             filtered = self.filter_thread_status_for_user(user, key)
             # Include both Running and Done threads, preserving status column
             summary = pretty_print_thread_status(filtered, running_only=False, print_output=False)
-            # print(f"{summary=}")
             json_safe = self._json_safe_thread_status(filtered)
-            self.record_status(user, key, {"summary": summary, "data": json_safe})
+            payload = {"summary": summary, "data": json_safe}
+            last_updated_at = self._derive_last_updated_at(json_safe)
+            if last_updated_at:
+                payload["last_updated_at"] = last_updated_at
+            self.record_status(user, key, payload)
 
 
     def close(self):

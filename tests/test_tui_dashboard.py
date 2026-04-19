@@ -46,10 +46,34 @@ SAMPLE_STATUS = {
     "summaries": {
         "process_objects": {
             "generated_at": "2026-04-18T10:20:00",
-            "summary": "Processed object queue with 3 items still pending and 12 completed.",
+            "last_updated_at": "2026-04-18T10:19:30",
+            "data": [
+                {
+                    "thread_id": "snapshot",
+                    "status": "Done",
+                    "updated_at": "2026-04-18T10:19:30",
+                    "work": [
+                        {
+                            "work_type": "process_objects",
+                            "user": "testuser",
+                            "nb_objects": 12,
+                            "bucket": "user1-textfiles",
+                            "data_base": "pgvector_testuser",
+                            "table_name": "embeddings",
+                        }
+                    ],
+                }
+            ],
+            "summary": "RAW_PRETTY_PRINT_BLOCK\nProcessed object queue with 3 items still pending and 12 completed.",
+        },
+        "PROCESS_OBJECTS": {
+            "generated_at": "2026-04-18T10:18:00",
+            "summary": "LEGACY_UPPERCASE_DUPLICATE",
         },
         "recompute": {
             "generated_at": "2026-04-18T10:22:00",
+            "last_updated_at": "2026-04-18T10:21:55",
+            "data": [],
             "summary": "Recompute finished successfully for all tracked embeddings.",
         },
     },
@@ -92,8 +116,46 @@ class TestDashboardRendering:
 
         plain = console.export_text(clear=False)
         assert "Status Tasks" in plain
-        assert "Summary: process_objects" in plain
+        assert "Details: process_objects" in plain
         assert "pending" in plain
+
+    def test_render_status_tab_shows_per_process_last_update(self):
+        from umrs.tui.dashboard import Dashboard, TAB_STATUS
+
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True, width=180, record=True)
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console, initial_tab=TAB_STATUS)
+
+        dash.render_once()
+
+        plain = console.export_text(clear=False)
+        assert "Last Update" in plain
+        assert "2026-04-18 10:19:30" in plain
+        assert "snapshot" in plain
+        assert "user1-textfiles" in plain
+
+    def test_render_status_tab_deduplicates_case_variants_and_omits_raw_pretty_summary(self):
+        from umrs.tui.dashboard import Dashboard, TAB_STATUS
+
+        buf = StringIO()
+        console = Console(file=buf, force_terminal=True, width=180, record=True)
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console, initial_tab=TAB_STATUS)
+
+        dash.render_once()
+
+        plain = console.export_text(clear=False)
+        assert "PROCESS_OBJECTS" not in plain
+        assert "RAW_PRETTY_PRINT_BLOCK" not in plain
+        assert "1 process" in plain
+
+    def test_status_footer_shows_command_hint(self):
+        from umrs.tui.dashboard import Dashboard, TAB_STATUS
+
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", initial_tab=TAB_STATUS)
+
+        footer = dash._build_footer().plain
+        assert ":" in footer
+        assert "cmd" in footer
 
     def test_status_navigation_moves_status_cursor(self):
         from umrs.tui.dashboard import Dashboard, TAB_STATUS

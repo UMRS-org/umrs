@@ -716,13 +716,13 @@ class MessageQueue:
 
         return reply
 
-    def request_export_embeddings(self, client_id, path_to_bucket, export_format="csv"):
+    def request_export_embeddings(self, client_id, path_to_bucket, export_format="csv", export_profile="minimal"):
         """Send EXPORT_EMBEDDINGS request and receive the serialised result."""
         if self.role != "client":
             raise PermissionError("Only client can call 'request_export_embeddings'")
 
         safe_client_id = (client_id or "").replace(":", "_")
-        safe_args = f"{path_to_bucket};{export_format}".replace(":", "_")
+        safe_args = f"{path_to_bucket};{export_format};{export_profile}".replace(":", "_")
         request_str = f"{TaskCmd.EXPORT_EMBEDDINGS}:{safe_client_id}:{safe_args}"
 
         # Allow a generous receive timeout for large tables

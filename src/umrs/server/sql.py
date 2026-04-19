@@ -176,9 +176,10 @@ class DataBase:
 def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq, zmq_sender_id, key, update_status_callback=None) :
     """Query the DB for embeddings and return a JSON-serialised response.
 
-    ``export_args`` is ``"path_to_bucket;format"`` where *format* is ``csv``
-    or ``jsonl``.  The response is a JSON string with columns + rows so the
-    client can write them to a local file without ever touching the DB.
+    ``export_args`` is ``"path_to_bucket;format;profile"`` where *format* is
+    ``csv`` or ``jsonl`` and *profile* controls which columns are exported.
+    The response is a JSON string with columns + rows so the client can write
+    them to a local file without ever touching the DB.
     """
 
     status = TaskStatus.RUNNING
@@ -188,6 +189,19 @@ def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq
     parts = export_args.split(";")
     path_to_bucket = parts[0]
     export_format = parts[1] if len(parts) > 1 else "csv"
+    export_profile = parts[2] if len(parts) > 2 else "minimal"
+
+    def _select_export_columns(columns):
+        if export_profile == "embedding-only":
+            return ["embedding"] if "embedding" in columns else columns
+        if export_profile != "minimal":
+            return columns
+        preferred = [name for name in ("s3_object", "embedding") if name in columns]
+        if preferred:
+            return preferred
+        if "embedding" in columns:
+            return ["embedding"]
+        return columns
 
     entry = buckets_cfg.get(path_to_bucket)
     if entry is None:
@@ -199,6 +213,8 @@ def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq
         data_base = entry.data_base
         table_name = entry.table_name
         db_name = entry.db_name
+        rows = []
+        selected_columns = []
 
         conn = data_base.get_conn()
         try:
@@ -221,9 +237,10 @@ def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq
                                         ensure_ascii=False)
                     status = TaskStatus.ERROR
                 else:
+                    selected_columns = _select_export_columns(columns)
                     # Fetch all rows
                     cur.execute(sql.SQL("SELECT {} FROM {}").format(
-                        sql.SQL(", ").join(sql.Identifier(c) for c in columns),
+                        sql.SQL(", ").join(sql.Identifier(c) for c in selected_columns),
                         sql.Identifier(table_name),
                     ))
                     rows = cur.fetchall()
@@ -247,10 +264,11 @@ def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq
                 "status": "ok",
                 "database": db_name,
                 "table": table_name,
-                "columns": columns,
+                "columns": selected_columns,
                 "rows": serialised_rows,
                 "rows_exported": len(serialised_rows),
                 "format": export_format,
+                "profile": export_profile,
             }, ensure_ascii=False)
 
             status = TaskStatus.COMPLETED

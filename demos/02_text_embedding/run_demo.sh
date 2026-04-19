@@ -74,7 +74,7 @@ preflight
 log ""
 log "Step 2: Ensuring embedding model is available..."
 MODEL_REPO="${EMBEDDING_MODEL:-intfloat/e5-base-v2}"
-$CLIENT model download "$MODEL_REPO" --scope system --server-side 2>&1 \
+$CLIENT model download "$MODEL_REPO" --scope user --server-side 2>&1 \
     | while IFS= read -r line; do log "  $line"; done
 ok "Embedding model download requested"
 
