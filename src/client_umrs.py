@@ -584,7 +584,8 @@ def main():
     mu_p.add_argument('path', help='Local directory containing model files')
     mu_p.add_argument('--name', required=True, help='Model name for registration')
     mu_p.add_argument('--type', choices=MODEL_TYPE_CHOICES, default='embedding', dest='model_type', help='Model type')
-    mu_p.add_argument('--scope', choices=MODEL_SCOPE_CHOICES, default='system', help='Model scope')
+    mu_p.add_argument('--scope', choices=MODEL_SCOPE_CHOICES, default='user', help='Model scope')
+    mu_p.add_argument('--project-id', default=None, help='Project identifier (required for project scope)')
     mu_p.add_argument('--description', default=None, help='Model description')
     mu_p.add_argument('--staging-dir', default=None,
                        help='Staging root directory (default: UMRS_MODEL_STAGING_ROOT or ~/.config/umrs/models/)')
@@ -777,14 +778,18 @@ def main():
         # API mode: pre-initialize a data queue for the provided username in action args (if any)
         # Some actions require username (upload_*), ping does not.
         if args.action == 'ping':
-            api = UMRSControlAPI(control_mq, os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_')))
+            api = UMRSControlAPI(
+                control_mq,
+                os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_')),
+                admin_token=admin_token,
+            )
             print(api_json(output_format=args.output, **api.ping(timeout_ms=connection.health_check_timeout_ms)))
             control_mq.close()
             sys.exit(0)
         if args.action == 'model':
             # Model registry commands — no config file required, uses ZMQ directly
             client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
-            api = UMRSControlAPI(control_mq, client_id)
+            api = UMRSControlAPI(control_mq, client_id, admin_token=admin_token)
             model_action = args.model_action
             exit_code = 0
             try:
@@ -794,6 +799,7 @@ def main():
                         path=args.path,
                         model_type=args.model_type,
                         scope=args.scope,
+                        project_id=args.project_id,
                         description=args.description,
                         huggingface_id=args.huggingface_id,
                     )
@@ -806,6 +812,8 @@ def main():
                             repo_id=args.repo_id,
                             name=target_name,
                             scope=args.scope,
+                            project_id=args.project_id,
+                            staging_dir=args.staging_dir,
                         )
                     else:
                         # Client-side download: runs on the login node, then registers with server
@@ -840,6 +848,7 @@ def main():
                             path=target_path,
                             model_type='embedding',
                             scope=args.scope,
+                            project_id=args.project_id,
                             huggingface_id=args.repo_id,
                             description=f'Downloaded from {args.repo_id}',
                         )
@@ -872,6 +881,7 @@ def main():
                         path=register_path,
                         model_type=args.model_type,
                         scope=args.scope,
+                        project_id=args.project_id,
                         description=args.description,
                     )
                 else:

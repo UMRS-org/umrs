@@ -1,5 +1,17 @@
 # TODO
 
+## Model Command ACL Hardening (2026-04-19)
+
+**Goal:** Harden the active `umrs-client model {register,download,upload}` path
+so scope enforcement and allowed-path validation apply on the current ZMQ
+command path, not only in the newer API/store layer.
+
+- [ ] M1 Add `--project-id` plumbing to model CLI commands and control payloads
+- [ ] M2 Enforce scope creation rules on the active server-side model command path
+- [ ] M3 Validate model registration and staging paths against approved per-scope rules
+- [ ] M4 Support opt-in custom experimental model roots through validated path patterns
+- [ ] M5 Add focused regression tests for scope denial, project scope handling, and custom allowed paths
+
 ## Vision Presigned S3 Hardening (2026-04-13)
 
 **Goal:** Remove direct S3 credentials from the BentoML vision runtime by
