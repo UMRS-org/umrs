@@ -52,6 +52,15 @@ finally:
 PY
 }
 
+check_server_bootstrap_complete() {
+    local log_offset="$1"
+
+    [[ -f "$LOG_FILE" ]] || return 1
+
+    tail -c "+$((log_offset + 1))" "$LOG_FILE" 2>/dev/null \
+        | grep -Fq "Server configuration done!"
+}
+
 check_rag_ready() {
     curl -sf "http://127.0.0.1:8081/docs" >/dev/null 2>&1
 }
@@ -319,6 +328,11 @@ echo "  Slurm:     ${RIVAULT_SLURM_SCRIPT}"
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
+LOG_START_SIZE=0
+if [[ -f "$LOG_FILE" ]]; then
+    LOG_START_SIZE=$(wc -c < "$LOG_FILE")
+fi
+
 nohup python "${REPO_ROOT}/src/server_umrs.py" \
     -c "${SCRIPT_DIR}/conf_umrs.json" \
     >> "$LOG_FILE" 2>&1 &
@@ -326,16 +340,22 @@ nohup python "${REPO_ROOT}/src/server_umrs.py" \
 SERVER_PID=$!
 echo "$SERVER_PID" > "$PID_FILE"
 
-# Verify the server started (wait up to 30s for real ZMQ readiness)
-echo -n "Waiting for UMRS ZMQ readiness..."
+# Verify the server finished bootstrap before starting dependent services.
+echo -n "Waiting for UMRS server bootstrap..."
 for i in $(seq 1 60); do
-    if check_zmq_ready; then
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        echo " failed (PID ${SERVER_PID} exited) — check ${LOG_FILE}"
+        exit 1
+    fi
+    if check_zmq_ready && check_server_bootstrap_complete "$LOG_START_SIZE"; then
         echo " ready (PID $SERVER_PID)."
         break
     fi
     echo -n "."
     sleep 0.5
-    [[ "$i" -eq 60 ]] && echo " NOTE: server not ready yet — check ${LOG_FILE}"
+    if [[ "$i" -eq 60 ]]; then
+        echo " NOTE: server bootstrap not complete yet — check ${LOG_FILE}"
+    fi
 done
 
 if [[ "$RAG_ENABLED" = true ]]; then
