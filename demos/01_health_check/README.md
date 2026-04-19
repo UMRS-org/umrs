@@ -20,8 +20,8 @@ bash run_demo.sh
 
 ## What This Demo Does
 
-1. **Port connectivity** — checks ZMQ control (5555), ZMQ data (5556), MinIO (9000)
-2. **Ping** the UMRS server via `umrs-client`
+1. **Ping** the UMRS server via `umrs-client` to verify real client connectivity
+2. **Supplemental endpoint checks** — inspects MinIO (9000) and reports raw ZMQ port visibility for debugging
 3. **RAG service** — checks if the optional RAG endpoint (8081) is available
 4. **List buckets** to confirm the user's S3 configuration
 
@@ -42,12 +42,12 @@ bash run_demo.sh
 # Inspect the effective connection first
 umrs-client --output text profile show
 
-# Check port connectivity
-nc -z localhost 5555 && echo "ZMQ OK"
-curl -sf http://localhost:9000/minio/health/live && echo "MinIO OK"
-
 # Ping the UMRS server
 umrs-client ping
+
+# Optional supplemental checks
+curl -sf http://localhost:9000/minio/health/live && echo "MinIO OK"
+nc -z localhost 5555 && echo "ZMQ port visible"
 
 # List configured buckets
 umrs-client list_buckets
@@ -56,13 +56,13 @@ umrs-client list_buckets
 ## Expected Output
 
 ```
-[health_check]   ✓ ZMQ control  (localhost:5555)
-[health_check]   ✓ MinIO S3     (localhost:9000)
 [health_check] Server is ready.
+[health_check]   ✓ MinIO S3     (localhost:9000)
 [health_check]   ✓ RAG service  (http://localhost:8081)
 ```
 
 If checks fail, verify that:
 - The UMRS server is running
+- `umrs-client ping` succeeds through the selected profile
 - SSH tunnels are active (if remote): ports 5555, 5556, 9000, 8081
 - The selected connection profile matches the deployment you are targeting
