@@ -43,24 +43,35 @@ banner "Demo 01: Health Check"
 echo "Config      : ${CONF}"
 echo ""
 
-# ---------- Step 1: Port-level connectivity ----------
-log "Step 1: Check port connectivity..."
+# ---------- Step 1: UMRS service connectivity ----------
+log "Step 1: Ping UMRS server via umrs-client..."
+if preflight; then
+    passed=$((passed + 1))
+else
+    failed=$((failed + 1))
+fi
+echo ""
 
-_check "ZMQ control  (${ZMQ_HOST}:${ZMQ_PORT})" nc -z "$ZMQ_HOST" "$ZMQ_PORT"
+# ---------- Step 2: Service endpoints (supplemental) ----------
+log "Step 2: Check supplemental service endpoints..."
 
-# ZMQ data port binds on-demand — informational only
+# MinIO is checked directly because demos depend on S3 uploads/downloads.
+_check "MinIO S3     (${MINIO_HOST}:${MINIO_PORT})" curl -sf "http://${MINIO_HOST}:${MINIO_PORT}/minio/health/live"
+
+# ZMQ data port binds on-demand after the client negotiates a data channel.
 if nc -z "$ZMQ_HOST" "$ZMQ_DATA_PORT" 2>/dev/null; then
     ok "ZMQ data     (${ZMQ_HOST}:${ZMQ_DATA_PORT})"; passed=$((passed + 1))
 else
     log "  ZMQ data     (${ZMQ_HOST}:${ZMQ_DATA_PORT}) — not yet bound (opens on first client connect, OK)"
 fi
 
-_check "MinIO S3     (${MINIO_HOST}:${MINIO_PORT})" curl -sf "http://${MINIO_HOST}:${MINIO_PORT}/minio/health/live"
-echo ""
-
-# ---------- Step 2: UMRS server ping ----------
-log "Step 2: Ping UMRS server via umrs-client..."
-preflight
+# The control socket may be resolved differently from the effective client path
+# in tunnel mode, so treat the raw port probe as informational only.
+if nc -z "$ZMQ_HOST" "$ZMQ_PORT" 2>/dev/null; then
+    ok "ZMQ control  (${ZMQ_HOST}:${ZMQ_PORT})"
+else
+    log "  ZMQ control  (${ZMQ_HOST}:${ZMQ_PORT}) — raw port probe skipped as pass/fail; umrs-client ping is authoritative"
+fi
 echo ""
 
 # ---------- Step 3: RAG service (optional) ----------
@@ -84,6 +95,6 @@ if [[ "$failed" -eq 0 ]]; then
     log "All healthy! Proceed with Demo 02 (Text Embedding)."
 else
     log "Some checks failed — ensure the server is running and network is connected."
-    log "If remote, check that SSH tunnels are active for ports ${ZMQ_PORT}, ${MINIO_PORT}."
+    log "If remote, check that SSH tunnels are active and that 'umrs-client ping' succeeds."
     exit 1
 fi
