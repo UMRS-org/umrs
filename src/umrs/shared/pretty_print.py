@@ -2,34 +2,61 @@ import pandas as pd
 import sys
 from tabulate import tabulate
 
+
+def _thread_sort_key(thread_status, key):
+    thread_id = thread_status[key].get("thread_id")
+    if isinstance(thread_id, int):
+        return (0, thread_id)
+    return (1, str(thread_id))
+
+
+def _render_thread_id(thread_id):
+    if thread_id in (None, ""):
+        return "N/A"
+    return thread_id
+
+
+def _render_last_update(info):
+    return info.get("updated_at", "-")
+
+
+def _build_thread_status_row(work, thread_id, status, updated_at, running_only):
+    row = [
+        thread_id,
+        work.get("work_type", "N/A"),
+        work.get("user", "N/A"),
+        work.get("nb_objects", "N/A"),
+        work.get("modality_name", "N/A"),
+        work.get("bucket", "N/A"),
+        f"{work.get('data_base', 'N/A')}/{work.get('table_name', 'N/A')}",
+    ]
+    if not running_only:
+        row.append(status)
+    row.append(updated_at)
+    return row
+
+
+def _thread_status_headers(running_only):
+    headers = ["Thread ID", "Work Type", "Username", "Nb Objects", "Modality", "Bucket", "Database/Table"]
+    if not running_only:
+        headers.append("Status")
+    headers.append("Last Update")
+    return headers
+
 def pretty_print_thread_status(thread_status, running_only=True, print_output=True):
     rows = []
-    for key in sorted(thread_status, key=lambda k: thread_status[k]["thread_id"]):
+    for key in sorted(thread_status, key=lambda current: _thread_sort_key(thread_status, current)):
         info = thread_status[key]
-        thread_id = info.get("thread_id", "N/A")
+        thread_id = _render_thread_id(info.get("thread_id", "N/A"))
         status = info.get("status", "N/A")
+        updated_at = _render_last_update(info)
         if status != "Running" and running_only:
             continue
-        works = info.get("work", [])
-        for work in works:
-            nb_objects = work.get("nb_objects", "N/A")
-            modality = work.get("modality_name", "N/A")
-            bucket = work.get("bucket", "N/A")
-            table_name = work.get("table_name", "N/A")
-            data_base = work.get("data_base", "N/A")
-            user = work.get("user", "N/A")
-            work_type = work.get("work_type", "N/A")
-            table_db = f"{data_base}/{table_name}"
-            if running_only:
-                rows.append([thread_id, work_type, user, nb_objects, modality, bucket, table_db])
-            else:
-                rows.append([thread_id, work_type, user, nb_objects, modality, bucket, table_db, status])
+        for work in info.get("work", []):
+            rows.append(_build_thread_status_row(work, thread_id, status, updated_at, running_only))
 
     if rows:
-        if running_only:
-            headers = ["Thread ID", "Work Type", "Username", "Nb Objects", "Modality", "Bucket", "Database/Table"]
-        else:
-            headers = ["Thread ID", "Work Type", "Username", "Nb Objects", "Modality", "Bucket", "Database/Table", "Status"]
+        headers = _thread_status_headers(running_only)
         table = tabulate(rows, headers, tablefmt="fancy_grid")
         message = "Server status:\n" + table
     else:
@@ -54,12 +81,12 @@ def pretty_print_cfg(cfg_dict, print_output=True):
         db_name = entry.db_name
         metadata = entry.metadata
         metadata_str= ""
-        for mkey, mentry in metadata.items():
+        for mentry in metadata.values():
             name = mentry["name"];
-            type = mentry["type"];
+            value_type = mentry["type"];
             if not metadata_str == "":
                 metadata_str += " ; "
-            metadata_str += f"{name} ({type})"
+            metadata_str += f"{name} ({value_type})"
 
         df.loc[len(df)] = [bucket_alias, s3_username, key, xp, modality, db_name, table_name, sql_username, model_name, store_embeddings_flag,  metadata_str]
 

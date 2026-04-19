@@ -34,7 +34,7 @@ If you prefer to run steps individually:
 umrs-client ping
 
 # 2. Ensure the embedding model is available to the server
-umrs-client model download intfloat/e5-base-v2 --scope system --server-side
+umrs-client model download intfloat/e5-base-v2 --scope user --server-side
 
 # 3. Upload the bundled sample files
 umrs-client upload_dir ../sample_data/texts user1-textfiles
@@ -42,8 +42,14 @@ umrs-client upload_dir ../sample_data/texts user1-textfiles
 # 4. Monitor progress
 umrs-client --output text status process_objects
 
-# 5. Once processing is done, export embeddings
+# 5. Once processing is done, export embeddings (default: minimal profile)
 umrs-client export_embeddings user1-textfiles ./results/embeddings.csv --format csv
+
+# 6. Export all stored DB columns when you need the full row
+umrs-client export_embeddings user1-textfiles ./results/embeddings-full.csv --format csv --profile full
+
+# 7. Export only the embedding vector itself
+umrs-client export_embeddings user1-textfiles ./results/embeddings-only.csv --format csv --profile embedding-only
 ```
 
 ## Test Data
@@ -65,6 +71,9 @@ The demo script assumes a configured UMRS client and uses:
 - Model: `intfloat/e5-base-v2` (768-d embeddings via vLLM in Mini-Rivault)
 - Modality: `text`
 
+The model staging step uses `user` scope. `system` scope is admin-only and is
+not required for this demo.
+
 If your site uses a different bucket alias, override it with:
 
 ```bash
@@ -75,7 +84,9 @@ TEXT_BUCKET=my-text-bucket bash run_demo.sh
 
 After a successful run:
 - Embeddings stored in pgvector (`text` table in user database)
-- CSV file at `./embeddings.csv` with columns: `id`, `s3_key`, `embedding`, etc.
+- Default CSV file at `./embeddings.csv` with essential metadata plus the embedding column
+- Optional full export at `./embeddings-full.csv` with all stored DB columns
+- Optional embedding-only export at `./embeddings-only.csv` with just the embedding vector
 - Status shows all `process_objects` tasks as `Done`
 
 ---

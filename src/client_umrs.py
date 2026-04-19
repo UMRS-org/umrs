@@ -374,10 +374,17 @@ def format_status_text(response_payload, default_key):
         if name:
             header_parts.append(name)
         generated_at = entry.get('generated_at')
-        if header_parts or generated_at:
+        last_updated_at = entry.get('last_updated_at')
+        if header_parts or generated_at or last_updated_at:
             header = ' - '.join(header_parts)
+            time_parts = []
             if generated_at:
-                header = f"{header} (generated {generated_at})" if header else f"generated {generated_at}"
+                time_parts.append(f"generated {generated_at}")
+            if last_updated_at:
+                time_parts.append(f"last update {last_updated_at}")
+            if time_parts:
+                time_text = '; '.join(time_parts)
+                header = f"{header} ({time_text})" if header else time_text
             if header:
                 lines.append(header)
         summary_body = entry.get('summary')
@@ -556,6 +563,10 @@ def main():
     ee_p.add_argument(
         '--format', choices=['csv', 'jsonl'], default='csv', dest='export_format',
         help='Output format (default: csv)'
+    )
+    ee_p.add_argument(
+        '--profile', choices=['full', 'minimal', 'embedding-only'], default='minimal', dest='export_profile',
+        help='Export profile: minimal keeps embedding plus essential metadata; embedding-only keeps only the embedding vector'
     )
     ee_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
 
@@ -1190,7 +1201,7 @@ def main():
                     sys.exit(1)
                 # Ask the server to fetch embeddings from the DB
                 raw_response = control_mq.request_export_embeddings(
-                    effective_username, path_to_bucket, args.export_format,
+                    effective_username, path_to_bucket, args.export_format, args.export_profile,
                 )
                 response = _json.loads(raw_response)
                 if response.get('status') != 'ok':
@@ -1227,6 +1238,7 @@ def main():
                     columns=columns,
                     local_path=local_path,
                     format=args.export_format,
+                    profile=response.get('profile', args.export_profile),
                     output_format=args.output
                 ))
             except Exception as e:

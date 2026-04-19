@@ -99,11 +99,12 @@ class UMRSClientConnector:
 
     def export_embeddings(self, bucket_alias: str, local_path: str,
                           fmt: str = "csv",
+                          profile: str = "minimal",
                           db_host: Optional[str] = None,
                           db_user: Optional[str] = None) -> str:
         """Export embeddings to a local file."""
         args = ["--no-check-server", "export_embeddings",
-                bucket_alias, local_path, "--format", fmt]
+                bucket_alias, local_path, "--format", fmt, "--profile", profile]
         if db_host:
             args.extend(["--db-host", db_host])
         if db_user:

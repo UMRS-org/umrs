@@ -17,6 +17,8 @@ Keyboard shortcuts (global):
     1-5         Switch tab
     q / Ctrl+C  Quit
     r           Force refresh
+    :           Open control command prompt
+    a           Open quick actions
     ?           Toggle help overlay
 
 Keyboard shortcuts (Jobs tab):
@@ -174,6 +176,58 @@ def _one_line(text: Optional[str], *, limit: int = 72) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1] + "…"
+
+
+def _iso_label(iso_str: Optional[str]) -> str:
+    if not iso_str:
+        return "—"
+    try:
+        return datetime.fromisoformat(iso_str.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return str(iso_str)
+
+
+def _canonical_status_key(task_key: Optional[str]) -> str:
+    return str(task_key or "").strip().lower()
+
+
+def _iso_sort_value(iso_str: Optional[str]) -> tuple[int, str]:
+    if not iso_str:
+        return (0, "")
+    try:
+        parsed = datetime.fromisoformat(str(iso_str).replace("Z", "+00:00"))
+        return (1, parsed.isoformat())
+    except (ValueError, TypeError):
+        return (0, str(iso_str))
+
+
+def _latest_iso(*values: Optional[str]) -> Optional[str]:
+    present = [value for value in values if value]
+    if not present:
+        return None
+    return max(present, key=_iso_sort_value)
+
+
+def _status_entry_rank(entry: Dict[str, Any]) -> tuple[int, int, int, tuple[int, str]]:
+    data = entry.get("data") or []
+    summary = str(entry.get("summary") or "")
+    timestamp = entry.get("last_updated_at") or entry.get("generated_at")
+    return (1 if data else 0, len(data), len(summary), _iso_sort_value(timestamp))
+
+
+def _merge_status_entries(existing: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
+    preferred = candidate if _status_entry_rank(candidate) >= _status_entry_rank(existing) else existing
+    fallback = existing if preferred is candidate else candidate
+    merged = dict(fallback)
+    merged.update(preferred)
+    merged["data"] = preferred.get("data") or fallback.get("data") or []
+    merged["summary"] = preferred.get("summary") or fallback.get("summary") or "(no summary)"
+    merged["generated_at"] = _latest_iso(existing.get("generated_at"), candidate.get("generated_at"))
+    merged["last_updated_at"] = _latest_iso(
+        existing.get("last_updated_at") or existing.get("generated_at"),
+        candidate.get("last_updated_at") or candidate.get("generated_at"),
+    )
+    return merged
 
 
 def _bool_from_text(raw: str) -> bool:
@@ -479,34 +533,119 @@ class Dashboard:
 
     def _build_status_items(self, parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
         summaries = parsed.get("summaries") or {}
-        pending = set(parsed.get("uncompleted_key_list") or [])
+        pending = {_canonical_status_key(item) for item in (parsed.get("uncompleted_key_list") or [])}
+        normalized: Dict[str, Dict[str, Any]] = {}
+        for task_key, entry in summaries.items():
+            if not isinstance(entry, dict):
+                continue
+            canonical_key = _canonical_status_key(task_key)
+            if not canonical_key:
+                continue
+            existing = normalized.get(canonical_key)
+            normalized[canonical_key] = _merge_status_entries(existing, entry) if existing else dict(entry)
+
         items: List[Dict[str, Any]] = []
         seen = set()
         for task_key in STATUS_TASK_ORDER:
-            entry = summaries.get(task_key)
+            entry = normalized.get(task_key)
             if isinstance(entry, dict):
                 seen.add(task_key)
                 items.append(self._make_status_item(task_key, entry, pending))
-        for task_key in sorted(summaries.keys()):
+        for task_key in sorted(normalized.keys()):
             if task_key in seen:
                 continue
-            entry = summaries.get(task_key)
+            entry = normalized.get(task_key)
             if isinstance(entry, dict):
                 items.append(self._make_status_item(task_key, entry, pending))
         return items
 
     def _make_status_item(self, task_key: str, entry: Dict[str, Any], pending: set[str]) -> Dict[str, Any]:
         generated_at = entry.get("generated_at")
+        last_updated_at = entry.get("last_updated_at") or generated_at
+        process_data = entry.get("data") or []
+        process_rows = self._iter_status_process_rows(process_data)
         summary = entry.get("summary") or "(no summary)"
+        process_count = len(process_data)
+        work_count = 0
+        object_count = 0
+        buckets = set()
+        thread_ids = set()
+        users = set()
+        for process_entry in process_data:
+            thread_id = process_entry.get("thread_id")
+            if thread_id not in (None, ""):
+                thread_ids.add(str(thread_id))
+            works = process_entry.get("work") or []
+            work_count += len(works)
+            for work in works:
+                bucket = work.get("bucket")
+                if bucket:
+                    buckets.add(str(bucket))
+                user = work.get("user")
+                if user:
+                    users.add(str(user))
+                try:
+                    object_count += int(work.get("nb_objects", 0))
+                except (TypeError, ValueError):
+                    pass
+
+        if process_rows:
+            preview_parts = [f"{process_count} process" + ("es" if process_count != 1 else "")]
+            if work_count:
+                preview_parts.append(f"{work_count} work item" + ("s" if work_count != 1 else ""))
+            preview_parts.append(f"{object_count} object" + ("s" if object_count != 1 else ""))
+            if buckets:
+                preview_parts.append(f"{len(buckets)} bucket" + ("s" if len(buckets) != 1 else ""))
+            preview = " • ".join(preview_parts)
+        else:
+            preview = _one_line(summary)
+
         return {
             "key": task_key,
             "generated_at": generated_at,
             "generated_label": str(generated_at or "—"),
-            "age": _ago(generated_at),
+            "last_updated_at": last_updated_at,
+            "last_updated_label": _iso_label(last_updated_at),
+            "age": _ago(last_updated_at),
             "summary": summary,
-            "preview": _one_line(summary),
-            "pending": task_key in pending,
+            "preview": preview,
+            "data": process_data,
+            "process_rows": process_rows,
+            "process_count": process_count,
+            "work_count": work_count,
+            "object_count": object_count,
+            "bucket_count": len(buckets),
+            "bucket_names": sorted(buckets),
+            "thread_ids": sorted(thread_ids),
+            "user_count": len(users),
+            "pending": _canonical_status_key(task_key) in pending,
         }
+
+    @staticmethod
+    def _iter_status_process_rows(status_data: List[Dict[str, Any]]) -> List[List[str]]:
+        rows: List[List[str]] = []
+        for entry in status_data:
+            thread_id = str(entry.get("thread_id", "—"))
+            status = str(entry.get("status", "—"))
+            updated_label = _iso_label(entry.get("updated_at"))
+            works = entry.get("work") or []
+            if not works:
+                rows.append([thread_id, "—", "—", "—", "—", "—", status, updated_label])
+                continue
+            for work in works:
+                rows.append(
+                    [
+                        thread_id,
+                        str(work.get("work_type", "—")),
+                        str(work.get("user", "—")),
+                        str(work.get("nb_objects", "—")),
+                        str(work.get("bucket", "—")),
+                        f"{work.get('data_base', '—')}/{work.get('table_name', '—')}",
+                        status,
+                        updated_label,
+                    ]
+                )
+        return rows
 
     def _refresh_selected_status(self) -> None:
         if not self._status_items:
@@ -1197,7 +1336,7 @@ class Dashboard:
                 f"{choice_hint}"
             )
 
-        common = "[dim]a[/dim] actions  [dim]s[/dim] search  [dim]:[/dim] command  [dim]1-6[/dim] tabs  [dim]?[/dim] help"
+        common = "[dim]:[/dim] cmd  [dim]a[/dim] actions  [dim]?[/dim] help  [dim]1-6[/dim] tabs"
         if self._tab == TAB_JOBS:
             return Text.from_markup(
                 "[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  "
@@ -1207,7 +1346,7 @@ class Dashboard:
         elif self._tab == TAB_STATUS:
             reload_hint = "[dim]R[/dim] reload" if self._config_path else "[dim strikethrough]R reload (no --conf)[/dim strikethrough]"
             return Text.from_markup(
-                f"[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  [dim]Enter[/dim] refresh item  {reload_hint}  {common}"
+                f"[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  [dim]Enter[/dim] refresh item  [dim]:[/dim] cmd  {reload_hint}  [dim]a[/dim] actions  [dim]?[/dim] help"
             )
         elif self._tab in (TAB_MODELS, TAB_WORKFLOWS):
             return Text.from_markup(
@@ -1422,6 +1561,7 @@ class Dashboard:
         list_table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
         list_table.add_column("#", width=3, justify="right")
         list_table.add_column("Task", min_width=14, style="bold")
+        list_table.add_column("Last Update", min_width=19)
         list_table.add_column("Age", width=10)
         list_table.add_column("State", width=9)
         list_table.add_column("Preview", ratio=1)
@@ -1433,6 +1573,7 @@ class Dashboard:
             list_table.add_row(
                 str(idx + 1),
                 item["key"],
+                item["last_updated_label"],
                 item["age"],
                 Text(state, style=state_style),
                 item["preview"],
@@ -1444,12 +1585,39 @@ class Dashboard:
         meta_table.add_column("Value", ratio=1)
         meta_table.add_row("Task", selected["key"])
         meta_table.add_row("Generated", selected["generated_label"])
+        meta_table.add_row("Last Update", selected["last_updated_label"])
         meta_table.add_row("Age", selected["age"])
         meta_table.add_row("State", "pending" if selected["pending"] else "ready")
+        meta_table.add_row("Preview", selected["preview"])
+        if selected["thread_ids"]:
+            meta_table.add_row("Threads", ", ".join(selected["thread_ids"]))
+        if selected["bucket_names"]:
+            meta_table.add_row("Bucket Names", ", ".join(selected["bucket_names"]))
+        if selected["process_rows"]:
+            meta_table.add_row("Processes", str(selected["process_count"]))
+            meta_table.add_row("Work Items", str(selected["work_count"]))
+            meta_table.add_row("Objects", str(selected["object_count"]))
+            meta_table.add_row("Buckets", str(selected["bucket_count"]))
         if client_label:
             meta_table.add_row("Client", client_label)
 
-        detail_group = [meta_table, Text(""), Text(selected["summary"])]
+        detail_group = [meta_table]
+        process_rows = selected["process_rows"]
+        if process_rows:
+            process_table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+            process_table.add_column("Thread", min_width=8)
+            process_table.add_column("Work", min_width=12)
+            process_table.add_column("User", min_width=8)
+            process_table.add_column("Objects", width=8, justify="right")
+            process_table.add_column("Bucket", min_width=12)
+            process_table.add_column("DB/Table", min_width=18)
+            process_table.add_column("Status", min_width=8)
+            process_table.add_column("Last Update", min_width=19)
+            for row in process_rows:
+                process_table.add_row(*row)
+            detail_group.extend([Text(""), process_table])
+        elif selected["summary"]:
+            detail_group.extend([Text(""), Text(selected["summary"])])
         if uncompleted:
             detail_group.extend([
                 Text(""),
@@ -1459,7 +1627,7 @@ class Dashboard:
         body = Layout()
         body.split_row(
             Layout(Panel(list_table, title="[bold]Status Tasks[/bold]", border_style="bright_white"), ratio=2),
-            Layout(Panel(Group(*detail_group), title=f"[bold]Summary: {selected['key']}[/bold]", border_style="bright_blue"), ratio=3),
+            Layout(Panel(Group(*detail_group), title=f"[bold]Details: {selected['key']}[/bold]", border_style="bright_blue"), ratio=3),
         )
 
         layout.split_column(
