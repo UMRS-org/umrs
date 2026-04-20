@@ -76,8 +76,8 @@ class RegisteredEndpoint:
 
     @property
     def litellm_url(self) -> str:
-        """OpenAI-compatible API URL."""
-        return f"http://{self.host}:{self.port}/v1"
+        """Base URL for the LiteLLM proxy (no trailing /v1)."""
+        return f"http://{self.host}:{self.port}"
 
     @property
     def models_url(self) -> str:
@@ -99,7 +99,7 @@ class RegisteredEndpoint:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API response."""
-        return {
+        d = {
             "project_id": self.project_id,
             "model": self.model,
             "job_id": self.job_id,
@@ -114,6 +114,11 @@ class RegisteredEndpoint:
             "error_message": self.error_message,
             "litellm_url": self.litellm_url,
         }
+        # Include served_model_name if available in metadata
+        served = self.metadata.get("served_model_name")
+        if served:
+            d["served_model_name"] = served
+        return d
 
 
 class EndpointRegistry:

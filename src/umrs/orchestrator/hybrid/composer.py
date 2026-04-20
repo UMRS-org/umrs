@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Type
 
 from ..base import (
+    DEFAULT_MINI_RIVAULT_IMAGE,
     EndpointInfo as BaseEndpointInfo,
     JobInfo,
     JobStatus,
@@ -42,7 +43,6 @@ from .wrappers import (
 )
 from .resolvers import (
     ResolverRegistry,
-    ResolvedModel,
 )
 
 logger = logging.getLogger(__name__)
@@ -441,7 +441,7 @@ class HybridOrchestrator(OrchestratorBackend):
         if self._authority == ExecutionAuthority.K8S:
             image = kwargs.get("image", cfg.k8s_image)
         elif self._authority == ExecutionAuthority.COMPOSE:
-            image = kwargs.get("image", "ghcr.io/rccs/mini-rivault:latest")
+            image = kwargs.get("image", cfg.k8s_image or DEFAULT_MINI_RIVAULT_IMAGE)
         else:  # Slurm
             image = kwargs.get("image", cfg.singularity_image)
 

@@ -728,8 +728,33 @@ def launch_rivault_model(model_cfg):
     if cached_model is not None:
         return cached_model
 
-    # --- 1. Select slurm script and get a node ---
-    rivault_slurm_script = get_slurm_script_from_host()
+            job_id = None
+
+    # --- 0b. BentoML models share a single Rivault stack. If another BentoML
+    #          model already has a running job, reuse it instead of submitting
+    #          a second Slurm job that would just PEND forever. ---
+    if job_id is None and model_cfg["model_type"].startswith("bentoml://"):
+        for cached_key in _list_cached_keys():
+            if cached_key == model_type_key:
+                continue
+            # Only reuse jobs from other BentoML models (same Rivault stack)
+            if ":bentoml://" not in str(cached_key):
+                continue
+            cached_job_id = _get_cached_job(cached_key)
+            if cached_job_id is not None and is_slurm_job_running(cached_job_id):
+                print(f"===> Reusing running BentoML Rivault job {cached_job_id} from '{cached_key}' for '{model_type_key}'.")
+                job_id = cached_job_id
+                break
+
+    # --- 1. get a node from SLURM ---
+    # Select slurm script based on VISION_STACK setting.
+    vision_stack = os.environ.get("VISION_STACK", VISION_STACK)
+
+    if model_cfg["model_type"].startswith("bentoml://") and vision_stack == "jens":
+        rivault_slurm_script = get_jens_rivault_slurm_script()
+        print(f"[VISION_STACK=jens] Using Jens's standalone stack: {rivault_slurm_script}")
+    else:
+        rivault_slurm_script = get_slurm_script_from_host()
 
     output_file, error_file, job_id = get_slurm_node(
         rivault_slurm_script, model_type_key,

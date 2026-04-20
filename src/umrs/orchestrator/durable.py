@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Optional
 
 from ..jobs import (
     JobService,
@@ -37,7 +37,9 @@ from ..jobs import (
     create_status_checker,
     ensure_schema,
 )
-from .service import OrchestrationService, ProvisionRequest, ProvisionResult
+from ..model_registry import ensure_schema as ensure_model_registry_schema
+from ..model_registry.store import ModelStore, PathValidator
+from .service import OrchestrationService, ProvisionResult
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +99,7 @@ class DurableOrchestrationService:
         self.db_pool = db_pool
         self._orchestration_service = orchestration_service
         self._job_service: Optional[JobService] = None
+        self._model_store_conn = None
         self._scheduler_interval = scheduler_interval
         self._monitor_interval = monitor_interval
         self._started = False
@@ -148,12 +151,34 @@ class DurableOrchestrationService:
         # Get underlying orchestration components
         orch = self.orchestration_service
 
+        model_store = None
+        path_validator = None
+        self._model_store_conn = self.db_pool.getconn()
+        try:
+            ensure_model_registry_schema(self._model_store_conn)
+            self._model_store_conn.commit()
+            path_validator = PathValidator()
+            model_store = ModelStore(
+                self._model_store_conn,
+                path_validator=path_validator,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to initialize model registry store for durable jobs; "
+                "model_download jobs will be unavailable"
+            )
+            if self._model_store_conn is not None:
+                self.db_pool.putconn(self._model_store_conn)
+                self._model_store_conn = None
+
         # Create backend factory that wraps the orchestrator
         backend_factory = create_backend_factory(
             orchestrator=orch.backend,
             registry=orch.registry,
             port_manager=orch.port_manager,
             get_job_with_attempts=self._job_service.get_job_with_attempts,
+            model_store=model_store,
+            path_validator=path_validator,
         )
         self._job_service.set_backend_factory(backend_factory)
 
@@ -182,6 +207,10 @@ class DurableOrchestrationService:
 
         if self._job_service:
             await self._job_service.shutdown(timeout)
+
+        if self._model_store_conn is not None:
+            self.db_pool.putconn(self._model_store_conn)
+            self._model_store_conn = None
 
         if self._orchestration_service:
             await self._orchestration_service.close()
@@ -225,13 +254,16 @@ class DurableOrchestrationService:
             spec["nodelist_hint"] = request.nodelist_hint
 
         # Submit to job service
-        job_id = self._job_service.submit_endpoint_provision(
+        job_id = self._job_service.submit_job(
             project_id=request.project_id,
             user_id=request.user_id,
+            job_type=JobType.ENDPOINT_PROVISION,
             spec=spec,
             priority=request.priority,
             max_attempts=request.max_attempts,
+            restart_policy=RestartPolicy.ON_CRASH,
             idempotency_key=request.idempotency_key,
+            enqueue=True,
         )
 
         logger.info(
