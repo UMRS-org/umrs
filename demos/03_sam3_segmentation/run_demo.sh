@@ -34,6 +34,11 @@ echo "Bucket alias : ${BUCKET_ALIAS}"
 echo "Image dir    : ${IMAGE_DIR}"
 echo ""
 
+model_visible() {
+    local scope="$1" name="$2"
+    $CLIENT model list --scope "$scope" 2>/dev/null | grep -q "\"name\": \"${name}\""
+}
+
 # ---------- Step 1: Pre-flight ----------
 log "Step 1: Pre-flight checks..."
 preflight
@@ -45,11 +50,19 @@ sleep 3
 
 # ---------- Step 2: Prepare SAM3 model ----------
 log ""
-log "Step 2: Preparing SAM3 model weights..."
+log "Step 2: Checking SAM3 model availability..."
 SAM3_REPO="${SAM3_MODEL_REPO:-facebook/sam2-hiera-small}"
-$CLIENT model download "$SAM3_REPO" --name sam3 --scope system --server-side 2>&1 \
-    | while IFS= read -r line; do log "  $line"; done
-ok "SAM3 model download requested"
+SAM3_NAME="${SAM3_MODEL_NAME:-sam3}"
+SAM3_STAGING_DIR="${SAM3_STAGING_DIR:-}"
+if model_visible system "$SAM3_NAME" || model_visible user "$SAM3_NAME"; then
+    ok "SAM3 model already visible in the registry: ${SAM3_NAME}"
+elif [[ -n "$SAM3_STAGING_DIR" ]]; then
+    $CLIENT model download "$SAM3_REPO" --name "$SAM3_NAME" --scope user --server-side --staging-dir "$SAM3_STAGING_DIR" 2>&1 \
+        | while IFS= read -r line; do log "  $line"; done
+    ok "SAM3 model download requested via SAM3_STAGING_DIR=${SAM3_STAGING_DIR}"
+else
+    die "SAM3 model '${SAM3_NAME}' is not visible. Stage it as an admin, or set SAM3_STAGING_DIR to a writable, allowed server path."
+fi
 
 # ---------- Step 3: Check test images ----------
 log ""

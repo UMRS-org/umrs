@@ -23,6 +23,30 @@ def _require_presigned_urls() -> bool:
     }
 
 
+def _include_full_masks_in_results() -> bool:
+    return os.environ.get("SAM3_INCLUDE_MASKS_IN_RESULTS", "").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _build_results_payload(result: Dict[str, Any], prompt: str, source_image: str) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "boxes": result["boxes"],
+        "scores": result["scores"],
+        "num_objects": result["num_objects"],
+        "prompt": prompt,
+        "source_image": source_image,
+        "mask_shapes": [tuple(mask.shape) for mask in result["masks"]],
+        "contains_full_masks": False,
+    }
+
+    if _include_full_masks_in_results():
+        payload["masks"] = result["masks"]
+        payload["contains_full_masks"] = True
+
+    return payload
+
+
 class SAM3Adapter(VisionModelAdapter):
     """Load and run SAM3 text-prompted segmentation."""
 
@@ -116,17 +140,13 @@ class SAM3Adapter(VisionModelAdapter):
                               Body=png_data, ContentType="image/png")
             response["overlay_s3_key"] = f"s3://{dst_bucket}/{overlay_key}"
 
-        # Upload pickled result arrays (masks, boxes, scores)
+        # Upload a compact result payload by default. Full-resolution masks make
+        # demo downloads multi-gigabyte on large images, so keep them opt-in.
         described = self.describe_outputs(key, config)
         pkl_key = next(k for k in described if k.endswith(".pkl"))
         dst_bucket = output_bucket or bucket
         pkl_data = pickle.dumps(
-            {
-                "masks": result["masks"],
-                "boxes": result["boxes"],
-                "scores": result["scores"],
-                "num_objects": result["num_objects"],
-            },
+            _build_results_payload(result, prompt, response["source_image"]),
             protocol=pickle.HIGHEST_PROTOCOL,
         )
         presigned_url = (presigned_output_urls or {}).get(pkl_key)

@@ -20,8 +20,8 @@ bash run_demo.sh
 ## What This Demo Does
 
 1. **Pre-flight** — verifies server connectivity and `rich` library
-2. **Seed sample jobs** — submits `index_build` and `cleanup` jobs so the
-   Jobs tab has data to display
+2. **Seed sample jobs** — submits a sample `index_build` job so the
+  Jobs tab has data to display
 3. **Jobs tab** — one-shot snapshot of all jobs
 4. **Filtered Jobs view** — only `queued` jobs
 5. **Status tab** — server task summaries (recompute, update, check, etc.)
@@ -47,12 +47,12 @@ bash run_demo.sh
 umrs-client ping
 
 # 2. Verify the rich library is installed
-python3 -c "import rich; print(rich.__version__)"
+python3 -c "import importlib.metadata; print(importlib.metadata.version('rich'))"
 
-# 3. Submit some sample jobs (optional — dashboard works with any existing jobs)
+# 3. Submit a sample job (optional — dashboard works with any existing jobs)
 umrs-client job submit index_build \
-    --spec '{"database": "demo_db", "table": "embeddings"}' \
-    --project demo
+  --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
+  --project demo22
 
 # 4. One-shot snapshot — Jobs tab (default)
 umrs-client monitor --once
@@ -64,6 +64,7 @@ umrs-client monitor --once --tab workflows
 umrs-client monitor --once --tab connection
 
 # 6. Filtered jobs view
+#    This may legitimately show zero rows if nothing is currently queued.
 umrs-client monitor --once --status queued
 
 # 7. Launch the live-refreshing interactive dashboard
@@ -147,7 +148,7 @@ When you pass `-c` / `--conf` pointing to a user config JSON file:
 │ Job ID   │ Type         │ Status   │ Project │ Submitted    │
 ├──────────┼──────────────┼──────────┼─────────┼──────────────┤
 │ abc123.. │ index_build  │ running  │ demo    │ 2 min ago    │
-│ def456.. │ cleanup      │ queued   │ demo    │ 1 min ago    │
+│ def456.. │ endpoint_pr… │ queued   │ demo22  │ 1 min ago    │
 └──────────┴──────────────┴──────────┴─────────┴──────────────┘
 ```
 

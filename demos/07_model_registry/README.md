@@ -13,18 +13,21 @@ models — including user's own trained models.
 
 ### 1. Download models from HuggingFace
 
-By default, the download runs **on the client machine** (login node),
-then registers the path with the server:
+By default, the download runs on the **client machine**, then registers that
+path with the server. This only works when the client and server share the
+same filesystem view (for example, the client is the login node itself or the
+model directory lives on a shared mount).
 
 ```bash
-# Client-side download (default — works even if compute nodes have no internet):
+# Client-side download (only when the server can also see the downloaded path):
 umrs-client model download intfloat/e5-base-v2
 
-# Custom staging directory (e.g. shared filesystem):
-umrs-client model download intfloat/e5-base-v2 --staging-dir /shared/models
+# Custom staging directory (only if your site exposes a writable, allowed root):
+umrs-client model download intfloat/e5-base-v2 --staging-dir /path/to/site-model-root
 
-# Server-side download (if the server machine has internet access):
-umrs-client model download intfloat/e5-base-v2 --server-side
+# Server-side download (recommended for Mac-local clients talking to a remote server):
+umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
+  --staging-dir /path/to/site-user-model-root
 ```
 
 ### 2. Register a model that's already on disk
@@ -32,7 +35,7 @@ umrs-client model download intfloat/e5-base-v2 --server-side
 For **air-gapped machines** or **user's own trained models**:
 
 ```bash
-# System-wide model (admin):
+# System-wide model (admin only):
 umrs-client model register e5-base-v2 /shared/models/e5-base-v2 \
     --type embedding --scope system --description "Multilingual embedding model"
 
@@ -60,15 +63,16 @@ umrs-client model list --scope system
 
 | Scope | Who can see | Typical path | Use case |
 |-------|------------|--------------|----------|
-| `system` | All users | `/shared/models/system/` | Pre-trained models (e5, SAM3, ...) |
+| `system` | All users | Site-managed shared root | Pre-trained models (e5, SAM3, ...) |
 | `project` | Project members | `/shared/projects/<id>/models/` | Team-trained models |
 | `user` | Owner only | `/home/<user>/models/` | Personal experiments |
 
 ## How It Works
 
 - **`model download`** (default: client-side):
-  1. Downloads from HuggingFace on the login node
+  1. Downloads from HuggingFace on the client machine
   2. Sends `MODEL_REGISTER` to the server to record the path
+  3. Therefore it only succeeds when that path is also visible on the server
 - **`model download --server-side`**:
   1. Sends `MODEL_DOWNLOAD` to the server
   2. Server downloads in a **background thread** (non-blocking)
@@ -84,9 +88,10 @@ For production with PostgreSQL, the full `model_registry/store.py`
 ## User's Own Model Workflow
 
 1. **Train** your model anywhere (local machine, Jupyter, Slurm job)
-2. **Copy** the weights to a path visible to the UMRS server:
-   - Shared NFS: `/shared/users/<you>/models/my-model`
-   - Your home dir: `/home/<you>/models/my-model`
+2. **Copy** the weights to a path visible to the UMRS server.
+   On Mac → HPC workflows, this usually means staging the directory on the
+   server first, then using `model register`, or using
+   `model download --server-side` with a site-approved staging root.
 3. **Register**: `umrs-client model register my-model /path/to/weights --scope user`
 4. **Use** in your config JSON by referencing the registered name
 

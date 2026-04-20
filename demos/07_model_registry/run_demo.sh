@@ -31,6 +31,8 @@ DEMO_TAG="model_reg" source "${SCRIPT_DIR}/../lib/common.sh"
 STAGING_ROOT="${UMRS_MODEL_STAGING_ROOT:-/shared/models}"
 REMOTE_HMAE_MODEL_PATH="${UMRS_REMOTE_HMAE_MODEL_PATH:-/shared/models/hmae}"
 DEMO_LOCAL_MODEL_UPLOAD="${DEMO_LOCAL_MODEL_UPLOAD:-0}"
+MODEL_SCOPE="${MODEL_SCOPE:-user}"
+MODEL_STAGING_DIR="${MODEL_STAGING_DIR:-}"
 
 banner "Demo 07: Model Registration & Staging"
 echo ""
@@ -52,7 +54,7 @@ if [[ -n "$SHARED_MODEL_PATH" && -d "$SHARED_MODEL_PATH" ]]; then
     MODEL_NAME=$(basename "$SHARED_MODEL_PATH")
     log "  Registering '${MODEL_NAME}' at ${SHARED_MODEL_PATH}..."
     $CLIENT model register "${MODEL_NAME}" "${SHARED_MODEL_PATH}" \
-        --type embedding --scope system \
+        --type embedding --scope "$MODEL_SCOPE" \
         --description "Auto-registered from shared models directory" || true
 else
     log "  Skipping — set UMRS_SHARED_MODEL_PATH to a server-side model dir"
@@ -64,14 +66,18 @@ HMAE_LOCAL_MODEL_DIR="${HMAE_LOCAL_MODEL_DIR:-}"
 if [[ -n "$HMAE_LOCAL_MODEL_DIR" ]] && [[ -d "$HMAE_LOCAL_MODEL_DIR" ]]; then
     log "Step 3a: Uploading real HMAE model via 'model upload'..."
     log "  Source (local):       $HMAE_LOCAL_MODEL_DIR"
-    log "  Register path (HPC): $REMOTE_HMAE_MODEL_PATH"
-    $CLIENT model upload "$HMAE_LOCAL_MODEL_DIR" \
-        --name "hmae-pretrained" \
-        --type embedding --scope system \
-        --description "HMAE ViT pretrained checkpoint" \
-        --register-path "$REMOTE_HMAE_MODEL_PATH" \
-        --force
-    ok "HMAE model upload complete"
+    if [[ -n "$REMOTE_HMAE_MODEL_PATH" ]]; then
+        log "  Register path (HPC): $REMOTE_HMAE_MODEL_PATH"
+        $CLIENT model upload "$HMAE_LOCAL_MODEL_DIR" \
+            --name "hmae-pretrained" \
+            --type embedding --scope "$MODEL_SCOPE" \
+            --description "HMAE ViT pretrained checkpoint" \
+            --register-path "$REMOTE_HMAE_MODEL_PATH" \
+            --force
+        ok "HMAE model upload complete"
+    else
+        warn "Skipping HMAE upload — set UMRS_REMOTE_HMAE_MODEL_PATH to a server-visible register path"
+    fi
 else
     log "Step 3a: Skipping HMAE upload (set HMAE_LOCAL_MODEL_DIR to enable)"
 fi
@@ -115,7 +121,11 @@ echo ""
 # Step 6: Download a model from HuggingFace (optional, requires HF access)
 if [ "${DEMO_DOWNLOAD:-0}" = "1" ]; then
     log "Step 6: Download model (server-side)..."
-    $CLIENT model download intfloat/e5-base-v2 --scope system --server-side
+    if [[ -n "$MODEL_STAGING_DIR" ]]; then
+        $CLIENT model download intfloat/e5-base-v2 --scope "$MODEL_SCOPE" --server-side --staging-dir "$MODEL_STAGING_DIR"
+    else
+        warn "Skipping server-side download — set MODEL_STAGING_DIR to a writable, allowed server path"
+    fi
     echo ""
     log "Models after download:"
     $CLIENT model list

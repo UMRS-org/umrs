@@ -92,7 +92,13 @@ class AuthContext:
         """Check if this is a service account."""
         return self.role == UserRole.SERVICE
 
-    def can_execute_command(self, command: str, target_user: Optional[str] = None) -> bool:
+    def can_execute_command(
+        self,
+        command: str,
+        target_user: Optional[str] = None,
+        *,
+        log_denial: bool = True,
+    ) -> bool:
         """
         Check if user can execute a command.
 
@@ -111,23 +117,26 @@ class AuthContext:
 
         # Check if command requires admin
         if cmd_upper in ADMIN_ONLY_COMMANDS:
-            logger.warning(
-                f"User {self.username} attempted admin command {cmd_upper}"
-            )
+            if log_denial:
+                logger.warning(
+                    f"User {self.username} attempted admin command {cmd_upper}"
+                )
             return False
 
         # For user-allowed commands, check scope
         if cmd_upper in USER_ALLOWED_COMMANDS:
             # Users can only operate on their own data
             if target_user and target_user != self.username:
-                logger.warning(
-                    f"User {self.username} attempted to access {target_user}'s data"
-                )
+                if log_denial:
+                    logger.warning(
+                        f"User {self.username} attempted to access {target_user}'s data"
+                    )
                 return False
             return True
 
         # Unknown command - deny by default
-        logger.warning(f"Unknown command {cmd_upper} - denying access")
+        if log_denial:
+            logger.warning(f"Unknown command {cmd_upper} - denying access")
         return False
 
     def filter_by_ownership(self, data: dict) -> dict:

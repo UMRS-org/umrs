@@ -197,6 +197,65 @@ class StepSpec:
         )
 
 
+def _normalize_execution_parallel_steps(
+    steps_data: List[Dict[str, Any]],
+    execution_data: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """Translate legacy ``execution.parallel`` shorthand into ``depends_on``.
+
+    The workflow engine only executes DAGs expressed via ``depends_on``.
+    Demo workflows and docs may still use ``execution.parallel`` to mean that
+    a contiguous group of steps should receive the same upstream input keys and
+    fan back into the next serial step.
+    """
+
+    normalized_steps = [dict(step) for step in steps_data]
+    parallel_names = execution_data.get("parallel")
+    if not parallel_names:
+        return normalized_steps
+
+    if not isinstance(parallel_names, list) or any(
+        not isinstance(name, str) for name in parallel_names
+    ):
+        raise ValueError("execution.parallel must be a list of step names")
+
+    if len(set(parallel_names)) != len(parallel_names):
+        raise ValueError("execution.parallel contains duplicate step names")
+
+    step_names = [step.get("name") for step in normalized_steps if "name" in step]
+    missing = [name for name in parallel_names if name not in step_names]
+    if missing:
+        missing_csv = ", ".join(missing)
+        raise ValueError(
+            f"execution.parallel references unknown step(s): {missing_csv}"
+        )
+
+    if any("depends_on" in step for step in normalized_steps):
+        return normalized_steps
+
+    parallel_set = set(parallel_names)
+    previous_serial_name: Optional[str] = None
+    current_parallel_group: List[str] = []
+
+    for step in normalized_steps:
+        step_name = step.get("name")
+
+        if step_name in parallel_set:
+            step["depends_on"] = [previous_serial_name] if previous_serial_name else []
+            current_parallel_group.append(step_name)
+            continue
+
+        if current_parallel_group:
+            step["depends_on"] = list(current_parallel_group)
+            current_parallel_group = []
+        else:
+            step["depends_on"] = [previous_serial_name] if previous_serial_name else []
+
+        previous_serial_name = step_name
+
+    return normalized_steps
+
+
 @dataclass
 class OutputSpec:
     """Describes the final output format of the workflow."""
@@ -292,6 +351,10 @@ class WorkflowDefinition:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "WorkflowDefinition":
         mode_str = data.get("execution_mode", "in_process")
+        steps_data = _normalize_execution_parallel_steps(
+            data["steps"],
+            data.get("execution", {}),
+        )
         return cls(
             name=data["name"],
             version=data.get("version", "1.0"),
@@ -300,7 +363,7 @@ class WorkflowDefinition:
             requirements=data.get("requirements", []),
             env=data.get("env", {}),
             resources=ResourceSpec.from_dict(data.get("resources", {})),
-            steps=[StepSpec.from_dict(s) for s in data["steps"]],
+            steps=[StepSpec.from_dict(s) for s in steps_data],
             output=OutputSpec.from_dict(data.get("output", {})),
             execution_mode=ExecutionMode(mode_str),
         )

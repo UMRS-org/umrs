@@ -170,15 +170,15 @@ umrs-client --output text workflow list --name hmae-full-pipeline
 umrs-client upload_dir ../../tmp/spring8-data/spring8concrete user1-hmae
 
 # 4. Trigger the registered workflow against that bucket
-umrs-client run-workflow hmae-full-pipeline --bucket user1-hmae
+umrs-client workflow run hmae-full-pipeline --bucket user1-hmae
 
 # 5. Download results written by the workflow
 umrs-client download_results user1-hmae ./results/workflow --force-overwrite
 ```
 
-### When to use `run-workflow`
+### When to use `workflow run`
 
-Use `umrs-client run-workflow ...` when you want to execute the registered
+Use `umrs-client workflow run ...` when you want to execute the registered
 workflow definition explicitly. Use `run_demo.sh` when you want to exercise the
 site's existing HMAE experience wiring without re-registering a custom
 workflow package.

@@ -13,6 +13,8 @@ from umrs.client.control_commands import (
     STATUS_CHOICES,
     configure_admin_token_parser,
     configure_job_cancel_parser,
+    configure_job_list_parser,
+    configure_job_status_parser,
     configure_job_submit_parser,
     configure_model_download_parser,
     configure_model_list_parser,
@@ -91,6 +93,14 @@ def _extract_bucket_aliases(user_cfg):
     return sorted(aliases)
 
 
+def _resolve_control_client_id(user_cfg=None):
+    if isinstance(user_cfg, dict):
+        username = user_cfg.get("username")
+        if username:
+            return username
+    return os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+
+
 def _build_monitor_capabilities(client_id, admin_token=None, user_cfg=None):
     auth_ctx = create_auth_context_from_request(client_id, token=admin_token)
     target_user = auth_ctx.username or client_id
@@ -100,10 +110,10 @@ def _build_monitor_capabilities(client_id, admin_token=None, user_cfg=None):
         "has_user_config": isinstance(user_cfg, dict),
         "bucket_aliases": _extract_bucket_aliases(user_cfg),
         "allowed_actions": {
-            "recompute": auth_ctx.can_execute_command(TaskCmd.RECOMPUTE, target_user=target_user),
-            "update": auth_ctx.can_execute_command(TaskCmd.UPDATE, target_user=target_user),
-            "check": auth_ctx.can_execute_command(TaskCmd.CHECK, target_user=target_user),
-            "reload": auth_ctx.can_execute_command(TaskCmd.RELOAD, target_user=target_user),
+            "recompute": auth_ctx.can_execute_command(TaskCmd.RECOMPUTE, target_user=target_user, log_denial=False),
+            "update": auth_ctx.can_execute_command(TaskCmd.UPDATE, target_user=target_user, log_denial=False),
+            "check": auth_ctx.can_execute_command(TaskCmd.CHECK, target_user=target_user, log_denial=False),
+            "reload": auth_ctx.can_execute_command(TaskCmd.RELOAD, target_user=target_user, log_denial=False),
         },
     }
 
@@ -456,14 +466,14 @@ def action_list_buckets(bucket_cfg, username, output_format):
     return api_json(buckets=buckets, output_format=output_format)
 
 def perform_upload_text(s3, full_bucket_name, text, data_mq, metadata_args):
-    s3_key = s3_store_txt(s3, full_bucket_name, text, data_mq, metadata_args)
+    s3_key = s3_store_txt(s3, full_bucket_name, "", text, data_mq, metadata_args)
     return s3_key
 
 def perform_upload_image(s3, full_bucket_name, file_path, data_mq, metadata_args):
-    return s3_store_image(s3, full_bucket_name, file_path, data_mq, metadata_args)
+    return s3_store_image(s3, full_bucket_name, "", file_path, data_mq, metadata_args)
 
 def perform_upload_textfile(s3, full_bucket_name, file_path, data_mq, metadata_args):
-    return s3_store_text_file(s3, full_bucket_name, file_path, data_mq, metadata_args)
+    return s3_store_text_file(s3, full_bucket_name, "", file_path, data_mq, metadata_args)
 
 def resolve_bucket(bucket_store, bucket_alias):
     entry = bucket_store.get(
@@ -638,7 +648,7 @@ def main():
                        help='Overwrite existing model directory in staging root')
 
     # --- Job tracking commands ---
-    job_p = subparsers.add_parser('job', help='Job commands (submit, cancel); use \'status\' to query running jobs')
+    job_p = subparsers.add_parser('job', help='Job commands (submit, status, list, cancel)')
     job_sub = job_p.add_subparsers(dest='job_action', required=True)
 
     # job submit
@@ -648,6 +658,14 @@ def main():
     # job cancel
     jc_p = job_sub.add_parser('cancel', help='Cancel a running job')
     configure_job_cancel_parser(jc_p)
+
+    # job status
+    jst_p = job_sub.add_parser('status', help='Show a specific durable job')
+    configure_job_status_parser(jst_p)
+
+    # job list
+    jl_p = job_sub.add_parser('list', help='List durable jobs with optional filters')
+    configure_job_list_parser(jl_p)
 
     # --- Workflow upload command ---
     uw_p = subparsers.add_parser('upload-workflow', help='Upload a workflow directory (with workflow.json + step scripts) to the server')
@@ -659,12 +677,16 @@ def main():
     configure_workflow_run_parser(rw_p)
 
     # --- Workflow registry commands ---
-    wf_p = subparsers.add_parser('workflow', help='Workflow registry commands (list)')
+    wf_p = subparsers.add_parser('workflow', help='Workflow registry commands (list, run)')
     wf_sub = wf_p.add_subparsers(dest='workflow_action', required=True)
 
     # workflow list
     wl_p = wf_sub.add_parser('list', help='List registered workflows')
     configure_workflow_list_parser(wl_p)
+
+    # workflow run
+    wr_p = wf_sub.add_parser('run', help='Trigger execution of a registered workflow on the server')
+    configure_workflow_run_parser(wr_p)
 
     # --- Monitor (TUI dashboard) ---
     mon_p = subparsers.add_parser('monitor', help='Live-refreshing multi-tab system monitor (TUI)')
@@ -823,15 +845,15 @@ def main():
         if args.action == 'ping':
             api = UMRSControlAPI(
                 control_mq,
-                os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_')),
+                _resolve_control_client_id(user),
                 admin_token=admin_token,
             )
             print(api_json(output_format=args.output, **api.ping(timeout_ms=connection.health_check_timeout_ms)))
             control_mq.close()
             sys.exit(0)
         if args.action == 'model':
-            # Model registry commands — no config file required, uses ZMQ directly
-            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            # Model registry commands can use the configured username when available.
+            client_id = _resolve_control_client_id(user)
             api = UMRSControlAPI(control_mq, client_id, admin_token=admin_token)
             model_action = args.model_action
             exit_code = 0
@@ -960,8 +982,7 @@ def main():
                 control_mq.close()
             sys.exit(exit_code)
         if args.action == 'job':
-            # Job tracking commands — no config file required
-            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            client_id = _resolve_control_client_id(user)
             api = UMRSControlAPI(control_mq, client_id)
             job_action = args.job_action
             exit_code = 0
@@ -979,6 +1000,16 @@ def main():
                     )
                 elif job_action == 'cancel':
                     parsed = api.cancel_job(args.job_id)
+                elif job_action == 'status':
+                    parsed = api.get_job(args.job_id)
+                elif job_action == 'list':
+                    parsed = api.list_jobs(
+                        project=getattr(args, 'project', None),
+                        status=getattr(args, 'status', None),
+                        job_type=getattr(args, 'job_type', None),
+                        limit=getattr(args, 'limit', 200),
+                        offset=getattr(args, 'offset', 0),
+                    )
                 else:
                     print(api_json(status='error', message=f'Unknown job action: {job_action}', output_format=args.output))
                     control_mq.close()
@@ -990,7 +1021,26 @@ def main():
                         exit_code = 1
                 else:
                     if parsed.get('status') == 'ok':
-                        print(f"OK: {parsed.get('message', '')}")
+                        if job_action == 'list':
+                            jobs = parsed.get('jobs', [])
+                            if not jobs:
+                                print('No jobs found.')
+                            else:
+                                for job in jobs:
+                                    print(
+                                        f"  {job.get('job_id',''):18s}  "
+                                        f"{job.get('status',''):10s}  "
+                                        f"{job.get('job_type',''):18s}  "
+                                        f"{job.get('project_id','')}"
+                                    )
+                        elif job_action == 'status':
+                            job = parsed.get('job', {})
+                            print(f"job_id={job.get('job_id', '')}")
+                            print(f"status={job.get('status', '')}")
+                            print(f"job_type={job.get('job_type', '')}")
+                            print(f"project_id={job.get('project_id', '')}")
+                        else:
+                            print(f"OK: {parsed.get('message', '')}")
                     else:
                         print(f"Error: {parsed.get('message', 'unknown error')}")
                         exit_code = 1
@@ -1004,9 +1054,7 @@ def main():
             sys.exit(exit_code)
         if args.action == 'monitor':
             # Multi-tab TUI system monitor — config file optional (enables reload)
-            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
-            if isinstance(user, dict) and user.get('username'):
-                client_id = user['username']
+            client_id = _resolve_control_client_id(user)
             try:
                 from umrs.tui.dashboard import Dashboard
             except ImportError:
@@ -1044,14 +1092,16 @@ def main():
                 control_mq.close()
             sys.exit(0)
         if args.action == 'workflow':
-            # Workflow registry commands — no config file required
-            client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            client_id = _resolve_control_client_id(user)
             api = UMRSControlAPI(control_mq, client_id)
             wf_action = args.workflow_action
             exit_code = 0
             try:
                 if wf_action == 'list':
                     parsed = api.list_workflows(scope=args.scope, user=args.user, name=args.name)
+                elif wf_action == 'run':
+                    params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
+                    parsed = api.run_workflow(workflow_name=args.workflow_name, params=params, bucket=args.bucket)
                 else:
                     print(api_json(status='error', message=f'Unknown workflow action: {wf_action}', output_format=args.output))
                     control_mq.close()
@@ -1063,13 +1113,16 @@ def main():
                         exit_code = 1
                 else:
                     if parsed.get('status') == 'ok':
-                        workflows = parsed.get('workflows', [])
-                        if not workflows:
-                            print("No workflows registered.")
+                        if wf_action == 'run':
+                            print(f"OK: {parsed.get('message', '')}")
                         else:
-                            for w in workflows:
-                                n_steps = len(w.get('steps', []))
-                                print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps} step(s)  {w.get('description','')}")
+                            workflows = parsed.get('workflows', [])
+                            if not workflows:
+                                print("No workflows registered.")
+                            else:
+                                for w in workflows:
+                                    n_steps = len(w.get('steps', []))
+                                    print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps} step(s)  {w.get('description','')}")
                     else:
                         print(f"Error: {parsed.get('message', 'unknown error')}")
                         exit_code = 1
@@ -1085,13 +1138,7 @@ def main():
             import tempfile
             import zipfile
             exit_code = 0
-            # Use the config username when available so the data-queue port
-            # matches the one allocated for upload_dir (critical for SSH tunnels
-            # that only forward a single data port).
-            if user and isinstance(user, dict) and user.get('username'):
-                client_id = user['username']
-            else:
-                client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            client_id = _resolve_control_client_id(user)
             src_path = os.path.abspath(args.path)
             if not os.path.isdir(src_path):
                 print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
@@ -1144,16 +1191,13 @@ def main():
                 control_mq.close()
             sys.exit(exit_code)
         if args.action == 'run-workflow':
-            if user and isinstance(user, dict) and user.get('username'):
-                client_id = user['username']
-            else:
-                client_id = os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+            client_id = _resolve_control_client_id(user)
             api = UMRSControlAPI(control_mq, client_id)
             workflow_name = args.workflow_name
             exit_code = 0
             try:
                 params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
-                parsed = api.run_workflow(workflow_name=workflow_name, params=params)
+                parsed = api.run_workflow(workflow_name=workflow_name, params=params, bucket=args.bucket)
                 if args.output == 'json':
                     print(_json.dumps(parsed, ensure_ascii=False))
                     if parsed.get('status') != 'ok':
@@ -1206,7 +1250,12 @@ def main():
             # Use configured username as client id for control plane
             # Determine a stable client id for control-plane requests
             client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', '_')
-            api = UMRSControlAPI(control_mq, client_id, configure_file if configure_file and config_state.user.valid else None)
+            api = UMRSControlAPI(
+                control_mq,
+                client_id,
+                configure_file if configure_file and config_state.user.valid else None,
+                admin_token=admin_token,
+            )
             try:
                 parsed = api.maintenance(args.action)
                 if parsed.get('status') == 'ok':
@@ -1456,17 +1505,10 @@ def main():
         timeout = 1
         _wait_start = time.time()
         while not done: # loop until we are sure the server has done with this bucket
-            #get the list of objects on s3 server
-            objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
-            #down load these object talink into account if we force overwrite or not
-            downloaded_files, _ = download_objects(s3, objects_list, checksums, args.local_path,
-                                files_allready_received=objects_received,
-                                force_overwrite=args.force_overwrite, verbose=args.verbose, print_only_new=print_only_new)
-            objects_received.update(downloaded_files)
-            # for now print only new dowloaded files
-            print_only_new = True
-            # now we need to check if the server is still computing things for this bucket
-            # ask the server
+            # Check whether the server is still computing for this bucket before
+            # downloading results. Some workflows create temporary artifacts that
+            # are deleted before completion; downloading too early can capture
+            # those transient files locally.
             raw_response = control_mq.request_status(effective_username, TaskCmd.PROCESS_OBJECTS)
             if raw_response is None:
                 break;
@@ -1511,7 +1553,7 @@ def main():
         # print("Done. Final check...")
         # Do it one more time in case the server finished after the last check
         # get the list of objects on s3 server
-        objects_list, total_size, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+        objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
         #down load these object talink into account if we force overwrite or not
         downloaded_files, _ = download_objects(s3, objects_list, checksums, args.local_path,
                             files_allready_received=objects_received,

@@ -21,7 +21,7 @@ PluginSpec → Validate → Fetch → Install → Execute → Complete
 
 ```bash
 cd demos/21_remote_plugins
-bash run_demo.sh
+python3 simulate_plugins.py results
 ```
 
 ## What This Demo Does
@@ -41,46 +41,10 @@ This demo does not use `umrs-client` because it runs entirely locally
 as a Python simulation. You can run it step by step:
 
 ```bash
-# 1. Run the plugin simulation
-#    The Python script defines 3 plugins, validates them,
+# 1. Run the plugin simulation.
+#    The script defines 3 plugins, validates them,
 #    simulates execution, and writes an audit log.
-python3 - results/ << 'EOF'
-import json, sys, time
-from pathlib import Path
-
-results_dir = Path(sys.argv[1])
-results_dir.mkdir(parents=True, exist_ok=True)
-
-# Define plugin specs with different source types:
-# - git_repo:   clone from a Git repository
-# - s3_wheel:   download a Python wheel from S3
-# - local_path: load from a local filesystem path
-plugins = [
-    {
-        "name": "image-embedder",
-        "version": "1.2.0",
-        "source_type": "git_repo",
-        "source_uri": "https://github.com/example/image-embedder.git",
-        "entrypoint": "image_embedder:ImageEmbedderPlugin",
-        "config": {"model": "clip-vit-base", "batch_size": 32},
-    },
-    {
-        "name": "pdf-parser",
-        "version": "0.9.0",
-        "source_type": "s3_wheel",
-        "source_uri": "s3://plugins/pdf_parser-0.9.0-py3-none-any.whl",
-        "entrypoint": "pdf_parser:PDFParserPlugin",
-    },
-    {
-        "name": "local-analyzer",
-        "version": "0.1.0",
-        "source_type": "local_path",
-        "source_uri": "/opt/plugins/local_analyzer",
-        "entrypoint": "analyzer:AnalyzerPlugin",
-    },
-]
-# ... (see run_demo.sh for full simulation logic)
-EOF
+python3 simulate_plugins.py results
 
 # 2. View the generated audit log
 cat results/audit_log.json

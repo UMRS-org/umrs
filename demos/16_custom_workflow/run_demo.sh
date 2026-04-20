@@ -59,7 +59,10 @@ JSON_EOF
 cat > "${WORKFLOW_DIR}/counter.py" << 'PYEOF'
 """Custom step: count words and characters in text files."""
 
-class WordCounter:
+from umrs.pipeline_sdk import Step, StepContext, StepResult
+
+
+class WordCounter(Step):
     name = "count_words"
 
     def setup(self, config):
@@ -68,7 +71,7 @@ class WordCounter:
     def teardown(self):
         pass
 
-    def run(self, ctx):
+    def run(self, ctx: StepContext) -> StepResult:
         results = {}
         for key in ctx.input_keys:
             if key.endswith(".txt"):
@@ -83,15 +86,18 @@ class WordCounter:
                 }
 
         import json
-        summary = json.dumps(results, indent=2)
-        ctx.upload_bytes("word_count_results.json", summary.encode())
 
-        return type("R", (), {
-            "output_keys": ["word_count_results.json"],
-            "embeddings": None,
-            "checksums": {},
-            "metadata": {"summary": results},
-        })()
+        summary = json.dumps(results, indent=2)
+        ctx.upload_bytes(
+            "word_count_results.json",
+            summary.encode(),
+            content_type="application/json",
+        )
+
+        return StepResult(
+            output_keys=["word_count_results.json"],
+            metadata=[{"summary": results}],
+        )
 PYEOF
 ok "Workflow files created"
 
@@ -101,6 +107,14 @@ log "Step 3: Uploading custom workflow to server..."
 $CLIENT upload-workflow "$WORKFLOW_DIR" --name "custom-text-counter" 2>&1 \
     | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
+
+log "Reloading server configuration..."
+if [[ -n "${UMRS_ADMIN_TOKEN:-}" ]]; then
+    $CLIENT --admin-token "$UMRS_ADMIN_TOKEN" reload 2>/dev/null || warn "reload returned non-zero"
+else
+    warn "UMRS_ADMIN_TOKEN not set; reload may be rejected on auth-enforced deployments"
+    $CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+fi
 
 # ---------- Step 4: Upload sample data ----------
 log ""

@@ -13,6 +13,7 @@
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - BentoML vision service available on compute node
 #   - workflow.json + steps/ uploaded to server
+#   - On auth-enforced deployments, set UMRS_ADMIN_TOKEN for reload
 #
 # Usage:
 #   bash run_demo.sh                          # use sample images
@@ -49,7 +50,12 @@ ok "Workflow uploaded"
 
 # Reload to pick up the new workflow
 log "Reloading server configuration..."
-$CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+if [[ -n "${UMRS_ADMIN_TOKEN:-}" ]]; then
+    $CLIENT --admin-token "$UMRS_ADMIN_TOKEN" reload 2>/dev/null || warn "reload returned non-zero"
+else
+    warn "UMRS_ADMIN_TOKEN not set; reload may be rejected on auth-enforced deployments"
+    $CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+fi
 sleep 3
 
 # ---------- Step 3: Prepare and upload images ----------
@@ -102,7 +108,7 @@ ok "Results saved to ${RESULTS_DIR}/"
 log ""
 banner "Demo 09 Complete"
 
-REPORT="${RESULTS_DIR}/analysis/report.json"
+REPORT="${RESULTS_DIR}/report.json"
 if [[ -f "$REPORT" ]]; then
     log "Aggregate report:"
     cat "$REPORT"
@@ -114,6 +120,8 @@ fi
 log ""
 log "Pipeline outputs:"
 log "  - Segmentation metadata: results/*_segment_meta.json"
-log "  - Segmentation masks:    results/*_segment_masks.npz"
-log "  - Cropped patches:       results/patches/"
-log "  - Analysis reports:       results/analysis/"
+log "  - Segmentation preview:  results/*_sam3_seg.png"
+log "  - Raw SAM3 payload:      results/*_sam3_results.pkl"
+log "  - Cropped patches:       results/*_patch_*.png"
+log "  - Patch statistics:      results/*_patch_*_stats.json"
+log "  - Aggregate report:      results/report.json"

@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+import httpx
+
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
@@ -509,6 +511,86 @@ def _endpoint_sort_key(endpoint: RegisteredEndpoint) -> tuple[int, Any]:
     return (status_rank.get(endpoint.status, -1), activity)
 
 
+def _endpoint_supports_openai(endpoint: RegisteredEndpoint) -> bool:
+    metadata = endpoint.metadata or {}
+    if "supports_openai" in metadata:
+        return bool(metadata["supports_openai"])
+
+    model_name = str(endpoint.model)
+    return model_name.startswith("openai://") or ":openai://" in model_name
+
+
+def _resolve_registry_base_url(endpoint: RegisteredEndpoint) -> str:
+    metadata = endpoint.metadata or {}
+    port = metadata.get("litellm_port")
+
+    if port is None and (
+        endpoint.backend == "slurm-podman"
+        or "rivault_profiles" in metadata
+        or "supports_openai" in metadata
+    ):
+        try:
+            port = get_site_config().network.litellm_port
+        except Exception:
+            port = os.getenv("NGINX_LITELLM_DOCKER_PORT") or os.getenv("RIVAULT_REMOTE_PORT")
+
+    resolved_port = int(port or endpoint.port)
+    return f"http://{endpoint.host}:{resolved_port}/v1"
+
+
+def _list_remote_models(base_url: str, api_key: str) -> List[str]:
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
+    try:
+        with httpx.Client(timeout=2.0, trust_env=False) as client:
+            resp = client.get(base_url.rstrip("/") + "/models", headers=headers)
+        if resp.status_code != 200:
+            return []
+        payload = resp.json()
+    except Exception:
+        return []
+
+    models: List[str] = []
+    for item in payload.get("data", []):
+        model_id = str(item.get("id", "")).strip()
+        if model_id:
+            models.append(model_id)
+    return models
+
+
+def _build_registry_candidate_models(
+    endpoint: RegisteredEndpoint,
+    desired_model: str,
+    known_ingestion_models: set[str],
+    api_key: str,
+) -> tuple[str, List[str]]:
+    base_url = _resolve_registry_base_url(endpoint)
+    available_models = _list_remote_models(base_url, api_key)
+
+    if desired_model in available_models:
+        return base_url, [desired_model]
+
+    candidate_models = [
+        model_name
+        for model_name in available_models
+        if model_name not in known_ingestion_models
+    ]
+
+    if candidate_models:
+        return base_url, candidate_models
+
+    model_name = str(endpoint.model)
+    if (
+        model_name == desired_model
+        or (
+            model_name not in known_ingestion_models
+            and "://" not in model_name
+        )
+    ):
+        return base_url, [model_name]
+
+    return base_url, []
+
+
 def _probeable_registry_endpoints(
     endpoints: List[RegisteredEndpoint],
 ) -> List[RegisteredEndpoint]:
@@ -578,36 +660,54 @@ def _build_llm_candidates() -> List[ResolvedLLMEndpoint]:
         reverse=True,
     )
     for endpoint in exact_matches:
-        add_candidate(
-            ResolvedLLMEndpoint(
-                model_name=endpoint.model,
-                base_url=endpoint.litellm_url,
-                api_key=api_key,
-                source="registry-exact",
-                job_id=endpoint.job_id,
-            )
+        if not _endpoint_supports_openai(endpoint):
+            continue
+        base_url, candidate_models = _build_registry_candidate_models(
+            endpoint,
+            desired_model,
+            set(),
+            api_key,
         )
+        for model_name in candidate_models:
+            add_candidate(
+                ResolvedLLMEndpoint(
+                    model_name=model_name,
+                    base_url=base_url,
+                    api_key=api_key,
+                    source="registry-exact",
+                    job_id=endpoint.job_id,
+                )
+            )
 
-    known_ingestion_models = _detect_ingestion_models_from_config(DB_MODEL_STORE)
+    known_ingestion_models = set(_detect_ingestion_models_from_config(DB_MODEL_STORE))
     fallback_endpoints = sorted(
         [
             endpoint
             for endpoint in usable_registry_endpoints
-            if endpoint.model != desired_model and endpoint.model not in known_ingestion_models
+            if endpoint.model != desired_model
         ],
         key=_endpoint_sort_key,
         reverse=True,
     )
     for endpoint in fallback_endpoints:
-        add_candidate(
-            ResolvedLLMEndpoint(
-                model_name=endpoint.model,
-                base_url=endpoint.litellm_url,
-                api_key=api_key,
-                source="registry-fallback",
-                job_id=endpoint.job_id,
-            )
+        if not _endpoint_supports_openai(endpoint):
+            continue
+        base_url, candidate_models = _build_registry_candidate_models(
+            endpoint,
+            desired_model,
+            known_ingestion_models,
+            api_key,
         )
+        for model_name in candidate_models:
+            add_candidate(
+                ResolvedLLMEndpoint(
+                    model_name=model_name,
+                    base_url=base_url,
+                    api_key=api_key,
+                    source="registry-fallback",
+                    job_id=endpoint.job_id,
+                )
+            )
 
     stale_exact_matches = sorted(
         [endpoint for endpoint in transitional_registry_endpoints if endpoint.model == desired_model],
@@ -615,45 +715,66 @@ def _build_llm_candidates() -> List[ResolvedLLMEndpoint]:
         reverse=True,
     )
     for endpoint in stale_exact_matches:
-        add_candidate(
-            ResolvedLLMEndpoint(
-                model_name=endpoint.model,
-                base_url=endpoint.litellm_url,
-                api_key=api_key,
-                source="registry-stale-exact",
-                job_id=endpoint.job_id,
-            )
+        if not _endpoint_supports_openai(endpoint):
+            continue
+        base_url, candidate_models = _build_registry_candidate_models(
+            endpoint,
+            desired_model,
+            set(),
+            api_key,
         )
+        for model_name in candidate_models:
+            add_candidate(
+                ResolvedLLMEndpoint(
+                    model_name=model_name,
+                    base_url=base_url,
+                    api_key=api_key,
+                    source="registry-stale-exact",
+                    job_id=endpoint.job_id,
+                )
+            )
 
     stale_fallback_endpoints = sorted(
         [
             endpoint
             for endpoint in transitional_registry_endpoints
-            if endpoint.model != desired_model and endpoint.model not in known_ingestion_models
+            if endpoint.model != desired_model
         ],
         key=_endpoint_sort_key,
         reverse=True,
     )
     for endpoint in stale_fallback_endpoints:
-        add_candidate(
-            ResolvedLLMEndpoint(
-                model_name=endpoint.model,
-                base_url=endpoint.litellm_url,
-                api_key=api_key,
-                source="registry-stale-fallback",
-                job_id=endpoint.job_id,
-            )
+        if not _endpoint_supports_openai(endpoint):
+            continue
+        base_url, candidate_models = _build_registry_candidate_models(
+            endpoint,
+            desired_model,
+            known_ingestion_models,
+            api_key,
         )
+        for model_name in candidate_models:
+            add_candidate(
+                ResolvedLLMEndpoint(
+                    model_name=model_name,
+                    base_url=base_url,
+                    api_key=api_key,
+                    source="registry-stale-fallback",
+                    job_id=endpoint.job_id,
+                )
+            )
 
     if not explicit_base_url:
-        add_candidate(
-            ResolvedLLMEndpoint(
-                model_name=desired_model,
-                base_url="http://localhost:8000/v1",
-                api_key=api_key,
-                source="default",
+        default_base_url = "http://localhost:8000/v1"
+        default_models = _list_remote_models(default_base_url, api_key)
+        if desired_model in default_models:
+            add_candidate(
+                ResolvedLLMEndpoint(
+                    model_name=desired_model,
+                    base_url=default_base_url,
+                    api_key=api_key,
+                    source="default",
+                )
             )
-        )
 
     return candidates
 
@@ -682,7 +803,7 @@ def _invoke_llm_with_candidates(
 ) -> tuple[Any, ResolvedLLMEndpoint]:
     """Try QA LLM candidates in order until one succeeds."""
     if not candidates:
-        raise RuntimeError("No LLM candidates configured")
+        raise RuntimeError("No chat-capable LLM endpoint available")
 
     last_error: Optional[Exception] = None
     for candidate in candidates:
@@ -695,7 +816,7 @@ def _invoke_llm_with_candidates(
 
     if last_error is not None:
         raise last_error
-    raise RuntimeError("No LLM candidates configured")
+    raise RuntimeError("No chat-capable LLM endpoint available")
 
 
 def _response_text(response: Any) -> str:

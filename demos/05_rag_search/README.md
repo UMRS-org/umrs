@@ -47,7 +47,7 @@ the compose stack.
 ```bash
 curl -s -X POST http://localhost:8081/rag/search \
   -H 'Content-Type: application/json' \
-  -d '{"query": "seismic wave propagation methods", "top_k": 5}'
+  -d '{"query": "seismic wave propagation methods", "top_k": 5, "bucket_alias": "user1-textfiles", "modality": "text_file"}'
 ```
 
 Parameters:
@@ -62,7 +62,7 @@ Parameters:
 ```bash
 curl -s -X POST http://localhost:8081/rag/qa \
   -H 'Content-Type: application/json' \
-  -d '{"query": "How is ML used in geophysics?", "top_k": 5}'
+  -d '{"query": "How is ML used in geophysics?", "top_k": 5, "bucket_alias": "user1-textfiles", "modality": "text_file"}'
 ```
 
 Additional parameters:
@@ -70,8 +70,12 @@ Additional parameters:
 - `max_context_chunks` — max retrieved chunks to feed to LLM (default: 8)
 - `enable_query_rewrite` — LLM rewrites query into sub-queries before retrieval (default: true)
 
-> **Note**: `/rag/qa` requires a running LLM backend (vLLM via Mini-Rivault).
-> The `/rag/search` endpoints work without an LLM.
+> **Note**: `/rag/qa` requires a chat-capable LLM backend (for example, a
+> Mini-RiVault stack whose LiteLLM `/v1/models` endpoint exposes an
+> instruction/chat model). On multi-experience deployments you should also
+> scope requests with `bucket_alias` and `modality`, otherwise retrieval may
+> fail with an ambiguity error. The `/rag/search` endpoints still work with an
+> embedding-only backend.
 
 ### Interactive docs
 

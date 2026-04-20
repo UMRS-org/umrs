@@ -8,6 +8,12 @@ the consistency between S3 objects and the pgvector embedding database.
 - UMRS server running and reachable
 - `umrs-client` available
 - At least one user configured with data already uploaded (run `demos/02_text_embedding/` first)
+- On auth-enforced deployments, an admin token exported as `UMRS_ADMIN_TOKEN`
+  or passed via `--admin-token` (see `demos/23_auth_enforcement/`)
+
+> **Note**: `check`, `update`, `recompute`, and `reload` are maintenance
+> commands. On deployments with role enforcement enabled they require admin
+> role even when you only target your own data.
 
 ## Commands
 
@@ -26,7 +32,7 @@ Verify that every object in S3 has a matching embedding in pgvector,
 and that checksums match:
 
 ```bash
-umrs-client check
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" check
 ```
 
 Output shows per-bucket: matches, mismatches, not-found, errors.
@@ -37,7 +43,7 @@ Re-embed only the objects that are missing or have stale embeddings
 (e.g., the file was re-uploaded with different content):
 
 ```bash
-umrs-client update
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" update
 ```
 
 This is **incremental** — it skips objects whose embeddings already match.
@@ -48,7 +54,7 @@ Force a full re-embedding of every object in every bucket. Use this after
 upgrading the embedding model:
 
 ```bash
-umrs-client recompute
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute
 ```
 
 **Warning**: This overwrites all existing embeddings. For large datasets,

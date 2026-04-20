@@ -27,10 +27,21 @@ run_demo.sh → jens_client.py → VisionFrontend /vision_task
 3. Python 3 with `bentoml>=1.4` installed
 4. Volume slice images (PNG format recommended)
 
+## Current Validation Note
+
+The current `rccs-cloud` validation environment does not expose a ready
+VisionFrontend at `http://localhost:3000/readyz`, so this demo is blocked until
+that service is started or tunneled locally.
+
+Also note that the current `umrs-client` does not expose a dedicated
+`presign` subcommand. The checked-in `run_demo.sh` already falls back to
+`s3://` references automatically, so prefer `IMAGE_MODE=s3` or
+`IMAGE_MODE=local` for manual runs.
+
 ## Quick Start
 
 ```bash
-# Default: reconstruct mode, presigned S3 URLs
+# Default: reconstruct mode
 bash run_demo.sh
 
 # All 3 modes sequentially
@@ -52,20 +63,17 @@ IMAGE_MODE=s3 BUCKET_ALIAS=user1-hmae bash run_demo.sh
 ## Running Manually
 
 This demo bypasses `umrs-client` for inference and calls the BentoML
-service directly. However, `umrs-client` is still used for uploading
-images and generating presigned URLs.
+service directly. `umrs-client` is still used for staging images, but in the
+current CLI the practical manual paths are `s3://` or local-file input.
 
 ```bash
 # 1. Check VisionFrontend service readiness
 curl -sf http://localhost:3000/readyz && echo "Service ready"
 
-# 2. Upload images to S3 via umrs-client (for presigned URL mode)
+# 2. Upload images to S3 via umrs-client
 umrs-client upload_dir ./volume_slices user1-hmae
 
-# 3. Generate a presigned URL for each image
-umrs-client presign user1-hmae volume_170.png
-
-# 4. Submit HMAE inference via the jens_client.py helper
+# 3. Submit HMAE inference via the jens_client.py helper
 #    --task selects the HMAE mode: reconstruct, mae, or features.
 #    Each mode produces different output:
 #      reconstruct: reconstructed image (prediction tensor)
@@ -76,20 +84,20 @@ python3 ../lib/jens_client.py \
     --port 3000 \
     --model hmae \
     --task "reconstruct" \
-    --image "https://presigned-url-from-step-3" \
+    --image "s3://user1-hmae/volume_170.png" \
     --output-dir ./results/reconstruct \
     --timeout 300
 
-# 5. Run all 3 modes on the same images
+# 4. Run all 3 modes on the same images
 for mode in reconstruct mae features; do
     python3 ../lib/jens_client.py \
         --server http://localhost --port 3000 \
         --model hmae --task "$mode" \
-        --image "https://presigned-url" \
+        --image "s3://user1-hmae/volume_170.png" \
         --output-dir "./results/$mode" --timeout 300
 done
 
-# 6. Results are saved as pickle files organized by mode
+# 5. Results are saved as pickle files organized by mode
 ls results/reconstruct/*.pkl
 ls results/mae/*.pkl
 ls results/features/*.pkl
@@ -104,7 +112,7 @@ ls results/features/*.pkl
 | `JENS_TOKEN` | _(none)_ | Bearer token |
 | `HMAE_MODE` | `reconstruct` | `reconstruct`, `mae`, `features`, or `all` |
 | `MAX_IMAGES` | `3` | Max images to process per mode |
-| `IMAGE_MODE` | `presigned` | `presigned`, `s3`, or `local` |
+| `IMAGE_MODE` | `presigned` | `presigned`, `s3`, or `local` (`presigned` currently falls back to `s3://`) |
 | `BUCKET_ALIAS` | `user1-hmae` | S3 bucket for presigned/s3 mode |
 
 ## Output

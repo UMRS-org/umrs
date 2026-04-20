@@ -11,6 +11,8 @@ UMRS server, send data through it, and download processed results.
 ## Quick Start
 
 ```bash
+export UMRS_ADMIN_TOKEN=...
+
 cd demos/16_custom_workflow
 bash run_demo.sh
 ```
@@ -46,13 +48,19 @@ mkdir -p workflow
 #    execute them when data arrives.
 umrs-client upload-workflow ./workflow --name "custom-text-counter"
 
-# 4. Upload text data to the workflow's bucket
+# 4. Reload server configuration
+#    The workflow-backed bucket alias is configured from user_script://...
+#    and the server must reload after the workflow upload so the bucket can
+#    be activated with the newly uploaded Step implementation.
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
+
+# 5. Upload text data to the workflow's bucket
 #    Files uploaded to this bucket will be processed by the custom workflow.
 #    The server detects new objects and runs the "count_words" step on each
 #    text file, producing a word_count_results.json output.
 umrs-client upload_dir ../sample_data/texts user1-custom-text
 
-# 5. Download the processed results
+# 6. Download the processed results
 #    Retrieves all output files from the bucket to a local directory.
 #    The main output is word_count_results.json with per-file statistics.
 umrs-client download_results user1-custom-text ./results --force-overwrite

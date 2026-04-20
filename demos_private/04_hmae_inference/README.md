@@ -42,17 +42,21 @@ HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir bash run_demo.sh
 # 1. Verify server connectivity
 umrs-client ping
 
-# 2. (Optional) Register a local HMAE model checkpoint
-#    Use this when you have pre-downloaded HMAE weights and want to
-#    register them as a system-scoped model for the server to use.
-umrs-client model register "hmae-pretrained" /path/to/hmae_checkpoint_dir \
-    --type embedding --scope system \
-    --description "HMAE ViT pretrained checkpoint"
+# 2. (Optional) Upload a local HMAE model checkpoint
+#    On a local-client / remote-server deployment, a plain `model register`
+#    path only works for paths that already exist on the server. Use
+#    `model upload` plus an explicit server-visible register path instead.
+umrs-client model upload /path/to/hmae_checkpoint_dir \
+  --name "hmae-pretrained" \
+  --type embedding --scope user \
+  --description "HMAE ViT pretrained checkpoint" \
+  --register-path /path/to/site-user-model-root/hmae-pretrained \
+  --force
 
 # 3. Upload volume slice images to the HMAE bucket
 #    The server will automatically dispatch images to the BentoML
 #    vision service running HMAE on GPU via Slurm.
-umrs-client upload_dir ../03_sam3_segmentation/test_data_full user1-hmae
+umrs-client upload_dir ../../demos/03_sam3_segmentation/test_data_full user1-hmae
 
 # 4. Download reconstruction results
 #    Waits for server-side HMAE processing and retrieves output
@@ -65,7 +69,7 @@ umrs-client download_results user1-hmae ./results --force-overwrite
 | Setting | Default |
 |---|---|
 | Bucket alias | `user1-hmae` |
-| Default image dir | `../03_sam3_segmentation/test_data_full` |
+| Default image dir | `../../demos/03_sam3_segmentation/test_data_full` |
 | Result dir | `results/` |
 
 ## Notes

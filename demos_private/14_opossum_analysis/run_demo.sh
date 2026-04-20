@@ -28,7 +28,7 @@
 # Optional env vars:
 #   UMRS_USER_CONF   — path to user config
 #   GEN_TEST_VIDEOS  — "1" to generate synthetic test videos instead
-#   VIDEO_BUCKET     — bucket alias for video uploads (default: user1-textfiles)
+#   VIDEO_BUCKET     — bucket alias for video uploads (default: user1-video)
 #   MAX_VIDEOS       — limit the number of videos to process (default: all)
 # =============================================================================
 set -Eeuo pipefail
@@ -36,14 +36,31 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="opossum" source "${SCRIPT_DIR}/../lib/common.sh"
 
-# Reuse user1-textfiles bucket for now (file-type bucket).
-# For a dedicated opossum experience, add one to your user config and reload.
-BUCKET_ALIAS="${VIDEO_BUCKET:-user1-textfiles}"
+# Use the configured movie bucket from the active user config.
+# The uploaded private workflow is still site-specific; this bucket at least
+# accepts video uploads on the current rccs-cloud validation setup.
+BUCKET_ALIAS="${VIDEO_BUCKET:-user1-video}"
 
 # Default to the real observation data from 2026-03-24
 REAL_DATA_DIR="${SCRIPT_DIR}/../../tmp/opossum/data/20260324"
 VIDEO_DIR="${1:-${REAL_DATA_DIR}}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
+
+extract_status_from_cli_output() {
+    python3 -c 'import json, sys
+payload = sys.stdin.read().splitlines()
+for line in reversed(payload):
+    line = line.strip()
+    if not line or not line.startswith("{"):
+        continue
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    print(data.get("status", ""))
+    sys.exit(0)
+sys.exit(1)'
+}
 
 banner "Demo 14: Opossum Video Motion Analysis"
 echo "User config  : ${CONF}"
@@ -96,8 +113,13 @@ fi
 # ---------- Step 4: Upload videos ----------
 log ""
 log "Step 4: Uploading videos to bucket '${BUCKET_ALIAS}'..."
-$CLIENT upload_dir "${VIDEO_DIR}" "$BUCKET_ALIAS"
-ok "Videos uploaded — server will process automatically"
+UPLOAD_JSON="$($CLIENT --output json upload_dir "${VIDEO_DIR}" "$BUCKET_ALIAS")"
+printf '%s\n' "$UPLOAD_JSON"
+if [[ "$(printf '%s\n' "$UPLOAD_JSON" | extract_status_from_cli_output || true)" == "ok" ]]; then
+    ok "Videos uploaded — server will process automatically"
+else
+    warn "Video upload was not accepted by the server for bucket '${BUCKET_ALIAS}'"
+fi
 UPLOAD_DONE=$SECONDS
 
 # ---------- Step 5: Run local analysis (fallback if server-side not configured) ----------
@@ -176,10 +198,13 @@ fi
 # ---------- Step 6: Try downloading server-side results ----------
 log ""
 log "Step 6: Attempting to download server-side results..."
-$CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite 2>/dev/null || {
-    warn "Server-side download returned non-zero (may not have opossum experience configured)"
+DOWNLOAD_JSON="$($CLIENT --output json download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite 2>/dev/null || true)"
+if [[ -n "$DOWNLOAD_JSON" ]] && [[ "$(printf '%s\n' "$DOWNLOAD_JSON" | extract_status_from_cli_output || true)" == "ok" ]]; then
+    printf '%s\n' "$DOWNLOAD_JSON"
+else
+    warn "Server-side download was not available (workflow may not be wired to '${BUCKET_ALIAS}')"
     log "  Local analysis results are in: ${RESULTS_DIR}/"
-}
+fi
 
 # ---------- Summary ----------
 log ""

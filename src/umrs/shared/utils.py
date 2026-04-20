@@ -166,6 +166,47 @@ def merge_chunks_by_tokens(chunks, max_tokens, tokenizer, original_text):
 
     return merged_chunks
 
+
+def _chunk_text_without_nlp(text, tokenizer=None, max_tokens=None):
+    if tokenizer is None or max_tokens is None or max_tokens <= 0:
+        return [{
+            "text": text,
+            "start": 0,
+            "end": len(text),
+            "num_tokens": 0 if not text else 1,
+            "md5": compute_md5(text),
+        }]
+
+    encoding = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
+    input_ids = encoding["input_ids"]
+    offsets = encoding["offset_mapping"]
+
+    if not input_ids:
+        return [{
+            "text": "",
+            "start": 0,
+            "end": 0,
+            "num_tokens": 0,
+            "md5": compute_md5(""),
+        }]
+
+    chunks = []
+    for index in range(0, len(input_ids), max_tokens):
+        sub_ids = input_ids[index:index + max_tokens]
+        sub_offsets = offsets[index:index + max_tokens]
+        sub_start = sub_offsets[0][0]
+        sub_end = sub_offsets[-1][1]
+        sub_text = text[sub_start:sub_end]
+        chunks.append({
+            "text": sub_text,
+            "start": sub_start,
+            "end": sub_end,
+            "num_tokens": len(sub_ids),
+            "md5": compute_md5(sub_text),
+        })
+
+    return chunks
+
 def flatten_text_chunks(texts, nlp, tokenizer, max_tokens):
     """
     Splits a list of texts into smaller chunks that respect the token limit of a transformer model.
@@ -184,9 +225,12 @@ def flatten_text_chunks(texts, nlp, tokenizer, max_tokens):
     flat_chunks = []
     chunks_by_text = []
     for text in texts:
-        doc = nlp(text)
-        chunks = chunk_text_by_max_tokens(doc, tokenizer, max_tokens)
-        chunks = merge_chunks_by_tokens(chunks, max_tokens, tokenizer, text)
+        if nlp is None:
+            chunks = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=max_tokens)
+        else:
+            doc = nlp(text)
+            chunks = chunk_text_by_max_tokens(doc, tokenizer, max_tokens)
+            chunks = merge_chunks_by_tokens(chunks, max_tokens, tokenizer, text)
         flat_chunks.extend([chunk["text"] for chunk in chunks])
         chunks_by_text.append(chunks)
     return flat_chunks, chunks_by_text

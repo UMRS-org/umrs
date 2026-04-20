@@ -26,6 +26,11 @@ echo "Bucket alias : ${BUCKET_ALIAS}"
 echo "Sample data  : ${SAMPLE_DIR}"
 echo ""
 
+model_visible() {
+    local scope="$1" name="$2"
+    $CLIENT model list --scope "$scope" 2>/dev/null | grep -q "\"name\": \"${name}\""
+}
+
 wait_for_embeddings_csv() {
     local max="${1:-60}" sleep_sec="${2:-10}"
     local out_file="${RESULTS_DIR}/embeddings.csv"
@@ -74,9 +79,19 @@ preflight
 log ""
 log "Step 2: Ensuring embedding model is available..."
 MODEL_REPO="${EMBEDDING_MODEL:-intfloat/e5-base-v2}"
-$CLIENT model download "$MODEL_REPO" --scope user --server-side 2>&1 \
-    | while IFS= read -r line; do log "  $line"; done
-ok "Embedding model download requested"
+MODEL_NAME="${EMBEDDING_MODEL_NAME:-${MODEL_REPO##*/}}"
+MODEL_STAGING_DIR="${MODEL_STAGING_DIR:-}"
+if model_visible system "$MODEL_NAME" || model_visible user "$MODEL_NAME"; then
+    ok "Embedding model already visible in the registry: ${MODEL_NAME}"
+elif [[ -n "$MODEL_STAGING_DIR" ]]; then
+    $CLIENT model download "$MODEL_REPO" --scope user --server-side --staging-dir "$MODEL_STAGING_DIR" 2>&1 \
+        | while IFS= read -r line; do log "  $line"; done
+    ok "Embedding model download requested via MODEL_STAGING_DIR=${MODEL_STAGING_DIR}"
+else
+    warn "Embedding model '${MODEL_NAME}' is not visible in the registry."
+    warn "Continuing because some deployments pre-stage models outside the user-visible catalog."
+    warn "Set MODEL_STAGING_DIR to a writable, allowed server path if staging is required."
+fi
 
 # ---------- Step 3: Upload text data ----------
 log ""

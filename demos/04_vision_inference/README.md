@@ -57,8 +57,12 @@ your own model:
 
 1. **Register** the model with UMRS:
    ```bash
-   umrs-client model register my-model /path/to/model --type embedding --scope system
+   umrs-client model register my-model /path/to/model --type embedding --scope user
    ```
+
+   On a local-client / remote-server deployment, use `model upload` with an
+   explicit `--register-path` when the model files only exist on your laptop.
+   `system` scope is admin-only.
 
 2. **Add an experience** to your config JSON that references the model.
 
@@ -89,3 +93,7 @@ your own model:
 3. The vision service loads the model, runs inference, and writes results
    back to S3
 4. `download_results` retrieves the output files to your local machine
+
+For SAM3-backed experiences, the result pickle is compact by default so demo
+downloads stay practical. Full-resolution mask arrays can be re-enabled on the
+server with `SAM3_INCLUDE_MASKS_IN_RESULTS=1`.

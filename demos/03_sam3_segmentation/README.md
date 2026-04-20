@@ -44,14 +44,24 @@ bash run_demo.sh
 5. Polls task status until complete
 6. Downloads segmentation results (masks, bounding boxes, scores)
 
+The `*_sam3_results.pkl` artifact is intentionally compact by default on shared
+deployments. It contains boxes, scores, object count, and mask shapes. Set the
+server-side environment variable `SAM3_INCLUDE_MASKS_IN_RESULTS=1` only when you
+explicitly need full-resolution mask arrays.
+
 ## Running Manually
 
 ```bash
-# 1. Ensure vision profile is active
-export RIVAULT_PROFILES="harness vllm vision-bentoml"
+# 1. Ensure the server deployment already includes the vision profile
+#    On rccs-cloud this is configured in site.yaml, so no client-side export is needed.
 
-# 2. Ensure the SAM3 model is available to the server
-umrs-client model download facebook/sam2-hiera-small --name sam3 --scope system --server-side
+# 2. Verify that the SAM3 model is already visible to the server
+umrs-client model list --scope system
+umrs-client model list --scope user
+
+# Optional: only if your site exposes a writable, allowed staging root
+umrs-client model download facebook/sam2-hiera-small --name sam3 \
+  --scope user --server-side --staging-dir /path/to/site-user-model-root
 
 # 3. Upload images
 umrs-client upload_dir ./test_data_full user1-sam3
@@ -64,8 +74,9 @@ umrs-client download_results user1-sam3 ./results --force-overwrite
 
 ### Mini-Rivault Profile
 
-The vision profile must be enabled for the Slurm job. Set the environment
-variable before launching:
+The vision profile must be enabled in the server-side RiVault launch context.
+For a local single-machine deployment you can export it before starting the
+server:
 
 ```bash
 export RIVAULT_PROFILES="harness vllm vision-bentoml"
@@ -73,6 +84,8 @@ export RIVAULT_PROFILES="harness vllm vision-bentoml"
 
 This tells `serve-model.slurm` to include the `bentoml-vision` service in the
 Mini-Rivault stack. Traffic reaches BentoML through NGINX's `/vision/` prefix.
+On `rccs-cloud`, the profile is already set in the site config used by the
+native server.
 
 ### Vision Model Config
 
@@ -99,6 +112,10 @@ Environment overrides in `env.vision`:
 SAM3_MODEL_PATH=./rivault/models/sam3
 RIVAULT_PROFILES="harness vllm vision-bentoml"
 ```
+
+On shared deployments, `sam3` is usually pre-staged by an administrator.
+Normal users should not expect to create a new `system`-scoped SAM3 model from
+the demo shell.
 
 ## Adapter Architecture
 

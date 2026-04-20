@@ -67,6 +67,19 @@ class TestAdminRoleEnforcement:
         for cmd in ADMIN_ONLY_COMMANDS:
             assert auth.can_execute_command(cmd) is False
 
+    def test_user_admin_probe_can_skip_denial_logging(self, caplog):
+        """Capability probes can suppress denial warnings without changing auth."""
+        auth = AuthContext(
+            user_id="user-uuid",
+            username="user1",
+            role=UserRole.USER,
+        )
+
+        with caplog.at_level("WARNING"):
+            assert auth.can_execute_command("RELOAD", log_denial=False) is False
+
+        assert "attempted admin command" not in caplog.text
+
     def test_user_can_execute_allowed_commands(self):
         """Regular users can execute user-allowed commands."""
         auth = AuthContext(

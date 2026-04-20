@@ -22,6 +22,9 @@ Step/`workflow.json` pattern.
 ## Quick Start
 
 ```bash
+# Auth-enforced deployments need an admin token for reload
+export UMRS_ADMIN_TOKEN=...
+
 # From demos/ directory
 bash 09_multistep_vision_pipeline/run_demo.sh
 
@@ -53,7 +56,8 @@ umrs-client upload-workflow workflow/ --name "vision-pipeline-demo"
 
 # 3. Reload server configuration
 #    Tells the server to pick up the newly uploaded workflow.
-umrs-client reload
+#    On auth-enforced deployments, reload is admin-only.
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 
 # 4. Upload images to the pipeline's bucket
 #    Images uploaded here will trigger the 3-step pipeline:
@@ -63,6 +67,9 @@ umrs-client upload_dir ../sample_data/images user1-pipeline
 # 5. Download results once all 3 steps complete
 #    Results include segmentation metadata, cropped patches, and
 #    per-patch statistics. The download blocks until processing finishes.
+#    If you rerun against a shared bucket, clear the corresponding
+#    *-output bucket first or use clean filenames to avoid mixing old
+#    artifacts into the download.
 umrs-client download_results user1-pipeline ./results --force-overwrite
 ```
 
@@ -98,14 +105,21 @@ Edit `workflow.json` → `steps[0].config`:
 
 ```
 results/
-├── image_001_segment_meta.json   # per-image segmentation metadata
-├── patches/
-│   ├── image_001_patch_0000.png  # cropped regions
-│   └── ...
-└── analysis/
-    ├── image_001_patch_0000_stats.json
-    └── report.json                # aggregate summary
+├── demo09_cat_segment_meta.json     # per-image segmentation metadata
+├── demo09_cat_sam3_seg.png          # segmentation preview
+├── demo09_cat_sam3_results.pkl      # raw SAM3 adapter payload
+├── demo09_cat_patch_0000.png        # cropped region
+├── demo09_cat_patch_0000_stats.json # per-patch statistics
+├── demo09_dog_segment_meta.json
+├── demo09_dog_patch_0000.png
+├── demo09_dog_patch_0000_stats.json
+└── report.json                      # aggregate summary
 ```
+
+`download_results` currently flattens S3 object prefixes into a single local
+directory, so patch and analysis files land directly under `./results/` even
+though the objects on S3 are stored under prefixes such as `patches/` and
+`analysis/`.
 
 ## See Also
 

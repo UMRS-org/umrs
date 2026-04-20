@@ -19,7 +19,7 @@ bash run_demo.sh
 ## What This Demo Does
 
 1. **Ping** the UMRS server to verify connectivity
-2. **Prepare** the embedding model (downloads to shared volume if needed)
+2. **Verify or prepare** the embedding model (reuse a staged model, or stage it if your site exposes a writable model root)
 3. **Upload** sample text files to the S3 bucket via `umrs-client`
 4. **Wait** for the embedding pipeline to finish
 5. **Verify** that embeddings are stored in pgvector
@@ -33,8 +33,13 @@ If you prefer to run steps individually:
 # 1. Check server
 umrs-client ping
 
-# 2. Ensure the embedding model is available to the server
-umrs-client model download intfloat/e5-base-v2 --scope user --server-side
+# 2. Ensure the embedding model is visible to the server
+umrs-client model list --scope system
+umrs-client model list --scope user
+
+# Optional: only if your site gives you a writable, allowed staging root
+umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
+    --staging-dir /path/to/site-user-model-root
 
 # 3. Upload the bundled sample files
 umrs-client upload_dir ../sample_data/texts user1-textfiles
@@ -71,8 +76,9 @@ The demo script assumes a configured UMRS client and uses:
 - Model: `intfloat/e5-base-v2` (768-d embeddings via vLLM in Mini-Rivault)
 - Modality: `text`
 
-The model staging step uses `user` scope. `system` scope is admin-only and is
-not required for this demo.
+On shared deployments, normal users should prefer an already staged model from
+the visible `system` or `user` catalog. The optional server-side download step
+only works when the deployment exposes a writable, allowed staging root.
 
 If your site uses a different bucket alias, override it with:
 

@@ -18,6 +18,21 @@ The script defaults to a site-local proprietary corpus path and also tries a
 local fallback analysis through an external opossum engine checkout if it is
 present. That external tree is **not** part of the current repo.
 
+On the current `rccs-cloud` validation setup, the usable upload bucket is the
+configured movie bucket `user1-video`, not `user1-textfiles`. The private
+`opossum-analysis` workflow can still be uploaded and registered, but server-side
+execution requires site wiring beyond what is present in this repo. The portable
+validated path is therefore:
+
+1. upload the workflow bundle successfully
+2. optionally invoke it explicitly with `umrs-client workflow run opossum-analysis --bucket user1-video`
+3. use synthetic or user-provided videos
+4. run the local fallback analysis if the external opossum engine checkout is present
+
+Automatic uploads to `user1-video` still exercise the site's configured
+`video-motion-analysis` experience unless the deployment is explicitly rewired to
+route that bucket through `opossum-analysis`.
+
 For a portable smoke test, use synthetic videos instead of relying on the
 missing proprietary dataset:
 
@@ -57,22 +72,25 @@ python3 generate_test_videos.py --output-dir sample_videos/ --num-videos 4
 #    Pipeline SDK step for server-side execution via Slurm.
 umrs-client upload-workflow workflow/ --name opossum-analysis
 
+# 3b. (Optional) Explicitly invoke the uploaded workflow
+umrs-client workflow run opossum-analysis --bucket user1-video
+
 # 4. Upload videos for analysis
 #    Each video is analyzed for motion events by comparing
 #    consecutive frames using the opossum engine.
-umrs-client upload_dir ./sample_videos user1-textfiles
+umrs-client upload_dir ./sample_videos user1-video
 
 # 5. Download analysis results
 #    Results include motion_events.tsv with start/end timestamps
 #    for each detected motion period.
-umrs-client download_results user1-textfiles ./results --force-overwrite
+umrs-client download_results user1-video ./results --force-overwrite
 ```
 
 ## Defaults Used By The Script
 
 | Setting | Default |
 |---|---|
-| Bucket alias | `user1-textfiles` |
+| Bucket alias | `user1-video` |
 | Default video dir | Site-local external corpus path configured in the script |
 | Synthetic mode | `GEN_TEST_VIDEOS=1` |
 | Result dir | `results/` |

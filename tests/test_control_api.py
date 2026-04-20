@@ -30,6 +30,43 @@ def test_cancel_job_uses_job_cancel_command():
     assert json.loads(payload) == {"job_id": "job-123"}
 
 
+def test_list_jobs_uses_job_list_filters():
+    mq = MagicMock()
+    mq.request_job_list.return_value = {"status": "ok", "jobs": []}
+
+    api = UMRSControlAPI(mq, "tester")
+    result = api.list_jobs(project="demo", status="running", job_type="index_build", limit=5, offset=2)
+
+    assert result == {"status": "ok", "jobs": []}
+    mq.request_job_list.assert_called_once_with(
+        "tester",
+        {
+            "limit": 5,
+            "offset": 2,
+            "project_id": "demo",
+            "status": "running",
+            "job_type": "index_build",
+        },
+    )
+
+
+def test_get_job_returns_first_job_from_job_list():
+    mq = MagicMock()
+    mq.request_job_list.return_value = {
+        "status": "ok",
+        "jobs": [{"job_id": "job-123", "status": "running"}],
+    }
+
+    api = UMRSControlAPI(mq, "tester")
+    result = api.get_job("job-123")
+
+    assert result == {"status": "ok", "job": {"job_id": "job-123", "status": "running"}}
+    mq.request_job_list.assert_called_once_with(
+        "tester",
+        {"limit": 1, "offset": 0, "job_id": "job-123"},
+    )
+
+
 def test_execute_command_supports_workflow_run():
     mq = MagicMock()
     mq.request_model_command.return_value = json.dumps({"status": "ok", "message": "workflow started"})
@@ -53,7 +90,7 @@ def test_maintenance_reload_notifies_server():
     result = api.maintenance("reload")
 
     assert result == {"status": "ok", "action": "reload", "accepted": True}
-    mq.notify_server.assert_called_once_with("tester", "RELOAD", 0)
+    mq.notify_server.assert_called_once_with("tester", "RELOAD", 0, admin_token=None)
 
 
 def test_maintenance_variants_notify_server():
@@ -66,7 +103,7 @@ def test_maintenance_variants_notify_server():
         result = api.maintenance(action)
 
         assert result == {"status": "ok", "action": action, "accepted": True}
-        api._mq.notify_server.assert_called_once_with("tester", expected_cmd, 0)
+        api._mq.notify_server.assert_called_once_with("tester", expected_cmd, 0, admin_token=None)
 
 
 def test_register_model_includes_project_id_and_admin_token():
@@ -133,6 +170,23 @@ def test_execute_command_supports_job_submit_with_nested_spec_and_hints():
         "partition_override": "gpu",
         "nodelist_hint": "node-1",
     }
+
+
+def test_execute_command_supports_job_status():
+    mq = MagicMock()
+    mq.request_job_list.return_value = {
+        "status": "ok",
+        "jobs": [{"job_id": "job-123", "status": "completed"}],
+    }
+
+    api = UMRSControlAPI(mq, "tester")
+    result = api.execute_command("job status job-123")
+
+    assert result == {"status": "ok", "job": {"job_id": "job-123", "status": "completed"}}
+    mq.request_job_list.assert_called_once_with(
+        "tester",
+        {"limit": 1, "offset": 0, "job_id": "job-123"},
+    )
 
 
 def test_execute_command_supports_workflow_list_filters():

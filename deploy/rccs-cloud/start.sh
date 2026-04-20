@@ -177,6 +177,13 @@ set -o allexport
 source .env
 set +o allexport
 
+if [[ -z "${UMRS_DATA_PORT_RANGE:-}" && -z "${UMRS_DATA_PORT:-}" ]]; then
+    data_base_port="${UMRS_DATA_BASE_PORT:-5556}"
+    data_port_count="${UMRS_DATA_PORT_COUNT:-8}"
+    data_last_port=$((data_base_port + data_port_count - 1))
+    export UMRS_DATA_PORT_RANGE="${data_base_port}-${data_last_port}"
+fi
+
 export UMRS_CONFIG="${UMRS_CONFIG:-${SCRIPT_DIR}}"
 
 RAG_ENABLED=false

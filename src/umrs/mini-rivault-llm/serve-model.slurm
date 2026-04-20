@@ -542,9 +542,16 @@ ip a
 if echo "${RIVAULT_PROFILES}" | grep -q "vision-bentoml"; then
     _BENTOML_IP="${PRIV_IP1TO3:-10.0.0}.${BENTOML_VISION_IP4:-35}"
     _VISION_READY=0
+    _VISION_READY_URL=""
     _VISION_TIMEOUT=${RIVAULT_VISION_READY_TIMEOUT:-180}  # 3 min default
     _VISION_ELAPSED=0
+    _VISION_READY_URLS=(
+        "http://127.0.0.1:${BENTOML_VISION_DOCKER_PORT:-3001}/readyz"
+        "http://127.0.0.1:${NGINX_LITELLM_DOCKER_PORT:-8001}/vision/readyz"
+        "http://${_BENTOML_IP}:3000/readyz"
+    )
     echo "[rivault] Waiting for BentoML vision service readiness (timeout=${_VISION_TIMEOUT}s)..."
+    echo "[rivault] Readiness candidates: ${_VISION_READY_URLS[*]}"
     while [ "$_VISION_ELAPSED" -lt "$_VISION_TIMEOUT" ]; do
         # Check if container is still running
         if ! podman ps --filter "name=bentoml-vision" --format '{{.Names}}' 2>/dev/null | grep -q bentoml-vision; then
@@ -553,18 +560,28 @@ if echo "${RIVAULT_PROFILES}" | grep -q "vision-bentoml"; then
             _VISION_ELAPSED=$(( _VISION_ELAPSED + 5 ))
             continue
         fi
-        # Probe readiness endpoint
-        if curl -sf -o /dev/null -w '' "http://${_BENTOML_IP}:3000/readyz" 2>/dev/null; then
-            _VISION_READY=1
+        # Probe readiness endpoints through the published direct proxy first.
+        # Some rootless podman setups do not route the host cleanly to the
+        # private container IP, while the host-published 3001/8001 paths are
+        # already what the launcher and clients use.
+        for _url in "${_VISION_READY_URLS[@]}"; do
+            if curl -fsS --connect-timeout 2 --max-time 5 -o /dev/null "${_url}" 2>/dev/null; then
+                _VISION_READY=1
+                _VISION_READY_URL="${_url}"
+                break
+            fi
+        done
+        if [ "$_VISION_READY" -eq 1 ]; then
             break
         fi
         sleep 5
         _VISION_ELAPSED=$(( _VISION_ELAPSED + 5 ))
     done
     if [ "$_VISION_READY" -eq 1 ]; then
-        echo "[rivault] BentoML vision service is READY (took ~${_VISION_ELAPSED}s)"
+        echo "[rivault] BentoML vision service is READY via ${_VISION_READY_URL} (took ~${_VISION_ELAPSED}s)"
     else
         echo "[rivault] WARNING: BentoML vision service did NOT become ready within ${_VISION_TIMEOUT}s"
+        echo "[rivault]          Checked endpoints: ${_VISION_READY_URLS[*]}"
         echo "[rivault]          Vision inference requests may fail. Check container logs:"
         echo "[rivault]          podman logs rivault_bentoml-vision_1"
     fi
