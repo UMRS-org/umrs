@@ -42,6 +42,7 @@ from umrs.shared.loaded_config_profiles import (
 )
 from umrs.shared.json_config import load_client_cfg_file
 from umrs.shared.pretty_print import pretty_print_user_cfg
+from umrs.shared.auth import create_auth_context_from_request
 from umrs.shared.config import (
     get_default_docker_s3cfg,
 )
@@ -61,6 +62,7 @@ def _format_profile_text(connection, selected_profile, errors):
         f"server_host={connection.server_host}",
         f"control_port={connection.control_port}",
         f"data_base_port={connection.data_base_port}",
+        f"data_port_range={connection.data_port_range_label}",
         f"tunnel_mode={str(connection.tunnel_mode).lower()}",
         f"minio_url={connection.minio_url}",
         f"rag_url={connection.rag_url}",
@@ -74,6 +76,36 @@ def _format_profile_text(connection, selected_profile, errors):
     if errors:
         lines.append(f"profile_errors={len(errors)}")
     return "\n".join(lines)
+
+
+def _extract_bucket_aliases(user_cfg):
+    if not isinstance(user_cfg, dict):
+        return []
+
+    aliases = set()
+    for xp in user_cfg.get("experiences", []):
+        for modality in xp.get("modalities", []):
+            bucket_alias = (modality.get("s3") or {}).get("bucket_alias")
+            if bucket_alias:
+                aliases.add(bucket_alias)
+    return sorted(aliases)
+
+
+def _build_monitor_capabilities(client_id, admin_token=None, user_cfg=None):
+    auth_ctx = create_auth_context_from_request(client_id, token=admin_token)
+    target_user = auth_ctx.username or client_id
+    return {
+        "username": auth_ctx.username,
+        "is_admin": auth_ctx.is_admin,
+        "has_user_config": isinstance(user_cfg, dict),
+        "bucket_aliases": _extract_bucket_aliases(user_cfg),
+        "allowed_actions": {
+            "recompute": auth_ctx.can_execute_command(TaskCmd.RECOMPUTE, target_user=target_user),
+            "update": auth_ctx.can_execute_command(TaskCmd.UPDATE, target_user=target_user),
+            "check": auth_ctx.can_execute_command(TaskCmd.CHECK, target_user=target_user),
+            "reload": auth_ctx.can_execute_command(TaskCmd.RELOAD, target_user=target_user),
+        },
+    }
 
 
 def _format_config_text(resolved):
@@ -984,6 +1016,11 @@ def main():
                 conn_info = connection.to_dict() if connection else {}
             except Exception:
                 conn_info = {}
+            capabilities = _build_monitor_capabilities(
+                client_id,
+                admin_token=admin_token,
+                user_cfg=user if isinstance(user, dict) else None,
+            )
             try:
                 dash = Dashboard(
                     control_mq=control_mq,
@@ -995,6 +1032,7 @@ def main():
                     config_path=configure_file if configure_file and config_state.user.valid else None,
                     user_cfg=user if isinstance(user, dict) else None,
                     connection_info=conn_info,
+                    capabilities=capabilities,
                 )
                 if args.once:
                     dash.render_once()

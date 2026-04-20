@@ -1,5 +1,18 @@
 # TODO
 
+## TUI Action Unification + Data Port Range (2026-04-20)
+
+**Goal:** Add range-based data-port allocation in the ZMQ transport, remove
+the duplicated monitor `cmd` surface, and make TUI actions capability-driven
+from trusted auth context plus loaded user config.
+
+- [x] T1 Normalize connection-profile data-port config with backward-compatible range support
+- [x] T2 Make `MessageQueue` allocate a concrete data port from the configured allowed range
+- [x] T3 Pass monitor capabilities from `client_umrs.py` into the dashboard bootstrap
+- [x] T4 Remove the visible TUI command prompt and keep actions as the only user-facing control surface
+- [x] T5 Filter actions/forms by admin capability, config availability, and current tab context
+- [x] T6 Add focused regression tests for range parsing/allocation and the new TUI action contract
+
 ## Model Command ACL Hardening (2026-04-19)
 
 **Goal:** Harden the active `umrs-client model {register,download,upload}` path

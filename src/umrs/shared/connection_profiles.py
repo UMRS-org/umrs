@@ -16,6 +16,73 @@ from umrs.shared.config import (
 
 
 UMRS_PROFILE_ENV_VAR_NAME = "UMRS_PROFILE"
+DEFAULT_DATA_PORT = 5556
+
+
+@dataclass(frozen=True)
+class DataPortRange:
+    start: int = DEFAULT_DATA_PORT
+    end: int = DEFAULT_DATA_PORT
+
+    def __post_init__(self) -> None:
+        if self.start < 1 or self.end < 1:
+            raise ValueError("Data ports must be positive integers")
+        if self.end < self.start:
+            raise ValueError("Data port range end must be greater than or equal to start")
+
+    @classmethod
+    def single(cls, port: int) -> "DataPortRange":
+        return cls(start=int(port), end=int(port))
+
+    @property
+    def base_port(self) -> int:
+        return self.start
+
+    @property
+    def is_single(self) -> bool:
+        return self.start == self.end
+
+    @property
+    def label(self) -> str:
+        if self.is_single:
+            return str(self.start)
+        return f"{self.start}-{self.end}"
+
+    def contains(self, port: int) -> bool:
+        return self.start <= int(port) <= self.end
+
+
+def parse_data_port_range(
+    raw: Any,
+    *,
+    default: Optional[DataPortRange] = None,
+) -> Optional[DataPortRange]:
+    if raw is None or raw == "":
+        return default
+
+    if isinstance(raw, DataPortRange):
+        return raw
+
+    if isinstance(raw, int):
+        return DataPortRange.single(raw)
+
+    if isinstance(raw, str):
+        value = raw.strip()
+        if not value:
+            return default
+        if "-" not in value:
+            return DataPortRange.single(int(value))
+        start_raw, end_raw = value.split("-", 1)
+        return DataPortRange(start=int(start_raw.strip()), end=int(end_raw.strip()))
+
+    if isinstance(raw, dict):
+        if "start" not in raw:
+            raise ValueError("data_port_range requires a start value")
+        start = int(raw["start"])
+        end = int(raw.get("end", start))
+        return DataPortRange(start=start, end=end)
+
+    raise ValueError(f"Unsupported data port range value: {raw!r}")
 
 
 def _env_flag(name: str, default: Optional[bool] = None) -> Optional[bool]:
@@ -30,6 +97,13 @@ def _env_int(name: str) -> Optional[int]:
     if raw is None or raw == "":
         return None
     return int(raw)
+
+
+def _env_port_range(name: str) -> Optional[DataPortRange]:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return None
+    return parse_data_port_range(raw)
 
 
 def _default_service_url(host: str, port: int, tunnel_mode: bool) -> str:
@@ -78,6 +152,15 @@ profile_schema: dict[str, Any] = {
                 "host": {"type": "string", "minLength": 1},
                 "control_port": {"type": "integer", "minimum": 1, "maximum": 65535},
                 "data_base_port": {"type": "integer", "minimum": 1, "maximum": 65535},
+                "data_port_range": {
+                    "type": "object",
+                    "required": ["start"],
+                    "properties": {
+                        "start": {"type": "integer", "minimum": 1, "maximum": 65535},
+                        "end": {"type": "integer", "minimum": 1, "maximum": 65535},
+                    },
+                    "additionalProperties": False,
+                },
                 "tunnel_mode": {"type": "boolean"},
                 "health_check_timeout_ms": {"type": "integer", "minimum": 1000},
             },
@@ -123,7 +206,7 @@ class ConnectionProfile:
     mode: str
     server_host: str
     control_port: int = 5555
-    data_base_port: int = 5556
+    data_port_range: DataPortRange = field(default_factory=lambda: DataPortRange.single(DEFAULT_DATA_PORT))
     tunnel_mode: bool = False
     health_check_timeout_ms: int = 5000
     minio_url: Optional[str] = None
@@ -133,8 +216,19 @@ class ConnectionProfile:
     command_hint: Optional[str] = None
     path: Optional[str] = None
 
+    @property
+    def data_base_port(self) -> int:
+        return self.data_port_range.base_port
+
+    @property
+    def data_port_range_label(self) -> str:
+        return self.data_port_range.label
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["data_base_port"] = self.data_base_port
+        payload["data_port_range_label"] = self.data_port_range_label
+        return payload
 
 
 @dataclass
@@ -145,7 +239,7 @@ class ResolvedConnection:
     mode: str
     server_host: str
     control_port: int
-    data_base_port: int
+    data_port_range: DataPortRange
     tunnel_mode: bool
     health_check_timeout_ms: int
     minio_url: str
@@ -153,10 +247,22 @@ class ResolvedConnection:
     ssh_host: Optional[str] = None
     local_forwards: list[dict[str, Any]] = field(default_factory=list)
     command_hint: Optional[str] = None
+    allocated_data_port: Optional[int] = None
     sources: dict[str, str] = field(default_factory=dict)
 
+    @property
+    def data_base_port(self) -> int:
+        return self.data_port_range.base_port
+
+    @property
+    def data_port_range_label(self) -> str:
+        return self.data_port_range.label
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["data_base_port"] = self.data_base_port
+        payload["data_port_range_label"] = self.data_port_range_label
+        return payload
 
 
 def get_connections_dir() -> Path:
@@ -197,13 +303,17 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
 
     services = content.get("services") or {}
     ssh_cfg = content.get("ssh") or {}
+    data_port_range = parse_data_port_range(
+        zmq_cfg.get("data_port_range"),
+        default=parse_data_port_range(zmq_cfg.get("data_base_port"), default=DataPortRange.single(DEFAULT_DATA_PORT)),
+    )
 
     profile = ConnectionProfile(
         name=content["name"],
         mode=mode,
         server_host=zmq_cfg["host"],
         control_port=int(zmq_cfg.get("control_port", 5555)),
-        data_base_port=int(zmq_cfg.get("data_base_port", 5556)),
+        data_port_range=data_port_range or DataPortRange.single(DEFAULT_DATA_PORT),
         tunnel_mode=bool(tunnel_mode),
         health_check_timeout_ms=int(zmq_cfg.get("health_check_timeout_ms", 5000)),
         minio_url=services.get("minio_url"),
@@ -336,18 +446,27 @@ def resolve_connection(
         sources["control_port"] = "default"
 
     env_data_port = _env_int("UMRS_DATA_PORT")
+    env_data_port_range = _env_port_range("UMRS_DATA_PORT_RANGE")
     if env_data_port is not None:
-        data_base_port = env_data_port
+        data_port_range = DataPortRange.single(env_data_port)
         sources["data_base_port"] = "env:UMRS_DATA_PORT"
+        sources["data_port_range"] = "env:UMRS_DATA_PORT"
+    elif env_data_port_range is not None:
+        data_port_range = env_data_port_range
+        sources["data_base_port"] = "env:UMRS_DATA_PORT_RANGE"
+        sources["data_port_range"] = "env:UMRS_DATA_PORT_RANGE"
     elif _env_int("UMRS_DATA_BASE_PORT") is not None:
-        data_base_port = _env_int("UMRS_DATA_BASE_PORT")
+        data_port_range = DataPortRange.single(_env_int("UMRS_DATA_BASE_PORT"))
         sources["data_base_port"] = "env:UMRS_DATA_BASE_PORT"
+        sources["data_port_range"] = "env:UMRS_DATA_BASE_PORT"
     elif profile:
-        data_base_port = profile.data_base_port
+        data_port_range = profile.data_port_range
         sources["data_base_port"] = f"profile:{profile.name}"
+        sources["data_port_range"] = f"profile:{profile.name}"
     else:
-        data_base_port = 5556
+        data_port_range = DataPortRange.single(DEFAULT_DATA_PORT)
         sources["data_base_port"] = "default"
+        sources["data_port_range"] = "default"
 
     tunnel_override = _env_flag("UMRS_TUNNEL_MODE", None)
     if tunnel_override is not None:
@@ -376,7 +495,7 @@ def resolve_connection(
         mode="ssh_tunnel" if tunnel_mode else "direct",
         server_host=server_host,
         control_port=control_port,
-        data_base_port=data_base_port,
+        data_port_range=data_port_range,
         tunnel_mode=tunnel_mode,
         health_check_timeout_ms=health_check_timeout_ms,
     )
@@ -395,7 +514,7 @@ def resolve_connection(
         mode=mode,
         server_host=server_host,
         control_port=control_port,
-        data_base_port=data_base_port,
+        data_port_range=data_port_range,
         tunnel_mode=tunnel_mode,
         health_check_timeout_ms=health_check_timeout_ms,
         minio_url=minio_url,
@@ -409,6 +528,7 @@ def resolve_connection(
 
 __all__ = [
     "ConnectionProfile",
+    "DataPortRange",
     "ResolvedConnection",
     "UMRS_PROFILE_ENV_VAR_NAME",
     "discover_connection_profiles",
@@ -419,6 +539,7 @@ __all__ = [
     "import_connection_profile",
     "load_connection_profile",
     "load_connection_profile_file",
+    "parse_data_port_range",
     "resolve_connection",
     "resolve_profile_name",
     "set_current_profile_name",
