@@ -169,6 +169,7 @@ class TestOrchestratorConfig:
         assert config.vllm_max_model_len == 4096
         assert config.startup_timeout_sec == 600
         assert config.idle_timeout_sec == 3600
+        assert config.k8s_image == "mini-rivault:latest"
 
     def test_custom_values(self, config):
         """Test custom configuration values."""

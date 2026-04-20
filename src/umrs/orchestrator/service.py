@@ -223,6 +223,8 @@ class OrchestrationService:
         host: str,
         port: int,
         deadline: float,
+        probe_model: Optional[str] = None,
+        probe_kind: str = "models",
         on_progress: Optional[Callable[[Any], None]] = None,
     ):
         """Run readiness polling within the remaining provision budget."""
@@ -235,10 +237,11 @@ class OrchestrationService:
 
         poller = self.readiness_poller
         temp_poller: Optional[ReadinessPoller] = None
+        target_timeout = max(1, int(remaining))
 
-        if remaining < (poller.config.timeout_sec - 1):
+        if target_timeout != poller.config.timeout_sec:
             temp_poller = ReadinessPoller(
-                replace(poller.config, timeout_sec=max(1, int(remaining)))
+                replace(poller.config, timeout_sec=target_timeout)
             )
             poller = temp_poller
 
@@ -247,6 +250,8 @@ class OrchestrationService:
                 job_id=job_id,
                 host=host,
                 port=port,
+                probe_model=probe_model,
+                probe_kind=probe_kind,
                 on_progress=on_progress,
             )
         finally:
@@ -327,7 +332,14 @@ class OrchestrationService:
         job_id: Optional[str] = None
         actual_host = target_host
         actual_port = port
-        deadline = start_time + self.readiness_poller.config.timeout_sec
+        backend_startup_timeout = int(
+            getattr(self.backend.config, "startup_timeout_sec", 0) or 0
+        )
+        provision_timeout_sec = max(
+            self.readiness_poller.config.timeout_sec,
+            backend_startup_timeout,
+        )
+        deadline = start_time + provision_timeout_sec
 
         try:
             # 4. Submit job to backend
@@ -403,12 +415,15 @@ class OrchestrationService:
             # 6. Wait for readiness (authoritative)
             remaining_timeout = max(1, int(deadline - asyncio.get_running_loop().time()))
             progress("waiting_for_ready", {"timeout": remaining_timeout})
+            readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
 
             readiness_result = await self._wait_for_ready_with_budget(
                 job_id=job_id,
                 host=actual_host,
                 port=actual_port,
                 deadline=deadline,
+                probe_model=request.model,
+                probe_kind=readiness_probe,
                 on_progress=lambda r: progress("readiness_check", r.to_dict()),
             )
 

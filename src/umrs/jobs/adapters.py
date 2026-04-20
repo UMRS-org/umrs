@@ -12,7 +12,7 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
@@ -39,6 +39,24 @@ def _parse_backend_ref(backend_ref: str) -> Dict[str, str]:
         key, value = item.split("=", 1)
         parsed[key] = value
     return parsed
+
+
+def _resolve_registered_model(model_name: str) -> Optional[Dict[str, Any]]:
+    """Resolve a model name from the native UMRS catalog when no path is supplied."""
+    try:
+        from umrs.server.model_registry_handler import _load_catalog
+    except Exception:
+        logger.debug("Native model catalog unavailable while resolving %s", model_name)
+        return None
+
+    models = _load_catalog().get("models", [])
+    scope_order = {"system": 0, "project": 1, "user": 2}
+    matches = [entry for entry in models if entry.get("name") == model_name]
+    if not matches:
+        return None
+
+    matches.sort(key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99))
+    return matches[0]
 
 
 class EndpointProvisionBackend(OrchestratorBackend):
@@ -107,6 +125,23 @@ class EndpointProvisionBackend(OrchestratorBackend):
         ttl_sec = spec.get("ttl_sec", 3600)
         requested_env = spec.get("env_vars") or {}
 
+        if not model_path and model_name:
+            model_entry = _resolve_registered_model(model_name)
+            if model_entry:
+                model_path = model_entry.get("storage_ref")
+                served_model_name = model_entry.get("huggingface_id") or model_name
+                requested_env = dict(requested_env)
+                requested_env.setdefault(
+                    "VLLM_SERVED_MODEL_NAME",
+                    served_model_name,
+                )
+                logger.info(
+                    "Resolved endpoint model %s to %s (served as %s)",
+                    model_name,
+                    model_path,
+                    served_model_name,
+                )
+
         # Determine target host
         target_host = self._determine_target_host()
 
@@ -151,6 +186,16 @@ class EndpointProvisionBackend(OrchestratorBackend):
 
             # Register endpoint in registry (status=provisioning)
             # Use attempt_id as endpoint ID for correlation
+            endpoint_metadata = {
+                "durable_job_id": job.job_id,
+                "attempt_id": attempt.attempt_id,
+                "attempt_no": attempt.attempt_no,
+            }
+            # Store the served model name so the gateway can discover by either name
+            env_served_name = submit_env.get("VLLM_SERVED_MODEL_NAME")
+            if env_served_name and env_served_name != model_name:
+                endpoint_metadata["served_model_name"] = env_served_name
+
             self.registry.register(
                 project_id=project_id,
                 model=model_name,
@@ -159,11 +204,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 port=port,
                 backend=self.backend_name,
                 ttl_sec=ttl_sec,
-                metadata={
-                    "durable_job_id": job.job_id,
-                    "attempt_id": attempt.attempt_id,
-                    "attempt_no": attempt.attempt_no,
-                },
+                metadata=endpoint_metadata,
             )
 
             logger.info(
@@ -259,9 +300,12 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
 
         # Check if endpoint is ready
         try:
+            readiness_probe = str(endpoint.metadata.get("readiness_probe") or "chat")
             is_ready, models, error = await self.readiness_poller.check_ready_detail(
                 endpoint.host,
                 endpoint.port,
+                probe_model=endpoint.model,
+                probe_kind=readiness_probe,
             )
 
             check_no = self._next_readiness_check_no(
@@ -291,11 +335,13 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                     models,
                 )
                 self._clear_readiness_tracking(backend_ref)
+                # Transition the endpoint registry status to READY
+                self.registry.mark_ready(backend_ref)
                 return AttemptCheckResult.succeeded(
                     metrics={
                         "host": endpoint.host,
                         "port": endpoint.port,
-                        "endpoint_status": endpoint.status.value,
+                        "endpoint_status": "ready",
                     },
                 )
 

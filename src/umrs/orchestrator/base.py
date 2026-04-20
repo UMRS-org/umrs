@@ -15,6 +15,9 @@ from enum import Enum
 from typing import Any, Dict, List, Optional
 
 
+DEFAULT_MINI_RIVAULT_IMAGE = "mini-rivault:latest"
+
+
 class JobStatus(Enum):
     """Status of a Mini-RiVault job."""
 
@@ -106,7 +109,7 @@ class OrchestratorConfig:
 
     # Kubernetes-specific
     k8s_namespace: str = "rivault-system"
-    k8s_image: str = "ghcr.io/rccs/mini-rivault:latest"
+    k8s_image: str = DEFAULT_MINI_RIVAULT_IMAGE
     k8s_gpu_resource: str = "nvidia.com/gpu"
     k8s_storage_class: str = ""
     k8s_model_pvc: str = "rivault-models"
@@ -155,7 +158,7 @@ class OrchestratorConfig:
             singularity_image=os.getenv("SINGULARITY_IMAGE", "/opt/singularity/mini-rivault.sif"),
             # Kubernetes
             k8s_namespace=os.getenv("K8S_NAMESPACE", "rivault-system"),
-            k8s_image=os.getenv("K8S_MINI_RIVAULT_IMAGE", "ghcr.io/rccs/mini-rivault:latest"),
+            k8s_image=os.getenv("K8S_MINI_RIVAULT_IMAGE", DEFAULT_MINI_RIVAULT_IMAGE),
             k8s_gpu_resource=os.getenv("K8S_GPU_RESOURCE", "nvidia.com/gpu"),
             k8s_storage_class=os.getenv("K8S_STORAGE_CLASS", ""),
             k8s_model_pvc=os.getenv("K8S_MODEL_PVC", "rivault-models"),

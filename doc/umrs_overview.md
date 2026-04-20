@@ -35,6 +35,7 @@ It supports multiple users and “experiences” (projects), each with multiple 
 1) Server config `src/conf_umrs.json` (used by the server image) specifies:
 
 - `admin_s3_configuration_file`: S3 admin credentials (e.g., MinIO root user)
+- `user_files_dir`: canonical directory for server-managed per-user JSON files
 - `users`: array of paths to per-user configuration files (e.g., `docker/user_files/user1.json`)
 
 2) User config `docker/user_files/userX.json` defines:
@@ -117,7 +118,7 @@ MinIO console will be on `http://localhost:9001`, S3 API on `http://localhost:90
 
 ### Server configuration inside the container
 
-The server image copies `docker/conf_umrs.json` to `/root/conf_umrs.json` and includes user files from `docker/user_files/` under `/root/user_files`. By default it uses `~/.s3cfg` for the admin S3 config, which is mounted from `docker/s3cfg` in compose.
+The server image copies `docker/conf_umrs.json` to `/root/conf_umrs.json` and includes user files from `docker/user_files/` under `/root/user_files`. The server config declares `"user_files_dir": "/root/user_files"`, so uploaded user configs and reloads remain anchored to that directory. It uses `~/.s3cfg` for the admin S3 config, which is mounted from `docker/s3cfg` in compose.
 
 Environment variables used by the server (see `docker/docker-compose.yml`):
 

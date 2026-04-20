@@ -633,6 +633,70 @@ class TestAdapters:
         assert env["LITELLM_PORT"] == "11434"
         assert env["MODEL_NAME"] == "test-model"
 
+    def test_endpoint_provision_backend_resolves_registered_model_path(self):
+        """EndpointProvisionBackend should resolve catalog-backed models when only the name is provided."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import EndpointProvisionBackend
+
+        mock_orchestrator = AsyncMock()
+        mock_orchestrator.backend_type = "slurm-podman"
+        mock_orchestrator.submit_job = AsyncMock(return_value=MagicMock(
+            job_id="slurm-123",
+            endpoint=MagicMock(node="pending"),
+        ))
+
+        backend = EndpointProvisionBackend(
+            orchestrator=mock_orchestrator,
+            registry=MagicMock(),
+            port_manager=MagicMock(allocate=MagicMock(return_value=11526)),
+        )
+
+        spec = {
+            "model": "qwen3-8b",
+            "max_model_len": 4096,
+        }
+        idempotency_key = compute_idempotency_key(
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            spec=spec,
+        )
+
+        job = Job(
+            job_id="job-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=idempotency_key,
+            priority=0,
+            desired_max_attempts=3,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+
+        attempt = JobAttempt(
+            attempt_id="att-123",
+            job_id="job-123",
+            attempt_no=1,
+            backend="slurm-podman",
+            status=AttemptStatus.CREATED,
+            umrs_instance_id="umrs-1",
+            created_at=datetime.utcnow(),
+        )
+
+        with patch("umrs.jobs.adapters._resolve_registered_model", return_value={
+            "storage_ref": "/models/qwen3-8b",
+            "huggingface_id": "Qwen/Qwen3-8B",
+        }), patch.object(backend, '_determine_target_host', return_value="pending"):
+            asyncio.run(backend.submit_job(job, attempt))
+
+        kwargs = mock_orchestrator.submit_job.await_args.kwargs
+        assert kwargs["model_path"] == "/models/qwen3-8b"
+        assert kwargs["env"]["MODEL_NAME"] == "qwen3-8b"
+        assert kwargs["env"]["VLLM_SERVED_MODEL_NAME"] == "Qwen/Qwen3-8B"
+
     def test_endpoint_provision_backend_treats_slurm_podman_as_pending_host(self):
         """Slurm-Podman endpoints should wait for backend host discovery."""
         from umrs.jobs.adapters import EndpointProvisionBackend

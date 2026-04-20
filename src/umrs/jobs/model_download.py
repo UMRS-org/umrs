@@ -554,64 +554,46 @@ class ModelDownloadBackend(OrchestratorBackend):
         """
         Auto-register model in catalog after successful download (U-824).
         """
-        from umrs.model_registry.models import (
-            ModelEntry,
-            ModelScope,
-            ModelType,
-            ServingProfile,
-            generate_model_id,
-        )
-        from umrs.model_registry.store import AccessContext
+        from umrs.model_registry.models import ModelScope, ModelStatus, ModelType, ServingProfile
 
         try:
-            # Map scope string to enum
+            metadata = ctx.metadata or {}
+            existing_model_id = metadata.get("model_id")
+            if existing_model_id:
+                self.model_store.update_status(existing_model_id, ModelStatus.AVAILABLE)
+                logger.info(
+                    "Marked model %s available after %s -> %s",
+                    existing_model_id,
+                    ctx.source_id,
+                    ctx.target_path,
+                )
+                return
+
             scope = ModelScope(ctx.scope)
 
-            # Create serving profile with defaults
-            serving_profile = ServingProfile(
-                gpu_memory_utilization=0.9,
-                max_model_len=4096,
-                tensor_parallel_size=1,
+            serving_profile = ServingProfile.from_dict(
+                metadata.get("serving_profile") or {}
             )
+            model_type = ModelType(metadata.get("model_type", "llm"))
 
-            # Detect model type from metadata or default to LLM
-            model_type = ModelType(ctx.metadata.get("model_type", "llm"))
-
-            # Create model entry
-            model_entry = ModelEntry(
-                model_id=generate_model_id(),
+            self.model_store.create_model(
                 name=ctx.model_name,
                 scope=scope,
+                storage_ref=ctx.target_path,
                 model_type=model_type,
-                storage_path=ctx.target_path,
-                source_uri=f"{ctx.source.value}://{ctx.source_id}",
-                owner_id=ctx.owner_id,
-                project_id=ctx.owner_id if scope == ModelScope.PROJECT else None,
+                owner_id=metadata.get("owner_id") if scope == ModelScope.USER else None,
+                project_id=metadata.get("project_id") if scope == ModelScope.PROJECT else None,
+                huggingface_id=metadata.get("huggingface_id"),
+                description=metadata.get("description"),
                 serving_profile=serving_profile,
-                description=ctx.metadata.get("description", ""),
-                tags=ctx.metadata.get("tags", []),
+                status=ModelStatus.AVAILABLE,
+                ctx=None,
             )
 
-            # Create access context for the owner
-            if scope == ModelScope.SYSTEM:
-                # System models are created by admin
-                access_ctx = AccessContext(
-                    user_id=ctx.owner_id,
-                    is_admin=True,
-                )
-            else:
-                access_ctx = AccessContext(
-                    user_id=ctx.owner_id,
-                    is_admin=False,
-                    project_ids=[ctx.owner_id] if scope == ModelScope.PROJECT else [],
-                )
-
-            # Register in catalog
-            self.model_store.create_model(model_entry, access_ctx)
-
             logger.info(
-                f"Auto-registered model: {model_entry.name} "
-                f"(id={model_entry.model_id}) at {ctx.target_path}"
+                "Auto-registered model %s at %s after download completion",
+                ctx.model_name,
+                ctx.target_path,
             )
 
         except Exception as e:

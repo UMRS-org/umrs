@@ -17,14 +17,14 @@ these are the only commands needed to deploy or redeploy after a code change:
 # ── On your local machine ────────────────────────────────────────────────
 # 1. Commit & push
 cd /path/to/umrs
-git push origin feature/user-defined-workflows
+git push origin ai4s-platform
 
 # ── On rccs-cloud (via SSH) ──────────────────────────────────────────────
 ssh rccs-cloud
 cd /lvs0/dne1/rccs-dmp/mnagaso/umrs
 
 # 2. Pull latest code
-git pull origin feature/user-defined-workflows
+git pull origin ai4s-platform
 
 # 3. Update the Python package and stop the old server
 source deploy/rccs-cloud/.venv/bin/activate
@@ -261,8 +261,9 @@ No change is required to use the defaults.
 
 ### 1c. Edit server config
 
-`conf_umrs.json` lists the user files.  Paths are **relative to the
-`deploy/rccs-cloud/` directory** (e.g. `./user_files/user1.json`).
+`conf_umrs.json` lists the user files and declares `"user_files_dir": "./user_files"`.
+Paths are resolved **relative to the config file location**
+(e.g. `./user_files/user1.json`), not the shell's current working directory.
 To add a second user, append another entry to the `users` array and create
 a corresponding `user_files/user2.json`.
 
@@ -566,6 +567,7 @@ UMRS handles multi-user S3 access automatically.  Each user defined in
 ```json
 {
   "admin_s3_configuration_file": "~/.s3cfg",
+  "user_files_dir": "./user_files",
   "users": [
     "./user_files/user1.json",
     "./user_files/user2.json"

@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/endpoints", tags=["endpoints"])
 
+_DEFAULT_PROVISION_MODEL_PATH = "/models/rivault-gpt-oss"
+
 
 # =============================================================================
 # Request/Response Models
@@ -52,6 +54,7 @@ class EndpointResponse(BaseModel):
     backend: str
     error_message: Optional[str] = None
     litellm_url: str
+    served_model_name: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -105,7 +108,10 @@ class ProvisionRequest(BaseModel):
 
     project_id: str = Field(..., description="Project/tenant identifier")
     model: str = Field(..., description="Model name")
-    model_path: str = Field("/models/rivault-gpt-oss", description="Path to model files")
+    model_path: Optional[str] = Field(
+        None,
+        description="Optional path to model files. If omitted, resolve from the registered model catalog.",
+    )
     ttl_sec: int = Field(3600, ge=60, description="TTL in seconds")
     gpu_count: int = Field(1, ge=1, description="Number of GPUs")
     max_model_len: int = Field(4096, ge=512, description="Max context length")
@@ -208,6 +214,112 @@ def get_project_id_optional(
     return None
 
 
+def _resolve_served_model_name(
+    model_name: str,
+    model_entry: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Resolve served_model_name from model catalog metadata."""
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    if not entry:
+        return model_name
+
+    serving_profile = entry.get("serving_profile") or {}
+    served_model_name = serving_profile.get("served_model_name")
+    if served_model_name:
+        return str(served_model_name)
+
+    # Default to the catalog alias. Hugging Face IDs identify the source model,
+    # not necessarily the runtime API name exposed by vLLM.
+    return model_name
+
+
+def _resolve_registered_model_entry(model_name: str) -> Optional[Dict[str, Any]]:
+    """Resolve a registered model entry from the authoritative UMRS catalog."""
+    try:
+        from ..model_registry.store import AccessContext
+        from .models import get_model_store
+
+        store = get_model_store()
+        matches = [
+            entry.to_dict()
+            for entry in store.list_models(
+                AccessContext(user_id="", is_admin=True),
+                limit=500,
+            )
+            if entry.name == model_name
+        ]
+        if matches:
+            scope_order = {"system": 0, "project": 1, "user": 2}
+            matches.sort(key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99))
+            return matches[0]
+    except Exception as e:
+        logger.debug(f"Failed to resolve model entry from model store for {model_name}: {e}")
+
+    try:
+        from umrs.server.model_registry_handler import _load_catalog
+
+        matches = [
+            entry for entry in _load_catalog().get("models", []) if entry.get("name") == model_name
+        ]
+        if not matches:
+            return None
+
+        scope_order = {"system": 0, "project": 1, "user": 2}
+        matches.sort(key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99))
+        return matches[0]
+    except Exception as e:
+        logger.debug(f"Failed to resolve model entry for {model_name}: {e}")
+    return None
+
+
+def _resolve_requested_model_path(
+    model_name: str,
+    model_path: Optional[str],
+    model_entry: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Resolve the actual model storage path for endpoint provisioning."""
+    normalized_path = model_path.strip() if model_path else None
+    if normalized_path and normalized_path != _DEFAULT_PROVISION_MODEL_PATH:
+        return normalized_path
+
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    if entry and entry.get("storage_ref"):
+        return entry["storage_ref"]
+
+    if model_name.startswith("/"):
+        return model_name
+
+    return None
+
+
+def _resolve_readiness_probe_mode(
+    model_name: str,
+    model_entry: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Resolve the readiness probe mode for a provisioned endpoint."""
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    model_type = str(entry.get("model_type", "")).lower() if entry else ""
+    if model_type == "embedding":
+        return "models"
+    return "chat"
+
+
+def _enrich_endpoint_response(ep_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Add served_model_name to endpoint dict if not already present."""
+    if not ep_dict.get("served_model_name"):
+        served = _resolve_served_model_name(ep_dict["model"])
+        if served:
+            ep_dict["served_model_name"] = served
+    return ep_dict
+
+
+def _is_all_models_query(model: Optional[str]) -> bool:
+    """Return True when the caller is requesting all visible models."""
+    if model is None:
+        return True
+    return model.strip() in {"", "*"}
+
+
 # =============================================================================
 # Endpoints
 # =============================================================================
@@ -230,18 +342,34 @@ def get_project_id_optional(
     """,
 )
 async def get_active_endpoints(
-    model: Optional[str] = Query(None, description="Filter by model name"),
+    model: Optional[str] = Query(None, description="Filter by model name (catalog or served name)"),
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointsListResponse:
     """Get active (ready) endpoints for the project."""
 
+    normalized_model = model.strip() if model else None
+
     # If specific model requested, try to get that endpoint
-    if model:
-        endpoint = registry.get(project_id, model, prefer_warm=True)
+    if not _is_all_models_query(normalized_model):
+        endpoint = registry.get(project_id, normalized_model, prefer_warm=True)
+        if not endpoint:
+            # Try matching by served_model_name in metadata
+            all_eps = registry.list_all(
+                project_id=project_id,
+                status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+            )
+            for ep in all_eps:
+                served = ep.metadata.get("served_model_name")
+                if not served:
+                    served = _resolve_served_model_name(ep.model)
+                if served == normalized_model:
+                    endpoint = ep
+                    break
         if endpoint:
+            ep_dict = _enrich_endpoint_response(endpoint.to_dict())
             return EndpointsListResponse(
-                endpoints=[EndpointResponse(**endpoint.to_dict())],
+                endpoints=[EndpointResponse(**ep_dict)],
                 total=1,
             )
         return EndpointsListResponse(endpoints=[], total=0)
@@ -253,7 +381,7 @@ async def get_active_endpoints(
     )
 
     return EndpointsListResponse(
-        endpoints=[EndpointResponse(**e.to_dict()) for e in endpoints],
+        endpoints=[EndpointResponse(**_enrich_endpoint_response(e.to_dict())) for e in endpoints],
         total=len(endpoints),
     )
 
@@ -312,27 +440,6 @@ async def register_endpoint(
         ttl_sec=request.ttl_sec,
         metadata=request.metadata,
     )
-
-    return EndpointResponse(**endpoint.to_dict())
-
-
-@router.get(
-    "/{job_id}",
-    response_model=EndpointResponse,
-    summary="Get endpoint by job_id",
-)
-async def get_endpoint(
-    job_id: str,
-    registry: EndpointRegistry = Depends(get_registry),
-) -> EndpointResponse:
-    """Get endpoint details by job_id."""
-
-    endpoint = registry.get_by_job_id(job_id)
-    if not endpoint:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Endpoint not found: {job_id}",
-        )
 
     return EndpointResponse(**endpoint.to_dict())
 
@@ -517,6 +624,27 @@ async def health_check(
     )
 
 
+@router.get(
+    "/{job_id}",
+    response_model=EndpointResponse,
+    summary="Get endpoint by job_id",
+)
+async def get_endpoint(
+    job_id: str,
+    registry: EndpointRegistry = Depends(get_registry),
+) -> EndpointResponse:
+    """Get endpoint details by job_id."""
+
+    endpoint = registry.get_by_job_id(job_id)
+    if not endpoint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Endpoint not found: {job_id}",
+        )
+
+    return EndpointResponse(**endpoint.to_dict())
+
+
 # =============================================================================
 # Provisioning endpoints (U-202, U-203, U-205)
 # =============================================================================
@@ -591,18 +719,45 @@ async def provision_endpoint(
 
     # Trigger new provisioning
     service = get_orchestration_service()
+    model_entry = _resolve_registered_model_entry(request.model)
+    resolved_model_path = _resolve_requested_model_path(
+        request.model,
+        request.model_path,
+        model_entry=model_entry,
+    )
+    if not resolved_model_path:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Unable to resolve model path for '{request.model}'. "
+                "Register the model in the catalog or provide model_path explicitly."
+            ),
+        )
+
+    request_metadata: Dict[str, Any] = {
+        # This route provisions interactive inference endpoints. Require a
+        # successful chat path before exposing the endpoint as ready.
+        "readiness_probe": "chat"
+    }
+    served_model_name = _resolve_served_model_name(
+        request.model,
+        model_entry=model_entry,
+    )
+    if served_model_name and served_model_name != request.model:
+        request_metadata["served_model_name"] = served_model_name
 
     # Create provision request
     service_request = ServiceProvisionRequest(
         project_id=request.project_id,
         model=request.model,
-        model_path=request.model_path,
+        model_path=resolved_model_path,
         ttl_sec=request.ttl_sec,
         gpu_count=request.gpu_count,
         max_model_len=request.max_model_len,
         prefer_warm=request.prefer_warm,
         partition_override=request.partition,
         nodelist_hint=request.nodelist,
+        metadata=request_metadata,
     )
 
     try:

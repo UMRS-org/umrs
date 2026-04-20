@@ -21,18 +21,16 @@ See DEVELOPMENT_OBJECTIVES.md Section 1.9.2 for design details.
 """
 
 import logging
-import uuid
 from typing import Any, Dict, List, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
+from ..jobs.models import JobType, RestartPolicy
+from ..jobs.store import DuplicateJobError, JobStore
 from ..model_registry.models import (
-    ExecutionAuthority,
     ModelEntry,
     ModelPolicy,
-    ModelRef,
-    ModelRefType,
     ModelScope,
     ModelStatus,
     ModelType,
@@ -46,6 +44,7 @@ from ..model_registry.store import (
     PathNotAllowedError,
     PermissionDeniedError,
 )
+from .jobs import get_job_store
 
 logger = logging.getLogger(__name__)
 
@@ -396,6 +395,104 @@ def serving_profile_from_request(
     )
 
 
+def _resolve_job_project_id(
+    caller_project_id: Optional[str],
+    requested_project_id: Optional[str],
+    ctx: AccessContext,
+) -> str:
+    """Resolve the durable-job project partition used for job API access."""
+    return requested_project_id or caller_project_id or ctx.user_id
+
+
+def _submit_model_download_job(
+    job_store: JobStore,
+    *,
+    project_id: str,
+    ctx: AccessContext,
+    spec: Dict[str, Any],
+) -> str:
+    """Create and enqueue a durable model_download job."""
+    try:
+        job_id = job_store.create_job(
+            project_id=project_id,
+            user_id=ctx.user_id,
+            job_type=JobType.MODEL_DOWNLOAD,
+            spec=spec,
+            priority=0,
+            max_attempts=2,
+            restart_policy=RestartPolicy.ON_CRASH,
+        )
+    except DuplicateJobError as exc:
+        logger.info("Reusing existing model download job %s", exc.existing_job_id)
+        return exc.existing_job_id
+
+    job_store.enqueue_job(job_id)
+    return job_id
+
+
+def _build_stage_job_spec(model: ModelEntry) -> Dict[str, Any]:
+    """Build the durable job spec for Hugging Face model staging."""
+    return {
+        "source": "huggingface",
+        "source_id": model.huggingface_id,
+        "target_path": model.storage_ref,
+        "model_name": model.name,
+        "scope": model.scope.value,
+        "model_id": model.model_id,
+        "model_type": model.model_type.value,
+        "metadata": {
+            "model_id": model.model_id,
+            "owner_id": model.owner_id,
+            "project_id": model.project_id,
+            "model_type": model.model_type.value,
+            "description": model.description,
+            "huggingface_id": model.huggingface_id,
+            "serving_profile": model.serving_profile.to_dict(),
+            "operation": "stage",
+        },
+    }
+
+
+def _build_copy_job_spec(
+    source_model: ModelEntry,
+    target_model: ModelEntry,
+) -> Dict[str, Any]:
+    """Build the durable job spec for system-model copy requests."""
+    return {
+        "source": "local",
+        "source_id": source_model.storage_ref,
+        "target_path": target_model.storage_ref,
+        "model_name": target_model.name,
+        "scope": target_model.scope.value,
+        "model_id": target_model.model_id,
+        "model_type": target_model.model_type.value,
+        "metadata": {
+            "model_id": target_model.model_id,
+            "owner_id": target_model.owner_id,
+            "project_id": target_model.project_id,
+            "model_type": target_model.model_type.value,
+            "description": target_model.description,
+            "huggingface_id": target_model.huggingface_id,
+            "serving_profile": target_model.serving_profile.to_dict(),
+            "operation": "copy",
+            "source_model_id": source_model.model_id,
+            "source_model_name": source_model.name,
+        },
+    }
+
+
+def _rollback_staged_model(
+    store: ModelStore,
+    model_id: str,
+    ctx: AccessContext,
+) -> None:
+    """Best-effort cleanup when model job submission fails after catalog creation."""
+    try:
+        store.delete_model(model_id, ctx)
+    except Exception:
+        logger.exception("Failed to roll back staged model %s after job submission error", model_id)
+
+
 # =============================================================================
 # Endpoints
 # =============================================================================
@@ -531,8 +628,13 @@ async def create_model(
 @router.post("/stage", response_model=ModelStageResponse, status_code=status.HTTP_202_ACCEPTED)
 async def stage_model(
     request: ModelStageRequest,
+    caller_project_id: Optional[str] = Query(
+        None,
+        description="Caller active project ID for durable job scoping",
+    ),
     ctx: AccessContext = Depends(get_access_context),
     store: ModelStore = Depends(get_model_store),
+    job_store: JobStore = Depends(get_job_store),
 ) -> ModelStageResponse:
     """
     Request model download/staging (U-814).
@@ -582,21 +684,22 @@ async def stage_model(
             ctx=ctx,
         )
 
-        # TODO: Create model_download job via JobStore
-        # For now, return a placeholder job_id
-        # In the full implementation:
-        # job_id = await job_store.create_job(
-        #     project_id=request.project_id or ctx.user_id,
-        #     user_id=ctx.user_id,
-        #     job_type="model_download",
-        #     spec={
-        #         "model_id": model.model_id,
-        #         "huggingface_id": request.huggingface_id,
-        #         "target_path": storage_ref,
-        #         "model_type": request.model_type,
-        #     },
-        # )
-        job_id = f"job-staging-{model.model_id[-8:]}"
+        job_project_id = _resolve_job_project_id(
+            caller_project_id=caller_project_id,
+            requested_project_id=model.project_id,
+            ctx=ctx,
+        )
+
+        try:
+            job_id = _submit_model_download_job(
+                job_store,
+                project_id=job_project_id,
+                ctx=ctx,
+                spec=_build_stage_job_spec(model),
+            )
+        except Exception:
+            _rollback_staged_model(store, model.model_id, ctx)
+            raise
 
         logger.info(
             "User %s requested staging of %s as %s (job %s)",
@@ -697,80 +800,65 @@ async def delete_model(
 class ModelPublishRequest(BaseModel):
     """Request to publish a user model to project scope."""
 
-    target_project_id: str = Field(..., description="Project ID to publish to")
-    new_name: Optional[str] = Field(None, description="New name for published model (optional)")
+    target_project_id: str = Field(..., description="Target project ID to publish to")
+    new_name: Optional[str] = Field(None, description="Override model name in target scope")
+
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "target_project_id": "proj-123",
+                "new_name": "my-finetune-v1-published",
+            }
+        }
 
 
-class ModelPublishResponse(BaseModel):
-    """Response for model publish operation."""
-
-    original_model_id: str
-    published_model_id: str
-    name: str
-    project_id: str
-    message: str
-
-
-@router.post("/{model_id}/publish", response_model=ModelPublishResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/{model_id}/publish", response_model=ModelResponse, status_code=status.HTTP_201_CREATED)
 async def publish_model(
     model_id: str,
     request: ModelPublishRequest,
     ctx: AccessContext = Depends(get_access_context),
     store: ModelStore = Depends(get_model_store),
-) -> ModelPublishResponse:
-    """
-    Publish a user model to project scope (U-815).
-
-    Promotes a user-owned model to project visibility, allowing all project
-    members to use it. The original user model remains unchanged.
-
-    Requirements:
-    - User must own the source model (user scope)
-    - User must be a member of the target project
-    - Model name must be unique within the project
-
-    Returns the newly created project-scoped model entry.
-    """
+) -> ModelResponse:
+    """Publish a user-scoped model to project scope by creating a project copy."""
     try:
-        # Get the source model
         source_model = store.get_model(model_id, ctx)
 
-        # Validate source model is user-scoped and owned by requester
         if source_model.scope != ModelScope.USER:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Only user-scoped models can be published to project scope",
             )
 
-        if source_model.owner_id != ctx.user_id:
+        if not ctx.is_admin and source_model.owner_id != ctx.user_id:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only the model owner can publish it",
             )
 
-        # Validate project membership (ctx.projects contains user's projects)
-        if request.target_project_id not in ctx.projects:
+        if (
+            not ctx.is_admin
+            and request.target_project_id not in ctx.project_memberships
+            and request.target_project_id not in ctx.admin_project_ids
+        ):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"User is not a member of project '{request.target_project_id}'",
             )
 
-        # Determine published model name
         published_name = request.new_name or source_model.name
-
-        # Create new project-scoped model with same properties
-        published_model = store.register_model(
+        published_model = store.create_model(
             name=published_name,
             scope=ModelScope.PROJECT,
             storage_ref=source_model.storage_ref,
             model_type=source_model.model_type,
+            owner_id=None,
             project_id=request.target_project_id,
-            owner_id=ctx.user_id,  # Original publisher
             huggingface_id=source_model.huggingface_id,
-            description=f"Published from user model: {source_model.name}",
+            description=f"Published from user model: {source_model.description or source_model.name}",
             serving_profile=source_model.serving_profile,
+            status=source_model.status,
             model_ref=source_model.model_ref,
-            execution_authority=source_model.execution_authority,
+            execution_authority_default=source_model.execution_authority_default,
             ctx=ctx,
         )
 
@@ -782,13 +870,7 @@ async def publish_model(
             published_model.model_id,
         )
 
-        return ModelPublishResponse(
-            original_model_id=model_id,
-            published_model_id=published_model.model_id,
-            name=published_model.name,
-            project_id=request.target_project_id,
-            message=f"Model successfully published to project '{request.target_project_id}'",
-        )
+        return ModelResponse.from_entry(published_model)
 
     except ModelNotFoundError:
         raise HTTPException(
@@ -826,128 +908,6 @@ async def resolve_model_path(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model not found: {model_id}",
-        )
-    except PermissionDeniedError as e:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=str(e),
-        )
-
-
-# =============================================================================
-# Model Publish Endpoint (U-815)
-# =============================================================================
-
-
-class ModelPublishRequest(BaseModel):
-    """Request to publish a user model to project scope (U-815)."""
-
-    target_project_id: str = Field(..., description="Target project ID to publish to")
-    new_name: Optional[str] = Field(None, description="Override model name in target scope")
-
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "target_project_id": "proj-123",
-                "new_name": "my-finetune-v1-published",
-            }
-        }
-
-
-class ModelPublishResponse(BaseModel):
-    """Response for model publish operation."""
-
-    published: bool = Field(..., description="Whether publish succeeded")
-    new_model_id: str = Field(..., description="New model ID in project scope")
-    source_model_id: str = Field(..., description="Original user model ID")
-    target_project_id: str = Field(..., description="Target project ID")
-    message: str = Field(..., description="Status message")
-
-
-@router.post("/{model_id}/publish", response_model=ModelPublishResponse)
-async def publish_model(
-    model_id: str,
-    request: ModelPublishRequest,
-    ctx: AccessContext = Depends(get_access_context),
-    store: ModelStore = Depends(get_model_store),
-) -> ModelPublishResponse:
-    """
-    Publish a user-scoped model to project scope (U-815).
-
-    Promotes a user model to be visible to all project members.
-    Requires:
-    - User owns the source model
-    - User has permission to publish to target project (project member or admin)
-
-    The original model remains in user scope; a new entry is created in project scope.
-    """
-    try:
-        # Get origin model
-        source_model = store.get_model(model_id, ctx)
-
-        # Verify it's a user-scoped model owned by requester
-        if source_model.scope != ModelScope.USER:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Only user-scoped models can be published to project scope",
-            )
-
-        if source_model.owner_id != ctx.user_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="You can only publish models you own",
-            )
-
-        # Check project access
-        if not ctx.is_admin and request.target_project_id not in ctx.project_ids:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"You don't have access to project {request.target_project_id}",
-            )
-
-        # Create new model in project scope
-        new_name = request.new_name or source_model.name
-        new_model = ModelEntry(
-            model_id=f"mdl-{uuid.uuid4().hex[:12]}",
-            name=new_name,
-            scope=ModelScope.PROJECT,
-            owner_id=None,  # Project models don't have individual owners
-            project_id=request.target_project_id,
-            storage_ref=source_model.storage_ref,
-            model_ref=source_model.model_ref,
-            model_type=source_model.model_type,
-            huggingface_id=source_model.huggingface_id,
-            description=f"Published from user model: {source_model.description or source_model.name}",
-            serving_profile=source_model.serving_profile,
-            execution_authority_default=source_model.execution_authority_default,
-            status=source_model.status,
-        )
-
-        # Save new model
-        store.create_model(new_model, ctx)
-
-        logger.info(
-            "User %s published model %s to project %s as %s",
-            ctx.user_id, model_id, request.target_project_id, new_model.model_id
-        )
-
-        return ModelPublishResponse(
-            published=True,
-            new_model_id=new_model.model_id,
-            source_model_id=model_id,
-            target_project_id=request.target_project_id,
-            message=f"Model '{new_name}' published to project {request.target_project_id}",
-        )
-
-    except ModelNotFoundError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Model not found: {model_id}",
-        )
-    except DuplicateModelError as e:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=str(e),
         )
     except PermissionDeniedError as e:
         raise HTTPException(
@@ -1125,8 +1085,13 @@ async def create_system_model(
 async def download_model_to_user_space(
     model_name: str,
     request: ModelDownloadRequest,
+    caller_project_id: Optional[str] = Query(
+        None,
+        description="Caller active project ID for durable job scoping",
+    ),
     ctx: AccessContext = Depends(get_access_context),
     store: ModelStore = Depends(get_model_store),
+    job_store: JobStore = Depends(get_job_store),
 ) -> ModelDownloadResponse:
     """
     Download/copy a system model to user/project space (U-818).
@@ -1179,12 +1144,37 @@ async def download_model_to_user_space(
         else:  # USER
             storage_ref = f"/shared/users/{ctx.user_id}/models/{target_name}"
 
-        # TODO: Create model_copy job via JobStore
-        # The job will:
-        # 1. Copy model weights from source to target
-        # 2. Create a new model entry with status='staging'
-        # 3. Update status to 'available' on completion
-        job_id = f"job-copy-{source_model.model_id[-8:]}-{target_name[:8]}"
+        target_model = store.create_model(
+            name=target_name,
+            scope=target_scope,
+            storage_ref=storage_ref,
+            model_type=source_model.model_type,
+            owner_id=ctx.user_id if target_scope == ModelScope.USER else None,
+            project_id=request.project_id if target_scope == ModelScope.PROJECT else None,
+            huggingface_id=source_model.huggingface_id,
+            description=source_model.description or f"Copy of system/{model_name}",
+            serving_profile=source_model.serving_profile,
+            execution_authority_default=source_model.execution_authority_default,
+            status=ModelStatus.STAGING,
+            ctx=ctx,
+        )
+
+        job_project_id = _resolve_job_project_id(
+            caller_project_id=caller_project_id,
+            requested_project_id=target_model.project_id,
+            ctx=ctx,
+        )
+
+        try:
+            job_id = _submit_model_download_job(
+                job_store,
+                project_id=job_project_id,
+                ctx=ctx,
+                spec=_build_copy_job_spec(source_model, target_model),
+            )
+        except Exception:
+            _rollback_staged_model(store, target_model.model_id, ctx)
+            raise
 
         logger.info(
             "User %s requested copy of system/%s to %s/%s (job %s)",

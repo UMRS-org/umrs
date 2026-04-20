@@ -55,7 +55,8 @@ umrs-client ping
 umrs-client list_buckets
 ```
 
-Site-specific setup scripts such as `deploy/rccs-cloud/setup_client.sh`
+Site-specific setup scripts under `deploy/<site>/`, such as
+`deploy/rccs-cloud/setup_client.sh` or `deploy/hpbd-atom/setup_client.sh`,
 create the venv, install the package, and place the expected config files
 under `~/.config/umrs/`.
 
@@ -73,9 +74,11 @@ limitations of the Docker-only setup.
 
 ### HPC / site deployments
 
-For Slurm-backed GPU inference with Mini-RiVault, use the site deployment docs:
+For Slurm-backed GPU inference with Mini-RiVault, use the site deployment docs
+that match your environment:
 
 - [deploy/rccs-cloud/README.md](deploy/rccs-cloud/README.md)
+- [deploy/hpbd-atom/README.md](deploy/hpbd-atom/README.md)
 - [doc/admin_guide.md](doc/admin_guide.md)
 
 ## Main User-Facing Capabilities
@@ -177,4 +180,5 @@ Deployment and runtime docs:
 
 - [docker/README.md](docker/README.md)
 - [deploy/rccs-cloud/README.md](deploy/rccs-cloud/README.md)
+- [deploy/hpbd-atom/README.md](deploy/hpbd-atom/README.md)
 - [src/umrs/mini-rivault-llm/README.md](src/umrs/mini-rivault-llm/README.md)

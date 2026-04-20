@@ -2,20 +2,21 @@
 Site Configuration — declarative, per-site deployment settings.
 
 Replaces hardcoded paths, partition names, and GPU parameters with a single
-YAML file per deployment site (e.g. ``deploy/rccs-cloud/site.yaml``).
+YAML file per deployment site (for example ``deploy/rccs-cloud/site.yaml`` or
+``deploy/hpbd-atom/site.yaml``).
 
 Loading order (first found wins):
   1. ``UMRS_SITE_CONFIG`` environment variable (absolute path)
   2. ``./site.yaml`` (current working directory)
-  3. ``~/.config/umrs/site.yaml``
+    3. ``<resolved UMRS config dir>/site.yaml``
 
 Usage::
 
     from umrs.orchestrator.site_config import get_site_config
 
     cfg = get_site_config()
-    print(cfg.scheduler.partition)      # "ng-dgx-s"
-    print(cfg.storage.model_cache_dir)  # "/lvs0/rccs-dmp/…/umrs_models"
+    print(cfg.scheduler.partition)      # "gpu-a100"
+    print(cfg.storage.model_cache_dir)  # "/shared/umrs/models"
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
+from umrs.shared.config import get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -142,7 +145,7 @@ class SiteConfig:
     """
     Top-level site configuration.
 
-    One instance per UMRS deployment (rccs-cloud, plafrim, laptop, …).
+    One instance per UMRS deployment site (cluster, workstation, laptop, …).
     """
 
     name: str = "default"
@@ -289,10 +292,14 @@ class SiteConfig:
 # Loader
 # ---------------------------------------------------------------------------
 
+def _default_site_config_path() -> str:
+    return get_resolved_umrs_subdir("site.yaml")
+
+
 _SEARCH_PATHS = [
     lambda: os.environ.get("UMRS_SITE_CONFIG", ""),
     lambda: str(Path.cwd() / "site.yaml"),
-    lambda: str(Path.home() / ".config" / "umrs" / "site.yaml"),
+    _default_site_config_path,
 ]
 
 
@@ -344,7 +351,7 @@ def load_site_config(path: Optional[str] = None) -> SiteConfig:
     if not resolved or not os.path.isfile(resolved):
         raise FileNotFoundError(
             "No site.yaml found.  Set UMRS_SITE_CONFIG or place site.yaml in "
-            "the working directory or ~/.config/umrs/."
+            "the working directory or the resolved UMRS config directory."
         )
 
     with open(resolved, "r") as fh:
