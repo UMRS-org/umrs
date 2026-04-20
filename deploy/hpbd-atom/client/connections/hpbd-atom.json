@@ -5,6 +5,10 @@
     "host": "127.0.0.1",
     "control_port": 5555,
     "data_base_port": 15556,
+    "data_port_range": {
+      "start": 15556,
+      "end": 15563
+    },
     "tunnel_mode": true,
     "health_check_timeout_ms": 5000
   },
@@ -25,6 +29,41 @@
         "local_port": 15556,
         "remote_host": "localhost",
         "remote_port": 15556
+      },
+      {
+        "local_port": 15557,
+        "remote_host": "localhost",
+        "remote_port": 15557
+      },
+      {
+        "local_port": 15558,
+        "remote_host": "localhost",
+        "remote_port": 15558
+      },
+      {
+        "local_port": 15559,
+        "remote_host": "localhost",
+        "remote_port": 15559
+      },
+      {
+        "local_port": 15560,
+        "remote_host": "localhost",
+        "remote_port": 15560
+      },
+      {
+        "local_port": 15561,
+        "remote_host": "localhost",
+        "remote_port": 15561
+      },
+      {
+        "local_port": 15562,
+        "remote_host": "localhost",
+        "remote_port": 15562
+      },
+      {
+        "local_port": 15563,
+        "remote_host": "localhost",
+        "remote_port": 15563
       },
       {
         "local_port": 9000,

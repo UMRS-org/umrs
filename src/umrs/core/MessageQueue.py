@@ -536,6 +536,23 @@ class MessageQueue:
                 except RuntimeError as e:
                     print(f"Error acknowledging {cmd} request: {e}")
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                token = splited_msg[3] if len(splited_msg) > 3 else None
+                if client_id and token:
+                    try:
+                        auth_ctx = create_auth_context_from_request(client_id, token=token)
+                        self._auth_sessions[client_id] = auth_ctx
+                        logger.info(
+                            "Auth session refreshed for maintenance: user=%s role=%s cmd=%s",
+                            client_id,
+                            auth_ctx.role.value,
+                            cmd,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to refresh auth context for maintenance request %s: %s",
+                            client_id,
+                            e,
+                        )
                 return cmd, client_id
 
             elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
@@ -749,11 +766,14 @@ class MessageQueue:
         else:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
-    def notify_server(self, client_id, notification_type, nb_objects, verbose=False):
+    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None):
         if self.role != "client":
             raise PermissionError(f"Only client can call 'notify_server'")
 
-        request_str = f"{notification_type}:{client_id}:{nb_objects}"
+        if admin_token:
+            request_str = f"{notification_type}:{client_id}:{nb_objects}:{admin_token}"
+        else:
+            request_str = f"{notification_type}:{client_id}:{nb_objects}"
         self.send_string(request_str)
 
         try:

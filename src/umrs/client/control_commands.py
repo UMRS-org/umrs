@@ -11,6 +11,7 @@ MODEL_TYPE_CHOICES = ("llm", "embedding", "vision")
 MODEL_SCOPE_CHOICES = ("system", "project", "user")
 WORKFLOW_SCOPE_CHOICES = ("system", "user")
 JOB_TYPE_CHOICES = ("endpoint_provision", "index_build", "cleanup")
+JOB_STATUS_FILTER_CHOICES = ("planned", "queued", "running", "completed", "failed", "cancelled")
 STATUS_CHOICES = tuple(TaskCmd.status_cmd())
 
 MODEL_REGISTER_SCOPE_DEFAULT = "user"
@@ -153,6 +154,29 @@ def configure_job_cancel_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("job_id", help="Job ID to cancel")
 
 
+def configure_job_status_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("job_id", help="Job ID to inspect")
+
+
+def configure_job_list_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", default=None, help="Filter by project ID")
+    parser.add_argument(
+        "--status",
+        default=None,
+        choices=JOB_STATUS_FILTER_CHOICES,
+        help="Filter by job status",
+    )
+    parser.add_argument(
+        "--type",
+        dest="job_type",
+        default=None,
+        choices=JOB_TYPE_CHOICES,
+        help="Filter by job type",
+    )
+    parser.add_argument("--limit", type=int, default=200, help="Maximum jobs to return")
+    parser.add_argument("--offset", type=int, default=0, help="Offset into the result set")
+
+
 def configure_workflow_run_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("workflow_name", help="Name of the registered workflow to execute")
     parser.add_argument("--bucket", default=None, help="Bucket alias to use as input data source")
@@ -206,6 +230,10 @@ def build_control_command_parser(
     configure_job_submit_parser(job_submit)
     job_cancel = job_subparsers.add_parser("cancel", add_help=add_help)
     configure_job_cancel_parser(job_cancel)
+    job_status = job_subparsers.add_parser("status", add_help=add_help)
+    configure_job_status_parser(job_status)
+    job_list = job_subparsers.add_parser("list", add_help=add_help)
+    configure_job_list_parser(job_list)
 
     workflow = subparsers.add_parser("workflow", add_help=add_help)
     workflow_subparsers = workflow.add_subparsers(dest="workflow_action", required=True)

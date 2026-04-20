@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from umrs.jobs.models import Job, JobAttempt, JobStatus, JobType, RestartPolicy, AttemptStatus
 from umrs.server import job_tracking_handler
 from umrs.server.job_tracking_handler import DurableJobCommandBackend, handle_job_command
+from umrs.jobs.store import InvalidTransitionError
 
 JOB_SUBMIT = "JOB_SUBMIT"
 JOB_LIST = "JOB_LIST"
@@ -15,6 +16,7 @@ class FakeJobStore:
         self.attempts = {}
         self.enqueued = []
         self.cancelled = []
+        self.idempotency = {}
 
     def create_job(
         self,
@@ -27,6 +29,10 @@ class FakeJobStore:
         max_attempts=3,
         restart_policy=RestartPolicy.ON_CRASH,
     ):
+        idem = idempotency_key or f"idem-{project_id}-{user_id}-{job_type.value}-{spec}"
+        if idem in self.idempotency:
+            raise job_tracking_handler.DuplicateJobError(self.idempotency[idem])
+
         job_id = f"job-{len(self.jobs) + 1:03d}"
         job = Job(
             job_id=job_id,
@@ -34,7 +40,7 @@ class FakeJobStore:
             user_id=user_id,
             job_type=job_type,
             spec=spec,
-            idempotency_key=idempotency_key or f"idem-{job_id}",
+            idempotency_key=idem,
             status=JobStatus.PLANNED,
             priority=priority,
             desired_max_attempts=max_attempts,
@@ -44,6 +50,7 @@ class FakeJobStore:
         )
         self.jobs[job_id] = job
         self.attempts[job_id] = []
+        self.idempotency[idem] = job_id
         return job_id
 
     def enqueue_job(self, job_id):
@@ -67,6 +74,8 @@ class FakeJobStore:
         return jobs[offset : offset + limit]
 
     def cancel_job(self, job_id, reason="user_cancelled"):
+        if self.jobs[job_id].status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}:
+            raise InvalidTransitionError(f"Cannot cancel job {job_id} (already terminal)")
         self.cancelled.append((job_id, reason))
         self.jobs[job_id].status = JobStatus.CANCELLED
 
@@ -137,6 +146,39 @@ def test_durable_backend_cancel_uses_job_store():
 
     assert result["status"] == "ok"
     assert store.cancelled == [(job_id, "cancelled by testuser")]
+
+
+def test_durable_backend_cancel_completed_endpoint_submits_cleanup_job():
+    store = FakeJobStore()
+    job_id = store.create_job(
+        project_id="demo11",
+        user_id="testuser",
+        job_type=JobType.ENDPOINT_PROVISION,
+        spec={"model": "sam3"},
+    )
+    store.jobs[job_id].status = JobStatus.COMPLETED
+    store.attempts[job_id].append(
+        JobAttempt(
+            attempt_id="att-123",
+            job_id=job_id,
+            attempt_no=1,
+            backend="slurm",
+            backend_ref="backend-123",
+            status=AttemptStatus.SUCCEEDED,
+            started_at=datetime.now(UTC),
+            ended_at=datetime.now(UTC),
+            created_at=datetime.now(UTC),
+        )
+    )
+    backend = DurableJobCommandBackend(store)
+
+    result = json.loads(backend.cancel("testuser", json.dumps({"job_id": job_id})))
+
+    assert result["status"] == "ok"
+    assert result["target_job_id"] == job_id
+    assert result["job"]["job_type"] == "cleanup"
+    assert result["job"]["spec"] == {"target": "endpoint", "job_id": job_id}
+    assert store.enqueued[-1] == result["job"]["job_id"]
 
 
 def test_handle_job_command_requires_durable_backend():
@@ -270,6 +312,7 @@ def test_build_durable_job_db_pool_reads_env(monkeypatch):
         "password": "jobs-pass",
         "host": "db-host",
         "port": "15432",
+        "sslmode": "disable",
     }
     assert pool_kwargs == {
         "minconn": 1,
@@ -279,4 +322,5 @@ def test_build_durable_job_db_pool_reads_env(monkeypatch):
         "password": "jobs-pass",
         "host": "db-host",
         "port": "15432",
+        "sslmode": "disable",
     }

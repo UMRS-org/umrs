@@ -1,6 +1,9 @@
 """Custom step: count words and characters in text files."""
 
-class WordCounter:
+from umrs.pipeline_sdk import Step, StepContext, StepResult
+
+
+class WordCounter(Step):
     name = "count_words"
 
     def setup(self, config):
@@ -9,7 +12,7 @@ class WordCounter:
     def teardown(self):
         pass
 
-    def run(self, ctx):
+    def run(self, ctx: StepContext) -> StepResult:
         results = {}
         for key in ctx.input_keys:
             if key.endswith(".txt"):
@@ -24,12 +27,15 @@ class WordCounter:
                 }
 
         import json
-        summary = json.dumps(results, indent=2)
-        ctx.upload_bytes("word_count_results.json", summary.encode())
 
-        return type("R", (), {
-            "output_keys": ["word_count_results.json"],
-            "embeddings": None,
-            "checksums": {},
-            "metadata": {"summary": results},
-        })()
+        summary = json.dumps(results, indent=2)
+        ctx.upload_bytes(
+            "word_count_results.json",
+            summary.encode(),
+            content_type="application/json",
+        )
+
+        return StepResult(
+            output_keys=["word_count_results.json"],
+            metadata=[{"summary": results}],
+        )

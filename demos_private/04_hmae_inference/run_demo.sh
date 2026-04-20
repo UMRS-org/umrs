@@ -29,6 +29,7 @@ DEMO_TAG="hmae_demo" source "${SCRIPT_DIR}/../lib/common.sh"
 BUCKET_ALIAS="${HMAE_BUCKET:-user1-hmae}"
 FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
+REMOTE_HMAE_MODEL_PATH="${UMRS_REMOTE_HMAE_MODEL_PATH:-}"
 
 # S3 bucket names (derived from user1.json naming convention)
 INPUT_S3_BUCKET="user1.hmae-inference.${BUCKET_ALIAS}"
@@ -79,11 +80,18 @@ preflight
 # ---------- Step 2: Optional model registration ----------
 if [[ -n "${HMAE_LOCAL_MODEL_DIR:-}" ]]; then
     log ""
-    log "Step 2: Registering HMAE model from ${HMAE_LOCAL_MODEL_DIR}..."
-    $CLIENT model register "hmae-pretrained" "${HMAE_LOCAL_MODEL_DIR}" \
-        --type embedding --scope system \
-        --description "HMAE ViT pretrained checkpoint" || warn "model register returned non-zero"
-    ok "Model registered"
+    if [[ -n "$REMOTE_HMAE_MODEL_PATH" ]]; then
+        log "Step 2: Uploading HMAE model from ${HMAE_LOCAL_MODEL_DIR}..."
+        $CLIENT model upload "${HMAE_LOCAL_MODEL_DIR}" \
+            --name "hmae-pretrained" \
+            --type embedding --scope user \
+            --description "HMAE ViT pretrained checkpoint" \
+            --register-path "$REMOTE_HMAE_MODEL_PATH" \
+            --force || warn "model upload returned non-zero"
+        ok "Model uploaded"
+    else
+        warn "Skipping model upload — set UMRS_REMOTE_HMAE_MODEL_PATH to a server-visible register path"
+    fi
 else
     log ""
     log "Step 2: Skipping model registration (set HMAE_LOCAL_MODEL_DIR to register)"

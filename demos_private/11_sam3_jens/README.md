@@ -22,16 +22,27 @@ It communicates with the BentoML service endpoint directly.
 2. Python 3 with `bentoml>=1.4` installed
 3. Network access to the VisionFrontend (SSH tunnel if remote)
 
+## Current Validation Note
+
+The current `rccs-cloud` validation environment does not expose a ready
+VisionFrontend at `http://localhost:3000/readyz`, so this demo is blocked until
+that service is started or tunneled locally.
+
+Also note that the current `umrs-client` does not expose a dedicated
+`presign` subcommand. The checked-in `run_demo.sh` already degrades to `s3://`
+references automatically, so prefer `IMAGE_MODE=s3` or `IMAGE_MODE=local` when
+running manually.
+
 ## Quick Start
 
 ```bash
-# Default: images from SAM3 demo's test_data_full, presigned S3 URLs
+# Default: images from SAM3 demo's test_data_full
 bash run_demo.sh
 
 # Custom image directory
 bash run_demo.sh /path/to/images/
 
-# Direct S3 mode (images already in S3)
+# Direct S3 mode (recommended with the current CLI surface)
 IMAGE_MODE=s3 BUCKET_ALIAS=user1-sam3 bash run_demo.sh
 
 # Local mode (service reads from shared filesystem)
@@ -44,23 +55,19 @@ JENS_SERVER=http://compute01 JENS_PORT=3000 bash run_demo.sh
 ## Running Manually
 
 This demo bypasses `umrs-client` for inference and calls the BentoML
-service directly. However, `umrs-client` is still used for uploading
-images and generating presigned URLs.
+service directly. `umrs-client` is still used for staging images, but in the
+current CLI the practical manual paths are `s3://` or local-file input.
 
 ```bash
 # 1. Check VisionFrontend service readiness
 curl -sf http://localhost:3000/readyz && echo "Service ready"
 
-# 2. Upload images to S3 via umrs-client (for presigned URL mode)
+# 2. Upload images to S3 via umrs-client
 #    The images are uploaded to MinIO so the BentoML service can
-#    access them via presigned URLs.
+#    access them via direct `s3://` URIs.
 umrs-client upload_dir ./test_images user1-sam3
 
-# 3. Generate a presigned URL for each image
-#    The BentoML service fetches images via these URLs.
-umrs-client presign user1-sam3 image.png
-
-# 4. Submit SAM3 inference via the jens_client.py helper
+# 3. Submit SAM3 inference via the jens_client.py helper
 #    This calls POST /vision_task directly on the VisionFrontend,
 #    bypassing the UMRS orchestrator for lower latency.
 python3 ../lib/jens_client.py \
@@ -68,11 +75,11 @@ python3 ../lib/jens_client.py \
     --port 3000 \
     --model sam3 \
     --task "all" \
-    --image "https://presigned-url-from-step-3" \
+    --image "s3://user1-sam3/image.png" \
     --output-dir ./results \
     --timeout 300
 
-# 5. Results are saved as pickle files in results/
+# 4. Results are saved as pickle files in results/
 ls results/*.pkl
 ```
 
@@ -85,7 +92,7 @@ ls results/*.pkl
 | `JENS_TOKEN` | _(none)_ | Bearer token (skip if `NO_AUTH=1` on server) |
 | `SAM3_PROMPT` | `all` | Object to segment (e.g. `cat`, `crack`, `all`) |
 | `MAX_IMAGES` | `3` | Max images to process |
-| `IMAGE_MODE` | `presigned` | `presigned`, `s3`, or `local` |
+| `IMAGE_MODE` | `presigned` | `presigned`, `s3`, or `local` (`presigned` currently falls back to `s3://`) |
 | `BUCKET_ALIAS` | `user1-sam3` | S3 bucket for presigned/s3 mode |
 
 ## Output

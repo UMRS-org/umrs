@@ -41,7 +41,7 @@ class _FakeAuthContext:
     username = "configured-user"
     is_admin = True
 
-    def can_execute_command(self, command, target_user=None):
+    def can_execute_command(self, command, target_user=None, **kwargs):
         allowed = {
             client_umrs.TaskCmd.RECOMPUTE: True,
             client_umrs.TaskCmd.UPDATE: False,

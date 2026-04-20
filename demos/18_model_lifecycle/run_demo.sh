@@ -23,6 +23,11 @@ banner "Demo 18: Model Lifecycle"
 echo "Config       : ${CONF}"
 echo ""
 
+model_visible() {
+    local scope="$1" name="$2"
+    $CLIENT model list --scope "$scope" 2>/dev/null | grep -q "\"name\": \"${name}\""
+}
+
 # ---------- Step 1: Pre-flight ----------
 log "Step 1: Pre-flight checks..."
 preflight
@@ -43,11 +48,20 @@ ok "Current model inventory retrieved"
 
 # ---------- Step 3: Download a system model ----------
 log ""
-log "Step 3: Downloading a system-scope embedding model..."
+log "Step 3: Verifying an embedding model is available..."
 MODEL_REPO="${EMBEDDING_MODEL:-intfloat/e5-base-v2}"
-$CLIENT model download "$MODEL_REPO" --scope system --server-side 2>&1 \
-    | while IFS= read -r line; do log "  $line"; done
-ok "Model download requested: $MODEL_REPO"
+MODEL_NAME="${EMBEDDING_MODEL_NAME:-${MODEL_REPO##*/}}"
+MODEL_STAGING_DIR="${MODEL_STAGING_DIR:-}"
+if model_visible system "$MODEL_NAME" || model_visible user "$MODEL_NAME"; then
+    ok "Embedding model already visible in the registry: ${MODEL_NAME}"
+elif [[ -n "$MODEL_STAGING_DIR" ]]; then
+    $CLIENT model download "$MODEL_REPO" --scope user --server-side --staging-dir "$MODEL_STAGING_DIR" 2>&1 \
+        | while IFS= read -r line; do log "  $line"; done
+    ok "Model download requested via MODEL_STAGING_DIR=${MODEL_STAGING_DIR}"
+else
+    warn "Model '${MODEL_NAME}' is not visible in the registry."
+    warn "Continuing because some deployments pre-stage shared models outside the user-visible catalog."
+fi
 
 # ---------- Step 4: Register a user-scope model ----------
 log ""
@@ -122,7 +136,7 @@ $CLIENT model list --scope user 2>&1 \
 log ""
 log "Summary of model lifecycle:"
 log "  ✓ Listed existing system and user models"
-log "  ✓ Downloaded system-scope model: ${MODEL_REPO}"
+log "  ✓ Verified or staged an embedding model: ${MODEL_REPO}"
 if [[ "$USER_MODEL_REGISTERED" = "1" ]]; then
     log "  ✓ Registered user-scope model: demo-custom-model"
 else

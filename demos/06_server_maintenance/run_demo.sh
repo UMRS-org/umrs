@@ -21,6 +21,12 @@ log "Step 0: Ping server..."
 preflight
 echo ""
 
+if [ -z "${UMRS_ADMIN_TOKEN:-}" ]; then
+    warn "UMRS_ADMIN_TOKEN is not set. On auth-enforced deployments, check/update/recompute will be denied."
+    warn "See demos/23_auth_enforcement for admin token setup."
+    echo ""
+fi
+
 # Step 1: List configured buckets
 log "Step 1: List configured buckets..."
 $CLIENT list_buckets || warn "no buckets configured — run Demo 02 first"

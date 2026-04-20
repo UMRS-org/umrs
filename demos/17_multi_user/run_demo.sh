@@ -6,7 +6,7 @@
 # and databases. User1 cannot see user2's data and vice versa.
 #
 # Prerequisites:
-#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
+#   - UMRS server reachable (SSH tunnels if remote: 5555, 5556-5563, 9000)
 #   - UMRS server running with two user configs created
 #   - umrs-client installed and in PATH
 #   - User configs: ~/.config/umrs/users/user1.json, user2.json

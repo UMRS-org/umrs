@@ -15,6 +15,7 @@
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - opencv-python-headless and numpy installed (for test video generation)
+#   - On auth-enforced deployments, set UMRS_ADMIN_TOKEN for reload
 #   - A bucket alias with 'movie' modality and 'need_output_bucket: true'
 #     configured in your user config (user1-video by default).
 #
@@ -85,7 +86,14 @@ log ""
 log "Step 3: Uploading video analysis workflow..."
 $CLIENT upload-workflow "${WORKFLOW_SOURCE_DIR}" --name "video-motion-analysis" 2>&1 | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
-$CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+
+log "Reloading server configuration..."
+if [[ -n "${UMRS_ADMIN_TOKEN:-}" ]]; then
+    $CLIENT --admin-token "$UMRS_ADMIN_TOKEN" reload 2>/dev/null || warn "reload returned non-zero"
+else
+    warn "UMRS_ADMIN_TOKEN not set; reload may be rejected on auth-enforced deployments"
+    $CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+fi
 sleep 3
 
 # ---------- Step 4: Upload videos ----------
@@ -127,5 +135,5 @@ else
 fi
 
 log ""
-log "Per-video motion reports: ${RESULTS_DIR}/results/*_motion.json"
-log "Aggregate summary:        ${RESULTS_DIR}/results/summary.json"
+log "Per-video motion reports: ${RESULTS_DIR}/*_motion.json"
+log "Aggregate summary:        ${RESULTS_DIR}/summary.json"

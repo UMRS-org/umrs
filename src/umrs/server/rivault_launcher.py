@@ -42,12 +42,23 @@ def _get_cached_job(model_type_key):
     return None
 
 
-def _cache_job(model_type_key, job_id, host="", port=0):
+def _cache_job(model_type_key, job_id, host="", port=0, metadata=None):
     """Register / update a job in the endpoint registry."""
+    merged_metadata = {}
+    existing = get_registry().get(
+        _RIVAULT_PROJECT, model_type_key,
+        prefer_warm=False, min_ttl_sec=0,
+    )
+    if existing and existing.metadata:
+        merged_metadata.update(existing.metadata)
+    if metadata:
+        merged_metadata.update(metadata)
+
     get_registry().register(
         _RIVAULT_PROJECT, model_type_key, str(job_id),
         host=host, port=port, backend="slurm-podman",
         ttl_sec=14400,  # 4 hours (matches Slurm --time)
+        metadata=merged_metadata,
     )
 
 
@@ -66,6 +77,55 @@ def _remove_cached_job(model_type_key):
 def _list_cached_keys():
     """Return all model_type_keys currently tracked."""
     return [ep.model for ep in get_registry().list_all(project_id=_RIVAULT_PROJECT)]
+
+
+def _get_active_rivault_profiles():
+    """Return the effective RiVault compose profiles for the current site."""
+    raw_profiles = os.environ.get("RIVAULT_PROFILES", "").strip()
+    if raw_profiles:
+        return tuple(profile for profile in raw_profiles.split() if profile)
+
+    try:
+        from umrs.orchestrator.site_config import get_site_config
+
+        runtime_profiles = getattr(get_site_config().runtime, "profiles", None) or []
+        profiles = tuple(str(profile).strip() for profile in runtime_profiles if str(profile).strip())
+        if profiles:
+            return profiles
+    except Exception:
+        pass
+
+    return ("harness", "vllm")
+
+
+def _job_capabilities_for_profiles(profiles):
+    """Encode reusable RiVault capabilities derived from compose profiles."""
+    profile_set = set(profiles)
+    return {
+        "rivault_profiles": list(profiles),
+        "supports_openai": "vllm" in profile_set,
+        "supports_bentoml": "vision-bentoml" in profile_set,
+    }
+
+
+def _endpoint_supports_bentoml(endpoint, default_profiles=()):
+    """Return whether a cached RiVault endpoint exposes the BentoML vision path."""
+    metadata = endpoint.metadata or {}
+    if "supports_bentoml" in metadata:
+        return bool(metadata["supports_bentoml"])
+
+    cached_profiles = metadata.get("rivault_profiles")
+    if isinstance(cached_profiles, str):
+        profiles = tuple(profile for profile in cached_profiles.split() if profile)
+    elif isinstance(cached_profiles, (list, tuple)):
+        profiles = tuple(str(profile).strip() for profile in cached_profiles if str(profile).strip())
+    else:
+        profiles = tuple(default_profiles)
+
+    if profiles:
+        return "vision-bentoml" in set(profiles)
+
+    return "bentoml://" in str(endpoint.model)
 
 
 def release_backend_job(model_type_key):
@@ -242,7 +302,7 @@ def _ensure_output_dir():
     os.makedirs(full_tmp_path, exist_ok=True)
     return full_tmp_path
 
-def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=None):
+def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=None, job_metadata=None):
     output_file = error_file = None
     if "plafrim" in slurm_script:
         create_plafrim_slurm_script(slurm_script)
@@ -301,7 +361,7 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
             if match:
                 job_id = int(match.group(1))
                 print("Job submitted with ID:", job_id)
-                _cache_job(model_type_key, job_id)  # persist immediately
+                _cache_job(model_type_key, job_id, metadata=job_metadata)  # persist immediately
                 startup_timeout = get_rivault_startup_timeout_sec()
                 if not wait_for_running(job_id, timeout=startup_timeout):
                     raise ValueError(
@@ -596,6 +656,7 @@ def _check_cache_or_reuse_job(model_type_key, model_cfg):
     - job_id is the running Slurm job to reuse, or None if a new job is needed.
     """
     job_id = _get_cached_job(model_type_key)
+    default_profiles = _get_active_rivault_profiles()
 
     if job_id is not None:
         print(f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running...")
@@ -621,17 +682,25 @@ def _check_cache_or_reuse_job(model_type_key, model_cfg):
     # model already has a running job, reuse it instead of submitting
     # a second Slurm job that would just PEND forever.
     if job_id is None and model_cfg["model_type"].startswith("bentoml://"):
-        for cached_key in _list_cached_keys():
-            if cached_key == model_type_key:
+        for endpoint in get_registry().list_all(project_id=_RIVAULT_PROJECT):
+            if endpoint.model == model_type_key:
                 continue
-            if ":bentoml://" not in str(cached_key):
+            try:
+                cached_job_id = int(endpoint.job_id)
+            except (TypeError, ValueError):
                 continue
-            cached_job_id = _get_cached_job(cached_key)
-            if cached_job_id is not None and is_slurm_job_running(cached_job_id):
-                print(f"===> Reusing running BentoML Rivault job {cached_job_id} "
-                      f"from '{cached_key}' for '{model_type_key}'.")
-                job_id = cached_job_id
-                break
+            if not is_slurm_job_running(cached_job_id):
+                continue
+            if not _endpoint_supports_bentoml(endpoint, default_profiles=default_profiles):
+                continue
+
+            print(
+                f"===> Reusing running RiVault job {cached_job_id} from "
+                f"'{endpoint.model}' for '{model_type_key}' "
+                "(vision-capable stack)."
+            )
+            job_id = cached_job_id
+            break
 
     return None, job_id
 
@@ -651,6 +720,8 @@ def launch_rivault_model(model_cfg):
     vmc = model_cfg.get("vision_model_config", {})
     task_suffix = ":" + vmc["task"] if vmc.get("task") else ""
     model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"] + task_suffix
+    job_profiles = _get_active_rivault_profiles()
+    job_metadata = _job_capabilities_for_profiles(job_profiles)
 
     # --- 0. Check cache / reuse running job ---
     cached_model, job_id = _check_cache_or_reuse_job(model_type_key, model_cfg)
@@ -662,7 +733,7 @@ def launch_rivault_model(model_cfg):
 
     output_file, error_file, job_id = get_slurm_node(
         rivault_slurm_script, model_type_key,
-        job_id_to_use=job_id, sbatch_env=None,
+        job_id_to_use=job_id, sbatch_env=None, job_metadata=job_metadata,
     )
     print(f"{output_file=} {job_id=}")
 
@@ -684,6 +755,6 @@ def launch_rivault_model(model_cfg):
 
     # --- 4. Cache the loaded model and job_id ---
     model_cache[model_type_key] = (model, thread_tunnel, proc_tunnel)
-    _cache_job(model_type_key, job_id, host=server_address, port=local_port)
+    _cache_job(model_type_key, job_id, host=server_address, port=local_port, metadata=job_metadata)
     return model
 

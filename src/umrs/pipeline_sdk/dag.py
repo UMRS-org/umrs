@@ -19,7 +19,7 @@ Usage::
 from __future__ import annotations
 
 import logging
-from collections import defaultdict, deque
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set
 
@@ -225,16 +225,10 @@ def execute_dag(
     step_output_keys: Dict[str, List[str]] = {}
     step_output_bucket: Dict[str, str] = {}
 
-    is_last_level_cache: Set[int] = set(levels[-1]) if levels else set()
-
-    for level_idx, level in enumerate(levels):
-        is_last_level = level_idx == len(levels) - 1
-
+    for level in levels:
         def _run_step(spec_idx: int) -> None:
             spec = step_specs[spec_idx]
             step = step_instances[spec_idx]
-            is_last = spec_idx in is_last_level_cache and is_last_level
-
             # Determine input keys: merge from all parents
             parents = scheduler.parent_names(spec.name)
             if parents:
@@ -252,11 +246,10 @@ def execute_dag(
                 current_keys = list(input_keys)
                 current_bucket = input_bucket
 
-            step_out_bucket = output_bucket if is_last else input_bucket
-            step_prefix = (
-                "" if is_last
-                else f"_staging/{run_id}/step_{spec_idx}_{spec.name}/"
-            )
+            # Route all workflow step outputs to the dedicated output bucket.
+            # Writing intermediate artifacts back into the watched input bucket
+            # causes the workflow to recursively retrigger on its own outputs.
+            step_out_bucket = output_bucket
 
             # Collect parent results for fan-in
             parent_results = {

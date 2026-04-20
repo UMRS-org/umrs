@@ -19,6 +19,9 @@ timestamps plus duration for each event.
 ## Quick Start
 
 ```bash
+# Auth-enforced deployments need an admin token for reload
+export UMRS_ADMIN_TOKEN=...
+
 # Generate synthetic test videos + analyse them
 bash 14_video_analysis/run_demo.sh
 
@@ -68,7 +71,8 @@ python3 generate_test_videos.py -o sample_videos/ --count 4 --fps 15
 umrs-client upload-workflow workflow/ --name "video-motion-analysis"
 
 # 4. Reload server configuration
-umrs-client reload
+#    On auth-enforced deployments, reload is admin-only.
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 
 # 5. Upload videos to the analysis bucket
 #    Each video will be processed by the MotionDetectStep,
@@ -80,6 +84,10 @@ umrs-client upload_dir ./sample_videos user1-video
 #    summary.json with total events across all videos.
 umrs-client download_results user1-video ./results --force-overwrite
 ```
+
+If you rerun the demo against a shared bucket, clear the corresponding
+`*-output` bucket first or use unique filenames so old reports do not mix into
+the next download.
 
 ## Configuration
 
@@ -106,12 +114,11 @@ Lower `diff_threshold` for subtle motion; raise for noisy footage.
 
 ```
 results/
-├── results/
-│   ├── test_video_000_motion_motion.json
-│   ├── test_video_001_motion_motion.json
-│   ├── test_video_002_static_motion.json  # should have 0 events
-│   ├── test_video_003_motion_motion.json
-│   └── summary.json                       # aggregate
+├── test_video_000_motion_motion.json
+├── test_video_001_motion_motion.json
+├── test_video_002_static_motion.json  # should have 0 events
+├── test_video_003_motion_motion.json
+└── summary.json                       # aggregate
 ```
 
 Each `*_motion.json` contains:

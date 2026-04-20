@@ -6,7 +6,7 @@ neither can access the other's data.
 
 ## Prerequisites
 
-- UMRS server running and reachable (SSH tunnels if remote: ports 5555, 5556, 9000)
+- UMRS server running and reachable (SSH tunnels if remote: ports 5555, 5556-5563, 9000)
 - `umrs-client` installed and in PATH
 - Two user configuration files:
   - `~/.config/umrs/users/user1.json`

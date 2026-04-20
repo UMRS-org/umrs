@@ -205,6 +205,34 @@ class TestWorkflowDefinition:
         with pytest.raises(FileNotFoundError):
             WorkflowDefinition.from_file("/nonexistent/workflow.json")
 
+    def test_from_dict_execution_parallel_roots(self):
+        wf = WorkflowDefinition.from_dict(_minimal_workflow_dict(
+            steps=[
+                {"name": "segment", "entrypoint": "segment:SegmentStep"},
+                {"name": "features", "entrypoint": "features:FeatureStep"},
+                {"name": "thumbnails", "entrypoint": "thumbs:ThumbnailStep"},
+            ],
+            execution={"parallel": ["segment", "features", "thumbnails"]},
+        ))
+
+        assert [step.depends_on for step in wf.steps] == [[], [], []]
+
+    def test_from_dict_execution_parallel_fans_back_into_next_step(self):
+        wf = WorkflowDefinition.from_dict(_minimal_workflow_dict(
+            steps=[
+                {"name": "load", "entrypoint": "load:LoadStep"},
+                {"name": "segment", "entrypoint": "segment:SegmentStep"},
+                {"name": "features", "entrypoint": "features:FeatureStep"},
+                {"name": "merge", "entrypoint": "merge:MergeStep"},
+            ],
+            execution={"parallel": ["segment", "features"]},
+        ))
+
+        assert wf.steps[0].depends_on == []
+        assert wf.steps[1].depends_on == ["load"]
+        assert wf.steps[2].depends_on == ["load"]
+        assert wf.steps[3].depends_on == ["segment", "features"]
+
 
 # =========================================================================
 # SourceSpec validation

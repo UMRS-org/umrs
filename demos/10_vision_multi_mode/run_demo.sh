@@ -13,6 +13,7 @@
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - BentoML vision service available on compute node
+#   - On auth-enforced deployments, set UMRS_ADMIN_TOKEN for reload
 #
 # Usage:
 #   bash run_demo.sh                         # sample images
@@ -46,7 +47,13 @@ log "Step 2: Uploading workflow definition..."
 $CLIENT upload-workflow "${WORKFLOW_SOURCE_DIR}" --name "vision-multi-mode" 2>&1 | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
 
-$CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+log "Reloading server configuration..."
+if [[ -n "${UMRS_ADMIN_TOKEN:-}" ]]; then
+    $CLIENT --admin-token "$UMRS_ADMIN_TOKEN" reload 2>/dev/null || warn "reload returned non-zero"
+else
+    warn "UMRS_ADMIN_TOKEN not set; reload may be rejected on auth-enforced deployments"
+    $CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+fi
 sleep 3
 
 # ---------- Step 3: Prepare and upload images ----------
@@ -97,20 +104,22 @@ ok "Results saved to ${RESULTS_DIR}/"
 log ""
 banner "Demo 10 Complete"
 
-log "Output structure:"
-for subdir in segment features thumbnails; do
-    subdir_path="${RESULTS_DIR}/${subdir}"
-    if [[ -d "$subdir_path" ]]; then
-        count=$(find "$subdir_path" -type f | wc -l | tr -d ' ')
-    else
-        count=0
-    fi
-    log "  ${subdir}/ — ${count} files"
-done
+segment_count=$(find "$RESULTS_DIR" -maxdepth 1 -type f -name '*_segment.json' | wc -l | tr -d ' ')
+feature_count=$(find "$RESULTS_DIR" -maxdepth 1 -type f -name '*_features.json' | wc -l | tr -d ' ')
+thumbnail_count=$(find "$RESULTS_DIR" -maxdepth 1 -type f \( -name '*_128px.jpg' -o -name '*_256px.jpg' \) | wc -l | tr -d ' ')
+raw_count=$(find "$RESULTS_DIR" -maxdepth 1 -type f \( -name '*_sam3_results.pkl' -o -name '*_sam3_seg.png' -o -name '*_features_results.pkl' \) | wc -l | tr -d ' ')
+
+log "Local results (flattened download):"
+log "  segment JSONs   — ${segment_count} files"
+log "  feature JSONs   — ${feature_count} files"
+log "  thumbnails      — ${thumbnail_count} files"
+log "  raw model files — ${raw_count} files"
 
 log ""
 log "Key outputs:"
-log "  segment/    — *_segment.json  (bounding boxes + scores)"
-log "  segment/    — *_segment_masks.npz  (per-object binary masks)"
-log "  features/   — *_features.json (embedding vectors)"
-log "  thumbnails/ — *_128px.jpg, *_256px.jpg (resized variants)"
+log "  *_segment.json          — segmentation metadata"
+log "  *_features.json         — feature metadata + embedding vectors"
+log "  *_{128,256}px.jpg       — thumbnail variants"
+log "  *_sam3_seg.png          — segmentation preview image"
+log "  *_sam3_results.pkl      — raw SAM3 adapter payload"
+log "  *_features_results.pkl  — raw feature extractor payload"

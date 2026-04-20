@@ -251,6 +251,7 @@ class Dashboard:
         config_path: Optional[str] = None,
         user_cfg: Optional[Dict[str, Any]] = None,
         connection_info: Optional[Dict[str, Any]] = None,
+        capabilities: Optional[Dict[str, Any]] = None,
     ):
         self._mq = control_mq
         self._api = UMRSControlAPI(control_mq, client_id, config_path)
@@ -269,6 +270,7 @@ class Dashboard:
 
         # Connection info (from ResolvedConnection.to_dict())
         self._connection_info = connection_info or {}
+        self._capabilities = capabilities or {}
 
         # ── per-tab data caches ──
         # Jobs

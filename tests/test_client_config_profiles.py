@@ -9,7 +9,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 
-from client_umrs import _handle_config_command
+from client_umrs import _handle_config_command, _resolve_control_client_id
 from umrs.shared.json_config import load_client_cfg_file
 from umrs.shared.loaded_config_profiles import (
     apply_s3_config_override,
@@ -206,3 +206,19 @@ def test_config_subcommand_use_and_show(config_workspace, capsys):
     assert config_payload["user"]["path"] == str(config_workspace["alt_user_cfg"])
     assert config_payload["user"]["details"]["username"] == "user_alt"
     assert config_payload["s3"]["path"] == str(config_workspace["alt_s3cfg"])
+
+
+def test_resolve_control_client_id_prefers_loaded_user_config(config_workspace, monkeypatch):
+    monkeypatch.setenv("USER", "mnagaso")
+    monkeypatch.setenv("UMRS_CLIENT_ID", "shell-user")
+
+    user_cfg = load_client_cfg_file(str(config_workspace["alt_user_cfg"]))
+
+    assert _resolve_control_client_id(user_cfg) == "user_alt"
+
+
+def test_resolve_control_client_id_falls_back_to_environment(monkeypatch):
+    monkeypatch.setenv("USER", "mnagaso")
+    monkeypatch.setenv("UMRS_CLIENT_ID", "shell-user")
+
+    assert _resolve_control_client_id(None) == "shell-user"

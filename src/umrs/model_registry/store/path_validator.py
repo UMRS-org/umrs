@@ -7,6 +7,8 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
+from umrs.orchestrator.site_config import get_site_config
+
 from ..models import ModelScope
 from .errors import PathNotAllowedError
 
@@ -21,6 +23,39 @@ DEFAULT_ALLOWED_PATHS = [
     "/models/*",                              # Development/Docker paths
     "/home/{owner_id}/models/*",              # Home directory models (dev)
 ]
+
+
+def _append_unique(patterns: List[str], candidate: Optional[str]) -> None:
+    if not candidate:
+        return
+    normalized = os.path.normpath(candidate)
+    if normalized not in patterns:
+        patterns.append(normalized)
+
+
+def _site_scope_patterns(scope: Optional[ModelScope] = None) -> List[str]:
+    try:
+        storage = get_site_config().storage
+    except Exception:
+        return []
+
+    patterns: List[str] = []
+
+    if scope in (None, ModelScope.SYSTEM):
+        model_cache_dir = getattr(storage, "model_cache_dir", "")
+        if model_cache_dir:
+            system_root = os.path.dirname(os.path.normpath(model_cache_dir))
+            _append_unique(patterns, os.path.join(system_root, "*"))
+
+        for attr_name in ("sam3_model_path", "hmae_model_path"):
+            _append_unique(patterns, getattr(storage, attr_name, ""))
+
+    if scope in (None, ModelScope.USER):
+        user_model_root = getattr(storage, "user_model_path", "")
+        if user_model_root:
+            _append_unique(patterns, os.path.join(user_model_root, "*"))
+
+    return patterns
 
 
 @dataclass
@@ -42,6 +77,9 @@ class PathValidator:
                 self.allowed_patterns = [p.strip() for p in env_paths.split(":")]
             else:
                 self.allowed_patterns = DEFAULT_ALLOWED_PATHS.copy()
+
+        for pattern in _site_scope_patterns():
+            _append_unique(self.allowed_patterns, pattern)
 
     def is_allowed(self, path: str) -> bool:
         """Check if a path matches any allowed pattern."""
@@ -93,7 +131,10 @@ class PathValidator:
 
     def _scope_patterns(self, scope: ModelScope) -> List[str]:
         if scope == ModelScope.SYSTEM:
-            return self._system_patterns()
+            patterns = self._system_patterns()
+            for pattern in _site_scope_patterns(ModelScope.SYSTEM):
+                _append_unique(patterns, pattern)
+            return patterns
 
         token = None
         if scope == ModelScope.PROJECT:
@@ -103,7 +144,10 @@ class PathValidator:
 
         if token is None:
             return []
-        return [pattern for pattern in self.allowed_patterns if token in pattern]
+        patterns = [pattern for pattern in self.allowed_patterns if token in pattern]
+        for pattern in _site_scope_patterns(scope):
+            _append_unique(patterns, pattern)
+        return patterns
 
     def _system_patterns(self) -> List[str]:
         return [

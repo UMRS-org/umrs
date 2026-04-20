@@ -1,7 +1,7 @@
 # Demo 20: Durable Job Orchestration
 
 Demonstrates the **durable job system**: submit jobs with idempotency,
-poll status, test duplicate detection, and cancel running jobs.
+poll status, test duplicate detection, and cancel a running durable endpoint job.
 
 ## Prerequisites
 
@@ -23,8 +23,8 @@ bash run_demo.sh
 3. **Poll job status** — checks the job status 3 times with intervals
 4. **Idempotent resubmit** — submits the same job spec again; the server
    should return the same `job_id` (deduplication)
-5. **Submit + cancel** — submits another job and immediately cancels it,
-   demonstrating the cancellation flow
+5. **Submit + cancel** — submits an `endpoint_provision` job and immediately
+    cancels it, demonstrating the cancellation flow
 
 ## Running Manually
 
@@ -35,12 +35,10 @@ umrs-client ping
 # 2. Submit an index_build job
 #    The --spec flag passes a JSON payload with job parameters.
 #    --project scopes the job to a project namespace.
-#    --keep-alive prevents the server from auto-releasing resources
-#    after job completion.
+#    On the current demo sequence, Demo 02 populated this table.
 umrs-client job submit index_build \
-    --spec '{"database": "demo_db", "table": "embeddings", "rebuild": true}' \
-    --project demo \
-    --keep-alive
+    --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
+    --project demo20
 # Output includes a job_id, e.g.: {"job": {"job_id": "abc123..."}}
 
 # 3. Check the job status
@@ -52,17 +50,16 @@ umrs-client job status <job_id>
 #    If the server enforces idempotency for this job type, it returns
 #    the same job_id instead of creating a duplicate job.
 umrs-client job submit index_build \
-    --spec '{"database": "demo_db", "table": "embeddings", "rebuild": true}' \
-    --project demo \
-    --keep-alive
+    --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
+    --project demo20
 # Expected: same job_id as step 2
 
-# 5. Submit a new job and cancel it
-#    This demonstrates the cancellation flow. First submit, then
-#    immediately cancel the job.
-umrs-client job submit index_build \
-    --spec '{"database": "cancel_test", "table": "temp"}' \
-    --project demo
+# 5. Submit a new endpoint_provision job and cancel it.
+#    This is a better cancellation demo than index_build because it stays
+#    active long enough to observe a real cancelled durable job state.
+umrs-client job submit endpoint_provision \
+    --spec '{"model": "sam3"}' \
+    --project demo20-cancel
 # Note the new job_id from the response
 
 # 6. Cancel the job
@@ -72,7 +69,7 @@ umrs-client job cancel <job_id>
 
 # 7. Verify the cancelled status
 umrs-client job status <job_id>
-# Expected: {"status": "cancelled"}
+# Expected: the job record reports status="cancelled"
 ```
 
 ## Job Lifecycle
@@ -87,7 +84,7 @@ QUEUED → RUNNING → COMPLETED
 
 | Type | Purpose | When to use |
 |------|---------|-------------|
-| `index_build` | Rebuild pgvector HNSW index | After large bulk imports |
+| `index_build` | Rebuild or verify the pgvector HNSW index | After large bulk imports |
 | `endpoint_provision` | Pre-warm a compute endpoint | Before batch uploads to avoid cold start |
 | `cleanup` | Teardown resources | Clean stale endpoints, S3 objects, or tables |
 
@@ -98,20 +95,19 @@ No additional environment variables — uses the default `umrs-client` config.
 ## Expected Output
 
 ```
-[durable_job]   ✓ Job submitted: abc123-def456-...
+[durable_job]   ✓ Job submitted: job-1838df7fa827
 [durable_job]     Poll 1: status=queued
-[durable_job]     Poll 2: status=running
-[durable_job]     Poll 3: status=completed
+[durable_job]     Poll 2: status=completed
 [durable_job]   ✓ Status polling complete (final: completed)
 [durable_job]   ✓ Idempotency confirmed — same job_id returned
-[durable_job]   ✓ Job cancelled: xyz789-...
+[durable_job]   ✓ Job cancelled: job-a83a0d9a841b
 [durable_job]     Cancelled job status: cancelled
 
 Summary of durable job operations:
   ✓ Submitted index_build job
   ✓ Polled status through lifecycle
   ✓ Idempotent resubmit test completed
-  ✓ Submit + cancel flow demonstrated
+    ✓ endpoint_provision submit + cancel flow demonstrated
 ```
 
 ## See Also

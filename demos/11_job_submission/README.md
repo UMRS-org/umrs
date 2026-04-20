@@ -42,7 +42,11 @@ umrs-client job cancel <job_id>
 
 In current durable deployments, the UMRS job record completes once the warm
 endpoint is ready. The backing endpoint then remains available for reuse until
-you cancel it or janitor/TTL cleanup removes it.
+you cancel it or janitor/TTL cleanup removes it. If you cancel while the
+provisioning job is still active, that job transitions to `cancelled`. If you
+cancel after the endpoint is already warm and the provision job is `completed`,
+UMRS now submits the corresponding `cleanup` job for that endpoint and leaves
+the original `endpoint_provision` record as `completed`.
 
 ### 2. `index_build` — Rebuild RAG index after bulk inserts
 
@@ -51,10 +55,11 @@ re-clustering for optimal search performance. This is a database
 operation, not a file upload:
 
 ```bash
-# Rebuild the RAG index after a large ingestion run:
+# Rebuild the RAG index after a large ingestion run.
+# On the current demo sequence, Demo 02 populates this table:
 umrs-client job submit index_build \
-    --spec '{"database": "xp_spring8", "table": "image_embeddings"}' \
-    --project spring8
+    --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
+    --project my-project
 ```
 
 ### 3. `cleanup` — Teardown resources explicitly
@@ -63,9 +68,9 @@ Force-clean endpoints explicitly. The janitor handles TTL-based cleanup
 automatically, but sometimes you want immediate teardown:
 
 ```bash
-# Teardown a specific endpoint:
+# Teardown a specific endpoint explicitly:
 umrs-client job submit cleanup \
-    --spec '{"target": "endpoint", "job_id": "job-abc123"}' \
+    --spec '{"target": "endpoint", "job_id": "<endpoint_provision_job_id>"}' \
     --project my-project
 
 # Additional cleanup targets may be added later, but the durable backend
@@ -75,6 +80,8 @@ umrs-client job submit cleanup \
 ### Cancel a job
 
 ```bash
+# Running or queued jobs are cancelled directly.
+# Completed endpoint_provision jobs are converted into cleanup jobs.
 umrs-client job cancel job-abc123def456
 ```
 
@@ -84,7 +91,7 @@ Use the monitor dashboard for the durable job list, or `status all` for the
 broader server summary:
 
 ```bash
-umrs-client monitor --once
+umrs-client monitor --once --project my-project
 umrs-client status all
 ```
 
@@ -103,7 +110,7 @@ Two lifecycle mechanisms exist today:
 | Path | What controls cleanup | Current status |
 |------|-----------------------|----------------|
 | Upload-triggered processing | `UMRS_SERVICE_LIFECYCLE=auto_release|keep_alive` in `server_umrs.py` | Legacy server-side path |
-| Durable `endpoint_provision` | Explicit `job cancel`, registry TTL/janitor cleanup, and warm reuse | Validated path on current site deployments |
+| Durable `endpoint_provision` | Explicit `job cancel`, cleanup jobs, registry TTL/janitor cleanup, and warm reuse | Validated path on current site deployments |
 
 For the validated durable path, prefer explicit `job cancel` when you are done
 and use the site-local harness validator to prove reuse or cleanup behavior
@@ -140,30 +147,30 @@ umrs-client job submit endpoint_provision \
     --spec '{"model": "sam3"}' \
     --project my-project
 
-# 3. Upload data (uses the warm endpoint — no cold start)
-umrs-client upload_dir /data/images/batch-1/ user1-sam3
-umrs-client upload_dir /data/images/batch-2/ user1-sam3
+# 3. Inspect the durable job list for this project
+umrs-client monitor --once --project my-project
 
-# 4. When done processing, release the endpoint
+# 4. Rebuild the pgvector index after bulk inserts
+#    Demo 02 populates text_embedding_usr1_text.text_file.
+umrs-client job submit index_build \
+    --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
+    --project my-project
+
+# 5. When done processing, release the endpoint
 #    Replace <job_id> with the ID returned in step 2.
+#    If the provision job is still active it becomes cancelled.
+#    If it already completed, UMRS submits the matching cleanup job.
 umrs-client job cancel <job_id>
 
-# 5. Rebuild RAG index after bulk inserts
-#    After large ingestions, the pgvector IVFFlat index benefits from
-#    re-clustering for optimal search performance.
-umrs-client job submit index_build \
-    --spec '{"database": "xp_spring8", "table": "image_embeddings"}' \
-    --project spring8
-
-# 6. Clean up stale resources
-#    Force-remove endpoints, S3 objects, or database tables immediately
-#    (instead of waiting for TTL-based janitor cleanup).
+# 6. Explicit cleanup remains available when you want to target a specific
+#    endpoint job id directly, or when you want a no-op cleanup against an
+#    already-gone endpoint.
 umrs-client job submit cleanup \
-    --spec '{"target": "endpoint", "job_id": "job-abc123"}' \
+    --spec '{"target": "endpoint", "job_id": "<endpoint_provision_job_id>"}' \
     --project my-project
 
 # 7. Monitor job status
-umrs-client monitor --once
+umrs-client monitor --once --project my-project
 umrs-client status all
 ```
 

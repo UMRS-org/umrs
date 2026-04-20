@@ -20,8 +20,8 @@ bash run_demo.sh
 
 1. **Pre-flight** — verifies server connectivity
 2. **List existing models** — shows current system and user model inventories
-3. **Download a system model** — fetches `intfloat/e5-base-v2` from HuggingFace
-   and registers it as a system-scoped model
+3. **Verify or stage an embedding model** — reuse a visible shared model, or
+   stage a user-scoped copy if your site exposes a writable model root
 4. **Register a user model** — optionally uploads a local model directory as a
    user-scoped model (requires `DEMO_LOCAL_MODEL_UPLOAD=1`)
 5. **Verify registration** — lists user models to confirm the new one appears
@@ -41,11 +41,13 @@ umrs-client ping
 umrs-client model list --scope system
 umrs-client model list --scope user
 
-# 3. Download a pre-trained embedding model from HuggingFace
-#    The --server-side flag tells the server to download the model itself
-#    (useful when the server has internet access).
-#    Omit --server-side to download on the client and register the path.
-umrs-client model download intfloat/e5-base-v2 --scope system --server-side
+# 3. Verify that an embedding model is already visible to the server
+umrs-client model list --scope system
+umrs-client model list --scope user
+
+# Optional: stage a user-scoped copy when your site exposes a writable model root
+umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
+   --staging-dir /path/to/site-user-model-root
 
 # 4. Register a local model directory as a user-scoped model (optional)
 #    Use this when you have trained or fine-tuned a model locally and
@@ -96,12 +98,12 @@ umrs-client model list --scope user
 [model_life]  User models:
 [model_life]    (none)
 [model_life]   ✓ Current model inventory retrieved
-[model_life]   ✓ Model download requested: intfloat/e5-base-v2
+[model_life]   ✓ Verified or staged an embedding model: intfloat/e5-base-v2
 [model_life]   ✓ Inference triggered (server will embed automatically)
 
 Summary of model lifecycle:
   ✓ Listed existing system and user models
-  ✓ Downloaded system-scope model: intfloat/e5-base-v2
+   ✓ Verified or staged an embedding model: intfloat/e5-base-v2
   ✓ Triggered inference with system model
   ✓ Verified model registry state
 ```

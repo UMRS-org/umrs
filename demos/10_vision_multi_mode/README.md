@@ -25,6 +25,9 @@ vision service; the thumbnail branch runs on CPU and finishes quickly.
 ## Quick Start
 
 ```bash
+# Auth-enforced deployments need an admin token for reload
+export UMRS_ADMIN_TOKEN=...
+
 bash 10_vision_multi_mode/run_demo.sh
 
 # Custom image directory
@@ -70,7 +73,8 @@ umrs-client upload-workflow workflow/ --name "vision-multi-mode"
 
 # 3. Reload server configuration
 #    Picks up the newly uploaded workflow definition.
-umrs-client reload
+#    On auth-enforced deployments, reload is admin-only.
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 
 # 4. Upload images to the multi-mode bucket
 #    All 3 branches receive the same images simultaneously:
@@ -81,11 +85,14 @@ umrs-client upload_dir ../sample_data/images user1-multi
 
 # 5. Download results from all 3 branches
 #    Results are organized by branch in the output:
-#    results/segment/   — segmentation JSON files
-#    results/features/  — feature vector JSON files
-#    results/thumbnails/ — resized JPEG thumbnails
+#    S3 objects are written under segment/, features/, and thumbnails/.
+#    The local client currently flattens those prefixes when downloading.
 umrs-client download_results user1-multi ./results --force-overwrite
 ```
+
+If you rerun the demo against a shared bucket, clear the corresponding
+`*-output` bucket first or use unique filenames so old artifacts do not mix
+into the new download.
 
 ## Environment Variables
 
@@ -107,6 +114,38 @@ Swap the vision model in `workflow/workflow.json`:
 ```
 
 Register the model first via Demo 07 (`umrs-client model register ...`).
+
+## Output
+
+Objects on S3 are grouped by branch prefixes:
+
+```text
+segment/demo10_cat_segment.json
+features/demo10_cat_features.json
+thumbnails/demo10_cat_128px.jpg
+```
+
+`download_results` currently flattens those keys into a single local directory,
+so a local run typically looks like this:
+
+```text
+results/
+├── demo10_cat_segment.json
+├── demo10_cat_features.json
+├── demo10_cat_128px.jpg
+├── demo10_cat_256px.jpg
+├── demo10_cat_sam3_seg.png
+├── demo10_cat_sam3_results.pkl
+├── demo10_cat_features_results.pkl
+├── demo10_dog_segment.json
+├── demo10_dog_features.json
+├── demo10_dog_128px.jpg
+└── ...
+```
+
+The `*_segment.json`, `*_features.json`, and `*_{128,256}px.jpg` files are the
+branch outputs. The `*_sam3_*` and `*_features_results.pkl` files are raw model
+artifacts produced alongside those branch outputs.
 
 ## See Also
 

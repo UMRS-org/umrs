@@ -24,6 +24,26 @@ DEMO_TAG="pool" source "${SCRIPT_DIR}/../lib/common.sh"
 banner "Demo 24: Thread Pool & Backpressure"
 echo ""
 
+TEXT_FILE_ALIAS=$(python3 - <<'PY' "$CONF"
+import json
+import sys
+from pathlib import Path
+
+conf_path = Path(sys.argv[1]).expanduser()
+data = json.loads(conf_path.read_text())
+for xp in data.get("experiences", []):
+    for modality in xp.get("modalities", []):
+        alias = ((modality.get("s3") or {}).get("bucket_alias"))
+        data_cfg = (modality.get("s3") or {}).get("data") or {}
+        mime_type = data_cfg.get("mime_type", "")
+        modality_name = str(modality.get("modality_name") or modality.get("modality") or "").lower()
+        if alias and mime_type == "text/plain" and ("file" in modality_name or data_cfg.get("type") == "file"):
+            print(alias)
+            raise SystemExit(0)
+print("")
+PY
+)
+
 # Step 0: Pre-flight
 log "Step 0: Ping server..."
 preflight
@@ -114,12 +134,18 @@ if [[ "${DEMO_SUBMIT_TASK:-0}" = "1" ]]; then
     log "Step 4: Submit a lightweight task and re-query..."
     echo ""
 
+    if [[ -z "$TEXT_FILE_ALIAS" ]]; then
+        warn "No text-file bucket alias found in ${CONF}; skipping upload test"
+        banner "Demo 24 Complete"
+        exit 0
+    fi
+
     # Upload a small test file to trigger processing
     TEST_FILE="$(mktemp)"
     echo "Pool demo test file $(date)" > "$TEST_FILE"
     trap "rm -f '$TEST_FILE'" EXIT
 
-    $CLIENT upload_file "$TEST_FILE" texts || warn "Upload failed (bucket may not exist)"
+    $CLIENT upload_file "$TEST_FILE" "$TEXT_FILE_ALIAS" || warn "Upload failed (bucket may not exist)"
     sleep 1
 
     # Re-query pool metrics

@@ -133,6 +133,47 @@ class DurableJobCommandBackend:
         if self._db_pool is not None:
             self._db_pool.closeall()
 
+    def _submit_endpoint_cleanup(self, client_id: str, job) -> str:
+        cleanup_spec = {
+            "target": "endpoint",
+            "job_id": job.job_id,
+        }
+
+        try:
+            cleanup_job_id = self._job_store.create_job(
+                project_id=job.project_id,
+                user_id=job.user_id,
+                job_type=JobType.CLEANUP,
+                spec=cleanup_spec,
+                max_attempts=1,
+                restart_policy=RestartPolicy.NEVER,
+            )
+            self._job_store.enqueue_job(cleanup_job_id)
+            cleanup_job = self._job_store.get_job(cleanup_job_id)
+            cleanup_attempts = self._job_store.get_attempts_for_job(cleanup_job_id)
+            message = (
+                f"Endpoint cleanup submitted for completed provision job {job.job_id}: "
+                f"{cleanup_job_id}"
+            )
+        except DuplicateJobError as exc:
+            cleanup_job = self._job_store.get_job(exc.existing_job_id)
+            cleanup_attempts = self._job_store.get_attempts_for_job(exc.existing_job_id)
+            message = (
+                f"Endpoint cleanup already exists for completed provision job {job.job_id}: "
+                f"{exc.existing_job_id}"
+            )
+
+        logger.info("Durable endpoint cleanup requested: %s by %s", job.job_id, client_id)
+        return json.dumps(
+            {
+                "status": "ok",
+                "message": message,
+                "target_job_id": job.job_id,
+                "job": _serialize_job(cleanup_job, cleanup_attempts),
+            },
+            default=str,
+        )
+
     def submit(self, client_id: str, payload_str: str) -> str:
         try:
             payload = _parse_payload(payload_str)
@@ -196,8 +237,15 @@ class DurableJobCommandBackend:
             return json.dumps({"status": "error", "message": "job_id is required"})
 
         try:
+            job = self._job_store.get_job(job_id)
+        except JobNotFoundError as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+
+        try:
             self._job_store.cancel_job(job_id, reason=f"cancelled by {client_id}")
-        except (InvalidTransitionError, JobNotFoundError) as exc:
+        except InvalidTransitionError as exc:
+            if job.job_type == JobType.ENDPOINT_PROVISION and job.status == JobStatus.COMPLETED:
+                return self._submit_endpoint_cleanup(client_id, job)
             return json.dumps({"status": "error", "message": str(exc)})
 
         logger.info("Durable job cancelled: %s by %s", job_id, client_id)
@@ -210,6 +258,7 @@ class DurableJobCommandBackend:
             payload = {}
 
         try:
+            job_id = payload.get("job_id")
             status = _parse_job_status(payload.get("status"))
             job_type = None
             if payload.get("job_type"):
@@ -219,6 +268,22 @@ class DurableJobCommandBackend:
             offset = max(int(payload.get("offset", 0)), 0)
         except ValueError as exc:
             return json.dumps({"status": "error", "message": str(exc)})
+
+        if job_id:
+            try:
+                job = self._job_store.get_job(job_id)
+            except JobNotFoundError as exc:
+                return json.dumps({"status": "error", "message": str(exc)})
+
+            attempts = self._job_store.get_attempts_for_job(job.job_id)
+            return json.dumps(
+                {
+                    "status": "ok",
+                    "jobs": [_serialize_job(job, attempts)],
+                    "total": 1,
+                },
+                default=str,
+            )
 
         jobs = self._job_store.list_jobs(
             project_id=project_id,

@@ -29,9 +29,9 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple
 
-from umrs.pipeline_sdk.step import Step, StepContext, StepResult
+from umrs.pipeline_sdk.step import Step, StepContext
 from umrs.pipeline_sdk.workflow import (
     ExecutionMode,
     OutputSpec,
@@ -39,7 +39,6 @@ from umrs.pipeline_sdk.workflow import (
     SourceSpec,
     StepSpec,
     WorkflowDefinition,
-    _import_step_class,
     _resolve_source,
     load_steps,
 )
@@ -205,7 +204,6 @@ class UserWorkflowRunner:
         output_bucket: str,
     ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
         """Run steps directly — identical to the original WorkflowPipeline."""
-        wf_def = self.workflow.to_workflow_definition()
         steps = self._ensure_steps(s3)
 
         run_id = uuid.uuid4().hex[:12]
@@ -223,8 +221,9 @@ class UserWorkflowRunner:
         last_metadata: List[Dict[str, Any]] = []
 
         for idx, (step, spec) in enumerate(zip(steps, self.workflow.steps)):
-            is_last = idx == len(steps) - 1
-            step_output_bucket = output_bucket if is_last else input_bucket
+            # Keep all step outputs in the workflow output bucket so
+            # intermediate artifacts do not retrigger the watched input bucket.
+            step_output_bucket = output_bucket
 
             logger.info(
                 "  step %d/%d [%s]: %d keys → bucket=%s",
@@ -336,8 +335,7 @@ class UserWorkflowRunner:
         current_bucket = input_bucket
 
         for idx, spec in enumerate(self.workflow.steps):
-            is_last = idx == len(self.workflow.steps) - 1
-            step_output_bucket = output_bucket if is_last else input_bucket
+            step_output_bucket = output_bucket
 
             logger.info(
                 "  [slurm] step %d/%d [%s]: submitting job",
@@ -418,8 +416,7 @@ class UserWorkflowRunner:
         current_bucket = input_bucket
 
         for idx, spec in enumerate(self.workflow.steps):
-            is_last = idx == len(self.workflow.steps) - 1
-            step_output_bucket = output_bucket if is_last else input_bucket
+            step_output_bucket = output_bucket
 
             logger.info(
                 "  [k8s] step %d/%d [%s]: submitting job",

@@ -60,9 +60,13 @@ umrs-client ping
 #    output buckets created for the SAM3 experience.
 umrs-client reload
 
-# 3. Download/stage the SAM3 model
-#    Server-side download from HuggingFace. Required on first run.
-umrs-client model download facebook/sam2-hiera-small --name sam3 --scope system --server-side
+# 3. Verify that the SAM3 model is already visible to the server
+umrs-client model list --scope system
+umrs-client model list --scope user
+
+# Optional: stage a user-scoped copy when your site exposes a writable model root
+umrs-client model download facebook/sam2-hiera-small --name sam3 \
+  --scope user --server-side --staging-dir /path/to/site-user-model-root
 
 # Optional: upload the full defect-analysis workflow bundle instead of using
 # the simpler SAM3-only shell path.
@@ -74,7 +78,7 @@ umrs-client upload-workflow workflow/ --name structural-defect-analysis
 #    Images are dispatched to SAM3 segmentation on the GPU node.
 #    The segmentation model detects structural features and defects
 #    using text-prompted segmentation.
-umrs-client upload_dir ../03_sam3_segmentation/test_data_full user1-sam3
+umrs-client upload_dir ../../demos/03_sam3_segmentation/test_data_full user1-sam3
 
 # 5. Download segmentation results
 #    Retrieves bounding boxes, masks, scores, and overlay images.
@@ -86,7 +90,7 @@ umrs-client download_results user1-sam3 ./results --force-overwrite
 | Setting | Default |
 |---|---|
 | Bucket alias | `user1-sam3` |
-| Image source | `../03_sam3_segmentation/test_data_full` |
+| Image source | `../../demos/03_sam3_segmentation/test_data_full` |
 | Result dir | `results/` |
 
 ## Public Analogue

@@ -133,6 +133,39 @@ class UMRSControlAPI:
     def cancel_job(self, job_id: str) -> Dict[str, Any]:
         return self._request_json(TaskCmd.JOB_CANCEL, json.dumps({"job_id": job_id}))
 
+    def list_jobs(
+        self,
+        *,
+        job_id: Optional[str] = None,
+        project: Optional[str] = None,
+        status: Optional[str] = None,
+        job_type: Optional[str] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        filters: Dict[str, Any] = {
+            "limit": limit,
+            "offset": offset,
+        }
+        if job_id:
+            filters["job_id"] = job_id
+        if project:
+            filters["project_id"] = project
+        if status:
+            filters["status"] = status
+        if job_type:
+            filters["job_type"] = job_type
+        return self._mq.request_job_list(self._client_id, filters)
+
+    def get_job(self, job_id: str) -> Dict[str, Any]:
+        parsed = self.list_jobs(job_id=job_id, limit=1)
+        if parsed.get("status") != "ok":
+            return parsed
+        jobs = parsed.get("jobs", [])
+        if not jobs:
+            return {"status": "error", "message": f"Job not found: {job_id}"}
+        return {"status": "ok", "job": jobs[0]}
+
     def list_workflows(
         self,
         *,
@@ -171,7 +204,12 @@ class UMRSControlAPI:
         if action == "reload":
             self._upload_reload_config(config_path or self._config_path)
 
-        ok = self._mq.notify_server(self._client_id, MAINTENANCE_ACTIONS[action], 0)
+        ok = self._mq.notify_server(
+            self._client_id,
+            MAINTENANCE_ACTIONS[action],
+            0,
+            admin_token=self._admin_token,
+        )
         if ok:
             return {"status": "ok", "action": action, "accepted": True}
         return {"status": "error", "action": action, "accepted": False, "message": "Command rejected by server"}
@@ -210,6 +248,16 @@ class UMRSControlAPI:
         if args.action == "job":
             if args.job_action == "cancel":
                 return self.cancel_job(args.job_id)
+            if args.job_action == "status":
+                return self.get_job(args.job_id)
+            if args.job_action == "list":
+                return self.list_jobs(
+                    project=getattr(args, "project", None),
+                    status=getattr(args, "status", None),
+                    job_type=getattr(args, "job_type", None),
+                    limit=getattr(args, "limit", 200),
+                    offset=getattr(args, "offset", 0),
+                )
             if args.job_action == "submit":
                 spec = parse_json_object_arg(args.spec, field_name="spec") if args.spec else {}
                 return self.submit_job(

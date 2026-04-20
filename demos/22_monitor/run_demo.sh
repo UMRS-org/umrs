@@ -31,17 +31,15 @@ preflight
 python3 -c "import rich" 2>/dev/null || die "'rich' library not installed. Run: pip install 'rich>=13.0'"
 ok "rich library available"
 
+PROJECT="demo22-$(date +%s)"
+
 # ---------- Step 2: Seed some jobs ----------
 log ""
-log "Step 2: Submitting sample jobs so the dashboard has data..."
+log "Step 2: Submitting a sample index_build job so the dashboard has data..."
 
 $CLIENT job submit index_build \
-    --spec '{"database": "demo_db", "table": "embeddings"}' \
-    --project demo >/dev/null 2>&1 && ok "Submitted index_build job" || warn "Submit failed (non-fatal)"
-
-$CLIENT job submit cleanup \
-    --spec '{"target": "stale_objects"}' \
-    --project demo >/dev/null 2>&1 && ok "Submitted cleanup job" || warn "Submit failed (non-fatal)"
+    --spec '{"database": "text_embedding_usr1_text", "table": "text_file"}' \
+    --project "$PROJECT" >/dev/null 2>&1 && ok "Submitted index_build job" || warn "Submit failed (non-fatal)"
 
 # ---------- Step 3: One-shot Jobs tab ----------
 log ""
@@ -55,6 +53,7 @@ ok "Jobs tab rendered"
 # ---------- Step 4: Filtered Jobs view ----------
 log ""
 log "Step 4: Filtered Jobs view — only queued jobs..."
+log "        (This can be empty when no jobs are currently queued.)"
 echo ""
 
 $CLIENT monitor --once --tab jobs --status queued
