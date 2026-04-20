@@ -26,7 +26,16 @@ def _create_app():
     """Create a minimal FastAPI app mounting the Gateway-facing UMRS routers."""
     from fastapi import FastAPI
 
-    from umrs.api import endpoints_router, jobs_router, llm_router, mcp_router, models_router, policy_router, rag_router
+    from umrs.api import (
+        endpoints_router,
+        jobs_router,
+        llm_router,
+        mcp_router,
+        models_router,
+        policy_router,
+        rag_router,
+        workflows_router,
+    )
 
     app = FastAPI(
         title="UMRS Endpoint Discovery API",
@@ -42,6 +51,7 @@ def _create_app():
     app.include_router(models_router)
     app.include_router(policy_router)
     app.include_router(rag_router)
+    app.include_router(workflows_router)
 
     db_pool = None
 
