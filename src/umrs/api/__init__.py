@@ -17,6 +17,7 @@ from .models import router as models_router
 from .models import policy_router
 from .pipelines import router as pipelines_router  # api/pipelines.py router (not the old umrs.pipelines package)
 from .rag import router as rag_router
+from .workflows import router as workflows_router
 
 __all__ = [
     "endpoints_router",
@@ -28,4 +29,5 @@ __all__ = [
     "policy_router",
     "pipelines_router",
     "rag_router",
+    "workflows_router",
 ]
