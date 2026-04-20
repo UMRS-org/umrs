@@ -1,9 +1,11 @@
 import os
+import socket
 import tempfile
 import time
 import json
 import logging
 from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.shared.connection_profiles import DataPortRange, parse_data_port_range
 from umrs.shared.auth import AuthContext, UserRole, create_auth_context_from_request
 try:
     import zmq
@@ -13,15 +15,28 @@ except ImportError as e:
 logger = logging.getLogger(__name__)
 
 BASE_PORT = 5555
-_data_port_raw = os.environ.get("UMRS_DATA_BASE_PORT")
-if _data_port_raw is not None:
-    DATA_BASE_PORT = int(_data_port_raw)
-    if DATA_BASE_PORT == BASE_PORT:
+
+
+def _validate_data_port_range(port_range: DataPortRange) -> DataPortRange:
+    if port_range.contains(BASE_PORT):
         raise ValueError(
-            f"UMRS_DATA_BASE_PORT ({DATA_BASE_PORT}) must differ from BASE_PORT ({BASE_PORT})"
+            f"Data port range {port_range.label} must not include BASE_PORT ({BASE_PORT})"
         )
-else:
-    DATA_BASE_PORT = BASE_PORT + 1
+    return port_range
+
+
+def _resolve_default_data_port_range() -> DataPortRange:
+    port_range = (
+        parse_data_port_range(os.environ.get("UMRS_DATA_PORT_RANGE"))
+        or parse_data_port_range(os.environ.get("UMRS_DATA_PORT"))
+        or parse_data_port_range(os.environ.get("UMRS_DATA_BASE_PORT"))
+        or DataPortRange.single(BASE_PORT + 1)
+    )
+    return _validate_data_port_range(port_range)
+
+
+DATA_PORT_RANGE = _resolve_default_data_port_range()
+DATA_BASE_PORT = DATA_PORT_RANGE.base_port
 DEFAULT_NB_MSG = 10240
 class MessageQueue:
     @staticmethod
@@ -49,9 +64,78 @@ class MessageQueue:
             if data_base_port is not None:
                 return int(data_base_port)
 
-            return DATA_BASE_PORT
+            data_port_range = os.environ.get("UMRS_DATA_PORT_RANGE")
+            if data_port_range is not None:
+                return parse_data_port_range(data_port_range).base_port
+
+            return _resolve_default_data_port_range().base_port
 
         return requested_port
+
+    @staticmethod
+    def _data_bind_host(tunnel_mode):
+        return "127.0.0.1" if tunnel_mode else "0.0.0.0"
+
+    def _configured_data_port_range(self):
+        return _resolve_default_data_port_range()
+
+    def _is_data_port_available(self, port):
+        bind_host = self._data_bind_host(self.tunnel_mode)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((bind_host, int(port)))
+        except OSError:
+            return False
+        return True
+
+    def _allocate_data_port(self, client_id, port_range):
+        reserved_ports = {
+            int(entry["port"])
+            for other_client_id, entry in self.client_dictionary.items()
+            if other_client_id != client_id and "port" in entry
+        }
+
+        for port in range(port_range.start, port_range.end + 1):
+            if port == BASE_PORT or port in reserved_ports:
+                continue
+            if self._is_data_port_available(port):
+                return port
+        return None
+
+    def _ensure_client_data_queue(self, client_id):
+        port_range = self._configured_data_port_range()
+        entry = self.client_dictionary.setdefault(client_id, {})
+        existing_port = entry.get("port")
+        existing_queue = entry.get("data_queue")
+
+        if existing_port is not None and port_range.contains(existing_port) and existing_queue is not None:
+            return int(existing_port), port_range
+
+        if existing_port is not None and port_range.contains(existing_port) and self._is_data_port_available(existing_port):
+            selected_port = int(existing_port)
+        else:
+            selected_port = self._allocate_data_port(client_id, port_range)
+            if selected_port is None:
+                return None, port_range
+
+        if existing_queue is not None and existing_port != selected_port:
+            try:
+                existing_queue.close()
+            except Exception as exc:
+                logger.warning("Failed to close stale data queue for %s: %s", client_id, exc)
+
+        if existing_queue is None or existing_port != selected_port:
+            entry["data_queue"] = MessageQueue(
+                role='server',
+                queue_type='data',
+                server_ip=self.server_ip,
+                port=selected_port,
+                tunnel_mode=self.tunnel_mode,
+            )
+
+        entry["port"] = selected_port
+        return selected_port, port_range
 
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
                  max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None,
@@ -64,7 +148,8 @@ class MessageQueue:
             role (str): 'server' or 'client'.
             server_ip (str): IP address of server.
             port (int): Port number. Defaults can be overridden at runtime via
-                        UMRS_CONTROL_PORT, UMRS_DATA_PORT, or UMRS_DATA_BASE_PORT.
+                        UMRS_CONTROL_PORT, UMRS_DATA_PORT, UMRS_DATA_BASE_PORT,
+                        or UMRS_DATA_PORT_RANGE.
             tunnel_mode (bool | None): When true, bind/connect to localhost so the
                         transport can run through SSH tunnels. When None, read
                         UMRS_TUNNEL_MODE from the environment.
@@ -342,20 +427,13 @@ class MessageQueue:
                     client_id, auth_ctx.role.value,
                 )
 
-                if client_id in self.client_dictionary and "port" in self.client_dictionary[client_id]:
-                    port = self.client_dictionary[client_id]["port"]
-                else:
-                    existing_ports = [entry["port"] for entry in self.client_dictionary.values() if "port" in entry]
-                    port = max(existing_ports) + 1 if existing_ports else DATA_BASE_PORT
-                    self.client_dictionary.setdefault(client_id, {})["port"] = port
-                    data_queue = MessageQueue(
-                        role='server',
-                        queue_type='data',
-                        server_ip=self.server_ip,
-                        port=port,
-                        tunnel_mode=self.tunnel_mode,
-                    )
-                    self.client_dictionary[client_id]["data_queue"] = data_queue
+                port, port_range = self._ensure_client_data_queue(client_id)
+                if port is None:
+                    try:
+                        self.send_string(f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id)
+                    except RuntimeError:
+                        pass
+                    continue
 
                 reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
                 try:
@@ -473,12 +551,6 @@ class MessageQueue:
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
                 return cmd, (client_id, payload_str, zmq_sender_id)
-                print(f"WARNING: Ignoring unknown command from unexpected client: {cmd[:80]}")
-                try:
-                    self.send_string("CMD_ERROR", zmq_sender_id)
-                except RuntimeError:
-                    pass
-                continue
 
     def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
         """Block until new messages arrive, then read all available messages.
@@ -670,6 +742,10 @@ class MessageQueue:
                 tunnel_mode=effective_tunnel_mode,
             )
             return data_mq
+        if reply.startswith("NO_DATA_PORT_AVAILABLE"):
+            _, _, port_range = reply.partition(":")
+            suffix = f" in configured range {port_range}" if port_range else ""
+            raise RuntimeError(f"No data ports available{suffix}")
         else:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
@@ -689,7 +765,8 @@ class MessageQueue:
             raise RuntimeError(
                 f"Timeout waiting for server response to {notification_type} for user {client_id}. "
                 "The server may be blocked waiting for data-queue messages that did not arrive. "
-                "Check that the SSH tunnel forwards the data port (see UMRS_DATA_BASE_PORT)."
+                "Check that the SSH tunnel forwards the configured data port range "
+                "(see UMRS_DATA_PORT_RANGE / UMRS_DATA_BASE_PORT)."
             )
         elif reply == "ACKNOWLEDGE":
             if verbose:
@@ -770,23 +847,6 @@ class MessageQueue:
 
     def set_debug(self, enabled: bool):
         self.debug = bool(enabled)
-
-    def get_auth_context(self, client_id: str) -> AuthContext:
-        """Return the AuthContext for *client_id*.
-
-        If the client has not yet authenticated via CREATE_DATA_QUEUE the
-        default role is ``UserRole.USER`` (backward compatible).
-        """
-        ctx = self._auth_sessions.get(client_id)
-        if ctx is not None:
-            return ctx
-        # Create a default USER context for clients that connected before
-        # auth enforcement was deployed (backward compatibility).
-        return AuthContext(
-            user_id=client_id or "",
-            username=client_id or "",
-            role=UserRole.USER,
-        )
 
     def get_auth_context(self, client_id: str) -> AuthContext:
         """Return the AuthContext for *client_id*.

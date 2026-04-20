@@ -148,14 +148,15 @@ class TestDashboardRendering:
         assert "RAW_PRETTY_PRINT_BLOCK" not in plain
         assert "1 process" in plain
 
-    def test_status_footer_shows_command_hint(self):
+    def test_status_footer_shows_actions_only(self):
         from umrs.tui.dashboard import Dashboard, TAB_STATUS
 
         dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", initial_tab=TAB_STATUS)
 
         footer = dash._build_footer().plain
-        assert ":" in footer
-        assert "cmd" in footer
+        assert ":" not in footer
+        assert "cmd" not in footer
+        assert "actions" in footer
 
     def test_status_navigation_moves_status_cursor(self):
         from umrs.tui.dashboard import Dashboard, TAB_STATUS
@@ -169,32 +170,76 @@ class TestDashboardRendering:
         dash._on_key("k")
         assert dash._status_cursor == 0
 
-    def test_command_prompt_executes_control_command(self):
+    def test_colon_key_no_longer_opens_command_prompt(self):
         from umrs.tui.dashboard import Dashboard
 
         dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
-        dash._api = MagicMock()
-        dash._api.execute_command.return_value = {"status": "ok", "server_ready": True}
+        footer_before = dash._build_footer().plain
+        dash._on_key(":")
 
-        dash._start_command_prompt("ping")
-        dash._on_key("\r")
+        assert dash._show_actions is False
+        assert dash._form_active is False
+        assert dash._search_active is False
+        assert dash._build_footer().plain == footer_before
 
-        dash._api.execute_command.assert_called_once_with("ping")
-        assert dash._command_active is False
-        assert dash._ping_ok is True
-
-    def test_actions_include_control_commands(self):
+    def test_actions_hide_admin_commands_for_regular_user(self):
         from umrs.tui.dashboard import Dashboard
 
         dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser")
         actions = dash._get_actions()
         action_names = {item["action"] for item in actions}
 
-        assert "command_prompt" in action_names
         assert "submit_job_form" in action_names
+        assert "command_prompt" not in action_names
+        assert "recompute" not in action_names
+        assert "update" not in action_names
+        assert "check" not in action_names
+
+    def test_actions_include_admin_commands_for_admin_capabilities(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(
+            control_mq=_make_mock_mq(),
+            client_id="testuser",
+            config_path="conf_umrs.json",
+            capabilities={
+                "is_admin": True,
+                "has_user_config": False,
+                "bucket_aliases": [],
+                "allowed_actions": {
+                    "recompute": True,
+                    "update": True,
+                    "check": True,
+                    "reload": True,
+                },
+            },
+        )
+
+        actions = dash._get_actions()
+        action_names = {item["action"] for item in actions}
+
         assert "recompute" in action_names
         assert "update" in action_names
         assert "check" in action_names
+        assert "reload" in action_names
+
+    def test_run_workflow_form_uses_bucket_choices_from_capabilities(self):
+        from umrs.tui.dashboard import Dashboard
+
+        dash = Dashboard(
+            control_mq=_make_mock_mq(),
+            client_id="testuser",
+            capabilities={
+                "has_user_config": True,
+                "bucket_aliases": ["user2-textfiles", "user1-textfiles"],
+            },
+        )
+        dash._workflows = [{"name": "demo-workflow"}]
+
+        dash._open_run_workflow_form()
+
+        bucket_field = next(field for field in dash._form_fields if field["name"] == "bucket")
+        assert bucket_field["choices"] == ["", "user1-textfiles", "user2-textfiles"]
 
     def test_submit_job_form_executes_api(self):
         from umrs.tui.dashboard import Dashboard

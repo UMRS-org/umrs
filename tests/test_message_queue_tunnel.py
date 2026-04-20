@@ -141,22 +141,23 @@ class TestTunnelModeControlQueue:
         """Client control queue should connect to server_ip in normal mode."""
         from umrs.core.MessageQueue import MessageQueue
 
-        with patch('zmq.Context') as mock_context:
-            mock_socket = MagicMock()
-            mock_context.return_value.socket.return_value = mock_socket
+        with patch.dict(os.environ, {'UMRS_SERVER_HOST': ''}, clear=False):
+            with patch('zmq.Context') as mock_context:
+                mock_socket = MagicMock()
+                mock_context.return_value.socket.return_value = mock_socket
 
-            mq = MessageQueue(
-                role='client',
-                queue_type='control',
-                server_ip='192.168.1.100',
-                tunnel_mode=False,
-            )
+                mq = MessageQueue(
+                    role='client',
+                    queue_type='control',
+                    server_ip='192.168.1.100',
+                    tunnel_mode=False,
+                )
 
-            # Client should connect to server_ip in normal mode
-            mock_socket.connect.assert_called_once()
-            connect_call = str(mock_socket.connect.call_args)
-            assert '192.168.1.100' in connect_call
-            mq.close()
+                # Client should connect to server_ip in normal mode
+                mock_socket.connect.assert_called_once()
+                connect_call = str(mock_socket.connect.call_args)
+                assert '192.168.1.100' in connect_call
+                mq.close()
 
 
 class TestTunnelModeDataQueue:
@@ -246,6 +247,62 @@ class TestTunnelModePortConfig:
                 assert '7777' in bind_call
                 mq.close()
 
+    def test_data_port_range_from_env_var_uses_range_start(self):
+        """Data queues should use the start of UMRS_DATA_PORT_RANGE by default."""
+        from umrs.core.MessageQueue import MessageQueue
+
+        with patch.dict(os.environ, {'UMRS_DATA_PORT_RANGE': '7780-7784', 'UMRS_TUNNEL_MODE': 'true'}, clear=False):
+            with patch('zmq.Context') as mock_context:
+                mock_socket = MagicMock()
+                mock_context.return_value.socket.return_value = mock_socket
+
+                mq = MessageQueue(
+                    role='server',
+                    queue_type='data',
+                )
+
+                bind_call = str(mock_socket.bind.call_args)
+                assert '7780' in bind_call
+                mq.close()
+
+    def test_ensure_client_data_queue_allocates_within_configured_range(self):
+        """Server allocation should stay inside UMRS_DATA_PORT_RANGE and skip reserved ports."""
+        from umrs.core.MessageQueue import MessageQueue
+
+        with patch.dict(os.environ, {'UMRS_DATA_PORT_RANGE': '7800-7802'}, clear=False):
+            with patch('zmq.Context') as mock_context:
+                mock_socket = MagicMock()
+                mock_context.return_value.socket.return_value = mock_socket
+
+                mq = MessageQueue(role='server', queue_type='control', tunnel_mode=True)
+                mq.client_dictionary['other-client'] = {'port': 7800}
+
+                port, port_range = mq._ensure_client_data_queue('new-client')
+
+                assert port == 7801
+                assert port_range.label == '7800-7802'
+                assert mq.client_dictionary['new-client']['port'] == 7801
+                mq.close()
+
+    def test_ensure_client_data_queue_reports_exhausted_range(self):
+        """Server allocation should fail cleanly when no data ports remain."""
+        from umrs.core.MessageQueue import MessageQueue
+
+        with patch.dict(os.environ, {'UMRS_DATA_PORT_RANGE': '7810-7811'}, clear=False):
+            with patch('zmq.Context') as mock_context:
+                mock_socket = MagicMock()
+                mock_context.return_value.socket.return_value = mock_socket
+
+                mq = MessageQueue(role='server', queue_type='control', tunnel_mode=True)
+                mq.client_dictionary['client-a'] = {'port': 7810}
+                mq.client_dictionary['client-b'] = {'port': 7811}
+
+                port, port_range = mq._ensure_client_data_queue('client-c')
+
+                assert port is None
+                assert port_range.label == '7810-7811'
+                mq.close()
+
 
 class TestGetDataQueueTunnelMode:
     """Tests for get_data_queue with tunnel mode."""
@@ -322,6 +379,26 @@ class TestGetDataQueueTunnelMode:
             control_mq.close()
             data_mq.close()
 
+    def test_get_data_queue_reports_range_exhaustion(self):
+        """get_data_queue should raise a clear error when the server exhausts the configured range."""
+        from umrs.core.MessageQueue import MessageQueue
+
+        with patch('zmq.Context') as mock_context:
+            mock_socket = MagicMock()
+            mock_context.return_value.socket.return_value = mock_socket
+            mock_socket.recv_multipart.return_value = [b'NO_DATA_PORT_AVAILABLE:7820-7821']
+
+            control_mq = MessageQueue(
+                role='client',
+                queue_type='control',
+                tunnel_mode=True,
+            )
+
+            with pytest.raises(RuntimeError, match='7820-7821'):
+                control_mq.get_data_queue(client_id='test-client')
+
+            control_mq.close()
+
 
 class TestResetControlQueueTunnelMode:
     """Tests for reset_control_queue with tunnel mode."""
@@ -354,25 +431,26 @@ class TestResetControlQueueTunnelMode:
         """reset_control_queue should connect to server_ip in normal mode."""
         from umrs.core.MessageQueue import MessageQueue
 
-        with patch('zmq.Context') as mock_context:
-            mock_socket = MagicMock()
-            mock_context.return_value.socket.return_value = mock_socket
+        with patch.dict(os.environ, {'UMRS_SERVER_HOST': ''}, clear=False):
+            with patch('zmq.Context') as mock_context:
+                mock_socket = MagicMock()
+                mock_context.return_value.socket.return_value = mock_socket
 
-            mq = MessageQueue(
-                role='client',
-                queue_type='control',
-                server_ip='192.168.1.100',
-                tunnel_mode=False,
-            )
+                mq = MessageQueue(
+                    role='client',
+                    queue_type='control',
+                    server_ip='192.168.1.100',
+                    tunnel_mode=False,
+                )
 
-            mock_socket.reset_mock()
-            mq.reset_control_queue()
+                mock_socket.reset_mock()
+                mq.reset_control_queue()
 
-            # Should connect to server_ip after reset
-            mock_socket.connect.assert_called()
-            connect_call = str(mock_socket.connect.call_args)
-            assert '192.168.1.100' in connect_call
-            mq.close()
+                # Should connect to server_ip after reset
+                mock_socket.connect.assert_called()
+                connect_call = str(mock_socket.connect.call_args)
+                assert '192.168.1.100' in connect_call
+                mq.close()
 
 
 class TestDocumentation:
