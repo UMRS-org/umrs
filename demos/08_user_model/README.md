@@ -479,12 +479,12 @@ Always accept both `"success"` and `"completed"` for backward compatibility.
 
 ## Execution modes
 
-| Mode | `workflow.json` key | Description |
-|------|---------------------|-------------|
-| **In-process** | *(default)* | Steps run directly in the UMRS server process |
-| **Subprocess** | `"extra": {"execution_mode": "subprocess"}` | Isolated child process with resource limits |
-| **Slurm** | `rivault://user_script://…` | Steps run as a Slurm batch job on the compute node |
-| **Kubernetes** | `"extra": {"execution_mode": "k8s"}` | Kubernetes Job (cluster deployments) |
+| Mode | `workflow.json` key | Description | Status |
+|------|---------------------|-------------|--------|
+| **In-process** | *(default)* | Steps run directly in the UMRS server process | Production-ready |
+| **Slurm** | `"execution_mode": "slurm"` | Steps run as Slurm batch jobs in Singularity containers on HPC. Each step is wrapped into a `PluginSpec`, submitted via `SlurmPluginRunner`, and executed by `python -m umrs.plugins.plugin_runner.entrypoint` inside the container. Results are chained between steps via `result_manifest.json`. | Functional (Phase 1 complete) |
+| **Kubernetes** | `"execution_mode": "k8s"` | Kubernetes Job with security context. Same step executor and result manifest contract as Slurm. | Structural (same contract, needs cluster validation) |
+| **Subprocess** | `"execution_mode": "subprocess"` | Same-host isolated sandbox. Not yet implemented — raises `NotImplementedError`. | Planned |
 
 ---
 

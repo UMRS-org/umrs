@@ -106,6 +106,6 @@ quarantined and reported in the audit log.
 
 ## See Also
 
-- [Demo 13: Plugins](../13_plugins/README.md) — plugin execution system (with Slurm/K8s backends)
-- [Demo 08: User-Defined Model](../08_user_model/README.md) — Step API for in-process pipelines
+- [Demo 13: Plugins](../13_plugins/README.md) — plugin execution system (Slurm/K8s backends, step executor, result manifest)
+- [Demo 08: User-Defined Model](../08_user_model/README.md) — Step API and execution modes (in-process, slurm, k8s)
 - [Demo 16: Custom Workflow](../16_custom_workflow/README.md) — server-side workflow execution

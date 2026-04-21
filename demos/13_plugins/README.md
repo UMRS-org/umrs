@@ -58,10 +58,12 @@ PluginSpec → PluginRunner → [Sandbox] → PluginResult → ResultWriter → 
                   │                          └── PluginAuditLog
                   ├── SlurmPluginRunner (HPC)
                   │     └── Singularity container + sbatch
+                  │     └── Step executor: python -m umrs.plugins.plugin_runner.entrypoint
+                  │     └── Result contract: /workspace/result_manifest.json
                   ├── K8sPluginRunner (Cloud)
                   │     └── Kubernetes Job + security context
                   └── Local (this demo)
-                        └── subprocess with workspace dirs
+                        └── direct execution with workspace dirs
 ```
 
 ## Plugin Spec Fields
@@ -81,10 +83,19 @@ PluginSpec → PluginRunner → [Sandbox] → PluginResult → ResultWriter → 
 
 A plugin is a Python script with a `main()` function. The runner sets up:
 
-- `/workspace/input/` — input data files
-- `/workspace/output/` — write results here
-- `/workspace/metrics.txt` — write key=value metrics
-- Environment variables: `PLUGIN_ENTRYPOINT`, `PLUGIN_SOURCE_*`, `PLUGIN_USER_ID`
+- `/workspace/` — job directory (host-side bind-mounted)
+- `/workspace/result_manifest.json` — step executor writes structured results here
+- `/source/` — step source code (bind-mounted read-only from `spec.source_uri`)
+- Environment variables:
+  - `PLUGIN_ENTRYPOINT`, `PLUGIN_SOURCE_TYPE`, `PLUGIN_SOURCE_URI`, `PLUGIN_TIMEOUT`
+  - `UMRS_STEP_NAME`, `UMRS_STEP_ENTRYPOINT`, `UMRS_STEP_CONFIG` (set by the step adapter)
+  - `UMRS_INPUT_BUCKET`, `UMRS_INPUT_KEYS`, `UMRS_OUTPUT_BUCKET`, `UMRS_RUN_ID`
+  - User-defined vars are prefixed with `USER_` (e.g. `CUDA_VISIBLE_DEVICES` → `USER_CUDA_VISIBLE_DEVICES`)
+
+For remote execution (Slurm/K8s), the in-container step executor
+(`python -m umrs.plugins.plugin_runner.entrypoint`) reads these env vars,
+imports the step class, runs `setup` → `run` → `teardown`, and writes
+`result_manifest.json` with output keys, embeddings, checksums, and metadata.
 
 See [word_count_plugin.py](word_count_plugin.py) for a complete example.
 
@@ -98,8 +109,12 @@ runner = SlurmPluginRunner(partition="gpu", singularity_image="/path/to/image.si
 result = await runner.execute(spec)
 ```
 - Generates sbatch script with `#SBATCH` directives
-- Runs inside Singularity container with `--containall`
-- Bind-mounts workspace directories
+- Runs inside Singularity container with `--containall --cleanenv`
+- Env vars delivered via `SINGULARITYENV_*` prefix (survives `--cleanenv`)
+- Bind-mounts: workspace dir at `/workspace`, source dir at `/source:ro`
+- In-container entrypoint: `python -m umrs.plugins.plugin_runner.entrypoint`
+- Metrics written to host-side `{work_dir}/{plugin_id}/metrics.txt`
+- Step executor writes `/workspace/result_manifest.json` for result chaining
 - Polls `squeue`/`sacct` for completion
 
 ### Kubernetes (Cloud)

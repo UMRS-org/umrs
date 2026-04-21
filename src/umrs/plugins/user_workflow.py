@@ -26,9 +26,12 @@ Usage::
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from umrs.pipeline_sdk.step import Step, StepContext
@@ -312,6 +315,11 @@ class UserWorkflowRunner:
         :func:`step_to_plugin_spec` and submitted as an independent batch
         job.  Steps are chained sequentially: output keys from step N
         become input keys for step N+1.
+
+        After each job completes the runner reads
+        ``{work_dir}/{plugin_id}/result_manifest.json`` written by the
+        in-container step executor to chain output_keys, embeddings,
+        checksums, and metadata to the next step.
         """
         from .slurm_runner import SlurmPluginRunner
         from .step_adapter import step_to_plugin_spec
@@ -333,6 +341,10 @@ class UserWorkflowRunner:
 
         current_keys = list(s3_keys)
         current_bucket = input_bucket
+
+        last_embeddings: Optional[Any] = None
+        last_checksums: List[str] = []
+        last_metadata: List[Dict[str, Any]] = []
 
         for idx, spec in enumerate(self.workflow.steps):
             step_output_bucket = output_bucket
@@ -360,9 +372,8 @@ class UserWorkflowRunner:
                 output_destinations=self.workflow.output_destinations,
             )
 
-            # execute() is async in the base class, but SlurmPluginRunner
-            # blocks until the job finishes, so we call the internal method.
-            result = runner.execute(plugin_spec)
+            # runner.execute() is async — run it in an event loop.
+            result = asyncio.run(runner.execute(plugin_spec))
 
             if result.status.value != "succeeded":
                 raise RuntimeError(
@@ -370,15 +381,33 @@ class UserWorkflowRunner:
                     f"{result.error_message or result.stderr}"
                 )
 
-            # TODO: Parse step result from Slurm job output to get
-            # updated current_keys for next step.  For now, this is a
-            # structural placeholder — actual S3 key chaining requires
-            # the step executor to write a result manifest.
+            # Read result manifest written by the in-container step executor.
+            manifest = self._read_step_manifest(runner.work_dir, result.plugin_id)
+            if manifest:
+                if manifest.get("output_keys"):
+                    current_keys = manifest["output_keys"]
+                    current_bucket = step_output_bucket
+                if manifest.get("embeddings") is not None:
+                    last_embeddings = manifest["embeddings"]
+                if manifest.get("checksums"):
+                    last_checksums = manifest["checksums"]
+                if manifest.get("metadata"):
+                    last_metadata = manifest["metadata"]
+
             logger.info("  [slurm] step %d/%d [%s]: completed", idx + 1,
                         len(self.workflow.steps), spec.name)
 
-        # Return placeholder (Slurm results need step-executor integration)
-        return [None] * len(s3_keys), [], [], [None] * len(s3_keys)
+        # Build return tuple
+        embeddings_list: List[Any] = (
+            list(last_embeddings) if last_embeddings is not None
+            else [None] * len(s3_keys)
+        )
+        saved_keys: List[Optional[str]] = (
+            list(current_keys) if current_keys != list(s3_keys)
+            else [None] * len(s3_keys)
+        )
+
+        return embeddings_list, last_checksums, last_metadata, saved_keys
 
     # ── Kubernetes execution ─────────────────────────────────────────────
 
@@ -415,6 +444,10 @@ class UserWorkflowRunner:
         current_keys = list(s3_keys)
         current_bucket = input_bucket
 
+        last_embeddings: Optional[Any] = None
+        last_checksums: List[str] = []
+        last_metadata: List[Dict[str, Any]] = []
+
         for idx, spec in enumerate(self.workflow.steps):
             step_output_bucket = output_bucket
 
@@ -441,7 +474,8 @@ class UserWorkflowRunner:
                 output_destinations=self.workflow.output_destinations,
             )
 
-            result = runner.execute(plugin_spec)
+            # runner.execute() is async — run it in an event loop.
+            result = asyncio.run(runner.execute(plugin_spec))
 
             if result.status.value != "succeeded":
                 raise RuntimeError(
@@ -449,12 +483,56 @@ class UserWorkflowRunner:
                     f"{result.error_message or result.stderr}"
                 )
 
+            # Read result manifest written by the in-container step executor.
+            manifest = self._read_step_manifest(runner.work_dir, result.plugin_id)
+            if manifest:
+                if manifest.get("output_keys"):
+                    current_keys = manifest["output_keys"]
+                    current_bucket = step_output_bucket
+                if manifest.get("embeddings") is not None:
+                    last_embeddings = manifest["embeddings"]
+                if manifest.get("checksums"):
+                    last_checksums = manifest["checksums"]
+                if manifest.get("metadata"):
+                    last_metadata = manifest["metadata"]
+
             logger.info("  [k8s] step %d/%d [%s]: completed", idx + 1,
                         len(self.workflow.steps), spec.name)
 
-        return [None] * len(s3_keys), [], [], [None] * len(s3_keys)
+        # Build return tuple
+        embeddings_list: List[Any] = (
+            list(last_embeddings) if last_embeddings is not None
+            else [None] * len(s3_keys)
+        )
+        saved_keys: List[Optional[str]] = (
+            list(current_keys) if current_keys != list(s3_keys)
+            else [None] * len(s3_keys)
+        )
+
+        return embeddings_list, last_checksums, last_metadata, saved_keys
 
     # ── Internal helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _read_step_manifest(
+        work_dir: Path, plugin_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Read result_manifest.json written by the in-container step executor.
+
+        Returns the parsed manifest dict, or ``None`` if not found.
+        """
+        manifest_path = work_dir / plugin_id / "result_manifest.json"
+        if not manifest_path.is_file():
+            logger.warning(
+                "No result manifest at %s — step chaining unavailable",
+                manifest_path,
+            )
+            return None
+        try:
+            return json.loads(manifest_path.read_text())
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Failed to read manifest %s: %s", manifest_path, exc)
+            return None
 
     def _ensure_steps(self, s3: Optional[Any] = None) -> List[Step]:
         """Load step instances lazily (in_process mode only)."""
