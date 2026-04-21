@@ -7,8 +7,6 @@ import re
 from dataclasses import dataclass
 from typing import List, Optional
 
-from umrs.orchestrator.site_config import get_site_config
-
 from ..models import ModelScope
 from .errors import PathNotAllowedError
 
@@ -35,6 +33,8 @@ def _append_unique(patterns: List[str], candidate: Optional[str]) -> None:
 
 def _site_scope_patterns(scope: Optional[ModelScope] = None) -> List[str]:
     try:
+        from umrs.orchestrator.site_config import get_site_config
+
         storage = get_site_config().storage
     except Exception:
         return []
