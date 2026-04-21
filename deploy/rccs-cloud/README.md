@@ -6,6 +6,8 @@ rootless podman containers, while `umrs-server` runs **natively** so it can
 invoke Slurm CLI tools (`sbatch`, `squeue`, `scancel`) and create SSH tunnels
 to compute nodes.
 
+> Admin-only guide. Normal users of the shared deployment should use the [R4 Basic User Quick Start](../../../docs/r4/quickstart.md) instead. They should not need `setup_server.sh`, `setup_client.sh`, `ssh_tunnel.sh`, Slurm settings, or storage credentials.
+
 ---
 
 ## Quick Deploy (already set up)
@@ -375,7 +377,11 @@ done
 
 ---
 
-## Step 3 — Set up the client (local Mac)
+## Step 3 — Legacy direct UMRS client testing (admins only)
+
+This section is for operator verification and troubleshooting only.
+
+For the standard shared-user path, send users to the [R4 Basic User Quick Start](../../../docs/r4/quickstart.md) and keep them on the shared Gateway-facing `r4` flow.
 
 From your local machine, inside this directory:
 
@@ -402,7 +408,7 @@ umrs-client --help
 
 ---
 
-## Step 4 — Open SSH tunnels (optional, local client access)
+## Step 4 — Open SSH tunnels for direct UMRS testing (admins only)
 
 Keep this running in a terminal (or run it in the background):
 
@@ -425,7 +431,7 @@ your local tunnels when uploading via presigned URLs.
 
 ---
 
-## Step 5 — Run the demos
+## Step 5 — Run UMRS demos for admin verification
 
 With tunnels open (if running from local Mac), run any demo from the
 canonical `demos/` directory at the repo root:
