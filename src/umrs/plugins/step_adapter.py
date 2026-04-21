@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import tempfile
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .models import PluginSpec, PluginSourceType
 
 logger = logging.getLogger(__name__)
+
+_RESERVED_STEP_ENV_PREFIXES = ("UMRS_", "PLUGIN_")
 
 
 def step_to_plugin_spec(
@@ -50,6 +49,14 @@ def step_to_plugin_spec(
     - ``UMRS_OUTPUT_BUCKET`` — S3 bucket for output data
     - ``UMRS_RUN_ID`` — unique run identifier
     """
+    user_env: Dict[str, str] = {}
+    if env_vars:
+        for key, value in env_vars.items():
+            if key.startswith(_RESERVED_STEP_ENV_PREFIXES):
+                logger.warning("Ignoring reserved step env override: %s", key)
+                continue
+            user_env[key] = value
+
     step_env: Dict[str, str] = {
         "UMRS_STEP_NAME": step_name,
         "UMRS_STEP_ENTRYPOINT": entrypoint,
@@ -59,8 +66,7 @@ def step_to_plugin_spec(
         "UMRS_OUTPUT_BUCKET": output_bucket,
         "UMRS_RUN_ID": run_id,
     }
-    if env_vars:
-        step_env.update(env_vars)
+    step_env = {**user_env, **step_env}
 
     return PluginSpec(
         source_type=PluginSourceType.LOCAL_PATH,

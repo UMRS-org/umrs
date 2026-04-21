@@ -35,6 +35,11 @@ At a high level, the current branch organizes UMRS into these layers:
 
 ## Quick Start
 
+> **ai4s-platform integration**: This branch is consumed by the
+> [ai4s-platform](https://github.com/mnagaso/ai4s-platform) project as a
+> git submodule. See [doc/AI4S_PLATFORM_BOUNDARY.md](doc/AI4S_PLATFORM_BOUNDARY.md)
+> for contracts and development boundaries.
+
 ### Client only
 
 The recommended package manager for the repo is

@@ -256,8 +256,14 @@ class PluginRunner(abc.ABC):
 
         # Add user-provided env vars (filtered)
         for key, value in spec.env_vars.items():
-            # Prevent overriding system vars
-            if not key.startswith("PLUGIN_"):
+            # Prevent overriding system vars — but let UMRS_* vars
+            # (set by the step adapter) through unprefixed so the
+            # in-container step executor can read them directly.
+            if key.startswith("PLUGIN_"):
+                continue  # reserved namespace — skip
+            if key.startswith("UMRS_"):
+                env[key] = value  # step-adapter contract — pass as-is
+            else:
                 env[f"USER_{key}"] = value
 
         return env
