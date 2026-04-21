@@ -108,6 +108,41 @@ preflight() {
     log "Server is ready."
 }
 
+# --- Onboard active user (idempotent) ---
+# Triggers server-side provisioning (bucket + DB creation) for the active
+# user config.  Safe to call repeatedly — the server treats reload as a
+# no-op when the config hasn't changed.
+#
+# Usage:
+#   onboard              # onboard $CONF (default user)
+#   onboard "$OTHER_CONF" # onboard an explicit config
+onboard() {
+    local conf="${1:-${CONF}}"
+    local client_cmd="${CLIENT_ARGS[*]}"
+    if [[ "$conf" != "$CONF" ]]; then
+        # Rebuild client command for the explicit config
+        client_cmd="${client_cmd%-c *}"
+        client_cmd="umrs-client"
+        [[ -n "${UMRS_PROFILE:-}" ]] && client_cmd+=" --profile ${UMRS_PROFILE}"
+        [[ -n "${UMRS_ZMQ_HOST:-}" ]] && client_cmd+=" --server-ip ${UMRS_ZMQ_HOST}"
+        [[ -n "${UMRS_ZMQ_PORT:-}" ]] && client_cmd+=" --control-port ${UMRS_ZMQ_PORT}"
+        client_cmd+=" -c ${conf}"
+    fi
+
+    log "Onboarding user config: ${conf}"
+    $client_cmd reload >/dev/null 2>&1 \
+        || die "reload failed for ${conf}"
+    ok "reload succeeded"
+
+    $client_cmd status reload 2>&1 \
+        | head -20 | while IFS= read -r line; do log "  $line"; done
+    ok "status reload OK"
+
+    $client_cmd list_buckets 2>&1 \
+        | head -10 | while IFS= read -r line; do log "  $line"; done
+    ok "bucket listing OK"
+}
+
 # --- Wait for all tasks to finish (simple polling) ---
 # Usage: wait_tasks [max_attempts] [sleep_sec]
 wait_tasks() {

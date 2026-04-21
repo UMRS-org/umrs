@@ -66,6 +66,9 @@ CONF="${UMRS_CONF:-${UMRS_USER_CONF:-${HOME}/.config/umrs/conf_umrs.json}}"
 umrs-client -c "$CONF" ping >/dev/null 2>&1 || { echo "ERROR: Server not reachable. Check connectivity."; exit 1; }
 echo "Pre-flight OK — server reachable."
 
+# ---------- Onboarding ----------
+run_demo "00" "User Onboarding"     "00_onboarding/run_demo.sh"
+
 # ---------- Core demos ----------
 run_demo "01" "Health Check"        "01_health_check/run_demo.sh"
 run_demo "02" "Text Embedding"      "02_text_embedding/run_demo.sh"

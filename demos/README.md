@@ -66,7 +66,13 @@ All demos source `lib/common.sh` which provides the `$CLIENT` command,
 
 | # | Demo | What you'll learn |
 |---|------|-------------------|
+| 00 | [User Onboarding](00_onboarding/) | Push user config → server provisions buckets + DB automatically |
 | 01 | [Health Check](01_health_check/) | Ping server, verify connectivity |
+
+> **Note:** All server-backed demos call the shared `onboard()` helper which
+> runs `reload` + `status reload` + `list_buckets`.  This is idempotent — the
+> server skips provisioning when the config hasn't changed.  Demos 08, 12, and
+> 13 run locally and do not require onboarding.
 
 ## Basic Usage
 

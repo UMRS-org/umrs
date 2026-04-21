@@ -38,6 +38,13 @@ $CLIENT1 ping >/dev/null 2>&1 || die "Server not reachable for user1"
 $CLIENT2 ping >/dev/null 2>&1 || die "Server not reachable for user2"
 ok "Both users can reach server"
 
+# ---------- Step 1b: Onboard both users ----------
+log ""
+log "Step 1b: Onboarding both users (reload → buckets)..."
+onboard "$USER1_CONF"
+onboard "$USER2_CONF"
+ok "Both users onboarded"
+
 mkdir -p "$RESULTS_DIR"
 
 # ---------- Step 2: User1 uploads data ----------
