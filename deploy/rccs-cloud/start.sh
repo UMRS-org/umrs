@@ -98,6 +98,55 @@ stop_managed_process() {
     rm -f "$pid_file"
 }
 
+rootlessport_pid_for_port() {
+    local port="$1"
+
+    ss -ltnp "sport = :${port}" 2>/dev/null \
+        | awk -F'pid=' '/rootlessport/ {print $2}' \
+        | awk -F',' '{print $1}' \
+        | head -1
+}
+
+reap_stale_rootlessport() {
+    local port="$1"
+    local pid
+
+    pid="$(rootlessport_pid_for_port "$port")"
+    if [[ -z "$pid" ]]; then
+        return 0
+    fi
+
+    echo "Reaping stale rootlessport on 127.0.0.1:${port} (PID ${pid})..."
+    kill "$pid" 2>/dev/null || true
+    sleep 1
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 "$pid" 2>/dev/null || true
+        sleep 1
+    fi
+}
+
+reconcile_infra_container() {
+    local name="$1"
+    shift
+    local ports=("$@")
+    local state
+
+    state="$(podman inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)"
+    if [[ -z "$state" || "$state" == "running" ]]; then
+        return 0
+    fi
+
+    case "$state" in
+        created|configured|exited|stopped)
+            echo "Removing stale ${name} container (${state}) before compose up..."
+            podman rm -f "$name" >/dev/null 2>&1 || true
+            for port in "${ports[@]}"; do
+                reap_stale_rootlessport "$port"
+            done
+            ;;
+    esac
+}
+
 resolve_model_layout() {
     if [[ -n "${MODEL_DIR:-}" ]]; then
         printf '%s\n%s\n%s\n' \
@@ -232,6 +281,9 @@ fi
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
 if [[ "${1:-}" != "--server" ]]; then
+    reconcile_infra_container umrs-postgres 5432
+    reconcile_infra_container umrs-minio 9000 9001
+
     echo "Starting infrastructure containers (postgres, minio)..."
     podman compose up -d
 
