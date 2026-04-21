@@ -16,30 +16,31 @@ reachable from your client machine.
 ## Table of Contents
 
 1. [Setup](#setup)
-2. [Demo 01 — Health Check](#demo-01--health-check)
-3. [Demo 02 — Text Embedding](#demo-02--text-embedding)
-4. [Demo 03 — SAM3 Segmentation](#demo-03--sam3-segmentation)
-5. [Demo 04 — Vision Inference](#demo-04--vision-inference)
-6. [Demo 05 — RAG Search](#demo-05--rag-search)
-7. [Demo 06 — Server Maintenance](#demo-06--server-maintenance)
-8. [Demo 07 — Model Registry](#demo-07--model-registry)
-9. [Demo 08 — User-Defined Models](#demo-08--user-defined-models)
-10. [Demo 09 — Multi-Step Vision Pipeline](#demo-09--multi-step-vision-pipeline)
-11. [Demo 10 — Multi-Mode Vision Pipeline](#demo-10--multi-mode-vision-pipeline)
-12. [Demo 11 — Job Submission](#demo-11--job-submission)
-13. [Demo 12 — Pipeline SDK](#demo-12--pipeline-sdk)
-14. [Demo 13 — Plugins](#demo-13--plugins)
-15. [Demo 14 — Video Analysis](#demo-14--video-analysis)
-16. [Demo 15 — Complex DAG](#demo-15--complex-dag)
-17. [Demo 16 — Custom Workflow](#demo-16--custom-workflow)
-18. [Demo 17 — Multi-User Isolation](#demo-17--multi-user-isolation)
-19. [Demo 18 — Model Lifecycle](#demo-18--model-lifecycle)
-20. [Demo 19 — RAG Advanced](#demo-19--rag-advanced)
-21. [Demo 20 — Durable Jobs](#demo-20--durable-jobs)
-22. [Demo 21 — Remote Plugins](#demo-21--remote-plugins)
-23. [Demo 22 — Monitor TUI](#demo-22--monitor-tui)
-24. [Environment Variables Reference](#environment-variables-reference)
-25. [Troubleshooting](#troubleshooting)
+2. [Demo 00 — User Onboarding](#demo-00--user-onboarding)
+3. [Demo 01 — Health Check](#demo-01--health-check)
+4. [Demo 02 — Text Embedding](#demo-02--text-embedding)
+5. [Demo 03 — SAM3 Segmentation](#demo-03--sam3-segmentation)
+6. [Demo 04 — Vision Inference](#demo-04--vision-inference)
+7. [Demo 05 — RAG Search](#demo-05--rag-search)
+8. [Demo 06 — Server Maintenance](#demo-06--server-maintenance)
+9. [Demo 07 — Model Registry](#demo-07--model-registry)
+10. [Demo 08 — User-Defined Models](#demo-08--user-defined-models)
+11. [Demo 09 — Multi-Step Vision Pipeline](#demo-09--multi-step-vision-pipeline)
+12. [Demo 10 — Multi-Mode Vision Pipeline](#demo-10--multi-mode-vision-pipeline)
+13. [Demo 11 — Job Submission](#demo-11--job-submission)
+14. [Demo 12 — Pipeline SDK](#demo-12--pipeline-sdk)
+15. [Demo 13 — Plugins](#demo-13--plugins)
+16. [Demo 14 — Video Analysis](#demo-14--video-analysis)
+17. [Demo 15 — Complex DAG](#demo-15--complex-dag)
+18. [Demo 16 — Custom Workflow](#demo-16--custom-workflow)
+19. [Demo 17 — Multi-User Isolation](#demo-17--multi-user-isolation)
+20. [Demo 18 — Model Lifecycle](#demo-18--model-lifecycle)
+21. [Demo 19 — RAG Advanced](#demo-19--rag-advanced)
+22. [Demo 20 — Durable Jobs](#demo-20--durable-jobs)
+23. [Demo 21 — Remote Plugins](#demo-21--remote-plugins)
+24. [Demo 22 — Monitor TUI](#demo-22--monitor-tui)
+25. [Environment Variables Reference](#environment-variables-reference)
+26. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -133,6 +134,54 @@ cp docker/user_files/user1.json ~/.config/umrs/users/user1.json
 umrs-client ping
 # Expected: server responds with "ready"
 ```
+
+---
+
+## Demo 00 — User Onboarding
+
+**Purpose:** Push the user config to the server to trigger automatic
+provisioning of MinIO IAM credentials, S3 buckets, and the per-user Postgres
+database.  This is the recommended first step after setting up the client.
+
+**Requires server:** Yes
+**Time:** < 30 seconds
+
+### Automated
+```bash
+cd demos/00_onboarding
+bash run_demo.sh
+```
+
+### Manual Steps
+
+```bash
+# 1. Check that your user config exists
+ls ~/.config/umrs/users/user1.json
+
+# 2. Push the config to the server (triggers provisioning)
+umrs-client -c ~/.config/umrs/users/user1.json reload
+
+# 3. Verify the reload result
+umrs-client -c ~/.config/umrs/users/user1.json status reload
+
+# 4. Confirm buckets are visible
+umrs-client -c ~/.config/umrs/users/user1.json list_buckets
+```
+
+### What happens on the server
+
+When the server receives `reload` with a user config it has not seen before, it:
+
+1. Creates a MinIO IAM user with a scoped access policy
+2. Creates a Postgres role and per-user database
+3. Creates the S3 buckets defined in the user config
+4. Updates internal routing tables so subsequent commands are routed correctly
+
+Re-running `reload` with the same config is a no-op — onboarding is idempotent.
+
+> **Shared helper:** All server-backed demos call the `onboard()` function
+> from `demos/lib/common.sh`, which performs the same reload → status → buckets
+> sequence automatically.
 
 ---
 
