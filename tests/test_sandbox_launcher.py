@@ -141,6 +141,33 @@ class TestGenerateContainerEnv:
         assert env["PLUGIN_TIMEOUT"] == "3600"
 
 
+class TestStepAdapterReservedEnv:
+    """Verify user env cannot override reserved step-executor keys."""
+
+    def test_reserved_step_env_keys_are_ignored(self):
+        spec = step_to_plugin_spec(
+            step_name="real-step",
+            entrypoint="real.mod:RealStep",
+            script_dir="/scripts",
+            step_config={},
+            input_bucket="real-in",
+            input_keys=["a.npy"],
+            output_bucket="real-out",
+            run_id="run-123",
+            env_vars={
+                "UMRS_STEP_ENTRYPOINT": "evil.mod:EvilStep",
+                "UMRS_INPUT_BUCKET": "evil-in",
+                "PLUGIN_SOURCE_URI": "/evil",
+                "CUDA_VISIBLE_DEVICES": "0",
+            },
+        )
+
+        assert spec.env_vars["UMRS_STEP_ENTRYPOINT"] == "real.mod:RealStep"
+        assert spec.env_vars["UMRS_INPUT_BUCKET"] == "real-in"
+        assert "PLUGIN_SOURCE_URI" not in spec.env_vars
+        assert spec.env_vars["CUDA_VISIBLE_DEVICES"] == "0"
+
+
 # =========================================================================
 # 2. slurm_runner — sbatch script generation
 # =========================================================================
@@ -437,3 +464,52 @@ class TestSlurmModeAsync:
             assert checksums == ["h1"]
             assert metadata == [{"done": True}]
             assert saved_keys == ["out/result.npy"]
+
+
+class TestK8sModeManifestHandling:
+    """Verify K8s mode does not require a Slurm-style work_dir."""
+
+    def test_k8s_mode_skips_manifest_when_runner_has_no_work_dir(self):
+        wf = _make_wf_def(execution_mode=ExecutionMode.K8S)
+        uw = UserWorkflow.from_workflow_definition(
+            wf,
+            env_vars={"MY_VAR": "1"},
+            user_id="alice",
+        )
+        runner = UserWorkflowRunner(uw)
+        mock_s3 = MagicMock()
+
+        mock_result = PluginResult(
+            plugin_id="plugin-test123",
+            status=PluginStatus.SUCCEEDED,
+            exit_code=0,
+        )
+
+        class _FakeK8sRunner:
+            def execute(self, spec):
+                return "coroutine_placeholder"
+
+        with patch(
+            "umrs.plugins.user_workflow._resolve_source",
+            return_value=Path("/tmp/src"),
+        ), patch(
+            "umrs.plugins.k8s_runner.K8sPluginRunner",
+            return_value=_FakeK8sRunner(),
+        ), patch(
+            "asyncio.run",
+            return_value=mock_result,
+        ) as mock_asyncio_run:
+            result = runner._run_k8s(
+                mock_s3,
+                ["key1.npy"],
+                "in-bkt",
+                "out-bkt",
+            )
+
+            mock_asyncio_run.assert_called_once()
+
+        embeddings, checksums, metadata, saved_keys = result
+        assert embeddings == [None]
+        assert checksums == []
+        assert metadata == []
+        assert saved_keys == [None]

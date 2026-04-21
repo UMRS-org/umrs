@@ -381,8 +381,7 @@ class UserWorkflowRunner:
                     f"{result.error_message or result.stderr}"
                 )
 
-            # Read result manifest written by the in-container step executor.
-            manifest = self._read_step_manifest(runner.work_dir, result.plugin_id)
+            manifest = self._resolve_step_manifest(runner, result)
             if manifest:
                 if manifest.get("output_keys"):
                     current_keys = manifest["output_keys"]
@@ -421,7 +420,8 @@ class UserWorkflowRunner:
         """Submit each step as a Kubernetes Job via K8sPluginRunner.
 
         Follows the same pattern as ``_run_slurm`` but uses the K8s
-        backend.
+        backend. Output chaining only happens when the backend exposes
+        a retrievable step manifest.
         """
         from .k8s_runner import K8sPluginRunner
         from .step_adapter import step_to_plugin_spec
@@ -483,8 +483,7 @@ class UserWorkflowRunner:
                     f"{result.error_message or result.stderr}"
                 )
 
-            # Read result manifest written by the in-container step executor.
-            manifest = self._read_step_manifest(runner.work_dir, result.plugin_id)
+            manifest = self._resolve_step_manifest(runner, result)
             if manifest:
                 if manifest.get("output_keys"):
                     current_keys = manifest["output_keys"]
@@ -512,6 +511,32 @@ class UserWorkflowRunner:
         return embeddings_list, last_checksums, last_metadata, saved_keys
 
     # ── Internal helpers ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _resolve_step_manifest(
+        runner: Any,
+        result: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Resolve a step manifest from backend-specific result surfaces."""
+        metrics = getattr(result, "metrics", None)
+        if isinstance(metrics, dict):
+            manifest = metrics.get("result_manifest")
+            if isinstance(manifest, dict):
+                return manifest
+
+        work_dir = getattr(runner, "work_dir", None)
+        if work_dir is not None:
+            return UserWorkflowRunner._read_step_manifest(
+                Path(work_dir),
+                result.plugin_id,
+            )
+
+        logger.info(
+            "Runner %s does not expose a retrievable step manifest; "
+            "skipping output chaining",
+            type(runner).__name__,
+        )
+        return None
 
     @staticmethod
     def _read_step_manifest(
