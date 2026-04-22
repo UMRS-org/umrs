@@ -71,6 +71,38 @@ umrs-client status update
 umrs-client status check
 ```
 
+## Manual Equivalent To `run_demo.sh`
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/umrs/demos/06_server_maintenance"
+
+CONF="${UMRS_USER_CONF:-$HOME/.config/umrs/users/user1.json}"
+
+# 0. Verify client → server connectivity.
+umrs-client -c "$CONF" ping
+
+# 1. Show configured buckets.
+umrs-client -c "$CONF" list_buckets || true
+
+# 2. Run a consistency check.
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c "$CONF" check
+sleep 2
+umrs-client -c "$CONF" status check || true
+
+# 3. Update only missing or stale embeddings.
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c "$CONF" update
+sleep 2
+umrs-client -c "$CONF" status update || true
+
+# 4. Optional full recompute.
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c "$CONF" recompute
+sleep 5
+umrs-client -c "$CONF" status recompute || true
+```
+
+If your deployment does not enforce admin tokens, omit `--admin-token`.
+
 ## When to Use What
 
 ```

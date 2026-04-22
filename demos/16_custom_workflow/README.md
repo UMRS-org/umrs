@@ -36,11 +36,74 @@ bash run_demo.sh
 umrs-client ping
 
 # 2. Prepare your workflow files
-#    Create a directory with:
-#    - workflow.json: defines the pipeline name, steps, and output type
-#    - counter.py:    Python step class that processes uploaded text files
-mkdir -p workflow
-# (see run_demo.sh for full file contents)
+#    Create the uploaded workflow package locally.
+mkdir -p workflow results
+
+cat > workflow/workflow.json <<'JSONEOF'
+{
+  "name": "custom-text-counter",
+  "version": "1.0",
+  "description": "Count words and characters in uploaded text files",
+  "source": {
+    "type": "uploaded",
+    "path": "."
+  },
+  "execution_mode": "in_process",
+  "steps": [
+    {
+      "name": "count_words",
+      "entrypoint": "counter:WordCounter",
+      "config": {"min_word_length": 3}
+    }
+  ],
+  "output": {
+    "return_type": "file"
+  }
+}
+JSONEOF
+
+cat > workflow/counter.py <<'PYEOF'
+"""Custom step: count words and characters in text files."""
+
+from umrs.pipeline_sdk import Step, StepContext, StepResult
+
+
+class WordCounter(Step):
+    name = "count_words"
+
+    def setup(self, config):
+        self.min_word_length = config.get("min_word_length", 1)
+
+    def teardown(self):
+        pass
+
+    def run(self, ctx: StepContext) -> StepResult:
+        results = {}
+        for key in ctx.input_keys:
+            if key.endswith(".txt"):
+                data = ctx.download_bytes(key)
+                text = data.decode("utf-8", errors="replace")
+                words = [w for w in text.split() if len(w) >= self.min_word_length]
+                results[key] = {
+                    "total_words": len(text.split()),
+                    "filtered_words": len(words),
+                    "characters": len(text),
+                    "lines": text.count("\n") + 1,
+                }
+
+        import json
+
+        ctx.upload_bytes(
+            "word_count_results.json",
+            json.dumps(results, indent=2).encode(),
+            content_type="application/json",
+        )
+
+        return StepResult(
+            output_keys=["word_count_results.json"],
+            metadata=[{"summary": results}],
+        )
+PYEOF
 
 # 3. Upload the custom workflow to the server
 #    This registers the workflow under the name "custom-text-counter".

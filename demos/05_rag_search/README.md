@@ -36,6 +36,63 @@ Override those defaults when needed:
 RAG_BUCKET_ALIAS=my-bucket RAG_MODALITY=text bash run_demo.sh
 ```
 
+## Running Manually
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/umrs/demos/05_rag_search"
+
+RAG_URL="${RAG_URL:-http://localhost:8081}"
+RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-user1-textfiles}"
+RAG_MODALITY="${RAG_MODALITY:-text_file}"
+
+# 1. Verify UMRS and RAG connectivity.
+umrs-client ping
+curl -sf "$RAG_URL/docs" >/dev/null && echo "RAG docs OK"
+
+# 2. Check that embeddings already exist (run Demo 02 first if needed).
+umrs-client status all | head -5 || true
+
+# 3. Vector search (same style as the script).
+curl -sf -X POST "$RAG_URL/rag/search" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"What machine learning methods are used for fault detection in seismic data?\",\"top_k\":3,\"bucket_alias\":\"$RAG_BUCKET_ALIAS\",\"modality\":\"$RAG_MODALITY\"}" \
+  | python3 -m json.tool
+
+curl -sf -X POST "$RAG_URL/rag/search" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"How do seismic P-waves and S-waves differ?\",\"top_k\":3,\"bucket_alias\":\"$RAG_BUCKET_ALIAS\",\"modality\":\"$RAG_MODALITY\"}" \
+  | python3 -m json.tool
+
+# 4. Hybrid search (BM25 + vector fusion).
+curl -sf -X POST "$RAG_URL/rag/search" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"What is the finite difference method for wave propagation?\",\"top_k\":3,\"bucket_alias\":\"$RAG_BUCKET_ALIAS\",\"modality\":\"$RAG_MODALITY\",\"search_method\":\"hybrid\"}" \
+  | python3 -m json.tool
+
+curl -sf -X POST "$RAG_URL/rag/search" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"How does GPU acceleration improve HPC simulations?\",\"top_k\":3,\"bucket_alias\":\"$RAG_BUCKET_ALIAS\",\"modality\":\"$RAG_MODALITY\",\"search_method\":\"hybrid\"}" \
+  | python3 -m json.tool
+
+# 5. Vector search + reranking.
+curl -sf -X POST "$RAG_URL/rag/search" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"What is RiVault and how does it provide secure inference?\",\"top_k\":3,\"bucket_alias\":\"$RAG_BUCKET_ALIAS\",\"modality\":\"$RAG_MODALITY\",\"enable_reranking\":true}" \
+  | python3 -m json.tool
+
+curl -sf -X POST "$RAG_URL/rag/search" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"Compare numerical methods for seismic modeling\",\"top_k\":3,\"bucket_alias\":\"$RAG_BUCKET_ALIAS\",\"modality\":\"$RAG_MODALITY\",\"enable_reranking\":true}" \
+  | python3 -m json.tool
+
+# 6. Optional RAG Q&A (requires a chat-capable LLM backend).
+curl -sf -X POST "$RAG_URL/rag/qa" \
+  -H 'Content-Type: application/json' \
+  -d "{\"query\":\"Explain how machine learning is applied to geophysical data analysis, citing specific methods.\",\"top_k\":5,\"bucket_alias\":\"$RAG_BUCKET_ALIAS\",\"modality\":\"$RAG_MODALITY\",\"enable_reranking\":true}" \
+  | python3 -m json.tool
+```
+
 ## RAG API
 
 The RAG service listens on port **8081**. On native site deployments it runs
