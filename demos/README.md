@@ -145,7 +145,7 @@ Complex DAG pipelines, multi-user isolation, durable jobs, and extensibility.
 
 ```
 New to UMRS?
-  → Demo 01 (health check) then Demo 02 (text embedding)
+  → Demo 00 (onboarding), then Demo 01 (health check), then Demo 02 (text embedding)
 
 Working with images?
   → Demo 03 (SAM3) or Demo 04 (vision inference)
@@ -182,31 +182,38 @@ Need durable job management?
 
 Want a live TUI dashboard?
   → Demo 22 (monitor: jobs table, status filters, detail views)
+
+Need admin-token / RBAC validation?
+  → Demo 23 (auth enforcement)
+
+Need to inspect thread-pool capacity or backpressure?
+  → Demo 24 (thread pool metrics)
 ```
 
 ### CLI Commands × Demo Coverage
 
 | Command | Demo | Description |
 |---------|------|-------------|
-| `ping` | 01 | Check server connectivity |
-| `upload_file` | 02 | Upload a single file |
+| `ping` | 00, 01 | Check server connectivity |
+| `reload` | 00, 03, 04, 09, 10, 14, 16 | Push config/workflow changes to the server |
+| `upload_file` | 17, 18, 24 | Upload a single file |
 | `upload_dir` | 02, 03, 04, 09, 10, 14 | Upload a directory |
 | `download_results` | 03, 04, 09, 10, 14 | Download computed outputs |
 | `export_embeddings` | 02 | Export embeddings to CSV/JSONL |
-| `list_buckets` | 06 | Show configured S3 buckets |
-| `status` | 02, 11 | Query server task status |
+| `list_buckets` | 00, 01, 06, 17 | Show configured S3 buckets |
+| `status` | 00, 02, 06, 20, 24 | Query task or pool status |
 | `check` | 06 | Verify S3 ↔ DB consistency |
 | `update` | 06 | Fix missing/mismatched embeddings |
 | `recompute` | 03, 04, 06 | Force full re-processing |
-| `reload` | 03, 04 | Reload server config |
 | `model register` | 07 | Register a local model |
 | `model list` | 07 | List registered models |
 | `model upload` | 07 | Upload model to staging root |
-| `model download` | 07 | Download from HuggingFace |
-| `job submit` | 11 | Submit endpoint/index/cleanup job |
-| `job cancel` | 11 | Cancel a running job |
+| `model download` | 02, 03, 07, 18 | Stage a model from HuggingFace |
+| `job submit` | 11, 20, 22 | Submit endpoint/index/cleanup jobs |
+| `job cancel` | 11, 20 | Cancel a running job |
 | `monitor` | 22 | Live-refreshing jobs dashboard (TUI) |
-| `upload-workflow` | 14 | Upload a UDM workflow to server |
+| `upload-workflow` | 09, 10, 14, 16 | Upload a workflow bundle to the server |
+| `admin token` | 23 | Generate, list, and revoke admin tokens |
 
 ### Environment Variables
 
@@ -215,11 +222,22 @@ Want a live TUI dashboard?
 | `UMRS_PROFILE` | all | Named connection profile to use for the demo commands |
 | `UMRS_USER_CONF` | all | Path to the user config JSON (default: `~/.config/umrs/users/user1.json`) |
 | `UMRS_CONF` | all | Explicit config override used by the demo helper (legacy/manual override) |
-| `FORCE_RECOMPUTE` | 03 | Set to `1` to trigger full recompute after upload |
-| `MAX_IMAGES` | 03, 09, 10 | Limit number of images to upload (default: 2-3) |
-| `HMAE_LOCAL_MODEL_DIR` | 04 | Path to HMAE checkpoint dir for model registration |
+| `UMRS_ADMIN_TOKEN` | 06, 09, 10, 14, 16, 23 | Admin token for reload and maintenance on auth-enforced deployments |
+| `TEXT_BUCKET` | 02, 18, 24 | Bucket alias for text uploads |
+| `SAM3_BUCKET` | 03 | Bucket alias for SAM3 segmentation uploads |
+| `VISION_BUCKET` | 04 | Bucket alias for generic vision inference |
+| `PIPELINE_BUCKET` | 09 | Bucket alias for the multi-step vision pipeline |
+| `MULTI_BUCKET` | 10 | Bucket alias for the multi-mode vision workflow |
+| `FORCE_RECOMPUTE` | 03, 04 | Set to `1` to trigger full recompute after upload |
+| `MAX_IMAGES` | 03, 04, 09, 10 | Limit number of images to upload |
+| `MODEL_STAGING_DIR` | 02, 07, 18 | Writable server-side staging directory for model downloads |
+| `DEMO_LOCAL_MODEL_UPLOAD` | 07, 18 | Enable the optional local model upload steps |
 | `RAG_URL` | 05 | RAG service URL (default: `http://localhost:8081`) |
 | `DEMO_RECOMPUTE` | 06 | Set to `1` to run full recompute step |
 | `DEMO_DOWNLOAD` | 07 | Set to `1` to download model from HuggingFace |
-| `GEN_TEST_VIDEOS` | 14 | Set to `1` to generate synthetic test videos |
-| `VIDEO_BUCKET` | 14 | Bucket alias for video uploads (default: `user1-textfiles`) |
+| `VIDEO_BUCKET` | 14 | Bucket alias for video uploads (default: `user1-video`) |
+| `MAX_VIDEOS` | 14 | Max number of videos to upload |
+| `USER1_BUCKET` | 17 | Bucket alias for user1 in the isolation demo |
+| `USER2_BUCKET` | 17 | Bucket alias for user2 in the isolation demo |
+| `DEMO_LOCAL_ONLY` | 23 | Run only local token management without server-side auth checks |
+| `DEMO_SUBMIT_TASK` | 24 | Submit a lightweight upload before re-querying pool metrics |
