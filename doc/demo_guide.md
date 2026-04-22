@@ -1,8 +1,9 @@
 # UMRS Demo Guide — Step by Step
 
 This guide walks you through every UMRS demo from start to finish.
-Each section explains what the demo does, how to run it manually (command
-by command), and what to expect.
+Each section explains what the demo does, how to run it manually, and what to
+expect. The per-demo `README.md` files under `demos/*/` are the authoritative
+source for the full command-by-command walkthroughs.
 
 The demos work with **any deployment** — Docker Compose (local dev),
 rccs-cloud, hpbd-atom, or any other setup — as long as the UMRS server is
@@ -39,8 +40,10 @@ reachable from your client machine.
 22. [Demo 20 — Durable Jobs](#demo-20--durable-jobs)
 23. [Demo 21 — Remote Plugins](#demo-21--remote-plugins)
 24. [Demo 22 — Monitor TUI](#demo-22--monitor-tui)
-25. [Environment Variables Reference](#environment-variables-reference)
-26. [Troubleshooting](#troubleshooting)
+25. [Demo 23 — Auth Enforcement](#demo-23--auth-enforcement)
+26. [Demo 24 — Thread Pool](#demo-24--thread-pool)
+27. [Environment Variables Reference](#environment-variables-reference)
+28. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -49,8 +52,9 @@ reachable from your client machine.
 ### 1. Install the UMRS client
 
 ```bash
-cd src
-pip install -e .
+uv venv .venv
+source .venv/bin/activate
+uv pip install -e src/
 which umrs-client          # should print a path
 ```
 
@@ -244,20 +248,25 @@ bash run_demo.sh
 ### Manual Steps
 
 ```bash
-# 1. Ensure the embedding model is available
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    model download intfloat/e5-base-v2 --scope system --server-side
+# 1. Verify connectivity and inspect the visible model catalog
+umrs-client -c ~/.config/umrs/users/user1.json ping
+umrs-client -c ~/.config/umrs/users/user1.json model list --scope system
+umrs-client -c ~/.config/umrs/users/user1.json model list --scope user
+
+# Optional: only if your site exposes a writable, allowed staging root
+umrs-client -c ~/.config/umrs/users/user1.json \
+    model download intfloat/e5-base-v2 --scope user --server-side \
+    --staging-dir /path/to/site-user-model-root
 
 # 2. Upload sample text files
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+umrs-client -c ~/.config/umrs/users/user1.json \
     upload_dir ../sample_data/texts user1-textfiles
 
 # 3. Wait for processing to finish
-umrs-client -c ~/.config/umrs/conf_umrs.json status all
-# Repeat until status shows "completed" or "done"
+umrs-client -c ~/.config/umrs/users/user1.json --output text status process_objects
 
 # 4. Export embeddings to CSV
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+umrs-client -c ~/.config/umrs/users/user1.json \
     export_embeddings user1-textfiles results/embeddings.csv --format csv
 ```
 
@@ -288,25 +297,24 @@ bash run_demo.sh
 ### Manual Steps
 
 ```bash
-# 1. Pre-flight
-umrs-client -c ~/.config/umrs/conf_umrs.json ping
+# 1. Verify that the server can already see the SAM3 model
+umrs-client -c ~/.config/umrs/users/user1.json model list --scope system
+umrs-client -c ~/.config/umrs/users/user1.json model list --scope user
 
-# 2. Reload config (ensures SAM3 experience is registered)
-umrs-client -c ~/.config/umrs/conf_umrs.json reload
+# Optional: only if your site exposes a writable, allowed staging root
+umrs-client -c ~/.config/umrs/users/user1.json \
+    model download facebook/sam2-hiera-small --name sam3 --scope user --server-side \
+    --staging-dir /path/to/site-user-model-root
 
-# 3. Download the SAM3 model weights
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    model download facebook/sam2-hiera-small --name sam3 --scope system --server-side
-
-# 4. Upload images
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+# 2. Upload images
+umrs-client -c ~/.config/umrs/users/user1.json \
     upload_dir test_data_full user1-sam3
 
-# 5. Wait for results and download
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    download_results user1-sam3 results/ --force-overwrite
+# 3. Wait for results and download
+umrs-client -c ~/.config/umrs/users/user1.json \
+    download_results user1-sam3 ./results --force-overwrite
 
-# 6. Check results
+# 4. Check results
 ls -lh results/
 ```
 
@@ -337,16 +345,16 @@ bash run_demo.sh
 
 ```bash
 # 1. Pre-flight + reload config
-umrs-client -c ~/.config/umrs/conf_umrs.json ping
-umrs-client -c ~/.config/umrs/conf_umrs.json reload
+umrs-client -c ~/.config/umrs/users/user1.json ping
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c ~/.config/umrs/users/user1.json reload
 
 # 2. Upload images
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+umrs-client -c ~/.config/umrs/users/user1.json \
     upload_dir ../sample_data/images user1-sam3
 
 # 3. Download results
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    download_results user1-sam3 results/ --force-overwrite
+umrs-client -c ~/.config/umrs/users/user1.json \
+    download_results user1-sam3 ./results --force-overwrite
 ```
 
 ### Behind the scenes
@@ -423,16 +431,20 @@ bash run_demo.sh
 
 ```bash
 # 1. List all buckets
-umrs-client -c ~/.config/umrs/conf_umrs.json list_buckets
+umrs-client -c ~/.config/umrs/users/user1.json list_buckets
 
 # 2. Check S3 ↔ DB consistency
-umrs-client -c ~/.config/umrs/conf_umrs.json check
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c ~/.config/umrs/users/user1.json check
+umrs-client -c ~/.config/umrs/users/user1.json status check
 
 # 3. Update: fix missing/mismatched embeddings
-umrs-client -c ~/.config/umrs/conf_umrs.json update
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c ~/.config/umrs/users/user1.json update
+umrs-client -c ~/.config/umrs/users/user1.json status update
 
 # 4. (Optional) Full recompute
-DEMO_RECOMPUTE=1 umrs-client -c ~/.config/umrs/conf_umrs.json recompute
+DEMO_RECOMPUTE=1 umrs-client --admin-token "$UMRS_ADMIN_TOKEN" \
+    -c ~/.config/umrs/users/user1.json recompute
+umrs-client -c ~/.config/umrs/users/user1.json status recompute
 ```
 
 ### Next step → Demo 07
@@ -457,26 +469,27 @@ bash run_demo.sh
 
 ```bash
 # 1. List currently registered models
-umrs-client -c ~/.config/umrs/conf_umrs.json model list
+umrs-client -c ~/.config/umrs/users/user1.json model list || true
 
-# 2. Register a model already on the server filesystem
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+# 2. Optionally register a model that is already visible on the server
+umrs-client -c ~/.config/umrs/users/user1.json \
     model register "my-model" /path/on/server \
-    --type embedding --scope system --description "My model"
+    --type embedding --scope user --description "My model"
 
-# 3. Upload a model from your local machine
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+# 3. Optionally upload a small local model directory as a user model
+umrs-client -c ~/.config/umrs/users/user1.json \
     model upload /local/path/to/model \
     --name "my-model" --type embedding --scope user \
     --description "Uploaded model" --force
 
-# 4. (Optional) Download from HuggingFace
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    model download intfloat/e5-base-v2 --scope system --server-side
+# 4. Optional server-side download when your site exposes a staging root
+umrs-client -c ~/.config/umrs/users/user1.json \
+    model download intfloat/e5-base-v2 --scope user --server-side \
+    --staging-dir /path/to/site-user-model-root
 
 # 5. Filter by scope
-umrs-client -c ~/.config/umrs/conf_umrs.json model list --scope system
-umrs-client -c ~/.config/umrs/conf_umrs.json model list --scope user
+umrs-client -c ~/.config/umrs/users/user1.json model list --scope system || true
+umrs-client -c ~/.config/umrs/users/user1.json model list --scope user || true
 ```
 
 ### Next step → Demo 08
@@ -538,19 +551,19 @@ bash run_demo.sh
 
 ```bash
 # 1. Upload workflow
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    upload-workflow .
+umrs-client -c ~/.config/umrs/users/user1.json \
+    upload-workflow workflow/ --name "vision-pipeline-demo"
 
 # 2. Reload config
-umrs-client -c ~/.config/umrs/conf_umrs.json reload
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c ~/.config/umrs/users/user1.json reload
 
 # 3. Upload images
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+umrs-client -c ~/.config/umrs/users/user1.json \
     upload_dir ../sample_data/images user1-pipeline
 
 # 4. Download results
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    download_results user1-pipeline results/
+umrs-client -c ~/.config/umrs/users/user1.json \
+    download_results user1-pipeline ./results --force-overwrite
 ```
 
 ### Pipeline steps
@@ -605,16 +618,16 @@ bash run_demo.sh
 
 ```bash
 # 1. Submit a job
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+umrs-client -c ~/.config/umrs/users/user1.json \
     job submit endpoint_provision \
     --spec '{"model": "sam3"}' \
     --project demo
 
-# 2. Check job status
-umrs-client -c ~/.config/umrs/conf_umrs.json status all
+# 2. Inspect the durable job list
+umrs-client -c ~/.config/umrs/users/user1.json monitor --once --project demo
 
 # 3. Cancel a running job
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+umrs-client -c ~/.config/umrs/users/user1.json \
     job cancel <job_id>
 ```
 
@@ -711,16 +724,17 @@ bash run_demo.sh /path/to/your/videos
 python generate_test_videos.py -o sample_videos/ --count 4
 
 # 2. Upload workflow
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    upload-workflow video_workflow/
+umrs-client -c ~/.config/umrs/users/user1.json \
+    upload-workflow workflow/ --name "video-motion-analysis"
 
 # 3. Upload videos
-umrs-client -c ~/.config/umrs/conf_umrs.json \
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c ~/.config/umrs/users/user1.json reload
+umrs-client -c ~/.config/umrs/users/user1.json \
     upload_dir sample_videos/ user1-video
 
 # 4. Download results
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    download_results user1-video results/
+umrs-client -c ~/.config/umrs/users/user1.json \
+    download_results user1-video ./results --force-overwrite
 ```
 
 ### Next step → Demo 15
@@ -761,13 +775,24 @@ bash run_demo.sh
 ### Manual Steps
 
 ```bash
-# 1. Upload your workflow
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    upload-workflow ./my_workflow --name my-workflow
+# 1. Upload the workflow bundle prepared locally under ./workflow
+umrs-client -c ~/.config/umrs/users/user1.json \
+    upload-workflow ./workflow --name custom-text-counter
 
-# 2. List workflows
-umrs-client -c ~/.config/umrs/conf_umrs.json workflow list
+# 2. Reload so the uploaded workflow-backed bucket becomes active
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c ~/.config/umrs/users/user1.json reload
+
+# 3. Upload sample text files to the workflow bucket
+umrs-client -c ~/.config/umrs/users/user1.json \
+    upload_dir ../sample_data/texts user1-custom-text
+
+# 4. Download the generated results
+umrs-client -c ~/.config/umrs/users/user1.json \
+    download_results user1-custom-text ./results --force-overwrite
 ```
+
+See `demos/16_custom_workflow/README.md` for the full `workflow.json` and
+`counter.py` package used by the demo.
 
 ### Next step → Demo 17
 
@@ -791,12 +816,25 @@ bash run_demo.sh
 ### Manual Steps
 
 ```bash
-# User 1: upload some data
-umrs-client -c ~/.config/umrs/conf_umrs.json \
-    upload_file myfile.txt user1-textfiles
-
-# User 2: try to list User 1's buckets (should fail or show empty)
+# User 1 and User 2 should both be able to reach the server
+umrs-client -c ~/.config/umrs/users/user1.json ping
 umrs-client -c ~/.config/umrs/users/user2.json list_buckets
+
+# User 1 uploads private data to user1's bucket
+echo "This is user1's private data" > /tmp/user1_data.txt
+umrs-client -c ~/.config/umrs/users/user1.json \
+    upload_file /tmp/user1_data.txt user1-textfiles
+
+# User 2 uploads private data to user2's bucket
+echo "This is user2's private data" > /tmp/user2_data.txt
+umrs-client -c ~/.config/umrs/users/user2.json \
+    upload_file /tmp/user2_data.txt user2-textfiles
+
+# Each user only sees their own bucket aliases and user-scoped models
+umrs-client -c ~/.config/umrs/users/user1.json list_buckets
+umrs-client -c ~/.config/umrs/users/user2.json list_buckets
+umrs-client -c ~/.config/umrs/users/user1.json model list --scope user
+umrs-client -c ~/.config/umrs/users/user2.json model list --scope user
 ```
 
 ### Next step → Demo 18
@@ -890,7 +928,73 @@ bash run_demo.sh
 
 ### Manual
 ```bash
-umrs-client -c ~/.config/umrs/conf_umrs.json monitor
+umrs-client -c ~/.config/umrs/users/user1.json monitor
+```
+
+---
+
+## Demo 23 — Auth Enforcement
+
+**Purpose:** Generate, list, and revoke admin tokens, then verify that
+maintenance commands are denied without admin privileges and accepted with a
+valid token.
+
+**Requires server:** Optional for local token management, yes for full auth test
+**Time:** < 1 minute locally, 1-2 minutes with server verification
+
+### Automated
+```bash
+cd demos/23_auth_enforcement
+bash run_demo.sh
+```
+
+### Manual
+```bash
+# 1. Generate a local admin token
+TOKEN_NAME="demo23-$(date -u +%Y%m%d%H%M%S)"
+TOKEN_JSON=$(umrs-client --output json admin token generate "$TOKEN_NAME" --description "Demo 23 test token")
+TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$TOKEN_JSON")
+
+# 2. Verify the token exists locally
+umrs-client --output json admin token list
+
+# 3. Run an admin-only maintenance command without and with the token
+umrs-client -c ~/.config/umrs/users/user1.json check || true
+umrs-client -c ~/.config/umrs/users/user1.json --admin-token "$TOKEN" check
+
+# 4. Revoke the token
+umrs-client admin token revoke "$TOKEN_NAME"
+```
+
+### Next step → Demo 24
+
+---
+
+## Demo 24 — Thread Pool
+
+**Purpose:** Inspect the bounded server thread pool, understand saturation
+metrics, and optionally submit a lightweight task before re-querying.
+
+**Requires server:** Yes
+**Time:** < 1 minute
+
+### Automated
+```bash
+cd demos/24_thread_pool
+bash run_demo.sh
+```
+
+### Manual
+```bash
+# 1. Query the server summary and inspect the pool object
+umrs-client -c ~/.config/umrs/users/user1.json --output json status all
+
+# 2. Optionally submit a lightweight upload, then re-query the pool metrics
+TMPFILE=$(mktemp)
+echo "Pool demo $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TMPFILE"
+umrs-client -c ~/.config/umrs/users/user1.json upload_file "$TMPFILE" user1-textfiles
+umrs-client -c ~/.config/umrs/users/user1.json --output json status all
+rm -f "$TMPFILE"
 ```
 
 ---
@@ -903,7 +1007,10 @@ These variables can be set before running any demo to override defaults.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `UMRS_CONF` | `~/.config/umrs/conf_umrs.json` | Server config JSON path |
+| `UMRS_PROFILE` | active profile | Named connection profile to use |
+| `UMRS_USER_CONF` | `~/.config/umrs/users/user1.json` | User config JSON path |
+| `UMRS_CONF` | *(unset)* | Explicit config override used by some helper scripts |
+| `UMRS_ADMIN_TOKEN` | *(unset)* | Admin token for reload and maintenance commands |
 | `UMRS_ZMQ_HOST` | `localhost` | ZMQ server host |
 | `UMRS_ZMQ_PORT` | `5555` | ZMQ control port |
 | `UMRS_ZMQ_DATA_PORT` | `5556` | ZMQ data port |
@@ -915,7 +1022,7 @@ These variables can be set before running any demo to override defaults.
 
 | Variable | Default | Used by |
 |----------|---------|---------|
-| `TEXT_BUCKET` | `user1-textfiles` | Demo 02 |
+| `TEXT_BUCKET` | `user1-textfiles` or `user1-custom-text` | Demo 02, 16, 18, 24 |
 | `SAM3_BUCKET` | `user1-sam3` | Demo 03 |
 | `VISION_BUCKET` | `user1-sam3` | Demo 04 |
 | `PIPELINE_BUCKET` | `user1-pipeline` | Demo 09 |
@@ -933,8 +1040,12 @@ These variables can be set before running any demo to override defaults.
 | `FORCE_RECOMPUTE` | *(unset)* | Demo 03, 04 |
 | `MAX_IMAGES` | `3` | Demo 03, 04, 09, 10 |
 | `MAX_VIDEOS` | `6` | Demo 14 |
+| `MODEL_STAGING_DIR` | *(unset)* | Demo 02, 07, 18 |
+| `DEMO_LOCAL_MODEL_UPLOAD` | `0` | Demo 07, 18 |
 | `DEMO_DOWNLOAD` | `0` | Demo 07 |
 | `DEMO_RECOMPUTE` | `0` | Demo 06 |
+| `DEMO_LOCAL_ONLY` | `0` | Demo 23 |
+| `DEMO_SUBMIT_TASK` | `0` | Demo 24 |
 
 ---
 
@@ -960,14 +1071,14 @@ source deploy/<site>/.venv/bin/activate
 Either the user config is missing experiences, or the server hasn't been
 reloaded since the config was updated:
 ```bash
-umrs-client -c ~/.config/umrs/conf_umrs.json reload
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c ~/.config/umrs/users/user1.json reload
 ```
 
 ### Embeddings not computed (0 rows exported)
 
 The embedding model may not be running. Check:
 ```bash
-umrs-client -c ~/.config/umrs/conf_umrs.json status all
+umrs-client -c ~/.config/umrs/users/user1.json status all
 ```
 If the model needs to be launched, the server will do so automatically on
 the next upload. On HPC this means a Slurm job is submitted.
@@ -992,6 +1103,7 @@ Check with your admin if you do not control the deployment.
 
 ```
 Beginner
+    Demo 00  User Onboarding
   Demo 01  Health Check
   Demo 02  Text Embedding
   Demo 06  Server Maintenance
@@ -1015,6 +1127,7 @@ Infrastructure
   Demo 17  Multi-User Isolation
   Demo 18  Model Lifecycle
   Demo 20  Durable Jobs
+    Demo 23  Auth Enforcement
 
 Expert
   Demo 13  Plugins
@@ -1022,4 +1135,5 @@ Expert
   Demo 19  RAG Advanced
   Demo 21  Remote Plugins
   Demo 22  Monitor TUI
+    Demo 24  Thread Pool
 ```
