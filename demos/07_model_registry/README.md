@@ -59,6 +59,57 @@ umrs-client model list --scope user
 umrs-client model list --scope system
 ```
 
+## Manual Equivalent To `run_demo.sh`
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT/umrs/demos/07_model_registry"
+
+CONF="${UMRS_USER_CONF:-$HOME/.config/umrs/users/user1.json}"
+MODEL_SCOPE="${MODEL_SCOPE:-user}"
+
+# 0. Verify connectivity.
+umrs-client -c "$CONF" ping
+
+# 1. List the current catalog.
+umrs-client -c "$CONF" model list || true
+
+# 2. Optionally register a model from a server-visible path.
+if [[ -n "${UMRS_SHARED_MODEL_PATH:-}" ]]; then
+  MODEL_NAME="$(basename "$UMRS_SHARED_MODEL_PATH")"
+  umrs-client -c "$CONF" model register "$MODEL_NAME" "$UMRS_SHARED_MODEL_PATH" \
+    --type embedding --scope "$MODEL_SCOPE" \
+    --description "Auto-registered from shared models directory"
+fi
+
+# 3. Optionally upload a tiny test model.
+if [[ "${DEMO_LOCAL_MODEL_UPLOAD:-0}" = "1" ]]; then
+  rm -rf .test_model
+  mkdir -p .test_model
+  printf '{"model_type":"test","framework":"demo"}\n' > .test_model/config.json
+  printf 'dummy weights\n' > .test_model/model.bin
+  umrs-client -c "$CONF" model upload .test_model \
+    --name test-upload-model \
+    --type embedding \
+    --scope user \
+    --description "Demo model uploaded via model upload" \
+    --force
+fi
+
+# 4. Verify the catalog and scope filters.
+umrs-client -c "$CONF" model list
+umrs-client -c "$CONF" model list --scope system || true
+umrs-client -c "$CONF" model list --scope user || true
+
+# 5. Optional server-side download.
+if [[ "${DEMO_DOWNLOAD:-0}" = "1" && -n "${MODEL_STAGING_DIR:-}" ]]; then
+  umrs-client -c "$CONF" model download intfloat/e5-base-v2 \
+    --scope "$MODEL_SCOPE" \
+    --server-side \
+    --staging-dir "$MODEL_STAGING_DIR"
+fi
+```
+
 ## Model Scopes
 
 | Scope | Who can see | Typical path | Use case |

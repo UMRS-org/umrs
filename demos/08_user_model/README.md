@@ -12,6 +12,71 @@ bash run_demo.sh
 
 This runs the unit test suite and an integration smoke test using a mock S3.
 
+## Running Manually
+
+```bash
+REPO_ROOT="$(git rev-parse --show-toplevel)/umrs"
+cd "$REPO_ROOT"
+
+PYTHON="$REPO_ROOT/.venv/bin/python"
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON="python3"
+fi
+
+# 1. Run the step test suite.
+PYTHONPATH="$REPO_ROOT/src" "$PYTHON" -m pytest tests/test_user_steps.py -v --tb=short
+
+# 2. Run the same integration smoke test as run_demo.sh.
+PYTHONPATH="$REPO_ROOT/src" SCRIPT_DIR="$REPO_ROOT/demos/08_user_model" "$PYTHON" - <<'PY'
+import json
+import os
+from pathlib import Path
+from unittest.mock import MagicMock
+
+from umrs.pipeline_sdk.workflow import WorkflowDefinition, WorkflowPipeline, load_steps
+
+repo = Path(os.environ["PYTHONPATH"].split(":")[0]).parent
+demo = Path(os.environ["SCRIPT_DIR"])
+
+wf_data = json.loads((demo / "workflow_text.json").read_text())
+wf_data["source"]["path"] = str(demo / "example_scripts")
+wf = WorkflowDefinition.from_dict(wf_data)
+wf.validate()
+
+store = {}
+
+def put_object(Bucket, Key, Body, **kwargs):
+    store[f"{Bucket}/{Key}"] = Body if isinstance(Body, bytes) else Body.encode()
+
+def get_object(Bucket, Key):
+    data = store[f"{Bucket}/{Key}"]
+    body = MagicMock()
+    body.read.return_value = data
+    return {"Body": body, "ETag": '"aaa"', "ContentLength": len(data), "Metadata": {}}
+
+def head_object(Bucket, Key):
+    data = store[f"{Bucket}/{Key}"]
+    return {"ETag": '"aaa"', "ContentLength": len(data), "Metadata": {}}
+
+s3 = MagicMock()
+s3.put_object.side_effect = put_object
+s3.get_object.side_effect = get_object
+s3.head_object.side_effect = head_object
+
+store["demo-in/hello.txt"] = b"Hello World!\nThis is a test file.\n"
+store["demo-in/readme.txt"] = b"UMRS user-defined workflows rock.\n"
+
+pipeline = WorkflowPipeline.from_workflow(wf, load_steps(wf))
+_, checksums, _, saved_keys = pipeline.run_as_embeddings(
+    s3, ["hello.txt", "readme.txt"], "demo-in", "demo-out"
+)
+
+print(f"Saved keys: {saved_keys}")
+print(f"Checksums: {checksums}")
+print("Integration smoke test PASSED")
+PY
+```
+
 ---
 
 ## Core concepts
