@@ -18,20 +18,20 @@ these are the only commands needed to deploy or redeploy after a code change:
 ```bash
 # ── On your local machine ────────────────────────────────────────────────
 # 1. Commit & push
-cd /path/to/umrs
+cd /path/to/ai4s-platform
 git push origin ai4s-platform
 
 # ── On rccs-cloud (via SSH) ──────────────────────────────────────────────
 ssh rccs-cloud
-cd /lvs0/dne1/rccs-dmp/mnagaso/umrs
+cd /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform
 
 # 2. Pull latest code
 git pull origin ai4s-platform
 
 # 3. Update the Python package and stop the old server
-source deploy/rccs-cloud/.venv/bin/activate
-uv pip install -e src/ --quiet
-cd deploy/rccs-cloud
+source umrs/deploy/rccs-cloud/.venv/bin/activate
+uv pip install -e umrs/src/ --quiet
+cd umrs/deploy/rccs-cloud
 ./stop.sh
 
 # 4. Start everything (containers + server)
@@ -232,7 +232,7 @@ All deployment files are in `deploy/rccs-cloud/` inside the repo.
 
 ```bash
 # On rccs-cloud:
-cd /lvs0/rccs-dmp/mnagaso/umrs/deploy/rccs-cloud
+cd /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs/deploy/rccs-cloud
 cp env.example .env
 nano .env          # or vim / any editor
 ```
@@ -254,6 +254,42 @@ Common values to adjust:
 Do not duplicate scheduler partitions, `RIVAULT_PROFILES`, LiteLLM port, or
 model-serving paths in `.env` unless you are intentionally overriding
 `site.yaml`.  Those values are part of the site contract, not per-host secrets.
+
+### 1e. Credentials, API keys, and control boundaries
+
+This deployment uses three different credential classes. Keep them separate.
+
+| Credential | Where it lives | Who should control it | How to generate / rotate |
+|---|---|---|---|
+| PostgreSQL password | `.env` as `POSTGRES_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
+| MinIO root password | `.env` as `MINIO_ROOT_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
+| LiteLLM service key | `site.yaml` `network.litellm_master_key` or `.env` override `LITELLM_MASTER_KEY` | RCCS operators only | Generate a random bearer-style secret, for example `printf 'sk-ll-%s\n' "$(openssl rand -hex 24)"` |
+| UMRS admin tokens | `~/.config/umrs/admin_tokens.json` (hashed at rest) | RCCS operators only | Generate with `python ../../src/client_umrs.py admin token generate <name> --description '<purpose>'` |
+
+**Important:** UMRS admin tokens are shown only once at creation time. The file
+`~/.config/umrs/admin_tokens.json` stores only token hashes, so rotation means
+generating a new token and revoking the old one rather than recovering the old
+value later.
+
+Example operator commands:
+
+```bash
+# Generate a new UMRS admin token (stored hashed in ~/.config/umrs/admin_tokens.json)
+source .venv/bin/activate
+python ../../src/client_umrs.py admin token generate rccs-ops --description "RCCS deployment operator"
+
+# List token metadata without revealing token values
+python ../../src/client_umrs.py admin token list
+
+# Revoke a token by name
+python ../../src/client_umrs.py admin token revoke rccs-ops
+```
+
+If you also deploy the Platform Gateway for user-facing access, treat its
+`JWT_SECRET` as a server-side signing secret only. Do not hand `JWT_SECRET` to
+end users. User-facing access should come from externally issued OIDC tokens or
+deployment-specific bearer tokens, while `GATEWAY_LITELLM_SERVICE_KEY` remains
+strictly service-to-service between Gateway and LiteLLM.
 
 ### 1b. Edit user config
 

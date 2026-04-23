@@ -132,12 +132,12 @@ mask_secret_state() {
 # from compute nodes. Override via RIVAULT_DIR env var.
 # Prefer SLURM_SUBMIT_DIR (the cwd of the sbatch invocation) so the
 # inner script is always picked from the same worktree as the wrapper.
-_DEFAULT_REPO="${SLURM_SUBMIT_DIR:-/lvs0/dne1/rccs-dmp/mnagaso/umrs}"
+_DEFAULT_REPO="${SLURM_SUBMIT_DIR:-/lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs}"
 RIVAULT_DIR="${RIVAULT_DIR:-${_DEFAULT_REPO}/src/umrs/mini-rivault-llm}"
 
 if [[ ! -d "$RIVAULT_DIR" ]]; then
     echo "ERROR: RIVAULT_DIR not found: $RIVAULT_DIR"
-    echo "  Check that the repo is cloned at /lvs0/dne1/rccs-dmp/mnagaso/umrs"
+    echo "  Check that the repo is cloned at /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs"
     exit 1
 fi
 
@@ -180,7 +180,7 @@ export USER_MODEL_PATH="${USER_MODEL_PATH:-/tmp}"
 #   aarch64 → cu130-nightly-aarch64   (Blackwell, GB10)
 #   x86_64  → cu130-nightly-x86_64    (H200, L40S, etc.)
 # VLLM_GPU_MEM_UTIL: low memory fraction — keep room for BentoML vision
-export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/rccs-dmp/mnagaso/umrs_models/hf}"
+export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hf}"
 export VLLM_MODEL="${VLLM_MODEL:-intfloat/e5-base-v2}"
 # VLLM_DOCKER_TAG: prefer partition profile value; fall back to arch auto-detect.
 if [[ -z "${VLLM_DOCKER_TAG:-}" ]]; then

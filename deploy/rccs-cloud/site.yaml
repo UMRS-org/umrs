@@ -18,7 +18,7 @@ description: >-
 
 scheduler:
   kind: slurm-podman
-  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # candidate partitions; backend picks one active target
+  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # ng-dgx-m0-[08-09], ng-dgx-m1-[10-11], ng-dgx-m2-[12-13], ng-dgx-m3-[14-15] (GB10)
   account: ""
   qos: ""
   time_limit: "04:00:00"
@@ -28,8 +28,8 @@ scheduler:
 
 runtime:
   kind: podman-compose
-  rivault_dir: /lvs0/dne1/rccs-dmp/mnagaso/umrs/src/umrs/mini-rivault-llm
-  repo_dir: /lvs0/dne1/rccs-dmp/mnagaso/umrs
+  rivault_dir: /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm
+  repo_dir: /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs
   vision_image: umrs-vision:latest
   compose_file: ""                       # defaults to serve-model.yaml inside rivault_dir
   profiles:
@@ -43,7 +43,7 @@ runtime:
   # vision_stack: jens                   # uncomment to use Jens's VisionFrontend stack (tmp/jens_stack/internal_genAI/)
 
 storage:
-  model_cache_dir: /lvs0/rccs-dmp/mnagaso/umrs_models/hf
+  model_cache_dir: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hf
   sam3_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/sam3
   hmae_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae
   hmae_config_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/infer_hmae_vit_b.yaml

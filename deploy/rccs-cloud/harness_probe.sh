@@ -10,7 +10,7 @@
 # =============================================================================
 set -euo pipefail
 
-REPO="/lvs0/dne1/rccs-dmp/mnagaso/umrs-presigned-e2e"
+REPO="/lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs"
 RESULTS_DIR="${REPO}/tmp/harness_probe_$(date +%Y%m%d%H%M%S)"
 mkdir -p "$RESULTS_DIR"
 
@@ -209,7 +209,7 @@ fi
 # 9. Lustre access check
 echo ""
 echo "--- LUSTRE ---"
-ls /lvs0/dne1/rccs-dmp/mnagaso/umrs-presigned-e2e/src/umrs/mini-rivault-llm/serve-model.slurm >/dev/null 2>&1 \
+ls /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/serve-model.slurm >/dev/null 2>&1 \
     && echo "LUSTRE_REPO=accessible" || echo "LUSTRE_REPO=not_accessible"
 
 # Cleanup
