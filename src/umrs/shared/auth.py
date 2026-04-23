@@ -44,6 +44,7 @@ ADMIN_ONLY_COMMANDS: Set[str] = frozenset({
     "RECOMPUTE",    # Global recompute all embeddings
     "UPDATE",       # Global update embeddings
     "CHECK",        # Global check consistency (when run without user scope)
+    "ENROLL_USER",  # Admin-only: register a new user on the server
 })
 
 # Commands that users can run on their own data
@@ -550,8 +551,10 @@ class AdminTokenManager:
         token = f"umrs-admin-{secrets.token_urlsafe(32)}"
 
         tokens = self._load_tokens()
+        token_hash, token_salt = self._hash_token(token)
         tokens[name] = {
-            "token_hash": self._hash_token(token),
+            "token_hash": token_hash,
+            "token_salt": token_salt,
             "description": description,
             "created_at": self._now_iso(),
         }
@@ -571,11 +574,26 @@ class AdminTokenManager:
             Token name if valid, None otherwise
         """
         tokens = self._load_tokens()
-        token_hash = self._hash_token(token)
 
         for name, entry in tokens.items():
-            if entry.get("token_hash") == token_hash:
-                return name
+            stored_salt = entry.get("token_salt")
+            if stored_salt:
+                # New salted format
+                computed_hash, _ = self._hash_token(token, salt=stored_salt)
+                if computed_hash == entry.get("token_hash"):
+                    return name
+            else:
+                # Legacy unsalted SHA-256 — validate and upgrade in-place
+                import hashlib
+                legacy_hash = hashlib.sha256(token.encode()).hexdigest()
+                if legacy_hash == entry.get("token_hash"):
+                    # Upgrade to salted hash
+                    new_hash, new_salt = self._hash_token(token)
+                    entry["token_hash"] = new_hash
+                    entry["token_salt"] = new_salt
+                    self._save_tokens(tokens)
+                    logger.info("Upgraded legacy token %r to salted hash", name)
+                    return name
 
         return None
 
@@ -601,10 +619,17 @@ class AdminTokenManager:
             for name, entry in tokens.items()
         ]
 
-    def _hash_token(self, token: str) -> str:
-        """Hash a token for storage."""
+    def _hash_token(self, token: str, salt: Optional[str] = None) -> tuple:
+        """Hash a token for storage using PBKDF2 with a per-token salt.
+
+        Returns:
+            (hex_hash, hex_salt) tuple.
+        """
         import hashlib
-        return hashlib.sha256(token.encode()).hexdigest()
+        if salt is None:
+            salt = os.urandom(16).hex()
+        h = hashlib.pbkdf2_hmac("sha256", token.encode(), bytes.fromhex(salt), 100_000)
+        return h.hex(), salt
 
     def _load_tokens(self) -> dict:
         """Load tokens from file."""

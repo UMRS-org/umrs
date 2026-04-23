@@ -324,6 +324,27 @@ def configure_admin_token_parser(
     rev_p.add_argument("name", help="Token name to revoke")
 
 
+def configure_admin_user_parser(
+    parser: argparse.ArgumentParser,
+    *,
+    add_help: bool = False,
+) -> None:
+    """Add ``admin user {add,list,remove}`` subparsers."""
+    user_sub = parser.add_subparsers(dest="user_action", required=True)
+
+    add_p = user_sub.add_parser("add", add_help=add_help,
+                                 help="Enroll a new user on the server")
+    add_p.add_argument("config_path",
+                        help="Path to the user config JSON file")
+
+    user_sub.add_parser("list", add_help=add_help,
+                         help="List enrolled users on the server")
+
+    rm_p = user_sub.add_parser("remove", add_help=add_help,
+                                help="Remove an enrolled user (not yet implemented)")
+    rm_p.add_argument("username", help="Username to remove")
+
+
 __all__ = [
     "JOB_MAX_ATTEMPTS_DEFAULT",
     "JOB_PROJECT_DEFAULT",
@@ -340,6 +361,7 @@ __all__ = [
     "WORKFLOW_SCOPE_CHOICES",
     "build_control_command_parser",
     "configure_admin_token_parser",
+    "configure_admin_user_parser",
     "configure_job_cancel_parser",
     "configure_job_submit_parser",
     "configure_maintenance_parser",

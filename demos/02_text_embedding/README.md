@@ -142,8 +142,8 @@ The `custom_embedding/` directory contains a complete working example:
 3. Upload text files and process as usual:
 
 ```bash
-umrs-client -c conf_umrs.json upload_dir ./test_data/ my-bucket
-umrs-client -c conf_umrs.json status all
+umrs-client upload_dir ./test_data/ my-bucket
+umrs-client status all
 ```
 
 ### Writing your own step

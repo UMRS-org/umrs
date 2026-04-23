@@ -12,6 +12,7 @@ from umrs.client.control_commands import (
     MODEL_TYPE_CHOICES,
     STATUS_CHOICES,
     configure_admin_token_parser,
+    configure_admin_user_parser,
     configure_job_cancel_parser,
     configure_job_list_parser,
     configure_job_status_parser,
@@ -29,6 +30,7 @@ from umrs.shared.modality import *
 from umrs.shared.modality import resolve_modality_task
 from umrs.shared.connection_profiles import (
     discover_connection_profiles,
+    get_profile_path,
     import_connection_profile,
     resolve_connection,
     set_current_profile_name,
@@ -49,6 +51,7 @@ from umrs.shared.config import (
     get_default_docker_s3cfg,
 )
 from glob import glob
+from pathlib import Path
 import argparse
 from collections import defaultdict
 import traceback
@@ -58,25 +61,92 @@ from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
 
 
+# ---------------------------------------------------------------------------
+# ANSI helpers — auto-disabled when stdout is not a terminal
+# ---------------------------------------------------------------------------
+def _use_color():
+    return hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+
+
+def _c(code, text):
+    """Wrap *text* in ANSI escape if color is enabled."""
+    if not _use_color():
+        return str(text)
+    return f"\033[{code}m{text}\033[0m"
+
+
+def _bold(t):     return _c("1", t)
+def _dim(t):      return _c("2", t)
+def _green(t):    return _c("32", t)
+def _red(t):      return _c("31", t)
+def _yellow(t):   return _c("33", t)
+def _cyan(t):     return _c("36", t)
+def _blue(t):     return _c("34", t)
+def _magenta(t):  return _c("35", t)
+
+
+def _section(title):
+    """Return a colored section header line."""
+    return _bold(_cyan(f"[{title}]"))
+
+
+def _kv(key, value, indent=2):
+    """Format a key=value line with colored key."""
+    pad = " " * indent
+    return f"{pad}{_bold(key):>30s}  {value}"
+
+
+def _status_dot(ok):
+    return _green("●") if ok else _red("●")
+
+
+def _is_dev_mode():
+    """Server config is a server-side concern.  Expose it on the client only
+    when ``UMRS_DEV_MODE=1`` or ``--server-conf`` was passed explicitly."""
+    return os.environ.get('UMRS_DEV_MODE', '') == '1'
+
+
+# ---------------------------------------------------------------------------
+# Text formatters
+# ---------------------------------------------------------------------------
 def _format_profile_text(connection, selected_profile, errors):
-    lines = [
-        f"mode={connection.mode}",
-        f"server_host={connection.server_host}",
-        f"control_port={connection.control_port}",
-        f"data_base_port={connection.data_base_port}",
-        f"data_port_range={connection.data_port_range_label}",
-        f"tunnel_mode={str(connection.tunnel_mode).lower()}",
-        f"minio_url={connection.minio_url}",
-        f"rag_url={connection.rag_url}",
-    ]
+    lines = []
+    lines.append(_section("Connection Profile"))
     if selected_profile:
-        lines.insert(0, f"profile={selected_profile}")
+        lines.append(_kv("profile", _bold(selected_profile)))
+    lines.append(_kv("mode", connection.mode))
+    lines.append(_kv("server_host", _bold(connection.server_host)))
+    lines.append(_kv("control_port", connection.control_port))
+    lines.append(_kv("data_base_port", connection.data_base_port))
+    lines.append(_kv("data_port_range", connection.data_port_range_label))
+    lines.append(_kv("tunnel_mode", str(connection.tunnel_mode).lower()))
+    lines.append("")
+    lines.append(_section("Services"))
+    lines.append(_kv("minio_url", connection.minio_url))
+    lines.append(_kv("rag_url", connection.rag_url))
     if connection.profile_path:
-        lines.append(f"profile_path={connection.profile_path}")
-    if connection.command_hint:
-        lines.append(f"command_hint={connection.command_hint}")
+        lines.append("")
+        lines.append(_section("File"))
+        lines.append(_kv("profile_path", connection.profile_path))
+    if connection.ssh_host or connection.local_forwards or connection.command_hint:
+        lines.append("")
+        lines.append(_section("SSH Tunnel"))
+        if connection.ssh_host:
+            lines.append(_kv("ssh_host", connection.ssh_host))
+        if connection.local_forwards:
+            for fwd in connection.local_forwards:
+                lines.append(_kv("local_forward", f"{fwd.get('local_port')}:{fwd.get('remote_host', 'localhost')}:{fwd.get('remote_port')}"))
+        if connection.command_hint:
+            lines.append(_kv("command_hint", _dim(connection.command_hint)))
     if errors:
-        lines.append(f"profile_errors={len(errors)}")
+        lines.append("")
+        for err in errors:
+            lines.append(f"  {_red('!')} {err}")
+    if hasattr(connection, 'sources') and connection.sources:
+        lines.append("")
+        lines.append(_section("Sources"))
+        for src_key, src_val in sorted(connection.sources.items()):
+            lines.append(_kv(src_key, _dim(src_val)))
     return "\n".join(lines)
 
 
@@ -118,61 +188,207 @@ def _build_monitor_capabilities(client_id, admin_token=None, user_cfg=None):
     }
 
 
-def _format_config_text(resolved):
+def _format_config_text(resolved, *, show_server=False):
+    kind_labels = {"server": "Server Config", "user": "User Config", "s3": "S3 Config"}
+    keys = ("server", "user", "s3") if show_server else ("user", "s3")
     lines = []
-    for key in ("server", "user", "s3"):
+    for key in keys:
         layer = getattr(resolved, key)
-        lines.append(f"{key}_config={layer.path or ''}")
-        lines.append(f"{key}_source={layer.source or ''}")
-        lines.append(f"{key}_exists={str(layer.exists).lower()}")
-        lines.append(f"{key}_valid={str(layer.valid).lower()}")
+        dot = _status_dot(layer.valid)
+        lines.append(_section(f"{kind_labels[key]}  {dot}"))
+        lines.append(_kv("path", layer.path or _dim("(none)")))
+        lines.append(_kv("source", _dim(layer.source or "(none)")))
         if layer.error:
-            lines.append(f"{key}_error={layer.error}")
+            lines.append(_kv("error", _red(layer.error)))
         for detail_key, detail_value in sorted(layer.details.items()):
             if isinstance(detail_value, list):
                 rendered = ", ".join(str(item) for item in detail_value)
             else:
                 rendered = detail_value
-            lines.append(f"{key}_{detail_key}={rendered}")
-    lines.append(f"warnings={len(resolved.warnings)}")
-    for index, warning in enumerate(resolved.warnings, start=1):
-        lines.append(f"warning_{index}={warning}")
+            lines.append(_kv(detail_key, rendered))
+        lines.append("")
+    if resolved.warnings:
+        lines.append(_section(f"Warnings  {_yellow('⚠')}  {len(resolved.warnings)}"))
+        for warning in resolved.warnings:
+            lines.append(f"  {_yellow('⚠')} {warning}")
     return "\n".join(lines)
 
 
-def _print_config_candidates_text(discovered):
+def _print_config_candidates_text(discovered, *, show_server=False):
     headings = {
         "server": "Server Configs",
         "user": "User Configs",
         "s3": "S3 Configs",
     }
-    for key in ("server", "user", "s3"):
-        print(f"[{headings[key]}]")
+    keys = ("server", "user", "s3") if show_server else ("user", "s3")
+    for key in keys:
+        print(_section(headings[key]))
         candidates = discovered.get(key) or []
         if not candidates:
-            print("(none)")
+            print(f"  {_dim('(none)')}")
             print("")
             continue
         for candidate in candidates:
-            marker = "*" if candidate.current else " "
-            state = "ok" if candidate.valid else "invalid"
-            print(f"{marker} {state:7s} {candidate.path}")
+            if candidate.current:
+                marker = _green("▸")
+            else:
+                marker = " "
+            dot = _status_dot(candidate.valid)
+            path_str = _bold(candidate.path) if candidate.current else candidate.path
+            print(f"  {marker} {dot} {path_str}")
             if candidate.error:
-                print(f"  error={candidate.error}")
+                print(f"      {_red(candidate.error)}")
         print("")
 
 
+def _build_user_config_template(username: str, fullname: str) -> dict:
+    """Return a minimal user config dict that passes client_schema validation."""
+    return {
+        "username": username,
+        "fullname": fullname,
+        "s3_configuration_file": f"~/.s3cfg_{username}",
+        "experiences": [
+            {
+                "xp_name": "default",
+                "sql_username": username,
+                "modalities": [
+                    {
+                        "modality_name": "text",
+                        "s3": {
+                            "bucket_alias": f"{username}-text",
+                            "data": {
+                                "type": "inline",
+                                "mime_type": "text/plain",
+                            },
+                        },
+                        "model": {
+                            "model_name": "intfloat/e5-base-v2",
+                            "vector_size": "768",
+                            "model_type": "TransformerEncoder",
+                            "return_type": None,
+                        },
+                        "sql": {
+                            "store_embeddings": "yes",
+                            "table_name": "text",
+                            "meta_data": [
+                                {"name": "keywords", "type": "TEXT"},
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _handle_config_init(args):
+    username = args.username
+    fullname = args.fullname
+
+    # Prompt interactively when required fields are missing.
+    if not username:
+        try:
+            username = input("Username: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            return 1
+    if not username:
+        raise ValueError("Username must not be empty.")
+
+    if not fullname:
+        try:
+            fullname = input("Full name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            return 1
+    if not fullname:
+        raise ValueError("Full name must not be empty.")
+
+    # Determine output path.
+    if args.output_path:
+        out_path = Path(args.output_path).expanduser()
+    else:
+        from umrs.shared.config import get_resolved_umrs_cfg_dir, get_users_default_cfg_subdir
+        users_dir = Path(get_resolved_umrs_cfg_dir()).expanduser() / get_users_default_cfg_subdir()
+        out_path = users_dir / f"{username}.json"
+
+    if out_path.exists() and not args.force:
+        raise FileExistsError(
+            f"Config already exists: {out_path}\n"
+            f"Use --force to overwrite, or 'umrs-client config use --user {out_path}' to select it."
+        )
+
+    # Build config from template or from scratch.
+    if args.template:
+        template_path = Path(args.template).expanduser()
+        if not template_path.is_file():
+            raise FileNotFoundError(f"Template not found: {template_path}")
+        import json as _json_mod
+        with open(template_path, encoding="utf-8") as f:
+            cfg = _json_mod.load(f)
+        cfg["username"] = username
+        cfg["fullname"] = fullname
+        cfg["s3_configuration_file"] = f"~/.s3cfg_{username}"
+    else:
+        # Check for a site-level template via UMRS_CONFIG_TEMPLATE env var.
+        site_template = os.environ.get("UMRS_CONFIG_TEMPLATE")
+        if site_template:
+            site_template_path = Path(site_template).expanduser()
+            if site_template_path.is_file():
+                import json as _json_mod
+                with open(site_template_path, encoding="utf-8") as f:
+                    cfg = _json_mod.load(f)
+                cfg["username"] = username
+                cfg["fullname"] = fullname
+                cfg["s3_configuration_file"] = f"~/.s3cfg_{username}"
+            else:
+                cfg = _build_user_config_template(username, fullname)
+        else:
+            cfg = _build_user_config_template(username, fullname)
+
+    # Write the file.
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    import json as _json_mod
+    with open(out_path, "w", encoding="utf-8") as f:
+        _json_mod.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    # Register as current user config.
+    saved = set_current_user_config(str(out_path))
+
+    if args.output == 'json':
+        print(api_json(
+            message="User config created and set as current",
+            path=str(out_path),
+            current=str(saved),
+            output_format=args.output,
+        ))
+    else:
+        print(f"{_green('✓')} Created {_bold(str(out_path))}")
+        print(f"  Set as current user config: {_dim(str(saved))}")
+        print(f"  Open the JSON file in an editor to customise experiences and modalities.")
+        print(f"  {_dim('Do not run the .json path directly in the shell.')}")
+        print(f"  Then run:")
+        print(f"  {_cyan('umrs-client reload')}")
+    return 0
+
+
 def _handle_config_command(args):
+    if args.config_action == 'init':
+        return _handle_config_init(args)
+
     if args.config_action == 'list':
         discovered = discover_loaded_config_profiles()
+        show_srv = _is_dev_mode() or bool(args.server_conf)
         payload = {
             key: [candidate.to_dict() for candidate in value]
             for key, value in discovered.items()
+            if show_srv or key != 'server'
         }
         if args.output == 'json':
             print(api_json(configs=payload, output_format=args.output))
         else:
-            _print_config_candidates_text(discovered)
+            _print_config_candidates_text(discovered, show_server=show_srv)
         return 0
 
     if args.config_action == 'use':
@@ -181,6 +397,12 @@ def _handle_config_command(args):
 
         updates = {}
         if args.server:
+            if not (_is_dev_mode() or args.server_conf):
+                raise ValueError(
+                    "--server is only available in dev mode "
+                    "(set UMRS_DEV_MODE=1). "
+                    "Server config is managed on the server side."
+                )
             updates['server'] = str(set_current_server_config(args.server))
         if args.user:
             updates['user'] = str(set_current_user_config(args.user))
@@ -190,9 +412,9 @@ def _handle_config_command(args):
         if args.output == 'json':
             print(api_json(message="Current config selections updated", updates=updates, output_format=args.output))
         else:
-            print("Current config selections updated")
+            print(f"{_green('✓')} Current config selections updated")
             for key, value in updates.items():
-                print(f"{key}={value}")
+                print(_kv(key, value))
         return 0
 
     resolved = resolve_loaded_config(
@@ -200,16 +422,154 @@ def _handle_config_command(args):
         explicit_user_config_path=args.conf,
         explicit_s3_config_path=args.s3cfg,
     )
+    show_srv = _is_dev_mode() or bool(args.server_conf)
+    if not show_srv:
+        resolved.warnings = [
+            w for w in resolved.warnings
+            if "server config" not in w.lower()
+        ]
     if args.output == 'json':
-        print(api_json(config=resolved.to_dict(), output_format=args.output))
+        payload = resolved.to_dict()
+        if not show_srv:
+            payload.pop('server', None)
+        print(api_json(config=payload, output_format=args.output))
     else:
-        print(_format_config_text(resolved))
+        print(_format_config_text(resolved, show_server=show_srv))
     return 0
 
 
+def _handle_admin_user_command(args):
+    """Handle ``admin user {add,list,remove}``."""
+    import json as _json_mod
+
+    if args.user_action == 'add':
+        config_path = args.config_path
+        if not os.path.isfile(config_path):
+            print(f"{_red('✗')} File not found: {config_path}")
+            return 1
+
+        # Peek at the username for display
+        try:
+            with open(config_path, "r", encoding="utf-8") as fh:
+                cfg_data = _json_mod.load(fh)
+            username = cfg_data.get("username", "<unknown>")
+        except Exception:
+            username = "<unknown>"
+
+        admin_token = getattr(args, 'admin_token', None) or os.environ.get('UMRS_ADMIN_TOKEN')
+        if not admin_token:
+            print(f"{_red('✗')} Admin token required. Set UMRS_ADMIN_TOKEN or pass --admin-token.")
+            return 1
+
+        connection = resolve_connection(
+            explicit_profile_name=args.profile,
+            explicit_server_ip=args.server_ip,
+            explicit_control_port=args.control_port,
+        )
+        control_mq = MessageQueue(
+            role="client",
+            queue_type="control",
+            server_ip=connection.server_host,
+            port=connection.control_port,
+            tunnel_mode=connection.tunnel_mode,
+            prefer_env_server_host=False,
+        )
+        try:
+            client_id = _resolve_control_client_id()
+            api = UMRSControlAPI(control_mq, client_id, admin_token=admin_token)
+            result = api.enroll_user(config_path)
+        except Exception as e:
+            if args.output == 'json':
+                print(api_json(action='user_add', status='error', message=str(e), output_format=args.output))
+            else:
+                print(f"{_red('✗')} Failed to enroll user: {e}")
+            return 1
+        finally:
+            try:
+                control_mq.close()
+            except Exception:
+                pass
+
+        if args.output == 'json':
+            print(api_json(action='user_add', **result, output_format=args.output))
+        else:
+            if result.get("status") == "ok":
+                print(f"{_green('✓')} User {_bold(username)} enrolled on the server.")
+                print(f"  {_dim('The server has auto-reloaded to provision MinIO/Postgres resources.')}")
+            else:
+                print(f"{_red('✗')} Enrollment failed: {result.get('message', 'unknown error')}")
+        return 0 if result.get("status") == "ok" else 1
+
+    if args.user_action == 'list':
+        admin_token = getattr(args, 'admin_token', None) or os.environ.get('UMRS_ADMIN_TOKEN')
+        connection = resolve_connection(
+            explicit_profile_name=args.profile,
+            explicit_server_ip=args.server_ip,
+            explicit_control_port=args.control_port,
+        )
+        control_mq = MessageQueue(
+            role="client",
+            queue_type="control",
+            server_ip=connection.server_host,
+            port=connection.control_port,
+            tunnel_mode=connection.tunnel_mode,
+            prefer_env_server_host=False,
+        )
+        try:
+            client_id = _resolve_control_client_id()
+            api = UMRSControlAPI(control_mq, client_id, admin_token=admin_token)
+            status = api.request_status("all")
+        except Exception as e:
+            if args.output == 'json':
+                print(api_json(action='user_list', status='error', message=str(e), output_format=args.output))
+            else:
+                print(f"{_red('✗')} Failed to query server: {e}")
+            return 1
+        finally:
+            try:
+                control_mq.close()
+            except Exception:
+                pass
+
+        # Extract enrolled users from status data
+        users = set()
+        if isinstance(status, dict):
+            for _key, entry in status.items():
+                if isinstance(entry, dict):
+                    for work in entry.get("work", []):
+                        u = work.get("user")
+                        if u:
+                            users.add(u)
+
+        if args.output == 'json':
+            print(api_json(action='user_list', users=sorted(users), output_format=args.output))
+        else:
+            print(_section("Enrolled Users"))
+            if users:
+                for u in sorted(users):
+                    print(f"  {_status_dot('green')} {u}")
+            else:
+                print(f"  {_dim('No users found in server status.')}")
+                print(f"  {_dim('(Users appear here after at least one processing job has run.)')}")
+        return 0
+
+    if args.user_action == 'remove':
+        if args.output == 'json':
+            print(api_json(action='user_remove', status='error', message='Not yet implemented', output_format=args.output))
+        else:
+            print(f"{_yellow('⚠')} User removal is not yet implemented.")
+            print(f"  {_dim('De-provisioning (MinIO IAM cleanup, Postgres role removal) will be added in a future release.')}")
+        return 1
+
+    raise ValueError(f"Unknown user action: {args.user_action}")
+
+
 def _handle_admin_command(args):
-    """Handle ``admin token {generate,list,revoke}`` — purely local."""
+    """Handle ``admin token {generate,list,revoke}`` and ``admin user {add,list,remove}``."""
     from umrs.shared.auth import AdminTokenManager
+
+    if args.admin_action == 'user':
+        return _handle_admin_user_command(args)
 
     if args.admin_action != 'token':
         raise ValueError(f"Unknown admin action: {args.admin_action}")
@@ -221,10 +581,10 @@ def _handle_admin_command(args):
         if args.output == 'json':
             print(api_json(action='token_generate', name=args.name, token=token, output_format=args.output))
         else:
-            print(f"Token generated for '{args.name}':")
-            print(f"  {token}")
+            print(f"{_green('✓')} Token generated for {_bold(args.name)}:")
+            print(f"  {_yellow(token)}")
             print("")
-            print("Save this token — it cannot be retrieved later.")
+            print(f"  {_dim('Save this token — it cannot be retrieved later.')}")
         return 0
 
     if args.token_action == 'list':
@@ -232,13 +592,14 @@ def _handle_admin_command(args):
         if args.output == 'json':
             print(api_json(action='token_list', tokens=tokens, output_format=args.output))
         else:
+            print(_section("Admin Tokens"))
             if tokens:
-                print(f"{'Name':20s} {'Description':30s} {'Created':25s}")
-                print("-" * 75)
+                print(f"  {_bold('Name'):20s} {_bold('Description'):30s} {_bold('Created'):25s}")
+                print(f"  {_dim('-' * 75)}")
                 for t in tokens:
-                    print(f"{t['name']:20s} {t.get('description', ''):30s} {t.get('created_at', ''):25s}")
+                    print(f"  {t['name']:20s} {t.get('description', ''):30s} {_dim(t.get('created_at', '')):25s}")
             else:
-                print("No admin tokens configured.")
+                print(f"  {_dim('No admin tokens configured.')}")
         return 0
 
     if args.token_action == 'revoke':
@@ -247,15 +608,119 @@ def _handle_admin_command(args):
             print(api_json(action='token_revoke', name=args.name, revoked=ok, output_format=args.output))
         else:
             if ok:
-                print(f"Token '{args.name}' revoked.")
+                print(f"{_green('✓')} Token {_bold(args.name)} revoked.")
             else:
-                print(f"Token '{args.name}' not found.")
+                print(f"{_red('✗')} Token {_bold(args.name)} not found.")
         return 0 if ok else 1
 
     raise ValueError(f"Unknown token action: {args.token_action}")
 
 
+def _handle_profile_init(args):
+    import json as _json_mod
+
+    name = args.name
+    if not name:
+        try:
+            name = input("Profile name: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            return 1
+    if not name:
+        raise ValueError("Profile name must not be empty.")
+
+    # Prompt for host and mode when not provided via CLI flags.
+    host = args.host
+    if host == '127.0.0.1' and '--host' not in sys.argv:
+        try:
+            entered = input(f"Server host [{host}]: ").strip()
+            if entered:
+                host = entered
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            return 1
+
+    mode = args.mode
+    if mode == 'direct' and '--mode' not in sys.argv:
+        try:
+            entered = input(f"Connection mode (direct/ssh_tunnel) [{mode}]: ").strip()
+            if entered in ('direct', 'ssh_tunnel'):
+                mode = entered
+            elif entered:
+                print(f"Invalid mode '{entered}', using '{mode}'")
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            return 1
+    minio_url = args.minio_url or f"http://{host}:9000"
+    rag_url = args.rag_url or f"http://{host}:8081"
+
+    profile_data = {
+        "name": name,
+        "mode": args.mode,
+        "zmq": {
+            "host": host,
+            "control_port": args.control_port,
+            "data_port_range": {
+                "start": args.data_port_start,
+                "end": args.data_port_end,
+            },
+            "tunnel_mode": args.mode == "ssh_tunnel",
+            "health_check_timeout_ms": 5000,
+        },
+        "services": {
+            "minio_url": minio_url,
+            "rag_url": rag_url,
+        },
+    }
+
+    if args.mode == "ssh_tunnel":
+        ssh_host = args.ssh_host or host
+        profile_data["ssh"] = {
+            "host": ssh_host,
+            "command_hint": f"ssh -L {args.control_port}:localhost:{args.control_port} {ssh_host}",
+            "local_forwards": [
+                {"local_port": args.control_port, "remote_host": "localhost", "remote_port": args.control_port},
+                {"local_port": args.data_port_start, "remote_host": "localhost", "remote_port": args.data_port_start},
+            ],
+        }
+
+    out_path = get_profile_path(name)
+
+    if out_path.exists() and not args.force:
+        raise FileExistsError(
+            f"Profile already exists: {out_path}\n"
+            f"Use --force to overwrite, or 'umrs-client profile use {name}' to select it."
+        )
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        _json_mod.dump(profile_data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    set_current_profile_name(name)
+
+    if args.output == 'json':
+        print(api_json(
+            message="Connection profile created and set as current",
+            name=name,
+            path=str(out_path),
+            output_format=args.output,
+        ))
+    else:
+        print(f"{_green('✓')} Created {_bold(str(out_path))}")
+        print(f"  Set as current profile: {_bold(name)}")
+        if args.mode == "ssh_tunnel":
+            print(f"  Open the JSON file in an editor to customise SSH tunnels.")
+            print(f"  {_dim('Do not run the .json path directly in the shell.')}")
+            print(f"  Then run:")
+            print(f"  {_cyan(profile_data['ssh']['command_hint'])}")
+    return 0
+
+
 def _handle_profile_command(args):
+    if args.profile_action == 'init':
+        return _handle_profile_init(args)
+
     if args.profile_action == 'list':
         profiles, errors = discover_connection_profiles()
         current = None
@@ -280,14 +745,20 @@ def _handle_profile_command(args):
         if args.output == 'json':
             print(api_json(**payload, output_format=args.output))
         else:
+            print(_section("Connection Profiles"))
             if profiles:
                 for profile in profiles:
-                    marker = "*" if profile.name == current else " "
-                    print(f"{marker} {profile.name:20s} {profile.mode:10s} {profile.path}")
+                    if profile.name == current:
+                        marker = _green("\u25b8")
+                        name_str = _bold(profile.name)
+                    else:
+                        marker = " "
+                        name_str = profile.name
+                    print(f"  {marker} {name_str:20s} {_dim(profile.mode):10s} {_dim(profile.path)}")
             else:
-                print("No connection profiles found.")
+                print(f"  {_dim('No connection profiles found.')}")
             for entry in errors:
-                print(f"! {entry['name']}: {entry['error']}")
+                print(f"  {_red('!')} {entry['name']}: {entry['error']}")
         return 0
 
     if args.profile_action == 'use':
@@ -295,8 +766,8 @@ def _handle_profile_command(args):
         if args.output == 'json':
             print(api_json(message=f"Current connection profile set to '{args.name}'", path=str(path), output_format=args.output))
         else:
-            print(f"Current connection profile set to '{args.name}'")
-            print(f"path={path}")
+            print(f"{_green('✓')} Current connection profile set to {_bold(args.name)}")
+            print(_kv("path", _dim(str(path))))
         return 0
 
     if args.profile_action == 'import':
@@ -309,13 +780,16 @@ def _handle_profile_command(args):
         if args.output == 'json':
             print(api_json(**payload, output_format=args.output))
         else:
-            print(payload["message"])
-            print(f"path={payload['path']}")
+            print(f"{_green('✓')} Imported connection profile {_bold(profile.name)}")
+            print(_kv("path", _dim(payload['path'])))
         return 0
 
     connection = resolve_connection(explicit_profile_name=args.profile, explicit_server_ip=args.server_ip, explicit_control_port=args.control_port)
+    conn_dict = connection.to_dict()
+    # Hide internal sources dict from JSON output (available in text via [sources] section)
+    conn_dict.pop("sources", None)
     payload = {
-        "connection": connection.to_dict(),
+        "connection": conn_dict,
         "selected_profile": connection.profile_name,
     }
     if args.output == 'json':
@@ -404,7 +878,13 @@ def merge_metadata(base_metadata, override_meta_dict):
 def format_status_text(response_payload, default_key):
     if response_payload.get('status') != 'ok':
         message = response_payload.get('message', 'status unavailable')
-        return api_json(status='error', message=message, output_format='text')
+        if message == "No status for 'reload'":
+            message = (
+                "No status for 'reload'. Reload is synchronous; use "
+                "'umrs-client status all' for a summary or "
+                "'umrs-client list_buckets' to verify onboarding."
+            )
+        return f"{_red('✗')} {message}"
 
     client_label = response_payload.get('client')
     lines = []
@@ -426,14 +906,14 @@ def format_status_text(response_payload, default_key):
                 time_parts.append(f"last update {last_updated_at}")
             if time_parts:
                 time_text = '; '.join(time_parts)
-                header = f"{header} ({time_text})" if header else time_text
+                header = f"{header} {_dim('(' + time_text + ')')}" if header else _dim(time_text)
             if header:
-                lines.append(header)
+                lines.append(_section(header))
         summary_body = entry.get('summary')
         if summary_body:
-            lines.append(summary_body)
+            lines.append(f"  {summary_body}")
         else:
-            lines.append("(no summary)")
+            lines.append(f"  {_dim('(no summary)')}")
 
     if 'summary' in response_payload:
         append_entry(default_key, response_payload['summary'])
@@ -445,13 +925,18 @@ def format_status_text(response_payload, default_key):
         if lines and lines[-1] == "":
             lines.pop()
     else:
-        return api_json(status='error', message='Unexpected status payload', output_format='text')
+        return f"{_red('✗')} Unexpected status payload"
 
     return "\n".join(lines)
 
-def action_ping(control_mq, output_format, timeout_ms=2000):
+def action_ping(control_mq, output_format, timeout_ms=2000, connection=None):
     ready = control_mq.is_server_ready(timeout_ms=timeout_ms)
-    return api_json(server_ready=ready, output_format=output_format)
+    endpoint_info = {}
+    if connection is not None:
+        endpoint_info["profile"] = connection.profile_name or "(none)"
+        endpoint_info["server_host"] = connection.server_host
+        endpoint_info["control_port"] = connection.control_port
+    return api_json(server_ready=ready, output_format=output_format, **endpoint_info)
 
 def action_list_buckets(bucket_cfg, username, output_format):
     buckets = []
@@ -463,7 +948,18 @@ def action_list_buckets(bucket_cfg, username, output_format):
                 'task': entry.task,
                 'path_to_bucket': entry.path_to_bucket
             })
-    return api_json(buckets=buckets, output_format=output_format)
+    if output_format == 'json':
+        return api_json(buckets=buckets, output_format=output_format)
+    # Text mode: formatted table
+    lines = [_section(f"Buckets for {_bold(username)}")]
+    if not buckets:
+        lines.append(f"  {_dim('No buckets found.')}")
+    else:
+        lines.append(f"  {_bold('Alias'):20s}  {_bold('Modality'):15s}  {_bold('Task'):15s}  {_bold('Path')}")
+        lines.append(f"  {_dim('-' * 80)}")
+        for b in buckets:
+            lines.append(f"  {b['bucket_alias']:20s}  {b['modality']:15s}  {b.get('task',''):15s}  {_dim(b['path_to_bucket'])}")
+    return "\n".join(lines)
 
 def perform_upload_text(s3, full_bucket_name, text, data_mq, metadata_args):
     s3_key = s3_store_txt(s3, full_bucket_name, "", text, data_mq, metadata_args)
@@ -516,7 +1012,7 @@ def main():
     parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
     parser.add_argument('--server-ip', default=None, help='Server IP for ZeroMQ control channel')
     parser.add_argument('--control-port', type=int, default=None, help='Control port for the ZeroMQ control channel')
-    parser.add_argument('--output', choices=['json','text'], default='json', help='Output format for API actions')
+    parser.add_argument('--output', choices=['json','text'], default='text', help='Output format for API actions')
     parser.add_argument('--admin-token', default=None,
                         help='Admin token for privileged commands (or set UMRS_ADMIN_TOKEN)')
     # Removed deprecated auto-add-columns behavior; metadata must be declared in server config
@@ -701,14 +1197,27 @@ def main():
                        choices=['jobs', 'status', 'models', 'workflows', 'connection'],
                        help='Tab to display on startup (default: jobs)')
 
-    # --- Admin token management (local-only, no server connection needed) ---
-    admin_p = subparsers.add_parser('admin', help='Admin token management (generate, list, revoke)')
+    # --- Admin commands (token management + user enrollment) ---
+    admin_p = subparsers.add_parser('admin', help='Admin commands: token management and user enrollment')
     admin_sub = admin_p.add_subparsers(dest='admin_action', required=True)
     token_p = admin_sub.add_parser('token', help='Manage admin API tokens')
     configure_admin_token_parser(token_p)
+    user_p = admin_sub.add_parser('user', help='Manage enrolled users on the server')
+    configure_admin_user_parser(user_p)
 
-    profile_p = subparsers.add_parser('profile', help='Connection profile commands (list, show, use, import)')
+    profile_p = subparsers.add_parser('profile', help='Connection profile commands (init, list, show, use, import)')
     profile_sub = profile_p.add_subparsers(dest='profile_action', required=True)
+    pn_p = profile_sub.add_parser('init', help='Create a new connection profile and set it as current')
+    pn_p.add_argument('--name', default=None, help='Profile name (prompted if omitted)')
+    pn_p.add_argument('--mode', default='direct', choices=['direct', 'ssh_tunnel'], help='Connection mode (default: direct)')
+    pn_p.add_argument('--host', default='127.0.0.1', help='Server host (default: 127.0.0.1)')
+    pn_p.add_argument('--control-port', type=int, default=5555, help='ZMQ control port (default: 5555)')
+    pn_p.add_argument('--data-port-start', type=int, default=5556, help='Data port range start (default: 5556)')
+    pn_p.add_argument('--data-port-end', type=int, default=5563, help='Data port range end (default: 5563)')
+    pn_p.add_argument('--minio-url', default=None, help='MinIO URL (default: http://<host>:9000)')
+    pn_p.add_argument('--rag-url', default=None, help='RAG URL (default: http://<host>:8081)')
+    pn_p.add_argument('--ssh-host', default=None, help='SSH host for tunnel mode')
+    pn_p.add_argument('--force', action='store_true', default=False, help='Overwrite if the profile already exists')
     profile_sub.add_parser('list', help='List available connection profiles')
     profile_sub.add_parser('show', help='Show the effective connection resolved from profile/env/flags')
     pu_p = profile_sub.add_parser('use', help='Set the current default connection profile')
@@ -717,8 +1226,14 @@ def main():
     pi_p.add_argument('file', help='Path to a connection profile JSON file')
     pi_p.add_argument('--force', action='store_true', default=False, help='Overwrite an existing profile with the same name')
 
-    config_p = subparsers.add_parser('config', help='Loaded config file commands (list, show, use)')
+    config_p = subparsers.add_parser('config', help='Loaded config file commands (init, list, show, use)')
     config_sub = config_p.add_subparsers(dest='config_action', required=True)
+    ci_p = config_sub.add_parser('init', help='Create a new user config JSON and set it as current')
+    ci_p.add_argument('--username', default=None, help='Username for the new config (prompted if omitted)')
+    ci_p.add_argument('--fullname', default=None, help='Full name of the user (prompted if omitted)')
+    ci_p.add_argument('--output-path', default=None, help='Where to write the JSON (default: ~/.config/umrs/users/<username>.json)')
+    ci_p.add_argument('--template', default=None, help='Path to an existing user JSON to use as template')
+    ci_p.add_argument('--force', action='store_true', default=False, help='Overwrite if the output file already exists')
     config_sub.add_parser('list', help='List discovered conf_umrs.json, user*.json, and s3cfg candidates')
     config_sub.add_parser('show', help='Show the resolved config stack for server, user, and s3 files')
     cu_p = config_sub.add_parser('use', help='Persist the current server/user/s3 config selections')
@@ -769,11 +1284,10 @@ def main():
 
     if not args.no_check_server:
         if not control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms):
-            sys.exit("Server connection timeout...\n"
-                     "Cannot continue!"
-                     )
+            sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
 
-    print (f"Server ready.\nConnected to zeroMQ message queue'")
+    profile_label = _bold(connection.profile_name) if connection.profile_name else _dim("(none)")
+    print(f"{_green('✓')} Server ready  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}")
 
     # Resolve admin token from CLI flag or environment
     admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
@@ -848,7 +1362,20 @@ def main():
                 _resolve_control_client_id(user),
                 admin_token=admin_token,
             )
-            print(api_json(output_format=args.output, **api.ping(timeout_ms=connection.health_check_timeout_ms)))
+            ping_result = api.ping(timeout_ms=connection.health_check_timeout_ms)
+            endpoint_info = {
+                "profile": connection.profile_name or "(none)",
+                "server_host": connection.server_host,
+                "control_port": connection.control_port,
+            }
+            if args.output == 'json':
+                print(api_json(output_format='json', **ping_result, **endpoint_info))
+            else:
+                ready = ping_result.get("server_ready", False)
+                dot = _status_dot(ready)
+                status_word = _green("ready") if ready else _red("not ready")
+                profile_label = _bold(connection.profile_name) if connection.profile_name else _dim("(none)")
+                print(f"  {dot} Server {status_word}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}")
             control_mq.close()
             sys.exit(0)
         if args.action == 'model':
@@ -963,15 +1490,18 @@ def main():
                         if model_action == 'list':
                             models = parsed.get('models', [])
                             if not models:
-                                print("No models registered.")
+                                print(f"  {_dim('No models registered.')}")
                             else:
+                                print(_section("Models"))
+                                print(f"  {_bold('Name'):30s}  {_bold('Type'):10s}  {_bold('Scope'):8s}  {_bold('Storage')}")
+                                print(f"  {_dim('-' * 80)}")
                                 for m in models:
                                     scope_str = m.get('scope', '')
-                                    print(f"  {m['name']:30s}  {m.get('model_type',''):10s}  {scope_str:8s}  {m.get('storage_ref','')}")
+                                    print(f"  {m['name']:30s}  {m.get('model_type',''):10s}  {scope_str:8s}  {_dim(m.get('storage_ref',''))}")
                         else:
-                            print(f"OK: {parsed.get('message', '')}")
+                            print(f"{_green('✓')} {parsed.get('message', 'OK')}")
                     else:
-                        print(f"Error: {parsed.get('message', 'unknown error')}")
+                        print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                         exit_code = 1
             except Exception as e:
                 exit_code = 1
@@ -1024,25 +1554,47 @@ def main():
                         if job_action == 'list':
                             jobs = parsed.get('jobs', [])
                             if not jobs:
-                                print('No jobs found.')
+                                print(f"  {_dim('No jobs found.')}")
                             else:
+                                print(_section("Jobs"))
+                                print(f"  {_bold('Job ID'):18s}  {_bold('Status'):10s}  {_bold('Type'):18s}  {_bold('Project')}")
+                                print(f"  {_dim('-' * 70)}")
                                 for job in jobs:
+                                    st = job.get('status', '')
+                                    if st in ('completed', 'done'):
+                                        st_str = _green(st)
+                                    elif st in ('failed', 'cancelled'):
+                                        st_str = _red(st)
+                                    elif st in ('running',):
+                                        st_str = _cyan(st)
+                                    else:
+                                        st_str = _yellow(st)
                                     print(
                                         f"  {job.get('job_id',''):18s}  "
-                                        f"{job.get('status',''):10s}  "
+                                        f"{st_str:10s}  "
                                         f"{job.get('job_type',''):18s}  "
-                                        f"{job.get('project_id','')}"
+                                        f"{_dim(job.get('project_id',''))}"
                                     )
                         elif job_action == 'status':
                             job = parsed.get('job', {})
-                            print(f"job_id={job.get('job_id', '')}")
-                            print(f"status={job.get('status', '')}")
-                            print(f"job_type={job.get('job_type', '')}")
-                            print(f"project_id={job.get('project_id', '')}")
+                            st = job.get('status', '')
+                            if st in ('completed', 'done'):
+                                st_str = _green(st)
+                            elif st in ('failed', 'cancelled'):
+                                st_str = _red(st)
+                            elif st in ('running',):
+                                st_str = _cyan(st)
+                            else:
+                                st_str = _yellow(st)
+                            print(_section("Job Details"))
+                            print(_kv("job_id", _bold(job.get('job_id', ''))))
+                            print(_kv("status", st_str))
+                            print(_kv("job_type", job.get('job_type', '')))
+                            print(_kv("project_id", job.get('project_id', '')))
                         else:
-                            print(f"OK: {parsed.get('message', '')}")
+                            print(f"{_green('✓')} {parsed.get('message', 'OK')}")
                     else:
-                        print(f"Error: {parsed.get('message', 'unknown error')}")
+                        print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                         exit_code = 1
             except Exception as e:
                 exit_code = 1
@@ -1114,17 +1666,20 @@ def main():
                 else:
                     if parsed.get('status') == 'ok':
                         if wf_action == 'run':
-                            print(f"OK: {parsed.get('message', '')}")
+                            print(f"{_green('✓')} {parsed.get('message', 'OK')}")
                         else:
                             workflows = parsed.get('workflows', [])
                             if not workflows:
-                                print("No workflows registered.")
+                                print(f"  {_dim('No workflows registered.')}")
                             else:
+                                print(_section("Workflows"))
+                                print(f"  {_bold('Name'):30s}  {_bold('Version'):8s}  {_bold('Scope'):6s}  {_bold('User'):12s}  {_bold('Steps'):8s}  {_bold('Description')}")
+                                print(f"  {_dim('-' * 100)}")
                                 for w in workflows:
                                     n_steps = len(w.get('steps', []))
-                                    print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps} step(s)  {w.get('description','')}")
+                                    print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps:5d}     {_dim(w.get('description',''))}")
                     else:
-                        print(f"Error: {parsed.get('message', 'unknown error')}")
+                        print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                         exit_code = 1
             except Exception as e:
                 exit_code = 1
@@ -1171,7 +1726,10 @@ def main():
                     _, reply = control_mq.recv_string()
                     if reply != "ACKNOWLEDGE":
                         raise RuntimeError(f"Unexpected reply from server during workflow upload: {reply}")
-                    print(api_json(action='upload-workflow', workflow_name=workflow_name, accepted=True, output_format=args.output))
+                    if args.output == 'json':
+                        print(api_json(action='upload-workflow', workflow_name=workflow_name, accepted=True, output_format='json'))
+                    else:
+                        print(f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully")
                 finally:
                     control_mq.set_timeouts(control_mq.timeout, control_mq.timeout)
                     try:
@@ -1204,9 +1762,9 @@ def main():
                         exit_code = 1
                 else:
                     if parsed.get('status') == 'ok':
-                        print(f"OK: {parsed.get('message', '')}")
+                        print(f"{_green('✓')} {parsed.get('message', 'OK')}")
                     else:
-                        print(f"Error: {parsed.get('message', 'unknown error')}")
+                        print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                         exit_code = 1
             except Exception as e:
                 exit_code = 1
@@ -1259,11 +1817,20 @@ def main():
             try:
                 parsed = api.maintenance(args.action)
                 if parsed.get('status') == 'ok':
-                    print(api_json(action=args.action, accepted=True, output_format=args.output))
+                    if args.output == 'json':
+                        print(api_json(action=args.action, accepted=True, output_format='json'))
+                    else:
+                        print(f"{_green('✓')} {_bold(args.action)} accepted")
                 else:
-                    print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format=args.output))
+                    if args.output == 'json':
+                        print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
+                    else:
+                        print(f"{_red('✗')} {_bold(args.action)} rejected: {parsed.get('message', '')}")
             except Exception as e:
-                print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
+                if args.output == 'json':
+                    print(api_json(status='error', action=args.action, message=str(e), output_format='json'))
+                else:
+                    print(f"{_red('✗')} {_bold(args.action)} error: {e}")
             finally:
                 control_mq.close()
             sys.exit(0)

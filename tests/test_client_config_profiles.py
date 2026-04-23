@@ -168,7 +168,8 @@ def test_discover_loaded_config_profiles_marks_current_selection(config_workspac
     assert user_candidates[0].path == str(config_workspace["user_cfg"])
 
 
-def test_config_subcommand_use_and_show(config_workspace, capsys):
+def test_config_subcommand_use_and_show(config_workspace, capsys, monkeypatch):
+    monkeypatch.setenv("UMRS_DEV_MODE", "1")
     use_args = Namespace(
         action="config",
         config_action="use",

@@ -18,8 +18,10 @@ DEMO_TAG="multi_user" source "${SCRIPT_DIR}/../lib/common.sh"
 
 USER1_CONF="${HOME}/.config/umrs/users/user1.json"
 USER2_CONF="${HOME}/.config/umrs/users/user2.json"
-CLIENT1="umrs-client -c ${USER1_CONF}"
-CLIENT2="umrs-client -c ${USER2_CONF}"
+
+# Helper: switch active user config and run a command
+as_user1() { umrs-client config use --user "${USER1_CONF}" >/dev/null 2>&1; umrs-client "$@"; }
+as_user2() { umrs-client config use --user "${USER2_CONF}" >/dev/null 2>&1; umrs-client "$@"; }
 
 RESULTS_DIR="${SCRIPT_DIR}/results"
 
@@ -34,8 +36,8 @@ which umrs-client >/dev/null 2>&1 || die "umrs-client not in PATH"
 [[ -f "$USER1_CONF" ]] || die "User1 config not found: $USER1_CONF"
 [[ -f "$USER2_CONF" ]] || die "User2 config not found: $USER2_CONF"
 
-$CLIENT1 ping >/dev/null 2>&1 || die "Server not reachable for user1"
-$CLIENT2 ping >/dev/null 2>&1 || die "Server not reachable for user2"
+as_user1 ping >/dev/null 2>&1 || die "Server not reachable for user1"
+as_user2 ping >/dev/null 2>&1 || die "Server not reachable for user2"
 ok "Both users can reach server"
 
 # ---------- Step 1b: Onboard both users ----------
@@ -52,7 +54,7 @@ log ""
 log "Step 2: User1 uploads a test file..."
 echo "This is user1's private data — $(date)" > "${RESULTS_DIR}/user1_data.txt"
 BUCKET1="${USER1_BUCKET:-user1-textfiles}"
-$CLIENT1 upload_file "${RESULTS_DIR}/user1_data.txt" "$BUCKET1" 2>&1 \
+as_user1 upload_file "${RESULTS_DIR}/user1_data.txt" "$BUCKET1" 2>&1 \
     | while IFS= read -r line; do log "  [user1] $line"; done
 ok "User1 uploaded data to ${BUCKET1}"
 
@@ -61,7 +63,7 @@ log ""
 log "Step 3: User2 uploads a test file..."
 echo "This is user2's private data — $(date)" > "${RESULTS_DIR}/user2_data.txt"
 BUCKET2="${USER2_BUCKET:-user2-textfiles}"
-$CLIENT2 upload_file "${RESULTS_DIR}/user2_data.txt" "$BUCKET2" 2>&1 \
+as_user2 upload_file "${RESULTS_DIR}/user2_data.txt" "$BUCKET2" 2>&1 \
     | while IFS= read -r line; do log "  [user2] $line"; done
 ok "User2 uploaded data to ${BUCKET2}"
 
@@ -70,11 +72,11 @@ log ""
 log "Step 4: Verifying bucket isolation..."
 
 log "  User1 listing own buckets..."
-U1_OWN=$($CLIENT1 list_buckets 2>&1 || true)
+U1_OWN=$(as_user1 list_buckets 2>&1 || true)
 echo "$U1_OWN" | head -5 | while IFS= read -r line; do log "    [user1] $line"; done
 
 log "  User2 listing own buckets..."
-U2_OWN=$($CLIENT2 list_buckets 2>&1 || true)
+U2_OWN=$(as_user2 list_buckets 2>&1 || true)
 echo "$U2_OWN" | head -5 | while IFS= read -r line; do log "    [user2] $line"; done
 
 log ""
@@ -100,15 +102,15 @@ log ""
 log "Step 5: Verifying model registry isolation..."
 
 log "  User1 models (user scope):"
-$CLIENT1 model list --scope user 2>&1 | head -5 \
+as_user1 model list --scope user 2>&1 | head -5 \
     | while IFS= read -r line; do log "    [user1] $line"; done
 
 log "  User2 models (user scope):"
-$CLIENT2 model list --scope user 2>&1 | head -5 \
+as_user2 model list --scope user 2>&1 | head -5 \
     | while IFS= read -r line; do log "    [user2] $line"; done
 
 log "  System models (shared):"
-$CLIENT1 model list --scope system 2>&1 | head -5 \
+as_user1 model list --scope system 2>&1 | head -5 \
     | while IFS= read -r line; do log "    [system] $line"; done
 
 ok "Model isolation verified"

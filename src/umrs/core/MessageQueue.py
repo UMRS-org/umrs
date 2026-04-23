@@ -481,6 +481,46 @@ class MessageQueue:
                     continue
                 # include client_id in the payload for server-side identity enforcement
                 return self._process_file_cmd(client_id, nb_files, zmq_sender_id)
+            elif cmd == TaskCmd.ENROLL_USER:
+                # Admin-only: same wire format as FILE but dispatched as ENROLL_USER
+                if len(splited_msg) < 3:
+                    print(f"ERROR: ENROLL_USER missing fields: {msg}")
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError:
+                        pass
+                    continue
+                client_id = splited_msg[1]
+                try:
+                    nb_files = int(splited_msg[2])
+                except ValueError:
+                    print(f"ERROR: ENROLL_USER invalid count: {splited_msg[2]}")
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError:
+                        pass
+                    continue
+                # Refresh auth session with admin token (same pattern as
+                # maintenance commands) so server_umrs._authorize() sees
+                # the ADMIN role instead of the default USER session.
+                token = splited_msg[3] if len(splited_msg) > 3 else None
+                if client_id and token:
+                    try:
+                        auth_ctx = create_auth_context_from_request(client_id, token=token)
+                        self._auth_sessions[client_id] = auth_ctx
+                        logger.info(
+                            "Auth session refreshed for ENROLL_USER: user=%s role=%s",
+                            client_id,
+                            auth_ctx.role.value,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to refresh auth context for ENROLL_USER %s: %s",
+                            client_id,
+                            e,
+                        )
+                return self._process_file_cmd(client_id, nb_files, zmq_sender_id,
+                                              result_cmd=TaskCmd.ENROLL_USER)
             elif cmd == TaskCmd.UPLOAD_WORKFLOW:
                 if len(splited_msg) < 3:
                     print(f"ERROR: UPLOAD_WORKFLOW missing fields: {msg}")

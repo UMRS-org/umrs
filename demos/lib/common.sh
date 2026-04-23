@@ -74,6 +74,11 @@ else
     CONF="${HOME}/.config/umrs/conf_umrs.json"
 fi
 
+# Persist the resolved config so subsequent commands don't need -c.
+if command -v umrs-client >/dev/null 2>&1 && [[ -f "${CONF}" ]]; then
+    umrs-client config use --user "${CONF}" >/dev/null 2>&1 || true
+fi
+
 CLIENT_ARGS=(umrs-client)
 if [[ -n "${UMRS_PROFILE:-}" ]]; then
     CLIENT_ARGS+=(--profile "${UMRS_PROFILE}")
@@ -84,7 +89,6 @@ fi
 if [[ -n "${UMRS_ZMQ_PORT:-}" ]]; then
     CLIENT_ARGS+=(--control-port "${UMRS_ZMQ_PORT}")
 fi
-CLIENT_ARGS+=(-c "${CONF}")
 CLIENT="${CLIENT_ARGS[*]}"
 
 # --- Logging helpers ---
@@ -120,13 +124,8 @@ onboard() {
     local conf="${1:-${CONF}}"
     local client_cmd="${CLIENT_ARGS[*]}"
     if [[ "$conf" != "$CONF" ]]; then
-        # Rebuild client command for the explicit config
-        client_cmd="${client_cmd%-c *}"
-        client_cmd="umrs-client"
-        [[ -n "${UMRS_PROFILE:-}" ]] && client_cmd+=" --profile ${UMRS_PROFILE}"
-        [[ -n "${UMRS_ZMQ_HOST:-}" ]] && client_cmd+=" --server-ip ${UMRS_ZMQ_HOST}"
-        [[ -n "${UMRS_ZMQ_PORT:-}" ]] && client_cmd+=" --control-port ${UMRS_ZMQ_PORT}"
-        client_cmd+=" -c ${conf}"
+        # Use config use to register the explicit config, then use base CLIENT_ARGS.
+        umrs-client config use --user "${conf}" >/dev/null 2>&1 || true
     fi
 
     log "Onboarding user config: ${conf}"
@@ -134,9 +133,9 @@ onboard() {
         || die "reload failed for ${conf}"
     ok "reload succeeded"
 
-    $client_cmd status reload 2>&1 \
+    $client_cmd status all 2>&1 \
         | head -20 | while IFS= read -r line; do log "  $line"; done
-    ok "status reload OK"
+    ok "status summary OK"
 
     $client_cmd list_buckets 2>&1 \
         | head -10 | while IFS= read -r line; do log "  $line"; done

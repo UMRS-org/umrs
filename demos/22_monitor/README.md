@@ -74,7 +74,7 @@ umrs-client monitor
 umrs-client monitor --tab connection
 
 # 9. Mount a config file (enables in-TUI reload via R key)
-umrs-client monitor -c ~/.config/umrs/users/user1.json
+umrs-client monitor --conf ~/.config/umrs/users/user1.json
 
 # 10. Other options
 umrs-client monitor --interval 5         # refresh every 5 seconds
@@ -136,7 +136,7 @@ Options:
 When you pass `-c` / `--conf` pointing to a user config JSON file:
 - The **Status tab** shows the config filename and enables the `R` key
 - Pressing `R` uploads the config to the server and triggers a RELOAD
-- This is equivalent to running `umrs-client reload -c <file>` but from
+- This is equivalent to running `umrs-client reload` but from
   within the dashboard
 
 ## Expected Output (One-Shot)

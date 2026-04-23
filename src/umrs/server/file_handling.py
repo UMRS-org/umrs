@@ -9,6 +9,7 @@ from umrs.shared.config import (
     get_users_default_cfg_subdir,
 )
 from umrs.shared.json_config import load_client_cfg_file
+from umrs.shared.auth import sanitize_username, validate_config_identity
 
 logger = logging.getLogger(__name__)
 
@@ -224,9 +225,15 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
 
 
 def persist_uploaded_user_config(
-    tmp_path, configure_file, user_config_map, expected_username=None
+    tmp_path, configure_file, user_config_map, expected_username=None,
+    *, allow_create=False,
 ):
     """Persist an uploaded user config JSON.
+
+    When *allow_create* is ``False`` (the default) the function refuses to
+    create entries for usernames that are not already present in
+    *user_config_map*.  Only the admin-only ``ENROLL_USER`` path should
+    pass ``allow_create=True``.
 
     Returns ``(success: bool, username: str | None, dest_path: str | None)``.
     """
@@ -240,12 +247,31 @@ def persist_uploaded_user_config(
                 f"ignoring"
             )
             return False, None, None
-        if expected_username and username != expected_username:
+
+        # Sanitize username to prevent path-traversal attacks
+        safe_username = sanitize_username(username)
+        if safe_username != username:
+            logger.warning(
+                "Rejecting unsafe username: %r (sanitized: %r)",
+                username, safe_username,
+            )
             print(
-                f"Warning: uploaded config username '{username}' does not match "
-                f"client identity '{expected_username}'; ignoring file"
+                f"Warning: uploaded file '{tmp_path}' contains unsafe "
+                f"username '{username}'; rejecting"
             )
             return False, None, None
+
+        # Rich identity validation (checks username match + flags admin claims)
+        if expected_username:
+            id_result = validate_config_identity(data, expected_username)
+            if not id_result.valid:
+                print(
+                    f"Warning: uploaded config identity validation failed: "
+                    f"{'; '.join(id_result.errors)}; ignoring file"
+                )
+                return False, None, None
+            for w in id_result.warnings:
+                logger.warning("Config identity warning: %s", w)
     except SystemExit:
         # load_client_cfg_file may sys.exit() on validation error
         print(f"Warning: uploaded file '{tmp_path}' failed validation; ignoring")
@@ -258,7 +284,14 @@ def persist_uploaded_user_config(
     dest_path = user_config_map.get(username, None)
 
     if not dest_path:
-        # Destination path (canonical)
+        if not allow_create:
+            print(
+                f"Rejected: user '{username}' is not enrolled on this server. "
+                f"An admin must run 'admin user add' first."
+            )
+            return False, username, None
+
+        # Destination path (canonical) — only reached when allow_create=True
         umrs_dir = os.path.dirname(configure_file)
         user_dir = os.path.join(umrs_dir, get_users_default_cfg_subdir())
         try:

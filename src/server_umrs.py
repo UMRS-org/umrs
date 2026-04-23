@@ -218,6 +218,41 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 else:
                     print("Warning: FILE command received with no payload")
                 update_status_func(TaskStatus.COMPLETED)
+
+            elif cmd == TaskCmd.ENROLL_USER:
+                if not payload:
+                    print("Warning: ENROLL_USER command received with no payload")
+                    update_status_func(TaskStatus.ERROR)
+                    continue
+                client_id, files = payload if isinstance(payload, tuple) else (None, payload)
+                if _authorize(cmd, client_id) is None:
+                    update_status_func(TaskStatus.ERROR)
+                    continue
+                enrolled_any = False
+                for file in files:
+                    print(f"Enrolling user from file: {file}")
+                    ok, uname, dest = _persist_uploaded_user_config(
+                        file, configure_file, user_config_map,
+                        expected_username=None,  # admin uploads on behalf of another user
+                        allow_create=True,
+                    )
+                    if ok:
+                        print(f"User '{uname}' enrolled -> {dest}")
+                        enrolled_any = True
+                    else:
+                        print(f"Failed to enroll user from '{file}'")
+                if enrolled_any:
+                    # Auto-reload so new user is provisioned (MinIO + Postgres)
+                    from umrs.server.config import ENABLE_PRETTY_PRINT
+                    outcome = reload_configuration(
+                        configure_file, buckets_cfg, user_config_map,
+                        log_output=ENABLE_PRETTY_PRINT,
+                    )
+                    filter_outcome(task_manager.active_threads, outcome, buckets_cfg, cmd.lower() if isinstance(cmd, str) else "enroll_user")
+                    if "error" in outcome:
+                        print(f"Warning: reload after enrollment encountered errors: {outcome['error']}")
+                update_status_func(TaskStatus.COMPLETED if enrolled_any else TaskStatus.ERROR)
+
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
                 client_id = payload
                 if _authorize(cmd, client_id) is None:

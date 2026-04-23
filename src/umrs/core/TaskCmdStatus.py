@@ -24,6 +24,8 @@ class TaskCmd:
     # Workflow registry commands
     LIST_WORKFLOWS = "LIST_WORKFLOWS"   # list registered workflows
     RUN_WORKFLOW = "RUN_WORKFLOW"        # trigger execution of a registered workflow
+    # Admin enrollment
+    ENROLL_USER = "ENROLL_USER"          # admin-only: register a new user
 
     @classmethod
     def all_cmd(cls):

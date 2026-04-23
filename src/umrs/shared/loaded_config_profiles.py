@@ -175,13 +175,12 @@ def _validate_server(path: Path) -> ConfigLayer:
         layer.error = f"Server config file not found: {path}"
         return layer
     try:
-        admin_s3_configuration_file, users, _ = load_server_cfg_file(str(path))
+        _, users, _ = load_server_cfg_file(str(path))
     except SystemExit as exc:
         layer.error = str(exc)
         return layer
     layer.valid = True
     layer.details = {
-        "admin_s3_configuration_file": admin_s3_configuration_file,
         "user_config_paths": [user.get("config_file_path") for user in users],
         "usernames": [user.get("username") for user in users],
         "user_count": len(users),
@@ -201,12 +200,19 @@ def _validate_user(path: Path) -> ConfigLayer:
         layer.error = str(exc)
         return layer
     layer.valid = True
+    bucket_aliases = sorted({
+        (mod.get("s3") or {}).get("bucket_alias")
+        for xp in (user_cfg.get("experiences") or [])
+        for mod in (xp.get("modalities") or [])
+        if (mod.get("s3") or {}).get("bucket_alias")
+    })
     layer.details = {
         "username": user_cfg.get("username"),
         "fullname": user_cfg.get("fullname"),
         "s3_configuration_file": user_cfg.get("s3_configuration_file"),
         "experience_count": len(user_cfg.get("experiences") or []),
         "experience_names": [xp.get("xp_name") for xp in user_cfg.get("experiences") or []],
+        "bucket_aliases": bucket_aliases,
     }
     return layer
 
@@ -238,7 +244,6 @@ def _validate_s3(path: Path) -> ConfigLayer:
         "bucket_location": parser.get("default", "bucket_location"),
         "use_https": parser.getboolean("default", "use_https", fallback=False),
         "check_ssl_certificate": parser.getboolean("default", "check_ssl_certificate", fallback=True),
-        "access_key": parser.get("default", "access_key"),
     }
     return layer
 
