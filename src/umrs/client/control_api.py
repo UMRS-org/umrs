@@ -214,6 +214,45 @@ class UMRSControlAPI:
             return {"status": "ok", "action": action, "accepted": True}
         return {"status": "error", "action": action, "accepted": False, "message": "Command rejected by server"}
 
+    def enroll_user(self, config_path: str) -> Dict[str, Any]:
+        """Enroll a new user on the server (admin-only).
+
+        Uploads the user config JSON via the data queue and sends the
+        ``ENROLL_USER`` command.  The server will persist the config,
+        update ``conf_umrs.json``, and auto-reload to provision the user.
+        """
+        if not os.path.isfile(config_path):
+            return {"status": "error", "message": f"File not found: {config_path}"}
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as fh:
+                cfg_json = json.load(fh)
+            upload_user = cfg_json.get("username")
+            if not upload_user:
+                return {"status": "error", "message": "Config file missing 'username' field"}
+        except Exception as e:
+            return {"status": "error", "message": f"Cannot read config file: {e}"}
+
+        data_mq = self._mq.get_data_queue(self._client_id)
+        try:
+            data_mq.send_file(config_path)
+            ok = self._mq.notify_server(
+                self._client_id,
+                TaskCmd.ENROLL_USER,
+                1,
+                admin_token=self._admin_token,
+            )
+        finally:
+            try:
+                data_mq.close()
+            except Exception:
+                pass
+
+        if ok:
+            return {"status": "ok", "username": upload_user, "accepted": True}
+        return {"status": "error", "username": upload_user, "accepted": False,
+                "message": "Server rejected ENROLL_USER (check admin token)"}
+
     def execute_command(self, command_line: str) -> Dict[str, Any]:
         parser = build_control_command_parser()
         args = parser.parse_args(shlex.split(prepare_control_command_line(command_line)))
@@ -300,7 +339,7 @@ class UMRSControlAPI:
         except Exception:
             upload_user = self._client_id
 
-        data_mq = self._mq.get_data_queue(upload_user)
+        data_mq = self._mq.get_data_queue(self._client_id)
         try:
             data_mq.send_file(config_path)
             self._mq.notify_server(upload_user, TaskCmd.FILE, 1)

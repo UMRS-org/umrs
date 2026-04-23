@@ -55,6 +55,20 @@ def test_format_status_text_shows_generated_and_last_update_timestamps():
     assert "generated 2026-04-19T02:12:00Z; last update 2026-04-19T02:11:24Z" in rendered
 
 
+def test_format_status_text_explains_missing_reload_status():
+    rendered = format_status_text(
+        {
+            "status": "error",
+            "message": "No status for 'reload'",
+        },
+        "reload",
+    )
+
+    assert "Reload is synchronous" in rendered
+    assert "status all" in rendered
+    assert "list_buckets" in rendered
+
+
 def test_reconcile_status_on_startup_records_snapshot_status():
     active_threads = MagicMock()
     active_threads._json_safe_thread_status.side_effect = lambda data: [

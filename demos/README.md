@@ -49,9 +49,19 @@ All demos (except 08, 12, 13 which run locally) require:
    which umrs-client            # verify it's in PATH
    ```
 
-4. **User config** at `~/.config/umrs/users/user1.json` and, optionally, a
-  **connection profile** under `~/.config/umrs/connections/`. Site-specific
-  `setup_client.sh` scripts create both for you.
+4. **User config and connection profile** — create both with the interactive
+  init subcommands:
+
+  ```bash
+  umrs-client profile init           # creates ~/.config/umrs/connections/<name>.json
+  umrs-client config init            # creates ~/.config/umrs/users/<username>.json
+  ```
+
+  Or use a site-specific setup script which does both for you:
+  ```bash
+  cd deploy/<site>/
+  ./setup_client.sh
+  ```
 
   To import an additional site profile manually:
   ```bash

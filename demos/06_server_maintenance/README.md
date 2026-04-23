@@ -78,27 +78,28 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT/umrs/demos/06_server_maintenance"
 
 CONF="${UMRS_USER_CONF:-$HOME/.config/umrs/users/user1.json}"
+umrs-client config use --user "$CONF"
 
 # 0. Verify client → server connectivity.
-umrs-client -c "$CONF" ping
+umrs-client ping
 
 # 1. Show configured buckets.
-umrs-client -c "$CONF" list_buckets || true
+umrs-client list_buckets || true
 
 # 2. Run a consistency check.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c "$CONF" check
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" check
 sleep 2
-umrs-client -c "$CONF" status check || true
+umrs-client status check || true
 
 # 3. Update only missing or stale embeddings.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c "$CONF" update
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" update
 sleep 2
-umrs-client -c "$CONF" status update || true
+umrs-client status update || true
 
 # 4. Optional full recompute.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" -c "$CONF" recompute
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute
 sleep 5
-umrs-client -c "$CONF" status recompute || true
+umrs-client status recompute || true
 ```
 
 If your deployment does not enforce admin tokens, omit `--admin-token`.

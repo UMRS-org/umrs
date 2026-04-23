@@ -73,20 +73,20 @@ uploaded.unlink(missing_ok=True)
 PY"
 
 # 4. Ping the server
-umrs-client -c ~/.config/umrs/users/user1.json ping
+umrs-client ping
 
 # 5. Attempt an admin-only maintenance action without a token.
 #    On rccs-cloud this is accepted by the client handoff but the server does
 #    not materialize a check status.
-umrs-client -c ~/.config/umrs/users/user1.json check || true
-umrs-client -c ~/.config/umrs/users/user1.json --output json status check
+umrs-client check || true
+umrs-client --output json status check
 
 # 6. Retry with the admin token; this should produce a real check summary.
-umrs-client -c ~/.config/umrs/users/user1.json --admin-token "$TOKEN" check
-umrs-client -c ~/.config/umrs/users/user1.json --admin-token "$TOKEN" --output json status check
+umrs-client --admin-token "$TOKEN" check
+umrs-client --admin-token "$TOKEN" --output json status check
 
 # 7. Inspect status all with admin privileges
-umrs-client -c ~/.config/umrs/users/user1.json --admin-token "$TOKEN" --output json status all
+umrs-client --admin-token "$TOKEN" --output json status all
 
 # 8. Revoke the token locally
 umrs-client admin token revoke "$TOKEN_NAME"

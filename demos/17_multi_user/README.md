@@ -34,41 +34,42 @@ bash run_demo.sh
 
 ```bash
 # 1. Verify both users can reach the server
-#    Each user authenticates with their own config file.
-#    The -c flag selects which user identity to use.
-umrs-client -c ~/.config/umrs/users/user1.json ping
-umrs-client -c ~/.config/umrs/users/user2.json ping
+#    Use `config use` to switch the active user identity.
+umrs-client config use --user ~/.config/umrs/users/user1.json
+umrs-client ping
+umrs-client config use --user ~/.config/umrs/users/user2.json
+umrs-client ping
 
 # 2. User1 uploads a test file to their private bucket
 #    This file is stored in user1's namespace and should not
 #    be visible to user2.
+umrs-client config use --user ~/.config/umrs/users/user1.json
 echo "This is user1's private data" > /tmp/user1_data.txt
-umrs-client -c ~/.config/umrs/users/user1.json upload_file /tmp/user1_data.txt user1-textfiles
+umrs-client upload_file /tmp/user1_data.txt user1-textfiles
 
 # 3. User2 uploads a test file to their private bucket
+umrs-client config use --user ~/.config/umrs/users/user2.json
 echo "This is user2's private data" > /tmp/user2_data.txt
-umrs-client -c ~/.config/umrs/users/user2.json upload_file /tmp/user2_data.txt user2-textfiles
+umrs-client upload_file /tmp/user2_data.txt user2-textfiles
 
 # 4. User1 lists their own bucket (should succeed)
-umrs-client -c ~/.config/umrs/users/user1.json list_buckets
+umrs-client config use --user ~/.config/umrs/users/user1.json
+umrs-client list_buckets
 
-# 5. User1 tries to access user2's bucket (should be denied)
-#    Expected: error/denied/forbidden response confirming isolation.
-umrs-client -c ~/.config/umrs/users/user1.json list_buckets
-# (user2's bucket alias will not appear in user1's bucket list)
+# 5. User2 lists their own bucket (user1's data is not visible)
+umrs-client config use --user ~/.config/umrs/users/user2.json
+umrs-client list_buckets
 
-# 6. User2 tries to access user1's bucket (should be denied)
-umrs-client -c ~/.config/umrs/users/user2.json list_buckets
-# (user1's bucket alias will not appear in user2's bucket list)
-
-# 7. Check user-scoped model isolation
+# 6. Check user-scoped model isolation
 #    User-scoped models are private — each user sees only their own.
-umrs-client -c ~/.config/umrs/users/user1.json model list --scope user
-umrs-client -c ~/.config/umrs/users/user2.json model list --scope user
+umrs-client config use --user ~/.config/umrs/users/user1.json
+umrs-client model list --scope user
+umrs-client config use --user ~/.config/umrs/users/user2.json
+umrs-client model list --scope user
 
-# 8. Check system-scoped models (shared across all users)
+# 7. Check system-scoped models (shared across all users)
 #    System models are visible to everyone.
-umrs-client -c ~/.config/umrs/users/user1.json model list --scope system
+umrs-client model list --scope system
 ```
 
 ## Isolation Model

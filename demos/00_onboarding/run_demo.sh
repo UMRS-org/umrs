@@ -5,6 +5,7 @@
 # First demo to run after installing umrs-client and configuring a connection
 # profile.  It performs the complete onboarding flow:
 #
+#   0. Create a user config JSON if none exists (config init)
 #   1. Show active connection profile and user config
 #   2. Pre-flight: verify umrs-client is installed and server is reachable
 #   3. Onboard: push user config to server → triggers bucket + DB creation
@@ -15,7 +16,6 @@
 # Prerequisites:
 #   - umrs-client installed and in PATH
 #   - UMRS server running and reachable
-#   - User config at ~/.config/umrs/users/user1.json (or UMRS_CONF)
 # =============================================================================
 set -Eeuo pipefail
 
@@ -24,7 +24,23 @@ DEMO_TAG="onboarding" source "${SCRIPT_DIR}/../lib/common.sh"
 
 banner "Demo 00: User Onboarding & Initialization"
 
+# ---------- Step 0: Create user config if missing ----------
+log "Step 0: Ensure user config exists"
+if [[ -f "${CONF}" ]]; then
+    ok "config already exists: ${CONF}"
+else
+    log "No user config found — creating one with 'config init'."
+    umrs-client config init || die "config init failed"
+    # Re-resolve CONF after init created and registered the file.
+    CONF="$(umrs-client --output json config show 2>/dev/null \
+        | python3 -c 'import sys,json; print(json.load(sys.stdin).get("config",{}).get("user",{}).get("path",""))' 2>/dev/null)" \
+        || true
+    [[ -f "${CONF}" ]] || die "Config still not found after init"
+    ok "config created: ${CONF}"
+fi
+
 # ---------- Step 1: Show active profile ----------
+log ""
 log "Step 1: Active connection profile"
 if umrs-client --output text profile show 2>/dev/null; then
     ok "profile displayed"
@@ -33,7 +49,6 @@ else
 fi
 echo ""
 log "Active user config: ${CONF}"
-[[ -f "${CONF}" ]] || die "Config not found: ${CONF}"
 ok "config file exists"
 
 # ---------- Step 2: Pre-flight ----------

@@ -12,7 +12,7 @@
 #   - UMRS server running
 #   - Network connectivity (SSH tunnels if remote)
 #   - umrs-client installed and in PATH
-#   - Server config at ~/.config/umrs/conf_umrs.json (or UMRS_CONF env var)
+#   - User config registered via `umrs-client config init` (or UMRS_CONF env var)
 #
 # Usage:
 #   bash run_all.sh                      # run all core demos
@@ -61,9 +61,11 @@ echo "=== UMRS Demo Suite Pre-flight ==="
 which umrs-client >/dev/null 2>&1 || { echo "ERROR: umrs-client not found in PATH"; exit 1; }
 
 CONF="${UMRS_CONF:-${UMRS_USER_CONF:-${HOME}/.config/umrs/conf_umrs.json}}"
-[[ -f "$CONF" ]] || { echo "ERROR: Config not found: $CONF"; exit 1; }
+if [[ -f "$CONF" ]]; then
+    umrs-client config use --user "$CONF" >/dev/null 2>&1 || true
+fi
 
-umrs-client -c "$CONF" ping >/dev/null 2>&1 || { echo "ERROR: Server not reachable. Check connectivity."; exit 1; }
+umrs-client ping >/dev/null 2>&1 || { echo "ERROR: Server not reachable. Check connectivity."; exit 1; }
 echo "Pre-flight OK — server reachable."
 
 # ---------- Onboarding ----------
