@@ -125,26 +125,71 @@ reap_stale_rootlessport() {
     fi
 }
 
+container_exists() {
+    local name="$1"
+
+    podman inspect --type container "$name" >/dev/null 2>&1
+}
+
+kill_stuck_container_runtime() {
+    local name="$1"
+    local container_pid
+    local conmon_pid
+
+    container_pid="$(podman inspect --type container --format '{{.State.Pid}}' "$name" 2>/dev/null || true)"
+    conmon_pid="$(podman inspect --type container --format '{{.State.ConmonPid}}' "$name" 2>/dev/null || true)"
+
+    if [[ -n "$container_pid" && "$container_pid" != "0" ]]; then
+        kill -9 "$container_pid" 2>/dev/null || true
+    fi
+
+    if [[ -n "$conmon_pid" && "$conmon_pid" != "0" ]]; then
+        kill -9 "$conmon_pid" 2>/dev/null || true
+    fi
+
+    sleep 1
+}
+
 reconcile_infra_container() {
     local name="$1"
     shift
     local ports=("$@")
     local state
 
-    state="$(podman inspect --format '{{.State.Status}}' "$name" 2>/dev/null || true)"
-    if [[ -z "$state" || "$state" == "running" ]]; then
+    state="$(podman inspect --type container --format '{{.State.Status}}' "$name" 2>/dev/null || true)"
+
+    if [[ -z "$state" ]]; then
+        for port in "${ports[@]}"; do
+            reap_stale_rootlessport "$port"
+        done
         return 0
     fi
 
-    case "$state" in
-        created|configured|exited|stopped)
-            echo "Removing stale ${name} container (${state}) before compose up..."
-            podman rm -f "$name" >/dev/null 2>&1 || true
-            for port in "${ports[@]}"; do
-                reap_stale_rootlessport "$port"
-            done
-            ;;
-    esac
+    if [[ "$state" == "running" ]]; then
+        return 0
+    fi
+
+    echo "Removing stale ${name} container (${state}) before compose up..."
+    if ! podman rm -f "$name" >/dev/null 2>&1; then
+        echo "Podman could not remove ${name} directly; killing host-side container processes..."
+        kill_stuck_container_runtime "$name"
+        podman rm -f "$name" >/dev/null 2>&1 || true
+    fi
+
+    for port in "${ports[@]}"; do
+        reap_stale_rootlessport "$port"
+    done
+
+    for _ in $(seq 1 10); do
+        if ! container_exists "$name"; then
+            return 0
+        fi
+        sleep 0.5
+    done
+
+    echo "ERROR: Failed to remove stale ${name} container."
+    podman inspect --type container --format 'state={{.State.Status}} pid={{.State.Pid}} conmon={{.State.ConmonPid}} err={{.State.Error}}' "$name" || true
+    return 1
 }
 
 resolve_model_layout() {
