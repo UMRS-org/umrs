@@ -264,7 +264,7 @@ This deployment uses three different credential classes. Keep them separate.
 | PostgreSQL password | `.env` as `POSTGRES_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
 | MinIO root password | `.env` as `MINIO_ROOT_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
 | LiteLLM service key | `site.yaml` `network.litellm_master_key` or `.env` override `LITELLM_MASTER_KEY` | RCCS operators only | Generate a random bearer-style secret, for example `printf 'sk-ll-%s\n' "$(openssl rand -hex 24)"` |
-| UMRS admin tokens | `~/.config/umrs/admin_tokens.json` (hashed at rest) | RCCS operators only | Generate with `python ../../src/client_umrs.py admin token generate <name> --description '<purpose>'` |
+| UMRS admin tokens | `~/.config/umrs/admin_tokens.json` (hashed at rest) | RCCS operators only | Generate with `umrs-client admin token generate <name> --description '<purpose>'` |
 
 **Important:** UMRS admin tokens are shown only once at creation time. The file
 `~/.config/umrs/admin_tokens.json` stores only token hashes, so rotation means
@@ -276,13 +276,13 @@ Example operator commands:
 ```bash
 # Generate a new UMRS admin token (stored hashed in ~/.config/umrs/admin_tokens.json)
 source .venv/bin/activate
-python ../../src/client_umrs.py admin token generate rccs-ops --description "RCCS deployment operator"
+umrs-client admin token generate rccs-ops --description "RCCS deployment operator"
 
 # List token metadata without revealing token values
-python ../../src/client_umrs.py admin token list
+umrs-client admin token list
 
 # Revoke a token by name
-python ../../src/client_umrs.py admin token revoke rccs-ops
+umrs-client admin token revoke rccs-ops
 ```
 
 If you also deploy the Platform Gateway for user-facing access, treat its
