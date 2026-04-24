@@ -27,7 +27,7 @@ from umrs.shared.config import resolve_server_user_files_dir
 logger = logging.getLogger(__name__)
 
 
-_VALID_USERNAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,62}$")
+_VALID_USERNAME_RE = re.compile(r"^[a-z][a-z0-9._-]{1,62}$")
 
 VALID_ROLES = ("user", "admin", "service")
 

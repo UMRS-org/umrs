@@ -319,12 +319,17 @@ def _cmd_bootstrap(args: argparse.Namespace, store: UserStore) -> int:
     if args.json:
         _print_json(result)
     else:
-        print(f"admin user: {rec.username} ({'created' if created_user else 'existed'})")
-        if token:
-            print(f"bootstrap token ({args.token_name}): {token}")
-            print("(this is the only time the raw token will be shown)")
+        if created_user:
+            print(f"✓ Created admin user: {rec.username}")
         else:
-            print(f"token {args.token_name!r} already exists; not regenerated")
+            print(f"✓ Admin user already exists: {rec.username} (no changes)")
+        if token:
+            print(f"✓ Generated bootstrap token ({args.token_name}): {token}")
+            print("  (this is the only time the raw token will be shown)")
+        else:
+            print(f"✓ Token {args.token_name!r} already exists (not regenerated)")
+        if not created_user and not token:
+            print("  Bootstrap already complete — nothing to do.")
     return 0
 
 

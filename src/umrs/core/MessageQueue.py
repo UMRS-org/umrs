@@ -728,7 +728,7 @@ class MessageQueue:
         if self.type != "control":
             raise PermissionError(f"Only control message queue can check server")
 
-        print("Checking for server availability...")
+        logger.debug("Checking for server availability...")
         if timeout_ms < 1500:
             timeout_ms = 1500
 
