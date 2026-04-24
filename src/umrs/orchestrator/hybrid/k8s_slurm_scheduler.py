@@ -50,6 +50,7 @@ class SlurmJobSpec:
     mem: str = "4G"
     gpus: int = 0
     gpu_type: Optional[str] = None
+    account: Optional[str] = None  # #SBATCH --account=<acct>
     container_image: str = ""
     container_runtime: str = "singularity"
     command: List[str] = field(default_factory=list)
@@ -88,6 +89,7 @@ class K8sToSlurmTranslator:
         container_runtime: str = "singularity",
         model_mount_path: str = "/models",
         gpu_resource_name: str = "nvidia.com/gpu",
+        default_account: Optional[str] = None,
     ):
         """Initialize translator with defaults."""
         self.default_partition = default_partition
@@ -95,6 +97,9 @@ class K8sToSlurmTranslator:
         self.container_runtime = container_runtime
         self.model_mount_path = model_mount_path
         self.gpu_resource_name = gpu_resource_name
+        # Fallback Slurm account used when the K8s manifest does not carry
+        # one via the ``rivault.platform/slurm-account`` annotation.
+        self.default_account = default_account
 
     def translate(self, resource: K8sResourceSpec) -> TranslatedJob:
         """
@@ -307,6 +312,7 @@ class K8sToSlurmTranslator:
             cpus_per_task=cpus,
             mem=mem,
             gpus=gpus,
+            account=self.default_account,
             container_image=container.get("image", ""),
             container_runtime=self.container_runtime,
             command=full_command,
@@ -335,6 +341,9 @@ class K8sToSlurmTranslator:
             if spec.gpu_type:
                 gpu_spec = f"{spec.gpu_type}:{spec.gpus}"
             lines.append(f"#SBATCH --gres=gpu:{gpu_spec}")
+
+        if spec.account:
+            lines.append(f"#SBATCH --account={spec.account}")
 
         lines.append("")
         lines.append("# Environment setup")

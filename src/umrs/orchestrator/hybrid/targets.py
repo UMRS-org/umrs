@@ -90,6 +90,12 @@ class JobSpec:
     time_limit: str = "02:00:00"
     priority: int = 0
 
+    # Per-submission Slurm account. When set, overrides the SlurmTarget
+    # instance default and SLURM_ACCOUNT env. None falls back to instance
+    # default / site.yaml. Populated from the submitting user's record so
+    # fairshare attributes the job to their own Slurm account.
+    slurm_account: Optional[str] = None
+
     # Labels/annotations
     labels: Dict[str, str] = field(default_factory=dict)
 
@@ -395,8 +401,10 @@ class SlurmTarget(ExecutionTarget):
             f"#SBATCH --mem={spec.memory_mb}M",
         ]
 
-        if self.account:
-            lines.append(f"#SBATCH --account={self.account}")
+        # Resolution order: per-submission (user record) > target instance > site default.
+        effective_account = spec.slurm_account or self.account
+        if effective_account:
+            lines.append(f"#SBATCH --account={effective_account}")
         if self.qos:
             lines.append(f"#SBATCH --qos={self.qos}")
 
