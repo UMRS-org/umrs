@@ -7,6 +7,16 @@ the new buckets are visible afterwards.
 See [../README.md](../README.md) for shared setup, connection profiles, and
 SSH tunnel guidance.
 
+> **Using the R4 Gateway instead?** If your deployment fronts UMRS with the
+> R4 Platform Gateway (OIDC login, `r4` CLI, no direct ZMQ/SSH tunnel), use
+> [docs/r4/quickstart.md](../../../docs/r4/quickstart.md) for the user flow
+> and
+> [docs/r4/admin-guide/README.md → UMRS User Enrollment](../../../docs/r4/admin-guide/README.md#umrs-user-enrollment-required-before-first-use)
+> for the admin enrollment step. The provisioning described here (MinIO IAM,
+> Postgres role, per-experience buckets) is the same — it's still triggered
+> by `umrs-client admin user add <user.json>` on the server, but end users
+> never run `umrs-client profile init` or open an SSH tunnel themselves.
+
 ## Quick Start
 
 ```bash

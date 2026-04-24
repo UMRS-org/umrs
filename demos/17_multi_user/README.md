@@ -7,7 +7,8 @@ neither can access the other's data.
 ## Prerequisites
 
 - UMRS server running and reachable (SSH tunnels if remote: ports 5555, 5556-5563, 9000)
-- `umrs-client` installed and in PATH
+- `umrs-client` installed and in PATH (see [demos/README.md](../README.md#prerequisites))
+- Two users onboarded on the server (see [Demo 00](../00_onboarding/) for the admin enrollment flow via `umrs-client admin user add`)
 - Two user configuration files:
   - `~/.config/umrs/users/user1.json`
   - `~/.config/umrs/users/user2.json`

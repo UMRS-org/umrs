@@ -6,7 +6,8 @@ models — including user's own trained models.
 ## Prerequisites
 
 - UMRS server running and reachable
-- `umrs-client` available (installed via `uv pip install -e src/`)
+- `umrs-client` available (see [demos/README.md](../README.md#prerequisites))
+- User onboarded (see [Demo 00](../00_onboarding/))
 - `huggingface_hub` installed (for `model download` only)
 
 ## Commands
@@ -20,10 +21,10 @@ model directory lives on a shared mount).
 
 ```bash
 # Client-side download (only when the server can also see the downloaded path):
-umrs-client model download intfloat/e5-base-v2
+umrs-client model download intfloat/e5-base-v2 --scope user
 
 # Custom staging directory (only if your site exposes a writable, allowed root):
-umrs-client model download intfloat/e5-base-v2 --staging-dir /path/to/site-model-root
+umrs-client model download intfloat/e5-base-v2 --scope user --staging-dir /path/to/site-model-root
 
 # Server-side download (recommended for Mac-local clients talking to a remote server):
 umrs-client model download intfloat/e5-base-v2 --scope user --server-side \
