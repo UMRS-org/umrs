@@ -10,7 +10,8 @@ vision model.
 ## Prerequisites
 
 - UMRS server running with a vision-capable compute backend
-- `umrs-client` installed and in PATH
+- `umrs-client` installed and in PATH (see [demos/README.md](../README.md#prerequisites))
+- User onboarded (see [Demo 00](../00_onboarding/))
 - Server config with a vision experience (e.g. SAM3 Segmentation)
 
 ## Quick Start
