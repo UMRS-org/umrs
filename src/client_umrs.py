@@ -1282,12 +1282,13 @@ def main():
         prefer_env_server_host=False,
     )
 
-    if not args.no_check_server:
+    if not args.no_check_server and args.action != 'ping':
         if not control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms):
             sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
 
-    profile_label = _bold(connection.profile_name) if connection.profile_name else _dim("(none)")
-    print(f"{_green('✓')} Server ready  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}")
+    if args.action != 'ping':
+        profile_label = _bold(connection.profile_name) if connection.profile_name else _dim("(none)")
+        print(f"{_green('✓')} Server ready  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}")
 
     # Resolve admin token from CLI flag or environment
     admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")

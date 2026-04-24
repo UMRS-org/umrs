@@ -7,6 +7,7 @@ Falls back gracefully on Windows (no keyboard support, just auto-refresh).
 
 from __future__ import annotations
 
+import select
 import sys
 import threading
 from typing import Callable, Optional
@@ -50,11 +51,17 @@ class KeyReader:
                 ch = sys.stdin.read(1)
                 if not ch:
                     break
-                # Handle escape sequences (arrow keys)
+                # Handle escape sequences (arrow keys) vs bare Esc
                 if ch == "\x1b":
-                    seq = sys.stdin.read(2)
-                    _ARROW_MAP = {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}
-                    key = _ARROW_MAP.get(seq, "esc")
+                    # Wait briefly for additional escape sequence chars
+                    ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+                    if ready:
+                        seq = sys.stdin.read(2)
+                        _ARROW_MAP = {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}
+                        key = _ARROW_MAP.get(seq, "esc")
+                    else:
+                        # No follow-up chars: bare Esc key
+                        key = "esc"
                 else:
                     key = ch
                 self._on_key(key)

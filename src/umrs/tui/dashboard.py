@@ -17,7 +17,6 @@ Keyboard shortcuts (global):
     1-5         Switch tab
     q / Ctrl+C  Quit
     r           Force refresh
-    :           Open control command prompt
     a           Open quick actions
     ?           Toggle help overlay
 
@@ -997,7 +996,7 @@ class Dashboard:
     def _on_key(self, key: str) -> None:
         # If search is active, handle search input
         if self._search_active:
-            if key in ("\r", "\n", "\x1b"):
+            if key in ("\r", "\n", "\x1b", "esc"):
                 self._search_active = False
             elif key == "\x7f":  # backspace
                 self._search_query = self._search_query[:-1]
@@ -1005,29 +1004,8 @@ class Dashboard:
                 self._search_query += key
             return
 
-        if self._command_active:
-            if key in ("\r", "\n"):
-                command_text = self._command_query.strip()
-                self._command_active = False
-                self._command_query = ""
-                if command_text:
-                    try:
-                        parsed = self._api.execute_command(command_text)
-                        self._apply_control_result(command_text, parsed)
-                    except Exception as e:
-                        self._set_flash(f"Command error: {e}")
-                        self._log("ERROR", f"Command error: {command_text} -> {e}")
-            elif key == "\x1b":
-                self._command_active = False
-                self._command_query = ""
-            elif key == "\x7f":
-                self._command_query = self._command_query[:-1]
-            elif len(key) == 1 and key.isprintable():
-                self._command_query += key
-            return
-
         if self._form_active:
-            if key == "\x1b":
+            if key in ("\x1b", "esc"):
                 self._close_form()
             elif key in ("l", "right", "]"):
                 self._cycle_form_choice(1)
@@ -1048,13 +1026,18 @@ class Dashboard:
                     self._form_fields[self._form_cursor]["value"] = value[:-1]
             elif len(key) == 1 and key.isprintable():
                 if self._form_fields:
-                    value = str(self._form_fields[self._form_cursor].get("value", ""))
-                    self._form_fields[self._form_cursor]["value"] = value + key
+                    field = self._form_fields[self._form_cursor]
+                    if field.get("choices"):
+                        # Field with choices: ignore free text, use h/l to cycle
+                        pass
+                    else:
+                        value = str(field.get("value", ""))
+                        field["value"] = value + key
             return
 
         # If quick actions overlay is open, handle it
         if self._show_actions:
-            if key in ("\x1b", "a", "q"):
+            if key in ("\x1b", "esc", "a", "q"):
                 self._show_actions = False
             elif key in ("j", "down"):
                 self._action_cursor = min(self._action_cursor + 1, len(self._get_actions()) - 1)
@@ -1083,7 +1066,6 @@ class Dashboard:
             "?": lambda: setattr(self, "_show_help", not self._show_help),
             "a": lambda: self._toggle_actions(),
             "s": lambda: self._start_search(),
-            ":": lambda: self._start_command_prompt(),
         }
         action = global_actions.get(key)
         if action:
@@ -1163,7 +1145,6 @@ class Dashboard:
             {"label": "Force Refresh", "key": "r", "action": "refresh"},
             {"label": "Ping Server", "key": "", "action": "ping"},
             {"label": "Toggle Help", "key": "?", "action": "help"},
-            {"label": "Run Control Command...", "key": ":", "action": "command_prompt"},
             {"label": "Submit Job...", "key": "", "action": "submit_job_form"},
             {"label": "Trigger Recompute", "key": "", "action": "recompute"},
             {"label": "Trigger Update", "key": "", "action": "update"},
@@ -1210,8 +1191,6 @@ class Dashboard:
             self._ping_server()
         elif action == "help":
             self._show_help = not self._show_help
-        elif action == "command_prompt":
-            self._start_command_prompt()
         elif action == "submit_job_form":
             self._open_submit_job_form()
         elif action in MAINTENANCE_ACTIONS:
@@ -1321,12 +1300,6 @@ class Dashboard:
                 "[dim]Enter[/dim] confirm  [dim]Esc[/dim] cancel"
             )
 
-        if self._command_active:
-            return Text.from_markup(
-                f"[bold yellow]Command:[/bold yellow] {self._command_query}[blink]_[/blink]  "
-                "[dim]Enter[/dim] run  [dim]Esc[/dim] cancel"
-            )
-
         if self._form_active:
             field = self._form_fields[self._form_cursor] if self._form_fields else {"label": "field"}
             choices = field.get("choices") or []
@@ -1379,7 +1352,6 @@ class Dashboard:
         t.add_row("r", "Force refresh", "Global")
         t.add_row("a", "Quick actions menu", "Global")
         t.add_row("s", "Text search", "Global")
-        t.add_row(":", "Control command prompt", "Global")
         t.add_row("Tab", "Move to next form field", "Forms")
         t.add_row("h / l", "Cycle form choices", "Forms")
         t.add_row("?", "Toggle this help", "Global")
@@ -1937,6 +1909,12 @@ class Dashboard:
             q = self._search_query.lower()
             entries = [e for e in entries if q in e.get("message", "").lower()]
 
+        # Clamp cursor to filtered entries to prevent out-of-bounds selection
+        if entries:
+            self._log_cursor = min(self._log_cursor, len(entries) - 1)
+        else:
+            self._log_cursor = 0
+
         for idx, entry in enumerate(entries):
             is_selected = idx == self._log_cursor
             level = entry.get("level", "INFO")
@@ -2115,6 +2093,9 @@ class Dashboard:
         reader = KeyReader(self._on_key)
         reader.start()
 
+        # Always fetch connection status first so the tab bar shows
+        # "connected" / "disconnected" instead of "unknown".
+        self._fetch_connection()
         self._fetch_active_tab()
 
         try:
