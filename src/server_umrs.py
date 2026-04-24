@@ -45,6 +45,12 @@ from umrs.server.maintenance import (
     reload_configuration,
     check_duplicated_database,
 )
+from umrs.admin.daemon_signal import (
+    consume_reload_request,
+    install_reload_signal_handler,
+    remove_pid_file,
+    write_pid_file,
+)
 from umrs.server.processing import process_s3_objects
 from umrs.server.file_handling import (
     ensure_user_file_in_conf as _ensure_user_file_in_conf,
@@ -162,6 +168,21 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######", flush=True)
             task_manager.tasks_status.pretty_print_tasks(limit=20)
+
+            # Honor SIGHUP-triggered hot reload from the offline admin CLI.
+            if consume_reload_request():
+                try:
+                    outcome = reload_configuration(
+                        configure_file, buckets_cfg, user_config_map,
+                        log_output=ENABLE_PRETTY_PRINT,
+                    )
+                    filter_outcome(task_manager.active_threads, outcome, buckets_cfg, "reload")
+                    if "error" in outcome:
+                        print(f"Warning: SIGHUP reload reported errors: {outcome['error']}")
+                    else:
+                        print("SIGHUP reload complete.")
+                except Exception as exc:  # noqa: BLE001 - best-effort reload
+                    print(f"ERROR: SIGHUP reload raised: {exc}", flush=True)
 
             # Log pool metrics once per iteration
             try:
@@ -525,6 +546,12 @@ def check_umrs_config_directory():
 # ---------------------------------- CLI ------------------------------------
 
 def main():
+    # Offline admin CLI: route `umrs-server admin ...` before any daemon
+    # bootstrap so it works without a configured UMRS_CONFIG directory.
+    if len(sys.argv) > 1 and sys.argv[1] == "admin":
+        from umrs.cli.admin import main as admin_main
+        return admin_main(sys.argv[2:])
+
     configure_server_logging()
 
     # check if we have a correct configuration directory
@@ -598,9 +625,29 @@ def main():
     task_manager.active_threads.record_status("system", "config", {"summary": cfg_summary})
 
     print("Server is ready to process tasks.")
+    # Install SIGHUP handler and write a PID file so the offline admin CLI
+    # can signal this process to hot-reload user records after mutations.
+    try:
+        install_reload_signal_handler()
+    except (ValueError, OSError) as exc:
+        # ValueError is raised if we are not on the main thread; OSError
+        # covers platforms without SIGHUP. Admin-driven hot reload will be
+        # unavailable in that case, which is acceptable.
+        print(f"Warning: could not install SIGHUP handler: {exc}")
+    pid_file_path = None
+    try:
+        pid_file_path = write_pid_file()
+        print(f"PID file written: {pid_file_path}")
+    except OSError as exc:
+        print(f"Warning: could not write PID file: {exc}")
     try:
         server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file, job_command_backend=job_command_backend)
     finally:
+        if pid_file_path is not None:
+            try:
+                remove_pid_file(pid_file_path)
+            except OSError:
+                pass
         if durable_job_runtime is not None:
             try:
                 durable_job_runtime.shutdown()

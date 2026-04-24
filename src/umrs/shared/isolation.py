@@ -90,6 +90,11 @@ class UserContext:
     display_name: Optional[str] = None
     email: Optional[str] = None
 
+    # Slurm accounting name used when this user's jobs are submitted via sbatch.
+    # Populated from the user record by the auth layer. ``None`` falls back to
+    # the site default (see ``site.yaml scheduler.account``).
+    slurm_account: Optional[str] = None
+
     @classmethod
     def anonymous(cls, project_id: str = "default") -> "UserContext":
         """Create anonymous context (no authentication)."""
@@ -106,6 +111,7 @@ class UserContext:
         x_project_id: Optional[str],
         x_user_role: Optional[str] = None,
         x_user_groups: Optional[str] = None,
+        x_slurm_account: Optional[str] = None,
     ) -> "UserContext":
         """Create context from HTTP headers."""
         user_id = x_user_id or "anonymous"
@@ -129,6 +135,7 @@ class UserContext:
             project_id=project_id,
             role=role,
             groups=groups,
+            slurm_account=(x_slurm_account.strip() if x_slurm_account else None) or None,
         )
 
     @property
