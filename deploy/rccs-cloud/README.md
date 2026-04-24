@@ -444,7 +444,7 @@ umrs-client --help
 
 ---
 
-## Step 4 — Open SSH tunnels for direct UMRS testing (admins only)
+## Step 4 — Open SSH tunnels for local admin tools (admins only)
 
 Keep this running in a terminal (or run it in the background):
 
@@ -458,6 +458,10 @@ To target a non-default host:
 ```bash
 ./ssh_tunnel.sh my-host     # defaults to "rccs-cloud"
 ```
+
+This tunnel forwards the Platform Gateway on `localhost:8080` in addition to
+the direct UMRS ZMQ, MinIO, and RAG ports, so local `r4` commands can use the
+same session.
 
 > Add extra `-L` lines to `ssh_tunnel.sh` for additional ZMQ data ports if you
 > run multiple concurrent users (e.g. `-L 5557:localhost:5557`).
