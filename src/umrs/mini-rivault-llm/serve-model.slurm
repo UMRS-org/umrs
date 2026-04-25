@@ -73,6 +73,21 @@ mountopt="xattr_permissions=2,threaded=1"
 EOF
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
+
+# ─── Derive vLLM model-path variables from orchestrator env ──────────────────
+# VLLM_MODEL_PATH (host filesystem path) is set by the orchestrator when it
+# provisions an endpoint for a registered model.  When absent, fall back to the
+# legacy HuggingFace-cache layout.
+_vllm_host_model_path="${VLLM_HOST_MODEL_PATH:-${VLLM_MODEL_PATH:-}}"
+if [[ -z "$_vllm_host_model_path" ]]; then
+    _hf_cache="${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}"
+    _model_id="${VLLM_MODEL:-Qwen/Qwen3-0.6B}"
+    _vllm_host_model_path="${_hf_cache}/hub/models--$(echo "$_model_id" | tr '/' '--')/snapshots"
+fi
+_vllm_container_model_path="${VLLM_CONTAINER_MODEL_PATH:-/models/$(basename "$_vllm_host_model_path")}"
+_vllm_model_ref="${VLLM_MODEL_REF:---model ${_vllm_container_model_path}}"
+_vllm_served_model_name="${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}"
+
 cat <<EOF > "./env.${uuid}"
 ###MANDATORY
 VLLM_MODEL=${VLLM_MODEL:-Qwen/Qwen3-0.6B}
@@ -83,6 +98,10 @@ SAM3_MODEL_PATH=${SAM3_MODEL_PATH:-./models/sam3}
 HMAE_MODEL_PATH=${HMAE_MODEL_PATH:-./models/hmae}
 HMAE_CONFIG_PATH=${HMAE_CONFIG_PATH:-./models/hmae/infer_hmae_vit_b.yaml}
 HMAE_CHECKPOINT=${HMAE_CHECKPOINT:-./models/hmae/latest_checkpoint.pth}
+VLLM_HOST_MODEL_PATH=${_vllm_host_model_path}
+VLLM_CONTAINER_MODEL_PATH=${_vllm_container_model_path}
+VLLM_MODEL_REF=${_vllm_model_ref}
+VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
 VLLM_TP=${VLLM_TP:-1}						# tensor parallelism
 VLLM_PP=${VLLM_PP:-1}						# pipeline parallelism
 NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}
