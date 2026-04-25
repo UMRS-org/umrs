@@ -616,6 +616,20 @@ def main():
     elif durable_job_runtime is None:
         print("Job commands using durable PostgreSQL backend.")
 
+    # Start HTTP sidecar so the Platform Gateway can proxy REST requests
+    # back to this UMRS instance (port 8082 by default). The sidecar runs
+    # in a daemon thread and respects UMRS_HTTP_SIDECAR_ENABLED env var.
+    try:
+        from umrs.server.http_sidecar import start_http_sidecar
+
+        _sidecar_thread = start_http_sidecar()
+        if _sidecar_thread is not None:
+            print(f"HTTP sidecar started (thread={_sidecar_thread.name}).")
+        else:
+            print("HTTP sidecar disabled by configuration.")
+    except Exception as _sc_exc:
+        print(f"Warning: HTTP sidecar failed to start: {_sc_exc}")
+
     handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
 
     print("Entering main server event loop.")
