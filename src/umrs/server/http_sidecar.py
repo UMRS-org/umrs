@@ -27,11 +27,13 @@ def _create_app():
     from fastapi import FastAPI
 
     from umrs.api import (
+        egress_audit_router,
         endpoints_router,
         jobs_router,
         llm_router,
         mcp_router,
         models_router,
+        pipelines_router,
         policy_router,
         rag_router,
         workflows_router,
@@ -44,11 +46,13 @@ def _create_app():
         docs_url="/docs",
     )
 
+    app.include_router(egress_audit_router)
     app.include_router(endpoints_router)
     app.include_router(jobs_router)
     app.include_router(llm_router)
     app.include_router(mcp_router)
     app.include_router(models_router)
+    app.include_router(pipelines_router)
     app.include_router(policy_router)
     app.include_router(rag_router)
     app.include_router(workflows_router)
