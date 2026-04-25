@@ -469,7 +469,8 @@ sed	-e "s@UMRS_S3_BUCKET_PORT@$(/bin/grep '^UMRS_S3_BUCKET_PORT=' "./env.${uuid}
 sed     -e "s@UMRS_S3_BUCKET_HOST@$(/bin/grep '^UMRS_S3_BUCKET_HOST=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	-e "s@CONTAINER_RUNTIME_DNS@$(/bin/grep '^CONTAINER_RUNTIME_DNS=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	"./coredns_fs/coredns.conf" > "./coredns_fs/coredns.conf.${uuid}"
-sed	-e "s@VLLM_MODEL_PLACEHOLDER@$(/bin/grep '^VLLM_MODEL=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
+sed	-e "s@VLLM_SERVED_MODEL_NAME_PLACEHOLDER@$(/bin/grep '^VLLM_SERVED_MODEL_NAME=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
+	-e "s@VLLM_MODEL_PLACEHOLDER@$(/bin/grep '^VLLM_MODEL=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
 	"./litellm_fs/config.yaml" > "./litellm_fs/config.yaml.${uuid}"
 
 # Profiles to activate (override via RIVAULT_PROFILES env var)
