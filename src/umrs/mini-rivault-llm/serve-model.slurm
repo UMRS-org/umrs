@@ -85,7 +85,7 @@ if [[ -z "$_vllm_host_model_path" ]]; then
     _vllm_host_model_path="${_hf_cache}/hub/models--$(echo "$_model_id" | tr '/' '--')/snapshots"
 fi
 _vllm_container_model_path="${VLLM_CONTAINER_MODEL_PATH:-/models/$(basename "$_vllm_host_model_path")}"
-_vllm_model_ref="${VLLM_MODEL_REF:---model ${_vllm_container_model_path}}"
+_vllm_model_ref="${VLLM_MODEL_REF:-${_vllm_container_model_path}}"
 _vllm_served_model_name="${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}"
 
 cat <<EOF > "./env.${uuid}"
