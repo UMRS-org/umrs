@@ -49,7 +49,7 @@ storage:
   hmae_config_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/infer_hmae_vit_b.yaml
   hmae_checkpoint: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/latest_checkpoint.pth
   vision_tarball: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar  # base path; wrapper appends -arm64.tar or -amd64.tar
-  user_model_path: /tmp
+  user_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models
   s3_tunnel_host: ""                     # auto-set to $SLURM_SUBMIT_HOST
   s3_tunnel_port: 9000
 
