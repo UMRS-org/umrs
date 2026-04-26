@@ -227,8 +227,9 @@ class EndpointRegistry:
                     f"Replacing endpoint for ({project_id}, {model}): "
                     f"{old.job_id} -> {job_id}"
                 )
-                # Remove old from job_id index
+                # Remove old from both in-memory index and backend
                 self._by_job_id.pop(old.job_id, None)
+                self._delete_from_backend(old.job_id)
 
             self._endpoints[key] = endpoint
             self._by_job_id[job_id] = endpoint
