@@ -90,7 +90,7 @@ UMRS_ART = r"""
  ██║   ██║██║╚██╔╝██║██╔══██╗╚════██║
  ╚██████╔╝██║ ╚═╝ ██║██║  ██║███████║
   ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝
- Bring your AI4S workflow to Stage 1-2
+ Bring your R4 workflow to Stage 1-2
 """
 
 PIPE_ART = r"""
