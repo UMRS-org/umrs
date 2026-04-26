@@ -5,19 +5,46 @@ Provides **async-first** submit → poll → get helpers using
 ``submit_vision_and_wait``) are kept for callers that cannot manage their
 own event loop — they create a short-lived ``AsyncHTTPClient`` internally
 via ``asyncio.run()``.
+
+R-16 (Phase 2k):
+- ``async_submit_and_wait`` now uses exponential backoff with jitter on the
+  status poll loop instead of a fixed ``poll_interval``.
+- ``pickle.loads`` is gated behind ``BENTOML_TRUSTED`` (default true) so
+  deployments that expose the BentoML port through a tunnel can opt out of
+  the RCE surface.
+- Failure paths surface the BentoML status detail when the client provides
+  one, instead of a bare "Task X failed".
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import pickle
+import random
 import time
 from typing import Any
 
 import bentoml
 
 logger = logging.getLogger(__name__)
+
+
+def _bentoml_trusted() -> bool:
+    """Whether the BentoML response is trusted enough for ``pickle.loads``.
+
+    R-16: defaults to True for backward compatibility (current deployment
+    keeps BentoML on the private network), but operators in less-trusted
+    topologies can set ``BENTOML_TRUSTED=0`` to refuse pickled bytes.
+    """
+    return os.environ.get("BENTOML_TRUSTED", "1").lower() in {"1", "true", "yes", "on"}
+
+
+def _backoff_sleep_seconds(attempt: int, base: float, cap: float) -> float:
+    """Exponential backoff with full jitter, bounded by ``cap``."""
+    raw = min(cap, base * (2 ** attempt))
+    return random.uniform(0, raw)
 
 
 # ---------------------------------------------------------------------------
@@ -49,6 +76,7 @@ async def async_submit_and_wait(
     logger.info("Task submitted: %s -> %s", endpoint_name, task_id)
 
     start = time.monotonic()
+    attempt = 0
     while True:
         elapsed = time.monotonic() - start
         if elapsed > timeout:
@@ -63,14 +91,37 @@ async def async_submit_and_wait(
         if status.value in {"success", "completed"}:
             raw = await task.get()
             if isinstance(raw, bytes):
-                return pickle.loads(raw)  # noqa: S301 — trusted internal service
+                if not _bentoml_trusted():
+                    raise RuntimeError(
+                        f"Refusing to unpickle BentoML task {task_id} response: "
+                        "BENTOML_TRUSTED=0"
+                    )
+                return pickle.loads(raw)  # noqa: S301 — gated by BENTOML_TRUSTED
             return raw
         if status.value in {"failure", "failed"}:
-            raise RuntimeError(f"Task {task_id} failed")
+            # R-16: surface BentoML's failure detail when available.
+            detail = ""
+            for attr in ("error", "exception", "message"):
+                getter = getattr(task, attr, None)
+                if callable(getter):
+                    try:
+                        value = await getter() if asyncio.iscoroutinefunction(getter) else getter()
+                        if value:
+                            detail = str(value)
+                            break
+                    except Exception:
+                        continue
+            raise RuntimeError(
+                f"Task {task_id} failed" + (f": {detail}" if detail else "")
+            )
         if status.value in {"cancelled", "canceled"}:
             raise RuntimeError(f"Task {task_id} was cancelled")
 
-        await asyncio.sleep(poll_interval)
+        # R-16: exponential backoff with jitter, capped at ``poll_interval * 5``
+        # so very slow tasks don't spam the status endpoint thousands of times.
+        sleep_for = _backoff_sleep_seconds(attempt, poll_interval, poll_interval * 5)
+        await asyncio.sleep(sleep_for)
+        attempt += 1
 
 
 async def async_submit_vision(

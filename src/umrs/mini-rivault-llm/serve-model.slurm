@@ -104,11 +104,19 @@ VLLM_MODEL_REF=${_vllm_model_ref}
 VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
 VLLM_TP=${VLLM_TP:-1}						# tensor parallelism
 VLLM_PP=${VLLM_PP:-1}						# pipeline parallelism
-NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}
-LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-$(openssl rand -hex 8)}
-LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-$(openssl rand -hex 8)}
-VLLM_API_KEY=${VLLM_API_KEY:-$(openssl rand -hex 8)}
-MCPO_API_KEY=${MCPO_API_KEY:-$(openssl rand -hex 8)}
+# R-1 (Phase 2k): honor the orchestrator-allocated port (LITELLM_PORT) over
+# any pre-existing NGINX_LITELLM_DOCKER_PORT, and only fall back to a random
+# pick when neither is set. PortManager in UMRS coordinates LITELLM_PORT, so
+# preferring it eliminates the silent collision risk between concurrent jobs.
+NGINX_LITELLM_DOCKER_PORT=${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}
+# R-3 (Phase 2k): 256-bit entropy for keys instead of 64. Note that
+# LITELLM_SALT_KEY is generated per-job here because LiteLLM's Postgres state
+# is currently tmpfs-only; if/when persistence is added, the salt MUST come
+# from a stable secret store or all encrypted columns become unreadable.
+LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-$(openssl rand -hex 32)}
+LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-$(openssl rand -hex 32)}
+VLLM_API_KEY=${VLLM_API_KEY:-$(openssl rand -hex 32)}
+MCPO_API_KEY=${MCPO_API_KEY:-$(openssl rand -hex 32)}
 UMRS_S3_BUCKET_HOST=${UMRS_S3_BUCKET_HOST:-${SLURM_SUBMIT_HOST}}		# httpforever.com
 UMRS_S3_BUCKET_PORT=${UMRS_S3_BUCKET_PORT:-9000}
 PRIV_IP1TO3=${PRIV_IP1TO3:-192.168.4}
@@ -462,16 +470,45 @@ done
 
 sed -i  -e "s@^\(PRIV_IP1TO3=\).*@\1${IP1TO3}@g" \
 	-e "s@^\(UUID=\).*@\1${uuid}@g" \
-	"./env.${uuid}"
+	"./env.${uuid}" \
+	|| { echo "[rivault] FATAL: failed to rewrite PRIV_IP1TO3/UUID in env.${uuid}"; exit 1; }
 
-sed	-e "s@UMRS_S3_BUCKET_PORT@$(/bin/grep '^UMRS_S3_BUCKET_PORT=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
-	"./nginx_fs/out-nginx.conf" > "./nginx_fs/out-nginx.conf.${uuid}"
-sed     -e "s@UMRS_S3_BUCKET_HOST@$(/bin/grep '^UMRS_S3_BUCKET_HOST=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
+# R-4 (Phase 2k): every placeholder substitution below is REQUIRED for the
+# downstream container to start. A silent grep miss (e.g. an env line missing
+# a value) historically surfaces only when vLLM/LiteLLM fail to parse their
+# config 2 minutes later. Validate substitution outputs before committing.
+_substitute_required() {
+    local label="$1" out="$2" placeholder="$3"
+    if [[ ! -s "$out" ]]; then
+        echo "[rivault] FATAL: ${label} substitution produced empty file (${out})"
+        exit 1
+    fi
+    if grep -q "${placeholder}" "$out" 2>/dev/null; then
+        echo "[rivault] FATAL: ${label} still contains unresolved placeholder '${placeholder}'"
+        exit 1
+    fi
+}
+
+if ! sed -e "s@UMRS_S3_BUCKET_PORT@$(/bin/grep '^UMRS_S3_BUCKET_PORT=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
+	"./nginx_fs/out-nginx.conf" > "./nginx_fs/out-nginx.conf.${uuid}"; then
+	echo "[rivault] FATAL: nginx out-nginx.conf substitution failed"; exit 1
+fi
+_substitute_required "out-nginx.conf" "./nginx_fs/out-nginx.conf.${uuid}" "UMRS_S3_BUCKET_PORT"
+
+if ! sed -e "s@UMRS_S3_BUCKET_HOST@$(/bin/grep '^UMRS_S3_BUCKET_HOST=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	-e "s@CONTAINER_RUNTIME_DNS@$(/bin/grep '^CONTAINER_RUNTIME_DNS=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
-	"./coredns_fs/coredns.conf" > "./coredns_fs/coredns.conf.${uuid}"
-sed	-e "s@VLLM_SERVED_MODEL_NAME_PLACEHOLDER@$(/bin/grep '^VLLM_SERVED_MODEL_NAME=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
+	"./coredns_fs/coredns.conf" > "./coredns_fs/coredns.conf.${uuid}"; then
+	echo "[rivault] FATAL: coredns substitution failed"; exit 1
+fi
+_substitute_required "coredns.conf" "./coredns_fs/coredns.conf.${uuid}" "UMRS_S3_BUCKET_HOST"
+
+if ! sed -e "s@VLLM_SERVED_MODEL_NAME_PLACEHOLDER@$(/bin/grep '^VLLM_SERVED_MODEL_NAME=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
 	-e "s@VLLM_MODEL_PLACEHOLDER@$(/bin/grep '^VLLM_MODEL=' "./env.${uuid}" | awk -F'=' '{print $2}')@g" \
-	"./litellm_fs/config.yaml" > "./litellm_fs/config.yaml.${uuid}"
+	"./litellm_fs/config.yaml" > "./litellm_fs/config.yaml.${uuid}"; then
+	echo "[rivault] FATAL: litellm config substitution failed"; exit 1
+fi
+_substitute_required "litellm/config.yaml" "./litellm_fs/config.yaml.${uuid}" "VLLM_SERVED_MODEL_NAME_PLACEHOLDER"
+_substitute_required "litellm/config.yaml" "./litellm_fs/config.yaml.${uuid}" "VLLM_MODEL_PLACEHOLDER"
 
 # Profiles to activate (override via RIVAULT_PROFILES env var)
 # If site defaults were loaded above, runtime.profiles wins. Otherwise the
@@ -600,10 +637,19 @@ if echo "${RIVAULT_PROFILES}" | grep -q "vision-bentoml"; then
     if [ "$_VISION_READY" -eq 1 ]; then
         echo "[rivault] BentoML vision service is READY via ${_VISION_READY_URL} (took ~${_VISION_ELAPSED}s)"
     else
-        echo "[rivault] WARNING: BentoML vision service did NOT become ready within ${_VISION_TIMEOUT}s"
-        echo "[rivault]          Checked endpoints: ${_VISION_READY_URLS[*]}"
-        echo "[rivault]          Vision inference requests may fail. Check container logs:"
-        echo "[rivault]          podman logs rivault_bentoml-vision_1"
+        echo "[rivault] ERROR: BentoML vision service did NOT become ready within ${_VISION_TIMEOUT}s"
+        echo "[rivault]        Checked endpoints: ${_VISION_READY_URLS[*]}"
+        echo "[rivault]        Container logs (last 50 lines):"
+        podman logs --tail 50 rivault_bentoml-vision_1 2>&1 | sed 's/^/[rivault]          /' || true
+        # R-5 (Phase 2k): fail the Slurm job rather than letting the registry
+        # advertise a half-up stack. The cleanup trap will tear down the
+        # compose stack; UMRS durable retry will create a new attempt.
+        if [[ "${RIVAULT_VISION_STRICT:-1}" == "1" ]]; then
+            echo "[rivault]        RIVAULT_VISION_STRICT=1 → exiting non-zero so UMRS retries cleanly."
+            exit 2
+        else
+            echo "[rivault]        RIVAULT_VISION_STRICT=0 → continuing; vision routes will return 503."
+        fi
     fi
 fi
 
