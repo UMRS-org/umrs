@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, cast
 
 from umrs.admin.user_store import (
     UserRecord,
@@ -283,7 +283,7 @@ def _build_jwt_payload(
 
 
 def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
-    """Generate a signed JWT for Gateway authentication."""
+    """Generate a project-scoped dev/testing JWT for Gateway authentication."""
     import time
 
     try:
@@ -441,6 +441,15 @@ def _cmd_slurm_accounts(args: argparse.Namespace, _store: UserStore) -> int:
 # parser
 # ---------------------------------------------------------------------------
 
+_GENERATE_JWT_DESCRIPTION = (
+    "Create a signed HS256 JWT for current dev/testing Gateway auth. "
+    "The token contains sub, project_id, roles, and exp claims, so it "
+    "is intentionally scoped to one project. Use it with 'r4 init "
+    "--api-key'. For shared user sessions prefer OIDC/Okta plus "
+    "server-side project authorization. The signing secret is read "
+    "from --secret, $JWT_SECRET, or the built-in dev default."
+)
+
 
 def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
     add_p = user_sub.add_parser("add", help="Create a user record")
@@ -527,13 +536,8 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
 
     jwt_p = token_sub.add_parser(
         "generate-jwt",
-        help="Generate a signed JWT for Gateway authentication",
-        description=(
-            "Create a signed HS256 JWT containing sub, project_id, roles, "
-            "and exp claims. The token can be used with 'r4 init --api-key'. "
-            "The signing secret is read from --secret, $JWT_SECRET, or the "
-            "built-in dev default."
-        ),
+        help="Generate a project-scoped dev/testing JWT for Gateway authentication",
+        description=_GENERATE_JWT_DESCRIPTION,
     )
     jwt_p.add_argument(
         "--user", "-u", default="admin",
@@ -545,7 +549,7 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
     )
     jwt_p.add_argument(
         "--project", "-p", default="default",
-        help="Project ID claim. Default: default",
+        help="Project ID claim / active scope for this token. Default: default",
     )
     jwt_p.add_argument(
         "--roles", "-r", nargs="*", default=None,
@@ -660,8 +664,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if func is None:
         parser.print_help()
         return 2
+    handler = cast(Callable[[argparse.Namespace, UserStore], int], func)
     try:
-        rc = int(func(args, store) or 0)
+        rc = int(handler(args, store) or 0)
     except UserStoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
