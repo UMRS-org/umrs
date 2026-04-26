@@ -20,7 +20,8 @@ services:
       #  target: /etc/nginx/ssl
       #  read_only: true
     depends_on:
-      - litellm
+      litellm:
+        condition: service_started
     environment:
       TZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
@@ -58,7 +59,8 @@ services:
         target: /config.yaml
         read_only: true
     depends_on:
-      - ll-postgres
+      ll-postgres:
+        condition: service_started
       #- vllm   # only available when 'vllm' profile is active
       #- mcpo   # commented out — mcpo/mcp-* disabled for now
     environment:
@@ -79,13 +81,13 @@ services:
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
       CUSTOM_TIKTOKEN_CACHE_DIR: "/usr/lib/python3.13/site-packages/litellm/litellm_core_utils/tokenizers"  # Note: temp workaround for issue #19852
-    #healthcheck:
-    #  test: [ "CMD-SHELL",
-    #          "wget --no-verbose --tries=1 http://localhost:4000/health/liveliness || exit 1" ]
-    #  interval: 30s
-    #  timeout: 10s
-    #  retries: 3
-    #  start_period: 40s
+    healthcheck:
+      test: [ "CMD-SHELL",
+              "wget --no-verbose --tries=1 http://localhost:4000/health/liveliness || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
     userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
@@ -121,12 +123,18 @@ services:
       PGTZ: ${GENAI_TZ:-Asia/Tokyo}
       CUDA_VISIBLE_DEVICES: ""
       HIP_VISIBLE_DEVICES: ""
-    #healthcheck:
-    #  test: [ "CMD-SHELL",
-    #          "pg_isready -U postgres" ]
-    #  interval: 3s
-    #  timeout: 3s
-    #  retries: 10
+    # R-2 (Phase 2k): healthchecks for service observability.
+    # Note: On rootless podman with userns_mode=host (RCCS), healthcheck exec
+    # is broken (runc "container does not exist"). depends_on uses
+    # service_started instead of service_healthy. Actual readiness is
+    # verified by the UMRS readiness poller.
+    healthcheck:
+      test: [ "CMD-SHELL",
+              "pg_isready -U postgres -h 127.0.0.1" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
     cap_drop: [ ALL ]
     cap_add: [ sys_nice, setuid, setgid, chown, dac_override, fowner ]
     userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
@@ -184,6 +192,16 @@ services:
       VLLM_MM_INPUT_CACHE_GIB: 2
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       TZ: ${GENAI_TZ:-Asia/Tokyo}
+    # R-2 (Phase 2k): vLLM liveness probe; uses /health on the default
+    # port 8000. start_period is generous because large models (70B+) can
+    # take 3-5 min to load weights.
+    healthcheck:
+      test: [ "CMD-SHELL",
+              "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\" || exit 1" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
     userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
