@@ -43,6 +43,38 @@ from umrs.shared.config import get_default_tmp_subdir, get_resolved_umrs_subdir
 logger = logging.getLogger(__name__)
 
 
+# R-6 (Phase 2k): every Slurm CLI invocation MUST be bounded so a hung
+# slurmctld cannot stall the orchestrator's reconciler/janitor loops.
+# Override via SLURM_CLI_TIMEOUT_SEC for sites with very slow controllers.
+_SLURM_CLI_TIMEOUT_SEC = float(os.environ.get("SLURM_CLI_TIMEOUT_SEC", "15"))
+
+
+async def _run_slurm_cli(*args: str) -> tuple[int, bytes, bytes]:
+    """Run a Slurm CLI command with a timeout; never block forever."""
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        stdout, stderr = await asyncio.wait_for(
+            proc.communicate(), timeout=_SLURM_CLI_TIMEOUT_SEC
+        )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        logger.warning(
+            "Slurm CLI timed out after %ss: %s",
+            _SLURM_CLI_TIMEOUT_SEC,
+            " ".join(args),
+        )
+        return 124, b"", b"timeout"
+    return proc.returncode or 0, stdout, stderr
+
+
 class SlurmPodmanBackend(OrchestratorBackend):
     """
     Orchestrator that submits the site's ``serve-model.slurm`` via sbatch.
@@ -503,31 +535,34 @@ class SlurmPodmanBackend(OrchestratorBackend):
             return candidates[0]
 
         fallback = candidates[0]
+
+        # R-7 (Phase 2k): single batched sinfo call instead of N round trips.
+        # Output format: "<partition> <state>" per line.
+        rc, stdout, stderr = await _run_slurm_cli(
+            "sinfo", "-h", "-p", ",".join(candidates), "-o", "%P %t",
+        )
+        if rc != 0:
+            logger.warning(
+                "sinfo unavailable while selecting partition (rc=%s, stderr=%s); "
+                "using fallback %s",
+                rc, stderr.decode().strip(), fallback,
+            )
+            return fallback
+
+        states_by_partition: Dict[str, List[str]] = {p: [] for p in candidates}
+        for line in stdout.decode().splitlines():
+            parts = line.split(None, 1)
+            if len(parts) != 2:
+                continue
+            # sinfo emits the partition name with a trailing '*' for default.
+            partition = parts[0].rstrip("*").strip()
+            state = parts[1].strip().lower()
+            if partition in states_by_partition:
+                states_by_partition[partition].append(state)
+
         mixed_candidates: List[str] = []
         for partition in candidates:
-            try:
-                proc = await asyncio.create_subprocess_exec(
-                    "sinfo", "-h", "-p", partition, "-o", "%t",
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                )
-            except FileNotFoundError:
-                logger.warning(
-                    "sinfo not available while selecting partition; using fallback %s",
-                    fallback,
-                )
-                return fallback
-
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                logger.warning(
-                    "Skipping partition %s during selection: %s",
-                    partition,
-                    stderr.decode().strip(),
-                )
-                continue
-
-            states = [line.strip().lower() for line in stdout.decode().splitlines() if line.strip()]
+            states = states_by_partition.get(partition, [])
             if any(state.startswith("idle") for state in states):
                 logger.info("Selected idle Slurm partition %s from %s", partition, candidates)
                 return partition
@@ -547,12 +582,11 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
     async def _squeue_info(self, job_id: str) -> tuple[Optional[str], Optional[str]]:
         """Return (node, state) from squeue, or (None, None) if not found."""
-        proc = await asyncio.create_subprocess_exec(
+        rc, stdout, _ = await _run_slurm_cli(
             "squeue", "-j", job_id, "-h", "-o", "%N %T",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        if rc != 0:
+            return None, None
         line = stdout.decode().strip()
         if not line:
             return None, None
@@ -563,12 +597,11 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
     async def _sacct_state(self, job_id: str) -> Optional[str]:
         """Return the first sacct State string, or None."""
-        proc = await asyncio.create_subprocess_exec(
+        rc, stdout, _ = await _run_slurm_cli(
             "sacct", "-j", job_id, "-n", "-o", "State",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await proc.communicate()
+        if rc != 0:
+            return None
         lines = stdout.decode().strip().split("\n")
         return lines[0].strip() if lines and lines[0].strip() else None
 

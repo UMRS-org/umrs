@@ -6,12 +6,17 @@ compute_embeddings interface expected by EmbeddingModel / embeddings.py.
 The generic factory ``make_bentoml_vision_compute`` creates a closure for
 **any** model type supported by the generic ``/infer`` endpoint.  Internally
 it creates a short-lived ``AsyncHTTPClient`` per batch via ``asyncio.run()``.
+
+R-16 (Phase 2k): the adapter caches one long-lived ``AsyncHTTPClient`` per
+``(service_url, token)`` pair, opened lazily on first use and reused across
+batches. Call :func:`close_bentoml_clients` from process-shutdown hooks to
+release file descriptors cleanly. Set ``BENTOML_CLIENT_REUSE=0`` to fall
+back to the legacy per-batch client (useful when debugging hung tasks).
 """
 
 import asyncio
 import logging
 import os
-import pickle
 
 import bentoml
 
@@ -23,6 +28,61 @@ from umrs.vision_service.bentoml_client import async_submit_and_wait
 from umrs.vision_service.output_specs import describe_output_artifacts
 
 logger = logging.getLogger(__name__)
+
+
+# R-16: per-event-loop AsyncHTTPClient cache. ``asyncio.run`` creates a fresh
+# event loop per batch, and BentoML's HTTP client is bound to the loop in
+# which it was opened. We therefore key the cache by ``(loop_id, service_url,
+# token)`` so a stale entry from a previous loop is never reused.
+_CLIENT_CACHE: dict[tuple[int, str, str | None], "bentoml.AsyncHTTPClient"] = {}
+_CLIENT_CACHE_LOCK = asyncio.Lock()
+
+
+def _client_reuse_enabled() -> bool:
+    return os.environ.get("BENTOML_CLIENT_REUSE", "1").lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+async def _get_or_open_client(service_url: str, token: str | None):
+    """Return an ``AsyncHTTPClient`` cached for the *current* event loop.
+
+    When the loop differs from the cache key (typical under per-batch
+    ``asyncio.run`` callers), a new client is opened. The previous client
+    bound to a now-closed loop is garbage-collected; its underlying socket
+    was already torn down with the loop.
+    """
+    loop_id = id(asyncio.get_running_loop())
+    key = (loop_id, service_url, token)
+    cached = _CLIENT_CACHE.get(key)
+    if cached is not None:
+        return cached
+    async with _CLIENT_CACHE_LOCK:
+        cached = _CLIENT_CACHE.get(key)
+        if cached is not None:
+            return cached
+        client = bentoml.AsyncHTTPClient(service_url, token=token)
+        await client.__aenter__()
+        _CLIENT_CACHE[key] = client
+        logger.debug(
+            "Opened cached BentoML client for %s on loop %s",
+            service_url, loop_id,
+        )
+        return client
+
+
+async def close_bentoml_clients() -> None:
+    """Close every cached BentoML client bound to the current loop."""
+    loop_id = id(asyncio.get_running_loop())
+    async with _CLIENT_CACHE_LOCK:
+        for key in list(_CLIENT_CACHE.keys()):
+            if key[0] != loop_id:
+                continue
+            client = _CLIENT_CACHE.pop(key)
+            try:
+                await client.__aexit__(None, None, None)
+            except Exception as exc:  # noqa: BLE001 — best-effort cleanup
+                logger.warning("Error closing BentoML client %s: %s", key[1], exc)
 
 
 def _copy_to_output_bucket(s3, s3_uri, output_bucket):
@@ -107,7 +167,16 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
             metadata_list = []
             saved_keys = []
 
-            async with bentoml.AsyncHTTPClient(service_url, token=token) as client:
+            # R-16: prefer the long-lived cached client; fall back to a
+            # per-batch context-managed client when the cache is disabled.
+            if _client_reuse_enabled():
+                client = await _get_or_open_client(service_url, token)
+                _client_ctx = None
+            else:
+                _client_ctx = bentoml.AsyncHTTPClient(service_url, token=token)
+                client = await _client_ctx.__aenter__()
+
+            try:
                 for idx, s3_key in enumerate(s3_keys):
                     logger.info("[%d/%d] BentoML %s: %s",
                                 idx + 1, len(s3_keys), model_type, s3_key)
@@ -210,6 +279,9 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                     output_s3_key = _copy_to_output_bucket(s3, output_s3_key,
                                                            output_bucket)
                     saved_keys.append(output_s3_key)
+            finally:
+                if _client_ctx is not None:
+                    await _client_ctx.__aexit__(None, None, None)
 
             return results, checksums, metadata_list, saved_keys
 

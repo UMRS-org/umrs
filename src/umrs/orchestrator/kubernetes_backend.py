@@ -2,11 +2,28 @@
 Kubernetes orchestrator backend for Mini-RiVault.
 
 Manages LLM inference endpoints via Kubernetes Jobs/Deployments.
+
+Phase 2k robustness changes (R-8 through R-13):
+- R-8: Apply a NetworkPolicy denying egress to enforce the offline-inference
+  invariant (mini-rivault must not have public network access).
+- R-9: Defer the READY verdict to UMRS's authoritative ReadinessPoller; this
+  backend reports only PENDING/STARTING/FAILED based on Pod phase.
+- R-10: Map the request-supplied ``model_path`` to a per-job volume so that
+  ``r4 endpoint up --model X`` actually selects model X on K8s.
+- R-11: Capture the last 200 lines of pod logs into ``error_message`` on
+  failure so operators do not need cluster shell access to triage.
+- R-12: Avoid an N+1 ``read_namespaced_job`` per item in ``list_jobs``;
+  build :class:`JobInfo` from the bulk list response. Add the
+  ``batch.kubernetes.io/job-name`` selector for K8s >= 1.27.
+- R-13: Resource requests/limits come from the provisioning request, not
+  from hardcoded constants.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -17,6 +34,21 @@ from .base import (
     OrchestratorBackend,
     OrchestratorConfig,
 )
+
+logger = logging.getLogger(__name__)
+
+# R-8: Default in-cluster CIDRs that mini-rivault is allowed to reach.
+# Override per deployment via env. The defaults assume a typical kubeadm
+# cluster (10.244.0.0/16 pods, 10.96.0.0/12 services). Production sites
+# MUST narrow this to the actual S3/MinIO and DNS endpoints.
+_K8S_EGRESS_ALLOWED_CIDRS = [
+    cidr.strip()
+    for cidr in os.environ.get(
+        "K8S_EGRESS_ALLOWED_CIDRS",
+        "10.96.0.0/12,10.244.0.0/16",
+    ).split(",")
+    if cidr.strip()
+]
 
 
 class KubernetesBackend(OrchestratorBackend):
@@ -55,6 +87,8 @@ class KubernetesBackend(OrchestratorBackend):
                 "core": client.CoreV1Api(),
                 "batch": client.BatchV1Api(),
                 "apps": client.AppsV1Api(),
+                # R-8: NetworkingV1Api needed for egress NetworkPolicy.
+                "networking": client.NetworkingV1Api(),
                 "ApiException": ApiException,
             }
             self._k8s_available = True
@@ -74,6 +108,62 @@ class KubernetesBackend(OrchestratorBackend):
         uid = uuid.uuid4().hex[:8]
         return f"mini-rivault-{uid}{'-' + suffix if suffix else ''}"
 
+    def _build_network_policy(
+        self, job_name: str, namespace: str
+    ) -> Dict[str, Any]:
+        """Build a NetworkPolicy that denies egress except to allowed CIDRs.
+
+        R-8 (Phase 2k): enforces the offline-inference invariant by allowing
+        only kube-dns and the configured in-cluster CIDRs (S3/MinIO,
+        Gateway). Public internet egress is implicitly denied.
+        """
+        # 53/UDP for DNS, plus arbitrary TCP to allowed CIDRs.
+        egress_rules: List[Dict[str, Any]] = [
+            {
+                "to": [
+                    {
+                        "namespaceSelector": {},
+                        "podSelector": {
+                            "matchLabels": {"k8s-app": "kube-dns"}
+                        },
+                    }
+                ],
+                "ports": [{"protocol": "UDP", "port": 53}],
+            }
+        ]
+        if _K8S_EGRESS_ALLOWED_CIDRS:
+            egress_rules.append(
+                {
+                    "to": [
+                        {"ipBlock": {"cidr": cidr}}
+                        for cidr in _K8S_EGRESS_ALLOWED_CIDRS
+                    ],
+                }
+            )
+        return {
+            "apiVersion": "networking.k8s.io/v1",
+            "kind": "NetworkPolicy",
+            "metadata": {
+                "name": f"{job_name}-egress",
+                "namespace": namespace,
+                "labels": {
+                    "app.kubernetes.io/name": "mini-rivault",
+                    "app.kubernetes.io/managed-by": "umrs-orchestrator",
+                    "job-name": job_name,
+                },
+            },
+            "spec": {
+                "podSelector": {
+                    "matchLabels": {
+                        "app.kubernetes.io/name": "mini-rivault",
+                        "job-name": job_name,
+                    }
+                },
+                "policyTypes": ["Egress"],
+                "egress": egress_rules,
+            },
+        }
+
     def _build_job_manifest(
         self,
         job_name: str,
@@ -83,9 +173,25 @@ class KubernetesBackend(OrchestratorBackend):
         """Build Kubernetes Job manifest for Mini-RiVault."""
         cfg = self.config
         namespace = kwargs.get("namespace", cfg.k8s_namespace)
-        gpus = kwargs.get("gpus", 1)
+        # R-13 (Phase 2k): resources come from request (gpu_count/memory/cpu)
+        # not hardcoded. Falls back to historical defaults when omitted.
+        gpus = kwargs.get("gpu_count", kwargs.get("gpus", 1))
+        memory_request = kwargs.get("memory_request", "32Gi")
+        memory_limit = kwargs.get("memory_limit", "64Gi")
+        cpu_request = kwargs.get("cpu_request", "4")
+        cpu_limit = kwargs.get("cpu_limit", str(int(cpu_request) * 2) if str(cpu_request).isdigit() else cpu_request)
+        # R-10 (Phase 2k): caller-supplied model_path drives an explicit volume
+        # subPath, so different requests on the same PVC pick different
+        # snapshots. Empty model_path falls back to the legacy whole-PVC mount.
+        model_subpath = kwargs.get("model_subpath")
+        if model_subpath is None and model_path and not model_path.startswith("/models"):
+            # Heuristic: if model_path looks like a relative key (e.g.
+            # "Qwen/Qwen3-8B"), use it as a subPath inside the model PVC.
+            model_subpath = model_path.lstrip("/")
 
         # Environment variables
+        # R-10: container always sees /models as the mount point; the host
+        # subPath selects which model snapshot is exposed.
         env_vars = [
             {"name": "VLLM_MODEL_PATH", "value": "/models"},
             {"name": "VLLM_PORT", "value": str(cfg.vllm_port)},
@@ -98,6 +204,18 @@ class KubernetesBackend(OrchestratorBackend):
             {"name": "HF_HUB_OFFLINE", "value": "1"},
             {"name": "VLLM_NO_USAGE_STATS", "value": "1"},
         ]
+        # Forward any extra env from the request (e.g. VLLM_SERVED_MODEL_NAME).
+        for key, value in (kwargs.get("env") or {}).items():
+            env_vars.append({"name": key, "value": str(value)})
+
+        # R-10: conditional subPath in the volumeMount.
+        model_volume_mount: Dict[str, Any] = {
+            "name": "models",
+            "mountPath": "/models",
+            "readOnly": True,
+        }
+        if model_subpath:
+            model_volume_mount["subPath"] = model_subpath
 
         # Add LiteLLM master key from secret or direct value
         if cfg.litellm_master_key:
@@ -149,21 +267,16 @@ class KubernetesBackend(OrchestratorBackend):
                                 "resources": {
                                     "limits": {
                                         cfg.k8s_gpu_resource: str(gpus),
-                                        "memory": "64Gi",
+                                        "memory": memory_limit,
+                                        "cpu": cpu_limit,
                                     },
                                     "requests": {
                                         cfg.k8s_gpu_resource: str(gpus),
-                                        "memory": "32Gi",
-                                        "cpu": "4",
+                                        "memory": memory_request,
+                                        "cpu": cpu_request,
                                     },
                                 },
-                                "volumeMounts": [
-                                    {
-                                        "name": "models",
-                                        "mountPath": "/models",
-                                        "readOnly": True,
-                                    }
-                                ],
+                                "volumeMounts": [model_volume_mount],
                                 "readinessProbe": {
                                     "httpGet": {
                                         "path": "/v1/models",
@@ -263,6 +376,32 @@ class KubernetesBackend(OrchestratorBackend):
         except self._k8s_client["ApiException"] as e:
             raise RuntimeError(f"Failed to create Job: {e}")
 
+        # R-8: apply egress-deny NetworkPolicy. Failure here is fatal because
+        # without it the offline-inference invariant cannot be enforced.
+        netpol_manifest = self._build_network_policy(job_name, namespace)
+        try:
+            self._k8s_client["networking"].create_namespaced_network_policy(
+                namespace=namespace,
+                body=netpol_manifest,
+            )
+        except self._k8s_client["ApiException"] as exc:
+            # Roll back the Job we just created so we never leave a pod
+            # running without its egress guard.
+            logger.error(
+                "Failed to apply egress NetworkPolicy for %s: %s; rolling back Job",
+                job_name, exc,
+            )
+            try:
+                self._k8s_client["batch"].delete_namespaced_job(
+                    name=job_name, namespace=namespace,
+                    propagation_policy="Background",
+                )
+            except self._k8s_client["ApiException"]:
+                pass
+            raise RuntimeError(
+                f"Refusing to start job {job_name} without egress NetworkPolicy: {exc}"
+            )
+
         # Create Service for endpoint discovery
         service_manifest = self._build_service_manifest(job_name, namespace)
         try:
@@ -270,9 +409,10 @@ class KubernetesBackend(OrchestratorBackend):
                 namespace=namespace,
                 body=service_manifest,
             )
-        except self._k8s_client["ApiException"]:
-            # Service creation failure is not fatal
-            pass
+        except self._k8s_client["ApiException"] as exc:
+            # Service creation failure is not fatal but degrades discovery;
+            # log loudly so operators see it.
+            logger.warning("Service creation failed for %s: %s", job_name, exc)
 
         return JobInfo(
             job_id=job_name,
@@ -280,6 +420,92 @@ class KubernetesBackend(OrchestratorBackend):
             model_path=model,
             created_at=datetime.now(),
             backend=self.backend_name,
+            metadata={"namespace": namespace, "network_policy": netpol_manifest["metadata"]["name"]},
+        )
+
+    # R-12: K8s 1.27 renamed the auto-generated job pod label. Ship both so
+    # the selector keeps working across versions.
+    _JOB_NAME_SELECTOR_TMPL = "job-name={job},batch.kubernetes.io/job-name={job}"
+    _JOB_NAME_SELECTOR_LEGACY = "job-name={job}"
+
+    def _select_job_pods(self, namespace: str, job_id: str):
+        """List pods for a job, tolerating both old and new label keys."""
+        # Try the union selector first; some K8s versions reject the comma
+        # form when one key is absent, so fall back to legacy on failure.
+        try:
+            return self._k8s_client["core"].list_namespaced_pod(
+                namespace=namespace,
+                label_selector=self._JOB_NAME_SELECTOR_TMPL.format(job=job_id),
+            )
+        except self._k8s_client["ApiException"]:
+            return self._k8s_client["core"].list_namespaced_pod(
+                namespace=namespace,
+                label_selector=self._JOB_NAME_SELECTOR_LEGACY.format(job=job_id),
+            )
+
+    def _capture_pod_logs(self, namespace: str, job_id: str, tail: int = 200) -> Optional[str]:
+        """R-11: pull last N lines of pod logs into the JobInfo error_message."""
+        try:
+            pods = self._select_job_pods(namespace, job_id)
+        except self._k8s_client["ApiException"]:
+            return None
+        snippets: List[str] = []
+        for pod in pods.items:
+            try:
+                log = self._k8s_client["core"].read_namespaced_pod_log(
+                    name=pod.metadata.name,
+                    namespace=namespace,
+                    tail_lines=tail,
+                )
+                snippets.append(f"--- pod {pod.metadata.name} ---\n{log}")
+            except self._k8s_client["ApiException"]:
+                continue
+        return "\n".join(snippets) if snippets else None
+
+    def _job_to_info(self, job, namespace: str) -> JobInfo:
+        """Build a JobInfo from a V1Job, with R-9 readiness deferral."""
+        status = JobStatus.PENDING
+        error_message: Optional[str] = None
+
+        if job.status.succeeded and job.status.succeeded > 0:
+            status = JobStatus.STOPPED
+        elif job.status.failed and job.status.failed > 0:
+            status = JobStatus.FAILED
+            if job.status.conditions:
+                for cond in job.status.conditions:
+                    if cond.type == "Failed":
+                        error_message = cond.message
+            # R-11: enrich with pod logs so the failure message is actionable.
+            log_tail = self._capture_pod_logs(namespace, job.metadata.name)
+            if log_tail:
+                error_message = (error_message or "") + "\n" + log_tail
+        elif job.status.active and job.status.active > 0:
+            status = JobStatus.STARTING
+
+        # R-9: never promote to READY here. The endpoint coordinates are set
+        # once the pod is Running so UMRS's ReadinessPoller can take over;
+        # the registry transitions to READY when the poller succeeds.
+        endpoint: Optional[EndpointInfo] = None
+        if status == JobStatus.STARTING:
+            try:
+                pods = self._select_job_pods(namespace, job.metadata.name)
+                for pod in pods.items:
+                    if pod.status.phase == "Running":
+                        endpoint = EndpointInfo(
+                            node=f"{job.metadata.name}.{namespace}.svc.cluster.local",
+                            litellm_port=self.config.litellm_port,
+                            vllm_port=self.config.vllm_port,
+                        )
+                        break
+            except self._k8s_client["ApiException"]:
+                pass
+
+        return JobInfo(
+            job_id=job.metadata.name,
+            status=status,
+            endpoint=endpoint,
+            backend=self.backend_name,
+            error_message=error_message,
             metadata={"namespace": namespace},
         )
 
@@ -304,52 +530,7 @@ class KubernetesBackend(OrchestratorBackend):
                 )
             raise
 
-        # Determine status from Job conditions
-        status = JobStatus.PENDING
-        error_message = None
-
-        if job.status.succeeded and job.status.succeeded > 0:
-            status = JobStatus.STOPPED
-        elif job.status.failed and job.status.failed > 0:
-            status = JobStatus.FAILED
-            if job.status.conditions:
-                for cond in job.status.conditions:
-                    if cond.type == "Failed":
-                        error_message = cond.message
-        elif job.status.active and job.status.active > 0:
-            status = JobStatus.STARTING
-
-        # Check if pod is ready
-        endpoint = None
-        if status == JobStatus.STARTING:
-            try:
-                pods = self._k8s_client["core"].list_namespaced_pod(
-                    namespace=namespace,
-                    label_selector=f"job-name={job_id}",
-                )
-                for pod in pods.items:
-                    if pod.status.phase == "Running":
-                        # Check readiness
-                        for cond in pod.status.conditions or []:
-                            if cond.type == "Ready" and cond.status == "True":
-                                status = JobStatus.READY
-                                endpoint = EndpointInfo(
-                                    node=f"{job_id}.{namespace}.svc.cluster.local",
-                                    litellm_port=self.config.litellm_port,
-                                    vllm_port=self.config.vllm_port,
-                                )
-                                break
-            except self._k8s_client["ApiException"]:
-                pass
-
-        return JobInfo(
-            job_id=job_id,
-            status=status,
-            endpoint=endpoint,
-            backend=self.backend_name,
-            error_message=error_message,
-            metadata={"namespace": namespace},
-        )
+        return self._job_to_info(job, namespace)
 
     async def wait_for_ready(
         self,
@@ -376,7 +557,7 @@ class KubernetesBackend(OrchestratorBackend):
         raise TimeoutError(f"Job {job_id} did not become ready within {timeout}s")
 
     async def cleanup(self, job_id: str, force: bool = False) -> None:
-        """Delete a Kubernetes Job and its Service."""
+        """Delete a Kubernetes Job, its Service, and its NetworkPolicy."""
         await self._ensure_k8s_client()
         namespace = self.config.k8s_namespace
 
@@ -401,11 +582,24 @@ class KubernetesBackend(OrchestratorBackend):
         except self._k8s_client["ApiException"]:
             pass
 
+        # R-8: delete the egress NetworkPolicy attached to this job.
+        try:
+            self._k8s_client["networking"].delete_namespaced_network_policy(
+                name=f"{job_id}-egress",
+                namespace=namespace,
+            )
+        except self._k8s_client["ApiException"]:
+            pass
+
     async def list_jobs(
         self,
         status_filter: Optional[List[JobStatus]] = None,
     ) -> List[JobInfo]:
-        """List all Mini-RiVault Jobs."""
+        """List all Mini-RiVault Jobs.
+
+        R-12 (Phase 2k): build :class:`JobInfo` directly from the bulk list
+        response instead of issuing a per-item ``read_namespaced_job`` call.
+        """
         await self._ensure_k8s_client()
         namespace = self.config.k8s_namespace
 
@@ -417,12 +611,11 @@ class KubernetesBackend(OrchestratorBackend):
         except self._k8s_client["ApiException"] as e:
             raise RuntimeError(f"Failed to list Jobs: {e}")
 
-        result = []
+        result: List[JobInfo] = []
         for job in jobs.items:
-            job_info = await self.get_job_status(job.metadata.name)
+            job_info = self._job_to_info(job, namespace)
             if status_filter is None or job_info.status in status_filter:
                 result.append(job_info)
-
         return result
 
     async def cleanup_orphans(self) -> int:

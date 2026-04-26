@@ -336,12 +336,27 @@ class EndpointRegistry:
 
         Returns:
             RegisteredEndpoint if found and usable, None otherwise.
+
+        R-15 (Phase 2k): Falls back to a `served_model_name` lookup when the
+        primary `(project_id, model)` key misses. The mini-rivault stack
+        sometimes registers under the user-facing model name (``Qwen/Qwen3-8B``)
+        and sometimes under the vLLM-served name (a filesystem basename). Both
+        callers should resolve to the same endpoint.
         """
         min_ttl = min_ttl_sec if min_ttl_sec is not None else self._min_ttl_for_reuse_sec
         key = (project_id, model)
 
         with self._lock:
             endpoint = self._endpoints.get(key)
+            if endpoint is None:
+                # R-15: fall back to served_model_name index.
+                for candidate in self._endpoints.values():
+                    if candidate.project_id != project_id:
+                        continue
+                    served = candidate.metadata.get("served_model_name")
+                    if served and served == model:
+                        endpoint = candidate
+                        break
             if not endpoint:
                 return None
 
