@@ -251,6 +251,74 @@ def _cmd_token_generate(args: argparse.Namespace, _store: UserStore) -> int:
     return 0
 
 
+def _resolve_jwt_secret(args: argparse.Namespace) -> str:
+    """Resolve the JWT signing secret from CLI flag, env, or default."""
+    import os
+
+    secret = getattr(args, "secret", None)
+    if secret:
+        return secret
+    return os.environ.get("JWT_SECRET", "dev-secret-change-in-production")
+
+
+def _build_jwt_payload(
+    user: str,
+    email: str,
+    project: str,
+    roles: List[str],
+    days: int,
+) -> Dict[str, Any]:
+    """Build the JWT claims payload."""
+    import time
+
+    now = int(time.time())
+    return {
+        "sub": user,
+        "email": email,
+        "project_id": project,
+        "roles": roles,
+        "iat": now,
+        "exp": now + (days * 86400),
+    }
+
+
+def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
+    """Generate a signed JWT for Gateway authentication."""
+    import time
+
+    try:
+        from jose import jwt as jose_jwt
+    except ImportError:
+        print(
+            "error: python-jose is required. "
+            "Install with: pip install python-jose[cryptography]",
+            file=sys.stderr,
+        )
+        return 2
+
+    secret = _resolve_jwt_secret(args)
+    email = args.email or f"{args.user}@dev.local"
+    roles = args.roles or ["admin"]
+    payload = _build_jwt_payload(args.user, email, args.project, roles, args.days)
+    token = jose_jwt.encode(payload, secret, algorithm="HS256")
+
+    if args.json:
+        _print_json({
+            "token": token,
+            "claims": payload,
+            "expires_at_utc": time.strftime(
+                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(payload["exp"])
+            ),
+        })
+    else:
+        print(f"token: {token}")
+        print(f"  sub:        {payload['sub']}")
+        print(f"  project_id: {payload['project_id']}")
+        print(f"  roles:      {', '.join(roles)}")
+        print(f"  expires:    {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(payload['exp']))}")
+    return 0
+
+
 def _cmd_token_list(args: argparse.Namespace, _store: UserStore) -> int:
     mgr = _token_manager()
     tokens = mgr.list_tokens()
@@ -456,6 +524,43 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
     gen_p.add_argument("--description", default="")
     gen_p.add_argument("--json", action="store_true")
     gen_p.set_defaults(func=_cmd_token_generate)
+
+    jwt_p = token_sub.add_parser(
+        "generate-jwt",
+        help="Generate a signed JWT for Gateway authentication",
+        description=(
+            "Create a signed HS256 JWT containing sub, project_id, roles, "
+            "and exp claims. The token can be used with 'r4 init --api-key'. "
+            "The signing secret is read from --secret, $JWT_SECRET, or the "
+            "built-in dev default."
+        ),
+    )
+    jwt_p.add_argument(
+        "--user", "-u", default="admin",
+        help="User identity (sub claim). Default: admin",
+    )
+    jwt_p.add_argument(
+        "--email", "-e", default=None,
+        help="Email claim. Default: <user>@dev.local",
+    )
+    jwt_p.add_argument(
+        "--project", "-p", default="default",
+        help="Project ID claim. Default: default",
+    )
+    jwt_p.add_argument(
+        "--roles", "-r", nargs="*", default=None,
+        help="Roles list. Default: admin",
+    )
+    jwt_p.add_argument(
+        "--days", "-d", type=int, default=30,
+        help="Token validity in days. Default: 30",
+    )
+    jwt_p.add_argument(
+        "--secret", "-s", default=None,
+        help="JWT signing secret. Default: $JWT_SECRET or dev default",
+    )
+    jwt_p.add_argument("--json", action="store_true")
+    jwt_p.set_defaults(func=_cmd_token_generate_jwt)
 
     list_p = token_sub.add_parser("list", help="List admin tokens (metadata only)")
     list_p.add_argument("--json", action="store_true")

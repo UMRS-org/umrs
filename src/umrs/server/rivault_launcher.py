@@ -79,22 +79,49 @@ def _list_cached_keys():
     return [ep.model for ep in get_registry().list_all(project_id=_RIVAULT_PROJECT)]
 
 
-def _get_active_rivault_profiles():
-    """Return the effective RiVault compose profiles for the current site."""
-    raw_profiles = os.environ.get("RIVAULT_PROFILES", "").strip()
-    if raw_profiles:
-        return tuple(profile for profile in raw_profiles.split() if profile)
-
+def _read_configured_profiles():
+    """Read profiles from env var or site config.  Returns None if unset."""
+    raw = os.environ.get("RIVAULT_PROFILES", "").strip()
+    if raw:
+        return tuple(p for p in raw.split() if p)
     try:
         from umrs.orchestrator.site_config import get_site_config
 
         runtime_profiles = getattr(get_site_config().runtime, "profiles", None) or []
-        profiles = tuple(str(profile).strip() for profile in runtime_profiles if str(profile).strip())
+        profiles = tuple(str(p).strip() for p in runtime_profiles if str(p).strip())
         if profiles:
             return profiles
     except Exception:
         pass
+    return None
 
+
+def _get_active_rivault_profiles():
+    """Return the effective RiVault compose profiles for the current site.
+
+    This returns the *global* default profiles from env or site config.
+    For model-aware profile selection, use ``_resolve_profiles_for_model()``.
+    """
+    return _read_configured_profiles() or ("harness", "vllm")
+
+
+def _resolve_profiles_for_model(model_cfg):
+    """Select the minimal compose profiles needed for *model_cfg*.
+
+    When ``RIVAULT_PROFILES`` is explicitly set in the environment or
+    site config, that value is respected (backward compatibility).
+    Otherwise the profiles are derived from ``model_cfg["model_type"]``:
+
+    - ``bentoml://``  → ``("harness", "vision-bentoml")``
+    - ``openai://`` or anything else → ``("harness", "vllm")``
+    """
+    configured = _read_configured_profiles()
+    if configured:
+        return configured
+
+    model_type = model_cfg.get("model_type", "")
+    if model_type.startswith("bentoml://"):
+        return ("harness", "vision-bentoml")
     return ("harness", "vllm")
 
 
@@ -720,15 +747,14 @@ def launch_rivault_model(model_cfg):
     vmc = model_cfg.get("vision_model_config", {})
     task_suffix = ":" + vmc["task"] if vmc.get("task") else ""
     model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"] + task_suffix
-    job_profiles = _get_active_rivault_profiles()
+    job_profiles = _resolve_profiles_for_model(model_cfg)
     job_metadata = _job_capabilities_for_profiles(job_profiles)
+    print(f"[rivault] resolved profiles for {model_cfg['model_type']}: {job_profiles}")
 
     # --- 0. Check cache / reuse running job ---
     cached_model, job_id = _check_cache_or_reuse_job(model_type_key, model_cfg)
     if cached_model is not None:
         return cached_model
-
-            job_id = None
 
     # --- 0b. BentoML models share a single Rivault stack. If another BentoML
     #          model already has a running job, reuse it instead of submitting
@@ -758,7 +784,9 @@ def launch_rivault_model(model_cfg):
 
     output_file, error_file, job_id = get_slurm_node(
         rivault_slurm_script, model_type_key,
-        job_id_to_use=job_id, sbatch_env=None, job_metadata=job_metadata,
+        job_id_to_use=job_id,
+        sbatch_env={"RIVAULT_PROFILES": " ".join(job_profiles)},
+        job_metadata=job_metadata,
     )
     print(f"{output_file=} {job_id=}")
 
