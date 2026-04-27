@@ -26,8 +26,8 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, Set
 
-from umrs.model_registry.models import ModelScope
-from umrs.model_registry.store import ACLEnforcer, AccessContext, PathNotAllowedError, PathValidator, PermissionDeniedError
+from umrs.model_registry.models import ModelScope, ModelType, ServingProfile
+from umrs.model_registry.store import ACLEnforcer, AccessContext, DuplicateModelError, ModelStore, PathNotAllowedError, PathValidator, PermissionDeniedError
 from umrs.shared.auth import create_auth_context_from_request
 from umrs.shared.config import get_default_umrs_cfg_dir
 
@@ -35,6 +35,98 @@ logger = logging.getLogger(__name__)
 
 _CATALOG_LOCK = threading.Lock()
 _ACL = ACLEnforcer()
+
+
+class DurableModelCommandBackend:
+    """PostgreSQL-backed adapter for ZMQ model commands."""
+
+    def __init__(self, db_pool):
+        self._db_pool = db_pool
+        conn = self._db_pool.getconn()
+        try:
+            from umrs.model_registry import ensure_schema as ensure_model_registry_schema
+
+            ensure_model_registry_schema(conn)
+            conn.commit()
+        finally:
+            self._db_pool.putconn(conn)
+
+    def close(self) -> None:
+        if self._db_pool is not None:
+            self._db_pool.closeall()
+
+    def _with_store(self, callback):
+        conn = self._db_pool.getconn()
+        try:
+            store = ModelStore(conn, path_validator=PathValidator())
+            return callback(store)
+        finally:
+            self._db_pool.putconn(conn)
+
+    def register(self, client_id: str, payload_str: str) -> str:
+        try:
+            payload = _parse_register_payload(payload_str)
+            validated = _validate_register_request(client_id, payload)
+            scope = validated["scope"]
+            model_type = ModelType(str(payload.get("model_type", "embedding")).strip().lower())
+            serving_profile = None
+            if isinstance(payload.get("serving_profile"), dict):
+                serving_profile = ServingProfile.from_dict(payload["serving_profile"])
+
+            model = self._with_store(
+                lambda store: store.create_model(
+                    name=validated["name"],
+                    scope=scope,
+                    storage_ref=validated["normalized_path"],
+                    model_type=model_type,
+                    owner_id=validated["access_ctx"].user_id if scope == ModelScope.USER else None,
+                    project_id=validated["project_id"] if scope == ModelScope.PROJECT else None,
+                    huggingface_id=payload.get("huggingface_id"),
+                    description=payload.get("description"),
+                    serving_profile=serving_profile,
+                    ctx=validated["access_ctx"],
+                )
+            )
+        except (DuplicateModelError, PathNotAllowedError, PermissionDeniedError, ValueError) as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+
+        logger.info(
+            "Registered model in durable registry: %s at %s (scope=%s)",
+            model.name,
+            model.storage_ref,
+            model.scope.value,
+        )
+        return json.dumps(
+            {
+                "status": "ok",
+                "message": f"Model '{model.name}' registered at {model.storage_ref}",
+                "model": model.to_dict(),
+            },
+            default=str,
+        )
+
+    def list_models(self, client_id: str, payload_str: str) -> str:
+        try:
+            payload = _parse_list_payload(payload_str)
+            access_ctx = _build_access_context(client_id, payload)
+            scope = _parse_scope(payload) if payload.get("scope") else None
+            models = self._with_store(
+                lambda store: store.list_models(
+                    ctx=access_ctx,
+                    scope=scope,
+                )
+            )
+        except (PermissionDeniedError, ValueError) as exc:
+            return json.dumps({"status": "error", "message": str(exc)})
+
+        return json.dumps(
+            {
+                "status": "ok",
+                "count": len(models),
+                "models": [model.to_dict() for model in models],
+            },
+            default=str,
+        )
 
 
 def _catalog_path() -> str:
@@ -280,8 +372,11 @@ def _filter_models_by_scope(models: list[Dict[str, Any]], scope_filter: str | No
     return [model for model in models if model.get("scope") == scope_filter]
 
 
-def _handle_register(client_id: str, payload_str: str) -> str:
+def _handle_register(client_id: str, payload_str: str, backend: DurableModelCommandBackend | None = None) -> str:
     """Register a local model path in the catalog."""
+    if backend is not None:
+        return backend.register(client_id, payload_str)
+
     try:
         payload = _parse_register_payload(payload_str)
         validated = _validate_register_request(client_id, payload)
@@ -311,8 +406,11 @@ def _handle_register(client_id: str, payload_str: str) -> str:
     }, default=str)
 
 
-def _handle_list(client_id: str, payload_str: str) -> str:
+def _handle_list(client_id: str, payload_str: str, backend: DurableModelCommandBackend | None = None) -> str:
     """List registered models, optionally filtered by scope."""
+    if backend is not None:
+        return backend.list_models(client_id, payload_str)
+
     payload = _parse_list_payload(payload_str)
 
     with _CATALOG_LOCK:
@@ -330,7 +428,11 @@ def _handle_list(client_id: str, payload_str: str) -> str:
     }, default=str)
 
 
-def _handle_download(client_id: str, payload_str: str) -> str:
+def _handle_download(
+    client_id: str,
+    payload_str: str,
+    backend: DurableModelCommandBackend | None = None,
+) -> str:
     """Accept a server-side download request, run it in a background thread.
 
     Returns immediately with an "accepted" response. The download runs
@@ -393,7 +495,7 @@ def _handle_download(client_id: str, payload_str: str) -> str:
                 "description": f"Downloaded from {repo_id}",
                 "admin_token": payload.get("admin_token"),
             })
-            result = _handle_register(client_id, register_payload)
+            result = _handle_register(client_id, register_payload, backend=backend)
             logger.info("Server-side download result: %s", result)
         except Exception:
             logger.exception("Server-side download failed for %s", repo_id)
@@ -407,7 +509,25 @@ def _handle_download(client_id: str, payload_str: str) -> str:
     })
 
 
-def handle_model_command(cmd: str, client_id: str, payload_str: str) -> str:
+def build_durable_model_backend_from_env() -> DurableModelCommandBackend | None:
+    """Best-effort bootstrap of the durable model backend from process env."""
+    try:
+        from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
+
+        db_pool = build_durable_job_db_pool_from_env()
+        logger.info("Durable ZMQ model backend enabled")
+        return DurableModelCommandBackend(db_pool)
+    except Exception:
+        logger.exception("Durable ZMQ model backend unavailable")
+        return None
+
+
+def handle_model_command(
+    cmd: str,
+    client_id: str,
+    payload_str: str,
+    backend: DurableModelCommandBackend | None = None,
+) -> str:
     """
     Dispatch a model registry command and return a JSON response string.
 
@@ -425,11 +545,11 @@ def handle_model_command(cmd: str, client_id: str, payload_str: str) -> str:
 
     try:
         if cmd == TaskCmd.MODEL_REGISTER:
-            return _handle_register(client_id, payload_str)
+            return _handle_register(client_id, payload_str, backend=backend)
         elif cmd == TaskCmd.MODEL_LIST:
-            return _handle_list(client_id, payload_str)
+            return _handle_list(client_id, payload_str, backend=backend)
         elif cmd == TaskCmd.MODEL_DOWNLOAD:
-            return _handle_download(client_id, payload_str)
+            return _handle_download(client_id, payload_str, backend=backend)
         else:
             return json.dumps({"status": "error", "message": f"Unknown model command: {cmd}"})
     except Exception as e:

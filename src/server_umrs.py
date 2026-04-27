@@ -23,7 +23,7 @@ from umrs.core.thread_pool import ServerOverloadedError, ThreadPoolManager, Pool
 from umrs.shared.auth import AuthContext, AuthorizationError
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 
-from umrs.server.model_registry_handler import handle_model_command
+from umrs.server.model_registry_handler import build_durable_model_backend_from_env, handle_model_command
 from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env, handle_job_command
@@ -130,7 +130,16 @@ def make_update_status_callback(task_manager, task_id):
         task_manager.tasks_status.update_status(task_id, status)
     return callback
 
-def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file, job_command_backend=None):
+def server_event_loop(
+    task_manager,
+    control_mq,
+    server_cfg,
+    device,
+    embedding_backend,
+    configure_file,
+    job_command_backend=None,
+    model_command_backend=None,
+):
     buckets_cfg = server_cfg.buckets_cfg
     user_config_map = server_cfg.user_config_map
     status_store = control_mq.get_status_store()
@@ -383,7 +392,12 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 if _authorize(cmd, client_id, zmq_sender_id) is None:
                     update_status_func(TaskStatus.ERROR)
                     continue
-                response_json = handle_model_command(cmd, client_id, payload_str)
+                response_json = handle_model_command(
+                    cmd,
+                    client_id,
+                    payload_str,
+                    backend=model_command_backend,
+                )
                 try:
                     control_mq.send_string(response_json, zmq_sender_id)
                 except RuntimeError as e:
@@ -396,7 +410,12 @@ def server_event_loop(task_manager, control_mq, server_cfg, device, embedding_ba
                 if _authorize(cmd, client_id, zmq_sender_id) is None:
                     update_status_func(TaskStatus.ERROR)
                     continue
-                ack = handle_model_command(cmd, client_id, payload_str)
+                ack = handle_model_command(
+                    cmd,
+                    client_id,
+                    payload_str,
+                    backend=model_command_backend,
+                )
                 try:
                     control_mq.send_string(ack, zmq_sender_id)
                 except RuntimeError as e:
@@ -616,6 +635,12 @@ def main():
     elif durable_job_runtime is None:
         print("Job commands using durable PostgreSQL backend.")
 
+    model_command_backend = build_durable_model_backend_from_env()
+    if model_command_backend is None:
+        print("Model commands using legacy JSON catalog fallback.")
+    else:
+        print("Model commands using durable PostgreSQL backend.")
+
     # Start HTTP sidecar so the Platform Gateway can proxy REST requests
     # back to this UMRS instance (port 8082 by default). The sidecar runs
     # in a daemon thread and respects UMRS_HTTP_SIDECAR_ENABLED env var.
@@ -655,7 +680,16 @@ def main():
     except OSError as exc:
         print(f"Warning: could not write PID file: {exc}")
     try:
-        server_event_loop(task_manager, control_mq, server_cfg, device, embedding_backend, configure_file, job_command_backend=job_command_backend)
+        server_event_loop(
+            task_manager,
+            control_mq,
+            server_cfg,
+            device,
+            embedding_backend,
+            configure_file,
+            job_command_backend=job_command_backend,
+            model_command_backend=model_command_backend,
+        )
     finally:
         if pid_file_path is not None:
             try:
@@ -672,6 +706,11 @@ def main():
                 job_command_backend.close()
             except Exception:
                 logger.exception("Failed to close durable job command backend")
+        if model_command_backend is not None:
+            try:
+                model_command_backend.close()
+            except Exception:
+                logger.exception("Failed to close durable model command backend")
 
 
 if __name__ == "__main__":
