@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 
+from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.model_registry.models import ModelScope
 from umrs.server import model_registry_handler as handler
 
@@ -94,3 +95,21 @@ def test_handle_list_filters_models_by_visibility(tmp_path, monkeypatch):
 
     assert result["status"] == "ok"
     assert [model["name"] for model in result["models"]] == ["sys", "mine", "team"]
+
+
+def test_handle_model_command_prefers_backend_for_list():
+    class DummyBackend:
+        def __init__(self):
+            self.calls = []
+
+        def list_models(self, client_id, payload_str):
+            self.calls.append((client_id, payload_str))
+            return json.dumps({"status": "ok", "models": [{"name": "shared-model"}]})
+
+    backend = DummyBackend()
+
+    result = json.loads(handler.handle_model_command(TaskCmd.MODEL_LIST, "alice", "{}", backend=backend))
+
+    assert result["status"] == "ok"
+    assert result["models"] == [{"name": "shared-model"}]
+    assert backend.calls == [("alice", "{}")]
