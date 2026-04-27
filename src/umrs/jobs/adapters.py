@@ -59,6 +59,61 @@ def _resolve_registered_model(model_name: str) -> Optional[Dict[str, Any]]:
     return matches[0]
 
 
+def _short_progress_text(value: Optional[str], *, limit: int = 96) -> str:
+    """Normalize and shorten progress text stored in job/endpoint metadata."""
+    cleaned = " ".join((value or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3] + "..."
+
+
+def _backend_progress_detail(job_info: Any) -> str:
+    """Describe the current backend-side provisioning phase."""
+    from umrs.orchestrator.base import JobStatus as OrchestratorJobStatus
+
+    endpoint = getattr(job_info, "endpoint", None)
+    target = None
+    if endpoint and getattr(endpoint, "node", None) and endpoint.node != "pending":
+        target = f"{endpoint.node}:{endpoint.litellm_port}"
+
+    if job_info.status == OrchestratorJobStatus.PENDING:
+        return "waiting for scheduler allocation"
+    if job_info.status == OrchestratorJobStatus.STARTING:
+        if target:
+            return f"starting container / loading model at {target}"
+        return "starting container / loading model"
+    if job_info.status in (OrchestratorJobStatus.RUNNING, OrchestratorJobStatus.READY):
+        if target:
+            return f"services up at {target}; waiting for readiness"
+        return "services starting; waiting for readiness"
+    if job_info.status == OrchestratorJobStatus.STOPPED:
+        return "backend job stopped"
+    if job_info.error_message:
+        return _short_progress_text(job_info.error_message)
+    return "waiting for backend status"
+
+
+def _readiness_progress_detail(endpoint: Any, error: Optional[str]) -> str:
+    """Describe readiness-probe progress in a user-facing way."""
+    target = f"{endpoint.host}:{endpoint.port}"
+    if not error:
+        return f"waiting for endpoint readiness ({target})"
+
+    lowered = error.lower()
+    if "connection error" in lowered or "connection refused" in lowered:
+        return "starting LiteLLM / waiting for service port"
+    if "chat probe timeout" in lowered or "request timeout" in lowered:
+        return "loading model weights / waiting for inference warmup"
+    if any(code in lowered for code in ("http 404", "http 500", "http 502", "http 503")):
+        return "starting LiteLLM / waiting for proxy readiness"
+    if "no models in response" in lowered or "expected model" in lowered:
+        return "registering served model / loading model"
+    if "chat probe http" in lowered or "chat probe error" in lowered:
+        return "endpoint reachable; waiting for inference readiness"
+
+    return f"waiting for endpoint readiness ({target}): {_short_progress_text(error, limit=72)}"
+
+
 class EndpointProvisionBackend(OrchestratorBackend):
     """
     Backend adapter for endpoint provisioning jobs.
@@ -195,6 +250,8 @@ class EndpointProvisionBackend(OrchestratorBackend):
             env_served_name = submit_env.get("VLLM_SERVED_MODEL_NAME")
             if env_served_name and env_served_name != model_name:
                 endpoint_metadata["served_model_name"] = env_served_name
+            endpoint_metadata.setdefault("job_status", job_info.status.value)
+            endpoint_metadata.setdefault("detail", _backend_progress_detail(job_info))
 
             self.registry.register(
                 project_id=project_id,
@@ -296,7 +353,9 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             )
 
         if endpoint.host in ("", "pending"):
-            return AttemptCheckResult.running("waiting for backend allocation")
+            return AttemptCheckResult.running(
+                str(endpoint.metadata.get("detail") or "waiting for backend allocation")
+            )
 
         # Check if endpoint is ready
         try:
@@ -336,6 +395,13 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                 )
                 self._clear_readiness_tracking(backend_ref)
                 # Transition the endpoint registry status to READY
+                self.registry.update_metadata(
+                    backend_ref,
+                    {
+                        "detail": "endpoint ready",
+                        "readiness_error": None,
+                    },
+                )
                 self.registry.mark_ready(backend_ref)
                 return AttemptCheckResult.succeeded(
                     metrics={
@@ -357,8 +423,18 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                 )
             self._last_readiness_error[backend_ref] = error or ""
 
+            progress_detail = _readiness_progress_detail(endpoint, error)
+            self.registry.update_metadata(
+                backend_ref,
+                {
+                    "detail": progress_detail,
+                    "readiness_error": _short_progress_text(error) if error else None,
+                    "readiness_check_no": check_no,
+                },
+            )
+
             return AttemptCheckResult.running(
-                f"waiting for endpoint readiness ({endpoint.host}:{endpoint.port})"
+                progress_detail
             )
 
         except Exception as e:
@@ -372,8 +448,17 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                     endpoint.error_message or endpoint.metadata.get("error", str(e))
                 )
 
+            progress_detail = _readiness_progress_detail(endpoint, str(e))
+            self.registry.update_metadata(
+                backend_ref,
+                {
+                    "detail": progress_detail,
+                    "readiness_error": _short_progress_text(str(e)),
+                },
+            )
+
             return AttemptCheckResult.running(
-                f"waiting for endpoint readiness ({endpoint.host}:{endpoint.port})"
+                progress_detail
             )
 
     async def check_attempt(
@@ -398,13 +483,22 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         from umrs.orchestrator.base import JobStatus as OrchestratorJobStatus
         from umrs.orchestrator.endpoint_registry import EndpointStatus
 
+        progress_metadata = {
+            "job_status": job_info.status.value,
+            "detail": _backend_progress_detail(job_info),
+        }
+        if job_info.error_message:
+            progress_metadata["backend_error"] = _short_progress_text(job_info.error_message)
+
         if job_info.endpoint:
             self.registry.update_location(
                 backend_ref,
                 host=job_info.endpoint.node,
                 port=job_info.endpoint.litellm_port,
-                metadata={"backend_status": job_info.status.value},
+                metadata=progress_metadata,
             )
+        else:
+            self.registry.update_metadata(backend_ref, progress_metadata)
 
         if job_info.status == OrchestratorJobStatus.PENDING:
             self.registry.update_status(backend_ref, EndpointStatus.PROVISIONING)
@@ -421,6 +515,13 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             self._clear_readiness_tracking(backend_ref)
             error = job_info.error_message or (
                 f"Backend job {backend_ref} {job_info.status.value}"
+            )
+            self.registry.update_metadata(
+                backend_ref,
+                {
+                    "job_status": job_info.status.value,
+                    "detail": _short_progress_text(error),
+                },
             )
             self.registry.mark_failed(backend_ref, error)
             return error

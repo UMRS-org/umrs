@@ -55,6 +55,8 @@ class EndpointResponse(BaseModel):
     error_message: Optional[str] = None
     litellm_url: str
     served_model_name: Optional[str] = None
+    detail: Optional[str] = None
+    job_status: Optional[str] = None
 
     class Config:
         json_schema_extra = {
@@ -72,6 +74,8 @@ class EndpointResponse(BaseModel):
                 "backend": "slurm",
                 "error_message": None,
                 "litellm_url": "http://compute-node-01:11434/v1",
+                "detail": "starting container / loading model",
+                "job_status": "starting",
             }
         }
 

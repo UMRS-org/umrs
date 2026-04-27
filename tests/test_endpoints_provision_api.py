@@ -73,3 +73,33 @@ def test_provision_endpoint_rejects_unresolved_model_without_model_path(monkeypa
 
     assert response.status_code == 400
     assert "Unable to resolve model path" in response.json()["detail"]
+
+
+def test_get_endpoint_exposes_progress_detail_from_registry_metadata():
+    registry = EndpointRegistry()
+    registry.register(
+        project_id="project-a",
+        model="qwen3-8b",
+        job_id="job-123",
+        host="pending",
+        port=11434,
+        backend="slurm",
+        metadata={
+            "detail": "starting container / loading model",
+            "job_status": "starting",
+        },
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = lambda: registry
+
+    with TestClient(app) as client:
+        response = client.get("/umrs/endpoints/job-123")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["detail"] == "starting container / loading model"
+    assert data["job_status"] == "starting"

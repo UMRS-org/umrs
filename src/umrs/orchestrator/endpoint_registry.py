@@ -118,6 +118,12 @@ class RegisteredEndpoint:
         served = self.metadata.get("served_model_name")
         if served:
             d["served_model_name"] = served
+        detail = self.metadata.get("detail")
+        if detail:
+            d["detail"] = detail
+        job_status = self.metadata.get("job_status")
+        if job_status:
+            d["job_status"] = job_status
         return d
 
 
@@ -300,6 +306,21 @@ class EndpointRegistry:
                 endpoint.host,
                 endpoint.port,
             )
+            return endpoint
+
+    def update_metadata(
+        self,
+        job_id: str,
+        metadata: Dict[str, Any],
+    ) -> Optional[RegisteredEndpoint]:
+        """Merge progress metadata without changing endpoint coordinates."""
+        with self._lock:
+            endpoint = self._by_job_id.get(job_id)
+            if not endpoint:
+                return None
+
+            endpoint.metadata.update(metadata)
+            self._persist(endpoint)
             return endpoint
 
     def mark_ready(self, job_id: str) -> Optional[RegisteredEndpoint]:
