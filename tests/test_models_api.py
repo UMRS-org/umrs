@@ -144,3 +144,43 @@ def test_download_model_creates_staging_copy_and_local_copy_job():
     assert job_kwargs["spec"]["model_id"] == "mdl-copy-001"
     assert job_kwargs["spec"]["metadata"]["source_model_id"] == "mdl-system-001"
     job_store.enqueue_job.assert_called_once_with("job-456")
+
+
+def test_create_model_keeps_system_scope_owner_null():
+    store = MagicMock()
+    job_store = MagicMock()
+
+    store.create_model.return_value = ModelEntry(
+        model_id="mdl-system-123",
+        name="qwen3-32b",
+        scope=ModelScope.SYSTEM,
+        storage_ref="/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/Qwen3-32B",
+        model_type=ModelType.LLM,
+        huggingface_id="Qwen/Qwen3-32B",
+        description="System-scoped Qwen3 32B",
+        serving_profile=ServingProfile(),
+        execution_authority_default=ExecutionAuthority.COMPOSE,
+        status=ModelStatus.AVAILABLE,
+    )
+
+    with _create_test_client(store, job_store) as client:
+        response = client.post(
+            "/umrs/models",
+            params={
+                "user_id": "alice",
+                "is_admin": "true",
+            },
+            json={
+                "name": "qwen3-32b",
+                "scope": "system",
+                "storage_ref": "/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/Qwen3-32B",
+                "model_type": "llm",
+                "huggingface_id": "Qwen/Qwen3-32B",
+                "description": "System-scoped Qwen3 32B",
+            },
+        )
+
+    assert response.status_code == 201
+    create_kwargs = store.create_model.call_args.kwargs
+    assert create_kwargs["scope"] == ModelScope.SYSTEM
+    assert create_kwargs["owner_id"] is None

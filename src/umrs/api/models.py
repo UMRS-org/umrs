@@ -579,13 +579,17 @@ async def create_model(
         scope = ModelScope(request.scope)
         model_type = ModelType(request.model_type)
         serving_profile = serving_profile_from_request(request.serving_profile)
+        owner_id = request.owner_id or ctx.user_id
+
+        if scope == ModelScope.SYSTEM:
+            owner_id = None
 
         model = store.create_model(
             name=request.name,
             scope=scope,
             storage_ref=request.storage_ref,
             model_type=model_type,
-            owner_id=request.owner_id or ctx.user_id,
+            owner_id=owner_id,
             project_id=request.project_id,
             huggingface_id=request.huggingface_id,
             description=request.description,
