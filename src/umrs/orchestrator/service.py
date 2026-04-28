@@ -395,6 +395,7 @@ class OrchestrationService:
             endpoint_metadata = dict(request.metadata)
             endpoint_metadata.setdefault("allocated_host", target_host)
             endpoint_metadata.setdefault("allocated_port", port)
+            endpoint_metadata["detail"] = f"container starting on {actual_host}:{actual_port}"
 
             # 5. Register endpoint in registry (status=provisioning)
             endpoint = self.registry.register(
@@ -411,11 +412,26 @@ class OrchestrationService:
 
             # Update registry status to starting
             self.registry.update_status(job_id, EndpointStatus.STARTING)
+            self.registry.update_metadata(job_id, {
+                "detail": "waiting for model to load",
+            })
 
             # 6. Wait for readiness (authoritative)
             remaining_timeout = max(1, int(deadline - asyncio.get_running_loop().time()))
             progress("waiting_for_ready", {"timeout": remaining_timeout})
             readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
+
+            def _on_readiness_progress(r) -> None:
+                progress("readiness_check", r.to_dict())
+                # Push live readiness detail into the endpoint registry so
+                # CLI clients polling GET /endpoints/{id} see real progress
+                # instead of a static "starting container / loading model".
+                detail = r.error or r.state.value
+                self.registry.update_metadata(job_id, {
+                    "detail": f"probe #{r.attempts}: {detail}" if detail else f"probe #{r.attempts}",
+                    "readiness_attempts": r.attempts,
+                    "readiness_elapsed_sec": round(r.elapsed_sec, 1),
+                })
 
             readiness_result = await self._wait_for_ready_with_budget(
                 job_id=job_id,
@@ -424,7 +440,7 @@ class OrchestrationService:
                 deadline=deadline,
                 probe_model=request.model,
                 probe_kind=readiness_probe,
-                on_progress=lambda r: progress("readiness_check", r.to_dict()),
+                on_progress=_on_readiness_progress,
             )
 
             # 7. Update endpoint status based on readiness
