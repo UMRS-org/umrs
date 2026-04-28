@@ -336,6 +336,21 @@ async def download_from_huggingface(
                 total_size += os.path.getsize(file_path)
                 file_count += 1
 
+        # Optimize Lustre striping for large weight files (no-op on
+        # non-Lustre filesystems).  This ensures model loading from
+        # Lustre uses parallel I/O across multiple OSTs.
+        try:
+            from umrs.shared.lustre import optimize_model_striping
+
+            migrated = optimize_model_striping(target_path)
+            if migrated:
+                logger.info(
+                    "Lustre striping optimized for %s: %d files re-striped",
+                    repo_id, len(migrated),
+                )
+        except Exception as e:
+            logger.warning("Lustre striping optimization skipped: %s", e)
+
         progress.downloaded_files = file_count
         progress.downloaded_bytes = total_size
         progress.total_files = file_count
