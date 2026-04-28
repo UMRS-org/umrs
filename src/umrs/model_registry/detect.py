@@ -162,5 +162,6 @@ def detect_capabilities(model_path: str) -> Optional[ModelCapabilities]:
         supports_vision=supports_vision,
         supports_structured_output=supports_structured_output,
         max_output_tokens=max_output_tokens,
+        max_position_embeddings=max_position_embeddings,
         model_family=model_family,
     )

@@ -256,6 +256,7 @@ class ModelCapabilities:
     supports_vision: bool = False
     supports_structured_output: bool = False
     max_output_tokens: Optional[int] = None
+    max_position_embeddings: Optional[int] = None
     model_family: Optional[str] = None  # e.g., "qwen", "llama", "mistral"
 
     def to_dict(self) -> Dict[str, Any]:
@@ -267,6 +268,8 @@ class ModelCapabilities:
         }
         if self.max_output_tokens is not None:
             d["max_output_tokens"] = self.max_output_tokens
+        if self.max_position_embeddings is not None:
+            d["max_position_embeddings"] = self.max_position_embeddings
         if self.model_family is not None:
             d["model_family"] = self.model_family
         return d
@@ -281,6 +284,7 @@ class ModelCapabilities:
             supports_vision=data.get("supports_vision", False),
             supports_structured_output=data.get("supports_structured_output", False),
             max_output_tokens=data.get("max_output_tokens"),
+            max_position_embeddings=data.get("max_position_embeddings"),
             model_family=data.get("model_family"),
         )
 
