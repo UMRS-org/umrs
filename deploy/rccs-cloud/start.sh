@@ -306,6 +306,12 @@ if [[ ! -f "$UMRS_SITE_CONFIG" ]]; then
     exit 1
 fi
 
+# ─── Phase 2l invariant: bind ZMQ on 127.0.0.1 only ─────────────────────────
+# RCCS-cloud exposes ZMQ to clients via SSH tunnels (Tier B); binding on
+# 0.0.0.0 would let any login-node user hit the data plane. Keep tunnel mode
+# on by default but allow operators to override via env when debugging.
+export UMRS_TUNNEL_MODE="${UMRS_TUNNEL_MODE:-true}"
+
 DEFAULT_RIVAULT_SLURM_SCRIPT="${SCRIPT_DIR}/serve-model.slurm"
 if [[ ! -e "$DEFAULT_RIVAULT_SLURM_SCRIPT" ]]; then
     DEFAULT_RIVAULT_SLURM_SCRIPT="${HOME}/.config/umrs/rivault_data/serve-model.slurm"
