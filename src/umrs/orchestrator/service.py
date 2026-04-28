@@ -96,6 +96,7 @@ class ProvisionRequest:
     gpu_count: int = 1
     max_model_len: int = 4096
     prefer_warm: bool = True  # Try to reuse existing endpoint
+    wait_for_ready: bool = True  # Return only after readiness unless disabled
     min_ttl_for_reuse_sec: int = 60  # Min TTL remaining for reuse
     env_vars: Dict[str, str] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -424,25 +425,19 @@ class OrchestrationService:
             job_id = job_info.job_id
             progress("job_submitted", {"job_id": job_id})
 
+            endpoint_metadata = dict(request.metadata)
+            endpoint_metadata.setdefault("allocated_host", target_host)
+            endpoint_metadata.setdefault("allocated_port", port)
             actual_host = job_info.endpoint.node if job_info.endpoint else target_host
             actual_port = (
                 job_info.endpoint.litellm_port
                 if job_info.endpoint and job_info.endpoint.litellm_port
                 else port
             )
-            progress("waiting_for_assignment", {"job_id": job_id})
-            actual_host, actual_port = await self._resolve_endpoint_location(
-                job_id,
-                actual_host,
-                actual_port,
-                deadline,
-            )
-            progress("assignment_resolved", {"host": actual_host, "port": actual_port})
-
-            endpoint_metadata = dict(request.metadata)
-            endpoint_metadata.setdefault("allocated_host", target_host)
-            endpoint_metadata.setdefault("allocated_port", port)
-            endpoint_metadata["detail"] = f"container starting on {actual_host}:{actual_port}"
+            if actual_host and actual_host != "pending":
+                endpoint_metadata["detail"] = f"container starting on {actual_host}:{actual_port}"
+            else:
+                endpoint_metadata["detail"] = "waiting for resource allocation"
 
             # 5. Register endpoint in registry (status=provisioning)
             endpoint = self.registry.register(
@@ -457,74 +452,38 @@ class OrchestrationService:
             )
             progress("registered", {"endpoint_id": job_id})
 
-            # Update registry status to starting
-            self.registry.update_status(job_id, EndpointStatus.STARTING)
-            self.registry.update_metadata(job_id, {
-                "detail": "waiting for model to load",
-            })
+            if request.wait_for_ready:
+                return await self._finalize_provision(
+                    request=request,
+                    job_id=job_id,
+                    target_host=target_host,
+                    actual_host=actual_host,
+                    actual_port=actual_port,
+                    deadline=deadline,
+                    progress=progress,
+                    start_time=start_time,
+                )
 
-            # 6. Wait for readiness (authoritative)
-            remaining_timeout = max(1, int(deadline - asyncio.get_running_loop().time()))
-            progress("waiting_for_ready", {"timeout": remaining_timeout})
-            readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
-
-            def _on_readiness_progress(r) -> None:
-                progress("readiness_check", r.to_dict())
-                # Push live readiness detail into the endpoint registry so
-                # CLI clients polling GET /endpoints/{id} see real progress
-                # instead of a static "starting container / loading model".
-                detail = _friendly_probe_detail(r.error, r.state.value)
-                self.registry.update_metadata(job_id, {
-                    "detail": f"probe #{r.attempts}: {detail}" if detail else f"probe #{r.attempts}",
-                    "readiness_attempts": r.attempts,
-                    "readiness_elapsed_sec": round(r.elapsed_sec, 1),
-                })
-
-            readiness_result = await self._wait_for_ready_with_budget(
-                job_id=job_id,
-                host=actual_host,
-                port=actual_port,
-                deadline=deadline,
-                probe_model=request.model,
-                probe_kind=readiness_probe,
-                on_progress=_on_readiness_progress,
+            asyncio.create_task(
+                self._finalize_provision(
+                    request=request,
+                    job_id=job_id,
+                    target_host=target_host,
+                    actual_host=actual_host,
+                    actual_port=actual_port,
+                    deadline=deadline,
+                    progress=None,
+                    start_time=start_time,
+                )
             )
 
-            # 7. Update endpoint status based on readiness
-            if readiness_result.is_ready:
-                self.registry.mark_ready(job_id)
-                progress("ready", {"models": readiness_result.models})
-
-                # Refresh endpoint from registry
-                endpoint = self.registry.get_by_job_id(job_id)
-
-                return ProvisionResult(
-                    success=True,
-                    endpoint=endpoint,
-                    job_id=job_id,
-                    reused=False,
-                    provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
-                )
-            else:
-                # Readiness failed
-                error = readiness_result.error or f"Readiness check failed: {readiness_result.state.value}"
-                self.registry.mark_failed(job_id, error)
-                progress("failed", {"error": error})
-
-                # Cleanup
-                await self._cleanup_failed_job(
-                    job_id,
-                    actual_host,
-                    actual_port,
-                    allocated_host=target_host,
-                )
-
-                return ProvisionResult(
-                    success=False,
-                    job_id=job_id,
-                    error=error,
-                    provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
-                )
+            return ProvisionResult(
+                success=True,
+                endpoint=endpoint,
+                job_id=job_id,
+                reused=False,
+                provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+            )
 
         except Exception as e:
             logger.exception(f"Provision failed: {e}")
@@ -547,6 +506,113 @@ class OrchestrationService:
             return ProvisionResult(
                 success=False,
                 error=str(e),
+            )
+
+    async def _finalize_provision(
+        self,
+        *,
+        request: ProvisionRequest,
+        job_id: str,
+        target_host: str,
+        actual_host: str,
+        actual_port: int,
+        deadline: float,
+        progress: Optional[Callable[[str, Any], None]],
+        start_time: float,
+    ) -> ProvisionResult:
+        """Resolve backend assignment and readiness for a submitted job."""
+        try:
+            if actual_host == "pending":
+                if progress:
+                    progress("waiting_for_assignment", {"job_id": job_id})
+                actual_host, actual_port = await self._resolve_endpoint_location(
+                    job_id,
+                    actual_host,
+                    actual_port,
+                    deadline,
+                )
+                self.registry.update_location(
+                    job_id,
+                    host=actual_host,
+                    port=actual_port,
+                    metadata={"detail": f"container starting on {actual_host}:{actual_port}"},
+                )
+                if progress:
+                    progress("assignment_resolved", {"host": actual_host, "port": actual_port})
+
+            self.registry.update_status(job_id, EndpointStatus.STARTING)
+            self.registry.update_metadata(job_id, {
+                "detail": "waiting for model to load",
+            })
+
+            remaining_timeout = max(1, int(deadline - asyncio.get_running_loop().time()))
+            if progress:
+                progress("waiting_for_ready", {"timeout": remaining_timeout})
+            readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
+
+            def _on_readiness_progress(r) -> None:
+                if progress:
+                    progress("readiness_check", r.to_dict())
+                detail = _friendly_probe_detail(r.error, r.state.value)
+                self.registry.update_metadata(job_id, {
+                    "detail": f"probe #{r.attempts}: {detail}" if detail else f"probe #{r.attempts}",
+                    "readiness_attempts": r.attempts,
+                    "readiness_elapsed_sec": round(r.elapsed_sec, 1),
+                })
+
+            readiness_result = await self._wait_for_ready_with_budget(
+                job_id=job_id,
+                host=actual_host,
+                port=actual_port,
+                deadline=deadline,
+                probe_model=request.model,
+                probe_kind=readiness_probe,
+                on_progress=_on_readiness_progress,
+            )
+
+            if readiness_result.is_ready:
+                self.registry.mark_ready(job_id)
+                if progress:
+                    progress("ready", {"models": readiness_result.models})
+                endpoint = self.registry.get_by_job_id(job_id)
+                return ProvisionResult(
+                    success=True,
+                    endpoint=endpoint,
+                    job_id=job_id,
+                    reused=False,
+                    provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+                )
+
+            error = readiness_result.error or f"Readiness check failed: {readiness_result.state.value}"
+            self.registry.mark_failed(job_id, error)
+            if progress:
+                progress("failed", {"error": error})
+            await self._cleanup_failed_job(
+                job_id,
+                actual_host,
+                actual_port,
+                allocated_host=target_host,
+            )
+            return ProvisionResult(
+                success=False,
+                job_id=job_id,
+                error=error,
+                provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+            )
+        except Exception as e:
+            logger.exception(f"Provision finalize failed: {e}")
+            self.registry.mark_failed(job_id, str(e))
+            await self._cleanup_failed_job(
+                job_id,
+                actual_host,
+                actual_port,
+                allocated_host=target_host,
+            )
+            return ProvisionResult(
+                success=False,
+                job_id=job_id,
+                error=str(e),
+                provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
             )
 
     async def deprovision(

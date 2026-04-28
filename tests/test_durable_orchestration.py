@@ -1046,6 +1046,75 @@ class TestOrchestrationServiceConfig:
         assert readiness_kwargs["host"] == "gpu-node-1"
         assert readiness_kwargs["port"] == 11434
 
+    def test_provision_can_return_after_submit_without_waiting(self):
+        """Non-blocking provision mode should return after submit/register."""
+        from unittest.mock import patch
+
+        from umrs.orchestrator.detection import BackendType
+        from umrs.orchestrator.base import JobInfo, JobStatus as BackendJobStatus
+        from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
+
+        registered_endpoint = MagicMock(job_id="slurm-777", is_usable=False)
+
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = None
+        mock_registry.register.return_value = registered_endpoint
+
+        mock_port_manager = MagicMock()
+        mock_port_manager.allocate.return_value = 11434
+
+        mock_readiness = MagicMock()
+        mock_readiness.config.timeout_sec = 300
+        mock_readiness.wait_for_ready = AsyncMock()
+
+        mock_backend = MagicMock()
+        mock_backend.config = MagicMock(readiness_poll_interval_sec=1)
+        mock_backend.submit_job = AsyncMock(
+            return_value=JobInfo(
+                job_id="slurm-777",
+                status=BackendJobStatus.PENDING,
+                endpoint=None,
+                backend="slurm-podman",
+            )
+        )
+        mock_backend.get_job_status = AsyncMock()
+
+        captured = {}
+
+        def _capture_task(coro):
+            captured["coro"] = coro
+            return object()
+
+        service = OrchestrationService(
+            registry=mock_registry,
+            port_manager=mock_port_manager,
+            readiness_poller=mock_readiness,
+            backend=mock_backend,
+        )
+        service._backend_type = BackendType.SLURM
+
+        with patch("umrs.orchestrator.service.asyncio.create_task", side_effect=_capture_task):
+            result = asyncio.run(
+                service.provision(
+                    ProvisionRequest(
+                        project_id="proj-1",
+                        model="intfloat/e5-base-v2",
+                        model_path="",
+                        wait_for_ready=False,
+                    )
+                )
+            )
+
+        captured["coro"].close()
+
+        assert result.success is True
+        assert result.job_id == "slurm-777"
+        register_kwargs = mock_registry.register.call_args.kwargs
+        assert register_kwargs["host"] == "pending"
+        assert register_kwargs["metadata"]["detail"] == "waiting for resource allocation"
+        mock_backend.get_job_status.assert_not_awaited()
+        mock_readiness.wait_for_ready.assert_not_awaited()
+
 
 # ============================================================================
 # Unit Tests for Reconciler
