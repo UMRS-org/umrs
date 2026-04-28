@@ -48,8 +48,41 @@ def test_provision_endpoint_resolves_model_path_from_catalog(monkeypatch):
 
     assert response.status_code == 202
     assert service.requests[0].model_path == "/shared/models/qwen3-8b"
+    assert service.requests[0].wait_for_ready is True
     assert service.requests[0].metadata["readiness_probe"] == "chat"
     assert service.requests[0].metadata["served_model_name"] == "Qwen/Qwen3-8B"
+
+
+def test_provision_endpoint_forwards_wait_false(monkeypatch):
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/qwen3-8b",
+            "huggingface_id": "Qwen/Qwen3-8B",
+            "model_type": "llm",
+        },
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = lambda: EndpointRegistry()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/umrs/endpoints/provision",
+            json={"project_id": "project-a", "model": "qwen3-8b", "wait": False},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    assert service.requests[0].wait_for_ready is False
 
 
 def test_provision_endpoint_rejects_unresolved_model_without_model_path(monkeypatch):
