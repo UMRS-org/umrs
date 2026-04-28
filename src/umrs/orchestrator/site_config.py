@@ -427,7 +427,7 @@ def default_site_config() -> SiteConfig:
 
     # vLLM
     cfg.vllm.model = os.getenv("VLLM_MODEL", "intfloat/e5-base-v2")
-    cfg.vllm.docker_tag = os.getenv("VLLM_DOCKER_TAG", "latest")
+    cfg.vllm.docker_tag = os.getenv("VLLM_DOCKER_TAG", "v0.20.0")
     cfg.vllm.gpu_mem_util = float(os.getenv("VLLM_GPU_MEM_UTIL", "0.10"))
 
     # Database
