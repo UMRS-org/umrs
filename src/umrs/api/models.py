@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from ..jobs.models import JobType, RestartPolicy
 from ..jobs.store import DuplicateJobError, JobStore
 from ..model_registry.models import (
+    ModelCapabilities,
     ModelEntry,
     ModelPolicy,
     ModelScope,
@@ -93,6 +94,16 @@ class ServingProfileRequest(BaseModel):
     recommended_gpu_count: int = Field(1, ge=1, description="Recommended number of GPUs")
 
 
+class CapabilitiesRequest(BaseModel):
+    """Model capability metadata."""
+
+    supports_tool_calling: bool = Field(False, description="Whether the model supports tool/function calling")
+    supports_vision: bool = Field(False, description="Whether the model supports vision/image input")
+    supports_structured_output: bool = Field(False, description="Whether the model supports structured (JSON) output")
+    max_output_tokens: Optional[int] = Field(None, description="Maximum output tokens")
+    model_family: Optional[str] = Field(None, description="Model family: qwen, llama, mistral, etc.")
+
+
 class ModelCreateRequest(BaseModel):
     """Request to register a new model."""
 
@@ -107,6 +118,7 @@ class ModelCreateRequest(BaseModel):
     huggingface_id: Optional[str] = Field(None, description="Source HuggingFace model ID")
     description: Optional[str] = Field(None, max_length=1000, description="Model description")
     serving_profile: Optional[ServingProfileRequest] = Field(None, description="Serving configuration")
+    capabilities: Optional[CapabilitiesRequest] = Field(None, description="Model capabilities")
 
     class Config:
         json_schema_extra = {
@@ -158,6 +170,7 @@ class ModelUpdateRequest(BaseModel):
     description: Optional[str] = Field(None, description="New description")
     serving_profile: Optional[ServingProfileRequest] = Field(None, description="New serving profile")
     status: Optional[str] = Field(None, description="New status: available, deprecated")
+    capabilities: Optional[CapabilitiesRequest] = Field(None, description="Model capabilities")
 
 
 class ModelResponse(BaseModel):
@@ -174,6 +187,7 @@ class ModelResponse(BaseModel):
     huggingface_id: Optional[str]
     description: Optional[str]
     serving_profile: Dict[str, Any]
+    capabilities: Dict[str, Any] = {}
     execution_authority_default: str = "compose"
     status: str
     created_at: Optional[str]
@@ -194,6 +208,7 @@ class ModelResponse(BaseModel):
             huggingface_id=entry.huggingface_id,
             description=entry.description,
             serving_profile=entry.serving_profile.to_dict(),
+            capabilities=entry.capabilities.to_dict(),
             execution_authority_default=entry.execution_authority_default.value,
             status=entry.status.value,
             created_at=entry.created_at.isoformat() if entry.created_at else None,
@@ -395,6 +410,21 @@ def serving_profile_from_request(
     )
 
 
+def capabilities_from_request(
+    req: Optional[CapabilitiesRequest],
+) -> Optional[ModelCapabilities]:
+    """Convert request to ModelCapabilities."""
+    if req is None:
+        return None
+    return ModelCapabilities(
+        supports_tool_calling=req.supports_tool_calling,
+        supports_vision=req.supports_vision,
+        supports_structured_output=req.supports_structured_output,
+        max_output_tokens=req.max_output_tokens,
+        model_family=req.model_family,
+    )
+
+
 def _resolve_job_project_id(
     caller_project_id: Optional[str],
     requested_project_id: Optional[str],
@@ -579,6 +609,7 @@ async def create_model(
         scope = ModelScope(request.scope)
         model_type = ModelType(request.model_type)
         serving_profile = serving_profile_from_request(request.serving_profile)
+        capabilities = capabilities_from_request(request.capabilities)
         owner_id = request.owner_id or ctx.user_id
 
         if scope == ModelScope.SYSTEM:
@@ -594,6 +625,7 @@ async def create_model(
             huggingface_id=request.huggingface_id,
             description=request.description,
             serving_profile=serving_profile,
+            capabilities=capabilities,
             ctx=ctx,
         )
 
@@ -747,6 +779,7 @@ async def update_model(
     try:
         serving_profile = serving_profile_from_request(request.serving_profile)
         status_enum = ModelStatus(request.status) if request.status else None
+        capabilities = capabilities_from_request(request.capabilities)
 
         model = store.update_model(
             model_id=model_id,
@@ -754,6 +787,7 @@ async def update_model(
             description=request.description,
             serving_profile=serving_profile,
             status=status_enum,
+            capabilities=capabilities,
         )
 
         return ModelResponse.from_entry(model)
@@ -799,6 +833,82 @@ async def delete_model(
 # =============================================================================
 # Model Publish Endpoint (U-815)
 # =============================================================================
+
+
+class ModelDetectResponse(BaseModel):
+    """Response for capability detection."""
+
+    model_id: str
+    name: str
+    detected: Dict[str, Any] = Field(default_factory=dict)
+    updated: bool = False
+    message: str = ""
+
+
+@router.post("/{model_id}/detect", response_model=ModelDetectResponse)
+async def detect_model_capabilities(
+    model_id: str,
+    dry_run: bool = Query(False, description="Preview without updating"),
+    ctx: AccessContext = Depends(get_access_context),
+    store: ModelStore = Depends(get_model_store),
+) -> ModelDetectResponse:
+    """
+    Detect model capabilities from files on the server filesystem.
+
+    Reads config.json, tokenizer_config.json, and generation_config.json
+    from the model's storage_path to infer capabilities.
+    """
+    from ..model_registry.detect import detect_capabilities
+
+    try:
+        model = store.get_model(model_id)
+    except ModelNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Model not found: {model_id}",
+        )
+
+    if not model.storage_ref:
+        return ModelDetectResponse(
+            model_id=model.model_id,
+            name=model.name,
+            message="No storage path configured",
+        )
+
+    caps = detect_capabilities(model.storage_ref)
+    if caps is None:
+        return ModelDetectResponse(
+            model_id=model.model_id,
+            name=model.name,
+            message=f"No config files found at {model.storage_ref}",
+        )
+
+    detected = caps.to_dict()
+
+    if dry_run:
+        return ModelDetectResponse(
+            model_id=model.model_id,
+            name=model.name,
+            detected=detected,
+            updated=False,
+            message="Dry run — capabilities not saved",
+        )
+
+    try:
+        store.update_capabilities(model.model_id, caps)
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update capabilities: {e}",
+        )
+
+    return ModelDetectResponse(
+        model_id=model.model_id,
+        name=model.name,
+        detected=detected,
+        updated=True,
+        message="Capabilities updated",
+    )
 
 
 class ModelPublishRequest(BaseModel):

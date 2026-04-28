@@ -15,6 +15,7 @@ import psycopg2
 
 from ..models import (
     ExecutionAuthority,
+    ModelCapabilities,
     ModelEntry,
     ModelPolicy,
     ModelRef,
@@ -64,6 +65,7 @@ class ModelStore:
         huggingface_id: Optional[str] = None,
         description: Optional[str] = None,
         serving_profile: Optional[ServingProfile] = None,
+        capabilities: Optional[ModelCapabilities] = None,
         status: ModelStatus = ModelStatus.AVAILABLE,
         model_ref: Optional[ModelRef] = None,
         execution_authority_default: ExecutionAuthority = ExecutionAuthority.COMPOSE,
@@ -86,6 +88,7 @@ class ModelStore:
 
         model_id = generate_model_id()
         serving_profile = serving_profile or ServingProfile()
+        capabilities = capabilities or ModelCapabilities()
 
         model = ModelEntry(
             model_id=model_id,
@@ -99,6 +102,7 @@ class ModelStore:
             huggingface_id=huggingface_id,
             description=description,
             serving_profile=serving_profile,
+            capabilities=capabilities,
             execution_authority_default=execution_authority_default,
             status=status,
         )
@@ -110,9 +114,10 @@ class ModelStore:
                     INSERT INTO model_catalog_entries (
                         model_id, name, scope, owner_id, project_id,
                         storage_ref, model_type, huggingface_id, description,
-                        serving_profile, status, model_ref_json, execution_authority_default
+                        serving_profile, status, model_ref_json, execution_authority_default,
+                        capabilities
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     RETURNING created_at, updated_at
                     """,
@@ -130,6 +135,7 @@ class ModelStore:
                         model.status.value,
                         json.dumps(model.model_ref.to_dict()) if model.model_ref else None,
                         model.execution_authority_default.value,
+                        json.dumps(model.capabilities.to_dict()),
                     ),
                 )
                 row = cur.fetchone()
@@ -165,7 +171,7 @@ class ModelStore:
                 SELECT model_id, name, scope, owner_id, project_id,
                        storage_ref, model_type, huggingface_id, description,
                        serving_profile, status, model_ref_json, execution_authority_default,
-                       created_at, updated_at
+                       created_at, updated_at, capabilities
                 FROM model_catalog_entries
                 WHERE model_id = %s
                 """,
@@ -199,7 +205,7 @@ class ModelStore:
                     SELECT model_id, name, scope, owner_id, project_id,
                            storage_ref, model_type, huggingface_id, description,
                            serving_profile, status, model_ref_json, execution_authority_default,
-                           created_at, updated_at
+                           created_at, updated_at, capabilities
                     FROM model_catalog_entries
                     WHERE name = %s AND scope = 'system'
                     """,
@@ -211,7 +217,7 @@ class ModelStore:
                     SELECT model_id, name, scope, owner_id, project_id,
                            storage_ref, model_type, huggingface_id, description,
                            serving_profile, status, model_ref_json, execution_authority_default,
-                           created_at, updated_at
+                           created_at, updated_at, capabilities
                     FROM model_catalog_entries
                     WHERE name = %s AND scope = 'project' AND project_id = %s
                     """,
@@ -223,7 +229,7 @@ class ModelStore:
                     SELECT model_id, name, scope, owner_id, project_id,
                            storage_ref, model_type, huggingface_id, description,
                            serving_profile, status, model_ref_json, execution_authority_default,
-                           created_at, updated_at
+                           created_at, updated_at, capabilities
                     FROM model_catalog_entries
                     WHERE name = %s AND scope = 'user' AND owner_id = %s
                     """,
@@ -292,7 +298,7 @@ class ModelStore:
             SELECT model_id, name, scope, owner_id, project_id,
                    storage_ref, model_type, huggingface_id, description,
                    serving_profile, status, model_ref_json, execution_authority_default,
-                   created_at, updated_at
+                   created_at, updated_at, capabilities
             FROM model_catalog_entries
             WHERE {where_clause}
             ORDER BY scope, name
@@ -317,6 +323,7 @@ class ModelStore:
         description: Optional[str] = None,
         serving_profile: Optional[ServingProfile] = None,
         status: Optional[ModelStatus] = None,
+        capabilities: Optional[ModelCapabilities] = None,
     ) -> ModelEntry:
         """Update model metadata."""
         model = self.get_model(model_id)
@@ -336,6 +343,10 @@ class ModelStore:
         if status is not None:
             updates.append("status = %s")
             params.append(status.value)
+
+        if capabilities is not None:
+            updates.append("capabilities = %s")
+            params.append(json.dumps(capabilities.to_dict()))
 
         if not updates:
             return model
@@ -383,6 +394,32 @@ class ModelStore:
             self.conn.commit()
 
         logger.info("Updated model %s status to %s", model_id, status.value)
+
+    def update_capabilities(
+        self,
+        model_id: str,
+        capabilities: ModelCapabilities,
+        ctx: Optional[AccessContext] = None,
+    ) -> None:
+        """Update model capabilities."""
+        if ctx:
+            model = self.get_model(model_id)
+            self.acl.enforce_write(model, ctx)
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE model_catalog_entries
+                SET capabilities = %s, updated_at = NOW()
+                WHERE model_id = %s
+                """,
+                (json.dumps(capabilities.to_dict()), model_id),
+            )
+            if cur.rowcount == 0:
+                raise ModelNotFoundError(model_id)
+            self.conn.commit()
+
+        logger.info("Updated model %s capabilities", model_id)
 
     # -------------------------------------------------------------------------
     # Delete
@@ -815,6 +852,7 @@ class ModelStore:
         huggingface_id: Optional[str] = None,
         description: Optional[str] = None,
         serving_profile: Optional[ServingProfile] = None,
+        capabilities: Optional[ModelCapabilities] = None,
         execution_authority_default: ExecutionAuthority = ExecutionAuthority.COMPOSE,
         warm_pool_min: int = 0,
         warm_pool_max: int = 1,
@@ -845,6 +883,7 @@ class ModelStore:
         policy_id = generate_policy_id()
 
         profile = serving_profile or ServingProfile()
+        caps = capabilities or ModelCapabilities()
 
         try:
             with self.conn.cursor() as cur:
@@ -853,8 +892,8 @@ class ModelStore:
                     INSERT INTO model_catalog_entries (
                         model_id, name, scope, storage_ref, model_type,
                         huggingface_id, description, serving_profile,
-                        execution_authority_default, status
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        execution_authority_default, status, capabilities
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
                         model_id,
@@ -867,6 +906,7 @@ class ModelStore:
                         json.dumps(profile.to_dict()),
                         execution_authority_default.value,
                         ModelStatus.AVAILABLE.value,
+                        json.dumps(caps.to_dict()),
                     ),
                 )
 

@@ -244,6 +244,48 @@ def generate_model_id() -> str:
 
 
 @dataclass
+class ModelCapabilities:
+    """
+    Model capability metadata.
+
+    Describes what a model can do — tool calling, vision, structured output, etc.
+    Stored as JSONB in the database for extensibility.
+    """
+
+    supports_tool_calling: bool = False
+    supports_vision: bool = False
+    supports_structured_output: bool = False
+    max_output_tokens: Optional[int] = None
+    model_family: Optional[str] = None  # e.g., "qwen", "llama", "mistral"
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON storage."""
+        d: Dict[str, Any] = {
+            "supports_tool_calling": self.supports_tool_calling,
+            "supports_vision": self.supports_vision,
+            "supports_structured_output": self.supports_structured_output,
+        }
+        if self.max_output_tokens is not None:
+            d["max_output_tokens"] = self.max_output_tokens
+        if self.model_family is not None:
+            d["model_family"] = self.model_family
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ModelCapabilities":
+        """Create from dictionary."""
+        if not data:
+            return cls()
+        return cls(
+            supports_tool_calling=data.get("supports_tool_calling", False),
+            supports_vision=data.get("supports_vision", False),
+            supports_structured_output=data.get("supports_structured_output", False),
+            max_output_tokens=data.get("max_output_tokens"),
+            model_family=data.get("model_family"),
+        )
+
+
+@dataclass
 class ServingProfile:
     """
     vLLM/LiteLLM serving configuration for a model.
@@ -328,6 +370,9 @@ class ModelEntry:
     # Serving configuration
     serving_profile: ServingProfile = field(default_factory=ServingProfile)
 
+    # Model capabilities metadata
+    capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
+
     # Execution authority default (U-807)
     execution_authority_default: ExecutionAuthority = ExecutionAuthority.COMPOSE
 
@@ -349,6 +394,8 @@ class ModelEntry:
             self.status = ModelStatus(self.status)
         if isinstance(self.serving_profile, dict):
             self.serving_profile = ServingProfile.from_dict(self.serving_profile)
+        if isinstance(self.capabilities, dict):
+            self.capabilities = ModelCapabilities.from_dict(self.capabilities)
         if isinstance(self.execution_authority_default, str):
             self.execution_authority_default = ExecutionAuthority(self.execution_authority_default)
         if isinstance(self.model_ref, dict):
@@ -389,6 +436,7 @@ class ModelEntry:
             "huggingface_id": self.huggingface_id,
             "description": self.description,
             "serving_profile": self.serving_profile.to_dict(),
+            "capabilities": self.capabilities.to_dict(),
             "execution_authority_default": self.execution_authority_default.value,
             "status": self.status.value,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -412,6 +460,9 @@ class ModelEntry:
             description=data.get("description"),
             serving_profile=ServingProfile.from_dict(
                 data.get("serving_profile", {})
+            ),
+            capabilities=ModelCapabilities.from_dict(
+                data.get("capabilities", {})
             ),
             execution_authority_default=ExecutionAuthority(
                 data.get("execution_authority_default", "compose")
@@ -438,9 +489,10 @@ class ModelEntry:
         model_id, name, scope, owner_id, project_id, storage_ref,
         model_type, huggingface_id, description, serving_profile,
         status, model_ref_json, execution_authority_default,
-        created_at, updated_at
+        created_at, updated_at, capabilities
         """
         model_ref_data = row[11]  # model_ref_json
+        capabilities_data = row[15] if len(row) > 15 else None
         return cls(
             model_id=row[0],
             name=row[1],
@@ -457,6 +509,7 @@ class ModelEntry:
             execution_authority_default=ExecutionAuthority(row[12] or "compose"),
             created_at=row[13],
             updated_at=row[14],
+            capabilities=ModelCapabilities.from_dict(capabilities_data or {}),
         )
 
 
