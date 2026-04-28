@@ -38,6 +38,53 @@ from .site_config import load_site_config
 logger = logging.getLogger(__name__)
 
 
+def _friendly_probe_detail(error: str | None, state: str) -> str:
+    """Translate raw readiness-probe errors into user-friendly messages.
+
+    Users seeing 'Connection error: ...' tend to think provisioning has
+    failed, when in reality the container is still starting up. This
+    function maps known transient errors to reassuring progress text.
+    """
+    if not error:
+        return state
+
+    low = error.lower()
+
+    # Container hasn't opened its port yet
+    if "connection" in low and ("refused" in low or "failed" in low or "reset" in low):
+        return "waiting for service to start"
+
+    # DNS not ready or host unreachable
+    if "name or service not known" in low or "nodename nor servname" in low:
+        return "waiting for host to become reachable"
+
+    # HTTP 503 — LiteLLM up but vLLM backend not ready
+    if "http 503" in low or "service unavailable" in low:
+        return "model is loading"
+
+    # HTTP 502/504 — reverse proxy up, backend not ready
+    if "http 502" in low or "http 504" in low or "bad gateway" in low:
+        return "waiting for backend to respond"
+
+    # Timeout on the probe request itself
+    if "timeout" in low:
+        return "service not responding yet"
+
+    # vLLM model list empty or expected model missing
+    if "no models" in low or "expected model" in low:
+        return "model still loading into memory"
+
+    # Chat probe failed — model loaded but warmup incomplete
+    if "chat probe" in low:
+        return "model warming up"
+
+    # Fallback: keep original but strip noisy details
+    short = " ".join(error.split())
+    if len(short) > 60:
+        short = short[:57] + "..."
+    return short
+
+
 @dataclass
 class ProvisionRequest:
     """Request to provision a Mini-RiVault instance."""
@@ -426,7 +473,7 @@ class OrchestrationService:
                 # Push live readiness detail into the endpoint registry so
                 # CLI clients polling GET /endpoints/{id} see real progress
                 # instead of a static "starting container / loading model".
-                detail = r.error or r.state.value
+                detail = _friendly_probe_detail(r.error, r.state.value)
                 self.registry.update_metadata(job_id, {
                     "detail": f"probe #{r.attempts}: {detail}" if detail else f"probe #{r.attempts}",
                     "readiness_attempts": r.attempts,
