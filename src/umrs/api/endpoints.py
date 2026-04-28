@@ -18,7 +18,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..orchestrator.endpoint_registry import (
     EndpointRegistry,
@@ -107,11 +107,33 @@ class EndpointStatusUpdate(BaseModel):
     error_message: Optional[str] = Field(None, description="Error message if failed")
 
 
+class LoraSpec(BaseModel):
+    """LoRA adapter specification for multi-lora endpoints."""
+
+    name: str = Field(..., min_length=1, description="Adapter name (served as `model` over OpenAI API)")
+    source: str = Field(..., min_length=1, description="Filesystem path or registered LoRA model name")
+
+
 class ProvisionRequest(BaseModel):
     """Request to provision a new endpoint (U-202)."""
 
     project_id: str = Field(..., description="Project/tenant identifier")
-    model: str = Field(..., description="Model name")
+    model: str = Field(..., description="Model name (primary; equals models[0])")
+    models: Optional[List[str]] = Field(
+        None,
+        description=(
+            "Optional list of base models for multi-model endpoints. "
+            "Defaults to ``[model]``. The first entry must equal ``model``."
+        ),
+    )
+    serving_mode: str = Field(
+        "single",
+        description="One of: single, multi-lora, co-located",
+    )
+    loras: Optional[List[LoraSpec]] = Field(
+        None,
+        description="LoRA adapters (multi-lora mode only)",
+    )
     model_path: Optional[str] = Field(
         None,
         description="Optional path to model files. If omitted, resolve from the registered model catalog.",
@@ -122,6 +144,41 @@ class ProvisionRequest(BaseModel):
     prefer_warm: bool = Field(True, description="Prefer reusing existing endpoint")
     partition: Optional[str] = Field(None, description="Override Slurm partition (must be in site candidates)")
     nodelist: Optional[str] = Field(None, description="Slurm --nodelist hint (e.g. 'ai-h200-brc-00')")
+
+    @model_validator(mode="after")
+    def _validate_multi_model(self) -> "ProvisionRequest":
+        # Normalize/validate models[]
+        if self.models is None:
+            self.models = [self.model]
+        if not self.models:
+            raise ValueError("models must be a non-empty list")
+        if any(not m for m in self.models):
+            raise ValueError("models entries must be non-empty strings")
+        if self.models[0] != self.model:
+            raise ValueError("models[0] must equal model")
+
+        if self.serving_mode not in ("single", "multi-lora", "co-located"):
+            raise ValueError(
+                "serving_mode must be one of: single, multi-lora, co-located"
+            )
+        if self.serving_mode == "single" and len(self.models) != 1:
+            raise ValueError("serving_mode=single requires exactly one model")
+        if self.serving_mode == "co-located" and len(self.models) < 2:
+            raise ValueError("serving_mode=co-located requires at least 2 models")
+
+        if self.loras:
+            if self.serving_mode != "multi-lora":
+                raise ValueError("loras requires serving_mode=multi-lora")
+            if len(self.models) != 1:
+                raise ValueError("multi-lora requires exactly one base model")
+            names = [l.name for l in self.loras]
+            if len(set(names)) != len(names):
+                raise ValueError("LoRA names must be unique")
+        elif self.serving_mode == "multi-lora":
+            raise ValueError(
+                "serving_mode=multi-lora requires a non-empty loras list"
+            )
+        return self
 
 
 class ProvisionResponse(BaseModel):
@@ -749,6 +806,16 @@ async def provision_endpoint(
     )
     if served_model_name and served_model_name != request.model:
         request_metadata["served_model_name"] = served_model_name
+
+    # Multi-model fields (forwarded via metadata so orchestrator backends
+    # can read them without a service-layer schema change yet). Phase 3
+    # will surface these as first-class ProvisionRequest fields.
+    request_metadata["serving_mode"] = request.serving_mode
+    request_metadata["models"] = list(request.models or [request.model])
+    if request.loras:
+        request_metadata["loras"] = [
+            {"name": l.name, "source": l.source} for l in request.loras
+        ]
 
     # Create provision request
     service_request = ServiceProvisionRequest(
