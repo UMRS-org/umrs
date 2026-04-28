@@ -265,6 +265,30 @@ class OrchestrationService:
 
             await asyncio.sleep(min(float(poll_interval), remaining))
 
+    async def _verify_backend_job_alive(self, job_id: str) -> bool:
+        """Return True if the backend reports the job in a non-terminal state.
+
+        Used to guard against stale warm-endpoint reuse: an entry can be
+        marked READY in the registry while the underlying Slurm/K8s job
+        has already terminated (walltime, manual cancel, crash).  Returns
+        False on any verification error so the caller falls through to a
+        fresh provisioning path (fail-safe default).
+        """
+        try:
+            info = await self.backend.get_job_status(job_id)
+        except Exception as exc:  # noqa: BLE001 - defensive
+            logger.warning(
+                "Backend get_job_status(%s) failed during warm-endpoint check: %s",
+                job_id, exc,
+            )
+            return False
+        return info.status in (
+            JobStatus.PENDING,
+            JobStatus.STARTING,
+            JobStatus.READY,
+            JobStatus.RUNNING,
+        )
+
     async def _wait_for_ready_with_budget(
         self,
         job_id: str,
@@ -347,17 +371,32 @@ class OrchestrationService:
                 min_ttl_sec=request.min_ttl_for_reuse_sec,
             )
             if existing and existing.is_usable:
-                progress("reusing", {"job_id": existing.job_id})
-                logger.info(
-                    f"Reusing existing endpoint for {request.project_id}/{request.model}: "
-                    f"{existing.job_id}"
+                # Verify the backend job is actually still alive before
+                # reusing the cached endpoint.  ``is_usable`` only reflects
+                # the registry's cached status; if the Slurm/K8s job has
+                # terminated since the last update we would otherwise
+                # return a ghost endpoint.
+                if await self._verify_backend_job_alive(existing.job_id):
+                    progress("reusing", {"job_id": existing.job_id})
+                    logger.info(
+                        f"Reusing existing endpoint for {request.project_id}/{request.model}: "
+                        f"{existing.job_id}"
+                    )
+                    return ProvisionResult(
+                        success=True,
+                        endpoint=existing,
+                        job_id=existing.job_id,
+                        reused=True,
+                        provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+                    )
+                logger.warning(
+                    "Stale warm endpoint for %s/%s (job_id=%s) — "
+                    "marking failed and provisioning fresh",
+                    request.project_id, request.model, existing.job_id,
                 )
-                return ProvisionResult(
-                    success=True,
-                    endpoint=existing,
-                    job_id=existing.job_id,
-                    reused=True,
-                    provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+                self.registry.mark_failed(
+                    existing.job_id,
+                    "stale registry entry: backend job no longer alive",
                 )
 
         # 2. Determine target host (backend-dependent)

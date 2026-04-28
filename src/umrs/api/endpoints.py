@@ -33,6 +33,39 @@ router = APIRouter(prefix="/umrs/endpoints", tags=["endpoints"])
 _DEFAULT_PROVISION_MODEL_PATH = "/models/rivault-gpt-oss"
 
 
+# Backend job statuses considered "alive enough" to reuse a warm endpoint
+# (registry says READY but the underlying job must also be in a non-terminal
+# state).  Imported lazily inside the helper to avoid an import cycle.
+async def _is_backend_job_alive(service: Any, job_id: str) -> bool:
+    """Return True if the backend reports the job as alive.
+
+    Used to guard against stale warm-endpoint reuse: an endpoint may be
+    cached as READY in the registry while its Slurm/K8s job has already
+    terminated.  Returns False on any verification error so the caller
+    falls through to a fresh provisioning path (fail-safe default).
+    """
+    from ..orchestrator.base import JobStatus
+
+    backend = getattr(service, "backend", None)
+    if backend is None:
+        return False
+    try:
+        info = await backend.get_job_status(job_id)
+    except Exception as exc:  # noqa: BLE001 - defensive, treat as dead
+        logger.warning(
+            "Backend get_job_status(%s) failed during warm-endpoint check: %s",
+            job_id, exc,
+        )
+        return False
+    status_value = getattr(info, "status", None)
+    return status_value in (
+        JobStatus.PENDING,
+        JobStatus.STARTING,
+        JobStatus.READY,
+        JobStatus.RUNNING,
+    )
+
+
 # =============================================================================
 # Request/Response Models
 # =============================================================================
@@ -754,10 +787,28 @@ async def provision_endpoint(
             min_ttl_sec=60,
         )
         if existing and existing.is_usable:
-            return ProvisionResponse(
-                status="ready",
-                job_id=existing.job_id,
-                endpoint=EndpointResponse(**existing.to_dict()),
+            # Verify the backend job is actually still alive before
+            # handing the cached endpoint back to the caller. The registry
+            # caches the last-known status; if the underlying Slurm/K8s
+            # job has terminated since (walltime, manual cancel, crash),
+            # `is_usable` would still return True and we would return a
+            # ghost endpoint that no longer responds. Probe the backend
+            # and demote stale entries before reusing.
+            service = get_orchestration_service()
+            if await _is_backend_job_alive(service, existing.job_id):
+                return ProvisionResponse(
+                    status="ready",
+                    job_id=existing.job_id,
+                    endpoint=EndpointResponse(**existing.to_dict()),
+                )
+            logger.warning(
+                "Stale warm endpoint detected for %s/%s (job_id=%s); "
+                "marking failed and provisioning fresh",
+                request.project_id, request.model, existing.job_id,
+            )
+            registry.mark_failed(
+                existing.job_id,
+                "stale registry entry: backend job no longer alive",
             )
 
     # Check if there's already a provisioning endpoint for this project/model

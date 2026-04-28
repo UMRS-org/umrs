@@ -885,6 +885,7 @@ class TestOrchestrationServiceConfig:
 
     def test_provision_reuses_existing_endpoint(self):
         """Warm reusable endpoints should bypass backend submission."""
+        from umrs.orchestrator.base import JobInfo, JobStatus
         from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint
         from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
 
@@ -905,6 +906,11 @@ class TestOrchestrationServiceConfig:
 
         mock_backend = MagicMock()
         mock_backend.submit_job = AsyncMock()
+        # Backend reports the cached job as still alive so the warm
+        # reuse path is taken.
+        mock_backend.get_job_status = AsyncMock(
+            return_value=JobInfo(job_id="slurm-123", status=JobStatus.RUNNING)
+        )
 
         service = OrchestrationService(
             registry=mock_registry,
@@ -927,6 +933,66 @@ class TestOrchestrationServiceConfig:
         assert result.reused is True
         assert result.job_id == "slurm-123"
         mock_backend.submit_job.assert_not_called()
+        mock_backend.get_job_status.assert_awaited_once_with("slurm-123")
+
+    def test_provision_skips_stale_warm_endpoint(self):
+        """A registry entry whose backend job has died must not be reused."""
+        from umrs.orchestrator.base import JobInfo, JobStatus
+        from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint
+        from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
+
+        # Registry still believes job is READY but the Slurm job has
+        # since terminated.  The service must mark it failed and fall
+        # through to the regular provisioning path.
+        endpoint = RegisteredEndpoint(
+            project_id="proj-1",
+            model="intfloat/e5-base-v2",
+            job_id="slurm-dead",
+            host="node-1",
+            port=8001,
+            status=EndpointStatus.READY,
+            ready_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(minutes=30),
+            backend="slurm-podman",
+        )
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = endpoint
+
+        mock_backend = MagicMock()
+        mock_backend.get_job_status = AsyncMock(
+            return_value=JobInfo(job_id="slurm-dead", status=JobStatus.STOPPED)
+        )
+        # Make submit_job raise so we exit the provisioning path quickly
+        # — we only care that the warm reuse path was rejected and the
+        # stale entry was demoted via mark_failed.
+        mock_backend.submit_job = AsyncMock(side_effect=RuntimeError("boom"))
+
+        mock_readiness = MagicMock()
+        mock_readiness.config.timeout_sec = 60
+
+        service = OrchestrationService(
+            registry=mock_registry,
+            port_manager=MagicMock(allocate=MagicMock(return_value=11434)),
+            readiness_poller=mock_readiness,
+            backend=mock_backend,
+        )
+
+        result = asyncio.run(
+            service.provision(
+                ProvisionRequest(
+                    project_id="proj-1",
+                    model="intfloat/e5-base-v2",
+                    model_path="",
+                )
+            )
+        )
+
+        # Stale entry was demoted.
+        mock_registry.mark_failed.assert_called_once()
+        # And we did NOT short-circuit as reused.
+        assert result.reused is False
+        # Backend job status was queried before reuse.
+        mock_backend.get_job_status.assert_awaited_once_with("slurm-dead")
 
     def test_provision_passes_env_vars_to_backend(self):
         """ProvisionRequest env_vars should reach backend submission."""
