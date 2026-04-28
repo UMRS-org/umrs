@@ -576,6 +576,8 @@ class ModelDownloadBackend(OrchestratorBackend):
             existing_model_id = metadata.get("model_id")
             if existing_model_id:
                 self.model_store.update_status(existing_model_id, ModelStatus.AVAILABLE)
+                # Auto-detect and update capabilities on existing model
+                self._detect_and_update_capabilities(existing_model_id, ctx.target_path)
                 logger.info(
                     "Marked model %s available after %s -> %s",
                     existing_model_id,
@@ -601,6 +603,7 @@ class ModelDownloadBackend(OrchestratorBackend):
                 huggingface_id=metadata.get("huggingface_id"),
                 description=metadata.get("description"),
                 serving_profile=serving_profile,
+                capabilities=self._detect_capabilities(ctx.target_path),
                 status=ModelStatus.AVAILABLE,
                 ctx=None,
             )
@@ -616,6 +619,41 @@ class ModelDownloadBackend(OrchestratorBackend):
                 f"Failed to auto-register model {ctx.model_name}: {e}"
             )
             # Don't fail the download - model can be registered manually
+
+    def _detect_capabilities(self, model_path: str) -> "ModelCapabilities | None":
+        """Detect model capabilities from downloaded files."""
+        try:
+            from umrs.model_registry.detect import detect_capabilities
+            return detect_capabilities(model_path)
+        except Exception as e:
+            logger.debug("Capability detection failed for %s: %s", model_path, e)
+            return None
+
+    def _detect_and_update_capabilities(
+        self, model_id: str, model_path: str
+    ) -> None:
+        """Detect capabilities and update existing model entry."""
+        caps = self._detect_capabilities(model_path)
+        if caps is None:
+            return
+        try:
+            model = self.model_store.get_model(model_id)
+            if model and not any([
+                model.capabilities.supports_tool_calling,
+                model.capabilities.supports_vision,
+                model.capabilities.model_family,
+            ]):
+                # Only update if capabilities are empty
+                self.model_store.update_capabilities(model_id, caps)
+                logger.info(
+                    "Auto-detected capabilities for model %s: family=%s, tools=%s, vision=%s",
+                    model_id,
+                    caps.model_family,
+                    caps.supports_tool_calling,
+                    caps.supports_vision,
+                )
+        except Exception as e:
+            logger.debug("Failed to update capabilities for %s: %s", model_id, e)
 
     async def _download_from_s3(
         self,
