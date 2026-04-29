@@ -408,6 +408,73 @@ def _enrich_endpoint_response(ep_dict: Dict[str, Any]) -> Dict[str, Any]:
     return ep_dict
 
 
+# Mapping of capability tag -> (model_entry path, expected truthy value)
+# ``None`` for the second slot means "boolean: any truthy value is OK".
+_CAPABILITY_TAG_MAP: Dict[str, Any] = {
+    "vision": ("capabilities.supports_vision", None),
+    "tool_calling": ("capabilities.supports_tool_calling", None),
+    "structured_output": ("capabilities.supports_structured_output", None),
+    "embedding": ("model_type", "embedding"),
+    # ``gpu`` is treated as always-satisfied: every served model in this
+    # platform runs on GPU. Kept here so workflows can declare it without
+    # being filtered out.
+    "gpu": (None, None),
+}
+
+
+def _entry_field(entry: Dict[str, Any], dotted: str) -> Any:
+    cur: Any = entry
+    for part in dotted.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return None
+        cur = cur[part]
+    return cur
+
+
+def _capability_satisfied(entry: Optional[Dict[str, Any]], tag: str) -> bool:
+    """Return True if the model entry advertises the given capability tag."""
+    if entry is None:
+        return False
+    if tag not in _CAPABILITY_TAG_MAP:
+        # Unknown tag: never matches (caller gets an empty list).
+        return False
+    field_path, expected = _CAPABILITY_TAG_MAP[tag]
+    if field_path is None:
+        # Always-satisfied tag (e.g. "gpu").
+        return True
+    actual = _entry_field(entry, field_path)
+    if expected is None:
+        return bool(actual)
+    return actual == expected
+
+
+def _endpoint_passes_capability_filter(
+    ep_dict: Dict[str, Any],
+    capabilities: Optional[List[str]],
+    model_type: Optional[str],
+) -> bool:
+    """Return True if the endpoint's served model satisfies the filters."""
+    if not capabilities and not model_type:
+        return True
+    entry = _resolve_registered_model_entry(ep_dict.get("model", ""))
+    if model_type:
+        actual_mt = (entry or {}).get("model_type")
+        if actual_mt != model_type:
+            return False
+    if capabilities:
+        for tag in capabilities:
+            if not _capability_satisfied(entry, tag):
+                return False
+    return True
+
+
+def _parse_capabilities_csv(raw: Optional[str]) -> Optional[List[str]]:
+    if not raw:
+        return None
+    tags = [t.strip() for t in raw.split(",") if t.strip()]
+    return tags or None
+
+
 def _is_all_models_query(model: Optional[str]) -> bool:
     """Return True when the caller is requesting all visible models."""
     if model is None:
@@ -438,12 +505,25 @@ def _is_all_models_query(model: Optional[str]) -> bool:
 )
 async def get_active_endpoints(
     model: Optional[str] = Query(None, description="Filter by model name (catalog or served name)"),
+    capabilities: Optional[str] = Query(
+        None,
+        description=(
+            "Comma-separated capability tags the served model must advertise. "
+            "Known tags: vision, tool_calling, structured_output, embedding, gpu."
+        ),
+    ),
+    model_type: Optional[str] = Query(
+        None,
+        description="Filter by ModelType: 'llm', 'vision', or 'embedding'.",
+    ),
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointsListResponse:
     """Get active (ready) endpoints for the project."""
 
     normalized_model = model.strip() if model else None
+    capability_tags = _parse_capabilities_csv(capabilities)
+    normalized_model_type = model_type.strip() if model_type else None
 
     # If specific model requested, try to get that endpoint
     if not _is_all_models_query(normalized_model):
@@ -463,6 +543,10 @@ async def get_active_endpoints(
                     break
         if endpoint:
             ep_dict = _enrich_endpoint_response(endpoint.to_dict())
+            if not _endpoint_passes_capability_filter(
+                ep_dict, capability_tags, normalized_model_type
+            ):
+                return EndpointsListResponse(endpoints=[], total=0)
             return EndpointsListResponse(
                 endpoints=[EndpointResponse(**ep_dict)],
                 total=1,
@@ -475,9 +559,18 @@ async def get_active_endpoints(
         status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
     )
 
+    enriched = [_enrich_endpoint_response(e.to_dict()) for e in endpoints]
+    filtered = [
+        ep
+        for ep in enriched
+        if _endpoint_passes_capability_filter(
+            ep, capability_tags, normalized_model_type
+        )
+    ]
+
     return EndpointsListResponse(
-        endpoints=[EndpointResponse(**_enrich_endpoint_response(e.to_dict())) for e in endpoints],
-        total=len(endpoints),
+        endpoints=[EndpointResponse(**e) for e in filtered],
+        total=len(filtered),
     )
 
 

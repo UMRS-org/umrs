@@ -199,3 +199,74 @@ async def trigger_workflow(
         ),
     )
     return _parse_command_response(raw, action="trigger")
+
+
+# ---------------------------------------------------------------------------
+# Execution status / results / cancel
+# ---------------------------------------------------------------------------
+
+
+@router.get("/executions/{execution_id}")
+async def get_execution_status(execution_id: str):
+    """Return the in-memory status of a workflow execution."""
+    from ..server.workflow_execution_registry import get_execution_registry
+
+    registry = get_execution_registry()
+    record = registry.get(execution_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id} not found",
+        )
+    return {"status": "ok", "execution": record.to_dict()}
+
+
+@router.get("/executions/{execution_id}/results")
+async def get_execution_results(execution_id: str):
+    """Return the structured outputs of a finished execution.
+
+    For unfinished executions, returns the partial results gathered so
+    far (so clients can render progressive UIs without retrying).
+    """
+    from ..server.workflow_execution_registry import get_execution_registry
+    from ..server.workflow_runner import list_artifacts
+
+    registry = get_execution_registry()
+    record = registry.get(execution_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id} not found",
+        )
+
+    artifacts = [
+        {"key": key, "size_bytes": size}
+        for key, size in list_artifacts(record)
+    ]
+    return {
+        "status": "ok",
+        "execution_id": record.execution_id,
+        "execution_status": record.status,
+        "progress": record.progress,
+        "error": record.error,
+        "results": {
+            "steps": record.results.get("steps", {}),
+            "final": record.results.get("final"),
+        },
+        "artifacts": artifacts,
+    }
+
+
+@router.post("/executions/{execution_id}/cancel")
+async def cancel_execution(execution_id: str):
+    """Request cancellation of a workflow execution."""
+    from ..server.workflow_execution_registry import get_execution_registry
+
+    registry = get_execution_registry()
+    record = registry.cancel(execution_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id} not found",
+        )
+    return {"status": "ok", "execution": record.to_dict()}

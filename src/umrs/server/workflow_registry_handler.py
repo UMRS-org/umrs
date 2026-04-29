@@ -234,6 +234,34 @@ def _handle_run_workflow(client_id: str, payload_str: str) -> str:
         workflow_name, client_id, len(steps), params,
     )
 
+    # Submit the run to the in-process execution registry so the
+    # caller gets an execution_id it can poll for status / results.
+    from umrs.server.workflow_execution_registry import get_execution_registry
+    from umrs.server.workflow_runner import run_workflow_record
+    from umrs.server.step_router import build_registry_backed_router
+
+    registry = get_execution_registry()
+    record = registry.create(
+        workflow_name=workflow_name,
+        user_id=client_id,
+        params=params,
+    )
+
+    project_id = (params or {}).get("project_id") if isinstance(params, dict) else None
+    router = build_registry_backed_router(project_id=project_id)
+
+    def _runner(rec):
+        run_workflow_record(
+            rec,
+            source_path=source_path,
+            workflow_json=wf_data,
+            router=router,
+            project_id=project_id,
+            user_id=client_id,
+        )
+
+    registry.launch(record, _runner)
+
     return json.dumps({
         "status": "ok",
         "action": "run-workflow",
@@ -241,6 +269,7 @@ def _handle_run_workflow(client_id: str, payload_str: str) -> str:
         "source_path": source_path,
         "steps": len(steps),
         "params": params,
+        "execution_id": record.execution_id,
         "message": f"Workflow '{workflow_name}' execution accepted ({len(steps)} steps)",
     }, default=str)
 
