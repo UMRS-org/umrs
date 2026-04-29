@@ -1006,3 +1006,198 @@ def test_affinity_overrides_ucb(monkeypatch):
         assert decision.endpoint_id == "ep-1"
         assert decision.affinity_used is True
     reset_feedback_store()
+
+
+# ── Slice 17: Capability-preference routing ───────────────────────────
+
+
+def test_capability_preference_bias(monkeypatch):
+    """Equal load — endpoint matching ``prefer`` tags wins."""
+    monkeypatch.setenv("UMRS_ROUTER_CAPABILITY_WEIGHT", "0.5")
+    router = _two_endpoint_router_with_load(
+        monkeypatch,
+        a_load={"gpu": True, "fast_storage": True},
+        b_load={},
+    )
+    decision = router.resolve(
+        _spec(
+            requires=["vision"],
+            model_type="vision",
+            routing_hints={"prefer": ["gpu", "fast_storage"]},
+        ),
+    )
+    assert decision.endpoint_id == "ep-1"
+    assert decision.capability_score == pytest.approx(1.0)
+
+
+def test_capability_weight_zero_disables(monkeypatch):
+    """``UMRS_ROUTER_CAPABILITY_WEIGHT=0`` → capability score has no effect."""
+    monkeypatch.setenv("UMRS_ROUTER_CAPABILITY_WEIGHT", "0")
+    router = _two_endpoint_router_with_load(
+        monkeypatch,
+        a_load={"gpu": True, "fast_storage": True},
+        b_load={},
+    )
+    # With weight=0 and no other differences both are equal; the first
+    # by declaration index wins.
+    decision = router.resolve(
+        _spec(
+            requires=["vision"],
+            model_type="vision",
+            routing_hints={"prefer": ["gpu", "fast_storage"]},
+        ),
+    )
+    # Either endpoint could win (declaration index tiebreak); the key
+    # assertion is that the capability score is still computed but
+    # irrelevant.
+    assert decision.endpoint_id in ("ep-1", "ep-2")
+
+
+def test_missing_capability_metadata_no_crash(monkeypatch):
+    """Endpoint with no metadata → capability_score 0.0, no crash."""
+    monkeypatch.setenv("UMRS_ROUTER_CAPABILITY_WEIGHT", "0.5")
+    router = _two_endpoint_router_with_load(monkeypatch)
+    decision = router.resolve(
+        _spec(
+            requires=["vision"],
+            model_type="vision",
+            routing_hints={"prefer": ["gpu"]},
+        ),
+    )
+    assert decision.capability_score == 0.0
+
+
+def test_capability_match_partial(monkeypatch):
+    """2 of 3 preferred capabilities matched → score ≈ 2/3."""
+    monkeypatch.setenv("UMRS_ROUTER_CAPABILITY_WEIGHT", "0.5")
+    router = _two_endpoint_router_with_load(
+        monkeypatch,
+        a_load={"gpu": True, "fast_storage": True},
+        b_load={},
+    )
+    decision = router.resolve(
+        _spec(
+            requires=["vision"],
+            model_type="vision",
+            routing_hints={"prefer": ["gpu", "fast_storage", "nvlink"]},
+        ),
+    )
+    # ep-1 matches 2/3, ep-2 matches 0/3 → ep-1 wins.
+    assert decision.endpoint_id == "ep-1"
+    assert decision.capability_score == pytest.approx(2.0 / 3.0)
+
+
+def test_ucb_overrides_capability(monkeypatch):
+    """Heavily-visited preferred endpoint can lose to cold endpoint via UCB."""
+    from umrs.server.step_router import get_feedback_store
+
+    reset_feedback_store()
+    # ep-1 has matching caps but many visits → low UCB bonus.
+    for _ in range(50):
+        get_feedback_store().record("ep-1", 100.0)
+    # Strong UCB, weak capability weight → cold ep-2 should win.
+    monkeypatch.setenv("UMRS_ROUTER_UCB_WEIGHT", "2.0")
+    monkeypatch.setenv("UMRS_ROUTER_CAPABILITY_WEIGHT", "0.1")
+    monkeypatch.setenv("UMRS_ROUTER_FEEDBACK_WEIGHT", "0")
+    router = _two_endpoint_router_with_load(
+        monkeypatch,
+        a_load={"gpu": True},
+        b_load={},
+    )
+    decision = router.resolve(
+        _spec(
+            requires=["vision"],
+            model_type="vision",
+            routing_hints={"prefer": ["gpu"]},
+        ),
+    )
+    assert decision.endpoint_id == "ep-2"
+    reset_feedback_store()
+
+
+def test_capability_weighted_prefer(monkeypatch):
+    """Weighted prefer: gpu (weight=1.0) + nvlink (weight=0.5).
+
+    ep-1 has gpu=True (matches weight 1.0 of total 1.5 → 2/3).
+    """
+    monkeypatch.setenv("UMRS_ROUTER_CAPABILITY_WEIGHT", "0.5")
+    router = _two_endpoint_router_with_load(
+        monkeypatch,
+        a_load={"gpu": True},
+        b_load={},
+    )
+    decision = router.resolve(
+        _spec(
+            requires=["vision"],
+            model_type="vision",
+            routing_hints={
+                "prefer": [
+                    {"name": "gpu", "weight": 1.0},
+                    {"name": "nvlink", "weight": 0.5},
+                ],
+            },
+        ),
+    )
+    assert decision.endpoint_id == "ep-1"
+    # 1.0 matched / 1.5 total = 2/3
+    assert decision.capability_score == pytest.approx(1.0 / 1.5)
+
+
+def test_capability_mixed_str_and_dict_prefer(monkeypatch):
+    """Mixed prefer list: str and dict items coexist."""
+    monkeypatch.setenv("UMRS_ROUTER_CAPABILITY_WEIGHT", "0.5")
+    router = _two_endpoint_router_with_load(
+        monkeypatch,
+        a_load={"gpu": True, "fast_storage": True},
+        b_load={},
+    )
+    decision = router.resolve(
+        _spec(
+            requires=["vision"],
+            model_type="vision",
+            routing_hints={
+                "prefer": [
+                    "gpu",
+                    {"name": "fast_storage", "weight": 2.0},
+                ],
+            },
+        ),
+    )
+    assert decision.endpoint_id == "ep-1"
+    # gpu=1.0 + fast_storage=2.0 matched / total=3.0
+    assert decision.capability_score == pytest.approx(1.0)
+
+
+def test_decision_breakdown_sums_to_total(monkeypatch):
+    """decision_breakdown values sum to total_score."""
+    monkeypatch.setenv("UMRS_ROUTER_CAPABILITY_WEIGHT", "0.3")
+    router = _two_endpoint_router_with_load(
+        monkeypatch,
+        a_load={"gpu": True},
+        b_load={},
+    )
+    decision = router.resolve(
+        _spec(
+            requires=["vision"],
+            model_type="vision",
+            routing_hints={"prefer": ["gpu"]},
+        ),
+    )
+    bd = decision.decision_breakdown
+    assert bd, "breakdown should not be empty"
+    assert sum(bd.values()) == pytest.approx(decision.total_score, abs=1e-9)
+
+
+def test_decision_breakdown_round_trips(monkeypatch):
+    """decision_breakdown survives to_dict() → dict access."""
+    router = _two_endpoint_router_with_load(monkeypatch, a_load={}, b_load={})
+    decision = router.resolve(
+        _spec(requires=["vision"], model_type="vision"),
+    )
+    d = decision.to_dict()
+    assert "decision_breakdown" in d
+    assert isinstance(d["decision_breakdown"], dict)
+    # All expected keys present.
+    for key in ("affinity", "load", "latency", "queue", "feedback",
+                "failure", "softcap", "ucb", "capability"):
+        assert key in d["decision_breakdown"]

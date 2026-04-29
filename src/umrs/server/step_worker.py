@@ -19,6 +19,7 @@ from __future__ import annotations
 import logging
 import os
 import pickle
+import shutil
 import signal
 import struct
 import sys
@@ -235,11 +236,75 @@ def pool_main() -> int:
     return 0
 
 
+# ------------------------------------------------------------------
+# Capability introspection (Slice 17 / 19)
+# ------------------------------------------------------------------
+
+def _gpu_mem_info() -> Dict[str, int]:
+    """Return GPU memory info via pynvml, or empty dict on failure."""
+    try:
+        import pynvml  # type: ignore
+
+        pynvml.nvmlInit()
+        handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+        info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+        return {"total": int(info.total), "free": int(info.free)}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _compute_slots(
+    free_mem_bytes: int,
+    mem_per_task_mb: int,
+    safety: float,
+) -> int:
+    """Return the number of concurrent task slots based on free GPU memory.
+
+    Always returns at least 1 to keep liveness. Capped at
+    ``UMRS_MAX_SLOTS_CAP`` (default 16) to prevent runaway parallelism.
+    """
+    if free_mem_bytes <= 0 or mem_per_task_mb <= 0:
+        return 1
+    effective_bytes = int(free_mem_bytes * safety)
+    mem_per_task_bytes = mem_per_task_mb * 1024 * 1024
+    slots = effective_bytes // mem_per_task_bytes
+    max_cap = int(os.environ.get("UMRS_MAX_SLOTS_CAP", "16"))
+    return max(1, min(slots, max_cap))
+
+
+def _get_capabilities() -> Dict[str, Any]:
+    """Collect worker capabilities for Slice 17 ping responses.
+
+    Returns a dict of capability tags. Currently:
+    - ``gpu``: True if ``nvidia-smi`` is on PATH
+    - GPU memory fields + ``slots`` when pynvml is available (Slice 19)
+    """
+    caps: Dict[str, Any] = {}
+    caps["gpu"] = shutil.which("nvidia-smi") is not None
+
+    gpu_info = _gpu_mem_info()
+    if gpu_info:
+        mem_per_task_mb = int(os.environ.get("UMRS_GPU_MEM_PER_TASK", "4096"))
+        safety = float(os.environ.get("UMRS_GPU_MEM_SAFETY_FACTOR", "0.9"))
+        caps["gpu_mem_total"] = gpu_info["total"]
+        caps["gpu_mem_free"] = gpu_info["free"]
+        caps["mem_per_task"] = mem_per_task_mb
+        caps["slots"] = _compute_slots(
+            gpu_info["free"], mem_per_task_mb, safety
+        )
+
+    return caps
+
+
 def zmq_pool_main(bind_address: str) -> int:
     """Persistent worker loop over ZMQ REP (Slice 16).
 
     Binds a ZMQ REP socket on *bind_address* and loops:
     ``recv → pickle.loads → _process_task → pickle.dumps → send``.
+
+    Capability pings (Slice 17): payloads with ``{"type": "ping"}``
+    are answered with ``{"type": "pong", "capabilities": {...}}``
+    without dispatching to ``_process_task``.
 
     When ``UMRS_TUNNEL_MODE`` is set, the bind address is forced to
     ``127.0.0.1`` regardless of what was passed.
@@ -301,8 +366,115 @@ def zmq_pool_main(bind_address: str) -> int:
                 sock.send(pickle.dumps(reply))
                 continue
 
+            # Slice 17: capability ping — respond without running a task.
+            if isinstance(payload, dict) and payload.get("type") == "ping":
+                pong: Dict[str, Any] = {
+                    "type": "pong",
+                    "capabilities": _get_capabilities(),
+                }
+                sock.send(pickle.dumps(pong))
+                continue
+
             reply = _process_task(payload)
             sock.send(pickle.dumps(reply))
+    finally:
+        sock.close(linger=0)
+        zmq_ctx.term()
+
+    return 0
+
+
+def zmq_dealer_main(connect_address: str) -> int:
+    """Persistent worker loop over ZMQ DEALER (Slice 18b).
+
+    Connects a ZMQ DEALER socket to a ROUTER on the orchestrator side.
+    Unlike REP mode the DEALER can receive pipelined requests:
+    each request carries a ``correlation_id`` that the worker echoes
+    back so the orchestrator can match replies to requests.
+
+    Capability pings (Slice 17): payloads with ``{"type": "ping"}``
+    are answered with ``{"type": "pong", ...}`` just like REP mode.
+    """
+    import zmq  # type: ignore
+
+    worker_id = os.environ.get("UMRS_WORKER_ID", "")
+
+    zmq_ctx = zmq.Context()
+    sock = zmq_ctx.socket(zmq.DEALER)
+    if worker_id:
+        sock.setsockopt_string(zmq.IDENTITY, worker_id)
+    sock.connect(connect_address)
+    logger.info(
+        "zmq_dealer_main connected to %s (identity=%s)",
+        connect_address,
+        worker_id or "<auto>",
+    )
+
+    max_payload_bytes = int(
+        os.environ.get("UMRS_ZMQ_MAX_PAYLOAD_BYTES", "52428800")
+    )
+
+    _shutdown = False
+
+    def _handle_signal(signum: int, _frame: Any) -> None:
+        nonlocal _shutdown
+        _shutdown = True
+
+    signal.signal(signal.SIGTERM, _handle_signal)
+    signal.signal(signal.SIGINT, _handle_signal)
+
+    try:
+        while not _shutdown:
+            if sock.poll(timeout=1000, flags=zmq.POLLIN) == 0:
+                continue
+            # DEALER receives [empty_frame, payload] or just [payload]
+            # depending on peer socket type.  We accept both forms.
+            frames = sock.recv_multipart()
+            if not frames:
+                continue
+            raw = frames[-1]
+            if len(raw) > max_payload_bytes:
+                reply: Dict[str, Any] = {
+                    "status": "error",
+                    "phase": "worker",
+                    "message": (
+                        f"payload too large: {len(raw)} bytes "
+                        f"exceeds limit {max_payload_bytes}"
+                    ),
+                }
+                sock.send_multipart(frames[:-1] + [pickle.dumps(reply)])
+                continue
+            try:
+                payload = pickle.loads(raw)
+            except Exception as exc:  # noqa: BLE001
+                reply = {
+                    "status": "error",
+                    "phase": "worker",
+                    "message": f"could not decode payload: {exc}",
+                }
+                sock.send_multipart(frames[:-1] + [pickle.dumps(reply)])
+                continue
+
+            # Echo correlation_id for request-reply matching.
+            correlation_id = None
+            if isinstance(payload, dict):
+                correlation_id = payload.get("correlation_id")
+
+            # Capability ping.
+            if isinstance(payload, dict) and payload.get("type") == "ping":
+                pong: Dict[str, Any] = {
+                    "type": "pong",
+                    "capabilities": _get_capabilities(),
+                }
+                if correlation_id is not None:
+                    pong["correlation_id"] = correlation_id
+                sock.send_multipart(frames[:-1] + [pickle.dumps(pong)])
+                continue
+
+            result = _process_task(payload)
+            if correlation_id is not None:
+                result["correlation_id"] = correlation_id
+            sock.send_multipart(frames[:-1] + [pickle.dumps(result)])
     finally:
         sock.close(linger=0)
         zmq_ctx.term()
@@ -339,4 +511,10 @@ if __name__ == "__main__":  # pragma: no cover
             print("--zmq-pool requires a bind address", file=sys.stderr)
             sys.exit(1)
         sys.exit(zmq_pool_main(sys.argv[idx + 1]))
+    if "--zmq-dealer" in sys.argv:
+        idx = sys.argv.index("--zmq-dealer")
+        if idx + 1 >= len(sys.argv):
+            print("--zmq-dealer requires a connect address", file=sys.stderr)
+            sys.exit(1)
+        sys.exit(zmq_dealer_main(sys.argv[idx + 1]))
     sys.exit(main())

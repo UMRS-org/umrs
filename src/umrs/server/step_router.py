@@ -87,6 +87,11 @@ class RoutingDecision:
     # 0.0 for cold endpoints — the router treats unobserved endpoints
     # as healthy until proven otherwise.
     failure_score: float = 0.0
+    # Capability-preference score (Slice 17). The fraction of
+    # ``routing_hints.prefer`` capabilities matched by the chosen
+    # endpoint's metadata.  Range [0, 1]; 0.0 when no preferences
+    # declared or endpoint has no metadata.
+    capability_score: float = 0.0
     # True when this decision was driven by ε-greedy exploration
     # (random pick or cold-endpoint forced exploration), False when
     # the deterministic score path picked the winner.
@@ -94,6 +99,10 @@ class RoutingDecision:
     # ``total_score`` is the combined affinity + load number used to
     # pick this endpoint within its scope tier.
     total_score: float = 0.0
+    # Weighted score breakdown (Slice 20-prep).  Each entry is the
+    # *weighted* contribution to ``total_score`` (sign-included), so
+    # ``sum(decision_breakdown.values()) ≈ total_score``.
+    decision_breakdown: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         # ``asdict`` produces a JSON-safe view (only primitives + dicts).
@@ -488,6 +497,46 @@ def _endpoint_queue_norm(ep: Dict[str, Any]) -> float:
     return ms / ref
 
 
+def _capability_match(
+    ep_metadata: Dict[str, Any],
+    preferred: List[Any],
+) -> float:
+    """Score how well an endpoint's metadata matches preferred capabilities.
+
+    ``preferred`` items can be:
+    - ``str`` — treated as weight 1.0
+    - ``dict`` with ``{"name": str, "weight": float}`` — explicit weight
+
+    Returns a value in ``[0.0, 1.0]`` (weighted matches / total weight).
+    Returns ``0.0`` when *preferred* is empty or total weight is zero.
+    """
+    if not preferred:
+        return 0.0
+    total_weight = 0.0
+    matched_weight = 0.0
+    for item in preferred:
+        if isinstance(item, str):
+            name, weight = item, 1.0
+        elif isinstance(item, dict) and isinstance(item.get("name"), str):
+            name = item["name"]
+            try:
+                weight = float(item.get("weight", 1.0))
+            except (TypeError, ValueError):
+                weight = 1.0
+            if weight <= 0:
+                continue
+        else:
+            continue
+        total_weight += weight
+        if ep_metadata.get(name):
+            matched_weight += weight
+    if total_weight <= 0:
+        return 0.0
+    raw = matched_weight / total_weight
+    # Clamp to [0, 1] to prevent bad metadata from exploding scores.
+    return max(0.0, min(1.0, raw))
+
+
 def _softcap_penalty(load_norm: float) -> float:
     """Return an extra penalty when utilisation crosses the soft cap.
 
@@ -671,6 +720,21 @@ class StepRouter:
         ucb_c = _env_float("UMRS_ROUTER_UCB_C", 1.0)
         total_visits = _feedback_store.get_total_visits()
 
+        # Capability preference (Slice 17): a small bonus for endpoints
+        # whose metadata matches the step's ``routing_hints.prefer``
+        # list.  This is a soft nudge, NOT a hard filter — candidates
+        # missing preferred capabilities are still eligible.
+        w_cap = _env_float("UMRS_ROUTER_CAPABILITY_WEIGHT", 0.2)
+        preferred_caps: List[Any] = []
+        if isinstance(step.routing_hints, dict):
+            raw_prefer = step.routing_hints.get("prefer")
+            if isinstance(raw_prefer, list):
+                preferred_caps = [
+                    c for c in raw_prefer
+                    if isinstance(c, str) and c
+                    or isinstance(c, dict) and isinstance(c.get("name"), str)
+                ]
+
         scored: List[Dict[str, Any]] = []
         for idx, item in enumerate(tier_pool):
             if affinity_active:
@@ -706,6 +770,13 @@ class StepRouter:
                 ucb_bonus = ucb_c * math.sqrt(math.log(total_visits + 1)) if total_visits > 0 else ucb_c
             else:
                 ucb_bonus = ucb_c * math.sqrt(math.log(total_visits + 1) / (visits + 1))
+            # Capability preference (Slice 17): score from endpoint
+            # metadata matching routing_hints.prefer tags.
+            ep_md = item["ep"].get("metadata")
+            cap_score = _capability_match(
+                ep_md if isinstance(ep_md, dict) else {},
+                preferred_caps,
+            )
             total = (
                 (w_aff * float(aff_score))
                 - (w_load * float(load_norm))
@@ -715,6 +786,7 @@ class StepRouter:
                 - (w_fail * float(fail_norm))
                 - (w_load * float(softcap))
                 + (w_ucb * ucb_bonus)
+                + (w_cap * cap_score)
             )
             scored.append(
                 {
@@ -727,6 +799,7 @@ class StepRouter:
                     "feedback_norm": fb_norm,
                     "failure_norm": fail_norm,
                     "ucb_bonus": ucb_bonus,
+                    "cap_score": cap_score,
                     "total": total,
                     "decl_index": idx,
                 }
@@ -763,8 +836,20 @@ class StepRouter:
             queue_score=float(chosen["queue_norm"]),
             feedback_score=float(chosen["feedback_norm"]),
             failure_score=float(chosen["failure_norm"]),
+            capability_score=float(chosen.get("cap_score", 0.0)),
             exploration_used=bool(explored),
             total_score=float(chosen["total"]),
+            decision_breakdown={
+                "affinity": w_aff * float(chosen["aff_score"]),
+                "load": -(w_load * float(chosen["load_norm"])),
+                "latency": -(w_lat * (float(chosen["latency_norm"]) * lat_decorr if chosen["feedback_norm"] > 0 else float(chosen["latency_norm"]))),
+                "queue": -(w_q * float(chosen["queue_norm"])),
+                "feedback": -(w_fb * float(chosen["feedback_norm"])),
+                "failure": -(w_fail * float(chosen["failure_norm"])),
+                "softcap": -(w_load * _softcap_penalty(float(chosen["load_norm"]))),
+                "ucb": w_ucb * float(chosen["ucb_bonus"]),
+                "capability": w_cap * float(chosen.get("cap_score", 0.0)),
+            },
         )
 
     def _env_fallback_decision(self, step: StepSpec) -> RoutingDecision:

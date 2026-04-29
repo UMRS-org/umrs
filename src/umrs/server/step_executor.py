@@ -1438,6 +1438,10 @@ _REMOTE_WORKER_COOLDOWN = float(
     os.environ.get("UMRS_REMOTE_WORKER_COOLDOWN", "10")
 )
 
+_WORKER_CAPABILITY_TTL = float(
+    os.environ.get("UMRS_WORKER_CAPABILITY_TTL", "30")
+)
+
 
 class _RemoteWorker:
     """ZMQ-based remote worker with same behavioural contract as _PooledWorker.
@@ -1472,6 +1476,15 @@ class _RemoteWorker:
         self._last_failure_at: Optional[float] = None
         self.last_used_at: float = time.monotonic()
         self._sock = self._make_socket()
+        # Slice 17: capability cache (no RPC in router; cached here).
+        self.capabilities: Dict[str, Any] = {}
+        self._last_capability_refresh: float = 0
+        self._capability_ttl = _WORKER_CAPABILITY_TTL
+        # Slice 18a/19: dynamic capacity (slots). Starts at env or 1;
+        # updated by capability refresh when GPU info is available.
+        self.capacity: int = int(os.environ.get("UMRS_REMOTE_WORKER_SLOTS", "1"))
+        # Slice 19: previous slots for smoothing (shrink fast, grow slow).
+        self._prev_slots: Optional[int] = None
 
     def _make_socket(self) -> Any:
         sock = self._zmq_ctx.socket(self._zmq.REQ)
@@ -1505,6 +1518,52 @@ class _RemoteWorker:
     def _mark_failed(self) -> None:
         self._alive = False
         self._last_failure_at = time.monotonic()
+
+    def refresh_capabilities(self) -> Dict[str, Any]:
+        """Lazy-fetch capabilities from the remote worker via ZMQ ping.
+
+        Returns cached capabilities if the TTL has not expired.
+        Never blocks the router — failures return last-known state.
+        """
+        now = time.monotonic()
+        if (now - self._last_capability_refresh) < self._capability_ttl:
+            return self.capabilities
+        if not self.is_alive():
+            return self.capabilities
+        try:
+            ping_blob = pickle.dumps({"type": "ping"})
+            self._sock.send(ping_blob)
+            data = self._sock.recv()
+            reply = pickle.loads(data)
+            if isinstance(reply, dict) and reply.get("type") == "pong":
+                caps = reply.get("capabilities", {})
+                if isinstance(caps, dict):
+                    self.capabilities = caps
+                    # Slice 19: update capacity with smoothing.
+                    raw_slots = caps.get("slots")
+                    if isinstance(raw_slots, int) and raw_slots >= 1:
+                        self._update_capacity(raw_slots)
+            self._last_capability_refresh = now
+        except Exception:  # noqa: BLE001
+            # On failure: keep last-known, don't break socket.
+            self._recreate_socket()
+        return self.capabilities
+
+    def _update_capacity(self, new_slots: int) -> None:
+        """Smooth capacity changes: shrink immediately, grow slowly."""
+        if self._prev_slots is None:
+            self._prev_slots = new_slots
+            self.capacity = new_slots
+            return
+        if new_slots <= self._prev_slots:
+            # Shrink immediately — avoid OOM.
+            self.capacity = new_slots
+        else:
+            # Grow slowly: move halfway toward new.
+            self.capacity = self._prev_slots + max(
+                1, (new_slots - self._prev_slots) // 2
+            )
+        self._prev_slots = self.capacity
 
     def run_task(self, payload_blob: bytes, timeout: Optional[float] = None) -> Dict[str, Any]:
         """Send a task and block until the reply arrives.
@@ -1707,12 +1766,14 @@ class RemotePoolExecutor:
                             self._active_count.get(addr, 1) - 1, 0
                         )
 
-                # Each address → at most 1 concurrent request (REQ/REP).
+                # Each address → at most `capacity` concurrent requests (Slice 18a).
                 for i in range(n):
                     idx = (self._rr_index + i) % n
                     addr = self.workers[idx]
                     count = self._active_count.get(addr, 0)
-                    if count < 1:
+                    # Get capacity from any existing worker, else env default.
+                    cap = self._get_capacity(addr)
+                    if count < cap:
                         self._active_count[addr] = count + 1
                         self._rr_index = (idx + 1) % n
                         # Create worker outside lock? No — socket creation is fast.
@@ -1765,6 +1826,19 @@ class RemotePoolExecutor:
         except Exception:  # noqa: BLE001
             pass
 
+    def _get_capacity(self, address: str) -> int:
+        """Return the concurrency limit for *address*.
+
+        Checks any pooled worker's capacity first (updated by
+        capability refresh). Falls back to env default.
+        """
+        idle = self._pool.get(address)
+        if idle:
+            for w in idle:
+                if w.capacity > 0:
+                    return w.capacity
+        return int(os.environ.get("UMRS_REMOTE_WORKER_SLOTS", "1"))
+
     def shutdown(self) -> None:
         """Close all sockets and terminate the ZMQ context."""
         with self._lock:
@@ -1777,6 +1851,188 @@ class RemotePoolExecutor:
             self._pool.clear()
             self._active_count.clear()
             self._conds.clear()
+        if self._zmq_ctx is not None:
+            try:
+                self._zmq_ctx.term()
+            except Exception:  # noqa: BLE001
+                pass
+
+
+# ----------------------------------------------------------------------
+# ROUTER-based executor (Slice 18b)
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class RouterPoolExecutor:
+    """Run steps on DEALER workers via a ZMQ ROUTER socket (Slice 18b).
+
+    Unlike :class:`RemotePoolExecutor` (REQ/REP per worker), this
+    executor binds a single ROUTER socket.  Workers connect with DEALER
+    sockets.  Requests carry a ``correlation_id`` so the executor can
+    match asynchronous replies to outstanding requests, enabling
+    multiple in-flight requests per worker without head-of-line
+    blocking.
+
+    Config via env:
+        ``UMRS_ROUTER_BIND`` — ZMQ bind address for the ROUTER socket
+        ``UMRS_STEP_EXECUTOR_TIMEOUT`` — per-task timeout
+    """
+
+    bind_address: str = "tcp://0.0.0.0:5560"
+    name: str = "router"
+    timeout_seconds: Optional[float] = None
+
+    # -- internal state --
+    _zmq_ctx: Any = field(default=None, init=False, repr=False)
+    _sock: Any = field(default=None, init=False, repr=False)
+    _pending: Dict[str, Any] = field(
+        default_factory=dict, init=False, repr=False
+    )
+    _lock: threading.Lock = field(
+        default_factory=threading.Lock, init=False, repr=False
+    )
+    _recv_thread: Optional[threading.Thread] = field(
+        default=None, init=False, repr=False
+    )
+    _shutdown_event: threading.Event = field(
+        default_factory=threading.Event, init=False, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        import zmq  # type: ignore
+
+        self._zmq = zmq
+        self._zmq_ctx = zmq.Context()
+        self._sock = self._zmq_ctx.socket(zmq.ROUTER)
+        self._sock.bind(self.bind_address)
+        logger.info("RouterPoolExecutor listening on %s", self.bind_address)
+        # Background thread to receive replies.
+        self._recv_thread = threading.Thread(
+            target=self._recv_loop, daemon=True, name="router-recv"
+        )
+        self._recv_thread.start()
+
+    def _recv_loop(self) -> None:
+        """Background loop: receive ROUTER frames and resolve pending futures."""
+        while not self._shutdown_event.is_set():
+            try:
+                if self._sock.poll(timeout=500, flags=self._zmq.POLLIN) == 0:
+                    continue
+                frames = self._sock.recv_multipart()
+                # ROUTER frames: [identity, empty, payload]
+                if len(frames) < 2:
+                    continue
+                data = frames[-1]
+                reply = pickle.loads(data)
+                cid = reply.get("correlation_id") if isinstance(reply, dict) else None
+                if cid is None:
+                    continue
+                with self._lock:
+                    future = self._pending.pop(cid, None)
+                if future is not None:
+                    future["reply"] = reply
+                    future["event"].set()
+            except Exception:  # noqa: BLE001
+                if self._shutdown_event.is_set():
+                    break
+
+    def execute(
+        self,
+        *,
+        entrypoint: str,
+        config: Dict[str, Any],
+        ctx: StepContext,
+    ) -> StepResult:
+        _INTERNAL_KEYS = {
+            EXECUTOR_IMAGE_METADATA_KEY,
+            EXECUTOR_PAYLOAD_S3_METADATA_KEY,
+            EXECUTOR_GPU_METADATA_KEY,
+        }
+        sanitised_metadata = {
+            k: v
+            for k, v in ctx.metadata.items()
+            if k not in _INTERNAL_KEYS
+        }
+
+        s3_config = _serialise_s3_client_config(ctx.s3)
+        ctx_payload = {
+            "input_bucket": ctx.input_bucket,
+            "input_keys": list(ctx.input_keys),
+            "output_bucket": ctx.output_bucket,
+            "config": dict(ctx.config),
+            "metadata": sanitised_metadata,
+            "run_id": ctx.run_id,
+            "parent_results": dict(ctx.parent_results),
+        }
+
+        correlation_id = str(uuid.uuid4())
+        payload = {
+            "entrypoint": entrypoint,
+            "config": dict(config),
+            "ctx": ctx_payload,
+            "s3_config": s3_config,
+            "correlation_id": correlation_id,
+        }
+
+        payload_blob = pickle.dumps(payload)
+        if len(payload_blob) > _PAYLOAD_MAX_BYTES:
+            raise StepExecutionError(
+                "setup",
+                f"payload size {len(payload_blob)} exceeds cap "
+                f"({_PAYLOAD_MAX_BYTES}); use S3 for large data",
+            )
+
+        future: Dict[str, Any] = {
+            "event": threading.Event(),
+            "reply": None,
+        }
+        with self._lock:
+            self._pending[correlation_id] = future
+
+        # Send to any available DEALER worker via ROUTER.
+        # ROUTER needs [identity, empty, payload] but we can broadcast
+        # to the first connected peer by sending without identity prefix
+        # — ZMQ ROUTER requires explicit identity.  For simplicity we
+        # keep track of connected workers via their pong identities.
+        # However, in a minimal implementation we send to all connected
+        # peers and the first to reply wins via correlation_id.
+        #
+        # In practice, the ROUTER socket dispatches round-robin to
+        # connected DEALER peers when the identity prefix is omitted.
+        # We send [empty_frame, payload] as the envelope.
+        try:
+            self._sock.send_multipart([b"", payload_blob])
+        except Exception as exc:  # noqa: BLE001
+            with self._lock:
+                self._pending.pop(correlation_id, None)
+            raise StepExecutionError(
+                "worker",
+                f"router send failed: {exc}",
+            ) from exc
+
+        timeout = self.timeout_seconds
+        if not future["event"].wait(timeout=timeout):
+            with self._lock:
+                self._pending.pop(correlation_id, None)
+            raise StepExecutionError(
+                "worker",
+                f"router task timeout after {timeout}s "
+                f"(correlation_id={correlation_id})",
+            )
+
+        return WorkerPoolExecutor._interpret_reply(future["reply"])
+
+    def shutdown(self) -> None:
+        """Stop the receiver thread and close the ROUTER socket."""
+        self._shutdown_event.set()
+        if self._recv_thread is not None:
+            self._recv_thread.join(timeout=5)
+        if self._sock is not None:
+            try:
+                self._sock.close(linger=0)
+            except Exception:  # noqa: BLE001
+                pass
         if self._zmq_ctx is not None:
             try:
                 self._zmq_ctx.term()
@@ -1800,6 +2056,7 @@ def build_step_executor(
         ``podman``           → :class:`PodmanExecutor`
         ``pool``             → :class:`WorkerPoolExecutor`
         ``remote``           → :class:`RemotePoolExecutor`
+        ``router``           → :class:`RouterPoolExecutor`
 
     Unknown values fall back to ``inproc`` with a warning so a typo
     in deployment config doesn't crash the workflow runner.
@@ -1869,6 +2126,12 @@ def build_step_executor(
             acquire_timeout=_parse_float_env(
                 "UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0
             ),
+        )
+    if chosen == "router":
+        bind = os.environ.get("UMRS_ROUTER_BIND", "tcp://0.0.0.0:5560").strip()
+        return RouterPoolExecutor(
+            bind_address=bind,
+            timeout_seconds=_executor_timeout(),
         )
     logger.warning(
         "unknown UMRS_STEP_EXECUTOR=%r; falling back to inproc", chosen
