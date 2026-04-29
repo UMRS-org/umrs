@@ -149,6 +149,25 @@ class ResourceSpec:
         )
 
 
+# Capability tags the StepRouter understands today. Unknown values are
+# accepted (with a warning) so user workflows aren't brittle when new
+# capabilities ship.
+KNOWN_CAPABILITY_TAGS: frozenset = frozenset(
+    {
+        "vision",
+        "tool_calling",
+        "structured_output",
+        "embedding",
+        "gpu",
+    }
+)
+
+# Allowed values for ``StepSpec.model_type``. Mirrors
+# ``umrs.model_registry.models.ModelType`` but redeclared as plain strings to
+# avoid pulling registry deps into pipeline_sdk.
+KNOWN_MODEL_TYPES: frozenset = frozenset({"llm", "vision", "embedding"})
+
+
 @dataclass
 class StepSpec:
     """One processing step inside a workflow."""
@@ -159,6 +178,12 @@ class StepSpec:
     depends_on: Optional[List[str]] = None  # step names this step depends on
     max_retries: int = 0  # per-step retry count (0 = no retries)
     retry_delay: float = 1.0  # seconds between retries
+    # ---- routing / resource hints (all optional, default-omitted in to_dict) ----
+    requires: List[str] = field(default_factory=list)  # capability tags
+    model: Optional[str] = None  # symbolic model alias (e.g. "vlm-large")
+    lora: Optional[str] = None  # adapter name (passthrough)
+    model_type: Optional[str] = None  # "llm" | "vision" | "embedding"
+    routing_hints: Dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         if not self.name:
@@ -168,9 +193,29 @@ class StepSpec:
                 f"Step '{self.name}': entrypoint must be 'module:ClassName', "
                 f"got '{self.entrypoint}'"
             )
+        if self.requires:
+            if not isinstance(self.requires, list) or any(
+                not isinstance(tag, str) or not tag for tag in self.requires
+            ):
+                raise ValueError(
+                    f"Step '{self.name}': requires must be a list of non-empty strings"
+                )
+            unknown = [tag for tag in self.requires if tag not in KNOWN_CAPABILITY_TAGS]
+            if unknown:
+                logger.warning(
+                    "Step '%s' declares unknown capability tag(s): %s; "
+                    "router will treat them as opaque hints.",
+                    self.name,
+                    ", ".join(sorted(unknown)),
+                )
+        if self.model_type is not None and self.model_type not in KNOWN_MODEL_TYPES:
+            raise ValueError(
+                f"Step '{self.name}': model_type must be one of "
+                f"{sorted(KNOWN_MODEL_TYPES)}, got '{self.model_type}'"
+            )
 
     def to_dict(self) -> Dict[str, Any]:
-        d = {
+        d: Dict[str, Any] = {
             "name": self.name,
             "entrypoint": self.entrypoint,
             "config": self.config,
@@ -182,6 +227,18 @@ class StepSpec:
         if self.max_retries > 0:
             d["max_retries"] = self.max_retries
             d["retry_delay"] = self.retry_delay
+        # New routing fields are omitted when at default to keep existing
+        # workflow.json fixtures byte-stable on round-trip.
+        if self.requires:
+            d["requires"] = list(self.requires)
+        if self.model is not None:
+            d["model"] = self.model
+        if self.lora is not None:
+            d["lora"] = self.lora
+        if self.model_type is not None:
+            d["model_type"] = self.model_type
+        if self.routing_hints:
+            d["routing_hints"] = dict(self.routing_hints)
         return d
 
     @classmethod
@@ -194,6 +251,11 @@ class StepSpec:
             depends_on=data.get("depends_on"),
             max_retries=data.get("max_retries", 0),
             retry_delay=data.get("retry_delay", 1.0),
+            requires=list(data.get("requires") or []),
+            model=data.get("model"),
+            lora=data.get("lora"),
+            model_type=data.get("model_type"),
+            routing_hints=dict(data.get("routing_hints") or {}),
         )
 
 

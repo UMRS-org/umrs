@@ -54,6 +54,11 @@ class StepContext:
         output_bucket: Bucket where outputs should be written.
         config: Step-specific configuration from *workflow.json*.
         metadata: Mutable dict carried across steps for the same run.
+            Note: under the parallel workflow runner (independent steps
+            in the same DAG wave run concurrently) this dict is **not**
+            safe for cross-step mutation. Use ``parent_results`` to pass
+            data forward in fan-in scenarios; reserve ``metadata`` for
+            within-step bookkeeping.
         run_id: Unique identifier for the current workflow execution.
         parent_results: Results from parent steps in DAG mode (keyed by step name).
     """
