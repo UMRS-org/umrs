@@ -29,6 +29,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _default_owner_type(project_id: str) -> str:
+    """Infer the effective owner type for legacy registry records."""
+    if project_id == "rivault":
+        return "system"
+    return "user"
+
+
 class EndpointStatus(str, Enum):
     """Status of a registered endpoint."""
 
@@ -99,6 +106,11 @@ class RegisteredEndpoint:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for API response."""
+        owner_type = self.metadata.get("owner_type") or self.metadata.get("tier")
+        if owner_type is None:
+            owner_type = _default_owner_type(self.project_id)
+
+        tier = self.metadata.get("tier") or owner_type
         d = {
             "project_id": self.project_id,
             "model": self.model,
@@ -113,7 +125,12 @@ class RegisteredEndpoint:
             "backend": self.backend,
             "error_message": self.error_message,
             "litellm_url": self.litellm_url,
+            "owner_type": str(owner_type),
+            "tier": str(tier),
         }
+        owner_id = self.metadata.get("owner_id")
+        if owner_id is not None:
+            d["owner_id"] = str(owner_id)
         # Include served_model_name if available in metadata
         served = self.metadata.get("served_model_name")
         if served:

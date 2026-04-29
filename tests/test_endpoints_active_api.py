@@ -75,6 +75,34 @@ def test_active_endpoints_wildcard_returns_all_ready_endpoints():
     }
 
 
+def test_active_endpoints_default_legacy_records_to_user_tier():
+    registry = EndpointRegistry()
+    _register_ready_endpoint(
+        registry,
+        project_id="project-a",
+        model="qwen3-8b",
+        job_id="job-1",
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = lambda: registry
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/umrs/endpoints/active",
+            params={"model": "*"},
+            headers={"X-Project-ID": "project-a"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["endpoints"][0]["owner_type"] == "user"
+    assert payload["endpoints"][0]["tier"] == "user"
+
+
 def test_active_endpoints_served_model_name_lookup_still_matches_single_endpoint():
     registry = EndpointRegistry()
     _register_ready_endpoint(
