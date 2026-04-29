@@ -87,6 +87,9 @@ class EndpointResponse(BaseModel):
     backend: str
     error_message: Optional[str] = None
     litellm_url: str
+    owner_type: Optional[str] = None
+    owner_id: Optional[str] = None
+    tier: Optional[str] = None
     served_model_name: Optional[str] = None
     detail: Optional[str] = None
     job_status: Optional[str] = None
@@ -107,6 +110,9 @@ class EndpointResponse(BaseModel):
                 "backend": "slurm",
                 "error_message": None,
                 "litellm_url": "http://compute-node-01:11434/v1",
+                "owner_type": "user",
+                "owner_id": None,
+                "tier": "user",
                 "detail": "starting container / loading model",
                 "job_status": "starting",
             }
@@ -945,6 +951,8 @@ async def provision_endpoint(
         # successful chat path before exposing the endpoint as ready.
         "readiness_probe": "chat"
     }
+    request_metadata.setdefault("owner_type", "user")
+    request_metadata.setdefault("tier", request_metadata["owner_type"])
     served_model_name = _resolve_served_model_name(
         request.model,
         model_entry=model_entry,

@@ -26,6 +26,7 @@ def test_provision_endpoint_resolves_model_path_from_catalog(monkeypatch):
         lambda model_name: {
             "storage_ref": "/shared/models/qwen3-8b",
             "huggingface_id": "Qwen/Qwen3-8B",
+            "serving_profile": {"served_model_name": "Qwen/Qwen3-8B"},
             "model_type": "llm",
         },
     )
@@ -50,6 +51,8 @@ def test_provision_endpoint_resolves_model_path_from_catalog(monkeypatch):
     assert service.requests[0].model_path == "/shared/models/qwen3-8b"
     assert service.requests[0].wait_for_ready is True
     assert service.requests[0].metadata["readiness_probe"] == "chat"
+    assert service.requests[0].metadata["owner_type"] == "user"
+    assert service.requests[0].metadata["tier"] == "user"
     assert service.requests[0].metadata["served_model_name"] == "Qwen/Qwen3-8B"
 
 
@@ -61,6 +64,7 @@ def test_provision_endpoint_forwards_wait_false(monkeypatch):
         lambda model_name: {
             "storage_ref": "/shared/models/qwen3-8b",
             "huggingface_id": "Qwen/Qwen3-8B",
+            "serving_profile": {"served_model_name": "Qwen/Qwen3-8B"},
             "model_type": "llm",
         },
     )
