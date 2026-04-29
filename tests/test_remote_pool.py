@@ -301,6 +301,173 @@ def test_remote_cooldown_backoff():
         ctx.term()
 
 
+def test_multi_slot_concurrent(fake_worker, monkeypatch):
+    """Slice 18a: 1 address, capacity 2 → 2 tasks run concurrently."""
+    monkeypatch.setenv("UMRS_REMOTE_WORKER_SLOTS", "2")
+    executor = RemotePoolExecutor(
+        workers=[fake_worker.address],
+        timeout_seconds=10.0,
+        acquire_timeout=5.0,
+    )
+    results = []
+    errors = []
+
+    def _run():
+        try:
+            r = executor.execute(
+                entrypoint=_TEST_ENTRYPOINT,
+                config={},
+                ctx=_make_ctx(),
+            )
+            results.append(r)
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_run) for _ in range(2)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+    try:
+        assert not errors, f"unexpected errors: {errors}"
+        assert len(results) == 2
+        assert all(r.extra == {"ok": True} for r in results)
+    finally:
+        executor.shutdown()
+
+
+def test_capacity_enforced(monkeypatch):
+    """Slice 18a: cap=1 blocks third concurrent request on same address."""
+    monkeypatch.setenv("UMRS_REMOTE_WORKER_SLOTS", "1")
+    # Slow worker that holds requests for 2s so we can saturate the slot.
+    slow = _FakeZmqWorker(slow=True)
+    executor = RemotePoolExecutor(
+        workers=[slow.address],
+        timeout_seconds=5.0,
+        acquire_timeout=0.5,  # very short — should timeout
+    )
+    # First task — will be accepted and block.
+    err_holder = []
+
+    def _run_slow():
+        try:
+            executor.execute(
+                entrypoint=_TEST_ENTRYPOINT,
+                config={},
+                ctx=_make_ctx(),
+            )
+        except Exception as exc:
+            err_holder.append(exc)
+
+    t = threading.Thread(target=_run_slow, daemon=True)
+    t.start()
+    time.sleep(0.2)  # Let first task start.
+
+    # Second task should timeout because cap=1 and the slot is busy.
+    with pytest.raises(StepExecutionError, match="acquire timeout"):
+        executor.execute(
+            entrypoint=_TEST_ENTRYPOINT,
+            config={},
+            ctx=_make_ctx(),
+        )
+    executor.shutdown()
+    t.join(timeout=3)
+    slow.stop()
+
+
+def test_capability_ping_updates_capacity():
+    """Slice 18a/19: refresh_capabilities() updates worker capacity."""
+    ctx = zmq.Context()
+    worker_ctx = zmq.Context()
+    sock = worker_ctx.socket(zmq.REP)
+    port = sock.bind_to_random_port("tcp://127.0.0.1")
+
+    # Background: reply to ping with slots=3.
+    stop = threading.Event()
+
+    def _pong_loop():
+        try:
+            while not stop.is_set():
+                if sock.poll(timeout=200, flags=zmq.POLLIN) == 0:
+                    continue
+                raw = sock.recv()
+                payload = pickle.loads(raw)
+                if isinstance(payload, dict) and payload.get("type") == "ping":
+                    sock.send(pickle.dumps({
+                        "type": "pong",
+                        "capabilities": {"gpu": True, "slots": 3},
+                    }))
+        except zmq.ContextTerminated:
+            pass
+
+    t = threading.Thread(target=_pong_loop, daemon=True)
+    t.start()
+
+    try:
+        w = _RemoteWorker(
+            address=f"tcp://127.0.0.1:{port}",
+            zmq_context=ctx,
+            timeout=5.0,
+        )
+        # Initially capacity=1 (env default).
+        assert w.capacity == 1
+
+        # Force refresh (TTL expired).
+        w._last_capability_refresh = 0
+        caps = w.refresh_capabilities()
+        assert caps.get("gpu") is True
+        assert w.capacity == 3
+        w.stop()
+    finally:
+        stop.set()
+        t.join(timeout=3)
+        sock.close(linger=0)
+        worker_ctx.term()
+        ctx.term()
+
+
+def test_capacity_smoothing_shrink_fast():
+    """Slice 19: capacity shrinks immediately when worker reports fewer slots."""
+    ctx = zmq.Context()
+    w = _RemoteWorker(
+        address="tcp://127.0.0.1:1",
+        zmq_context=ctx,
+        timeout=0.3,
+    )
+    try:
+        # Simulate initial capacity set by a prior refresh.
+        w.capacity = 4
+        w._prev_slots = 4
+        # Worker now reports 2 slots — should shrink immediately.
+        w._update_capacity(2)
+        assert w.capacity == 2
+    finally:
+        w.stop()
+        ctx.term()
+
+
+def test_capacity_smoothing_grow_slow():
+    """Slice 19: capacity grows gradually, not in one jump."""
+    ctx = zmq.Context()
+    w = _RemoteWorker(
+        address="tcp://127.0.0.1:1",
+        zmq_context=ctx,
+        timeout=0.3,
+    )
+    try:
+        w.capacity = 2
+        w._prev_slots = 2
+        # Worker now reports 8 slots — should grow slowly (halfway).
+        w._update_capacity(8)
+        assert w.capacity == 5  # 2 + max(1, (8-2)//2) = 2+3 = 5
+        # Second update: still heading toward 8.
+        w._update_capacity(8)
+        assert w.capacity == 6  # 5 + max(1, (8-5)//2) = 5+1 = 6
+    finally:
+        w.stop()
+        ctx.term()
+
+
 def test_remote_payload_too_large():
     """Worker rejects payloads exceeding UMRS_ZMQ_MAX_PAYLOAD_BYTES."""
     import os
@@ -376,3 +543,182 @@ def test_remote_payload_too_large():
             os.environ.pop("UMRS_ZMQ_MAX_PAYLOAD_BYTES", None)
         else:
             os.environ["UMRS_ZMQ_MAX_PAYLOAD_BYTES"] = original
+
+
+# ── Slice 17: Capability ping ─────────────────────────────────────────
+
+
+class _PingAwareWorker:
+    """In-process ZMQ REP worker that handles ping and task payloads."""
+
+    def __init__(self, capabilities: Dict[str, Any] | None = None) -> None:
+        self._ctx = zmq.Context()
+        self._sock = self._ctx.socket(zmq.REP)
+        self._port = self._sock.bind_to_random_port("tcp://127.0.0.1")
+        self._caps = capabilities or {"gpu": True, "slots": 2}
+        self._stop = False
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+
+    @property
+    def address(self) -> str:
+        return f"tcp://127.0.0.1:{self._port}"
+
+    def _loop(self) -> None:
+        try:
+            while not self._stop:
+                if self._sock.poll(timeout=200, flags=zmq.POLLIN) == 0:
+                    continue
+                raw = self._sock.recv()
+                payload = pickle.loads(raw)
+                if isinstance(payload, dict) and payload.get("type") == "ping":
+                    reply = {"type": "pong", "capabilities": self._caps}
+                else:
+                    reply = _process_task(payload)
+                self._sock.send(pickle.dumps(reply))
+        except zmq.ContextTerminated:
+            pass
+
+    def stop(self) -> None:
+        self._stop = True
+        self._thread.join(timeout=5)
+        try:
+            self._sock.close(linger=0)
+        except Exception:
+            pass
+        try:
+            self._ctx.term()
+        except Exception:
+            pass
+
+
+def test_remote_worker_refresh_capabilities():
+    """``refresh_capabilities()`` round-trips a ping to the worker."""
+    worker_proc = _PingAwareWorker(capabilities={"gpu": True, "slots": 4})
+    try:
+        ctx = zmq.Context()
+        w = _RemoteWorker(
+            address=worker_proc.address,
+            zmq_context=ctx,
+            timeout=5.0,
+        )
+        try:
+            caps = w.refresh_capabilities()
+            assert caps.get("gpu") is True
+            assert caps.get("slots") == 4
+        finally:
+            w.stop()
+            ctx.term()
+    finally:
+        worker_proc.stop()
+
+
+def test_remote_worker_capability_ttl_caching():
+    """Capabilities are cached for the TTL duration."""
+    worker_proc = _PingAwareWorker(capabilities={"gpu": True})
+    try:
+        ctx = zmq.Context()
+        w = _RemoteWorker(
+            address=worker_proc.address,
+            zmq_context=ctx,
+            timeout=5.0,
+        )
+        try:
+            caps1 = w.refresh_capabilities()
+            assert caps1.get("gpu") is True
+            # Second call within TTL returns cached.
+            caps2 = w.refresh_capabilities()
+            assert caps2 is caps1
+        finally:
+            w.stop()
+            ctx.term()
+    finally:
+        worker_proc.stop()
+
+
+# ── Slice 18a: Multi-slot acquire ─────────────────────────────────────
+
+
+def test_multi_slot_acquire(monkeypatch):
+    """With UMRS_REMOTE_WORKER_SLOTS=2, two tasks can be acquired concurrently."""
+    monkeypatch.setenv("UMRS_REMOTE_WORKER_SLOTS", "2")
+    w = _FakeZmqWorker()
+    try:
+        executor = RemotePoolExecutor(
+            workers=[w.address],
+            timeout_seconds=5.0,
+            acquire_timeout=5.0,
+        )
+        try:
+            w1 = executor._acquire_worker()
+            w2 = executor._acquire_worker()
+            # Both acquired from the same address.
+            assert w1.address == w2.address
+            executor._release_worker(w1.address, w1)
+            executor._release_worker(w2.address, w2)
+        finally:
+            executor.shutdown()
+    finally:
+        w.stop()
+
+
+def test_single_slot_blocks_second_acquire(monkeypatch):
+    """With UMRS_REMOTE_WORKER_SLOTS=1 (default), second acquire times out."""
+    monkeypatch.setenv("UMRS_REMOTE_WORKER_SLOTS", "1")
+    w = _FakeZmqWorker()
+    try:
+        executor = RemotePoolExecutor(
+            workers=[w.address],
+            timeout_seconds=5.0,
+            acquire_timeout=0.3,
+        )
+        try:
+            w1 = executor._acquire_worker()
+            with pytest.raises(StepExecutionError, match="acquire timeout"):
+                executor._acquire_worker()
+            executor._release_worker(w1.address, w1)
+        finally:
+            executor.shutdown()
+    finally:
+        w.stop()
+
+
+# ── Slice 19: GPU memory-aware slots ──────────────────────────────────
+
+
+def test_compute_slots():
+    """``_compute_slots`` computes floor(free*safety / per_task)."""
+    from umrs.server.step_worker import _compute_slots
+
+    # 16 GB free, 4 GB per task, 0.9 safety → floor(14.4/4) = 3 slots.
+    assert _compute_slots(16 * 1024**3, 4096, 0.9) == 3
+    # Edge: 0 free → always 1.
+    assert _compute_slots(0, 4096, 0.9) == 1
+    # Edge: 0 per_task → always 1.
+    assert _compute_slots(16 * 1024**3, 0, 0.9) == 1
+
+
+def test_update_capacity_smoothing():
+    """Shrink is immediate, grow moves halfway."""
+    ctx = zmq.Context()
+    w = _RemoteWorker(
+        address="tcp://127.0.0.1:19999",
+        zmq_context=ctx,
+        timeout=1.0,
+    )
+    try:
+        # Initial: set directly.
+        w._update_capacity(4)
+        assert w.capacity == 4
+        # Shrink: immediate.
+        w._update_capacity(2)
+        assert w.capacity == 2
+        # Grow: halfway from 2 → 6 = 2 + max(1, 4//2) = 4.
+        w._update_capacity(6)
+        assert w.capacity == 4
+        # Grow again: 4 → 8 = 4 + max(1, 4//2) = 6.
+        w._update_capacity(8)
+        assert w.capacity == 6
+    finally:
+        w.stop()
+        ctx.term()
