@@ -4,7 +4,7 @@ Demonstrates UMRS role-based access control and admin token management.
 
 ## What You'll Learn
 
-- How to generate, list, and revoke admin tokens via `umrs-client admin token`
+- How to generate, list, and revoke admin tokens via `umrs-server admin token`
 - How the server enforces authorization: user vs admin role
 - How maintenance commands (`check`, `recompute`, etc.) require admin privileges
 - How the `--admin-token` flag grants admin access
@@ -12,22 +12,28 @@ Demonstrates UMRS role-based access control and admin token management.
 ## Quick Start
 
 ```bash
-# Local-only (token management, no server needed):
+# Local-only (token management only, no server daemon needed):
 DEMO_LOCAL_ONLY=1 bash run_demo.sh
 
 # Full test (requires running UMRS server):
+bash run_demo.sh
+
+# Remote admin CLI over SSH (optional):
+UMRS_ADMIN_SSH_HOST=rccs-cloud \
+UMRS_ADMIN_REMOTE_CWD=/lvs0/rccs-dmp/mnagaso/ai4s-platform/umrs \
+UMRS_ADMIN_REMOTE_ACTIVATE=/lvs0/rccs-dmp/mnagaso/ai4s-platform/.venv/bin/activate \
 bash run_demo.sh
 ```
 
 ## Prerequisites
 
 1. `umrs-client` installed and in PATH
-2. For server tests: UMRS server running and reachable
-3. The admin token hash must exist in the server's active UMRS config root.
+2. `umrs-server` available where the server-side token store lives, or SSH
+   access to a host where it is available
+3. For server tests: UMRS server running and reachable
+4. The admin token must be created in the server's active UMRS config root.
    On native site deployments started via `deploy/<site>/start.sh`, this is
-   often `deploy/<site>/admin_tokens.json` because `UMRS_CONFIG` is exported to
-   the site directory. Syncing only `~/.config/umrs/admin_tokens.json` on the
-   server machine may be insufficient.
+   often the site directory because `UMRS_CONFIG` is exported there.
 
 ## Steps
 
@@ -45,83 +51,59 @@ bash run_demo.sh
 
 ## Running Manually
 
+Run the `umrs-server admin ...` commands below on the server host, or in a
+shell that shares the UMRS daemon's active config root.
+
 ```bash
-# 1. Generate a local admin token
+# 1. Generate an admin token in the server-side token store
 TOKEN_NAME="demo23-$(date -u +%Y%m%d%H%M%S)"
-TOKEN_JSON=$(umrs-client --output json admin token generate "$TOKEN_NAME" --description "Demo 23 test token")
+TOKEN_JSON=$(umrs-server admin token generate "$TOKEN_NAME" --description "Demo 23 test token" --json)
 TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$TOKEN_JSON")
 
-# 2. Verify the token exists locally
-umrs-client --output json admin token list
+# 2. Verify the token exists in the same server-side token store
+umrs-server admin token list --json
 
-# 3. For native site deployments, merge the token hash into the server's
-#    active UMRS config root before testing admin access.
-#    On rccs-cloud this is deploy/rccs-cloud/admin_tokens.json.
-scp ~/.config/umrs/admin_tokens.json rccs-cloud:/tmp/demo23-admin_tokens.json
-ssh rccs-cloud "python3 - <<'PY'
-import json
-from pathlib import Path
-
-name = '${TOKEN_NAME}'
-remote = Path('/lvs0/dne1/rccs-dmp/mnagaso/umrs/deploy/rccs-cloud/admin_tokens.json')
-uploaded = Path('/tmp/demo23-admin_tokens.json')
-remote_tokens = json.loads(remote.read_text()) if remote.exists() else {}
-uploaded_tokens = json.loads(uploaded.read_text())
-remote_tokens[name] = uploaded_tokens[name]
-remote.write_text(json.dumps(remote_tokens, indent=2))
-uploaded.unlink(missing_ok=True)
-PY"
-
-# 4. Ping the server
+# 3. Ping the server
 umrs-client ping
 
-# 5. Attempt an admin-only maintenance action without a token.
+# 4. Attempt an admin-only maintenance action without a token.
 #    On rccs-cloud this is accepted by the client handoff but the server does
 #    not materialize a check status.
 umrs-client check || true
 umrs-client --output json status check
 
-# 6. Retry with the admin token; this should produce a real check summary.
+# 5. Retry with the admin token; this should produce a real check summary.
 umrs-client --admin-token "$TOKEN" check
 umrs-client --admin-token "$TOKEN" --output json status check
 
-# 7. Inspect status all with admin privileges
+# 6. Inspect status all with admin privileges
 umrs-client --admin-token "$TOKEN" --output json status all
 
-# 8. Revoke the token locally
-umrs-client admin token revoke "$TOKEN_NAME"
+# 7. Revoke the token from the same server-side token store
+umrs-server admin token revoke "$TOKEN_NAME" -y
 
-# 9. Remove the temporary remote hash entry
-ssh rccs-cloud "python3 - <<'PY'
-import json
-from pathlib import Path
-
-name = '${TOKEN_NAME}'
-remote = Path('/lvs0/dne1/rccs-dmp/mnagaso/umrs/deploy/rccs-cloud/admin_tokens.json')
-remote_tokens = json.loads(remote.read_text()) if remote.exists() else {}
-remote_tokens.pop(name, None)
-remote.write_text(json.dumps(remote_tokens, indent=2))
-PY"
+# 8. Verify the token is gone
+umrs-server admin token list --json
 ```
 
 ## Key Concepts
 
 ### Admin Tokens
 
-Client-side token generation stores hashes locally in
-`~/.config/umrs/admin_tokens.json` by default. The server validates against the
-token store visible in its own UMRS config root. Only SHA-256 hashes are
-stored; the raw token is shown once at generation time.
+Admin tokens are managed on the server with `umrs-server admin token ...`.
+Hashes are stored in `~/.config/umrs/admin_tokens.json` in the server's UMRS
+config root. Only SHA-256 hashes are stored; the raw token is shown once at
+generation time.
 
 ```bash
 # Generate
-umrs-client admin token generate my-token --description "CI pipeline"
+umrs-server admin token generate my-token --description "CI pipeline"
 
 # List
-umrs-client --output text admin token list
+umrs-server admin token list
 
 # Revoke
-umrs-client admin token revoke my-token
+umrs-server admin token revoke my-token
 ```
 
 ### Authorization Flow
