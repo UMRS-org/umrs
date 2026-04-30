@@ -114,6 +114,14 @@ run_demo "24" "Thread Pool"          "24_thread_pool/run_demo.sh"
 # Video analysis (requires opencv — CPU only)
 run_demo "14" "Video Analysis"       "14_video_analysis/run_demo.sh"
 
+# ---------- Platform API demos ----------
+run_demo "25" "Endpoint Provisioning" "25_endpoint_provisioning/run_demo.sh"
+run_demo "26" "MCP Servers"           "26_mcp_servers/run_demo.sh"
+run_demo "27" "Pipeline CRUD"         "27_pipeline_crud/run_demo.sh"
+run_demo "28" "Egress Audit"          "28_egress_audit/run_demo.sh"
+run_demo "29" "LLM Completions"       "29_llm_completions/run_demo.sh"
+run_demo "30" "File Management"       "30_file_management/run_demo.sh"
+
 # ---------- Summary ----------
 echo ""
 echo "==========================================="

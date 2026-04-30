@@ -302,8 +302,10 @@ No change is required to use the defaults.
 `conf_umrs.json` lists the user files and declares `"user_files_dir": "./user_files"`.
 Paths are resolved **relative to the config file location**
 (e.g. `./user_files/user1.json`), not the shell's current working directory.
-To add a second user, append another entry to the `users` array and create
-a corresponding `user_files/user2.json`.
+The default rccs-cloud bootstrap intentionally loads only `user1.json` so
+initial provisioning stays minimal.
+To add a second user later, append another entry to the `users` array and
+create a corresponding `user_files/user2.json`.
 
 ### 1d. One-time server setup
 
