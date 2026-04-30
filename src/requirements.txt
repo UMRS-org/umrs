@@ -22,3 +22,5 @@ requests
 python-multipart
 langchain
 langchain-community
+matplotlib
+timm
