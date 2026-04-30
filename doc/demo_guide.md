@@ -950,20 +950,20 @@ bash run_demo.sh
 
 ### Manual
 ```bash
-# 1. Generate a local admin token
+# 1. Generate an admin token in the server-side token store
 TOKEN_NAME="demo23-$(date -u +%Y%m%d%H%M%S)"
-TOKEN_JSON=$(umrs-client --output json admin token generate "$TOKEN_NAME" --description "Demo 23 test token")
+TOKEN_JSON=$(umrs-server admin token generate "$TOKEN_NAME" --description "Demo 23 test token" --json)
 TOKEN=$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["token"])' "$TOKEN_JSON")
 
-# 2. Verify the token exists locally
-umrs-client --output json admin token list
+# 2. Verify the token exists in the same token store
+umrs-server admin token list --json
 
 # 3. Run an admin-only maintenance command without and with the token
 umrs-client -c ~/.config/umrs/users/user1.json check || true
 umrs-client -c ~/.config/umrs/users/user1.json --admin-token "$TOKEN" check
 
 # 4. Revoke the token
-umrs-client admin token revoke "$TOKEN_NAME"
+umrs-server admin token revoke "$TOKEN_NAME" -y
 ```
 
 ### Next step → Demo 24

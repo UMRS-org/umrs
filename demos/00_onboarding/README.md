@@ -13,9 +13,10 @@ SSH tunnel guidance.
 > and
 > [docs/r4/admin-guide/README.md → UMRS User Enrollment](../../../docs/r4/admin-guide/README.md#umrs-user-enrollment-required-before-first-use)
 > for the admin enrollment step. The provisioning described here (MinIO IAM,
-> Postgres role, per-experience buckets) is the same — it's still triggered
-> by `umrs-client admin user add <user.json>` on the server, but end users
-> never run `umrs-client profile init` or open an SSH tunnel themselves.
+> Postgres role, per-experience buckets) is the same — the admin now creates
+> the server-side user record with `umrs-server admin user add <username> ...`,
+> and the user's later `umrs-client reload` still triggers provisioning. End
+> users never run `umrs-client profile init` or open an SSH tunnel themselves.
 
 ## Quick Start
 
@@ -153,56 +154,65 @@ enrolled.
 
 #### Admin Enrollment Flow
 
-1. The admin generates an admin token (once):
+1. If this is the first time using the server-side admin CLI, bootstrap it
+   once on the server host:
    ```bash
-   umrs-client admin token generate my-admin --description "admin token"
-   # Save the printed token — it cannot be retrieved later.
-   export UMRS_ADMIN_TOKEN=<token>
+   umrs-server admin bootstrap --admin-user admin --json
    ```
+   Save the printed bootstrap token if you need admin/API access later; the
+   raw token is shown only once.
 
-2. The admin prepares a user config JSON (or asks the user to run
-   `umrs-client config init` and send the resulting file).
-
-3. The admin enrolls the user on the server:
+2. The admin enrolls the user directly on the server:
    ```bash
-   umrs-client admin user add /path/to/new_user.json
+   umrs-server admin user add alice \
+       --fullname "Alice Smith" \
+       --role user
    ```
+   Add `--email`, `--slurm-account`, and repeated `--project` flags as
+   needed.
    This will:
-   - Validate the JSON against the client schema.
-   - Write the file to `<user_files_dir>/<username>.json` on the server.
-   - Update `conf_umrs.json`'s `users` array.
-   - Auto-reload the server to provision MinIO IAM, Postgres roles, and
-     buckets.
+   - Write the user record to `<user_files_dir>/<username>.json` on the
+     server.
+   - Trigger a best-effort daemon reload when `umrs-server` is already
+     running.
 
-4. The user can now connect and run commands normally. Subsequent config
-   updates (via `maintenance reload -c user.json`) are allowed because the
-   user is already enrolled.
+3. The user creates or updates their local config with
+   `umrs-client config init`.
+
+4. The user can now connect and run commands normally. Running
+   `umrs-client reload` uploads the full config for the already-enrolled user
+   and triggers provisioning of MinIO IAM, Postgres roles, and buckets.
 
 #### Listing / Removing Users
 
 ```bash
-umrs-client admin user list       # show enrolled users from server status
-umrs-client admin user remove bob # not yet implemented (placeholder)
+umrs-server admin user list
+umrs-server admin user show alice
+umrs-server admin user disable alice
+umrs-server admin user delete alice --purge -y
 ```
 
 #### Config Update (Non-Admin)
 
 After enrollment, a user can update their own config by running
-`maintenance reload -c updated_user.json`. The server will accept the update
+`umrs-client reload -c updated_user.json`. The server will accept the update
 only if the username already exists in the server's user registry.
 
 ### Data Flow
 
 ```
-Client                               Server
-──────                               ──────
+Admin                                Server
+─────                                ──────
+umrs-server admin user add alice ──► create user_files/alice.json
+                                     └─ best-effort daemon reload (SIGHUP)
+
+User                                 Server
+────                                 ──────
 config init
   └─ creates ~/.config/umrs/
        users/<username>.json
 
-reload ──── sends user JSON ───────► persist user config
-                                       └─ user_files/<username>.json
-                                       └─ update conf_umrs.json
+reload ───── sends user JSON ──────► validate/update enrolled user config
 
                                      create_s3_sql_users()
                                        ├─ MinIO: create IAM user + password
@@ -277,12 +287,13 @@ files, and the initial list of users:
 
 - `user_files_dir` — where new user configs are persisted when received via
   `reload`. Paths are resolved relative to the config file location.
-- `users` — initial user list. New users are appended automatically when
-  they run `reload` from the client.
+- `users` — initial user list. Seed it with JSON files under `user_files_dir`,
+   and use `umrs-server admin user add ...` for ongoing enrollment instead of
+   hand-editing this array.
 
 ### 4. Adding Users
 
-New users must be enrolled by an admin via the `admin user add` command.
+New users must be enrolled by an admin via `umrs-server admin user add`.
 See the **Admin Enrollment Flow** section earlier in this document for
 the full procedure.
 
