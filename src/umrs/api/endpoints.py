@@ -66,6 +66,87 @@ async def _is_backend_job_alive(service: Any, job_id: str) -> bool:
     )
 
 
+async def _backend_job_liveness(service: Any, job_id: str) -> bool | None:
+    """Return backend liveness as alive / dead / unknown.
+
+    ``True`` means the backend positively reports a non-terminal job.
+    ``False`` means the backend positively reports a terminal or unknown job.
+    ``None`` means we could not verify backend state and should preserve the
+    registry row rather than deleting a potentially valid endpoint.
+    """
+    from ..orchestrator.base import JobStatus
+
+    backend = getattr(service, "backend", None)
+    if backend is None:
+        return None
+
+    try:
+        info = await backend.get_job_status(job_id)
+    except Exception as exc:  # noqa: BLE001 - preserve on verification errors
+        logger.warning(
+            "Backend get_job_status(%s) failed during active-endpoint verification: %s",
+            job_id,
+            exc,
+        )
+        return None
+
+    status_value = getattr(info, "status", None)
+    if status_value in (
+        JobStatus.PENDING,
+        JobStatus.STARTING,
+        JobStatus.READY,
+        JobStatus.RUNNING,
+    ):
+        return True
+    return False
+
+
+async def _filter_live_ready_endpoints(
+    registry: EndpointRegistry,
+    endpoints: List[Any],
+) -> List[Any]:
+    """Return only endpoints whose backing jobs are still alive.
+
+    ``/umrs/endpoints/active`` is a discovery surface, so returning a stale
+    READY record after a UMRS restart is worse than returning nothing. When we
+    can initialize the orchestration service, verify every READY/DEGRADED row
+    against the backend and remove ghosts from the registry backend.
+    """
+    if not endpoints:
+        return endpoints
+
+    from ..orchestrator.service import get_orchestration_service
+
+    try:
+        service = get_orchestration_service()
+    except Exception as exc:  # noqa: BLE001 - keep discovery available
+        logger.warning(
+            "Could not initialize orchestration service during active endpoint verification: %s",
+            exc,
+        )
+        return endpoints
+
+    live_endpoints: List[Any] = []
+    for endpoint in endpoints:
+        is_alive = await _backend_job_liveness(service, endpoint.job_id)
+        if is_alive is None:
+            live_endpoints.append(endpoint)
+            continue
+        if is_alive:
+            live_endpoints.append(endpoint)
+            continue
+
+        logger.warning(
+            "Removing stale active endpoint %s/%s (job_id=%s): backend job no longer alive",
+            endpoint.project_id,
+            endpoint.model,
+            endpoint.job_id,
+        )
+        registry.remove(endpoint.job_id)
+
+    return live_endpoints
+
+
 # =============================================================================
 # Request/Response Models
 # =============================================================================
@@ -548,6 +629,10 @@ async def get_active_endpoints(
                     endpoint = ep
                     break
         if endpoint:
+            live = await _filter_live_ready_endpoints(registry, [endpoint])
+            if not live:
+                return EndpointsListResponse(endpoints=[], total=0)
+            endpoint = live[0]
             ep_dict = _enrich_endpoint_response(endpoint.to_dict())
             if not _endpoint_passes_capability_filter(
                 ep_dict, capability_tags, normalized_model_type
@@ -564,6 +649,7 @@ async def get_active_endpoints(
         project_id=project_id,
         status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
     )
+    endpoints = await _filter_live_ready_endpoints(registry, endpoints)
 
     enriched = [_enrich_endpoint_response(e.to_dict()) for e in endpoints]
     filtered = [
