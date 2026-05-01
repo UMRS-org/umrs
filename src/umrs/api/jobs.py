@@ -10,11 +10,12 @@ Provides:
 """
 
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..jobs.models import (
@@ -61,6 +62,19 @@ def get_job_store() -> JobStore:
     return _job_store
 
 
+def get_optional_job_store() -> Optional[JobStore]:
+    """Return the configured job store, if this process owns one."""
+    return _job_store
+
+
+def _strict_auth_mode() -> bool:
+    return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+
+
+def _header_str(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value.strip() else None
+
+
 @dataclass
 class CallerIdentity:
     """Identity of the API caller, extracted from request parameters.
@@ -83,20 +97,61 @@ class CallerIdentity:
 
 
 def get_caller_identity(
-    caller_user_id: str = Query(..., description="Caller's user ID"),
-    caller_project_id: str = Query(..., description="Caller's project ID"),
+    caller_user_id: Optional[str] = Query(None, description="Caller's user ID"),
+    caller_project_id: Optional[str] = Query(None, description="Caller's project ID"),
     is_admin: bool = Query(False, description="Admin flag (from JWT in production)"),
+    x_user_id: Optional[str] = Header(None),
+    x_verified_project_id: Optional[str] = Header(None),
 ) -> CallerIdentity:
     """Build caller identity from request params.
 
     Production: extract from JWT claims via Gateway.
     MVP/Testing: accept as query params.
     """
+    verified_user_id = _header_str(x_user_id)
+    verified_project_id = _header_str(x_verified_project_id)
+    if verified_user_id and verified_project_id:
+        return CallerIdentity(
+            user_id=verified_user_id,
+            project_id=verified_project_id,
+            is_admin=is_admin,
+        )
+
+    if _strict_auth_mode():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Gateway-verified caller identity",
+        )
+
+    if not caller_user_id or not caller_project_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="caller_user_id and caller_project_id are required",
+        )
+
     return CallerIdentity(
-        user_id=caller_user_id,
-        project_id=caller_project_id,
+        user_id=caller_user_id.strip(),
+        project_id=caller_project_id.strip(),
         is_admin=is_admin,
     )
+
+
+def _resolve_job_create_identity(
+    request: "JobCreateRequest",
+    x_user_id: Optional[str],
+    x_verified_project_id: Optional[str],
+) -> tuple[str, str]:
+    verified_user_id = _header_str(x_user_id)
+    verified_project_id = _header_str(x_verified_project_id)
+    if verified_user_id and verified_project_id:
+        return verified_project_id, verified_user_id
+
+    if _strict_auth_mode():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Gateway-verified caller identity",
+        )
+    return request.project_id, request.user_id
 
 
 # =============================================================================
@@ -330,6 +385,8 @@ def _enforce_job_access(
 )
 async def create_job(
     request: JobCreateRequest,
+    x_user_id: Optional[str] = Header(None),
+    x_verified_project_id: Optional[str] = Header(None),
     store: JobStore = Depends(get_job_store),
 ) -> JobCreateResponse:
     """
@@ -360,11 +417,16 @@ async def create_job(
 
         # Build spec dict
         spec = request.spec.model_dump(exclude_none=True)
+        project_id, user_id = _resolve_job_create_identity(
+            request,
+            x_user_id,
+            x_verified_project_id,
+        )
 
         # Create job
         job_id = store.create_job(
-            project_id=request.project_id,
-            user_id=request.user_id,
+            project_id=project_id,
+            user_id=user_id,
             job_type=job_type,
             spec=spec,
             idempotency_key=request.idempotency_key,
@@ -525,6 +587,10 @@ async def cancel_job(
         _enforce_job_access(caller, job, action="cancel")
 
         store.cancel_job(job_id, reason)
+        if job.job_type == JobType.WORKFLOW_RUN:
+            from ..jobs.workflow_run import cancel_workflow_execution_for_job
+
+            cancel_workflow_execution_for_job(job)
         return JobActionResponse(
             job_id=job_id,
             action="cancel",

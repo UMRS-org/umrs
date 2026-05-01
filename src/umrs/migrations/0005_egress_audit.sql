@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS egress_requests (
     request_id         UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id            TEXT         NOT NULL,
     project_id         TEXT         NOT NULL,
-    agent_session_id   UUID,
+    agent_session_id   TEXT,
     tool_name          TEXT,
     destination_url    TEXT         NOT NULL,
     destination_domain TEXT         NOT NULL,

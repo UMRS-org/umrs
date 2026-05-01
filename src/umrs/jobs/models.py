@@ -21,6 +21,7 @@ class JobType(Enum):
     INDEX_BUILD = "index_build"           # Build RAG index from dataset
     EMBEDDING_BATCH = "embedding_batch"   # Batch embedding computation
     PIPELINE_RUN = "pipeline_run"         # Execute ingestion pipeline
+    WORKFLOW_RUN = "workflow_run"         # Execute registered user workflow
     ENDPOINT_PROVISION = "endpoint_provision"  # Provision Mini-RiVault
     MODEL_DOWNLOAD = "model_download"     # Download model weights to approved path
     CLEANUP = "cleanup"                   # Delete resources
@@ -73,6 +74,10 @@ DEFAULT_BACKOFFS: Dict[JobType, Dict[str, Any]] = {
     },
     JobType.PIPELINE_RUN: {
         "delays": [15, 30, 60],     # Medium
+        "max_attempts": 4,
+    },
+    JobType.WORKFLOW_RUN: {
+        "delays": [15, 30, 60],
         "max_attempts": 4,
     },
     JobType.MODEL_DOWNLOAD: {

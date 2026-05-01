@@ -1,0 +1,7 @@
+name: compose-dev
+description: Local development profile using Docker Compose.
+scheduler_kind: compose
+runtime_kind: docker-compose
+slurm_modules: []
+slurm_log_dir: ./tmp/rivault/logs
+slurm_job_info_dir: ./tmp/rivault/jobs

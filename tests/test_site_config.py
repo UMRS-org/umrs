@@ -23,6 +23,10 @@ from umrs.orchestrator.site_config import (
 )
 
 
+UMRS_ROOT = os.path.dirname(os.path.dirname(__file__))
+RCCS_CLOUD_SITE_CONFIG = os.path.join(UMRS_ROOT, "deploy", "rccs-cloud", "site.yaml")
+
+
 # =============================================================================
 # Fixtures
 # =============================================================================
@@ -59,65 +63,67 @@ MINIMAL_YAML = textwrap.dedent("""\
 """)
 
 
-FULL_YAML = textwrap.dedent("""\
-    name: full-site
-    description: Full test with every field
-    scheduler:
-      kind: slurm
-      partition: a100
-      account: myaccount
-      qos: high
-      time_limit: "08:00:00"
-      gpus: 4
-      cpus: 32
-      memory: "256G"
-      extra_sbatch:
+FULL_YAML = """\
+name: full-site
+description: Full test with every field
+scheduler:
+    kind: slurm
+    partition: a100
+    account: myaccount
+    qos: high
+    time_limit: "08:00:00"
+    gpus: 4
+    cpus: 32
+    memory: "256G"
+    extra_sbatch:
         - --constraint=a100
         - --exclusive
-    runtime:
-      kind: podman-compose
-      rivault_dir: /opt/rivault
-      compose_file: custom-compose.yaml
-      profiles:
+runtime:
+    kind: podman-compose
+    rivault_dir: /opt/rivault
+    compose_file: custom-compose.yaml
+    profiles:
         - harness
         - vllm
-      gpu_passthrough: cdi
-      cdi_spec: /run/cdi/nvidia.yaml
-      cgroup_manager: systemd
-      storage_root: /var/tmp/podman_test
-    storage:
-      model_cache_dir: /scratch/models
-      sam3_model_path: /scratch/sam3
-      hmae_model_path: /scratch/hmae
-      hmae_config_path: /scratch/hmae/config.yaml
-      hmae_checkpoint: /scratch/hmae/ckpt.pth
-      vision_tarball: /scratch/vision.tar
-      user_model_path: /scratch/user
-      s3_tunnel_host: login01
-      s3_tunnel_port: 9999
-    network:
-      litellm_port: 8001
-      litellm_master_key: sk-full
-      port_range_min: 20000
-      port_range_max: 20100
-      port_strategy: registry_lock
-    vllm:
-      model: meta/llama-3
-      docker_tag: latest-gpu
-      gpu_mem_util: 0.90
-      max_model_len: 8192
-      max_num_seqs: 16
-      tensor_parallel_size: 4
-    database:
-      host: pg-host
-      port: 5432
-      superuser: admin
-      superuser_password: s3cret
-      user_password: u_pass
-      registry_dsn: postgres://admin:s3cret@pg-host:5432/umrs_db
-    extra:
-      custom_key: custom_value
-""")
+    gpu_passthrough: cdi
+    cdi_spec: /run/cdi/nvidia.yaml
+    cgroup_manager: systemd
+    storage_root: /var/tmp/podman_test
+storage:
+    model_cache_dir: /scratch/models
+    sam3_model_path: /scratch/sam3
+    hmae_model_path: /scratch/hmae
+    hmae_config_path: /scratch/hmae/config.yaml
+    hmae_checkpoint: /scratch/hmae/ckpt.pth
+    vision_tarball: /scratch/vision.tar
+    user_model_path: /scratch/user
+    s3_tunnel_host: login01
+    s3_tunnel_port: 9999
+network:
+    litellm_port: 8001
+    litellm_master_key: sk-full
+    port_range_min: 20000
+    port_range_max: 20100
+    port_strategy: registry_lock
+    egress_proxy_url: "http://egress-guard:8888"
+    egress_no_proxy: localhost,vllm,litellm
+vllm:
+    model: meta/llama-3
+    docker_tag: latest-gpu
+    gpu_mem_util: 0.90
+    max_model_len: 8192
+    max_num_seqs: 16
+    tensor_parallel_size: 4
+database:
+    host: pg-host
+    port: 5432
+    superuser: admin
+    superuser_password: s3cret
+    user_password: u_pass
+    registry_dsn: postgres://admin:s3cret@pg-host:5432/umrs_db
+extra:
+    custom_key: custom_value
+"""
 
 
 # =============================================================================
@@ -191,6 +197,8 @@ class TestLoadSiteConfig:
         assert cfg.storage.s3_tunnel_host == "login01"
         assert cfg.storage.s3_tunnel_port == 9999
         assert cfg.network.port_strategy == "registry_lock"
+        assert cfg.network.egress_proxy_url == "http://egress-guard:8888"
+        assert cfg.network.egress_no_proxy == "localhost,vllm,litellm"
         assert cfg.vllm.tensor_parallel_size == 4
         assert cfg.database.registry_dsn == "postgres://admin:s3cret@pg-host:5432/umrs_db"
         assert cfg.extra == {"custom_key": "custom_value"}
@@ -210,6 +218,33 @@ class TestLoadSiteConfig:
         p.write_text("")
         cfg = load_site_config(str(p))
         assert cfg.name == "default"
+
+    def test_load_expands_environment_references(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("UMRS_TEST_ROOT", "/shared/alice")
+        monkeypatch.setenv("USER", "alice")
+        p = tmp_path / "site.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: env-site
+            runtime:
+              rivault_dir: $UMRS_TEST_ROOT/rivault
+              repo_dir: /lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs
+            storage:
+              model_cache_dir: ~/umrs_models/hf
+        """))
+
+        cfg = load_site_config(str(p))
+
+        assert cfg.runtime.rivault_dir == "/shared/alice/rivault"
+        assert cfg.runtime.repo_dir == "/lvs0/dne1/rccs-dmp/alice/ai4s-platform/umrs"
+        assert cfg.storage.model_cache_dir == os.path.expanduser("~/umrs_models/hf")
+
+    def test_rccs_cloud_site_config_uses_operator_user_placeholder(self, monkeypatch):
+        monkeypatch.setenv("USER", "test-operator")
+
+        cfg = load_site_config(RCCS_CLOUD_SITE_CONFIG)
+
+        assert "/test-operator/" in cfg.runtime.repo_dir
+        assert "/mnagaso/" not in cfg.runtime.repo_dir
 
     def test_search_path_umrs_site_config_env(self, tmp_path):
         p = tmp_path / "custom_site.yaml"
@@ -260,12 +295,21 @@ class TestToEnv:
 
     def test_to_env_contains_network(self):
         cfg = SiteConfig(
-            network=NetworkConfig(litellm_port=9001, litellm_master_key="sk-x"),
+            network=NetworkConfig(
+                litellm_port=9001,
+                litellm_master_key="sk-x",
+                egress_proxy_url="http://egress-guard:8888",
+                egress_no_proxy="localhost,vllm",
+            ),
         )
         env = cfg.to_env()
         assert env["NGINX_LITELLM_DOCKER_PORT"] == "9001"
         assert env["LITELLM_MASTER_KEY"] == "sk-x"
         assert env["RIVAULT_REMOTE_PORT"] == "9001"
+        assert env["RIVAULT_HTTP_PROXY"] == "http://egress-guard:8888"
+        assert env["RIVAULT_HTTPS_PROXY"] == "http://egress-guard:8888"
+        assert env["EGRESS_GUARD_PROXY_URL"] == "http://egress-guard:8888"
+        assert env["RIVAULT_NO_PROXY"] == "localhost,vllm"
 
     def test_to_env_contains_vllm(self):
         cfg = SiteConfig(

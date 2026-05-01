@@ -103,6 +103,32 @@ def test_call_tool_success():
     assert data["isError"] is False
 
 
+def test_call_tool_forwards_chain_metadata():
+    """POST /umrs/mcp/call should forward chain metadata to MCP servers."""
+    server = MockMCPServer()
+    store = MockMCPStore(servers=[server])
+    client = _create_client(store)
+
+    mock_result = {
+        "content": [{"type": "text", "text": "found 42 results"}],
+        "isError": False,
+    }
+
+    with patch("umrs.api.mcp._proxy_tool_call", new_callable=AsyncMock, return_value=mock_result) as proxy_tool_call:
+        response = client.post(
+            "/umrs/mcp/call",
+            json={
+                "tool": "search",
+                "arguments": {"query": "test"},
+                "_meta": {"chain_id": "chain-1", "target_tool": "summarize"},
+            },
+        )
+
+    assert response.status_code == 200
+    metadata = proxy_tool_call.await_args.kwargs["metadata"]
+    assert metadata == {"chain_id": "chain-1", "target_tool": "summarize"}
+
+
 def test_call_tool_not_found():
     """POST /umrs/mcp/call should return 404 for unknown tool."""
     store = MockMCPStore(servers=[])

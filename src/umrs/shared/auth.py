@@ -525,6 +525,23 @@ def get_identity_store() -> UserIdentityStore:
 # Admin Token Management
 # =============================================================================
 
+WEAK_ADMIN_TOKEN_LITERALS = {
+    "",
+    "admin",
+    "password",
+    "changeme",
+    "change-me",
+    "change_me",
+    "umrs-admin",
+    "umrs-admin-token",
+    "umrs-admin-change-me",
+}
+
+
+def is_weak_admin_token(token: str) -> bool:
+    """Return True when an admin token is a documented weak/default literal."""
+    return token.strip() in WEAK_ADMIN_TOKEN_LITERALS
+
 
 class AdminTokenManager:
     """
@@ -573,6 +590,10 @@ class AdminTokenManager:
         Returns:
             Token name if valid, None otherwise
         """
+        if is_weak_admin_token(token):
+            logger.warning("Rejected weak admin token literal")
+            return None
+
         tokens = self._load_tokens()
 
         for name, entry in tokens.items():

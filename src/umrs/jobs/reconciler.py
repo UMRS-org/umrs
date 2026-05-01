@@ -14,11 +14,10 @@ NO backend cleanup (scancel/delete) - rely on attempt-scoped isolation.
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime
 from typing import List, Optional, Tuple
 
-from .models import AttemptStatus, JobStatus, RestartPolicy
+from .models import AttemptStatus, Job, JobStatus, JobType
 from .store import JobStore
 
 logger = logging.getLogger(__name__)
@@ -31,6 +30,7 @@ class ReconcileResult:
         self.lost_attempts: List[str] = []
         self.requeued_jobs: List[str] = []
         self.failed_jobs: List[str] = []  # No more retries
+        self.model_download_recoveries: List[str] = []
         self.errors: List[Tuple[str, str]] = []  # (id, error_message)
 
     @property
@@ -42,6 +42,7 @@ class ReconcileResult:
             f"ReconcileResult(lost={len(self.lost_attempts)}, "
             f"requeued={len(self.requeued_jobs)}, "
             f"failed={len(self.failed_jobs)}, "
+            f"model_download_recoveries={len(self.model_download_recoveries)}, "
             f"errors={len(self.errors)})"
         )
 
@@ -161,6 +162,8 @@ class Reconciler:
 
         # Get job to check retry policy
         job = self.job_store.get_job(job_id)
+        if job.job_type == JobType.MODEL_DOWNLOAD:
+            self._record_model_download_recovery(job, attempt_id, result)
 
         # Only process if job is still in RUNNING status
         # (could have been cancelled or completed by other means)
@@ -171,7 +174,6 @@ class Reconciler:
         # Check if we should retry
         if job.can_retry(attempt_no):
             # Calculate backoff delay
-            delay = job.get_backoff_delay(attempt_no)
             next_run = datetime.utcnow()  # Run immediately on crash recovery
 
             # Requeue the job
@@ -183,6 +185,26 @@ class Reconciler:
             self._fail_job(job_id, f"exhausted retries after crash (last attempt: {attempt_no})")
             result.failed_jobs.append(job_id)
             logger.warning(f"Job {job_id} failed - no more retries after crash")
+
+    def _record_model_download_recovery(
+        self,
+        job: Job,
+        attempt_id: str,
+        result: ReconcileResult,
+    ) -> None:
+        """Record explicit restart policy for partial model downloads."""
+        source = job.spec.get("source", "huggingface").lower()
+        recovery_mode = (
+            "resume_on_retry" if source == "huggingface" else "retry_in_place"
+        )
+        result.model_download_recoveries.append(f"{attempt_id}:{recovery_mode}")
+        logger.info(
+            "Model download attempt %s lost; recovery=%s source=%s target=%s",
+            attempt_id,
+            recovery_mode,
+            source,
+            job.spec.get("target_path", "<missing>"),
+        )
 
     def _requeue_job(self, job_id: str, next_run: datetime) -> None:
         """

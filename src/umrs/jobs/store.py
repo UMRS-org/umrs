@@ -14,15 +14,15 @@ Key methods:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import psycopg2
-from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 
 from .models import (
@@ -43,7 +43,6 @@ logger = logging.getLogger(__name__)
 
 class JobStoreError(Exception):
     """Base exception for JobStore errors."""
-    pass
 
 
 class DuplicateJobError(JobStoreError):
@@ -56,17 +55,14 @@ class DuplicateJobError(JobStoreError):
 
 class JobNotFoundError(JobStoreError):
     """Raised when job is not found."""
-    pass
 
 
 class AttemptNotFoundError(JobStoreError):
     """Raised when attempt is not found."""
-    pass
 
 
 class InvalidTransitionError(JobStoreError):
     """Raised when state transition is invalid."""
-    pass
 
 
 class JobStore:
@@ -97,6 +93,12 @@ class JobStore:
         finally:
             self.db_pool.putconn(conn)
 
+    @staticmethod
+    def _advisory_lock_key(job_id: str) -> int:
+        """Return a stable int32 advisory-lock key for ``job_id``."""
+        digest = hashlib.sha256(job_id.encode("utf-8")).digest()
+        return int.from_bytes(digest[:4], byteorder="big", signed=False) & 0x7FFFFFFF
+
     @contextmanager
     def _get_conn(self):
         """Get a connection from the pool."""
@@ -114,8 +116,7 @@ class JobStore:
         This prevents concurrent attempts on the same job,
         even across multiple UMRS instances.
         """
-        # Use a hash of job_id for the lock key
-        lock_key = hash(job_id) & 0x7FFFFFFF  # Ensure positive int32
+        lock_key = self._advisory_lock_key(job_id)
 
         with conn.cursor() as cur:
             # Try to acquire lock (non-blocking)

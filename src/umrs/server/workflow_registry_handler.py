@@ -19,10 +19,14 @@ import json
 import logging
 import os
 import threading
+import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from umrs.shared.config import get_resolved_umrs_subdir
+
+if TYPE_CHECKING:
+    from umrs.server.job_tracking_handler import DurableJobCommandBackend
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +173,168 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
     }, default=str)
 
 
-def _handle_run_workflow(client_id: str, payload_str: str) -> str:
+def _workflow_project_id(params: Any) -> str:
+    if isinstance(params, dict) and isinstance(params.get("project_id"), str):
+        project_id = params["project_id"].strip()
+        if project_id:
+            return project_id
+    return "default"
+
+
+def _workflow_run_context(
+    workflow_name: str,
+    client_id: str,
+    source_path: Optional[str] = None,
+) -> tuple[str, Dict[str, Any], int]:
+    if source_path is None:
+        with _CATALOG_LOCK:
+            catalog = _load_catalog()
+
+        entry = None
+        for workflow_entry in catalog.get("workflows", []):
+            if workflow_entry["name"] == workflow_name:
+                if workflow_entry.get("user_id") == client_id:
+                    entry = workflow_entry
+                    break
+                if entry is None:
+                    entry = workflow_entry
+
+        if entry is None:
+            raise ValueError(f"Workflow '{workflow_name}' not found in registry")
+        source_path = entry.get("source_path", "")
+
+    if not source_path or not os.path.isdir(source_path):
+        raise ValueError(f"Workflow source path not found: {source_path}")
+
+    wf_json_path = os.path.join(source_path, "workflow.json")
+    if not os.path.isfile(wf_json_path):
+        raise ValueError(f"workflow.json missing at {source_path}")
+
+    try:
+        with open(wf_json_path, "r", encoding="utf-8") as handle:
+            workflow_json = json.load(handle)
+    except Exception as exc:
+        raise ValueError(f"Failed to load workflow.json: {exc}") from exc
+
+    return source_path, workflow_json, len(workflow_json.get("steps", []))
+
+
+def _launch_workflow_from_catalog(
+    *,
+    workflow_name: str,
+    client_id: str,
+    params: Dict[str, Any],
+    execution_id: Optional[str] = None,
+    durable_job_id: Optional[str] = None,
+    source_path: Optional[str] = None,
+):
+    source_path, workflow_json, step_count = _workflow_run_context(
+        workflow_name,
+        client_id,
+        source_path=source_path,
+    )
+
+    logger.info(
+        "Running workflow '%s' for user '%s' with %d steps (params=%s, durable_job_id=%s)",
+        workflow_name,
+        client_id,
+        step_count,
+        params,
+        durable_job_id,
+    )
+
+    from umrs.server.step_router import build_registry_backed_router
+    from umrs.server.workflow_execution_registry import get_execution_registry
+    from umrs.server.workflow_runner import run_workflow_record
+
+    registry = get_execution_registry()
+    record = registry.create(
+        workflow_name=workflow_name,
+        user_id=client_id,
+        params=params,
+        execution_id=execution_id,
+        durable_job_id=durable_job_id,
+    )
+
+    project_id = _workflow_project_id(params)
+    router = build_registry_backed_router(project_id=project_id)
+
+    def _runner(record_to_run):
+        run_workflow_record(
+            record_to_run,
+            source_path=source_path,
+            workflow_json=workflow_json,
+            router=router,
+            project_id=project_id,
+            user_id=client_id,
+        )
+
+    registry.launch(record, _runner)
+    return record, source_path, step_count
+
+
+def _submit_durable_workflow_run(
+    *,
+    client_id: str,
+    workflow_name: str,
+    params: Dict[str, Any],
+    execution_id: str,
+    source_path: str,
+    step_count: int,
+    job_backend: "DurableJobCommandBackend",
+) -> str:
+    raw = job_backend.submit(
+        client_id,
+        json.dumps(
+            {
+                "project_id": _workflow_project_id(params),
+                "job_type": "workflow_run",
+                "spec": {
+                    "workflow_name": workflow_name,
+                    "execution_id": execution_id,
+                    "params": params,
+                    "source_path": source_path,
+                },
+                "max_attempts": 4,
+                "restart_policy": "on_crash",
+            }
+        ),
+    )
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        return json.dumps({"status": "error", "message": f"Invalid durable job response: {exc}"})
+
+    if data.get("status") == "error":
+        return raw
+
+    job = data.get("job") if isinstance(data.get("job"), dict) else {}
+    durable_job_id = job.get("job_id")
+    return json.dumps(
+        {
+            "status": "ok",
+            "action": "run-workflow",
+            "workflow_name": workflow_name,
+            "source_path": source_path,
+            "steps": step_count,
+            "params": params,
+            "execution_id": execution_id,
+            "durable_job_id": durable_job_id,
+            "durable_job": job,
+            "message": (
+                f"Workflow '{workflow_name}' execution queued as durable job "
+                f"{durable_job_id or '<unknown>'} ({step_count} steps)"
+            ),
+        },
+        default=str,
+    )
+
+
+def _handle_run_workflow(
+    client_id: str,
+    payload_str: str,
+    job_backend: Optional["DurableJobCommandBackend"] = None,
+) -> str:
     """Trigger execution of a registered workflow.
 
     Payload JSON:
@@ -186,95 +351,52 @@ def _handle_run_workflow(client_id: str, payload_str: str) -> str:
 
     if not workflow_name:
         return json.dumps({"status": "error", "message": "workflow_name is required"})
-
-    with _CATALOG_LOCK:
-        catalog = _load_catalog()
-
-    # Find the workflow entry
-    entry = None
-    for w in catalog.get("workflows", []):
-        if w["name"] == workflow_name:
-            # Prefer user's own workflow, fall back to any match
-            if w.get("user_id") == client_id:
-                entry = w
-                break
-            if entry is None:
-                entry = w
-
-    if entry is None:
-        return json.dumps({
-            "status": "error",
-            "message": f"Workflow '{workflow_name}' not found in registry",
-        })
-
-    source_path = entry.get("source_path", "")
-    if not source_path or not os.path.isdir(source_path):
-        return json.dumps({
-            "status": "error",
-            "message": f"Workflow source path not found: {source_path}",
-        })
-
-    # Load workflow.json from the registered source
-    wf_json_path = os.path.join(source_path, "workflow.json")
-    if not os.path.isfile(wf_json_path):
-        return json.dumps({
-            "status": "error",
-            "message": f"workflow.json missing at {source_path}",
-        })
+    if not isinstance(params, dict):
+        return json.dumps({"status": "error", "message": "workflow params must be an object"})
 
     try:
-        with open(wf_json_path, "r", encoding="utf-8") as fh:
-            wf_data = json.load(fh)
-    except Exception as e:
-        return json.dumps({"status": "error", "message": f"Failed to load workflow.json: {e}"})
+        source_path, _, step_count = _workflow_run_context(workflow_name, client_id)
+    except ValueError as exc:
+        return json.dumps({"status": "error", "message": str(exc)})
 
-    steps = wf_data.get("steps", [])
-    logger.info(
-        "Running workflow '%s' for user '%s' with %d steps (params=%s)",
-        workflow_name, client_id, len(steps), params,
-    )
-
-    # Submit the run to the in-process execution registry so the
-    # caller gets an execution_id it can poll for status / results.
-    from umrs.server.workflow_execution_registry import get_execution_registry
-    from umrs.server.workflow_runner import run_workflow_record
-    from umrs.server.step_router import build_registry_backed_router
-
-    registry = get_execution_registry()
-    record = registry.create(
-        workflow_name=workflow_name,
-        user_id=client_id,
-        params=params,
-    )
-
-    project_id = (params or {}).get("project_id") if isinstance(params, dict) else None
-    router = build_registry_backed_router(project_id=project_id)
-
-    def _runner(rec):
-        run_workflow_record(
-            rec,
+    if job_backend is not None:
+        execution_id = f"wf-{uuid.uuid4().hex[:12]}"
+        return _submit_durable_workflow_run(
+            client_id=client_id,
+            workflow_name=workflow_name,
+            params=params,
+            execution_id=execution_id,
             source_path=source_path,
-            workflow_json=wf_data,
-            router=router,
-            project_id=project_id,
-            user_id=client_id,
+            step_count=step_count,
+            job_backend=job_backend,
         )
 
-    registry.launch(record, _runner)
+    record, source_path, step_count = _launch_workflow_from_catalog(
+        workflow_name=workflow_name,
+        client_id=client_id,
+        params=params,
+        source_path=source_path,
+    )
 
     return json.dumps({
         "status": "ok",
         "action": "run-workflow",
         "workflow_name": workflow_name,
         "source_path": source_path,
-        "steps": len(steps),
+        "steps": step_count,
         "params": params,
         "execution_id": record.execution_id,
-        "message": f"Workflow '{workflow_name}' execution accepted ({len(steps)} steps)",
+        "durable_job_id": record.durable_job_id,
+        "message": f"Workflow '{workflow_name}' execution accepted ({step_count} steps)",
     }, default=str)
 
 
-def handle_workflow_command(cmd: str, client_id: str, payload_str: str) -> str:
+def handle_workflow_command(
+    cmd: str,
+    client_id: str,
+    payload_str: str,
+    job_backend: Optional["DurableJobCommandBackend"] = None,
+) -> str:
     """Dispatch a workflow registry command and return a JSON response string.
 
     Called from the server main loop when a LIST_WORKFLOWS command is received.
@@ -285,7 +407,7 @@ def handle_workflow_command(cmd: str, client_id: str, payload_str: str) -> str:
         if cmd == TaskCmd.LIST_WORKFLOWS:
             return _handle_list_workflows(client_id, payload_str)
         elif cmd == TaskCmd.RUN_WORKFLOW:
-            return _handle_run_workflow(client_id, payload_str)
+            return _handle_run_workflow(client_id, payload_str, job_backend=job_backend)
         else:
             return json.dumps({
                 "status": "error",

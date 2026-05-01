@@ -45,7 +45,7 @@ VALID_STATUSES = {"planned", "queued", "running", "completed", "failed", "cancel
 # - model_download → MODEL_DOWNLOAD ZMQ command
 # - embedding_batch → PROCESS_OBJECTS (upload) + recompute/update maintenance
 # - pipeline_run → deferred until steps framework is fully wired
-VALID_JOB_TYPES = {"endpoint_provision", "index_build", "cleanup"}
+VALID_JOB_TYPES = {"endpoint_provision", "index_build", "cleanup", "workflow_run"}
 JOB_SUBMIT = "JOB_SUBMIT"
 JOB_CANCEL = "JOB_CANCEL"
 JOB_LIST = "JOB_LIST"
@@ -90,23 +90,41 @@ def _require_string(spec: Dict[str, Any], key: str, label: str) -> str:
     return value.strip()
 
 
+def _validate_index_build_spec(spec: Dict[str, Any]) -> None:
+    _require_string(spec, "database", "index_build spec.database")
+    _require_string(spec, "table", "index_build spec.table")
+    if "rebuild" in spec and not isinstance(spec["rebuild"], bool):
+        raise ValueError("index_build spec.rebuild must be a boolean")
+
+
+def _validate_workflow_run_spec(spec: Dict[str, Any]) -> None:
+    _require_string(spec, "workflow_name", "workflow_run spec.workflow_name")
+    _require_string(spec, "execution_id", "workflow_run spec.execution_id")
+    if "params" in spec and not isinstance(spec["params"], dict):
+        raise ValueError("workflow_run spec.params must be an object")
+
+
+def _validate_cleanup_spec(spec: Dict[str, Any]) -> None:
+    target = _require_string(spec, "target", "cleanup spec.target").lower()
+    if target != "endpoint":
+        raise ValueError("cleanup currently supports only spec.target='endpoint'")
+    _require_string(spec, "job_id", "cleanup spec.job_id")
+
+
+_JOB_SPEC_VALIDATORS = {
+    JobType.INDEX_BUILD: _validate_index_build_spec,
+    JobType.WORKFLOW_RUN: _validate_workflow_run_spec,
+    JobType.CLEANUP: _validate_cleanup_spec,
+}
+
+
 def _validate_job_spec(job_type: JobType, spec: Any) -> Dict[str, Any]:
     if not isinstance(spec, dict):
         raise ValueError("spec must be a JSON object")
 
-    if job_type == JobType.INDEX_BUILD:
-        _require_string(spec, "database", "index_build spec.database")
-        _require_string(spec, "table", "index_build spec.table")
-        if "rebuild" in spec and not isinstance(spec["rebuild"], bool):
-            raise ValueError("index_build spec.rebuild must be a boolean")
-    elif job_type == JobType.CLEANUP:
-        target = _require_string(spec, "target", "cleanup spec.target").lower()
-        if target != "endpoint":
-            raise ValueError(
-                "cleanup currently supports only spec.target='endpoint'"
-            )
-        _require_string(spec, "job_id", "cleanup spec.job_id")
-
+    validator = _JOB_SPEC_VALIDATORS.get(job_type)
+    if validator is not None:
+        validator(spec)
     return spec
 
 
@@ -243,6 +261,10 @@ class DurableJobCommandBackend:
 
         try:
             self._job_store.cancel_job(job_id, reason=f"cancelled by {client_id}")
+            if job.job_type == JobType.WORKFLOW_RUN:
+                from umrs.jobs.workflow_run import cancel_workflow_execution_for_job
+
+                cancel_workflow_execution_for_job(job)
         except InvalidTransitionError as exc:
             if job.job_type == JobType.ENDPOINT_PROVISION and job.status == JobStatus.COMPLETED:
                 return self._submit_endpoint_cleanup(client_id, job)

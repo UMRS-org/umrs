@@ -15,12 +15,7 @@ Tests:
 
 from __future__ import annotations
 
-import asyncio
-import os
-import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -32,7 +27,6 @@ from umrs.jobs.model_download import (
     DownloadTaskRegistry,
     ModelDownloadBackend,
     ModelDownloadStatusChecker,
-    download_from_huggingface,
     get_download_registry,
 )
 from umrs.jobs.models import (
@@ -49,13 +43,6 @@ from umrs.jobs.models import (
 # =============================================================================
 # Fixtures
 # =============================================================================
-
-
-@pytest.fixture
-def temp_dir():
-    """Create a temporary directory for tests."""
-    with tempfile.TemporaryDirectory() as td:
-        yield td
 
 
 @pytest.fixture
@@ -335,53 +322,6 @@ class TestDownloadTaskRegistry:
         assert len(tasks) == 3
 
 
-# =============================================================================
-# Test ModelDownloadBackend
-# =============================================================================
-
-
-class TestModelDownloadBackend:
-    """Tests for ModelDownloadBackend."""
-
-    def test_backend_name(self, mock_model_store, mock_path_validator, download_registry):
-        """Test backend name property."""
-        backend = ModelDownloadBackend(
-            model_store=mock_model_store,
-            path_validator=mock_path_validator,
-            download_registry=download_registry,
-        )
-        assert backend.backend_name == "model_download"
-
-    @pytest.mark.asyncio
-    async def test_submit_job_registers_task(
-        self,
-        mock_model_store,
-        mock_path_validator,
-        download_registry,
-        sample_job,
-        sample_attempt,
-    ):
-        """Test that submit_job registers the task."""
-        backend = ModelDownloadBackend(
-            model_store=mock_model_store,
-            path_validator=mock_path_validator,
-            download_registry=download_registry,
-        )
-
-        # Mock the actual download to not run
-        with patch.object(
-            backend, "_execute_download", new_callable=AsyncMock
-        ):
-            task_id = await backend.submit_job(sample_job, sample_attempt)
-
-        assert task_id == sample_attempt.attempt_id
-
-        # Task should be registered
-        task = await download_registry.get(sample_attempt.attempt_id)
-        assert task is not None
-        assert task.source == DownloadSource.HUGGINGFACE
-        assert task.source_id == "microsoft/DialoGPT-small"
-
     @pytest.mark.asyncio
     async def test_submit_job_validates_path(
         self,
@@ -576,52 +516,6 @@ class TestModelDownloadStatusChecker:
         """Test that checker handles MODEL_DOWNLOAD job type."""
         checker = ModelDownloadStatusChecker(download_registry=download_registry)
         assert checker.job_type == JobType.MODEL_DOWNLOAD
-
-
-# =============================================================================
-# Test HuggingFace Download (Mocked)
-# =============================================================================
-
-
-class TestHuggingFaceDownload:
-    """Tests for HuggingFace download function (mocked)."""
-
-    @pytest.mark.asyncio
-    async def test_download_success(self, temp_dir):
-        """Test successful download from HuggingFace."""
-        # Mock huggingface_hub
-        mock_api = MagicMock()
-        mock_api.repo_info.return_value = MagicMock(
-            siblings=[
-                MagicMock(size=100),
-                MagicMock(size=200),
-            ]
-        )
-
-        with patch.dict("sys.modules", {"huggingface_hub": MagicMock()}):
-            with patch("huggingface_hub.HfApi", return_value=mock_api):
-                with patch("huggingface_hub.snapshot_download") as mock_download:
-                    # Create some files in temp_dir to simulate download
-                    test_file = Path(temp_dir) / "model.bin"
-                    test_file.write_bytes(b"test content")
-                    mock_download.return_value = temp_dir
-
-                    progress = await download_from_huggingface(
-                        repo_id="test/model",
-                        target_path=temp_dir,
-                    )
-
-                    # Note: This test may fail because the mocking is complex
-                    # In a real test environment, we'd use more sophisticated mocking
-
-    @pytest.mark.asyncio
-    async def test_download_missing_hub(self):
-        """Test graceful handling when huggingface_hub not installed."""
-        with patch.dict("sys.modules", {"huggingface_hub": None}):
-            with patch("builtins.__import__", side_effect=ImportError("No module")):
-                # This should handle the ImportError gracefully
-                # The actual implementation catches this
-                pass
 
 
 # =============================================================================

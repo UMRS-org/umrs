@@ -15,6 +15,8 @@ Example SSH tunnel command:
 import pytest
 from unittest.mock import MagicMock, patch
 import os
+import json
+import logging
 
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
@@ -70,6 +72,121 @@ class TestTunnelModeBasics:
                 mq = MessageQueue(role='server', queue_type='control', tunnel_mode=False)
                 assert mq.tunnel_mode is False
                 mq.close()
+
+
+class TestControlMessageLogging:
+    """Tests for control-plane log redaction."""
+
+    def test_send_control_request_uses_multipart_auth_frame(self):
+        """Admin tokens should not be embedded in colon-delimited commands."""
+        from umrs.core.MessageQueue import MessageQueue
+        from umrs.core.TaskCmdStatus import TaskCmd
+
+        token = "secret:token:with:colons"
+        mq = object.__new__(MessageQueue)
+        mq.role = "client"
+        mq.type = "control"
+        mq.debug = False
+        mq.socket = MagicMock()
+
+        mq.send_control_request(
+            [TaskCmd.CREATE_DATA_QUEUE, "alice"],
+            admin_token=token,
+        )
+
+        frames = mq.socket.send_multipart.call_args.args[0]
+        assert frames[0] == b"CREATE_DATA_QUEUE:alice"
+        assert token.encode("utf-8") not in frames[0]
+        assert json.loads(frames[1].decode("utf-8")) == {"admin_token": token}
+
+    def test_recv_string_decodes_multipart_auth_frame(self):
+        """Server control receive should keep auth out of the command body."""
+        from umrs.core.MessageQueue import MessageQueue
+
+        token = "secret:token:with:colons"
+        mq = object.__new__(MessageQueue)
+        mq.role = "server"
+        mq.type = "control"
+        mq.socket = MagicMock()
+        mq.socket.recv_multipart.return_value = [
+            b"client-1",
+            b"ENROLL_USER:alice:1",
+            json.dumps({"admin_token": token}).encode("utf-8"),
+        ]
+
+        client_id, message = mq.recv_string()
+
+        assert client_id == b"client-1"
+        assert message == "ENROLL_USER:alice:1"
+        assert mq._last_control_auth == {"admin_token": token}
+
+    def test_control_auth_token_uses_multipart_frame_only(self):
+        """Admin tokens must come from the multipart auth frame only."""
+        from umrs.core.MessageQueue import MessageQueue
+
+        mq = object.__new__(MessageQueue)
+        mq._last_control_auth = {"admin_token": "new-token"}
+
+        assert mq._control_auth_token() == "new-token"
+        mq._last_control_auth = {}
+        assert mq._control_auth_token() is None
+
+    def test_redact_control_message_hides_admin_token(self):
+        """Admin tokens in legacy colon-delimited messages must not be logged."""
+        from umrs.core.MessageQueue import MessageQueue
+
+        token = "umrs-admin-secret-token"
+        summary = MessageQueue._redact_control_message(
+            f"CREATE_DATA_QUEUE:alice:{token}"
+        )
+
+        assert token not in summary
+        assert "CREATE_DATA_QUEUE" in summary
+        assert "client_id=alice" in summary
+        assert "has_auth=true" in summary
+
+    def test_redact_control_message_hides_json_payload(self):
+        """JSON payloads can contain secrets and should be summarized only."""
+        from umrs.core.MessageQueue import MessageQueue
+
+        payload = '{"api_key":"secret-value","model":"demo"}'
+        summary = MessageQueue._redact_control_message(
+            f"MODEL_REGISTER:alice:{payload}"
+        )
+
+        assert "secret-value" not in summary
+        assert "api_key" not in summary
+        assert "MODEL_REGISTER" in summary
+        assert "client_id=alice" in summary
+
+    def test_wait_for_request_does_not_print_or_log_control_payload(
+        self,
+        caplog,
+        capsys,
+    ):
+        """Full control request handling must not leak payloads to logs or stdio."""
+        from umrs.core.MessageQueue import MessageQueue
+        from umrs.core.TaskCmdStatus import TaskCmd
+
+        secret = "secret-token-value"
+        mq = object.__new__(MessageQueue)
+        mq.recv_string = MagicMock(
+            return_value=(b"client-1", f"WAIT_OUTPUT:alice:bucket;0:{secret}")
+        )
+
+        caplog.set_level(logging.INFO)
+        mq.role = "server"
+
+        result_cmd, payload = mq.server_control_queue_loop()
+
+        captured = capsys.readouterr()
+        assert result_cmd == TaskCmd.WAIT_OUTPUT
+        assert payload[0] == "alice"
+        assert secret not in captured.out
+        assert secret not in captured.err
+        assert secret not in caplog.text
+        assert "Received control request" in caplog.text
+        assert "cmd=WAIT_OUTPUT" in caplog.text
 
 
 class TestTunnelModeControlQueue:

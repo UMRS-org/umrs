@@ -110,6 +110,7 @@ class ToolCallRequest(BaseModel):
 
     tool: str = Field(..., description="Tool name to invoke")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+    metadata: Dict[str, Any] = Field(default_factory=dict, alias="_meta")
 
 
 class ToolCallResponse(BaseModel):
@@ -315,7 +316,13 @@ async def call_tool(
     logger.info("Invoking tool %s on server %s", request.tool, server.name)
 
     try:
-        result = await _proxy_tool_call(server.url, server.transport, request.tool, request.arguments)
+        result = await _proxy_tool_call(
+            server.url,
+            server.transport,
+            request.tool,
+            request.arguments,
+            metadata=request.metadata,
+        )
         return ToolCallResponse(
             content=result.get("content", []),
             isError=result.get("isError", False),
@@ -400,6 +407,7 @@ async def _proxy_tool_call(
     transport: str,
     tool_name: str,
     arguments: Dict[str, Any],
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Proxy a tool call to the MCP server via HTTP."""
     if transport not in ("http", "sse") and not server_url.startswith("http"):
@@ -408,10 +416,14 @@ async def _proxy_tool_call(
         )
 
     url = f"{server_url.rstrip('/')}/tools/call"
+    params: Dict[str, Any] = {"name": tool_name, "arguments": arguments}
+    if metadata:
+        params["_meta"] = metadata
+
     payload = {
         "jsonrpc": "2.0",
         "method": "tools/call",
-        "params": {"name": tool_name, "arguments": arguments},
+        "params": params,
         "id": 1,
     }
     timeout = aiohttp.ClientTimeout(total=_MCP_PROXY_TIMEOUT)

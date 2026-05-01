@@ -441,7 +441,12 @@ def server_event_loop(
                 if _authorize(cmd, client_id, zmq_sender_id) is None:
                     update_status_func(TaskStatus.ERROR)
                     continue
-                response_json = handle_workflow_command(cmd, client_id, payload_str)
+                response_json = handle_workflow_command(
+                    cmd,
+                    client_id,
+                    payload_str,
+                    job_backend=job_command_backend,
+                )
                 try:
                     control_mq.send_string(response_json, zmq_sender_id)
                 except RuntimeError as e:

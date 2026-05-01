@@ -51,6 +51,7 @@ from .adapters import (
     create_backend_factory,
     create_status_checker,
 )
+from .workflow_run import WorkflowRunBackend
 # Note: context_jobs excluded from selective merge
 from .ha import (
     HeartbeatManager,
@@ -108,6 +109,7 @@ __all__ = [
     "EndpointProvisionStatusChecker",
     "IndexBuildBackend",
     "IndexBuildStatusChecker",
+    "WorkflowRunBackend",
     "create_backend_factory",
     "create_status_checker",
     # HA Coordination (U-703, U-715)

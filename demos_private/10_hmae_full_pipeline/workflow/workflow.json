@@ -10,16 +10,21 @@
     {
       "name": "hmae_reconstruct",
       "entrypoint": "hmae_reconstruct:HMAEReconstructStep",
+      "model": "HMAE ViT-B",
+      "requires": ["vision"],
+      "model_type": "vision",
       "config": {
-        "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
         "timeout": 600
       }
     },
     {
       "name": "hmae_mae",
       "entrypoint": "hmae_mae:HMAEMaeStep",
+      "depends_on": ["hmae_reconstruct"],
+      "model": "HMAE ViT-B",
+      "requires": ["vision"],
+      "model_type": "vision",
       "config": {
-        "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
         "anomaly_threshold": 0.3,
         "timeout": 600
       }
@@ -27,8 +32,11 @@
     {
       "name": "hmae_features",
       "entrypoint": "hmae_features:HMAEFeaturesStep",
+      "depends_on": ["hmae_mae"],
+      "model": "HMAE ViT-B",
+      "requires": ["vision"],
+      "model_type": "vision",
       "config": {
-        "bentoml_url": "${BENTOML_URL:-http://localhost:11434/vision}",
         "timeout": 600
       }
     }
