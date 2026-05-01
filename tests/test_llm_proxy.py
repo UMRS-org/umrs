@@ -151,6 +151,47 @@ def test_chat_completions_missing_project_returns_401():
     assert response.status_code == 401
 
 
+def test_chat_completions_requires_verified_project_in_strict_mode(monkeypatch):
+    """Strict mode rejects legacy X-Project-ID without Gateway verification."""
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    registry = _make_registry_with_endpoint()
+    client = _create_client(registry)
+
+    response = client.post(
+        "/umrs/llm/v1/chat/completions",
+        json={"model": "qwen3-8b", "messages": []},
+        headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_chat_completions_prefers_verified_project(monkeypatch):
+    """Verified Gateway project identity wins over advisory X-Project-ID."""
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    registry = _make_registry_with_endpoint(project_id="verified-project")
+    client = _create_client(registry)
+
+    async def fake_request(self, method, url, **kwargs):
+        assert "compute-01:11434" in str(url)
+        return _mock_litellm_response({"id": "x", "choices": []})
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "request", fake_request):
+        response = client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "qwen3-8b", "messages": []},
+            headers={
+                "x-user-id": "user-1",
+                "x-project-id": "attacker-project",
+                "x-verified-project-id": "verified-project",
+            },
+        )
+
+    assert response.status_code == 200
+
+
 def test_model_alias_rewriting_catalog_to_served():
     """When client sends catalog name, it should be rewritten to served name."""
     registry = _make_registry_with_endpoint()

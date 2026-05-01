@@ -22,26 +22,39 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
-from datetime import datetime
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from .models import (
-    AttemptStatus,
     Job,
     JobAttempt,
     JobStatus,
     JobType,
     RestartPolicy,
 )
-from .monitor import AttemptMonitor, CompositeStatusChecker, EndpointProvisionChecker
-from .reconciler import ReconcileResult, Reconciler, reconcile_on_startup
-from .scheduler import Scheduler, SimpleBackendAdapter
-from .store import DuplicateJobError, JobNotFoundError, JobStore
+from .monitor import AttemptMonitor, CompositeStatusChecker
+from .reconciler import ReconcileResult, reconcile_on_startup
+from .scheduler import Scheduler
+from .store import JobStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class JobSubmission:
+    """Parameters for creating a durable job."""
+
+    project_id: str
+    user_id: str
+    job_type: JobType
+    spec: Dict[str, Any]
+    priority: int = 0
+    max_attempts: int = 3
+    restart_policy: RestartPolicy = RestartPolicy.ON_CRASH
+    idempotency_key: Optional[str] = None
+    enqueue: bool = True
 
 
 class JobService:
@@ -131,6 +144,8 @@ class JobService:
         result = reconcile_on_startup(self._job_store)
         logger.info(f"Boot reconciliation: {result}")
 
+        await self._recover_model_download_registry()
+
         # Start scheduler if backend factory is set
         if self._backend_factory:
             self._scheduler = Scheduler(
@@ -157,6 +172,20 @@ class JobService:
         logger.info("JobService started")
 
         return result
+
+    async def _recover_model_download_registry(self) -> None:
+        """Recover in-memory model download task contexts from durable jobs."""
+        if self._job_store is None:
+            return
+
+        try:
+            from .model_download import recover_download_registry_from_job_store
+
+            recovered = await recover_download_registry_from_job_store(self._job_store)
+            if recovered:
+                logger.info("Recovered %d model download task context(s)", recovered)
+        except Exception as exc:
+            logger.warning("Model download task registry recovery skipped: %s", exc)
 
     async def shutdown(self, timeout: float = 10.0) -> None:
         """
@@ -186,29 +215,16 @@ class JobService:
 
     def submit_job(
         self,
-        project_id: str,
-        user_id: str,
-        job_type: JobType,
-        spec: Dict[str, Any],
-        priority: int = 0,
-        max_attempts: int = 3,
-        restart_policy: RestartPolicy = RestartPolicy.ON_CRASH,
-        idempotency_key: Optional[str] = None,
-        enqueue: bool = True,
+        request: Optional[JobSubmission | str] = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> str:
         """
         Submit a new job.
 
         Args:
-            project_id: Project/tenant identifier
-            user_id: User who submitted the job
-            job_type: Type of job
-            spec: Job-specific parameters
-            priority: Higher = more urgent
-            max_attempts: Maximum retry attempts
-            restart_policy: When to retry
-            idempotency_key: Optional; auto-generated if not provided
-            enqueue: Whether to enqueue immediately
+            request: Structured job submission. Existing keyword calls are
+                accepted and converted into this request object.
 
         Returns:
             job_id of created job
@@ -216,21 +232,48 @@ class JobService:
         Raises:
             DuplicateJobError: If idempotency key already exists
         """
+        submission = self._coerce_submission(request, args, kwargs)
         job_id = self.job_store.create_job(
-            project_id=project_id,
-            user_id=user_id,
-            job_type=job_type,
-            spec=spec,
-            idempotency_key=idempotency_key,
-            priority=priority,
-            max_attempts=max_attempts,
-            restart_policy=restart_policy,
+            project_id=submission.project_id,
+            user_id=submission.user_id,
+            job_type=submission.job_type,
+            spec=submission.spec,
+            idempotency_key=submission.idempotency_key,
+            priority=submission.priority,
+            max_attempts=submission.max_attempts,
+            restart_policy=submission.restart_policy,
         )
 
-        if enqueue:
+        if submission.enqueue:
             self.job_store.enqueue_job(job_id)
 
         return job_id
+
+    def _coerce_submission(
+        self,
+        request: Optional[JobSubmission | str],
+        args: tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> JobSubmission:
+        """Normalize legacy keyword arguments into a JobSubmission."""
+        if isinstance(request, JobSubmission):
+            if kwargs:
+                raise TypeError("submit_job accepts either request or keyword fields")
+            if args:
+                raise TypeError("submit_job request cannot be combined with positional fields")
+            return request
+
+        positional_values = () if request is None else (request,)
+        positional_values += args
+        field_names = tuple(JobSubmission.__dataclass_fields__)
+        if len(positional_values) > len(field_names):
+            raise TypeError("submit_job received too many positional fields")
+
+        for field_name, value in zip(field_names, positional_values):
+            if field_name in kwargs:
+                raise TypeError(f"submit_job got multiple values for {field_name}")
+            kwargs[field_name] = value
+        return JobSubmission(**kwargs)
 
     def submit_endpoint_provision(
         self,

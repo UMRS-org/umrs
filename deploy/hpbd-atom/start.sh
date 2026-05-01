@@ -240,7 +240,7 @@ export PATH="${HOME}/.local/bin:${PATH}"
 # Database — containers publish postgres on localhost:5432
 export DB_HOST="127.0.0.1"
 export DB_SUPERUSER="${POSTGRES_USER:-umrs}"
-export DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD:-umrs_rccs}"
+export DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
 
 # S3 presigned URL endpoint — compute nodes access MinIO via SSH tunnel
 # (localhost:9000 on compute → login node MinIO).

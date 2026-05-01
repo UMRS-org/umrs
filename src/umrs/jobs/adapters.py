@@ -827,6 +827,9 @@ def create_backend_factory(
         registry=registry,
         get_job_with_attempts=get_job_with_attempts,
     )
+    from .workflow_run import WorkflowRunBackend
+
+    workflow_run_backend = WorkflowRunBackend()
 
     model_download_backend = None
     if model_store and path_validator:
@@ -844,6 +847,8 @@ def create_backend_factory(
             return index_backend
         elif job_type == JobType.CLEANUP:
             return cleanup_backend
+        elif job_type == JobType.WORKFLOW_RUN:
+            return workflow_run_backend
         elif job_type == JobType.MODEL_DOWNLOAD:
             if model_download_backend is None:
                 raise RuntimeError(
@@ -888,6 +893,9 @@ def create_status_checker(
             orchestrator=orchestrator,
         ),
     )
+    from .workflow_run import WorkflowRunStatusChecker
+
+    checker.register(JobType.WORKFLOW_RUN, WorkflowRunStatusChecker())
     checker.register(JobType.INDEX_BUILD, IndexBuildStatusChecker())
     checker.register(JobType.CLEANUP, CleanupStatusChecker(registry=registry))
 

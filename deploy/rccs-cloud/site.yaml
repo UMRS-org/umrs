@@ -28,8 +28,8 @@ scheduler:
 
 runtime:
   kind: podman-compose
-  rivault_dir: /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm
-  repo_dir: /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs
+  rivault_dir: /lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs/src/umrs/mini-rivault-llm
+  repo_dir: /lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs
   vision_image: umrs-vision:latest
   compose_file: ""                       # defaults to serve-model.yaml inside rivault_dir
   profiles:
@@ -43,19 +43,19 @@ runtime:
   # vision_stack: jens                   # uncomment to use Jens's VisionFrontend stack (tmp/jens_stack/internal_genAI/)
 
 storage:
-  model_cache_dir: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hf
-  sam3_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/sam3
-  hmae_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae
-  hmae_config_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/infer_hmae_vit_b.yaml
-  hmae_checkpoint: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/latest_checkpoint.pth
-  vision_tarball: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar  # base path; wrapper appends -arm64.tar or -amd64.tar
-  user_model_path: /lvs0/dne1/rccs-dmp/mnagaso/umrs_models
+  model_cache_dir: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hf
+  sam3_model_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/sam3
+  hmae_model_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae
+  hmae_config_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/infer_hmae_vit_b.yaml
+  hmae_checkpoint: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/latest_checkpoint.pth
+  vision_tarball: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/umrs-vision.tar  # base path; wrapper appends -arm64.tar or -amd64.tar
+  user_model_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models
   s3_tunnel_host: ""                     # auto-set to $SLURM_SUBMIT_HOST
   s3_tunnel_port: 9000
 
 network:
   litellm_port: 8001
-  litellm_master_key: umrs-rccs-litellm-key
+  litellm_master_key: ""  # Set LITELLM_MASTER_KEY in .env or operator environment.
   port_range_min: 11434
   port_range_max: 11534
   port_strategy: static_range
@@ -74,9 +74,9 @@ database:
   host: localhost
   port: 5432
   superuser: umrs
-  superuser_password: umrs_rccs
+  superuser_password: ""  # Set POSTGRES_PASSWORD or DB_SUPERUSER_PASSWORD in .env.
   user_password: ""
-  registry_dsn: postgres://umrs:umrs_rccs@localhost:5432/umrs_db
+  registry_dsn: ""  # start.sh derives UMRS_REGISTRY_POSTGRES_DSN from runtime env.
 
 # ─────────────────────────────────────────────────────────────
 # Per-partition profiles — eliminates fragile runtime detection

@@ -26,6 +26,7 @@ import logging
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from .base import (
     EndpointInfo,
@@ -37,18 +38,75 @@ from .base import (
 
 logger = logging.getLogger(__name__)
 
-# R-8: Default in-cluster CIDRs that mini-rivault is allowed to reach.
-# Override per deployment via env. The defaults assume a typical kubeadm
-# cluster (10.244.0.0/16 pods, 10.96.0.0/12 services). Production sites
-# MUST narrow this to the actual S3/MinIO and DNS endpoints.
-_K8S_EGRESS_ALLOWED_CIDRS = [
-    cidr.strip()
-    for cidr in os.environ.get(
-        "K8S_EGRESS_ALLOWED_CIDRS",
-        "10.96.0.0/12,10.244.0.0/16",
-    ).split(",")
-    if cidr.strip()
-]
+_DEFAULT_EGRESS_PROXY_URL = "http://egress-guard:8888"
+_DEFAULT_EGRESS_NO_PROXY = (
+    "localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard"
+)
+
+
+def _k8s_egress_allowed_cidrs() -> List[str]:
+    """Return optional site-specific CIDRs allowed outside EgressGuard."""
+    return [
+        cidr.strip()
+        for cidr in os.environ.get("K8S_EGRESS_ALLOWED_CIDRS", "").split(",")
+        if cidr.strip()
+    ]
+
+
+def _proxy_port(proxy_url: str) -> int:
+    parsed = urlparse(proxy_url or _DEFAULT_EGRESS_PROXY_URL)
+    if parsed.port:
+        return parsed.port
+    if parsed.scheme == "https":
+        return 443
+    return 80
+
+
+def _dns_egress_rule() -> Dict[str, Any]:
+    return {
+        "to": [
+            {
+                "namespaceSelector": {},
+                "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}},
+            }
+        ],
+        "ports": [
+            {"protocol": "UDP", "port": 53},
+            {"protocol": "TCP", "port": 53},
+        ],
+    }
+
+
+def _egress_guard_rule(proxy_port: int) -> Dict[str, Any]:
+    return {
+        "to": [
+            {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "egress-guard"}}},
+            {"podSelector": {"matchLabels": {"app": "egress-guard"}}},
+        ],
+        "ports": [{"protocol": "TCP", "port": proxy_port}],
+    }
+
+
+def _cidr_egress_rule(allowed_cidrs: List[str]) -> Dict[str, Any]:
+    return {
+        "to": [{"ipBlock": {"cidr": cidr}} for cidr in allowed_cidrs],
+    }
+
+
+def _egress_proxy_env_vars(cfg: OrchestratorConfig) -> List[Dict[str, str]]:
+    egress_proxy_url = cfg.egress_proxy_url or _DEFAULT_EGRESS_PROXY_URL
+    egress_no_proxy = cfg.egress_no_proxy or _DEFAULT_EGRESS_NO_PROXY
+    return [
+        {"name": "RIVAULT_HTTP_PROXY", "value": egress_proxy_url},
+        {"name": "RIVAULT_HTTPS_PROXY", "value": egress_proxy_url},
+        {"name": "EGRESS_GUARD_PROXY_URL", "value": egress_proxy_url},
+        {"name": "HTTP_PROXY", "value": egress_proxy_url},
+        {"name": "HTTPS_PROXY", "value": egress_proxy_url},
+        {"name": "http_proxy", "value": egress_proxy_url},
+        {"name": "https_proxy", "value": egress_proxy_url},
+        {"name": "NO_PROXY", "value": egress_no_proxy},
+        {"name": "no_proxy", "value": egress_no_proxy},
+    ]
 
 
 class KubernetesBackend(OrchestratorBackend):
@@ -117,29 +175,16 @@ class KubernetesBackend(OrchestratorBackend):
         only kube-dns and the configured in-cluster CIDRs (S3/MinIO,
         Gateway). Public internet egress is implicitly denied.
         """
-        # 53/UDP for DNS, plus arbitrary TCP to allowed CIDRs.
+        # 53/UDP+TCP for DNS, plus EgressGuard for all HTTP(S) egress.
+        # Site-specific private CIDRs may be added explicitly through
+        # K8S_EGRESS_ALLOWED_CIDRS, but the default is no direct CIDR egress.
         egress_rules: List[Dict[str, Any]] = [
-            {
-                "to": [
-                    {
-                        "namespaceSelector": {},
-                        "podSelector": {
-                            "matchLabels": {"k8s-app": "kube-dns"}
-                        },
-                    }
-                ],
-                "ports": [{"protocol": "UDP", "port": 53}],
-            }
+            _dns_egress_rule(),
+            _egress_guard_rule(_proxy_port(self.config.egress_proxy_url)),
         ]
-        if _K8S_EGRESS_ALLOWED_CIDRS:
-            egress_rules.append(
-                {
-                    "to": [
-                        {"ipBlock": {"cidr": cidr}}
-                        for cidr in _K8S_EGRESS_ALLOWED_CIDRS
-                    ],
-                }
-            )
+        allowed_cidrs = _k8s_egress_allowed_cidrs()
+        if allowed_cidrs:
+            egress_rules.append(_cidr_egress_rule(allowed_cidrs))
         return {
             "apiVersion": "networking.k8s.io/v1",
             "kind": "NetworkPolicy",
@@ -204,6 +249,7 @@ class KubernetesBackend(OrchestratorBackend):
             {"name": "HF_HUB_OFFLINE", "value": "1"},
             {"name": "VLLM_NO_USAGE_STATS", "value": "1"},
         ]
+        env_vars.extend(_egress_proxy_env_vars(cfg))
         # Forward any extra env from the request (e.g. VLLM_SERVED_MODEL_NAME).
         for key, value in (kwargs.get("env") or {}).items():
             env_vars.append({"name": key, "value": str(value)})
@@ -365,19 +411,9 @@ class KubernetesBackend(OrchestratorBackend):
         namespace = kwargs.get("namespace", self.config.k8s_namespace)
         job_name = self._job_name()
 
-        # Create Job
-        job_manifest = self._build_job_manifest(job_name, model, **kwargs)
-
-        try:
-            self._k8s_client["batch"].create_namespaced_job(
-                namespace=namespace,
-                body=job_manifest,
-            )
-        except self._k8s_client["ApiException"] as e:
-            raise RuntimeError(f"Failed to create Job: {e}")
-
-        # R-8: apply egress-deny NetworkPolicy. Failure here is fatal because
-        # without it the offline-inference invariant cannot be enforced.
+        # R-8: apply the egress-deny NetworkPolicy before creating the Job.
+        # NetworkPolicy can select pods that do not exist yet, which avoids a
+        # startup race where a new pod could egress before the policy lands.
         netpol_manifest = self._build_network_policy(job_name, namespace)
         try:
             self._k8s_client["networking"].create_namespaced_network_policy(
@@ -385,22 +421,29 @@ class KubernetesBackend(OrchestratorBackend):
                 body=netpol_manifest,
             )
         except self._k8s_client["ApiException"] as exc:
-            # Roll back the Job we just created so we never leave a pod
-            # running without its egress guard.
+            raise RuntimeError(
+                f"Refusing to start job {job_name} without egress NetworkPolicy: {exc}"
+            ) from exc
+
+        job_manifest = self._build_job_manifest(job_name, model, **kwargs)
+        try:
+            self._k8s_client["batch"].create_namespaced_job(
+                namespace=namespace,
+                body=job_manifest,
+            )
+        except self._k8s_client["ApiException"] as exc:
             logger.error(
-                "Failed to apply egress NetworkPolicy for %s: %s; rolling back Job",
+                "Failed to create Kubernetes Job for %s: %s; removing NetworkPolicy",
                 job_name, exc,
             )
             try:
-                self._k8s_client["batch"].delete_namespaced_job(
-                    name=job_name, namespace=namespace,
-                    propagation_policy="Background",
+                self._k8s_client["networking"].delete_namespaced_network_policy(
+                    name=netpol_manifest["metadata"]["name"],
+                    namespace=namespace,
                 )
             except self._k8s_client["ApiException"]:
                 pass
-            raise RuntimeError(
-                f"Refusing to start job {job_name} without egress NetworkPolicy: {exc}"
-            )
+            raise RuntimeError(f"Failed to create Job: {exc}") from exc
 
         # Create Service for endpoint discovery
         service_manifest = self._build_service_manifest(job_name, namespace)

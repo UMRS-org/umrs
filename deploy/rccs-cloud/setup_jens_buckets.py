@@ -13,6 +13,7 @@ After running, Jens can use plain HTTP URLs (no signature, no expiry):
 """
 
 import json
+import os
 import sys
 
 import boto3
@@ -20,8 +21,8 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 
 ENDPOINT = "http://localhost:9000"
-ACCESS_KEY = "minioadmin"
-SECRET_KEY = "minioadmin"
+ACCESS_KEY = os.environ["MINIO_ROOT_USER"]
+SECRET_KEY = os.environ["MINIO_ROOT_PASSWORD"]
 
 BUCKETS = {
     "jens": {

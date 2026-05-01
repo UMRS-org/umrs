@@ -164,7 +164,7 @@ export NGINX_LITELLM_DOCKER_PORT="${NGINX_LITELLM_DOCKER_PORT:-8001}"
 
 # ─── LiteLLM API key (shared between Slurm job and UMRS server) ─────────────
 # Must match LITELLM_MASTER_KEY in .env so the server can authenticate.
-export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:-umrs-rccs-litellm-key}"
+export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}"
 
 # ─── Model cache on Lustre (inherit from server or set default) ──────────────
 export SAM3_MODEL_PATH="${SAM3_MODEL_PATH:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/sam3}"

@@ -17,6 +17,7 @@ from .base import OrchestratorBackend, OrchestratorConfig
 
 # Registry of available backends
 _BACKEND_REGISTRY: Dict[str, Type[OrchestratorBackend]] = {}
+_EXPERIMENTAL_HYBRID_BACKENDS = {"hybrid", "hybrid-slurm", "slurm-hybrid"}
 
 
 def register_backend(name: str, backend_class: Type[OrchestratorBackend]) -> None:
@@ -53,39 +54,26 @@ def _detect_backend() -> str:
     if shutil.which("sbatch") and shutil.which("squeue"):
         return "slurm"
 
-    # Check for Kubernetes
-    if shutil.which("kubectl"):
-        # Verify cluster is accessible
-        import subprocess
-        try:
-            result = subprocess.run(
-                ["kubectl", "cluster-info"],
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return "kubernetes"
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+    if shutil.which("kubectl") and _command_succeeds("kubectl", "cluster-info"):
+        return "kubernetes"
 
-    # Check for Docker
-    if shutil.which("docker"):
-        import subprocess
-        try:
-            result = subprocess.run(
-                ["docker", "info"],
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return "docker-compose"
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+    if shutil.which("docker") and _command_succeeds("docker", "info"):
+        return "docker-compose"
 
     raise RuntimeError(
         "No orchestration backend available. "
         "Install Slurm, Kubernetes (kubectl), or Docker."
     )
+
+
+def _command_succeeds(*args: str) -> bool:
+    import subprocess
+
+    try:
+        result = subprocess.run(args, capture_output=True, timeout=5)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+    return result.returncode == 0
 
 
 def get_orchestrator(
@@ -123,6 +111,13 @@ def get_orchestrator(
 
     if backend == "auto":
         backend = _detect_backend()
+
+    if backend in _EXPERIMENTAL_HYBRID_BACKENDS:
+        raise ValueError(
+            "Hybrid Slurm orchestration is experimental, not for HPC production. "
+            "Use 'slurm-podman' or 'slurm', or instantiate HybridOrchestrator "
+            "with RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM=true for compatibility testing."
+        )
 
     if backend not in _BACKEND_REGISTRY:
         available = ", ".join(sorted(_BACKEND_REGISTRY.keys()))

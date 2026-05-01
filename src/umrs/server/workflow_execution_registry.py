@@ -77,6 +77,7 @@ class ExecutionRecord:
     steps: Dict[str, StepProgress] = field(default_factory=dict)
     results: Dict[str, Any] = field(default_factory=dict)
     artifacts: List[str] = field(default_factory=list)
+    durable_job_id: Optional[str] = None
     cancel_requested: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -95,6 +96,7 @@ class ExecutionRecord:
                 "params": dict(self.params),
                 "steps": [step.to_dict() for step in self.steps.values()],
                 "artifacts": list(self.artifacts),
+                "durable_job_id": self.durable_job_id,
                 "cancel_requested": self.cancel_requested,
             }
 
@@ -117,6 +119,9 @@ class ExecutionRecord:
             if key not in self.artifacts:
                 self.artifacts.append(key)
 
+    def set_durable_job_id(self, job_id: str) -> None:
+        self.update(durable_job_id=job_id)
+
 
 class WorkflowExecutionRegistry:
     """Thread-safe in-memory registry of workflow executions."""
@@ -136,16 +141,18 @@ class WorkflowExecutionRegistry:
         workflow_name: str,
         user_id: str,
         params: Optional[Dict[str, Any]] = None,
+        execution_id: Optional[str] = None,
+        durable_job_id: Optional[str] = None,
     ) -> ExecutionRecord:
-        execution_id = f"wf-{uuid.uuid4().hex[:12]}"
         record = ExecutionRecord(
-            execution_id=execution_id,
+            execution_id=execution_id or f"wf-{uuid.uuid4().hex[:12]}",
             workflow_name=workflow_name,
             user_id=user_id,
             params=dict(params or {}),
+            durable_job_id=durable_job_id,
         )
         with self._lock:
-            self._records[execution_id] = record
+            self._records[record.execution_id] = record
             self._gc_locked()
         return record
 

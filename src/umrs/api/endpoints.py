@@ -15,6 +15,7 @@ Authentication:
 """
 
 import logging
+import os
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
@@ -27,6 +28,25 @@ from ..orchestrator.endpoint_registry import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _strict_auth_mode() -> bool:
+    """Return True when MVP header/default project fallback is disabled."""
+    return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+
+
+def _raise_strict_project_auth_error() -> None:
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=(
+            "UMRS_AUTH_MODE=strict requires a verified project claim; "
+            "X-Project-ID and default-project fallbacks are disabled."
+        ),
+    )
+
+
+def _header_str(value: Any) -> Optional[str]:
+    return value.strip() if isinstance(value, str) and value.strip() else None
 
 router = APIRouter(prefix="/umrs/endpoints", tags=["endpoints"])
 
@@ -356,6 +376,7 @@ class HealthResponse(BaseModel):
 
 def get_project_id(
     authorization: Optional[str] = Header(None),
+    x_verified_project_id: Optional[str] = Header(None),
     x_project_id: Optional[str] = Header(None),
 ) -> str:
     """
@@ -367,9 +388,16 @@ def get_project_id(
     Raises:
         HTTPException: If project_id cannot be determined.
     """
+    verified_project_id = _header_str(x_verified_project_id)
+    if _strict_auth_mode() and verified_project_id:
+        return verified_project_id
+    if _strict_auth_mode():
+        _raise_strict_project_auth_error()
+
     # MVP: Accept X-Project-ID header for testing
-    if x_project_id:
-        return x_project_id
+    project_id = _header_str(x_project_id)
+    if project_id:
+        return project_id
 
     # TODO: Production - decode JWT and extract project_id claim
     if authorization and authorization.startswith("Bearer "):
@@ -386,11 +414,18 @@ def get_project_id(
 
 def get_project_id_optional(
     authorization: Optional[str] = Header(None),
+    x_verified_project_id: Optional[str] = Header(None),
     x_project_id: Optional[str] = Header(None),
 ) -> Optional[str]:
     """Get project_id if available, None otherwise (for admin endpoints)."""
-    if x_project_id:
-        return x_project_id
+    verified_project_id = _header_str(x_verified_project_id)
+    if _strict_auth_mode() and verified_project_id:
+        return verified_project_id
+    if _strict_auth_mode():
+        return None
+    project_id = _header_str(x_project_id)
+    if project_id:
+        return project_id
     if authorization and authorization.startswith("Bearer "):
         return "default-project"
     return None

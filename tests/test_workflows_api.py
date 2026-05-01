@@ -12,6 +12,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from umrs.api.workflows import router
+from umrs.server.workflow_execution_registry import (
+    get_execution_registry,
+    reset_execution_registry_for_tests,
+)
 from umrs.server.workflow_registry_handler import register_workflow
 
 
@@ -124,6 +128,53 @@ def test_trigger_workflow_returns_acceptance_payload(client, tmp_path):
     assert data["workflow_name"] == "ct-analysis"
     assert data["steps"] == 2
     assert data["params"]["bucket"] == "demo-bucket"
+
+
+def test_trigger_workflow_uses_verified_identity_in_strict_mode(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    reset_execution_registry_for_tests()
+    workflow_dir = tmp_path / "ct-analysis"
+    workflow_dir.mkdir()
+    (workflow_dir / "workflow.json").write_text(json.dumps(_workflow_json()))
+
+    register_workflow(
+        workflow_name="ct-analysis",
+        version="1.0",
+        user_id="alice",
+        source_path=str(workflow_dir),
+        workflow_json=_workflow_json(),
+        scope="user",
+    )
+
+    response = client.post(
+        "/umrs/workflows/ct-analysis/trigger",
+        headers={
+            "X-User-ID": "alice",
+            "X-Verified-Project-ID": "project-a",
+        },
+        json={
+            "user_id": "attacker",
+            "params": {"project_id": "evil-project", "bucket": "demo-bucket"},
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    record = get_execution_registry().get(data["execution_id"])
+    assert record is not None
+    assert record.user_id == "alice"
+    assert record.params["project_id"] == "project-a"
+
+
+def test_trigger_workflow_rejects_query_identity_in_strict_mode(client, monkeypatch):
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+
+    response = client.post(
+        "/umrs/workflows/ct-analysis/trigger",
+        json={"user_id": "alice", "params": {"project_id": "project-a"}},
+    )
+
+    assert response.status_code == 401
 
 
 def test_trigger_missing_workflow_returns_404(client):

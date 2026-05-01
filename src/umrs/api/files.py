@@ -166,8 +166,13 @@ class PresignBatchResponse(BaseModel):
 # =============================================================================
 
 
+def _header_str(value: Any) -> Optional[str]:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
 def get_project_id(
     authorization: Optional[str] = Header(None),
+    x_verified_project_id: Optional[str] = Header(None),
     x_project_id: Optional[str] = Header(None),
 ) -> str:
     """
@@ -176,8 +181,21 @@ def get_project_id(
     Production: Extract from JWT claims in Authorization header.
     MVP/Testing: Accept X-Project-ID header.
     """
-    if x_project_id:
-        return x_project_id
+    verified_project_id = _header_str(x_verified_project_id)
+    if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict" and verified_project_id:
+        return verified_project_id
+    if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                "UMRS_AUTH_MODE=strict requires a verified project claim; "
+                "X-Project-ID and default-project fallbacks are disabled."
+            ),
+        )
+
+    project_id = _header_str(x_project_id)
+    if project_id:
+        return project_id
 
     if authorization and authorization.startswith("Bearer "):
         logger.warning("JWT project_id extraction not implemented, using default")

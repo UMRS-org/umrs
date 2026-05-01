@@ -401,8 +401,32 @@ export PATH="${HOME}/.local/bin:${PATH}"
 
 # Database — containers publish postgres on localhost:5432
 export DB_HOST="127.0.0.1"
+export DB_PORT="${DB_PORT:-5432}"
 export DB_SUPERUSER="${POSTGRES_USER:-umrs}"
-export DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD:-umrs_rccs}"
+export DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}"
+
+if [[ -z "${UMRS_REGISTRY_POSTGRES_DSN:-}" ]]; then
+    UMRS_REGISTRY_POSTGRES_DSN="$(
+        "${VENV_DIR}/bin/python" - <<'PY'
+import os
+from urllib.parse import quote
+
+user = os.environ.get("DB_SUPERUSER") or os.environ.get("POSTGRES_USER") or "umrs"
+password = os.environ.get("DB_SUPERUSER_PASSWORD") or os.environ.get("POSTGRES_PASSWORD") or ""
+host = os.environ.get("DB_HOST") or "127.0.0.1"
+port = os.environ.get("DB_PORT") or "5432"
+database = os.environ.get("POSTGRES_DB") or "umrs_db"
+
+auth = quote(user, safe="")
+if password:
+    auth += f":{quote(password, safe='')}"
+auth += "@"
+
+print(f"postgres://{auth}{host}:{port}/{database}")
+PY
+    )"
+    export UMRS_REGISTRY_POSTGRES_DSN
+fi
 
 # S3 presigned URL endpoint — compute nodes access MinIO via SSH tunnel
 # (localhost:9000 on compute → login node MinIO).

@@ -124,6 +124,47 @@ def test_query_rag_missing_project_returns_401():
     assert response.status_code == 401
 
 
+def test_query_rag_requires_verified_project_in_strict_mode(monkeypatch):
+    """Strict mode rejects advisory X-Project-ID without Gateway verification."""
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    registry = _make_registry_with_endpoint()
+    client = _create_client(registry)
+
+    response = client.post(
+        "/umrs/rag/query",
+        json={"query": "test", "project_id": "test-project"},
+        headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_query_rag_prefers_verified_project(monkeypatch):
+    """Verified Gateway project identity wins over advisory X-Project-ID."""
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    registry = _make_registry_with_endpoint(project_id="verified-project")
+    client = _create_client(registry)
+
+    async def fake_post(self, url, **kwargs):
+        assert "compute-01:8003" in str(url)
+        return _mock_rag_response({"answer": "ok", "sources": []})
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "post", fake_post):
+        response = client.post(
+            "/umrs/rag/query",
+            json={"query": "test", "project_id": "verified-project"},
+            headers={
+                "x-user-id": "user-1",
+                "x-project-id": "attacker-project",
+                "x-verified-project-id": "verified-project",
+            },
+        )
+
+    assert response.status_code == 200
+
+
 def test_list_documents_endpoint():
     """List documents endpoint should work."""
     registry = _make_registry_with_endpoint()

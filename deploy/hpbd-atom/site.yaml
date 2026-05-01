@@ -54,7 +54,7 @@ storage:
 
 network:
   litellm_port: 8001
-  litellm_master_key: umrs-rccs-litellm-key
+  litellm_master_key: ${LITELLM_MASTER_KEY}
   port_range_min: 11434
   port_range_max: 11534
   port_strategy: static_range
@@ -71,6 +71,6 @@ database:
   host: 127.0.0.1
   port: 5432
   superuser: umrs
-  superuser_password: umrs_rccs
+  superuser_password: ${POSTGRES_PASSWORD}
   user_password: ""
-  registry_dsn: postgres://umrs:umrs_rccs@127.0.0.1:5432/umrs_db
+  registry_dsn: ${UMRS_REGISTRY_POSTGRES_DSN}

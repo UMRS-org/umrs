@@ -30,6 +30,8 @@ from typing import Any, Dict, List
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 from umrs.vision_service.bentoml_client import submit_vision_and_wait
 
+from _hmae_runtime import resolve_bentoml_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -39,7 +41,7 @@ class HMAEMaeStep(Step):
     name = "hmae_mae"
 
     def setup(self, config: Dict[str, Any]) -> None:
-        self.service_url = config["bentoml_url"].rstrip("/")
+        self.service_url = resolve_bentoml_url(config)
         self.anomaly_threshold = config.get("anomaly_threshold", 0.3)
         self.timeout = config.get("timeout", 300)
         self.poll_interval = config.get("poll_interval", 2.0)
@@ -48,62 +50,22 @@ class HMAEMaeStep(Step):
         output_keys: List[str] = []
         metadata_list: List[Dict[str, Any]] = []
         checksums: List[str] = []
+        original_bucket, original_keys = self._resolve_original_inputs(ctx)
         anomaly_count = 0
 
-        # Resolve original image keys — prefer shared metadata, fall back
-        # to parsing the JSON files produced by the previous step.
-        original_keys = ctx.metadata.get("original_keys")
-        original_bucket = ctx.metadata.get("original_bucket", ctx.input_bucket)
-
-        if not original_keys:
-            original_keys = self._resolve_source_keys(ctx)
-
         for idx, key in enumerate(original_keys):
-            logger.info(
-                "[%d/%d] HMAE mae: %s",
-                idx + 1, len(original_keys), key,
-            )
-
-            image_url = f"s3://{original_bucket}/{key}"
-            result = self._submit_and_poll(image_url)
-
-            mae_loss = float(result.get("mae_loss", -1.0))
-            is_anomaly = (
-                mae_loss > self.anomaly_threshold if mae_loss >= 0 else False
-            )
-            if is_anomaly:
-                anomaly_count += 1
-
-            base = key.rsplit(".", 1)[0] if "." in key else key
-            meta = {
-                "source_key": key,
-                "source_bucket": original_bucket,
-                "task": "mae_reconstruction",
-                "mae_loss": mae_loss,
-                "anomaly_threshold": self.anomaly_threshold,
-                "is_anomaly": is_anomaly,
-                "output_s3_key": result.get("output_s3_key", ""),
-                "error": result.get("error"),
-            }
-
-            meta_key = f"mae/{base}_mae.json"
-            ctx.upload_bytes(
-                meta_key,
-                json.dumps(meta, indent=2).encode(),
-                content_type="application/json",
+            meta_key, meta, is_anomaly = self._process_image(
+                ctx,
+                source_bucket=original_bucket,
+                source_key=key,
+                index=idx,
+                total=len(original_keys),
             )
             output_keys.append(meta_key)
             metadata_list.append(meta)
             checksums.append("")
-
-            status_str = "ANOMALY" if is_anomaly else "normal"
-            if "error" in result:
-                logger.warning("  mae failed: %s", result["error"])
-            else:
-                logger.info(
-                    "  → mae_loss=%.4f [%s], output: %s",
-                    mae_loss, status_str, meta["output_s3_key"],
-                )
+            if is_anomaly:
+                anomaly_count += 1
 
         return StepResult(
             output_keys=output_keys,
@@ -117,7 +79,79 @@ class HMAEMaeStep(Step):
                     anomaly_count / len(original_keys)
                     if original_keys else 0.0
                 ),
+                "items": metadata_list,
             },
+        )
+
+    def _resolve_original_inputs(self, ctx: StepContext) -> tuple[str, List[str]]:
+        original_keys = ctx.metadata.get("original_keys")
+        original_bucket = ctx.metadata.get("original_bucket", ctx.input_bucket)
+        if original_keys:
+            return original_bucket, original_keys
+        return original_bucket, self._resolve_source_keys(ctx)
+
+    def _process_image(
+        self,
+        ctx: StepContext,
+        *,
+        source_bucket: str,
+        source_key: str,
+        index: int,
+        total: int,
+    ) -> tuple[str, Dict[str, Any], bool]:
+        logger.info(
+            "[%d/%d] HMAE mae: %s",
+            index + 1, total, source_key,
+        )
+
+        result = self._submit_and_poll(f"s3://{source_bucket}/{source_key}")
+        meta = self._build_metadata(source_bucket, source_key, result)
+        meta_key = self._store_metadata(ctx, source_key, meta)
+        self._log_result(meta, result)
+        return meta_key, meta, bool(meta["is_anomaly"])
+
+    def _build_metadata(
+        self,
+        source_bucket: str,
+        source_key: str,
+        result: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        mae_loss = float(result.get("mae_loss", -1.0))
+        is_anomaly = mae_loss >= 0 and mae_loss > self.anomaly_threshold
+        return {
+            "source_key": source_key,
+            "source_bucket": source_bucket,
+            "task": "mae_reconstruction",
+            "mae_loss": mae_loss,
+            "anomaly_threshold": self.anomaly_threshold,
+            "is_anomaly": is_anomaly,
+            "output_s3_key": result.get("output_s3_key", ""),
+            "error": result.get("error"),
+        }
+
+    def _store_metadata(
+        self,
+        ctx: StepContext,
+        source_key: str,
+        meta: Dict[str, Any],
+    ) -> str:
+        base = source_key.rsplit(".", 1)[0] if "." in source_key else source_key
+        meta_key = f"mae/{base}_mae.json"
+        ctx.upload_bytes(
+            meta_key,
+            json.dumps(meta, indent=2).encode(),
+            content_type="application/json",
+        )
+        return meta_key
+
+    def _log_result(self, meta: Dict[str, Any], result: Dict[str, Any]) -> None:
+        status_str = "ANOMALY" if meta["is_anomaly"] else "normal"
+        if "error" in result:
+            logger.warning("  mae failed: %s", result["error"])
+            return
+        logger.info(
+            "  → mae_loss=%.4f [%s], output: %s",
+            meta["mae_loss"], status_str, meta["output_s3_key"],
         )
 
     # ------------------------------------------------------------------

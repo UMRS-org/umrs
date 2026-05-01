@@ -7,10 +7,10 @@ import logging
 import os
 import signal
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from ..targets import AllocationInfo
-from .base import ContainerEndpoint, LaunchError, LaunchSpec, MountSpec, RuntimeWrapper
+from .base import ContainerEndpoint, LaunchError, LaunchSpec, RuntimeWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +50,8 @@ class SingularityWrapper(RuntimeWrapper):
         image = spec.image or self.default_image
         if not image:
             raise LaunchError("No Singularity image specified")
+        if self._requires_slurm_launch(allocation) and not allocation.node:
+            raise LaunchError("Slurm allocation has no node for remote launch")
 
         cmd = self._build_command(allocation, spec, image)
 
@@ -74,6 +76,7 @@ class SingularityWrapper(RuntimeWrapper):
                     "pid": proc.pid,
                     "image": image,
                     "job_id": allocation.job_id,
+                    "remote_launch": self._requires_slurm_launch(allocation),
                 },
             )
 
@@ -101,6 +104,9 @@ class SingularityWrapper(RuntimeWrapper):
 
     async def is_running(self, endpoint: ContainerEndpoint) -> bool:
         """Check if Singularity process is running."""
+        if endpoint.metadata.get("remote_launch"):
+            return await self._is_slurm_remote_running(endpoint)
+
         pid = endpoint.metadata.get("pid")
         if not pid:
             return False
@@ -110,6 +116,30 @@ class SingularityWrapper(RuntimeWrapper):
             return True
         except ProcessLookupError:
             return False
+
+    async def _is_slurm_remote_running(self, endpoint: ContainerEndpoint) -> bool:
+        """Probe the allocated Slurm node for the Singularity process."""
+        job_id = endpoint.metadata.get("job_id")
+        image = endpoint.metadata.get("image")
+        if not job_id or not endpoint.node or not image:
+            return False
+
+        proc = await asyncio.create_subprocess_exec(
+            "srun",
+            f"--jobid={job_id}",
+            "--nodes=1",
+            "--ntasks=1",
+            "--overlap",
+            "--nodelist",
+            endpoint.node,
+            "pgrep",
+            "-f",
+            image,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.communicate()
+        return proc.returncode == 0
 
     def _build_command(
         self,
@@ -143,4 +173,28 @@ class SingularityWrapper(RuntimeWrapper):
         if spec.args:
             cmd.extend(spec.args)
 
-        return cmd
+        return self._with_slurm_launch(allocation, cmd)
+
+    @staticmethod
+    def _requires_slurm_launch(allocation: AllocationInfo) -> bool:
+        """Return true when the allocation came from Slurm."""
+        return allocation.metadata.get("execution_authority") == "slurm"
+
+    def _with_slurm_launch(
+        self,
+        allocation: AllocationInfo,
+        cmd: List[str],
+    ) -> List[str]:
+        """Wrap a local command in `srun` when launched from Slurm."""
+        if not self._requires_slurm_launch(allocation):
+            return cmd
+        return [
+            "srun",
+            f"--jobid={allocation.job_id}",
+            "--nodes=1",
+            "--ntasks=1",
+            "--overlap",
+            "--nodelist",
+            allocation.node,
+            *cmd,
+        ]

@@ -241,8 +241,8 @@ Common values to adjust:
 
 | Variable | Default | Notes |
 |---|---|---|
-| `POSTGRES_PASSWORD` | `umrs_rccs` | Change in production |
-| `MINIO_ROOT_PASSWORD` | `minioadmin` | Change in production |
+| `POSTGRES_PASSWORD` | unset | Must be set in `.env` before startup |
+| `MINIO_ROOT_PASSWORD` | unset | Must be set in `.env` before startup |
 | `S3_PRESIGN_ENDPOINT` | `http://localhost:9000` | Compute nodes access MinIO via an SSH tunnel (see below).  The Slurm script opens `localhost:9000` → login node MinIO automatically. |
 | `VISION_S3_PRESIGN_ENDPOINT` | `http://minio-host:19000` | BentoML vision runs inside a compute-node container, so presigned URLs for vision tasks must target the host-gateway alias rather than `localhost`. |
 | `VISION_REQUIRE_PRESIGNED_URLS` | `true` | Disables direct S3 fallback in the BentoML vision service so the container no longer needs S3 secrets. |
@@ -250,6 +250,7 @@ Common values to adjust:
 | `UMRS_SITE_CONFIG` | `~/.config/umrs/site.yaml` | Optional override for the canonical site config path |
 | `RIVAULT_SLURM_SCRIPT` | `./serve-model.slurm` | Optional override for the site-specific Slurm wrapper; the legacy `~/.config/umrs/rivault_data/serve-model.slurm` path is only a fallback |
 | `MODEL_DIR` | unset by default | Optional local override for the shared model root; otherwise `HF_HOME` comes from `site.yaml` `storage.model_cache_dir` |
+| `LITELLM_MASTER_KEY` | unset by default | Required for shared deployments; generate an operator-held bearer-style secret |
 
 Do not duplicate scheduler partitions, `RIVAULT_PROFILES`, LiteLLM port, or
 model-serving paths in `.env` unless you are intentionally overriding
@@ -263,7 +264,7 @@ This deployment uses three different credential classes. Keep them separate.
 |---|---|---|---|
 | PostgreSQL password | `.env` as `POSTGRES_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
 | MinIO root password | `.env` as `MINIO_ROOT_PASSWORD` | RCCS operators on the login node | `openssl rand -base64 24` and restart `./start.sh` |
-| LiteLLM service key | `site.yaml` `network.litellm_master_key` or `.env` override `LITELLM_MASTER_KEY` | RCCS operators only | Generate a random bearer-style secret, for example `printf 'sk-ll-%s\n' "$(openssl rand -hex 24)"` |
+| LiteLLM service key | `.env` or operator environment as `LITELLM_MASTER_KEY` | RCCS operators only | Generate a random bearer-style secret, for example `printf 'sk-ll-%s\n' "$(openssl rand -hex 24)"` |
 | UMRS admin tokens | `~/.config/umrs/admin_tokens.json` (hashed at rest) | RCCS operators only | Generate with `umrs-server admin token generate <name> --description '<purpose>'` |
 
 **Important:** UMRS admin tokens are shown only once at creation time. The file
@@ -651,7 +652,7 @@ their own scripts), create credentials for them via the MinIO admin client (`mc`
 # curl -sL https://dl.min.io/client/mc/release/linux-arm64/mc -o ~/.local/bin/mc && chmod +x ~/.local/bin/mc
 
 # Alias for the local MinIO instance
-mc alias set local http://127.0.0.1:9000 minioadmin minioadmin
+mc alias set local http://127.0.0.1:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
 
 # Create a new MinIO user
 mc admin user add local user2 <password>

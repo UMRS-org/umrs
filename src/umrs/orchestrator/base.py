@@ -18,6 +18,30 @@ from typing import Any, Dict, List, Optional
 DEFAULT_MINI_RIVAULT_IMAGE = "mini-rivault:latest"
 
 
+def _inject_orchestrator_env_defaults() -> None:
+    try:
+        from .site_config import get_site_config
+        get_site_config().inject_env(overwrite=False)
+    except Exception:
+        pass  # graceful fallback when no site.yaml
+    try:
+        from .site_profiles import inject_site_profile_env
+        inject_site_profile_env(overwrite=False)
+    except Exception:
+        pass  # graceful fallback when no named profile is selected
+
+
+def _env_list(name: str, default: str) -> List[str]:
+    return os.getenv(name, default).replace(",", " ").split()
+
+
+
+def _env_nonempty(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip()
+
 class JobStatus(Enum):
     """Status of a Mini-RiVault job."""
 
@@ -104,7 +128,9 @@ class OrchestratorConfig:
     slurm_gpus: int = 1
     slurm_cpus: int = 8
     slurm_mem: str = "64G"
+    slurm_log_dir: str = "/var/log/rivault"
     slurm_job_info_dir: str = "/var/run/rivault"
+    slurm_modules: List[str] = field(default_factory=lambda: ["cuda/12.1", "singularity"])
     singularity_image: str = "/opt/singularity/mini-rivault.sif"
 
     # Kubernetes-specific
@@ -119,6 +145,12 @@ class OrchestratorConfig:
     compose_file: str = "compose.yaml"
     compose_nvidia_file: str = "compose.nvidia.yaml"
 
+    # EgressGuard proxy settings for mini-RiVault runtimes
+    egress_proxy_url: str = "http://egress-guard:8888"
+    egress_no_proxy: str = (
+        "localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard"
+    )
+
     @classmethod
     def from_env(cls) -> "OrchestratorConfig":
         """Load configuration from environment variables.
@@ -127,12 +159,7 @@ class OrchestratorConfig:
         ``os.environ`` first (without overwriting existing vars), so
         all the ``os.getenv`` calls below pick them up transparently.
         """
-        # Layer site-config into env (non-destructive)
-        try:
-            from .site_config import get_site_config
-            get_site_config().inject_env(overwrite=False)
-        except Exception:
-            pass  # graceful fallback when no site.yaml
+        _inject_orchestrator_env_defaults()
 
         return cls(
             # Common
@@ -154,7 +181,9 @@ class OrchestratorConfig:
             slurm_gpus=int(os.getenv("SLURM_GPUS", "1")),
             slurm_cpus=int(os.getenv("SLURM_CPUS", "8")),
             slurm_mem=os.getenv("SLURM_MEM", "64G"),
+            slurm_log_dir=os.getenv("SLURM_LOG_DIR", "/var/log/rivault"),
             slurm_job_info_dir=os.getenv("SLURM_JOB_INFO_DIR", "/var/run/rivault"),
+            slurm_modules=_env_list("SLURM_MODULES", "cuda/12.1 singularity"),
             singularity_image=os.getenv("SINGULARITY_IMAGE", "/opt/singularity/mini-rivault.sif"),
             # Kubernetes
             k8s_namespace=os.getenv("K8S_NAMESPACE", "rivault-system"),
@@ -166,6 +195,15 @@ class OrchestratorConfig:
             compose_project_name=os.getenv("COMPOSE_PROJECT_NAME", "mini-rivault"),
             compose_file=os.getenv("COMPOSE_FILE", "compose.yaml"),
             compose_nvidia_file=os.getenv("COMPOSE_NVIDIA_FILE", "compose.nvidia.yaml"),
+            # EgressGuard
+            egress_proxy_url=_env_nonempty(
+                "RIVAULT_HTTP_PROXY",
+                _env_nonempty("EGRESS_GUARD_PROXY_URL", "http://egress-guard:8888"),
+            ),
+            egress_no_proxy=_env_nonempty(
+                "RIVAULT_NO_PROXY",
+                "localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard",
+            ),
         )
 
 

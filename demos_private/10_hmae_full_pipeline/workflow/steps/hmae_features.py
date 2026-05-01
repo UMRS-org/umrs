@@ -34,6 +34,8 @@ import numpy as np
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 from umrs.vision_service.bentoml_client import submit_vision_and_wait
 
+from _hmae_runtime import download_s3_bytes, resolve_bentoml_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -43,7 +45,7 @@ class HMAEFeaturesStep(Step):
     name = "hmae_features"
 
     def setup(self, config: Dict[str, Any]) -> None:
-        self.service_url = config["bentoml_url"].rstrip("/")
+        self.service_url = resolve_bentoml_url(config)
         self.timeout = config.get("timeout", 300)
         self.poll_interval = config.get("poll_interval", 2.0)
 
@@ -52,77 +54,120 @@ class HMAEFeaturesStep(Step):
         metadata_list: List[Dict[str, Any]] = []
         checksums: List[str] = []
         all_cls: List[np.ndarray] = []
-
-        # Resolve original image keys
-        original_keys = ctx.metadata.get("original_keys")
-        original_bucket = ctx.metadata.get("original_bucket", ctx.input_bucket)
-
-        if not original_keys:
-            original_keys = self._resolve_source_keys(ctx)
+        original_bucket, original_keys = self._resolve_original_inputs(ctx)
 
         for idx, key in enumerate(original_keys):
-            logger.info(
-                "[%d/%d] HMAE features: %s",
-                idx + 1, len(original_keys), key,
-            )
-
-            image_url = f"s3://{original_bucket}/{key}"
-            result = self._submit_and_poll(image_url)
-
-            base = key.rsplit(".", 1)[0] if "." in key else key
-
-            if "error" in result:
-                logger.warning("  features failed: %s", result["error"])
-                cls_emb = np.zeros(768, dtype=np.float32)
-            else:
-                cls_emb = self._extract_cls(
-                    ctx, result.get("output_s3_key", ""),
-                )
-
-            all_cls.append(cls_emb)
-
-            # Save CLS embedding as .npy
-            emb_key = f"features/{base}_emb.npy"
-            ctx.upload_numpy(emb_key, cls_emb)
-
-            meta = {
-                "source_key": key,
-                "source_bucket": original_bucket,
-                "task": "feature_extraction",
-                "features_s3_key": result.get("output_s3_key", ""),
-                "embedding_key": emb_key,
-                "embedding_dim": int(cls_emb.shape[0]),
-                "error": result.get("error"),
-            }
-
-            meta_key = f"features/{base}_feat.json"
-            ctx.upload_bytes(
-                meta_key,
-                json.dumps(meta, indent=2).encode(),
-                content_type="application/json",
+            meta_key, meta, cls_emb = self._process_image(
+                ctx,
+                source_bucket=original_bucket,
+                source_key=key,
+                index=idx,
+                total=len(original_keys),
             )
             output_keys.append(meta_key)
             metadata_list.append(meta)
             checksums.append("")
+            all_cls.append(cls_emb)
 
-            logger.info("  → embedding shape=%s", cls_emb.shape)
+        embeddings_matrix = self._store_embeddings(ctx, all_cls)
+        return self._build_result(
+            output_keys=output_keys,
+            embeddings_matrix=embeddings_matrix,
+            checksums=checksums,
+            metadata_list=metadata_list,
+            total_images=len(original_keys),
+        )
 
-        # Stack all CLS embeddings
+    def _resolve_original_inputs(self, ctx: StepContext) -> tuple[str, List[str]]:
+        original_keys = ctx.metadata.get("original_keys")
+        original_bucket = ctx.metadata.get("original_bucket", ctx.input_bucket)
+        if original_keys:
+            return original_bucket, original_keys
+        return original_bucket, self._resolve_source_keys(ctx)
+
+    def _store_embeddings(
+        self,
+        ctx: StepContext,
+        all_cls: List[np.ndarray],
+    ) -> np.ndarray | None:
         embeddings_matrix = np.stack(all_cls) if all_cls else None
-
         if embeddings_matrix is not None:
             ctx.upload_numpy("features/all_embeddings.npy", embeddings_matrix)
+        return embeddings_matrix
 
+    def _build_result(
+        self,
+        *,
+        output_keys: List[str],
+        embeddings_matrix: np.ndarray | None,
+        checksums: List[str],
+        metadata_list: List[Dict[str, Any]],
+        total_images: int,
+    ) -> StepResult:
         return StepResult(
             output_keys=output_keys,
             embeddings=embeddings_matrix,
             checksums=checksums,
             metadata=metadata_list,
             extra={
-                "total_images": len(original_keys),
+                "total_images": total_images,
                 "task": "feature_extraction",
                 "embedding_dim": 768,
+                "items": metadata_list,
             },
+        )
+
+    def _process_image(
+        self,
+        ctx: StepContext,
+        *,
+        source_bucket: str,
+        source_key: str,
+        index: int,
+        total: int,
+    ) -> tuple[str, Dict[str, Any], np.ndarray]:
+        logger.info(
+            "[%d/%d] HMAE features: %s",
+            index + 1, total, source_key,
+        )
+
+        image_url = f"s3://{source_bucket}/{source_key}"
+        result = self._submit_and_poll(image_url)
+        base = source_key.rsplit(".", 1)[0] if "." in source_key else source_key
+        cls_emb = self._resolve_embedding(ctx, result)
+
+        emb_key = f"features/{base}_emb.npy"
+        ctx.upload_numpy(emb_key, cls_emb)
+        meta = {
+            "source_key": source_key,
+            "source_bucket": source_bucket,
+            "task": "feature_extraction",
+            "features_s3_key": result.get("output_s3_key", ""),
+            "embedding_key": emb_key,
+            "embedding_dim": int(cls_emb.shape[0]),
+            "error": result.get("error"),
+        }
+
+        meta_key = f"features/{base}_feat.json"
+        ctx.upload_bytes(
+            meta_key,
+            json.dumps(meta, indent=2).encode(),
+            content_type="application/json",
+        )
+        logger.info("  → embedding shape=%s", cls_emb.shape)
+        return meta_key, meta, cls_emb
+
+    def _resolve_embedding(
+        self,
+        ctx: StepContext,
+        result: Dict[str, Any],
+    ) -> np.ndarray:
+        if "error" in result:
+            logger.warning("  features failed: %s", result["error"])
+            return np.zeros(768, dtype=np.float32)
+
+        return self._extract_cls(
+            ctx, result.get("output_s3_key", ""),
         )
 
     # ------------------------------------------------------------------
@@ -144,15 +189,10 @@ class HMAEFeaturesStep(Step):
         if not feat_s3_url:
             return np.zeros(768, dtype=np.float32)
 
-        path = feat_s3_url[5:] if feat_s3_url.startswith("s3://") else feat_s3_url
-        parts = path.split("/", 1)
-        bucket = parts[0]
-        key = parts[1] if len(parts) > 1 else ""
-
         try:
             import torch
 
-            data = ctx.download_bytes(key, bucket=bucket)
+            data = download_s3_bytes(feat_s3_url)
             obj = torch.load(
                 io.BytesIO(data), map_location="cpu", weights_only=False,
             )

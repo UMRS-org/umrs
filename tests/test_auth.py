@@ -497,6 +497,26 @@ class TestAdminTokenManager:
         result = manager.validate_token("invalid-token")
         assert result is None
 
+    def test_weak_admin_token_literals_are_rejected(self, tmp_path):
+        """Known weak admin token literals never grant admin access."""
+        config = ConfigDirectory()
+        config._config_dir = tmp_path
+
+        manager = AdminTokenManager(config)
+        token_hash, token_salt = manager._hash_token("admin")
+        manager._save_tokens(
+            {
+                "weak-token": {
+                    "token_hash": token_hash,
+                    "token_salt": token_salt,
+                    "description": "weak fixture",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }
+            }
+        )
+
+        assert manager.validate_token("admin") is None
+
     def test_revoke_token(self, tmp_path):
         """Revoked tokens become invalid."""
         config = ConfigDirectory()

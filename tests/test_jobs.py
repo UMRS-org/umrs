@@ -8,11 +8,9 @@ These tests verify the core job tracking functionality:
 - Crash recovery (reconciliation)
 """
 
-import json
+from multiprocessing import get_context
+
 import pytest
-import uuid
-from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
 
 # Import the modules we're testing
 from umrs.jobs.models import (
@@ -26,6 +24,12 @@ from umrs.jobs.models import (
     generate_attempt_id,
     generate_job_id,
 )
+
+
+def _compute_advisory_lock_key_in_process(job_id, queue):
+    from umrs.jobs.store import JobStore
+
+    queue.put(JobStore._advisory_lock_key(job_id))
 
 
 class TestJobModels:
@@ -182,6 +186,43 @@ class TestJobModels:
         assert restored.metrics == original.metrics
 
 
+class TestJobStoreAdvisoryLockKey:
+    """Test JobStore advisory-lock key generation."""
+
+    def test_advisory_lock_key_is_stable_int32(self):
+        """Advisory lock keys must be deterministic across processes."""
+        from umrs.jobs.store import JobStore
+
+        key_1 = JobStore._advisory_lock_key("job-test-123")
+        key_2 = JobStore._advisory_lock_key("job-test-123")
+        other_key = JobStore._advisory_lock_key("job-test-456")
+
+        assert key_1 == key_2
+        assert key_1 != other_key
+        assert 0 <= key_1 <= 0x7FFFFFFF
+
+    def test_advisory_lock_key_is_stable_across_processes(self):
+        """Advisory lock keys must not depend on Python's per-process hash seed."""
+        ctx = get_context("spawn")
+        queue = ctx.Queue()
+        processes = [
+            ctx.Process(
+                target=_compute_advisory_lock_key_in_process,
+                args=("job-test-123", queue),
+            )
+            for _ in range(2)
+        ]
+
+        for process in processes:
+            process.start()
+        keys = [queue.get(timeout=5) for _ in processes]
+        for process in processes:
+            process.join(timeout=5)
+
+        assert all(process.exitcode == 0 for process in processes)
+        assert keys[0] == keys[1]
+
+
 class TestJobStatus:
     """Test job status enum values."""
 
@@ -210,6 +251,7 @@ class TestJobTypes:
             "endpoint_provision",
             "model_download",
             "cleanup",
+            "workflow_run",
         ]
         actual = [t.value for t in JobType]
         assert set(expected) == set(actual)
@@ -362,6 +404,37 @@ class TestCallerIdentity:
         caller = CallerIdentity(user_id="admin-user", project_id="admin-proj", is_admin=True)
         job = self._make_job()
         assert caller.can_access_job(job) is True
+
+    def test_verified_headers_override_query_identity_in_strict_mode(self, monkeypatch):
+        """Strict mode trusts Gateway-issued headers instead of query identity."""
+        from umrs.api.jobs import get_caller_identity
+
+        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+
+        caller = get_caller_identity(
+            caller_user_id="attacker",
+            caller_project_id="evil-project",
+            x_user_id="alice",
+            x_verified_project_id="project-a",
+        )
+
+        assert caller.user_id == "alice"
+        assert caller.project_id == "project-a"
+
+    def test_strict_mode_rejects_missing_verified_job_identity(self, monkeypatch):
+        """Strict mode rejects legacy query-only caller identity."""
+        from fastapi import HTTPException as FastAPIHTTPException
+        from umrs.api.jobs import get_caller_identity
+
+        monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+
+        with pytest.raises(FastAPIHTTPException) as exc_info:
+            get_caller_identity(
+                caller_user_id="alice",
+                caller_project_id="project-a",
+            )
+
+        assert exc_info.value.status_code == 401
 
     def test_enforce_raises_403_for_non_owner(self):
         """_enforce_job_access raises HTTPException 403 for non-owners."""

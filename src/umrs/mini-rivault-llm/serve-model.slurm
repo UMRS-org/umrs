@@ -123,6 +123,15 @@ PRIV_IP1TO3=${PRIV_IP1TO3:-192.168.4}
 CONTAINER_RUNTIME_DNS=${CONTAINER_RUNTIME_DNS:-/etc/resolv.conf}			# Note: docker uses 127.0.0.11 while podman forces me to use /etc/resolv.conf
 UUID=00000000-0000-0000-0000-000000000000
 RIVAULT_USERNS_MODE=${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}
+RIVAULT_HTTP_PROXY=${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}
+RIVAULT_HTTPS_PROXY=${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
+RIVAULT_NO_PROXY=${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}
+HTTP_PROXY=${HTTP_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
+HTTPS_PROXY=${HTTPS_PROXY:-${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}}
+NO_PROXY=${NO_PROXY:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
+http_proxy=${http_proxy:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
+https_proxy=${https_proxy:-${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}}
+no_proxy=${no_proxy:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
 ###OPTIONAL
 VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
 VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
@@ -491,10 +500,12 @@ _substitute_required() {
 }
 
 if ! sed -e "s@UMRS_S3_BUCKET_PORT@$(/bin/grep '^UMRS_S3_BUCKET_PORT=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
+    -e "s@UMRS_S3_BUCKET_HOST@$(/bin/grep '^UMRS_S3_BUCKET_HOST=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	"./nginx_fs/out-nginx.conf" > "./nginx_fs/out-nginx.conf.${uuid}"; then
 	echo "[rivault] FATAL: nginx out-nginx.conf substitution failed"; exit 1
 fi
 _substitute_required "out-nginx.conf" "./nginx_fs/out-nginx.conf.${uuid}" "UMRS_S3_BUCKET_PORT"
+_substitute_required "out-nginx.conf" "./nginx_fs/out-nginx.conf.${uuid}" "UMRS_S3_BUCKET_HOST"
 
 if ! sed -e "s@UMRS_S3_BUCKET_HOST@$(/bin/grep '^UMRS_S3_BUCKET_HOST=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \
 	-e "s@CONTAINER_RUNTIME_DNS@$(/bin/grep '^CONTAINER_RUNTIME_DNS=' "./env.${uuid}" | awk -F'[=#\t ]+' '{print $2}')@g" \

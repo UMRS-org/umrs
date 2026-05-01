@@ -39,12 +39,40 @@ DATA_PORT_RANGE = _resolve_default_data_port_range()
 DATA_BASE_PORT = DATA_PORT_RANGE.base_port
 DEFAULT_NB_MSG = 10240
 class MessageQueue:
+    _AUTH_FIELD_INDEX = {
+        TaskCmd.CREATE_DATA_QUEUE: 2,
+        TaskCmd.ENROLL_USER: 3,
+        TaskCmd.RECOMPUTE: 3,
+        TaskCmd.UPDATE: 3,
+        TaskCmd.CHECK: 3,
+        TaskCmd.RELOAD: 3,
+    }
+
     @staticmethod
     def _env_flag(name, default=False):
         raw = os.environ.get(name)
         if raw is None:
             return default
         return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _redact_control_message(cls, message):
+        """Return a log-safe summary for a control-plane message."""
+        if message is None:
+            return "<empty>"
+
+        parts = str(message).split(":")
+        if not parts or not parts[0]:
+            return "cmd=<empty> fields=0"
+
+        cmd = parts[0]
+        client_id = parts[1] if len(parts) > 1 else "<missing>"
+        auth_index = cls._AUTH_FIELD_INDEX.get(cmd)
+        has_auth = bool(auth_index is not None and len(parts) > auth_index and parts[auth_index])
+        return (
+            f"cmd={cmd} client_id={client_id} "
+            f"fields={max(len(parts) - 1, 0)} has_auth={str(has_auth).lower()}"
+        )
 
     @staticmethod
     def _resolve_port(queue_type, requested_port):
@@ -174,6 +202,7 @@ class MessageQueue:
         self.status_store = status_store
         self.debug = False  # disable noisy send/recv logs by default
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
+        self._last_control_auth: dict[str, str] = {}
 
         # Initialize the selected queue type
         if self.type == "control":
@@ -222,11 +251,67 @@ class MessageQueue:
 
     # ------------------------ Core Methods ------------------------
 
+    @staticmethod
+    def _encode_control_auth_frame(admin_token=None):
+        """Encode optional auth data for a control multipart request."""
+        if not admin_token:
+            return None
+        return json.dumps({"admin_token": admin_token}).encode("utf-8")
+
+    @staticmethod
+    def _decode_control_auth_frame(frame):
+        """Decode optional auth data from a control multipart request."""
+        if not frame:
+            return {}
+        try:
+            payload = json.loads(frame.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning("Ignoring malformed control auth frame")
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _control_auth_token(self):
+        """Return admin token from the multipart auth frame only."""
+        return self._last_control_auth.get("admin_token")
+
+    def send_control_request(self, fields, admin_token=None):
+        """Send a control request with auth in a separate multipart frame."""
+        if self.role != "client" or self.type != "control":
+            raise PermissionError("Only control clients can send control requests")
+
+        request = ":".join(str(field) for field in fields)
+        frames = [request.encode("utf-8")]
+        auth_frame = self._encode_control_auth_frame(admin_token)
+        if auth_frame is not None:
+            frames.append(auth_frame)
+
+        if self.debug:
+            logger.debug(
+                "Sending message role=%s type=%s client_id=None %s",
+                self.role,
+                self.type,
+                self._redact_control_message(request),
+            )
+
+        try:
+            self.socket.send_multipart(frames)
+        except zmq.Again:
+            raise RuntimeError("Timeout while sending message")
+        except zmq.ZMQError as e:
+            raise RuntimeError(f"ZMQ error while sending: {e}")
+
     def send_string(self, string, client_id=None):
         if self.debug:
-            print(
-                f"[SEND] role={self.role}, type={self.type}, "
-                f"client_id={client_id}, msg='{string}'"
+            if self.type == "control":
+                message = self._redact_control_message(string)
+            else:
+                message = f"payload_bytes={len(str(string).encode('utf-8'))}"
+            logger.debug(
+                "Sending message role=%s type=%s client_id=%s %s",
+                self.role,
+                self.type,
+                client_id,
+                message,
             )
 
         try:
@@ -281,10 +366,17 @@ class MessageQueue:
             if self.type == "control" and self.role == "server":
                 # ROUTER receives: [client_id][empty_delimiter][payload] from REQ
                 # or [client_id][payload] from DEALER
+                self._last_control_auth = {}
                 frames = self.socket.recv_multipart()
                 if len(frames) == 3:
-                    # REQ socket: [client_id][empty][payload]
-                    client_id, _empty, msg = frames
+                    client_id, second, third = frames
+                    if second == b"":
+                        # REQ socket: [client_id][empty][payload]
+                        msg = third
+                    else:
+                        # DEALER multipart auth: [client_id][payload][auth]
+                        msg = second
+                        self._last_control_auth = self._decode_control_auth_frame(third)
                 elif len(frames) == 2:
                     # DEALER socket: [client_id][payload]
                     client_id, msg = frames
@@ -375,13 +467,13 @@ class MessageQueue:
                 try:
                     data_queue.socket.close()
                 except Exception as e:
-                    print(f"Warning: Failed to close data socket: {e}")
+                    logger.warning("Failed to close data socket: %s", e)
 
         # Close main socket
         try:
             self.socket.close()
         except Exception as e:
-            print(f"Warning: Failed to close main socket: {e}")
+            logger.warning("Failed to close main socket: %s", e)
 
 
     # ------------------------ Server methods ------------------------
@@ -391,7 +483,7 @@ class MessageQueue:
 
         while True:
             zmq_sender_id, msg = self.recv_string() # Blocking call
-            print(f"Received request: {msg}", flush=True)
+            logger.info("Received control request: %s", self._redact_control_message(msg))
             # messgae structure should be "{command}:{username}:{other information (e.g file/object count)}"
             splited_msg = msg.split(":")
 
@@ -400,11 +492,14 @@ class MessageQueue:
                 try:
                     self.send_string("READY!", zmq_sender_id)
                 except RuntimeError as e:
-                    print(f"Error in client handshake: {e}")
+                    logger.error("Error in client handshake: %s", e)
 
             elif cmd == TaskCmd.CREATE_DATA_QUEUE:  # prepare PUB-SUB request
                 if len(splited_msg) < 2:
-                    print(f"ERROR: CREATE_DATA_QUEUE missing client_id: {msg}")
+                    logger.error(
+                        "CREATE_DATA_QUEUE missing client_id: %s",
+                        self._redact_control_message(msg),
+                    )
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError:
@@ -412,8 +507,7 @@ class MessageQueue:
                     continue
                 client_id = splited_msg[1]
 
-                # Optional admin token in third field (backward compatible)
-                token = splited_msg[2] if len(splited_msg) > 2 else None
+                token = self._control_auth_token()
                 try:
                     auth_ctx = create_auth_context_from_request(client_id, token=token)
                 except Exception as e:
@@ -439,11 +533,14 @@ class MessageQueue:
                 try:
                     self.send_string(reply, zmq_sender_id)
                 except RuntimeError as e:
-                    print(f"Error in sending back port to client: {e}")
+                    logger.error("Error in sending back port to client: %s", e)
 
             elif cmd == TaskCmd.PROCESS_OBJECTS:  # prepare PUB-SUB request
                 if len(splited_msg) < 3:
-                    print(f"ERROR: PROCESS_OBJECTS missing fields: {msg}")
+                    logger.error(
+                        "PROCESS_OBJECTS missing fields: %s",
+                        self._redact_control_message(msg),
+                    )
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError:
@@ -453,7 +550,7 @@ class MessageQueue:
                 try:
                     nb_objects = int(splited_msg[2])
                 except ValueError:
-                    print(f"ERROR: PROCESS_OBJECTS invalid count: {splited_msg[2]}")
+                    logger.error("PROCESS_OBJECTS invalid count: %s", splited_msg[2])
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError:
@@ -463,7 +560,10 @@ class MessageQueue:
 
             elif cmd == TaskCmd.FILE:  # prepare PUB-SUB request
                 if len(splited_msg) < 3:
-                    print(f"ERROR: FILE missing fields: {msg}")
+                    logger.error(
+                        "FILE missing fields: %s",
+                        self._redact_control_message(msg),
+                    )
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError:
@@ -473,7 +573,7 @@ class MessageQueue:
                 try:
                     nb_files = int(splited_msg[2])
                 except ValueError:
-                    print(f"ERROR: FILE invalid count: {splited_msg[2]}")
+                    logger.error("FILE invalid count: %s", splited_msg[2])
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError:
@@ -484,7 +584,10 @@ class MessageQueue:
             elif cmd == TaskCmd.ENROLL_USER:
                 # Admin-only: same wire format as FILE but dispatched as ENROLL_USER
                 if len(splited_msg) < 3:
-                    print(f"ERROR: ENROLL_USER missing fields: {msg}")
+                    logger.error(
+                        "ENROLL_USER missing fields: %s",
+                        self._redact_control_message(msg),
+                    )
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError:
@@ -494,7 +597,7 @@ class MessageQueue:
                 try:
                     nb_files = int(splited_msg[2])
                 except ValueError:
-                    print(f"ERROR: ENROLL_USER invalid count: {splited_msg[2]}")
+                    logger.error("ENROLL_USER invalid count: %s", splited_msg[2])
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError:
@@ -503,7 +606,7 @@ class MessageQueue:
                 # Refresh auth session with admin token (same pattern as
                 # maintenance commands) so server_umrs._authorize() sees
                 # the ADMIN role instead of the default USER session.
-                token = splited_msg[3] if len(splited_msg) > 3 else None
+                token = self._control_auth_token()
                 if client_id and token:
                     try:
                         auth_ctx = create_auth_context_from_request(client_id, token=token)
@@ -523,7 +626,10 @@ class MessageQueue:
                                               result_cmd=TaskCmd.ENROLL_USER)
             elif cmd == TaskCmd.UPLOAD_WORKFLOW:
                 if len(splited_msg) < 3:
-                    print(f"ERROR: UPLOAD_WORKFLOW missing fields: {msg}")
+                    logger.error(
+                        "UPLOAD_WORKFLOW missing fields: %s",
+                        self._redact_control_message(msg),
+                    )
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError:
@@ -542,7 +648,7 @@ class MessageQueue:
                 try:
                     self.send_string(payload, zmq_sender_id)
                 except RuntimeError as e:
-                    print(f"Error sending status payload: {e}")
+                    logger.error("Error sending status payload: %s", e)
                 continue
             elif cmd == TaskCmd.WAIT_OUTPUT :
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
@@ -551,7 +657,7 @@ class MessageQueue:
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError as e:
-                        print(f"Error sending status payload: {e}")
+                        logger.error("Error sending status payload: %s", e)
                     continue
                 splited_args = args.split(";")
                 bucket_name = splited_args[0]
@@ -565,7 +671,7 @@ class MessageQueue:
                     try:
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     except RuntimeError as e:
-                        print(f"Error sending export error: {e}")
+                        logger.error("Error sending export error: %s", e)
                     continue
                 return TaskCmd.EXPORT_EMBEDDINGS, (client_id, export_args, zmq_sender_id)
 
@@ -574,7 +680,7 @@ class MessageQueue:
                 try:
                     self.send_string("ACKNOWLEDGE", zmq_sender_id)
                 except RuntimeError as e:
-                    print(f"Error acknowledging {cmd} request: {e}")
+                    logger.error("Error acknowledging %s request: %s", cmd, e)
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 token = splited_msg[3] if len(splited_msg) > 3 else None
                 if client_id and token:
@@ -627,17 +733,25 @@ class MessageQueue:
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
 
         messages = []
-        print(f"Listening for {nb_objects} new messages (timeout={timeout_s}s)...")
+        logger.info(
+            "Listening for %s new messages (timeout=%s)",
+            nb_objects,
+            timeout_s,
+        )
         nb_received = 0
         start = time.time()
         while nb_received < nb_objects:
             if timeout_s and (time.time() - start) > timeout_s:
-                print(f"wait_for_s3_events: timeout after {timeout_s}s "
-                      f"({nb_received}/{nb_objects} received)")
+                logger.warning(
+                    "wait_for_s3_events timed out after %s seconds (%s/%s received)",
+                    timeout_s,
+                    nb_received,
+                    nb_objects,
+                )
                 break
             _, message = self.recv_string()
             if message:
-                print("Received :", message)
+                logger.debug("Received S3 event payload_bytes=%s", len(message.encode("utf-8")))
                 messages.append(message)
                 nb_received += 1
 
@@ -650,11 +764,14 @@ class MessageQueue:
         if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
             data_queue = self.client_dictionary[client_id]["data_queue"]
             port = self.client_dictionary[client_id]["port"]
-            print(f"Listening data to port {port}")
+            logger.info("Listening for data on port %s", port)
 
             path_list = []
             if not self.tmp_dir or not os.path.exists(self.tmp_dir) :
-                print(f"Warning no directory set for temporary receiving files or not accessible, using {os.devnull}")
+                logger.warning(
+                    "No temporary receiving directory configured or accessible; using %s",
+                    os.devnull,
+                )
                 recv_dir = os.devnull
             else :
                 recv_dir = self.tmp_dir
@@ -670,7 +787,7 @@ class MessageQueue:
             try:
                 self.send_string("ACKNOWLEDGE", zmq_sender_id)
             except RuntimeError as e:
-                print(f"Error in sending acknowleding client: {e}")
+                logger.error("Error acknowledging file client: %s", e)
             # Return client_id along with received file paths so server can enforce identity
             if extra_payload is not None:
                 return result_cmd, (client_id, path_list, extra_payload)
@@ -679,7 +796,7 @@ class MessageQueue:
             try:
                 self.send_string("NO_DATA_QUEUE", zmq_sender_id)
             except RuntimeError as e:
-                print(f"Error in sending 'no available data queue' to client: {e}")
+                logger.error("Error sending NO_DATA_QUEUE to client: %s", e)
 
     def _process_object_cmd(self, client_id, nb_objects, zmq_sender_id):
         if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
@@ -688,18 +805,22 @@ class MessageQueue:
             try:
                 self.send_string("ACKNOWLEDGE", zmq_sender_id)
             except RuntimeError as e:
-                print(f"Error in sending acknowledging client: {e}")
+                logger.error("Error acknowledging object client: %s", e)
             objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
             if len(objects) < nb_objects:
-                print(f"Warning: received {len(objects)}/{nb_objects} S3 events "
-                      f"for client={client_id} (timeout)")
+                logger.warning(
+                    "Received %s/%s S3 events for client=%s (timeout)",
+                    len(objects),
+                    nb_objects,
+                    client_id,
+                )
             return TaskCmd.PROCESS_OBJECTS, (client_id, objects)
         else:
-            print(f"Warning: no data queue for client={client_id}")
+            logger.warning("No data queue for client=%s", client_id)
             try:
                 self.send_string("NO_DATA_QUEUE", zmq_sender_id)
             except RuntimeError as e:
-                print(f"Error in sending 'no available data queue' to client: {e}")
+                logger.error("Error sending NO_DATA_QUEUE to client: %s", e)
         return None
 
     # ------------------------ client methods ------------------------
@@ -769,11 +890,10 @@ class MessageQueue:
         if self.role != "client":
             raise PermissionError(f"Only client can call 'get_data_queue'")
 
-        if admin_token:
-            request_str = f"CREATE_DATA_QUEUE:{client_id}:{admin_token}"
-        else:
-            request_str = f"CREATE_DATA_QUEUE:{client_id}"
-        self.send_string(request_str)
+        self.send_control_request(
+            [TaskCmd.CREATE_DATA_QUEUE, client_id],
+            admin_token=admin_token,
+        )
 
         effective_tunnel_mode = self.tunnel_mode if tunnel_mode is None else bool(tunnel_mode)
         try:
@@ -810,11 +930,10 @@ class MessageQueue:
         if self.role != "client":
             raise PermissionError(f"Only client can call 'notify_server'")
 
-        if admin_token:
-            request_str = f"{notification_type}:{client_id}:{nb_objects}:{admin_token}"
-        else:
-            request_str = f"{notification_type}:{client_id}:{nb_objects}"
-        self.send_string(request_str)
+        self.send_control_request(
+            [notification_type, client_id, nb_objects],
+            admin_token=admin_token,
+        )
 
         try:
             _, reply = self.recv_string()
@@ -830,7 +949,7 @@ class MessageQueue:
             )
         elif reply == "ACKNOWLEDGE":
             if verbose:
-                print("Server acknowledges reception of the objects")
+                logger.info("Server acknowledged reception of the objects")
             return True
         elif reply == "NO_DATA_QUEUE":
             raise RuntimeError(f"Error: the server cannot find the data queue for user {client_id}.")

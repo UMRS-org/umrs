@@ -31,6 +31,8 @@ from typing import Any, Dict, List
 from umrs.pipeline_sdk import Step, StepContext, StepResult
 from umrs.vision_service.bentoml_client import submit_vision_and_wait
 
+from _hmae_runtime import resolve_bentoml_url, resolve_input_images
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +42,7 @@ class HMAEReconstructStep(Step):
     name = "hmae_reconstruct"
 
     def setup(self, config: Dict[str, Any]) -> None:
-        self.service_url = config["bentoml_url"].rstrip("/")
+        self.service_url = resolve_bentoml_url(config)
         self.timeout = config.get("timeout", 300)
         self.poll_interval = config.get("poll_interval", 2.0)
 
@@ -48,24 +50,26 @@ class HMAEReconstructStep(Step):
         output_keys: List[str] = []
         metadata_list: List[Dict[str, Any]] = []
         checksums: List[str] = []
+        input_images = resolve_input_images(ctx)
 
         # Store original keys for downstream steps
-        ctx.metadata["original_keys"] = list(ctx.input_keys)
-        ctx.metadata["original_bucket"] = ctx.input_bucket
+        ctx.metadata["original_keys"] = [image.key for image in input_images]
+        if input_images:
+            ctx.metadata["original_bucket"] = input_images[0].bucket
 
-        for idx, key in enumerate(ctx.input_keys):
+        for idx, image in enumerate(input_images):
+            key = image.key
             logger.info(
                 "[%d/%d] HMAE reconstruct: %s",
-                idx + 1, len(ctx.input_keys), key,
+                idx + 1, len(input_images), key,
             )
 
-            image_url = f"s3://{ctx.input_bucket}/{key}"
-            result = self._submit_and_poll(image_url)
+            result = self._submit_and_poll(image.s3_url)
 
             base = key.rsplit(".", 1)[0] if "." in key else key
             meta = {
                 "source_key": key,
-                "source_bucket": ctx.input_bucket,
+                "source_bucket": image.bucket,
                 "task": "reconstruction",
                 "output_s3_key": result.get("output_s3_key", ""),
                 "error": result.get("error"),
@@ -81,7 +85,7 @@ class HMAEReconstructStep(Step):
             metadata_list.append(meta)
 
             try:
-                head = ctx.head_object(key)
+                head = ctx.head_object(key, bucket=image.bucket)
                 checksums.append(head.get("ETag", "").strip('"'))
             except Exception:
                 checksums.append("")
@@ -95,7 +99,11 @@ class HMAEReconstructStep(Step):
             output_keys=output_keys,
             checksums=checksums,
             metadata=metadata_list,
-            extra={"total_images": len(ctx.input_keys), "task": "reconstruction"},
+            extra={
+                "total_images": len(input_images),
+                "task": "reconstruction",
+                "items": metadata_list,
+            },
         )
 
     def _submit_and_poll(self, image_url: str) -> Dict[str, Any]:

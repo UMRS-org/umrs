@@ -35,6 +35,16 @@ logger = logging.getLogger(__name__)
 def _split_partitions(raw: str) -> List[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
+
+def _expand_env_refs(value: Any) -> Any:
+    if isinstance(value, str):
+        return os.path.expanduser(os.path.expandvars(value))
+    if isinstance(value, list):
+        return [_expand_env_refs(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _expand_env_refs(item) for key, item in value.items()}
+    return value
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -95,6 +105,8 @@ class NetworkConfig:
     port_range_min: int = 11434
     port_range_max: int = 11534
     port_strategy: str = "static_range"         # static_range | registry_lock
+    egress_proxy_url: str = ""                  # Forward proxy URL for mini-rivault egress
+    egress_no_proxy: str = ""                   # Comma-separated internal hosts bypassing proxy
 
 
 @dataclass
@@ -248,6 +260,12 @@ class SiteConfig:
         env["RIVAULT_PORT_MAX"] = str(self.network.port_range_max)
         env["RIVAULT_PORT_STRATEGY"] = self.network.port_strategy
         env["RIVAULT_REMOTE_PORT"] = str(self.network.litellm_port)
+        if self.network.egress_proxy_url:
+            env["RIVAULT_HTTP_PROXY"] = self.network.egress_proxy_url
+            env["RIVAULT_HTTPS_PROXY"] = self.network.egress_proxy_url
+            env["EGRESS_GUARD_PROXY_URL"] = self.network.egress_proxy_url
+        if self.network.egress_no_proxy:
+            env["RIVAULT_NO_PROXY"] = self.network.egress_no_proxy
 
         # vLLM
         env["VLLM_MODEL"] = self.vllm.model
@@ -355,7 +373,7 @@ def load_site_config(path: Optional[str] = None) -> SiteConfig:
         )
 
     with open(resolved, "r") as fh:
-        raw = yaml.safe_load(fh) or {}
+        raw = _expand_env_refs(yaml.safe_load(fh) or {})
 
     logger.info("Loaded site config from %s", resolved)
     return _parse_raw(raw)
@@ -424,6 +442,11 @@ def default_site_config() -> SiteConfig:
     cfg.network.port_range_min = int(os.getenv("RIVAULT_PORT_MIN", "11434"))
     cfg.network.port_range_max = int(os.getenv("RIVAULT_PORT_MAX", "11534"))
     cfg.network.port_strategy = os.getenv("RIVAULT_PORT_STRATEGY", "static_range")
+    cfg.network.egress_proxy_url = os.getenv(
+        "RIVAULT_HTTP_PROXY",
+        os.getenv("EGRESS_GUARD_PROXY_URL", ""),
+    )
+    cfg.network.egress_no_proxy = os.getenv("RIVAULT_NO_PROXY", "")
 
     # vLLM
     cfg.vllm.model = os.getenv("VLLM_MODEL", "intfloat/e5-base-v2")
