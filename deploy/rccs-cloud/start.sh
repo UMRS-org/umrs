@@ -482,8 +482,9 @@ if [[ "${1:-}" != "--server" ]]; then
             echo "  Query error:"
             printf '%s\n' "$postgres_catalog_check_output"
         fi
-        echo "  Recovery: ./stop.sh --clean && ./start.sh"
-        echo "  Warning: --clean removes the postgres and minio volumes for this harness."
+        echo "  Recovery: ./stop.sh --postgres-clean && ./start.sh"
+        echo "  Full reset: ./stop.sh --clean && ./start.sh"
+        echo "  Warning: --postgres-clean removes only postgres state; --clean also removes minio data."
         echo "  Inspect postgres logs with: podman logs --tail 40 umrs-postgres"
         exit 1
     fi

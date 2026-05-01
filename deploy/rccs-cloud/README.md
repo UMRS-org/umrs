@@ -579,6 +579,9 @@ umrs-client reload
 # Stop everything (data preserved in volumes)
 ./stop.sh
 
+# Stop + wipe only postgres state (keeps MinIO objects)
+./stop.sh --postgres-clean
+
 # Stop + wipe all persistent data (volumes)
 ./stop.sh --clean
 ```
@@ -749,15 +752,22 @@ persistent `pg_data` volume is usually corrupted or incomplete. Confirm with:
 podman logs --tail 40 umrs-postgres
 ```
 
-To reinitialize the harness state, run:
+To reinitialize only postgres and keep MinIO data, run:
+
+```bash
+./stop.sh --postgres-clean
+./start.sh
+```
+
+If you intentionally want to wipe both postgres and MinIO, run:
 
 ```bash
 ./stop.sh --clean
 ./start.sh
 ```
 
-`--clean` is destructive: it removes both the postgres and minio volumes managed by
-this RCCS harness.
+`--postgres-clean` removes only the postgres volume. `--clean` is fully destructive:
+it removes both the postgres and minio volumes managed by this RCCS harness.
 
 ### umrs-client cannot connect
 
