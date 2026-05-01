@@ -61,6 +61,49 @@ check_server_bootstrap_complete() {
         | grep -Fq "Server configuration done!"
 }
 
+check_postgres_catalog_ready() {
+    if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+        return 1
+    fi
+
+    "${VENV_DIR}/bin/python" - <<'PY' 2>&1
+import os
+
+import psycopg2
+
+host = os.environ.get("DB_HOST") or "127.0.0.1"
+port = os.environ.get("DB_PORT") or "5432"
+user = os.environ.get("DB_SUPERUSER") or os.environ.get("POSTGRES_USER") or "umrs"
+password = os.environ.get("DB_SUPERUSER_PASSWORD") or os.environ.get("POSTGRES_PASSWORD") or ""
+
+try:
+    with psycopg2.connect(
+        dbname="postgres",
+        user=user,
+        password=password,
+        host=host,
+        port=port,
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM pg_roles LIMIT 1;")
+            cur.fetchone()
+except Exception as exc:
+    print(exc)
+    raise SystemExit(1)
+PY
+}
+
+show_recent_log_tail() {
+    local log_file="$1"
+    local lines="${2:-40}"
+
+    [[ -f "$log_file" ]] || return 0
+
+    echo ""
+    echo "Recent log tail (${log_file}):"
+    tail -n "$lines" "$log_file" || true
+}
+
 check_rag_ready() {
     curl -sf "http://127.0.0.1:8081/docs" >/dev/null 2>&1
 }
@@ -428,6 +471,25 @@ PY
     export UMRS_REGISTRY_POSTGRES_DSN
 fi
 
+if [[ "${1:-}" != "--server" ]]; then
+    echo -n "Validating postgres catalog..."
+    postgres_catalog_check_output=""
+    if ! postgres_catalog_check_output="$(check_postgres_catalog_ready 2>&1)"; then
+        echo " failed."
+        echo "ERROR: PostgreSQL is listening, but a system catalog query failed."
+        echo "  This usually means the persistent pg_data volume is corrupted or incomplete."
+        if [[ -n "$postgres_catalog_check_output" ]]; then
+            echo "  Query error:"
+            printf '%s\n' "$postgres_catalog_check_output"
+        fi
+        echo "  Recovery: ./stop.sh --clean && ./start.sh"
+        echo "  Warning: --clean removes the postgres and minio volumes for this harness."
+        echo "  Inspect postgres logs with: podman logs --tail 40 umrs-postgres"
+        exit 1
+    fi
+    echo " ready."
+fi
+
 # S3 presigned URL endpoint — compute nodes access MinIO via SSH tunnel
 # (localhost:9000 on compute → login node MinIO).
 export S3_PRESIGN_ENDPOINT="${S3_PRESIGN_ENDPOINT:-http://localhost:9000}"
@@ -489,6 +551,7 @@ echo -n "Waiting for UMRS server bootstrap..."
 for i in $(seq 1 60); do
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
         echo " failed (PID ${SERVER_PID} exited) — check ${LOG_FILE}"
+        show_recent_log_tail "$LOG_FILE"
         exit 1
     fi
     if check_zmq_ready && check_server_bootstrap_complete "$LOG_START_SIZE"; then
@@ -499,6 +562,7 @@ for i in $(seq 1 60); do
     sleep 0.5
     if [[ "$i" -eq 60 ]]; then
         echo " NOTE: server bootstrap not complete yet — check ${LOG_FILE}"
+        show_recent_log_tail "$LOG_FILE"
     fi
 done
 

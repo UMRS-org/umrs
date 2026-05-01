@@ -742,6 +742,23 @@ so it no longer receives MinIO access keys or secret keys.
 Wait 10–15 s after `podman compose up` — postgres needs time to initialize on first run.
 The server retries on startup.
 
+If startup fails with a catalog error such as `could not open file "global/2964"`, the
+persistent `pg_data` volume is usually corrupted or incomplete. Confirm with:
+
+```bash
+podman logs --tail 40 umrs-postgres
+```
+
+To reinitialize the harness state, run:
+
+```bash
+./stop.sh --clean
+./start.sh
+```
+
+`--clean` is destructive: it removes both the postgres and minio volumes managed by
+this RCCS harness.
+
 ### umrs-client cannot connect
 
 Make sure `ssh_tunnel.sh` is running.  Test the tunnel:
