@@ -1,189 +1,106 @@
 # UMRS Access Control
 
-This document describes how user access is limited across the three resource
-layers: **Server API**, **S3/MinIO storage**, and **Slurm compute**.
+This document describes the current access-control boundary in UMRS. In the
+full R4 platform, the Gateway is the external authentication and policy
+boundary. UMRS receives either Gateway-verified headers or MVP/testing
+parameters, then enforces ownership and project scoping in the relevant API
+handlers.
 
----
+## Current Identity Sources
 
-## 1. Server API — Authentication & Authorization
+| Surface | Current source | Strict mode behavior |
+|---|---|---|
+| Endpoint and file APIs | `X-Verified-Project-ID` from Gateway, or `X-Project-ID` in MVP mode | `UMRS_AUTH_MODE=strict` requires the Gateway-verified project header |
+| Job APIs | `X-User-ID` + `X-Verified-Project-ID`, or query params in MVP mode | `UMRS_AUTH_MODE=strict` requires Gateway-verified caller identity |
+| Model registry APIs | `user_id`, `is_admin`, and `project_memberships` query params | Still an MVP/test surface; Gateway should wrap external access |
+| ZMQ/control commands | `AuthContext` from UMRS shared auth helpers | Command-level role checks apply |
 
-### Authentication (identity)
+Authoritative implementation files:
 
-| Mechanism | Location | Status |
-|-----------|----------|--------|
-| Admin token (SHA-256 hashed) | `src/umrs/auth.py` → `AdminTokenManager` | Implemented |
-| Per-user config identity | `src/umrs/admin/create_users.py`, JSON config files | Implemented |
-| JWT Bearer from Gateway | `src/umrs/api/endpoints.py` → `get_project_id()` | Stub (MVP uses `X-Project-ID` header) |
+- `src/umrs/shared/auth.py` for roles, admin/service/user checks, admin tokens,
+  and XDG config helpers.
+- `src/umrs/shared/isolation.py` for path and project isolation helpers.
+- `src/umrs/api/endpoints.py` and `src/umrs/api/files.py` for project header
+  extraction and strict-mode fallback behavior.
+- `src/umrs/api/jobs.py` for `CallerIdentity` and durable-job ownership checks.
+- `src/umrs/api/models.py` for model registry access contexts and model policy
+  enforcement.
 
-Admin tokens are generated as `umrs-admin-{random}`, stored as SHA-256 hashes
-in `~/.config/umrs/admin_tokens.json` (file mode 0600).
+## Gateway Boundary
 
-### Authorization (permissions)
+External clients should call the Platform Gateway, not UMRS directly. Gateway
+adds user authentication, project membership validation, rate limiting, audit
+logging, and policy checks before forwarding to UMRS.
 
-**Role-Based Access Control** (`src/umrs/auth.py`):
+UMRS still exposes direct HTTP/ZMQ surfaces because they are needed for local
+development, harness validation, and trusted operator workflows. In shared
+deployments, those surfaces should be bound to trusted networks or reached
+through SSH tunnels and Gateway routes.
 
-- `ADMIN` — unrestricted.
-- `USER` — limited to own resources.
-- `SERVICE` — inter-service calls, unrestricted.
+## Resource Ownership
 
-Command-level gates:
+### Jobs
 
-| Gate | Commands |
-|------|----------|
-| `ADMIN_ONLY_COMMANDS` | `RELOAD`, `RECOMPUTE`, `UPDATE`, `CHECK` |
-| `USER_ALLOWED_COMMANDS` | `PROCESS_OBJECTS`, `WAIT_OUTPUT`, `FILE`, `STATUS`, … |
+Every durable job carries `project_id` and `user_id`. Non-admin callers can
+read, list, cancel, or retry only jobs they own, unless the endpoint explicitly
+allows an operator/admin action.
 
-Key enforcement functions:
-
-```
-AuthContext.can_execute_command(command, target_user)
-AuthContext.filter_by_ownership(data)
-require_admin(auth, command)           → raises AuthorizationError
-require_ownership(auth, target_user)   → raises AuthorizationError
-```
-
-### User isolation
-
-`src/umrs/isolation.py` provides:
-
-- `UserContext.from_headers()` — extracts user/project from request headers.
-- `AccessControl.validate_path()` — rejects `..`, absolute paths, shell
-  metacharacters (directory-traversal prevention).
-- `ResourceOwnership` — supports private, shared, and project-level sharing.
-- `IsolationValidator` — multi-user invariant checks.
-
-### Security defaults
-
-- **Default-deny**: resources are private unless explicitly shared.
-- **Username sanitization**: alphanumeric + underscore/hyphen only.
-- **Config validation**: `validate_config_identity()` rejects mismatched
-  username/user_id claims.
-
----
-
-## 2. Job API — Ownership Enforcement
-
-Added in this changeset. Every job-mutating or job-reading endpoint now
-requires a `CallerIdentity` (extracted via `get_caller_identity()` dependency).
-
-### CallerIdentity
+Current job checks live in `src/umrs/api/jobs.py`:
 
 ```python
-@dataclass
-class CallerIdentity:
-    user_id: str
-    project_id: str
-    is_admin: bool = False
+CallerIdentity.can_access_job(job)
+_enforce_job_access(caller, job, action)
 ```
 
-Passed as query parameters `caller_user_id`, `caller_project_id`, `is_admin`.
-In production these will come from JWT claims decoded by the API Gateway.
+### Models
 
-### Endpoint enforcement matrix
+The model registry supports system, project, and user scopes. Access checks are
+handled by the model registry store and API layer. Model staging and downloads
+are submitted as durable `MODEL_DOWNLOAD` jobs; inference containers do not
+download models at runtime.
 
-| Endpoint | Auth check | Non-owner behaviour |
-|----------|-----------|---------------------|
-| `POST /umrs/jobs` | None (caller self-declares in body) | N/A |
-| `GET /umrs/jobs` | `CallerIdentity` | Non-admin: forced to own `project_id`, filtered to own `user_id` |
-| `GET /umrs/jobs/{job_id}` | `_enforce_job_access(caller, job, "read")` | HTTP 403 |
-| `POST /umrs/jobs/{job_id}/cancel` | `_enforce_job_access(caller, job, "cancel")` | HTTP 403 |
-| `POST /umrs/jobs/{job_id}/retry` | `caller.is_admin` required | HTTP 403 |
+Key files:
 
-### Helper: `_enforce_job_access`
+- `src/umrs/api/models.py`
+- `src/umrs/model_registry/`
+- `src/umrs/jobs/model_download.py`
+- `src/umrs/jobs/model_download_state.py`
 
-```python
-def _enforce_job_access(caller, job, action="access"):
-    """Raise 403 if caller does not own the job and is not admin."""
-```
+### Files and Presigned URLs
 
-Checks `job.project_id == caller.project_id AND job.user_id == caller.user_id`,
-or `caller.is_admin`. Logs denied attempts at WARNING level.
+UMRS owns S3/MinIO object access. File APIs validate project-scoped keys before
+issuing presigned URLs. External clients should upload through Gateway HTTP;
+presigned URLs are for controlled internal/runtime access, especially compute
+nodes that need S3 access without holding MinIO credentials.
 
----
+Key files:
 
-## 3. S3/MinIO Storage — Per-User Bucket Isolation
+- `src/umrs/api/files.py`
+- `src/umrs/shared/storage/`
 
-### User creation flow (server startup)
+## Compute Isolation
 
-1. Server reads master config listing all users.
-2. For each user, `src/umrs/minio.py` → `minio_s3_create_user()`:
-   - Creates a MinIO IAM user with a strong random password (24 chars).
-   - Writes the user's `s3cfg` file.
-3. For each bucket, `minio_grant_user_access()`:
-   - Creates an IAM policy `allow-{bucket}` scoped to `arn:aws:s3:::{bucket}/*`.
-   - Attaches the policy to the user via `mc admin policy attach`.
+UMRS orchestrates Mini-RiVault jobs through the selected backend
+(`slurm-podman`, Kubernetes, or Compose). The execution authority is selected
+once for each job and must not change during the job lifecycle.
 
-### Bucket naming
+Current safeguards:
 
-```
-{username}.{xp_name}.{bucket_alias}[-output]
-```
+- Mini-RiVault inference jobs set `TRANSFORMERS_OFFLINE=1` and
+  `HF_HUB_OFFLINE=1`.
+- Egress proxy environment is injected into Mini-RiVault launches.
+- Direct Slurm network blocking is a site infrastructure requirement; see the
+  parent repo's `docs/EGRESS_INFRASTRUCTURE.md`.
+- RCCS Slurm/Podman launch defaults are captured in `deploy/rccs-cloud/site.yaml`
+  and `src/umrs/orchestrator/site_profiles/rccs-cloud.yaml`.
 
-Example: `user1.images-and-texts.bucket-3-output`
+## Tests
 
-Implemented in `src/umrs/s3.py` → `make_path_to_bucket_string()`.
+Focused coverage lives in:
 
-### Access model
-
-| Actor | Can access |
-|-------|-----------|
-| Admin (`minioadmin`) | All buckets |
-| User N | Only buckets matching `userN.*` (enforced by IAM policy) |
-
-### Presigned URLs
-
-Clients never get direct MinIO credentials for other users' buckets. The
-server validates bucket ownership, then generates a time-limited presigned URL
-via the admin client (`src/umrs/s3_presign.py`).
-
----
-
-## 4. Slurm Compute — Current State & Known Gaps
-
-### What's implemented
-
-- Every `Job` record carries `project_id` + `user_id`
-  (`src/umrs/jobs/models.py`).
-- Per-job resource limits (`gpu_count`, `cpu_limit`, `memory_limit`,
-  `timeout_seconds`) are translated to `#SBATCH` directives
-  (`src/umrs/plugins/slurm_runner.py`).
-- Model registry has per-model token quotas.
-
-### Known gaps
-
-| Gap | Impact | Suggested fix |
-|-----|--------|---------------|
-| All Slurm jobs run under a single service UID | No OS-level isolation between users | Map UMRS users to Slurm accounts; use `--account` |
-| No per-user job quotas | A single user can saturate the cluster | Add `max_concurrent_jobs` to user config; enforce in `create_job` |
-| SSH tunnels are per-model, not per-user | Users on the same model share a tunnel | Accept for shared-model use-case; document |
-| Slurm fairshare/QOS not configured | No priority fairness between users | Enable `PriorityType=priority/multifactor` in `slurm.conf` |
-
----
-
-## Key source files
-
-| File | Purpose |
-|------|---------|
-| `src/umrs/auth.py` | Roles, AuthContext, admin tokens, ownership checks |
-| `src/umrs/isolation.py` | UserContext, AccessControl, path validation |
-| `src/umrs/api/jobs.py` | CallerIdentity, _enforce_job_access, endpoint guards |
-| `src/umrs/minio.py` | MinIO user/policy creation |
-| `src/umrs/s3.py` | Bucket naming, user+bucket setup |
-| `src/umrs/s3_presign.py` | Presigned URL generation |
-| `src/umrs/jobs/models.py` | Job model (project_id, user_id) |
-| `src/umrs/plugins/slurm_runner.py` | Sbatch script generation with resource limits |
-| `tests/test_auth.py` | Auth & role enforcement tests |
-| `tests/test_isolation.py` | Isolation invariant tests |
-| `tests/test_jobs.py` | Job model + ownership enforcement tests |
-
----
-
-## Testing
-
-```bash
-# Unit tests (no database required)
-pytest tests/test_auth.py tests/test_isolation.py tests/test_jobs.py -v
-
-# Integration tests (requires PostgreSQL)
-pytest tests/ --db-url postgresql://user:pass@host:5432/umrs_test -v
-```
+- `tests/test_auth.py`
+- `tests/test_strict_auth_mode.py`
+- `tests/test_jobs.py`
+- `tests/test_egress_audit_api.py`
+- `tests/test_mini_rivault_egress.py`
+- `tests/test_slurm_orchestration_authority.py`

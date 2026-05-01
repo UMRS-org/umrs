@@ -1,16 +1,15 @@
 # Design: User-Defined Model Workflows (UDM)
 
-> **Status**: DRAFT — 2026-03-16  
-> **Author**: Planning session  
-> **Tracking**: U-200 through U-208 in `tasks/todo.md`
+> **Status**: Implemented; current paths verified May 2026
 
 ---
 
 ## 1. Problem Statement
 
-Today, adding a new model to UMRS requires modifying internal code in multiple files:
+Before the user-defined workflow path existed, adding a new model to UMRS
+required modifying internal code in multiple files:
 
-1. **`models_loading.py`** — add an `elif` branch in `load_model()`
+1. **`src/umrs/inference/loading.py`** — add an `elif` branch in `load_model()`
 2. **`bentoml_adapter.py`** — write a `make_bentoml_<name>_compute()` wrapper
 3. **`rivault_launcher.py`** — add endpoint detection logic
 4. **`vision_service/service.py`** — add a `@bentoml.task` method
@@ -62,7 +61,7 @@ runs inference, and writes output.
 ┌───────────────────────────────────────────────────────────────────────┐
 │                          UMRS SERVER                                  │
 │                                                                       │
-│  models_loading.py                                                    │
+│  src/umrs/inference/loading.py                                        │
 │  ┌─────────────────────────────────────────────────────────┐          │
 │  │ model_type == "user_script://"                          │          │
 │  │   → ScriptLoader.load(source)                           │          │
@@ -264,27 +263,29 @@ class InferenceStep(Step):
 
 ### 5.2 Integration Points (minimal changes to existing code)
 
-#### A. `models_loading.py` — one new `elif` branch
+#### A. `src/umrs/inference/loading.py` — implemented loader branches
 
 ```python
 elif model_type.startswith("user_script://"):
-    source_uri = model_type[len("user_script://"):]
-    workflow_def = ScriptLoader.load_workflow(source_uri)
-    steps = ScriptLoader.load_steps(workflow_def)
-    executor = WorkflowExecutor(workflow_def, steps)
+    from umrs.pipeline_sdk.adapter import EmbeddingAdapter
+    from umrs.pipeline_sdk.workflow import WorkflowPipeline
 
-    return EmbeddingModel(
-        model_name=model_cfg["model_name"],
-        type="user_script",
-        return_type=workflow_def.output.return_type,
-        embedding_vector_size=workflow_def.output.embedding_vector_size,
-        model=None,
-        compute_embeddings=executor.run,
-        input_type=workflow_def.steps[0].input_type or "image",
-    )
+    source_uri = model_type[len("user_script://"):]
+    pipeline = WorkflowPipeline(source_uri)
+    adapter = EmbeddingAdapter(pipeline)
+    compute_embeddings_func = adapter.compute_embeddings
+
+elif model_type.startswith("user_workflow://"):
+    from umrs.inference.plugins.user_workflow import UserWorkflow, UserWorkflowRunner
+    from umrs.pipeline_sdk.workflow import WorkflowPipeline
+
+    source_uri = model_type[len("user_workflow://"):]
+    pipeline = WorkflowPipeline(source_uri)
+    workflow = UserWorkflow.from_workflow_definition(pipeline.workflow)
+    compute_embeddings_func = UserWorkflowRunner(workflow).run
 ```
 
-#### B. `embeddings.py` — no changes needed
+#### B. `src/umrs/inference/embeddings.py` — no changes needed
 
 `compute_and_store()` already calls `model.compute_embeddings(s3, keys, bucket, out_bucket)` generically.
 The `WorkflowExecutor.run()` method implements that exact signature.
@@ -486,11 +487,13 @@ umrs-client update  # triggers processing via user's denoise pipeline
 
 ### What happens internally:
 
-1. `models_loading.py` sees `user_script://` prefix → calls `ScriptLoader`
-2. `ScriptLoader` reads `/home/user/my_models/workflow.json`, validates schema
-3. `ScriptLoader` imports `denoise.py`, verifies `DenoiseStep(Step)`, calls `setup()`
-4. `WorkflowExecutor` wraps the step chain into a `compute_embeddings()`-compatible function
-5. `EmbeddingModel` returned with `type="user_script"`, `compute=executor.run`
+1. `src/umrs/inference/loading.py` sees `user_script://` or `user_workflow://`
+    and creates a `WorkflowPipeline`.
+2. `WorkflowPipeline` reads `/home/user/my_models/workflow.json`, validates the
+    schema, imports `denoise.py`, verifies `DenoiseStep(Step)`, and calls `setup()`.
+3. `EmbeddingAdapter` or `UserWorkflowRunner` wraps the step chain into a
+    `compute_embeddings()`-compatible function.
+4. `EmbeddingModel` is returned with `type="user_script"` or `type="user_workflow"`.
 6. When S3 objects arrive, `compute_and_store()` calls `executor.run(s3, keys, bucket, out_bucket)`
 7. `DenoiseStep.run()` downloads each image, denoises, uploads to output bucket
 8. Results stored in DB + S3 as usual
@@ -553,7 +556,7 @@ S3 keys (raw CT scans)
 | U-202 | `WorkflowDefinition` model + JSON schema validation | `src/umrs/pipeline_sdk/models.py` | ✅ |
 | U-203 | `ScriptLoader` (local path first, then S3/git) | `src/umrs/pipeline_sdk/loader.py` | ✅ |
 | U-204 | `WorkflowExecutor` with step chaining + S3 staging | `src/umrs/pipeline_sdk/executor.py` | ✅ |
-| U-205 | `user_script://` type in `models_loading.py` | `src/umrs/models_loading.py` (one elif) | ✅ |
+| U-205 | `user_script://` and `user_workflow://` model loading | `src/umrs/inference/loading.py`, `src/umrs/pipeline_sdk/workflow.py` | ✅ |
 
 ### Phase 2: Sandboxed & Remote Execution (U-206) ✅
 
@@ -683,5 +686,5 @@ Inside the container:
 - **Backward compatible**: All existing `model_type` values (`SentenceTransformer`, `openai://`, `rivault://bentoml://`, etc.) continue to work unchanged
 - **Opt-in**: Users who don't need custom models never encounter UDM code
 - **Composable with rivault://**: `rivault://user_script://...` chains infrastructure (Slurm launch) with user code execution
-- **Extends TODOs.md stage model**: The workflow steps map directly to the "pre-process → embedding → post-process" stage model defined in TODOs.md
+- **Extends the current Pipeline SDK**: Workflow steps map to the implemented `src/umrs/pipeline_sdk/` execution model and can be exposed through `user_script://` or `user_workflow://` model types.
 - **Extends PipelineDefinition**: `pre_processors` / `post_processors` fields can now reference user script entrypoints instead of only plugin IDs

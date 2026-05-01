@@ -7,7 +7,7 @@ These demos work with **any deployment** (Docker Compose, rccs-cloud, hpbd-atom,
 or any other setup) as long as the UMRS server is reachable from your client
 machine.
 
-> For a full walkthrough of every demo, see **[doc/demo_guide.md](../doc/demo_guide.md)**.
+> This file is the canonical walkthrough for the public demo suite.
 
 ## Prerequisites
 

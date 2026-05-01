@@ -331,7 +331,8 @@ only when the validator finishes successfully and `squeue` is clean afterward.
 
 Each Mini-Rivault instance provides:
 - **Per-job isolation** — fresh container stack per Slurm job, cleaned up on exit
-- **Private network** — `genai-private-net` (192.168.4.0/24), no public internet
+- **Controlled egress path** — Mini-RiVault receives EgressGuard proxy env;
+  direct public-network blocking depends on site network/cgroup policy
 - **Offline mode** — `TRANSFORMERS_OFFLINE=1`, `HF_HUB_OFFLINE=1`
 - **Read-only weights** — model directories mounted read-only
 - **Ephemeral scratch** — tmpfs, wiped when job ends
