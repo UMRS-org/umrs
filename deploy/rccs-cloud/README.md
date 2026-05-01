@@ -493,7 +493,7 @@ bash run_demo.sh
 ```
 
 See [demos/README.md](../../demos/README.md) for the full list of demos and
-[doc/demo_guide.md](../../doc/demo_guide.md) for a detailed walkthrough.
+[demos/README.md](../../demos/README.md) for the canonical demo walkthrough.
 
 Or use `umrs-client` directly:
 

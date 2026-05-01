@@ -14,7 +14,7 @@ Mini-RiVault launches for GPU inference.
     runtimes for vLLM and BentoML-based vision inference.
 - A model registry, workflow upload/registration flow, durable job tracking,
     and a TUI jobs monitor.
-- Public demos `01` to `22` plus private/demo-specific variants in
+- Public demos `00` to `30` plus private/demo-specific variants in
     `demos_private/`.
 - Site-driven deployment under `deploy/` with typed `site.yaml` config.
 
@@ -169,17 +169,11 @@ Core docs:
 
 - [doc/admin_guide.md](doc/admin_guide.md)
 - [doc/user_guide.md](doc/user_guide.md)
-- [doc/demo_guide.md](doc/demo_guide.md)
 - [doc/umrs_overview.md](doc/umrs_overview.md)
 - [doc/zmq_api_contract.md](doc/zmq_api_contract.md)
 - [doc/design_user_defined_models.md](doc/design_user_defined_models.md)
 - [doc/rag_implementation.md](doc/rag_implementation.md)
-
-Branch comparison docs created from the current branch:
-
-- [doc/branch_updates_from_hmae_inference.md](doc/branch_updates_from_hmae_inference.md)
-- [doc/branch_updates_from_hmae_inference_executive_summary.md](doc/branch_updates_from_hmae_inference_executive_summary.md)
-- [doc/branch_updates_from_hmae_inference_pr_summary.md](doc/branch_updates_from_hmae_inference_pr_summary.md)
+- [demos/README.md](demos/README.md)
 
 Deployment and runtime docs:
 
