@@ -37,8 +37,14 @@ def get_s3_server_name(s3):
 
 
 def s3_strong_password(length=24):
+    if length <= 0:
+        raise ValueError("length must be positive")
+
     chars = string.ascii_letters + string.digits + "-_@"
-    return ''.join(secrets.choice(chars) for _ in range(length))
+    leading_chars = string.ascii_letters + string.digits + "_@"
+    return secrets.choice(leading_chars) + ''.join(
+        secrets.choice(chars) for _ in range(length - 1)
+    )
 
 
 def s3_key_exists(s3, bucket_name, key):

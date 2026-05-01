@@ -19,7 +19,9 @@
 
 services:
   postgres:
-    image: docker.io/ankane/pgvector:latest
+    # `ankane/pgvector:latest` lacks basic shell/coreutils on fresh init and
+    # breaks the postgres entrypoint's init-script scan (`ls: command not found`).
+    image: docker.io/pgvector/pgvector:pg15
     container_name: umrs-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-umrs}

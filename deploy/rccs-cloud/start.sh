@@ -85,7 +85,9 @@ try:
         port=port,
     ) as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM pg_roles LIMIT 1;")
+            # Mirror the first role lookup used during user provisioning so
+            # catalog corruption is caught before the native server starts.
+            cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s;", (user,))
             cur.fetchone()
 except Exception as exc:
     print(exc)

@@ -67,6 +67,11 @@ def minio_create_user_with_policy(user, password, target, policy_name):
         policy_name (str): policy to attach (must already exist)
     """
 
+    if not password or password.startswith("-"):
+        raise ValueError(
+            "MinIO user secrets passed to mc must be non-empty and must not start with '-'"
+        )
+
     # First, ensure the user exists and the password matches the provided one
     try:
         result = subprocess.run(
@@ -343,6 +348,14 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
                 f"Critical error. The access key in '{user_s3_configuration_file}' should be '{username}', but is '{u_access_key}'.\n"
                 "Cannot continue. Either update the JSON user config file or change/remove the S3 user config file."
             )
+        if not u_secret_key or u_secret_key.startswith("-"):
+            # mc parses a leading '-' in positional args as another flag, so
+            # regenerate an existing unsafe secret before reconciling the user.
+            u_secret_key = s3_strong_password()
+            ucfg.set("default", "secret_key", u_secret_key)
+            with open(user_cfg_path, "w") as file:
+                ucfg.write(file)
+            print(f"==> Updated unsafe S3 secret in: {user_s3_configuration_file}")
         # Ensure mc alias exists using admin credentials (needed for admin commands)
         minio_check_create_alias(alias, endpoint_url, admin_access_key, admin_secret_key, insecure=not use_https or not verify_ssl)
         list_only_policy = minio_check_create_list_only_policy(alias)
