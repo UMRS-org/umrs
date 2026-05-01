@@ -712,7 +712,12 @@ async def list_endpoints(
     status_filter: Optional[str] = Query(None, description="Comma-separated statuses"),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointsListResponse:
-    """List all endpoints, optionally filtered."""
+    """List all endpoints, optionally filtered.
+
+    F-012: READY/DEGRADED endpoints are verified against the backend and
+    ghost entries are pruned, same as the ``/active`` route.  This ensures
+    ``r4 endpoint list --all`` never shows stale READY rows.
+    """
 
     statuses = None
     if status_filter:
@@ -725,6 +730,21 @@ async def list_endpoints(
             )
 
     endpoints = registry.list_all(project_id=project_id, status_filter=statuses)
+
+    # F-012: Prune ghost READY/DEGRADED endpoints at list time so the
+    # user-facing ``r4 endpoint list`` output is always honest.
+    ready_eps = [
+        e for e in endpoints
+        if e.status in (EndpointStatus.READY, EndpointStatus.DEGRADED)
+    ]
+    if ready_eps:
+        live_ready = await _filter_live_ready_endpoints(registry, ready_eps)
+        live_job_ids = {e.job_id for e in live_ready}
+        endpoints = [
+            e for e in endpoints
+            if e.status not in (EndpointStatus.READY, EndpointStatus.DEGRADED)
+            or e.job_id in live_job_ids
+        ]
 
     return EndpointsListResponse(
         endpoints=[EndpointResponse(**e.to_dict()) for e in endpoints],
