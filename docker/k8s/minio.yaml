@@ -47,6 +47,8 @@ spec:
         app.kubernetes.io/name: umrs
         app.kubernetes.io/component: object-storage
     spec:
+      securityContext:
+        fsGroup: 1000
       containers:
         - name: minio
           image: minio/minio:latest
