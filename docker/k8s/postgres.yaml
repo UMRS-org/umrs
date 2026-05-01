@@ -48,7 +48,7 @@ spec:
         fsGroup: 999
       containers:
         - name: postgres
-          image: ankane/pgvector:latest
+          image: pgvector/pgvector:pg15
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false

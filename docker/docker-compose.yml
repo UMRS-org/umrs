@@ -46,7 +46,9 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: ankane/pgvector:latest
+    # `ankane/pgvector:latest` breaks fresh init because the entrypoint calls
+    # `ls`, but the image does not ship the required shell/coreutils.
+    image: pgvector/pgvector:pg15
     container_name: postgres
     environment:
       - POSTGRES_USER=postgres
