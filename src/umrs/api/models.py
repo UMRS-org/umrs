@@ -21,9 +21,10 @@ See DEVELOPMENT_OBJECTIVES.md Section 1.9.2 for design details.
 """
 
 import logging
-from typing import Any, Dict, List, Optional, Set
+import os
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..jobs.models import JobType, RestartPolicy
@@ -368,27 +369,64 @@ class PolicyCheckResponse(BaseModel):
 # =============================================================================
 
 
+def _strict_auth_mode() -> bool:
+    return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+
+
 def get_access_context(
-    user_id: str = Query(..., description="User ID"),
-    is_admin: bool = Query(False, description="Admin flag"),
+    user_id: str = Query("", description="User ID (legacy, ignored in strict mode)"),
+    is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
     project_memberships: Optional[str] = Query(
-        None, description="Comma-separated project IDs"
+        None, description="Comma-separated project IDs (legacy)"
     ),
+    x_user_id: Optional[str] = Header(None),
+    x_verified_is_admin: Optional[str] = Header(None),
+    x_verified_project_memberships: Optional[str] = Header(None),
+    x_verified_project_id: Optional[str] = Header(None),
 ) -> AccessContext:
     """
-    Build access context from request headers/params.
+    Build access context from Gateway-verified headers, falling back to
+    query params in MVP/testing mode.
 
-    In production, this would come from JWT claims via Gateway.
-    For now, accept as query params for testing.
+    In production (strict mode) the identity is derived entirely from
+    ``X-User-ID``, ``X-Verified-Is-Admin``, and
+    ``X-Verified-Project-Memberships`` / ``X-Verified-Project-ID`` headers
+    set by the Gateway after JWT validation.
     """
-    memberships: Set[str] = set()
+    header_user = (x_user_id or "").strip() or None
+    header_admin = (x_verified_is_admin or "").strip()
+    header_memberships = (
+        (x_verified_project_memberships or "").strip()
+        or (x_verified_project_id or "").strip()
+        or None
+    )
+
+    if header_user:
+        admin = header_admin in ("true", "1")
+        memberships: set[str] = set()
+        if header_memberships:
+            memberships = {p.strip() for p in header_memberships.split(",") if p.strip()}
+        return AccessContext(
+            user_id=header_user,
+            is_admin=admin,
+            project_memberships=memberships,
+        )
+
+    if _strict_auth_mode():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Gateway-verified caller identity for model access",
+        )
+
+    # MVP / testing fallback — use query params
+    memberships_set: set[str] = set()
     if project_memberships:
-        memberships = {p.strip() for p in project_memberships.split(",") if p.strip()}
+        memberships_set = {p.strip() for p in project_memberships.split(",") if p.strip()}
 
     return AccessContext(
         user_id=user_id,
         is_admin=is_admin,
-        project_memberships=memberships,
+        project_memberships=memberships_set,
     )
 
 
