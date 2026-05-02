@@ -99,22 +99,26 @@ class CallerIdentity:
 def get_caller_identity(
     caller_user_id: Optional[str] = Query(None, description="Caller's user ID"),
     caller_project_id: Optional[str] = Query(None, description="Caller's project ID"),
-    is_admin: bool = Query(False, description="Admin flag (from JWT in production)"),
+    is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
     x_user_id: Optional[str] = Header(None),
     x_verified_project_id: Optional[str] = Header(None),
+    x_verified_is_admin: Optional[str] = Header(None),
 ) -> CallerIdentity:
     """Build caller identity from request params.
 
-    Production: extract from JWT claims via Gateway.
-    MVP/Testing: accept as query params.
+    Production: extract from Gateway-verified headers only.
+    ``is_admin`` is derived from the ``X-Verified-Is-Admin`` header
+    when present; the query-param ``is_admin`` is only used in
+    non-strict MVP/testing mode when no verified headers are sent.
     """
     verified_user_id = _header_str(x_user_id)
     verified_project_id = _header_str(x_verified_project_id)
     if verified_user_id and verified_project_id:
+        admin = _header_str(x_verified_is_admin) in ("true", "1")
         return CallerIdentity(
             user_id=verified_user_id,
             project_id=verified_project_id,
-            is_admin=is_admin,
+            is_admin=admin,
         )
 
     if _strict_auth_mode():

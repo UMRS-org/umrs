@@ -268,7 +268,15 @@ def _resolve_jwt_secret(args: argparse.Namespace) -> str:
     secret = getattr(args, "secret", None)
     if secret:
         return secret
-    return os.environ.get("JWT_SECRET", "dev-secret-change-in-production")
+    env_secret = os.environ.get("JWT_SECRET")
+    if env_secret:
+        return env_secret
+    print(
+        "WARNING: JWT_SECRET is not set — using insecure default. "
+        "Set JWT_SECRET or pass --secret for production use.",
+        file=sys.stderr,
+    )
+    return "dev-secret-change-in-production"
 
 
 def _build_jwt_payload(

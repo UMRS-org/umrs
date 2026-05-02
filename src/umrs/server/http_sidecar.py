@@ -22,6 +22,34 @@ logger = logging.getLogger(__name__)
 _DEFAULT_PORT = 8082
 
 
+def _is_tunnel_mode() -> bool:
+    """Return True when UMRS_TUNNEL_MODE is enabled."""
+    return os.environ.get("UMRS_TUNNEL_MODE", "false").lower() in ("true", "1", "yes")
+
+
+def _resolve_bind_host(host: str | None) -> str:
+    """Resolve the HTTP sidecar bind address.
+
+    In tunnel mode (UMRS_TUNNEL_MODE=true) the sidecar MUST bind to
+    127.0.0.1 only — matching the ZMQ invariant in Platform Contract §8.1/§8.4.
+    An explicit ``UMRS_HTTP_HOST`` env var can override the default but is
+    still clamped to loopback in tunnel mode.
+    """
+    env_host = os.environ.get("UMRS_HTTP_HOST")
+    if _is_tunnel_mode():
+        if env_host and env_host.strip() not in ("127.0.0.1", "localhost", "::1"):
+            logger.warning(
+                "UMRS_TUNNEL_MODE=true — ignoring UMRS_HTTP_HOST=%s, binding 127.0.0.1",
+                env_host,
+            )
+        return "127.0.0.1"
+    if env_host:
+        return env_host.strip()
+    if host is not None:
+        return host
+    return "127.0.0.1"
+
+
 def _create_app():
     """Create a minimal FastAPI app mounting the Gateway-facing UMRS routers."""
     from fastapi import FastAPI
@@ -39,11 +67,15 @@ def _create_app():
         workflows_router,
     )
 
+    environment = os.environ.get("GATEWAY_ENVIRONMENT", "development").lower()
+    enable_docs = environment in ("development", "dev", "test")
+
     app = FastAPI(
         title="UMRS Endpoint Discovery API",
         description="HTTP sidecar for Gateway endpoint discovery, LLM/RAG/MCP proxy",
         version="0.3.0",
-        docs_url="/docs",
+        docs_url="/docs" if enable_docs else None,
+        redoc_url="/redoc" if enable_docs else None,
     )
 
     app.include_router(egress_audit_router)
@@ -115,26 +147,31 @@ def _create_app():
 
 def start_http_sidecar(
     port: Optional[int] = None,
-    host: str = "0.0.0.0",
+    host: str | None = None,
 ) -> Optional[threading.Thread]:
     """
     Start the HTTP sidecar in a daemon thread.
 
     Returns the thread, or None if disabled via UMRS_HTTP_SIDECAR_ENABLED=false.
+
+    The bind address respects ``UMRS_TUNNEL_MODE``: when tunnel mode is
+    enabled the sidecar is forced to ``127.0.0.1`` regardless of the
+    *host* argument (Platform Contract §8.4).
     """
     enabled = os.environ.get("UMRS_HTTP_SIDECAR_ENABLED", "true").lower()
     if enabled not in ("true", "1", "yes"):
         logger.info("HTTP sidecar disabled (UMRS_HTTP_SIDECAR_ENABLED=%s)", enabled)
         return None
 
+    resolved_host = _resolve_bind_host(host)
     port = port or int(os.environ.get("UMRS_HTTP_PORT", str(_DEFAULT_PORT)))
 
     def _run():
         import uvicorn
 
         app = _create_app()
-        logger.info("Starting HTTP sidecar on %s:%d", host, port)
-        uvicorn.run(app, host=host, port=port, log_level="warning")
+        logger.info("Starting HTTP sidecar on %s:%d", resolved_host, port)
+        uvicorn.run(app, host=resolved_host, port=port, log_level="warning")
 
     thread = threading.Thread(
         target=_run,
