@@ -242,12 +242,22 @@ def _token_manager():
 
 def _cmd_token_generate(args: argparse.Namespace, _store: UserStore) -> int:
     mgr = _token_manager()
+    existing = {t["name"] for t in mgr.list_tokens()}
+    overwrite = args.name in existing
     token = mgr.generate_token(args.name, description=args.description or "")
     if args.json:
-        _print_json({"name": args.name, "token": token})
+        _print_json({"name": args.name, "token": token, "overwritten": overwrite})
     else:
+        action = "Regenerated" if overwrite else "Generated"
+        print(f"{action} admin token '{args.name}' (for umrs-client --admin-token / $UMRS_ADMIN_TOKEN)")
         print(f"token: {token}")
-        print("(this is the only time the raw token will be shown)")
+        print("  (this is the only time the raw token will be shown)")
+        print()
+        print("  Use with: umrs-client --admin-token <token> <command>")
+        print("         or: export UMRS_ADMIN_TOKEN=<token>")
+        print()
+        print("  NOTE: this token is for the umrs-client ZMQ control plane only.")
+        print("        To authenticate r4/Gateway, use 'umrs-server admin token generate-jwt' instead.")
     return 0
 
 
@@ -302,6 +312,9 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
     payload = _build_jwt_payload(args.user, email, args.project, roles, args.days)
     token = jose_jwt.encode(payload, secret, algorithm="HS256")
 
+    using_default_user = args.user == "admin"
+    using_default_project = args.project == "default"
+
     if args.json:
         _print_json({
             "token": token,
@@ -311,11 +324,28 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
             ),
         })
     else:
+        print(f"Generated JWT for user '{payload['sub']}' in project '{payload['project_id']}'")
         print(f"token: {token}")
         print(f"  sub:        {payload['sub']}")
+        print(f"  email:      {payload['email']}")
         print(f"  project_id: {payload['project_id']}")
         print(f"  roles:      {', '.join(roles)}")
         print(f"  expires:    {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(payload['exp']))}")
+        if using_default_user or using_default_project:
+            warnings = []
+            if using_default_user:
+                warnings.append("--user was not set, defaulted to 'admin'")
+            if using_default_project:
+                warnings.append("--project was not set, defaulted to 'default'")
+            print()
+            for w in warnings:
+                print(f"  warning: {w}", file=sys.stderr)
+            print(
+                "  hint: pass --user <username> --project <project-id> to scope this token correctly.",
+                file=sys.stderr,
+            )
+        print()
+        print(f"  Use with: r4 auth login --api-key <token>")
     return 0
 
 
@@ -442,12 +472,14 @@ def _cmd_slurm_accounts(args: argparse.Namespace, _store: UserStore) -> int:
 # ---------------------------------------------------------------------------
 
 _GENERATE_JWT_DESCRIPTION = (
-    "Create a signed HS256 JWT for current dev/testing Gateway auth. "
-    "The token contains sub, project_id, roles, and exp claims, so it "
-    "is intentionally scoped to one project. Use it with 'r4 init "
-    "--api-key'. For shared user sessions prefer OIDC/Okta plus "
-    "server-side project authorization. The signing secret is read "
-    "from --secret, $JWT_SECRET, or the built-in dev default."
+    "Create a signed HS256 JWT for r4 CLI / Gateway HTTP authentication. "
+    "The token carries sub, project_id, roles, and exp claims and is "
+    "intentionally scoped to one user and project. "
+    "Use it with 'r4 auth login --api-key <token>'. "
+    "For shared user sessions prefer OIDC/Okta. "
+    "The signing secret is read from --secret, $JWT_SECRET, or the built-in dev default. "
+    "NOTE: this token is NOT for umrs-client --admin-token — "
+    "for that, use 'generate' instead."
 )
 
 
@@ -528,7 +560,16 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
 
 
 def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
-    gen_p = token_sub.add_parser("generate", help="Generate a new admin token")
+    gen_p = token_sub.add_parser(
+        "generate",
+        help="Generate an opaque admin token for umrs-client --admin-token (ZMQ control plane)",
+        description=(
+            "Generate (or regenerate) a named opaque admin token stored in admin_tokens.json. "
+            "This token is used with 'umrs-client --admin-token' or $UMRS_ADMIN_TOKEN for "
+            "privileged ZMQ control-plane operations (reload, recompute, monitor, etc.). "
+            "It is NOT used for r4 CLI / Gateway HTTP authentication — for that, use 'generate-jwt'."
+        ),
+    )
     gen_p.add_argument("name")
     gen_p.add_argument("--description", default="")
     gen_p.add_argument("--json", action="store_true")
@@ -536,7 +577,7 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
 
     jwt_p = token_sub.add_parser(
         "generate-jwt",
-        help="Generate a project-scoped dev/testing JWT for Gateway authentication",
+        help="Generate a project-scoped JWT for r4 CLI / Gateway HTTP authentication",
         description=_GENERATE_JWT_DESCRIPTION,
     )
     jwt_p.add_argument(

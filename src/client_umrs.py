@@ -577,14 +577,19 @@ def _handle_admin_command(args):
     mgr = AdminTokenManager()
 
     if args.token_action == 'generate':
+        existing = {t['name'] for t in mgr.list_tokens()}
+        overwrite = args.name in existing
         token = mgr.generate_token(args.name, description=args.description)
         if args.output == 'json':
-            print(api_json(action='token_generate', name=args.name, token=token, output_format=args.output))
+            print(api_json(action='token_generate', name=args.name, token=token, overwritten=overwrite, output_format=args.output))
         else:
-            print(f"{_green('✓')} Token generated for {_bold(args.name)}:")
+            action = "Regenerated" if overwrite else "Generated"
+            print(f"{_green('✓')} {action} admin token for {_bold(args.name)} (for umrs-client --admin-token / $UMRS_ADMIN_TOKEN):")
             print(f"  {_yellow(token)}")
             print("")
             print(f"  {_dim('Save this token — it cannot be retrieved later.')}")
+            print(f"  {_dim('Use with: umrs-client --admin-token <token> <command>')}")
+            print(f"  {_dim('NOTE: this is NOT a Gateway/r4 JWT — use umrs-server admin token generate-jwt for that.')}")
         return 0
 
     if args.token_action == 'list':
@@ -1080,10 +1085,10 @@ def main():
     configure_status_parser(status_p, include_username=True)
 
     # Embedding maintenance actions
-    subparsers.add_parser('recompute', help='Recompute all embeddings for all buckets (server-side)')
-    subparsers.add_parser('update', help='Update embeddings only for missing/mismatched entries (server-side)')
-    subparsers.add_parser('check', help='Check consistency between S3 objects and DB (server-side)')
-    rl_p = subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
+    subparsers.add_parser('recompute', help='Recompute embeddings for your own buckets (admin: all users)')
+    subparsers.add_parser('update', help='Update embeddings for missing/mismatched entries in your own buckets (admin: all users)')
+    subparsers.add_parser('check', help='Check consistency between S3 objects and DB (admin-only: checks all users)')
+    rl_p = subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart (admin-only); if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
 
     # Export embeddings from pgvector (server-mediated)
     ee_p = subparsers.add_parser('export_embeddings', help='Export computed embeddings to a local file (via server)')
