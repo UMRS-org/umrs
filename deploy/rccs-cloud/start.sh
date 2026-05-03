@@ -325,16 +325,6 @@ fi
 
 export UMRS_CONFIG="${UMRS_CONFIG:-${SCRIPT_DIR}}"
 
-# Extend the model registry allowlist for the concrete RCCS home layout.
-# Shared defaults assume /home/<user>/models/*, but RCCS uses
-# /home/users/<user>/models/*. Keep the shared defaults intact and append the
-# resolved HOME-based path for this deployment only.
-DEFAULT_MODEL_ALLOWED_PATHS="/shared/models/system/*:/shared/projects/*/models/*:/shared/users/*/models/*:/models/*:/home/*/models/*"
-if [[ -n "${HOME:-}" ]]; then
-    DEFAULT_MODEL_ALLOWED_PATHS+="${DEFAULT_MODEL_ALLOWED_PATHS:+:}${HOME%/}/models/*"
-fi
-export MODEL_ALLOWED_PATHS="${MODEL_ALLOWED_PATHS:-${DEFAULT_MODEL_ALLOWED_PATHS}}"
-
 RAG_ENABLED=false
 if is_truthy "${UMRS_RAG_ENABLE:-false}"; then
     RAG_ENABLED=true
@@ -350,6 +340,22 @@ if [[ ! -f "$UMRS_SITE_CONFIG" ]]; then
     echo "  Run: ./setup_server.sh  or set UMRS_SITE_CONFIG explicitly"
     exit 1
 fi
+
+# Extend the model registry allowlist for the concrete RCCS home layout.
+# Shared defaults assume /home/<user>/models/*, but RCCS uses
+# /home/users/<user>/models/*. Keep the shared defaults intact and append the
+# resolved HOME-based path for this deployment only.
+DEFAULT_MODEL_ALLOWED_PATHS="/shared/models/system/*:/shared/projects/*/models/*:/shared/users/*/models/*:/models/*:/home/*/models/*"
+if [[ -n "${HOME:-}" ]]; then
+    DEFAULT_MODEL_ALLOWED_PATHS+="${DEFAULT_MODEL_ALLOWED_PATHS:+:}${HOME%/}/models/*"
+fi
+# Auto-append the site.yaml model root (Lustre) so model registration
+# can use paths resolved from the site config without manual overrides.
+_site_model_root=$(resolve_model_layout | head -1)
+if [[ -n "${_site_model_root:-}" && -d "$_site_model_root" ]]; then
+    DEFAULT_MODEL_ALLOWED_PATHS+="${DEFAULT_MODEL_ALLOWED_PATHS:+:}${_site_model_root%/}/*"
+fi
+export MODEL_ALLOWED_PATHS="${MODEL_ALLOWED_PATHS:-${DEFAULT_MODEL_ALLOWED_PATHS}}"
 
 # ─── Phase 2l invariant: bind ZMQ on 127.0.0.1 only ─────────────────────────
 # RCCS-cloud exposes ZMQ to clients via SSH tunnels (Tier B); binding on
