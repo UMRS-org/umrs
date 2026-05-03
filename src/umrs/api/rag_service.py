@@ -1389,7 +1389,9 @@ def rag_delete_document(
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("umrs.api.rag_service:app", host="0.0.0.0", port=8081, reload=False)
+    bind_host = os.getenv("UMRS_RAG_BIND_HOST", "127.0.0.1")
+    bind_port = int(os.getenv("UMRS_RAG_PORT", "8081"))
+    uvicorn.run("umrs.api.rag_service:app", host=bind_host, port=bind_port, reload=False)
 
 
 __all__ = ["app", "main"]

@@ -33,9 +33,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/llm", tags=["llm-proxy"])
 
+def _resolve_litellm_service_key() -> Optional[str]:
+    return os.environ.get("GATEWAY_LITELLM_SERVICE_KEY") or os.environ.get("LITELLM_MASTER_KEY")
+
+
 # LiteLLM service key — injected as Authorization header when proxying.
-# Set via GATEWAY_LITELLM_SERVICE_KEY env var (same as the Python Gateway used).
-_LITELLM_SERVICE_KEY: Optional[str] = os.environ.get("GATEWAY_LITELLM_SERVICE_KEY")
+# Prefer the Gateway-specific env var, but fall back to the mini-RiVault key
+# used by readiness probes and Slurm-launched LiteLLM.
+_LITELLM_SERVICE_KEY: Optional[str] = _resolve_litellm_service_key()
 
 # Timeouts
 _CONNECT_TIMEOUT = float(os.environ.get("LLM_PROXY_CONNECT_TIMEOUT", "10"))
@@ -54,6 +59,32 @@ def _resolve_served_model_name(catalog_name: str) -> str:
         "qwen3-1.7b": "Qwen/Qwen3-1.7B",
     }
     return mapping.get(catalog_name, catalog_name)
+
+
+def _upstream_model_name(endpoint: RegisteredEndpoint) -> str:
+    return str(endpoint.metadata.get("served_model_name") or endpoint.model)
+
+
+def _recognized_model_names(endpoint: RegisteredEndpoint) -> set[str]:
+    names = {endpoint.model, _resolve_served_model_name(endpoint.model)}
+    served = endpoint.metadata.get("served_model_name")
+    if served:
+        names.add(str(served))
+    return names
+
+
+def _json_body(body: bytes) -> Optional[dict]:
+    try:
+        decoded = json.loads(body)
+    except (ValueError, json.JSONDecodeError):
+        return None
+    return decoded if isinstance(decoded, dict) else None
+
+
+def _model_needs_rewrite(req_model: Optional[str], endpoint: RegisteredEndpoint) -> bool:
+    if not req_model:
+        return False
+    return req_model in _recognized_model_names(endpoint) and req_model != _upstream_model_name(endpoint)
 
 
 def _discover_endpoint(
@@ -95,34 +126,17 @@ def _discover_endpoint(
 
 def _rewrite_model_name(body: bytes, endpoint: RegisteredEndpoint) -> bytes:
     """
-    Bidirectional model alias rewriting.
-
-    - If client sends served name (e.g. "Qwen/Qwen3-8B"), rewrite to catalog name
-    - If client sends catalog name (e.g. "qwen3-8b"), rewrite to served name
+    Rewrite catalog/alias names to the actual upstream model name.
     """
-    served = endpoint.metadata.get("served_model_name") or _resolve_served_model_name(endpoint.model)
-    catalog = endpoint.model
-
-    if not served or served == catalog:
-        return body
-
-    try:
-        body_json = json.loads(body)
-    except (ValueError, json.JSONDecodeError):
+    body_json = _json_body(body)
+    if body_json is None:
         return body
 
     req_model = body_json.get("model")
-    if not req_model:
-        return body
-
-    if req_model == served and served != catalog:
-        body_json["model"] = catalog
-        logger.debug("Rewriting model (served→catalog): %s → %s", req_model, catalog)
-        return json.dumps(body_json).encode()
-
-    if req_model == catalog and catalog != served:
-        body_json["model"] = served
-        logger.debug("Rewriting model (catalog→served): %s → %s", req_model, served)
+    if _model_needs_rewrite(req_model, endpoint):
+        upstream_model = _upstream_model_name(endpoint)
+        body_json["model"] = upstream_model
+        logger.debug("Rewriting model for upstream: %s -> %s", req_model, upstream_model)
         return json.dumps(body_json).encode()
 
     return body
@@ -159,6 +173,99 @@ def _build_upstream_headers(
     return headers
 
 
+_PROXY_TIMEOUT = httpx.Timeout(
+    connect=_CONNECT_TIMEOUT,
+    read=_READ_TIMEOUT,
+    write=_READ_TIMEOUT,
+    pool=5.0,
+)
+
+
+async def _proxy_streaming(
+    request: Request,
+    upstream_url: str,
+    headers: dict[str, str],
+    body: bytes,
+) -> StreamingResponse:
+    """Stream upstream response to the caller.
+
+    The httpx client must stay open until the generator is fully consumed
+    by the ASGI server, so we close it in the generator's ``finally``.
+    """
+    client = httpx.AsyncClient(timeout=_PROXY_TIMEOUT)
+    try:
+        req = client.build_request(
+            method=request.method,
+            url=upstream_url,
+            headers=headers,
+            content=body,
+        )
+        response = await client.send(req, stream=True)
+    except httpx.TimeoutException:
+        await client.aclose()
+        logger.error("Timeout proxying to %s", upstream_url)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="Request to upstream service timed out",
+        )
+    except httpx.RequestError as exc:
+        await client.aclose()
+        logger.error("Error proxying to %s: %s", upstream_url, exc)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to connect to upstream service",
+        )
+
+    async def _yield():
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            await response.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        _yield(),
+        status_code=response.status_code,
+        media_type=response.headers.get("content-type", "text/event-stream"),
+    )
+
+
+async def _proxy_oneshot(
+    request: Request,
+    upstream_url: str,
+    headers: dict[str, str],
+    body: bytes,
+) -> Response:
+    """Non-streaming proxy: send request, return full response."""
+    async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT) as client:
+        try:
+            response = await client.request(
+                method=request.method,
+                url=upstream_url,
+                headers=headers,
+                content=body,
+            )
+            return Response(
+                content=response.content,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.headers.get("content-type"),
+            )
+        except httpx.TimeoutException:
+            logger.error("Timeout proxying to %s", upstream_url)
+            raise HTTPException(
+                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+                detail="Request to upstream service timed out",
+            )
+        except httpx.RequestError as exc:
+            logger.error("Error proxying to %s: %s", upstream_url, exc)
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail="Failed to connect to upstream service",
+            )
+
+
 async def _proxy_to_litellm(
     request: Request,
     endpoint: RegisteredEndpoint,
@@ -187,62 +294,9 @@ async def _proxy_to_litellm(
         except (ValueError, json.JSONDecodeError):
             pass
 
-    timeout = httpx.Timeout(
-        connect=_CONNECT_TIMEOUT,
-        read=_READ_TIMEOUT,
-        write=_READ_TIMEOUT,
-        pool=5.0,
-    )
-
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        try:
-            if is_streaming:
-                req = client.build_request(
-                    method=request.method,
-                    url=upstream_url,
-                    headers=headers,
-                    content=body,
-                )
-                response = await client.send(req, stream=True)
-
-                async def stream_response():
-                    try:
-                        async for chunk in response.aiter_bytes():
-                            yield chunk
-                    finally:
-                        await response.aclose()
-
-                return StreamingResponse(
-                    stream_response(),
-                    status_code=response.status_code,
-                    media_type=response.headers.get("content-type", "text/event-stream"),
-                )
-            else:
-                response = await client.request(
-                    method=request.method,
-                    url=upstream_url,
-                    headers=headers,
-                    content=body,
-                )
-                return Response(
-                    content=response.content,
-                    status_code=response.status_code,
-                    headers=dict(response.headers),
-                    media_type=response.headers.get("content-type"),
-                )
-
-        except httpx.TimeoutException:
-            logger.error("Timeout proxying to %s", upstream_url)
-            raise HTTPException(
-                status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-                detail="Request to upstream service timed out",
-            )
-        except httpx.RequestError as exc:
-            logger.error("Error proxying to %s: %s", upstream_url, exc)
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail="Failed to connect to upstream service",
-            )
+    if is_streaming:
+        return await _proxy_streaming(request, upstream_url, headers, body)
+    return await _proxy_oneshot(request, upstream_url, headers, body)
 
 
 def _extract_model(body: dict) -> str:

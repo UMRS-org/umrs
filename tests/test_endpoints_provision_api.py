@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from umrs.api import endpoints as endpoints_api
 from umrs.api.endpoints import router
-from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
+from umrs.orchestrator.endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
 from umrs.orchestrator.service import ProvisionResult
 
 
@@ -16,6 +16,26 @@ class _StubOrchestrationService:
     async def provision(self, request):
         self.requests.append(request)
         return ProvisionResult(success=True, job_id="job-123")
+
+
+class _ReadyPoller:
+    def __init__(self):
+        self.calls = []
+
+    async def check_ready_detail(self, host, port, *, probe_model=None, probe_kind="models"):
+        self.calls.append(
+            {
+                "host": host,
+                "port": port,
+                "probe_model": probe_model,
+                "probe_kind": probe_kind,
+            }
+        )
+        return True, [probe_model], ""
+
+
+def _new_registry():
+    return EndpointRegistry()
 
 
 def test_provision_endpoint_resolves_model_path_from_catalog(monkeypatch):
@@ -37,7 +57,7 @@ def test_provision_endpoint_resolves_model_path_from_catalog(monkeypatch):
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_registry] = lambda: EndpointRegistry()
+    app.dependency_overrides[get_registry] = _new_registry
 
     with TestClient(app) as client:
         response = client.post(
@@ -54,6 +74,80 @@ def test_provision_endpoint_resolves_model_path_from_catalog(monkeypatch):
     assert service.requests[0].metadata["owner_type"] == "user"
     assert service.requests[0].metadata["tier"] == "user"
     assert service.requests[0].metadata["served_model_name"] == "Qwen/Qwen3-8B"
+    assert service.requests[0].env_vars["VLLM_SERVED_MODEL_NAME"] == "Qwen/Qwen3-8B"
+
+
+def test_provision_endpoint_uses_gateway_project_header(monkeypatch):
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/qwen3-8b",
+            "huggingface_id": "Qwen/Qwen3-8B",
+            "model_type": "llm",
+        },
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/umrs/endpoints/provision",
+            headers={"X-Project-ID": "project-from-gateway"},
+            json={"model": "qwen3-8b", "models": ["qwen3-8b"], "serving_mode": "single"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    assert service.requests[0].project_id == "project-from-gateway"
+
+
+def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeypatch):
+    service = _StubOrchestrationService()
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/qwen3-8b",
+            "huggingface_id": "Qwen/Qwen3-8B",
+            "model_type": "llm",
+        },
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/umrs/endpoints/provision",
+            headers={"X-Project-ID": "untrusted-project"},
+            json={"project_id": "body-project", "model": "qwen3-8b"},
+        )
+        verified_response = client.post(
+            "/umrs/endpoints/provision",
+            headers={"X-Verified-Project-ID": "verified-project"},
+            json={"project_id": "body-project", "model": "qwen3-8b"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 401
+    assert verified_response.status_code == 202
+    assert service.requests[0].project_id == "verified-project"
 
 
 def test_provision_endpoint_forwards_wait_false(monkeypatch):
@@ -75,7 +169,7 @@ def test_provision_endpoint_forwards_wait_false(monkeypatch):
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_registry] = lambda: EndpointRegistry()
+    app.dependency_overrides[get_registry] = _new_registry
 
     with TestClient(app) as client:
         response = client.post(
@@ -98,7 +192,7 @@ def test_provision_endpoint_rejects_unresolved_model_without_model_path(monkeypa
 
     app = FastAPI()
     app.include_router(router)
-    app.dependency_overrides[get_registry] = lambda: EndpointRegistry()
+    app.dependency_overrides[get_registry] = _new_registry
 
     with TestClient(app) as client:
         response = client.post(
@@ -140,3 +234,43 @@ def test_get_endpoint_exposes_progress_detail_from_registry_metadata():
     data = response.json()
     assert data["detail"] == "starting container / loading model"
     assert data["job_status"] == "starting"
+
+
+def test_get_endpoint_refreshes_starting_endpoint_when_ready(monkeypatch):
+    registry = EndpointRegistry()
+    registry.register(
+        project_id="project-a",
+        model="qwen3-8b",
+        job_id="job-123",
+        host="ng-dgx-m0-08",
+        port=8001,
+        backend="slurm",
+        metadata={"readiness_probe": "chat"},
+    )
+    registry.update_status("job-123", EndpointStatus.STARTING)
+
+    poller = _ReadyPoller()
+    monkeypatch.setattr(endpoints_api, "get_readiness_poller", lambda: poller)
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = lambda: registry
+
+    with TestClient(app) as client:
+        response = client.get("/umrs/endpoints/job-123")
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ready"
+    assert data["detail"] == "endpoint ready"
+    assert registry.get_by_job_id("job-123").status == EndpointStatus.READY
+    assert poller.calls == [
+        {
+            "host": "ng-dgx-m0-08",
+            "port": 8001,
+            "probe_model": "qwen3-8b",
+            "probe_kind": "chat",
+        }
+    ]

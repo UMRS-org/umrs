@@ -26,6 +26,7 @@ from ..orchestrator.endpoint_registry import (
     EndpointStatus,
     get_registry,
 )
+from ..orchestrator.readiness import get_readiness_poller
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +168,96 @@ async def _filter_live_ready_endpoints(
     return live_endpoints
 
 
+_REFRESHABLE_ENDPOINT_STATUSES = {
+    EndpointStatus.PENDING,
+    EndpointStatus.PROVISIONING,
+    EndpointStatus.STARTING,
+}
+
+
+_READINESS_DETAIL_RULES = (
+    (("connection error", "connection refused"), "starting LiteLLM / waiting for service port"),
+    (("chat probe timeout", "request timeout"), "loading model weights / waiting for inference warmup"),
+    (("http 404", "http 500", "http 502", "http 503"), "starting LiteLLM / waiting for proxy readiness"),
+    (("no models in response", "expected model"), "registering served model / loading model"),
+    (("chat probe http", "chat probe error"), "endpoint reachable; waiting for inference readiness"),
+)
+
+
+def _short_readiness_error(error: Optional[str], *, limit: int = 96) -> Optional[str]:
+    if not error:
+        return None
+    cleaned = " ".join(error.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3] + "..."
+
+
+def _readiness_status_detail(endpoint: Any, error: Optional[str]) -> str:
+    target = f"{endpoint.host}:{endpoint.port}"
+    if not error:
+        return f"waiting for endpoint readiness ({target})"
+
+    lowered = error.lower()
+    for needles, detail in _READINESS_DETAIL_RULES:
+        if any(needle in lowered for needle in needles):
+            return detail
+
+    return f"waiting for endpoint readiness ({target}): {_short_readiness_error(error, limit=72)}"
+
+
+def _endpoint_can_refresh_readiness(endpoint: Any) -> bool:
+    return (
+        endpoint.status in _REFRESHABLE_ENDPOINT_STATUSES
+        and bool(endpoint.host)
+        and endpoint.host != "pending"
+    )
+
+
+async def _refresh_endpoint_readiness(
+    registry: EndpointRegistry,
+    endpoint: Any,
+) -> Any:
+    if not _endpoint_can_refresh_readiness(endpoint):
+        return endpoint
+
+    readiness_probe = str(
+        endpoint.metadata.get("readiness_probe")
+        or _resolve_readiness_probe_mode(endpoint.model)
+    )
+
+    try:
+        is_ready, models, error = await get_readiness_poller().check_ready_detail(
+            endpoint.host,
+            endpoint.port,
+            probe_model=endpoint.model,
+            probe_kind=readiness_probe,
+        )
+    except Exception as exc:  # noqa: BLE001 - status lookup must stay best-effort
+        logger.warning("Endpoint readiness refresh failed for %s: %s", endpoint.job_id, exc)
+        return endpoint
+
+    if is_ready:
+        registry.update_metadata(
+            endpoint.job_id,
+            {
+                "detail": "endpoint ready",
+                "readiness_error": None,
+                "readiness_models": models,
+            },
+        )
+        return registry.mark_ready(endpoint.job_id) or endpoint
+
+    registry.update_metadata(
+        endpoint.job_id,
+        {
+            "detail": _readiness_status_detail(endpoint, error),
+            "readiness_error": _short_readiness_error(error),
+        },
+    )
+    return registry.get_by_job_id(endpoint.job_id) or endpoint
+
+
 # =============================================================================
 # Request/Response Models
 # =============================================================================
@@ -257,7 +348,13 @@ class LoraSpec(BaseModel):
 class ProvisionRequest(BaseModel):
     """Request to provision a new endpoint (U-202)."""
 
-    project_id: str = Field(..., description="Project/tenant identifier")
+    project_id: Optional[str] = Field(
+        None,
+        description=(
+            "Project/tenant identifier. Optional when the Gateway provides "
+            "X-Project-ID or X-Verified-Project-ID."
+        ),
+    )
     model: str = Field(..., description="Model name (primary; equals models[0])")
     models: Optional[List[str]] = Field(
         None,
@@ -429,6 +526,33 @@ def get_project_id_optional(
     if authorization and authorization.startswith("Bearer "):
         return "default-project"
     return None
+
+
+def _resolve_provision_project_id(
+    request: ProvisionRequest,
+    authenticated_project_id: Optional[str],
+) -> str:
+    """Resolve the project that owns an endpoint provision request."""
+    if authenticated_project_id is not None:
+        if request.project_id and request.project_id != authenticated_project_id:
+            logger.warning(
+                "Ignoring endpoint provision body project_id=%s in favor of authenticated project_id=%s",
+                request.project_id,
+                authenticated_project_id,
+            )
+        return authenticated_project_id
+
+    if _strict_auth_mode():
+        _raise_strict_project_auth_error()
+
+    body_project_id = _header_str(request.project_id)
+    if body_project_id:
+        return body_project_id
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Missing project_id. Provide X-Project-ID header or project_id in the request body.",
+    )
 
 
 def _resolve_served_model_name(
@@ -977,6 +1101,8 @@ async def get_endpoint(
             detail=f"Endpoint not found: {job_id}",
         )
 
+    endpoint = await _refresh_endpoint_readiness(registry, endpoint)
+
     return EndpointResponse(**endpoint.to_dict())
 
 
@@ -1008,6 +1134,7 @@ async def get_endpoint(
 )
 async def provision_endpoint(
     request: ProvisionRequest,
+    project_id: Optional[str] = Depends(get_project_id_optional),
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Provision a new endpoint or return existing one."""
@@ -1018,10 +1145,12 @@ async def provision_endpoint(
         get_orchestration_service,
     )
 
+    effective_project_id = _resolve_provision_project_id(request, project_id)
+
     # Check for existing warm endpoint first
     if request.prefer_warm:
         existing = registry.get(
-            request.project_id,
+            effective_project_id,
             request.model,
             prefer_warm=True,
             min_ttl_sec=60,
@@ -1044,7 +1173,7 @@ async def provision_endpoint(
             logger.warning(
                 "Stale warm endpoint detected for %s/%s (job_id=%s); "
                 "marking failed and provisioning fresh",
-                request.project_id, request.model, existing.job_id,
+                effective_project_id, request.model, existing.job_id,
             )
             registry.mark_failed(
                 existing.job_id,
@@ -1053,7 +1182,7 @@ async def provision_endpoint(
 
     # Check if there's already a provisioning endpoint for this project/model
     provisioning = registry.list_all(
-        project_id=request.project_id,
+        project_id=effective_project_id,
         status_filter=[EndpointStatus.PENDING],
     )
     for ep in provisioning:
@@ -1092,6 +1221,7 @@ async def provision_endpoint(
         # successful chat path before exposing the endpoint as ready.
         "readiness_probe": "chat"
     }
+    env_vars: Dict[str, str] = {}
     request_metadata.setdefault("owner_type", "user")
     request_metadata.setdefault("tier", request_metadata["owner_type"])
     served_model_name = _resolve_served_model_name(
@@ -1100,6 +1230,7 @@ async def provision_endpoint(
     )
     if served_model_name and served_model_name != request.model:
         request_metadata["served_model_name"] = served_model_name
+        env_vars["VLLM_SERVED_MODEL_NAME"] = served_model_name
 
     # Multi-model fields (forwarded via metadata so orchestrator backends
     # can read them without a service-layer schema change yet). Phase 3
@@ -1113,7 +1244,7 @@ async def provision_endpoint(
 
     # Create provision request
     service_request = ServiceProvisionRequest(
-        project_id=request.project_id,
+        project_id=effective_project_id,
         model=request.model,
         model_path=resolved_model_path,
         ttl_sec=request.ttl_sec,
@@ -1123,6 +1254,7 @@ async def provision_endpoint(
         wait_for_ready=request.wait,
         partition_override=request.partition,
         nodelist_hint=request.nodelist,
+        env_vars=env_vars,
         metadata=request_metadata,
     )
 
