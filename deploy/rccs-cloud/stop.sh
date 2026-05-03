@@ -19,6 +19,20 @@ RAG_PID_FILE="./rag-service.pid"
 LOG_FILE="./logs/server.log"
 MODE="full"
 
+usage() {
+        cat <<'EOF'
+Usage: ./stop.sh [--server|--postgres-clean|--clean]
+
+Stop the RCCS UMRS stack.
+
+Options:
+    --server          Stop only the native UMRS server and RAG service; keep containers and Slurm jobs running.
+    --postgres-clean  Full stop, then remove only the postgres volume.
+    --clean           Full stop, remove all compose volumes. This deletes local deployment state.
+    -h, --help        Show this help and exit without changing running services.
+EOF
+}
+
 compose_project_name() {
     if [[ -n "${COMPOSE_PROJECT_NAME:-}" ]]; then
         printf '%s\n' "$COMPOSE_PROJECT_NAME"
@@ -54,9 +68,13 @@ case "${1:-}" in
     --clean )
         MODE="clean"
         ;;
+    -h|--help )
+        usage
+        exit 0
+        ;;
     * )
         echo "ERROR: Unknown option: ${1}"
-        echo "Usage: ./stop.sh [--server|--postgres-clean|--clean]"
+        usage
         exit 1
         ;;
 esac

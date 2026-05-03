@@ -36,6 +36,37 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 LOG_FILE="${LOG_DIR}/server.log"
 RAG_LOG_FILE="${LOG_DIR}/rag-service.log"
 
+usage() {
+        cat <<'EOF'
+Usage: ./start.sh [--server]
+
+Start the RCCS UMRS stack.
+
+Options:
+    --server      Restart only the native UMRS server and RAG service; keep containers and Slurm jobs running.
+    -h, --help    Show this help and exit without changing running services.
+
+Examples:
+    ./start.sh
+    ./start.sh --server
+EOF
+}
+
+START_MODE="${1:-}"
+case "$START_MODE" in
+        ""|--server )
+                ;;
+        -h|--help )
+                usage
+                exit 0
+                ;;
+        * )
+                echo "ERROR: Unknown option: ${START_MODE}"
+                usage
+                exit 1
+                ;;
+esac
+
 check_zmq_ready() {
     if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
         return 1
@@ -382,7 +413,7 @@ else
 fi
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
-if [[ "${1:-}" != "--server" ]]; then
+if [[ "$START_MODE" != "--server" ]]; then
     reconcile_infra_container umrs-postgres 5432
     reconcile_infra_container umrs-minio 9000 9001
 
@@ -479,7 +510,7 @@ PY
     export UMRS_REGISTRY_POSTGRES_DSN
 fi
 
-if [[ "${1:-}" != "--server" ]]; then
+if [[ "$START_MODE" != "--server" ]]; then
     echo -n "Validating postgres catalog..."
     postgres_catalog_check_output=""
     if ! postgres_catalog_check_output="$(check_postgres_catalog_ready 2>&1)"; then

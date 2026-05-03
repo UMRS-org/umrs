@@ -8,6 +8,7 @@ from unittest.mock import patch
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from umrs.api import llm as llm_api
 from umrs.api.llm import router
 from umrs.orchestrator.endpoint_registry import EndpointRegistry, get_registry
 
@@ -217,8 +218,8 @@ def test_model_alias_rewriting_catalog_to_served():
     assert captured_body.get("model") == "Qwen/Qwen3-8B"
 
 
-def test_model_alias_rewriting_served_to_catalog():
-    """When client sends served name, it should be rewritten to catalog name."""
+def test_model_alias_rewriting_keeps_explicit_served_model():
+    """When endpoint metadata names the upstream model, keep that served name."""
     registry = _make_registry_with_endpoint()
     client = _create_client(registry)
 
@@ -236,6 +237,56 @@ def test_model_alias_rewriting_served_to_catalog():
         client.post(
             "/umrs/llm/v1/chat/completions",
             json={"model": "Qwen/Qwen3-8B", "messages": []},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert captured_body.get("model") == "Qwen/Qwen3-8B"
+
+
+def test_model_alias_rewriting_heuristic_served_to_catalog_without_metadata():
+    """Heuristic aliases are recognized, but upstream defaults to registry model."""
+    registry = _make_registry_with_endpoint(served_model_name=None)
+    client = _create_client(registry)
+
+    captured_body = {}
+
+    async def fake_request(self, method, url, **kwargs):
+        body = kwargs.get("content", b"")
+        if body:
+            captured_body.update(json.loads(body))
+        return _mock_litellm_response({"id": "x", "choices": []})
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "request", fake_request):
+        client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "Qwen/Qwen3-8B", "messages": []},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert captured_body.get("model") == "qwen3-8b"
+
+
+def test_model_alias_rewriting_keeps_catalog_without_metadata():
+    """Live RCCS endpoints without served metadata should keep catalog names upstream."""
+    registry = _make_registry_with_endpoint(served_model_name=None)
+    client = _create_client(registry)
+
+    captured_body = {}
+
+    async def fake_request(self, method, url, **kwargs):
+        body = kwargs.get("content", b"")
+        if body:
+            captured_body.update(json.loads(body))
+        return _mock_litellm_response({"id": "x", "choices": []})
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "request", fake_request):
+        client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "qwen3-8b", "messages": []},
             headers={"x-user-id": "user-1", "x-project-id": "test-project"},
         )
 
@@ -348,6 +399,14 @@ def test_service_key_injected():
             )
 
     assert captured_headers.get("Authorization") == "Bearer sk-test-key"
+
+
+def test_service_key_resolution_falls_back_to_litellm_master_key(monkeypatch):
+    """RCCS server env provides LITELLM_MASTER_KEY rather than Gateway-specific key."""
+    monkeypatch.delenv("GATEWAY_LITELLM_SERVICE_KEY", raising=False)
+    monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-master-key")
+
+    assert llm_api._resolve_litellm_service_key() == "sk-master-key"
 
 
 def test_discovery_by_served_name():
