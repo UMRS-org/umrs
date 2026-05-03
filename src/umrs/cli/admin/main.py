@@ -285,19 +285,33 @@ def _build_jwt_payload(
     project: str,
     roles: List[str],
     days: int,
+    *,
+    projects: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
-    """Build the JWT claims payload."""
+    """Build the JWT claims payload.
+
+    When *projects* is supplied the token carries a
+    ``project_memberships`` list so a single JWT can be used across
+    multiple projects.  ``project_id`` is always emitted for backward
+    compatibility (set to the first entry of *projects* when given).
+    """
     import time
 
     now = int(time.time())
-    return {
+    effective_project = project
+    if projects:
+        effective_project = projects[0]
+    payload: Dict[str, Any] = {
         "sub": user,
         "email": email,
-        "project_id": project,
+        "project_id": effective_project,
         "roles": roles,
         "iat": now,
         "exp": now + (days * 86400),
     }
+    if projects and len(projects) > 1:
+        payload["project_memberships"] = list(projects)
+    return payload
 
 
 def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
@@ -317,11 +331,15 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
     secret = _resolve_jwt_secret(args)
     email = args.email or f"{args.user}@dev.local"
     roles = args.roles or ["admin"]
-    payload = _build_jwt_payload(args.user, email, args.project, roles, args.days)
+    projects = getattr(args, "projects", None) or None
+    payload = _build_jwt_payload(
+        args.user, email, args.project, roles, args.days,
+        projects=projects,
+    )
     token = jose_jwt.encode(payload, secret, algorithm="HS256")
 
     using_default_user = args.user == "admin"
-    using_default_project = args.project == "default"
+    using_default_project = args.project == "default" and not projects
 
     if args.json:
         _print_json({
@@ -332,11 +350,19 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
             ),
         })
     else:
-        print(f"Generated JWT for user '{payload['sub']}' in project '{payload['project_id']}'")
+        memberships = payload.get("project_memberships")
+        scope_label = (
+            f"projects {', '.join(memberships)}"
+            if memberships
+            else f"project '{payload['project_id']}'"
+        )
+        print(f"Generated JWT for user '{payload['sub']}' in {scope_label}")
         print(f"token: {token}")
         print(f"  sub:        {payload['sub']}")
         print(f"  email:      {payload['email']}")
         print(f"  project_id: {payload['project_id']}")
+        if memberships:
+            print(f"  projects:   {', '.join(memberships)}")
         print(f"  roles:      {', '.join(roles)}")
         print(f"  expires:    {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(payload['exp']))}")
         if using_default_user or using_default_project:
@@ -481,8 +507,9 @@ def _cmd_slurm_accounts(args: argparse.Namespace, _store: UserStore) -> int:
 
 _GENERATE_JWT_DESCRIPTION = (
     "Create a signed HS256 JWT for r4 CLI / Gateway HTTP authentication. "
-    "The token carries sub, project_id, roles, and exp claims and is "
-    "intentionally scoped to one user and project. "
+    "The token carries sub, project_id, roles, and exp claims. "
+    "Use --projects to grant access to multiple projects in a single token "
+    "(the first project becomes the default project_id). "
     "Use it with 'r4 auth login --api-key <token>'. "
     "For shared user sessions prefer OIDC/Okta. "
     "The signing secret is read from --secret, $JWT_SECRET, or the built-in dev default. "
@@ -598,7 +625,16 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
     )
     jwt_p.add_argument(
         "--project", "-p", default="default",
-        help="Project ID claim / active scope for this token. Default: default",
+        help="Primary project ID claim. Default: default",
+    )
+    jwt_p.add_argument(
+        "--projects", nargs="+", default=None,
+        metavar="ID",
+        help=(
+            "Grant access to multiple projects. The first ID becomes "
+            "the default project_id; the full list is stored in "
+            "project_memberships. Overrides --project when given."
+        ),
     )
     jwt_p.add_argument(
         "--roles", "-r", nargs="*", default=None,
