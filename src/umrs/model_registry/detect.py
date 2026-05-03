@@ -125,6 +125,11 @@ def detect_capabilities(model_path: str) -> Optional[ModelCapabilities]:
 
     # --- Context length ---
     max_pos = config.get("max_position_embeddings")
+    # Fallback: check nested text_config (e.g. Gemma multimodal models)
+    if not isinstance(max_pos, int) or max_pos <= 0:
+        text_cfg = config.get("text_config")
+        if isinstance(text_cfg, dict):
+            max_pos = text_cfg.get("max_position_embeddings")
     max_position_embeddings = max_pos if isinstance(max_pos, int) and max_pos > 0 else None
 
     # --- Tool calling ---
