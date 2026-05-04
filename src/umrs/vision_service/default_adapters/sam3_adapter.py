@@ -50,6 +50,28 @@ def _build_results_payload(result: Dict[str, Any], prompt: str, source_image: st
 class SAM3Adapter(VisionModelAdapter):
     """Load and run SAM3 text-prompted segmentation."""
 
+    def capabilities(self):
+        return {
+            "name": "sam3",
+            "description": "SAM3 text-prompted image segmentation",
+            "supported_tasks": ["image-segmentation", "custom:segmentation"],
+            "supported_inputs": ["image_with_text", "single_image"],
+            "output_types": ["masks", "bounding_boxes", "overlay_image", "scores"],
+            "gpu_memory_mb": 6000,
+            "supports_batch": False,
+            "max_batch_size": 1,
+            "typical_inference_seconds": 3.0,
+            "model_source": "facebook/sam3",
+            "framework": "pytorch",
+        }
+
+    def estimate_gpu_memory_mb(self, config: Dict[str, Any]) -> int:
+        checkpoint = config.get("checkpoint",
+                                os.environ.get("SAM3_MODEL_PATH", "facebook/sam3"))
+        if "large" in checkpoint.lower():
+            return 8000
+        return 6000
+
     def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
         return describe_output_artifacts("sam3", key, config)
 

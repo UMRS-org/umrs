@@ -2,20 +2,36 @@
 
 To add a new vision model to the BentoML service:
   1. Subclass ``VisionModelAdapter``
-  2. Implement ``load()``, ``infer()``, ``cache_key()``
-  3. Register in ``adapters/__init__.py`` ADAPTER_REGISTRY
+  2. Implement ``load()``, ``infer()``, ``cache_key()``, ``describe_outputs()``
+  3. Optionally override ``capabilities()`` and ``infer_batch()``
+  4. Place the .py file in a VISION_ADAPTERS_DIR directory or register via
+     VISION_ADAPTERS env var
 """
 
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, List, Optional
 
 from PIL import Image
 
+logger = logging.getLogger(__name__)
+
 
 class VisionModelAdapter(abc.ABC):
-    """Interface that every vision model adapter must implement."""
+    """Interface that every vision model adapter must implement.
+
+    v2 additions (backward-compatible):
+    - ``capabilities()``: declare model metadata for orchestrator
+    - ``infer_batch()``: process multiple images in one call
+    - ``estimate_gpu_memory_mb()``: hint resource requirements
+    - ``warmup()``: self-test after model load
+    """
+
+    # ------------------------------------------------------------------
+    # Required abstract methods
+    # ------------------------------------------------------------------
 
     @abc.abstractmethod
     def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
@@ -87,3 +103,97 @@ class VisionModelAdapter(abc.ABC):
         Two configs that would produce the same in-memory model **must**
         return the same cache key.
         """
+
+    # ------------------------------------------------------------------
+    # Optional v2 methods (with default implementations)
+    # ------------------------------------------------------------------
+
+    def capabilities(self) -> Optional[Dict[str, Any]]:
+        """Declare model capabilities for orchestrator resource planning.
+
+        Override to return a dict compatible with ``ModelCapabilities.to_dict()``.
+        When ``None`` (default), the orchestrator uses conservative defaults.
+
+        Example::
+
+            return {
+                "name": "sam3",
+                "supported_tasks": ["image-segmentation"],
+                "supported_inputs": ["image_with_text", "image_with_points"],
+                "gpu_memory_mb": 6000,
+                "supports_batch": False,
+                "model_source": "facebook/sam3",
+            }
+        """
+        return None
+
+    def infer_batch(
+        self,
+        model: Any,
+        images: List[Image.Image],
+        keys: List[str],
+        bucket: str,
+        config: Dict[str, Any],
+        s3,
+        output_bucket: str,
+        presigned_output_urls_list: Optional[List[Dict[str, str]]] = None,
+        raw_image_bytes_list: Optional[List[bytes]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Run inference on a batch of images.
+
+        Default implementation processes images sequentially via ``infer()``.
+        Override for models that benefit from batched GPU execution.
+
+        Args:
+            model: The object returned by ``load()``.
+            images: List of PIL RGB images.
+            keys: List of S3 object keys (one per image).
+            bucket: Source S3 bucket (same for all images in batch).
+            config: Adapter-specific configuration.
+            s3: boto3 S3 client (may be None with presigned URLs).
+            output_bucket: Target bucket for output artifacts.
+            presigned_output_urls_list: List of presigned URL dicts per image.
+            raw_image_bytes_list: List of raw image bytes per image.
+
+        Returns:
+            List of result dicts, one per input image.
+        """
+        results = []
+        for i, (image, key) in enumerate(zip(images, keys)):
+            presigned = (
+                presigned_output_urls_list[i]
+                if presigned_output_urls_list
+                else None
+            )
+            raw_bytes = (
+                raw_image_bytes_list[i]
+                if raw_image_bytes_list
+                else None
+            )
+            result = self.infer(
+                model, image, bucket, key, config, s3, output_bucket,
+                presigned_output_urls=presigned,
+                raw_image_bytes=raw_bytes,
+            )
+            results.append(result)
+        return results
+
+    def estimate_gpu_memory_mb(self, config: Dict[str, Any]) -> int:
+        """Estimate GPU memory in MB needed for this model + config.
+
+        Used by the orchestrator for Slurm resource allocation.
+        Default returns 4096 MB (4 GB) as a safe conservative estimate.
+        """
+        return 4096
+
+    def warmup(self, model: Any, config: Dict[str, Any]) -> bool:
+        """Run a self-test after loading to verify the model works.
+
+        Called by ModelCache after ``load()`` succeeds. Return True if
+        warmup passes, False otherwise. Default always returns True.
+
+        Override to run a small inference pass (e.g. on a synthetic image)
+        to catch initialization issues early.
+        """
+        return True
+
