@@ -1,8 +1,8 @@
 #!/usr/bin/python3
 import sys
-import time 
-from utils import compute_md5
+
 from charset_normalizer import from_path
+from utils import compute_md5
 
 # Vérification des arguments
 if len(sys.argv) != 4:

@@ -23,12 +23,15 @@ compute-node hostname.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
+
+from umrs.shared.config import get_default_tmp_subdir, get_resolved_umrs_subdir
 
 from .base import (
     EndpointInfo,
@@ -38,7 +41,6 @@ from .base import (
     OrchestratorConfig,
 )
 from .site_config import SiteConfig, get_site_config
-from umrs.shared.config import get_default_tmp_subdir, get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -61,10 +63,8 @@ async def _run_slurm_cli(*args: str) -> tuple[int, bytes, bytes]:
             proc.communicate(), timeout=_SLURM_CLI_TIMEOUT_SEC
         )
     except asyncio.TimeoutError:
-        try:
+        with contextlib.suppress(ProcessLookupError):
             proc.kill()
-        except ProcessLookupError:
-            pass
         await proc.wait()
         logger.warning(
             "Slurm CLI timed out after %ss: %s",
@@ -86,9 +86,9 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
     def __init__(
         self,
-        config: Optional[OrchestratorConfig] = None,
-        site: Optional[SiteConfig] = None,
-        slurm_script: Optional[str] = None,
+        config: OrchestratorConfig | None = None,
+        site: SiteConfig | None = None,
+        slurm_script: str | None = None,
     ):
         super().__init__(config)
         self._site = site
@@ -148,14 +148,14 @@ class SlurmPodmanBackend(OrchestratorBackend):
         return "slurm-podman"
 
     @staticmethod
-    def _partition_candidates(raw: str) -> List[str]:
+    def _partition_candidates(raw: str) -> list[str]:
         return [candidate.strip() for candidate in raw.split(",") if candidate.strip()]
 
     # ------------------------------------------------------------------
     # sbatch environment
     # ------------------------------------------------------------------
 
-    def _sbatch_env(self, **overrides: str) -> Dict[str, str]:
+    def _sbatch_env(self, **overrides: str) -> dict[str, str]:
         """Build the environment dict passed to sbatch.
 
         Merges the current ``os.environ``, site-config exports, and any
@@ -210,7 +210,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
     async def submit_job(
         self,
-        model_path: Optional[str] = None,
+        model_path: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
         """Submit the site's serve-model.slurm via sbatch."""
@@ -269,7 +269,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         sbatch_args.append(script)
 
         # Build environment
-        env_overrides: Dict[str, str] = {}
+        env_overrides: dict[str, str] = {}
         requested_env = kwargs.pop("env", None)
         if isinstance(requested_env, dict):
             env_overrides.update(
@@ -344,9 +344,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
             status = self._map_slurm_state(sacct_state) if sacct_state else JobStatus.UNKNOWN
 
         # If running, try to resolve the node from the Slurm output
-        if status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY):
-            if not node:
-                node = await self._node_from_output(job_id)
+        if status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY) and not node:
+            node = await self._node_from_output(job_id)
 
         endpoint = None
         if node and status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY):
@@ -365,7 +364,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
     async def wait_for_ready(
         self,
         job_id: str,
-        timeout_sec: Optional[int] = None,
+        timeout_sec: int | None = None,
     ) -> EndpointInfo:
         """Block until endpoint passes readiness check."""
         timeout = timeout_sec or self.config.startup_timeout_sec
@@ -380,9 +379,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
             if job.status == JobStatus.STOPPED:
                 raise RuntimeError(f"Job {job_id} stopped unexpectedly")
 
-            if job.endpoint:
-                if await self.check_readiness(job.endpoint):
-                    return job.endpoint
+            if job.endpoint and await self.check_readiness(job.endpoint):
+                return job.endpoint
 
             await asyncio.sleep(poll)
             elapsed += poll
@@ -446,8 +444,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
     async def list_jobs(
         self,
-        status_filter: Optional[List[JobStatus]] = None,
-    ) -> List[JobInfo]:
+        status_filter: list[JobStatus] | None = None,
+    ) -> list[JobInfo]:
         """List UMRS-related Slurm jobs."""
         proc = await asyncio.create_subprocess_exec(
             "squeue",
@@ -460,7 +458,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         )
         stdout, _ = await proc.communicate()
 
-        jobs: List[JobInfo] = []
+        jobs: list[JobInfo] = []
         if stdout:
             for line in stdout.decode().strip().split("\n"):
                 jid = line.strip()
@@ -486,7 +484,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
                 cleaned += 1
         return cleaned
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Verify Slurm accessibility and script existence."""
         # Check sinfo
         try:
@@ -549,7 +547,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
             )
             return fallback
 
-        states_by_partition: Dict[str, List[str]] = {p: [] for p in candidates}
+        states_by_partition: dict[str, list[str]] = {p: [] for p in candidates}
         for line in stdout.decode().splitlines():
             parts = line.split(None, 1)
             if len(parts) != 2:
@@ -560,7 +558,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
             if partition in states_by_partition:
                 states_by_partition[partition].append(state)
 
-        mixed_candidates: List[str] = []
+        mixed_candidates: list[str] = []
         for partition in candidates:
             states = states_by_partition.get(partition, [])
             if any(state.startswith("idle") for state in states):
@@ -580,7 +578,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         logger.warning("Falling back to first configured Slurm partition %s from %s", fallback, candidates)
         return fallback
 
-    async def _squeue_info(self, job_id: str) -> tuple[Optional[str], Optional[str]]:
+    async def _squeue_info(self, job_id: str) -> tuple[str | None, str | None]:
         """Return (node, state) from squeue, or (None, None) if not found."""
         rc, stdout, _ = await _run_slurm_cli(
             "squeue", "-j", job_id, "-h", "-o", "%N %T",
@@ -595,7 +593,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         state = parts[1] if len(parts) >= 2 else None
         return node, state
 
-    async def _sacct_state(self, job_id: str) -> Optional[str]:
+    async def _sacct_state(self, job_id: str) -> str | None:
         """Return the first sacct State string, or None."""
         rc, stdout, _ = await _run_slurm_cli(
             "sacct", "-j", job_id, "-n", "-o", "State",
@@ -605,7 +603,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         lines = stdout.decode().strip().split("\n")
         return lines[0].strip() if lines and lines[0].strip() else None
 
-    async def _node_from_output(self, job_id: str) -> Optional[str]:
+    async def _node_from_output(self, job_id: str) -> str | None:
         """Try to extract the compute-node hostname from the job output file."""
         candidate_paths = (
             self._output_dir / f"slurm-{job_id}.out",

@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
@@ -37,8 +37,8 @@ class _StepNode:
     """Internal node representation for DAG scheduling."""
     name: str
     spec_index: int
-    parents: Set[str] = field(default_factory=set)
-    children: Set[str] = field(default_factory=set)
+    parents: set[str] = field(default_factory=set)
+    children: set[str] = field(default_factory=set)
 
 
 class DAGScheduler:
@@ -56,7 +56,7 @@ class DAGScheduler:
 
     def __init__(self, step_specs: list) -> None:
         self._specs = step_specs
-        self._nodes: Dict[str, _StepNode] = {}
+        self._nodes: dict[str, _StepNode] = {}
         self._build_graph()
 
     def _build_graph(self) -> None:
@@ -104,7 +104,7 @@ class DAGScheduler:
                 unreachable steps.
         """
         # Kahn's algorithm for cycle detection
-        in_degree: Dict[str, int] = {
+        in_degree: dict[str, int] = {
             name: len(node.parents) for name, node in self._nodes.items()
         }
         queue = deque(
@@ -128,7 +128,7 @@ class DAGScheduler:
                 f"Cycle detected involving steps: {cycle_members}"
             )
 
-    def execution_levels(self) -> List[List[int]]:
+    def execution_levels(self) -> list[list[int]]:
         """Return step indices grouped by execution level.
 
         Level 0 contains steps with no dependencies (roots).
@@ -141,13 +141,13 @@ class DAGScheduler:
         """
         self.validate()
 
-        in_degree: Dict[str, int] = {
+        in_degree: dict[str, int] = {
             name: len(node.parents) for name, node in self._nodes.items()
         }
         queue = deque(
             name for name, deg in in_degree.items() if deg == 0
         )
-        levels: List[List[int]] = []
+        levels: list[list[int]] = []
 
         while queue:
             level_names = list(queue)
@@ -165,14 +165,14 @@ class DAGScheduler:
 
         return levels
 
-    def topological_order(self) -> List[int]:
+    def topological_order(self) -> list[int]:
         """Return step indices in a valid topological order.
 
         This is a flattened version of :meth:`execution_levels`.
         """
         return [idx for level in self.execution_levels() for idx in level]
 
-    def parent_names(self, step_name: str) -> Set[str]:
+    def parent_names(self, step_name: str) -> set[str]:
         """Return the set of parent step names for *step_name*."""
         return set(self._nodes[step_name].parents)
 
@@ -189,16 +189,16 @@ class DAGScheduler:
 
 def execute_dag(
     scheduler: DAGScheduler,
-    step_instances: List[Step],
+    step_instances: list[Step],
     step_specs: list,
     *,
     s3: Any,
     input_bucket: str,
-    input_keys: List[str],
+    input_keys: list[str],
     output_bucket: str,
     run_id: str,
-    shared_metadata: Dict[str, Any],
-) -> Dict[str, StepResult]:
+    shared_metadata: dict[str, Any],
+) -> dict[str, StepResult]:
     """Execute steps according to DAG ordering.
 
     For linear DAGs, steps run sequentially. For DAGs with parallelism,
@@ -219,11 +219,11 @@ def execute_dag(
         Mapping of step_name → StepResult for all executed steps.
     """
     levels = scheduler.execution_levels()
-    results: Dict[str, StepResult] = {}
+    results: dict[str, StepResult] = {}
 
     # Track current keys per step for fan-in/fan-out
-    step_output_keys: Dict[str, List[str]] = {}
-    step_output_bucket: Dict[str, str] = {}
+    step_output_keys: dict[str, list[str]] = {}
+    step_output_bucket: dict[str, str] = {}
 
     for level in levels:
         def _run_step(spec_idx: int) -> None:
@@ -232,7 +232,7 @@ def execute_dag(
             # Determine input keys: merge from all parents
             parents = scheduler.parent_names(spec.name)
             if parents:
-                merged_keys: List[str] = []
+                merged_keys: list[str] = []
                 merged_bucket = input_bucket
                 for parent_name in parents:
                     p_keys = step_output_keys.get(parent_name, input_keys)
@@ -276,7 +276,7 @@ def execute_dag(
             )
 
             # Execute with retry support
-            last_exc: Optional[Exception] = None
+            last_exc: Exception | None = None
             for attempt in range(spec.max_retries + 1):
                 try:
                     result = step.run(ctx)

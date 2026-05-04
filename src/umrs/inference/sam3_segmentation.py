@@ -362,7 +362,7 @@ def overlay_masks_on_image(image, masks, alpha=0.5):
     cmap = matplotlib.colormaps.get_cmap("rainbow").resampled(n_masks)
     colors = [tuple(int(c * 255) for c in cmap(i)[:3]) for i in range(n_masks)]
 
-    for mask, color in zip(masks, colors):
+    for mask, color in zip(masks, colors, strict=False):
         mask_uint8 = (255 * mask.astype(np.uint8))
         mask_img = Image.fromarray(mask_uint8)
         if mask_img.size != image.size:

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import configparser
 import copy
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any
 
 from umrs.server.json_config import load_server_cfg_file
 from umrs.shared.config import (
@@ -22,11 +23,11 @@ from umrs.shared.json_config import load_client_cfg_file
 @dataclass
 class ConfigLayer:
     kind: str
-    path: Optional[str] = None
-    source: Optional[str] = None
+    path: str | None = None
+    source: str | None = None
     exists: bool = False
     valid: bool = False
-    error: Optional[str] = None
+    error: str | None = None
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -41,7 +42,7 @@ class ConfigFileCandidate:
     exists: bool
     valid: bool
     current: bool = False
-    error: Optional[str] = None
+    error: str | None = None
     details: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -88,7 +89,7 @@ def _normalize_path(path_like: str | Path) -> str:
     return str(Path(path_like).expanduser().resolve())
 
 
-def _read_pointer(path: Path) -> Optional[str]:
+def _read_pointer(path: Path) -> str | None:
     if not path.is_file():
         return None
     value = path.read_text(encoding="utf-8").strip()
@@ -261,7 +262,7 @@ _FLAG_SOURCES = {
 }
 
 
-def _make_candidate(kind: str, path: Path, current_path: Optional[str]) -> ConfigFileCandidate:
+def _make_candidate(kind: str, path: Path, current_path: str | None) -> ConfigFileCandidate:
     layer = _VALIDATORS[kind](path)
     current = bool(current_path and _normalize_path(path) == _normalize_path(current_path))
     return ConfigFileCandidate(
@@ -324,8 +325,8 @@ def _auto_select(candidates: list[ConfigFileCandidate], kind: str) -> ConfigLaye
 
 def _resolve_selector(
     kind: str,
-    explicit_path: Optional[str],
-    current_path: Optional[str],
+    explicit_path: str | None,
+    current_path: str | None,
     candidates: list[ConfigFileCandidate],
     pointer_path: Path,
 ) -> ConfigLayer:
@@ -343,9 +344,9 @@ def _resolve_selector(
 
 
 def resolve_loaded_config(
-    explicit_server_config_path: Optional[str] = None,
-    explicit_user_config_path: Optional[str] = None,
-    explicit_s3_config_path: Optional[str] = None,
+    explicit_server_config_path: str | None = None,
+    explicit_user_config_path: str | None = None,
+    explicit_s3_config_path: str | None = None,
 ) -> ResolvedLoadedConfig:
     discovered = discover_loaded_config_profiles()
     current_server = _read_pointer(get_current_server_config_path())
@@ -457,7 +458,7 @@ def set_current_s3_config(selection: str) -> Path:
     return _write_pointer(get_current_s3_config_path(), path)
 
 
-def apply_s3_config_override(user_cfg: dict[str, Any], s3_config_path: Optional[str]) -> dict[str, Any]:
+def apply_s3_config_override(user_cfg: dict[str, Any], s3_config_path: str | None) -> dict[str, Any]:
     if not s3_config_path:
         return user_cfg
     if user_cfg.get("s3_configuration_file") == s3_config_path:

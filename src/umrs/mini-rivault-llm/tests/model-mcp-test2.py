@@ -1,5 +1,5 @@
-import json
 from openai import OpenAI
+
 
 def square_the_number(input_num: float) -> dict:
     return {"result": input_num ** 2}
@@ -39,6 +39,7 @@ choice = completion.choices[0]
 print(choice)
 
 import re
+
 
 def extract_input_num(text):
     match = re.search(r"<parameter=input_num>\s*(.*?)\s*</parameter>", text)

@@ -32,7 +32,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 from umrs.schemas.vision import (
@@ -53,7 +53,7 @@ class VisionStep(Step):
 
     name = "vision"
 
-    def setup(self, config: Dict[str, Any]) -> None:
+    def setup(self, config: dict[str, Any]) -> None:
         self.mode: str = str(config.get("mode", "dense")).lower()
         if self.mode not in VALID_MODES:
             raise ValueError(
@@ -63,19 +63,19 @@ class VisionStep(Step):
 
         self.model: str = str(config.get("model", "rivault-vlm-static"))
         self.image_param: str = str(config.get("image_param", "image"))
-        self.prompt: Optional[str] = config.get("prompt")
+        self.prompt: str | None = config.get("prompt")
         self.max_chars: int = int(config.get("max_chars", 2000))
-        self.api_base: Optional[str] = (
+        self.api_base: str | None = (
             config.get("api_base")
             or os.environ.get("OPENAI_BASE_URL")
             or os.environ.get("R4_GATEWAY_URL")
         )
-        self.api_key: Optional[str] = (
+        self.api_key: str | None = (
             config.get("api_key") or os.environ.get("OPENAI_API_KEY")
         )
         self.timeout_sec: float = float(config.get("timeout_sec", 60.0))
         # Per-execution cache key (set by run() so retries are cheap).
-        self._cache: Dict[str, VisionPerception] = {}
+        self._cache: dict[str, VisionPerception] = {}
 
     # ------------------------------------------------------------------
     # Run
@@ -98,14 +98,14 @@ class VisionStep(Step):
         try:
             payload = json.dumps(perception.to_dict(), ensure_ascii=False).encode("utf-8")
             ctx.upload_bytes(out_key, payload, content_type="application/json")
-            output_keys: List[str] = [out_key]
+            output_keys: list[str] = [out_key]
         except Exception as exc:  # noqa: BLE001 — runtime path, just log and skip
             logger.warning("VisionStep: failed to upload perception JSON: %s", exc)
             output_keys = []
 
         ctx.report_progress(100.0, f"vision_step({self.mode}) complete")
 
-        extra: Dict[str, Any] = {
+        extra: dict[str, Any] = {
             "perception": perception.to_dict(),
             "mode": self.mode,
         }
@@ -124,7 +124,7 @@ class VisionStep(Step):
     # Image resolution
     # ------------------------------------------------------------------
 
-    def _resolve_image(self, ctx: StepContext) -> Optional["_ImageRef"]:
+    def _resolve_image(self, ctx: StepContext) -> _ImageRef | None:
         # Priority 1: explicit config (e.g. image_path).
         image_value = ctx.config.get(self.image_param)
         if image_value:
@@ -146,7 +146,7 @@ class VisionStep(Step):
     # Vision invocation
     # ------------------------------------------------------------------
 
-    def _invoke(self, ctx: StepContext, image_ref: "_ImageRef") -> VisionPerception:
+    def _invoke(self, ctx: StepContext, image_ref: _ImageRef) -> VisionPerception:
         if os.environ.get("UMRS_VISION_MOCK", "0") in ("1", "true", "TRUE"):
             return self._mock_perception(image_ref)
 
@@ -171,7 +171,7 @@ class VisionStep(Step):
 
         return self._mock_perception(image_ref, fallback=True, error="unknown mode")
 
-    def _invoke_vlm(self, image_ref: "_ImageRef") -> VisionPerception:
+    def _invoke_vlm(self, image_ref: _ImageRef) -> VisionPerception:
         """Call an OpenAI-compatible VLM via the Gateway."""
         try:
             import httpx
@@ -221,7 +221,7 @@ class VisionStep(Step):
 
         return self._parse_vlm_text(text, image_ref)
 
-    def _invoke_vision_mcp(self, image_ref: "_ImageRef") -> VisionPerception:
+    def _invoke_vision_mcp(self, image_ref: _ImageRef) -> VisionPerception:
         """Call the local Vision MCP server (SAM3 / embeddings)."""
         # The Vision MCP runs inside mini-rivault and is not directly
         # reachable from a step process in every environment.  When
@@ -260,7 +260,7 @@ class VisionStep(Step):
     # Output parsing / mocking
     # ------------------------------------------------------------------
 
-    def _parse_vlm_text(self, text: str, image_ref: "_ImageRef") -> VisionPerception:
+    def _parse_vlm_text(self, text: str, image_ref: _ImageRef) -> VisionPerception:
         text = text.strip()
         info = image_ref.image_info()
         model = ModelInfo(name=self.model, version="vlm")
@@ -270,7 +270,7 @@ class VisionStep(Step):
         if self.mode == "dense":
             return VisionPerception(dense_description=text, image=info, model=model)
         if self.mode == "ocr":
-            ocr_items: List[OCRItem] = []
+            ocr_items: list[OCRItem] = []
             for line in text.splitlines():
                 line = line.strip()
                 if line:
@@ -282,7 +282,7 @@ class VisionStep(Step):
         return VisionPerception(image=info, model=model, meta={"raw_text": text})
 
     @staticmethod
-    def _parse_detection_text(text: str) -> List[DetectedObject]:
+    def _parse_detection_text(text: str) -> list[DetectedObject]:
         """Best-effort parse of detection output.
 
         We try JSON first (preferred VLM format); fall back to a simple
@@ -298,7 +298,7 @@ class VisionStep(Step):
             if isinstance(data, dict) and "objects" in data:
                 data = data["objects"]
             if isinstance(data, list):
-                out: List[DetectedObject] = []
+                out: list[DetectedObject] = []
                 for item in data:
                     if isinstance(item, dict) and item.get("label"):
                         try:
@@ -307,7 +307,7 @@ class VisionStep(Step):
                             continue
                 return out
         # Fallback: each non-empty line is one object label.
-        objects: List[DetectedObject] = []
+        objects: list[DetectedObject] = []
         for line in text.splitlines():
             line = line.strip().lstrip("-").strip()
             if not line:
@@ -325,14 +325,14 @@ class VisionStep(Step):
 
     def _mock_perception(
         self,
-        image_ref: "_ImageRef",
+        image_ref: _ImageRef,
         *,
         fallback: bool = False,
-        error: Optional[str] = None,
+        error: str | None = None,
     ) -> VisionPerception:
         info = image_ref.image_info()
         model = ModelInfo(name="mock-vlm", version="0.1")
-        meta: Dict[str, Any] = {"mock": True, "mode": self.mode}
+        meta: dict[str, Any] = {"mock": True, "mode": self.mode}
         if fallback:
             meta["fallback"] = True
         if error:
@@ -421,10 +421,10 @@ class _ImageRef:
     def __init__(
         self,
         *,
-        bytes_data: Optional[bytes] = None,
-        path: Optional[str] = None,
-        url: Optional[str] = None,
-        s3_key: Optional[str] = None,
+        bytes_data: bytes | None = None,
+        path: str | None = None,
+        url: str | None = None,
+        s3_key: str | None = None,
     ) -> None:
         self.bytes_data = bytes_data
         self.path = path
@@ -434,7 +434,7 @@ class _ImageRef:
     # ----- factory ---------------------------------------------------
 
     @classmethod
-    def from_value(cls, value: str, ctx: StepContext) -> "_ImageRef":
+    def from_value(cls, value: str, ctx: StepContext) -> _ImageRef:
         if value.startswith(("http://", "https://", "data:")):
             return cls(url=value)
         if value.startswith("file://"):

@@ -24,7 +24,7 @@ import signal
 import struct
 import sys
 import traceback
-from typing import Any, Dict
+from typing import Any
 
 from umrs.pipeline_sdk.step import StepContext
 
@@ -33,7 +33,7 @@ logging.basicConfig(level=os.environ.get("UMRS_STEP_WORKER_LOG", "WARNING"))
 logger = logging.getLogger("umrs.step_worker")
 
 
-def _build_s3_client(s3_config: Dict[str, Any]) -> Any:
+def _build_s3_client(s3_config: dict[str, Any]) -> Any:
     """Reconstruct a boto3-compatible S3 client inside the worker.
 
     Honours ``s3_config['endpoint_url']`` / ``region_name`` if present
@@ -47,7 +47,7 @@ def _build_s3_client(s3_config: Dict[str, Any]) -> Any:
     except Exception as exc:  # noqa: BLE001
         logger.warning("boto3 unavailable in worker: %s", exc)
         return None
-    kwargs: Dict[str, Any] = {}
+    kwargs: dict[str, Any] = {}
     endpoint = s3_config.get("endpoint_url") or os.environ.get("MINIO_ENDPOINT")
     if endpoint:
         kwargs["endpoint_url"] = endpoint
@@ -61,7 +61,7 @@ def _build_s3_client(s3_config: Dict[str, Any]) -> Any:
         return None
 
 
-def _emit(reply: Dict[str, Any]) -> None:
+def _emit(reply: dict[str, Any]) -> None:
     """Write the pickle reply.
 
     Priority order (Slice 11):
@@ -129,7 +129,7 @@ def _read_payload() -> bytes:
     return sys.stdin.buffer.read()
 
 
-def _process_task(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _process_task(payload: dict[str, Any]) -> dict[str, Any]:
     """Run a single task and return the reply dict.
 
     Shared by both one-shot ``main()`` and ``pool_main()``.
@@ -222,7 +222,7 @@ def pool_main() -> int:
         try:
             payload = pickle.loads(raw)
         except Exception as exc:  # noqa: BLE001
-            reply: Dict[str, Any] = {
+            reply: dict[str, Any] = {
                 "status": "error",
                 "phase": "worker",
                 "message": f"could not decode payload: {exc}",
@@ -240,7 +240,7 @@ def pool_main() -> int:
 # Capability introspection (Slice 17 / 19)
 # ------------------------------------------------------------------
 
-def _gpu_mem_info() -> Dict[str, int]:
+def _gpu_mem_info() -> dict[str, int]:
     """Return GPU memory info via pynvml, or empty dict on failure."""
     try:
         import pynvml  # type: ignore
@@ -272,14 +272,14 @@ def _compute_slots(
     return max(1, min(slots, max_cap))
 
 
-def _get_capabilities() -> Dict[str, Any]:
+def _get_capabilities() -> dict[str, Any]:
     """Collect worker capabilities for Slice 17 ping responses.
 
     Returns a dict of capability tags. Currently:
     - ``gpu``: True if ``nvidia-smi`` is on PATH
     - GPU memory fields + ``slots`` when pynvml is available (Slice 19)
     """
-    caps: Dict[str, Any] = {}
+    caps: dict[str, Any] = {}
     caps["gpu"] = shutil.which("nvidia-smi") is not None
 
     gpu_info = _gpu_mem_info()
@@ -345,7 +345,7 @@ def zmq_pool_main(bind_address: str) -> int:
                 continue
             raw = sock.recv()
             if len(raw) > max_payload_bytes:
-                reply: Dict[str, Any] = {
+                reply: dict[str, Any] = {
                     "status": "error",
                     "phase": "worker",
                     "message": (
@@ -358,7 +358,7 @@ def zmq_pool_main(bind_address: str) -> int:
             try:
                 payload = pickle.loads(raw)
             except Exception as exc:  # noqa: BLE001
-                reply: Dict[str, Any] = {
+                reply: dict[str, Any] = {
                     "status": "error",
                     "phase": "worker",
                     "message": f"could not decode payload: {exc}",
@@ -368,7 +368,7 @@ def zmq_pool_main(bind_address: str) -> int:
 
             # Slice 17: capability ping — respond without running a task.
             if isinstance(payload, dict) and payload.get("type") == "ping":
-                pong: Dict[str, Any] = {
+                pong: dict[str, Any] = {
                     "type": "pong",
                     "capabilities": _get_capabilities(),
                 }
@@ -434,7 +434,7 @@ def zmq_dealer_main(connect_address: str) -> int:
                 continue
             raw = frames[-1]
             if len(raw) > max_payload_bytes:
-                reply: Dict[str, Any] = {
+                reply: dict[str, Any] = {
                     "status": "error",
                     "phase": "worker",
                     "message": (
@@ -462,7 +462,7 @@ def zmq_dealer_main(connect_address: str) -> int:
 
             # Capability ping.
             if isinstance(payload, dict) and payload.get("type") == "ping":
-                pong: Dict[str, Any] = {
+                pong: dict[str, Any] = {
                     "type": "pong",
                     "capabilities": _get_capabilities(),
                 }

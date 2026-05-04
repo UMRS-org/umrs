@@ -5,8 +5,12 @@ import json
 import os
 import sys
 
-from umrs.shared.storage.s3 import connect_to_s3, make_path_to_bucket_string, s3_create_users_and_buckets
 from umrs.server.sql import create_db
+from umrs.shared.storage.s3 import (
+    connect_to_s3,
+    make_path_to_bucket_string,
+    s3_create_users_and_buckets,
+)
 
 
 def create_s3_user(user_cfg, admin_s3_configuration_file):
@@ -69,7 +73,7 @@ def main(argv=None):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
-    with open(configure_file, "r", encoding="utf-8") as file:
+    with open(configure_file, encoding="utf-8") as file:
         content = json.load(file)
 
     print("Configuration loaded successfully.")

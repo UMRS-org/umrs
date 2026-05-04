@@ -1,34 +1,56 @@
 #!/usr/bin/env python3
 
 import argparse
+import json
+import logging
 import os
 import sys
-import time
-import json
+
 import diskcache
-import logging
 
 # Add the parent directory of this script (src) to sys.path
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
-from umrs.shared.storage.s3 import *
+import contextlib
+
+import umrs.server.config as _server_config
+from umrs.admin.daemon_signal import (
+    consume_reload_request,
+    install_reload_signal_handler,
+    remove_pid_file,
+    write_pid_file,
+)
 from umrs.core.MessageQueue import MessageQueue
-from umrs.shared.pretty_print import pretty_print_cfg
-
-from umrs.server.json_config import load_server_cfg_file
-from umrs.core.TaskManager import TaskManager
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
-from umrs.core.thread_pool import ServerOverloadedError, ThreadPoolManager, PoolConfig
-from umrs.shared.auth import AuthContext, AuthorizationError
+from umrs.core.TaskManager import TaskManager
+from umrs.core.thread_pool import PoolConfig, ServerOverloadedError, ThreadPoolManager
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
-
-from umrs.server.model_registry_handler import build_durable_model_backend_from_env, handle_model_command
-from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
+from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
+from umrs.server.file_handling import (
+    handle_upload_workflow as _handle_upload_workflow,
+)
+from umrs.server.file_handling import (
+    persist_uploaded_user_config as _persist_uploaded_user_config,
+)
 from umrs.server.job_tracking_handler import build_durable_job_backend_from_env, handle_job_command
-from umrs.shared.config import *
-from umrs.server.config import *
+from umrs.server.json_config import load_server_cfg_file
+from umrs.server.maintenance import (
+    check_duplicated_database,
+    check_objects,
+    filter_outcome,
+    recompute_all_objects,
+    reload_configuration,
+    update_objects,
+)
+from umrs.server.maintenance import (
+    handle_maintenance_command as _handle_maintenance_command,
+)
+from umrs.server.model_registry_handler import (
+    build_durable_model_backend_from_env,
+    handle_model_command,
+)
 from umrs.server.provisioning import (
     ServerCfg,
     configure_user,
@@ -36,27 +58,14 @@ from umrs.server.provisioning import (
     is_client_configured,
     reconcile_status_on_startup,
 )
-from umrs.server.maintenance import (
-    recompute_all_objects,
-    update_objects,
-    check_objects,
-    filter_outcome,
-    handle_maintenance_command as _handle_maintenance_command,
-    reload_configuration,
-    check_duplicated_database,
+from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
+from umrs.shared.config import (
+    get_default_json_server_file,
+    get_default_tmp_subdir,
+    get_default_umrs_cfg_dir,
+    get_umrs_cfg_env_var_name,
 )
-from umrs.admin.daemon_signal import (
-    consume_reload_request,
-    install_reload_signal_handler,
-    remove_pid_file,
-    write_pid_file,
-)
-from umrs.server.processing import process_s3_objects
-from umrs.server.file_handling import (
-    ensure_user_file_in_conf as _ensure_user_file_in_conf,
-    handle_upload_workflow as _handle_upload_workflow,
-    persist_uploaded_user_config as _persist_uploaded_user_config,
-)
+from umrs.shared.pretty_print import pretty_print_cfg
 
 _status_store_global = None
 logger = logging.getLogger(__name__)
@@ -112,7 +121,7 @@ def perform_initial_config(configure_file, status_store):
     print(f"-->  Models will be run on device: {device}")
 
     embedding_backend = LocalEmbeddingBackend()
-    print(f"\n######################\nServer configuration done!\n######################\n")
+    print("\n######################\nServer configuration done!\n######################\n")
 
     return control_mq, server_cfg, device, embedding_backend
 
@@ -167,10 +176,8 @@ def server_event_loop(
             client_id, auth_ctx.role.value, cmd,
         )
         if zmq_sender_id is not None:
-            try:
+            with contextlib.suppress(RuntimeError):
                 control_mq.send_string(f"UNAUTHORIZED:{cmd}", zmq_sender_id)
-            except RuntimeError:
-                pass
         return None
 
     try:
@@ -273,7 +280,6 @@ def server_event_loop(
                         print(f"Failed to enroll user from '{file}'")
                 if enrolled_any:
                     # Auto-reload so new user is provisioned (MinIO + Postgres)
-                    from umrs.server.config import ENABLE_PRETTY_PRINT
                     outcome = reload_configuration(
                         configure_file, buckets_cfg, user_config_map,
                         log_output=ENABLE_PRETTY_PRINT,
@@ -317,7 +323,7 @@ def server_event_loop(
                         # Auto-register in workflow catalog
                         try:
                             wf_json_path = os.path.join(dest, "workflow.json")
-                            with open(wf_json_path, "r", encoding="utf-8") as fh:
+                            with open(wf_json_path, encoding="utf-8") as fh:
                                 wf_data = json.load(fh)
                             version = wf_data.get("version", "0.1")
                             register_workflow(
@@ -368,10 +374,8 @@ def server_event_loop(
                         task_manager.associate_thread_with_task(thread_ident, task_id)
                     except ServerOverloadedError as exc:
                         _reject_overloaded(task_id, update_status_func, exc)
-                        try:
+                        with contextlib.suppress(RuntimeError):
                             control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
-                        except RuntimeError:
-                            pass
             elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
                 client_id, export_args, zmq_sender_id = payload
                 if _authorize(cmd, client_id, zmq_sender_id) is None:
@@ -382,10 +386,8 @@ def server_event_loop(
                     task_manager.associate_thread_with_task(thread_ident, task_id)
                 except ServerOverloadedError as exc:
                     _reject_overloaded(task_id, update_status_func, exc)
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
-                    except RuntimeError:
-                        pass
 
             elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST):
                 client_id, payload_str, zmq_sender_id = payload
@@ -463,7 +465,7 @@ def server_event_loop(
 
             # After any event and cleanup, update per-user task status summaries
             try:
-                users = set(entry.s3_username for entry in buckets_cfg.values())
+                users = {entry.s3_username for entry in buckets_cfg.values()}
                 users = {u for u in users if u}
                 task_manager.active_threads.record_status_for_users_by_key(users, TaskCmd.PROCESS_OBJECTS)
             except Exception as e:
@@ -600,7 +602,6 @@ def main():
     configure_file = args.conf
 
     global ENABLE_PRETTY_PRINT
-    import umrs.server.config as _server_config
     ENABLE_PRETTY_PRINT = args.pretty_print
     _server_config.ENABLE_PRETTY_PRINT = args.pretty_print
 
@@ -697,10 +698,8 @@ def main():
         )
     finally:
         if pid_file_path is not None:
-            try:
+            with contextlib.suppress(OSError):
                 remove_pid_file(pid_file_path)
-            except OSError:
-                pass
         if durable_job_runtime is not None:
             try:
                 durable_job_runtime.shutdown()

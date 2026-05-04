@@ -37,10 +37,9 @@ import logging
 import os
 import sys
 import traceback
-from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logging.basicConfig(
     level=logging.INFO,
@@ -142,7 +141,7 @@ def _build_s3_client():
         return None
 
 
-def _write_manifest(manifest: Dict[str, Any]) -> Path:
+def _write_manifest(manifest: dict[str, Any]) -> Path:
     """Write the result manifest to /workspace/result_manifest.json."""
     manifest_path = WORKSPACE / "result_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, default=str))
@@ -232,7 +231,7 @@ def main() -> int:
         ended_at = datetime.now(timezone.utc)
 
         # Serialise embeddings — convert numpy arrays to lists for JSON.
-        embeddings_serialised: Optional[List] = None
+        embeddings_serialised: list | None = None
         if result.embeddings is not None:
             try:
                 import numpy as np

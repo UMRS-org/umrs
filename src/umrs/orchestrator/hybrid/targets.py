@@ -13,10 +13,10 @@ Implementations:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import os
-import re
 import subprocess
 import tempfile
 from abc import ABC, abstractmethod
@@ -24,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,8 @@ class AllocationInfo:
     job_id: str                     # Backend-specific job ID
     node: str                       # Allocated node hostname
     status: AllocationStatus
-    allocated_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    allocated_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     # Resource details (filled by backend)
     gpus: int = 0
@@ -94,13 +94,13 @@ class JobSpec:
     # instance default and SLURM_ACCOUNT env. None falls back to instance
     # default / site.yaml. Populated from the submitting user's record so
     # fairshare attributes the job to their own Slurm account.
-    slurm_account: Optional[str] = None
+    slurm_account: str | None = None
 
     # Labels/annotations
-    labels: Dict[str, str] = field(default_factory=dict)
+    labels: dict[str, str] = field(default_factory=dict)
 
     # Backend-specific options
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 class ExecutionTarget(ABC):
@@ -169,8 +169,8 @@ class ExecutionTarget(ABC):
     @abstractmethod
     async def list_jobs(
         self,
-        labels: Optional[Dict[str, str]] = None,
-    ) -> List[AllocationInfo]:
+        labels: dict[str, str] | None = None,
+    ) -> list[AllocationInfo]:
         """
         List active jobs matching optional label filter.
 
@@ -207,9 +207,7 @@ class ExecutionTarget(ABC):
         while True:
             info = await self.status(job_id)
 
-            if info.status == AllocationStatus.ALLOCATED:
-                return info
-            elif info.status == AllocationStatus.RUNNING:
+            if info.status == AllocationStatus.ALLOCATED or info.status == AllocationStatus.RUNNING:
                 return info
             elif info.status in (AllocationStatus.FAILED, AllocationStatus.CANCELLED):
                 raise RuntimeError(f"Job {job_id} failed during allocation: {info.status}")
@@ -304,13 +302,11 @@ class SlurmTarget(ExecutionTarget):
             )
 
         except subprocess.CalledProcessError as e:
-            raise SubmissionError(f"sbatch failed: {e.stderr}")
+            raise SubmissionError(f"sbatch failed: {e.stderr}") from e
         finally:
             # Clean up temp script
-            try:
+            with contextlib.suppress(Exception):
                 os.unlink(script_path)
-            except Exception:
-                pass
 
     async def cancel(self, job_id: str) -> bool:
         """Cancel job via scancel."""
@@ -346,8 +342,8 @@ class SlurmTarget(ExecutionTarget):
 
     async def list_jobs(
         self,
-        labels: Optional[Dict[str, str]] = None,
-    ) -> List[AllocationInfo]:
+        labels: dict[str, str] | None = None,
+    ) -> list[AllocationInfo]:
         """List jobs via squeue."""
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -456,7 +452,7 @@ class SlurmTarget(ExecutionTarget):
 
         return stdout.decode().strip()
 
-    async def _squeue_status(self, job_id: str) -> Optional[AllocationInfo]:
+    async def _squeue_status(self, job_id: str) -> AllocationInfo | None:
         """Get status from squeue."""
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -486,7 +482,7 @@ class SlurmTarget(ExecutionTarget):
         except Exception:
             return None
 
-    async def _sacct_status(self, job_id: str) -> Optional[AllocationInfo]:
+    async def _sacct_status(self, job_id: str) -> AllocationInfo | None:
         """Get status from sacct (for completed jobs)."""
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -548,7 +544,7 @@ class K8sTarget(ExecutionTarget):
         self,
         namespace: str = "rivault-system",
         gpu_resource: str = "nvidia.com/gpu",
-        kubeconfig: Optional[str] = None,
+        kubeconfig: str | None = None,
     ):
         """
         Initialize K8s target.
@@ -604,7 +600,7 @@ class K8sTarget(ExecutionTarget):
             )
 
         except subprocess.CalledProcessError as e:
-            raise SubmissionError(f"kubectl failed: {e}")
+            raise SubmissionError(f"kubectl failed: {e}") from e
 
     async def cancel(self, job_id: str) -> bool:
         """Delete K8s Job."""
@@ -663,8 +659,8 @@ class K8sTarget(ExecutionTarget):
 
     async def list_jobs(
         self,
-        labels: Optional[Dict[str, str]] = None,
-    ) -> List[AllocationInfo]:
+        labels: dict[str, str] | None = None,
+    ) -> list[AllocationInfo]:
         """List Jobs with optional label selector."""
         try:
             cmd = [
@@ -705,7 +701,7 @@ class K8sTarget(ExecutionTarget):
             logger.warning(f"Failed to list jobs: {e}")
             return []
 
-    def _build_job_manifest(self, name: str, spec: JobSpec) -> Dict[str, Any]:
+    def _build_job_manifest(self, name: str, spec: JobSpec) -> dict[str, Any]:
         """Build K8s Job manifest."""
         labels = {
             "app.kubernetes.io/name": "rivault",
@@ -751,7 +747,7 @@ class K8sTarget(ExecutionTarget):
             },
         }
 
-    def _parse_job_status(self, job: Dict[str, Any]) -> AllocationStatus:
+    def _parse_job_status(self, job: dict[str, Any]) -> AllocationStatus:
         """Parse Job status from JSON."""
         status = job.get("status", {})
 
@@ -886,10 +882,8 @@ class ComposeTarget(ExecutionTarget):
             services = []
             for line in stdout.decode().strip().split("\n"):
                 if line:
-                    try:
+                    with contextlib.suppress(json.JSONDecodeError):
                         services.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
 
             if not services:
                 return AllocationInfo(
@@ -920,8 +914,8 @@ class ComposeTarget(ExecutionTarget):
 
     async def list_jobs(
         self,
-        labels: Optional[Dict[str, str]] = None,
-    ) -> List[AllocationInfo]:
+        labels: dict[str, str] | None = None,
+    ) -> list[AllocationInfo]:
         """List compose projects (limited to current project)."""
         info = await self.status(self.project_name)
         if info.status in (AllocationStatus.RUNNING, AllocationStatus.PENDING):

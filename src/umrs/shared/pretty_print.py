@@ -1,5 +1,6 @@
-import pandas as pd
 import sys
+
+import pandas as pd
 from tabulate import tabulate
 
 
@@ -82,9 +83,9 @@ def pretty_print_cfg(cfg_dict, print_output=True):
         metadata = entry.metadata
         metadata_str= ""
         for mentry in metadata.values():
-            name = mentry["name"];
-            value_type = mentry["type"];
-            if not metadata_str == "":
+            name = mentry["name"]
+            value_type = mentry["type"]
+            if metadata_str != "":
                 metadata_str += " ; "
             metadata_str += f"{name} ({value_type})"
 
@@ -143,10 +144,7 @@ def pretty_print_recompute(recompute_dict, update=False, print_output=True):
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
-    if update:
-        title = "\nUpdate Summary:"
-    else:
-        title = "\nRecompute Summary:"
+    title = "\nUpdate Summary:" if update else "\nRecompute Summary:"
 
     # If no rows to display, avoid tabulate alignment issues and print a friendly message
     if df.empty:

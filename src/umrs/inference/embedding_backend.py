@@ -1,4 +1,4 @@
-from typing import List, Any
+from typing import Any
 
 from umrs.inference.embeddings import compute_and_store_embedding
 
@@ -13,7 +13,7 @@ class LocalEmbeddingBackend:
     def compute_and_store(
         self,
         path_to_bucket: str,
-        s3_keys: List[str],
+        s3_keys: list[str],
         data_base: Any,
         table_name: str,
         model: Any,

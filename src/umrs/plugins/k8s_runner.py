@@ -9,11 +9,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any
 
-from .models import PluginSpec, PluginResult, PluginStatus
-from .runner import PluginRunner, DEFAULT_PLUGIN_IMAGE
+from .models import PluginResult, PluginSpec, PluginStatus
+from .runner import DEFAULT_PLUGIN_IMAGE, PluginRunner
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +49,7 @@ class K8sPluginRunner(PluginRunner):
         self.service_account = service_account
 
         # Track submitted jobs: plugin_id -> job_name
-        self._k8s_jobs: Dict[str, str] = {}
+        self._k8s_jobs: dict[str, str] = {}
 
         # Lazy-load kubernetes client
         self._k8s_client = None
@@ -75,7 +74,7 @@ class K8sPluginRunner(PluginRunner):
                 raise RuntimeError(
                     "kubernetes package required for K8s plugin runner. "
                     "Install with: pip install kubernetes"
-                )
+                ) from None
         return self._k8s_client
 
     async def _execute_backend(
@@ -84,7 +83,7 @@ class K8sPluginRunner(PluginRunner):
         spec: PluginSpec,
     ) -> PluginResult:
         """Execute plugin as Kubernetes Job."""
-        client = self._get_k8s_client()
+        self._get_k8s_client()
 
         job_name = f"plugin-{plugin_id[:8]}"
         self._k8s_jobs[plugin_id] = job_name
@@ -122,7 +121,7 @@ class K8sPluginRunner(PluginRunner):
         job_name: str,
         plugin_id: str,
         spec: PluginSpec,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Create Kubernetes Job manifest."""
         client = self._get_k8s_client()
 
@@ -366,7 +365,7 @@ class K8sPluginRunner(PluginRunner):
             logger.exception(f"Failed to cancel K8s job {job_name}")
             return False
 
-    async def get_status(self, plugin_id: str) -> Optional[PluginStatus]:
+    async def get_status(self, plugin_id: str) -> PluginStatus | None:
         """Get current status of a plugin execution."""
         job_name = self._k8s_jobs.get(plugin_id)
         if not job_name:

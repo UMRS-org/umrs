@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 from umrs.model_registry.models import ExecutionAuthority, ModelRef, ModelRefType
 
 from .base import ModelRefResolver, ResolutionError, ResolvedModel
@@ -21,13 +19,13 @@ class ResolverRegistry:
     """
 
     def __init__(self):
-        self._resolvers: Dict[ModelRefType, ModelRefResolver] = {}
+        self._resolvers: dict[ModelRefType, ModelRefResolver] = {}
 
     def register(self, resolver: ModelRefResolver) -> None:
         """Register a resolver for its ref type."""
         self._resolvers[resolver.ref_type] = resolver
 
-    def get(self, ref_type: ModelRefType) -> Optional[ModelRefResolver]:
+    def get(self, ref_type: ModelRefType) -> ModelRefResolver | None:
         """Get resolver for a ref type."""
         return self._resolvers.get(ref_type)
 
@@ -45,7 +43,7 @@ class ResolverRegistry:
         return await resolver.resolve(ref, authority)
 
     @classmethod
-    def default(cls) -> "ResolverRegistry":
+    def default(cls) -> ResolverRegistry:
         """Create registry with default resolvers."""
         registry = cls()
         registry.register(FilesystemResolver())

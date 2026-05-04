@@ -12,14 +12,12 @@ Provides:
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..jobs.models import (
-    AttemptStatus,
     Job,
     JobAttempt,
     JobStatus,
@@ -43,7 +41,7 @@ router = APIRouter(prefix="/umrs/jobs", tags=["jobs"])
 # =============================================================================
 
 # Global job store instance (set during app startup)
-_job_store: Optional[JobStore] = None
+_job_store: JobStore | None = None
 
 
 def set_job_store(store: JobStore) -> None:
@@ -62,7 +60,7 @@ def get_job_store() -> JobStore:
     return _job_store
 
 
-def get_optional_job_store() -> Optional[JobStore]:
+def get_optional_job_store() -> JobStore | None:
     """Return the configured job store, if this process owns one."""
     return _job_store
 
@@ -71,7 +69,7 @@ def _strict_auth_mode() -> bool:
     return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
 
 
-def _header_str(value: Any) -> Optional[str]:
+def _header_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
@@ -97,12 +95,12 @@ class CallerIdentity:
 
 
 def get_caller_identity(
-    caller_user_id: Optional[str] = Query(None, description="Caller's user ID"),
-    caller_project_id: Optional[str] = Query(None, description="Caller's project ID"),
+    caller_user_id: str | None = Query(None, description="Caller's user ID"),
+    caller_project_id: str | None = Query(None, description="Caller's project ID"),
     is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
-    x_user_id: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
-    x_verified_is_admin: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
 ) -> CallerIdentity:
     """Build caller identity from request params.
 
@@ -142,8 +140,8 @@ def get_caller_identity(
 
 def _resolve_job_create_identity(
     request: "JobCreateRequest",
-    x_user_id: Optional[str],
-    x_verified_project_id: Optional[str],
+    x_user_id: str | None,
+    x_verified_project_id: str | None,
 ) -> tuple[str, str]:
     verified_user_id = _header_str(x_user_id)
     verified_project_id = _header_str(x_verified_project_id)
@@ -167,15 +165,15 @@ class JobSpec(BaseModel):
     """Job specification - parameters for the job."""
 
     # Common fields
-    model: Optional[str] = Field(None, description="Model name for inference jobs")
-    model_path: Optional[str] = Field(None, description="Path to model files")
+    model: str | None = Field(None, description="Model name for inference jobs")
+    model_path: str | None = Field(None, description="Path to model files")
 
     # Data job fields
-    dataset: Optional[str] = Field(None, description="Dataset name/path for data jobs")
-    output_path: Optional[str] = Field(None, description="Output path for results")
+    dataset: str | None = Field(None, description="Dataset name/path for data jobs")
+    output_path: str | None = Field(None, description="Output path for results")
 
     # Additional params (extensible)
-    extra: Optional[Dict[str, Any]] = Field(
+    extra: dict[str, Any] | None = Field(
         default_factory=dict, description="Additional job-specific parameters"
     )
 
@@ -194,7 +192,7 @@ class JobCreateRequest(BaseModel):
     )
     spec: JobSpec = Field(..., description="Job specification")
 
-    idempotency_key: Optional[str] = Field(
+    idempotency_key: str | None = Field(
         None, description="Idempotency key (auto-generated if not provided)"
     )
     priority: int = Field(0, ge=-100, le=100, description="Priority (-100 to 100)")
@@ -232,14 +230,14 @@ class AttemptResponse(BaseModel):
     job_id: str
     attempt_no: int
     backend: str
-    backend_ref: Optional[str]
+    backend_ref: str | None
     status: str
-    started_at: Optional[str]
-    ended_at: Optional[str]
-    exit_reason: Optional[str]
-    log_uri: Optional[str]
-    status_detail: Optional[str]
-    metrics: Dict[str, Any]
+    started_at: str | None
+    ended_at: str | None
+    exit_reason: str | None
+    log_uri: str | None
+    status_detail: str | None
+    metrics: dict[str, Any]
     created_at: str
 
 
@@ -250,20 +248,20 @@ class JobResponse(BaseModel):
     project_id: str
     user_id: str
     job_type: str
-    spec: Dict[str, Any]
+    spec: dict[str, Any]
     status: str
     priority: int
     desired_max_attempts: int
     restart_policy: str
-    next_run_at: Optional[str]
-    active_attempt_id: Optional[str]
-    commit_attempt_id: Optional[str]
+    next_run_at: str | None
+    active_attempt_id: str | None
+    commit_attempt_id: str | None
     created_at: str
     updated_at: str
-    last_state_change_at: Optional[str]
+    last_state_change_at: str | None
 
     # Included in detail view
-    attempts: Optional[List[AttemptResponse]] = None
+    attempts: list[AttemptResponse] | None = None
 
     class Config:
         json_schema_extra = {
@@ -290,7 +288,7 @@ class JobResponse(BaseModel):
 class JobListResponse(BaseModel):
     """Response for job listing."""
 
-    jobs: List[JobResponse]
+    jobs: list[JobResponse]
     total: int
     limit: int
     offset: int
@@ -389,8 +387,8 @@ def _enforce_job_access(
 )
 async def create_job(
     request: JobCreateRequest,
-    x_user_id: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
     store: JobStore = Depends(get_job_store),
 ) -> JobCreateResponse:
     """
@@ -407,7 +405,7 @@ async def create_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid job_type: {request.job_type}. "
                        f"Valid types: {[t.value for t in JobType]}",
-            )
+            ) from None
 
         # Parse restart policy
         try:
@@ -417,7 +415,7 @@ async def create_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid restart_policy: {request.restart_policy}. "
                        f"Valid policies: {[p.value for p in RestartPolicy]}",
-            )
+            ) from None
 
         # Build spec dict
         spec = request.spec.model_dump(exclude_none=True)
@@ -462,7 +460,7 @@ async def create_job(
                 "message": "Job with this idempotency key already exists",
                 "existing_job_id": e.existing_job_id,
             },
-        )
+        ) from e
 
 
 @router.get(
@@ -472,11 +470,11 @@ async def create_job(
     description="List jobs with optional filters by project, status, and type.",
 )
 async def list_jobs(
-    project_id: Optional[str] = Query(None, description="Filter by project ID"),
-    status_filter: Optional[str] = Query(
+    project_id: str | None = Query(None, description="Filter by project ID"),
+    status_filter: str | None = Query(
         None, alias="status", description="Filter by status"
     ),
-    job_type: Optional[str] = Query(None, description="Filter by job type"),
+    job_type: str | None = Query(None, description="Filter by job type"),
     limit: int = Query(100, ge=1, le=1000, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
     caller: CallerIdentity = Depends(get_caller_identity),
@@ -499,7 +497,7 @@ async def list_jobs(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid status: {status_filter}",
-            )
+            ) from None
 
     parsed_type = None
     if job_type:
@@ -509,7 +507,7 @@ async def list_jobs(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid job_type: {job_type}",
-            )
+            ) from None
 
     # Query jobs
     jobs = store.list_jobs(
@@ -565,7 +563,7 @@ async def get_job(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job not found: {job_id}",
-        )
+        ) from None
 
 
 @router.post(
@@ -606,12 +604,12 @@ async def cancel_job(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job not found: {job_id}",
-        )
+        ) from None
     except InvalidTransitionError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
 
 
 @router.post(
@@ -650,12 +648,12 @@ async def retry_job(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job not found: {job_id}",
-        )
+        ) from None
     except InvalidTransitionError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
 
 
 # =============================================================================
@@ -669,9 +667,9 @@ async def retry_job(
     description="Get aggregate statistics about jobs.",
 )
 async def get_job_stats(
-    project_id: Optional[str] = Query(None, description="Filter by project ID"),
+    project_id: str | None = Query(None, description="Filter by project ID"),
     store: JobStore = Depends(get_job_store),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get job statistics.
     """
@@ -683,8 +681,8 @@ async def get_job_stats(
     }
 
     # Count by status
-    for status in JobStatus:
-        jobs = store.list_jobs(project_id=project_id, status=status, limit=0)
-        stats["status_counts"][status.value] = len(jobs)
+    for job_status in JobStatus:
+        jobs = store.list_jobs(project_id=project_id, status=job_status, limit=0)
+        stats["status_counts"][job_status.value] = len(jobs)
 
     return stats

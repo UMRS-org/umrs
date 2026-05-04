@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, List
+from typing import Any
 
 from .base import OrchestratorConfig
 
@@ -33,7 +33,7 @@ def render_sbatch_script(
     )
 
 
-def module_load_lines(modules: List[str]) -> str:
+def module_load_lines(modules: list[str]) -> str:
     """Render configured module loads for the Slurm script."""
     if not modules:
         return "# No site modules configured"

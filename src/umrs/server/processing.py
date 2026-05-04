@@ -1,9 +1,8 @@
 """S3 object processing pipeline: embedding computation and storage."""
 
+import logging
 import os
 import threading
-import logging
-
 from collections import defaultdict
 
 from umrs.core.TaskCmdStatus import TaskStatus
@@ -40,7 +39,7 @@ def process_s3_objects(
     active_threads.update_thread_dict(buckets_cfg, keys_per_bucket, key)
 
     exit_status = TaskStatus.COMPLETED
-    for path_to_bucket in keys_per_bucket.keys():
+    for path_to_bucket in keys_per_bucket:
         selected_fields = [
             "s3_username",
             "data_base",

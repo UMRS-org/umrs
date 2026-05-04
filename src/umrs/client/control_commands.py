@@ -5,7 +5,6 @@ import json
 
 from umrs.core.TaskCmdStatus import TaskCmd
 
-
 PING_TIMEOUT_MS_DEFAULT = 2000
 MODEL_TYPE_CHOICES = ("llm", "embedding", "vision")
 MODEL_SCOPE_CHOICES = ("system", "project", "user")

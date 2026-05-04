@@ -1,7 +1,8 @@
-from transformers import AutoTokenizer, AutoModel
-from transformers.utils import logging
-from umrs.shared.utils import flatten_text_chunks, add_embeddings_to_chunks_dict
 import torch
+from transformers import AutoModel, AutoTokenizer
+from transformers.utils import logging
+
+from umrs.shared.utils import add_embeddings_to_chunks_dict, flatten_text_chunks
 
 ################################ TransformerEncoder  ###########################
 

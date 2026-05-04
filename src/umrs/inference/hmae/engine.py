@@ -5,9 +5,9 @@ Adaptively decomposes an image into variable-size patches using edge-guided
 quadtree splitting. High-detail regions get smaller patches.
 """
 
-import torch
-import numpy as np
 import cv2
+import numpy as np
+import torch
 
 
 class Rect:

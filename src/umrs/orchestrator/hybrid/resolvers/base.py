@@ -10,7 +10,7 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any
 
 from umrs.model_registry.models import ExecutionAuthority, ModelRef, ModelRefType
 
@@ -32,10 +32,10 @@ class ResolvedModel:
     container_path: str = "/models"
     read_only: bool = True
     model_name: str = ""
-    resolved_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    resolved_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_mount_spec(self) -> Dict[str, Any]:
+    def to_mount_spec(self) -> dict[str, Any]:
         """Convert to MountSpec-compatible dict."""
         from ..wrappers import MountSpec
 

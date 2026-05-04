@@ -7,7 +7,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .models import AttemptStatus, Job, JobAttempt, JobStatus, JobType
 
@@ -31,10 +31,10 @@ class DownloadProgress:
     downloaded_files: int = 0
     total_bytes: int = 0
     downloaded_bytes: int = 0
-    current_file: Optional[str] = None
-    started_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    error_message: Optional[str] = None
+    current_file: str | None = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+    error_message: str | None = None
     status: str = "pending"
 
     @property
@@ -44,7 +44,7 @@ class DownloadProgress:
             return 0.0
         return min(100.0, (self.downloaded_bytes / self.total_bytes) * 100)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for storage."""
         return {
             "total_files": self.total_files,
@@ -60,7 +60,7 @@ class DownloadProgress:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "DownloadProgress":
+    def from_dict(cls, data: dict[str, Any]) -> DownloadProgress:
         """Create from dictionary."""
         return cls(
             total_files=data.get("total_files", 0),
@@ -96,10 +96,10 @@ class DownloadTaskContext:
     scope: str
     owner_id: str
     progress: DownloadProgress = field(default_factory=DownloadProgress)
-    hf_token: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    hf_token: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary without exposing secret token values."""
         return {
             "job_id": self.job_id,
@@ -120,7 +120,7 @@ class DownloadTaskRegistry:
     """In-memory registry for in-flight download task contexts."""
 
     def __init__(self):
-        self._tasks: Dict[str, DownloadTaskContext] = {}
+        self._tasks: dict[str, DownloadTaskContext] = {}
         self._lock = asyncio.Lock()
 
     async def register(self, ctx: DownloadTaskContext) -> None:
@@ -128,7 +128,7 @@ class DownloadTaskRegistry:
         async with self._lock:
             self._tasks[ctx.attempt_id] = ctx
 
-    async def get(self, attempt_id: str) -> Optional[DownloadTaskContext]:
+    async def get(self, attempt_id: str) -> DownloadTaskContext | None:
         """Get task context by attempt ID."""
         async with self._lock:
             return self._tasks.get(attempt_id)
@@ -143,18 +143,18 @@ class DownloadTaskRegistry:
             if attempt_id in self._tasks:
                 self._tasks[attempt_id].progress = progress
 
-    async def remove(self, attempt_id: str) -> Optional[DownloadTaskContext]:
+    async def remove(self, attempt_id: str) -> DownloadTaskContext | None:
         """Remove and return a completed task."""
         async with self._lock:
             return self._tasks.pop(attempt_id, None)
 
-    async def list_tasks(self) -> List[DownloadTaskContext]:
+    async def list_tasks(self) -> list[DownloadTaskContext]:
         """List all active tasks."""
         async with self._lock:
             return list(self._tasks.values())
 
 
-_download_registry: Optional[DownloadTaskRegistry] = None
+_download_registry: DownloadTaskRegistry | None = None
 
 
 def get_download_registry() -> DownloadTaskRegistry:
@@ -165,7 +165,7 @@ def get_download_registry() -> DownloadTaskRegistry:
     return _download_registry
 
 
-def _download_source_from_spec(spec: Dict[str, Any]) -> DownloadSource:
+def _download_source_from_spec(spec: dict[str, Any]) -> DownloadSource:
     """Resolve and validate the download source from a durable job spec."""
     source_str = spec.get("source", "huggingface").lower()
     try:
@@ -189,7 +189,7 @@ def _download_owner_id(job: Job, scope: str) -> str:
 def _download_task_context_from_attempt(
     job: Job,
     attempt: JobAttempt,
-    hf_token: Optional[str] = None,
+    hf_token: str | None = None,
     recovered: bool = False,
 ) -> DownloadTaskContext:
     """Rebuild task context from durable job and attempt records."""
@@ -238,7 +238,7 @@ def _download_progress_from_attempt(attempt: JobAttempt) -> DownloadProgress:
     return progress
 
 
-def _recoverable_download_attempt(job_store: Any, job: Job) -> Optional[JobAttempt]:
+def _recoverable_download_attempt(job_store: Any, job: Job) -> JobAttempt | None:
     """Return the active durable model-download attempt, if one exists."""
     active_attempt_id = job.active_attempt_id
     if active_attempt_id:
@@ -256,7 +256,7 @@ def _recoverable_download_attempt(job_store: Any, job: Job) -> Optional[JobAttem
 
 async def recover_download_registry_from_job_store(
     job_store: Any,
-    download_registry: Optional[DownloadTaskRegistry] = None,
+    download_registry: DownloadTaskRegistry | None = None,
     limit: int = 1000,
 ) -> int:
     """Rebuild in-memory task contexts from durable active attempts."""

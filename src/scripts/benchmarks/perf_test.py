@@ -2,8 +2,10 @@
 
 import time  # For performance timing using time.perf_counter
 from io import BytesIO  # To read binary data from S3 objects
+
 from PIL import Image  # For image loading and manipulation
-import boto3  # AWS SDK for Python to interact with S3
+from umrs.server.sql import store_embeddings_in_db
+
 
 def perf_test(s3, bucket_name, modality_name, model, db_pool, table_name, stage_max = 1, n=1):
     response = s3.list_objects_v2(Bucket=bucket_name)
@@ -51,7 +53,7 @@ def perf_test(s3, bucket_name, modality_name, model, db_pool, table_name, stage_
     total_time = end - start # ms
     throughput_MB_p_s = (n * total_size /(1024*1024))/(total_time/1000)
     print(f"stage: BytesIO+PIL ; nb_objects: {nb_objects*n} ; Total_size: {total_size*n/(1024*1024):.3f}MB ; total_time: {total_time:.3f} ms ; Throughput: {throughput_MB_p_s:.3f} MB/s")
-    
+
     stage += 1
     if stage>stage_max:
         return
@@ -68,7 +70,7 @@ def perf_test(s3, bucket_name, modality_name, model, db_pool, table_name, stage_
     total_time = end - start # ms
     throughput_MB_p_s = (n * total_size /(1024*1024))/(total_time/1000)
     print(f"stage: BytesIO+PIL+Embedding ; nb_objects: {nb_objects*n} ; Total_size: {total_size*n/(1024*1024):.3f}MB ; total_time: {total_time:.3f} ms ; Throughput: {throughput_MB_p_s:.3f} MB/s")
-    
+
     stage += 1
     if stage>stage_max:
         return
@@ -86,18 +88,11 @@ def perf_test(s3, bucket_name, modality_name, model, db_pool, table_name, stage_
     total_time = end - start # ms
     throughput_MB_p_s = (n * total_size /(1024*1024))/(total_time/1000)
     print(f"stage: BytesIO+PIL+Embedding+SQL_Store ; nb_objects: {nb_objects*n} ; Total_size: {total_size*n/(1024*1024):.3f}MB ; total_time: {total_time:.3f} ms ; Throughput: {throughput_MB_p_s:.3f} MB/s")
-    
+
 def run_perf_test():
-    bucket_name = "ejeannot-text-and-images-ej-bucket-1"
-    db_pool, table_name, model, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
-    bucket_name = "tarballs"
-    perf_test(s3_connection, bucket_name, "image", model,db_pool, table_name, stage_max = 1)
-    bucket_name = "ejeannot-text-and-images-ej-bucket-1"
-    perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=1, n=100)
-    perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=2, n=100)
-    perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=3, n=10)
-    perf_test(s3_connection, bucket_name, "image", model, db_pool, table_name, stage_max=4, n=10)
+    raise RuntimeError(
+        "run_perf_test requires caller-provided db_model_store/query_db_model setup; "
+        "call perf_test(...) directly with resolved dependencies."
+    )
 
 
-
-    

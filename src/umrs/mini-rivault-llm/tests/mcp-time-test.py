@@ -1,5 +1,6 @@
-from fastmcp import Client
 import asyncio
+
+from fastmcp import Client
 
 # Standard MCP configuration
 config = {

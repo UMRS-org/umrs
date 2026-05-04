@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 
 class ModelScope(Enum):
@@ -113,21 +113,21 @@ class ModelRef:
     ref_type: ModelRefType
 
     # For filesystem_path
-    path: Optional[str] = None
+    path: str | None = None
 
     # For pvc_ref
-    pvc_name: Optional[str] = None
-    pvc_namespace: Optional[str] = None
-    subpath: Optional[str] = None
+    pvc_name: str | None = None
+    pvc_namespace: str | None = None
+    subpath: str | None = None
 
     # For s3_ref
-    bucket: Optional[str] = None
-    key: Optional[str] = None
-    endpoint_url: Optional[str] = None  # For S3-compatible storage
+    bucket: str | None = None
+    key: str | None = None
+    endpoint_url: str | None = None  # For S3-compatible storage
 
     # For hf_repo_ref
-    repo_id: Optional[str] = None
-    revision: Optional[str] = None  # Git ref (branch, tag, commit)
+    repo_id: str | None = None
+    revision: str | None = None  # Git ref (branch, tag, commit)
 
     def __post_init__(self) -> None:
         """Validate model ref after initialization."""
@@ -144,13 +144,12 @@ class ModelRef:
         elif self.ref_type == ModelRefType.S3_REF:
             if not self.bucket or not self.key:
                 raise ValueError("s3_ref requires 'bucket' and 'key'")
-        elif self.ref_type == ModelRefType.HF_REPO_REF:
-            if not self.repo_id:
-                raise ValueError("hf_repo_ref requires 'repo_id'")
+        elif self.ref_type == ModelRefType.HF_REPO_REF and not self.repo_id:
+            raise ValueError("hf_repo_ref requires 'repo_id'")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON storage."""
-        data: Dict[str, Any] = {"type": self.ref_type.value}
+        data: dict[str, Any] = {"type": self.ref_type.value}
 
         if self.ref_type == ModelRefType.FILESYSTEM_PATH:
             data["path"] = self.path
@@ -173,7 +172,7 @@ class ModelRef:
         return data
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelRef":
+    def from_dict(cls, data: dict[str, Any]) -> ModelRef:
         """Create from dictionary."""
         ref_type = ModelRefType(data["type"])
         return cls(
@@ -190,7 +189,7 @@ class ModelRef:
         )
 
     @classmethod
-    def filesystem(cls, path: str) -> "ModelRef":
+    def filesystem(cls, path: str) -> ModelRef:
         """Create a filesystem path reference."""
         return cls(ref_type=ModelRefType.FILESYSTEM_PATH, path=path)
 
@@ -198,9 +197,9 @@ class ModelRef:
     def pvc(
         cls,
         pvc_name: str,
-        subpath: Optional[str] = None,
-        namespace: Optional[str] = None,
-    ) -> "ModelRef":
+        subpath: str | None = None,
+        namespace: str | None = None,
+    ) -> ModelRef:
         """Create a PVC reference."""
         return cls(
             ref_type=ModelRefType.PVC_REF,
@@ -214,8 +213,8 @@ class ModelRef:
         cls,
         bucket: str,
         key: str,
-        endpoint_url: Optional[str] = None,
-    ) -> "ModelRef":
+        endpoint_url: str | None = None,
+    ) -> ModelRef:
         """Create an S3 reference."""
         return cls(
             ref_type=ModelRefType.S3_REF,
@@ -228,8 +227,8 @@ class ModelRef:
     def huggingface(
         cls,
         repo_id: str,
-        revision: Optional[str] = None,
-    ) -> "ModelRef":
+        revision: str | None = None,
+    ) -> ModelRef:
         """Create a HuggingFace repository reference."""
         return cls(
             ref_type=ModelRefType.HF_REPO_REF,
@@ -255,13 +254,13 @@ class ModelCapabilities:
     supports_tool_calling: bool = False
     supports_vision: bool = False
     supports_structured_output: bool = False
-    max_output_tokens: Optional[int] = None
-    max_position_embeddings: Optional[int] = None
-    model_family: Optional[str] = None  # e.g., "qwen", "llama", "mistral"
+    max_output_tokens: int | None = None
+    max_position_embeddings: int | None = None
+    model_family: str | None = None  # e.g., "qwen", "llama", "mistral"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON storage."""
-        d: Dict[str, Any] = {
+        d: dict[str, Any] = {
             "supports_tool_calling": self.supports_tool_calling,
             "supports_vision": self.supports_vision,
             "supports_structured_output": self.supports_structured_output,
@@ -275,7 +274,7 @@ class ModelCapabilities:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelCapabilities":
+    def from_dict(cls, data: dict[str, Any]) -> ModelCapabilities:
         """Create from dictionary."""
         if not data:
             return cls()
@@ -299,20 +298,20 @@ class ServingProfile:
 
     # vLLM parameters
     tensor_parallel_size: int = 1
-    max_model_len: Optional[int] = None
+    max_model_len: int | None = None
     gpu_memory_utilization: float = 0.9
     dtype: str = "auto"
-    quantization: Optional[str] = None  # e.g., "awq", "gptq"
+    quantization: str | None = None  # e.g., "awq", "gptq"
 
     # LiteLLM parameters
-    served_model_name: Optional[str] = None  # Override model name in API
-    api_base: Optional[str] = None
+    served_model_name: str | None = None  # Override model name in API
+    api_base: str | None = None
 
     # Resource hints
-    min_gpu_memory_gb: Optional[float] = None
+    min_gpu_memory_gb: float | None = None
     recommended_gpu_count: int = 1
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON storage."""
         return {
             "tensor_parallel_size": self.tensor_parallel_size,
@@ -327,7 +326,7 @@ class ServingProfile:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ServingProfile":
+    def from_dict(cls, data: dict[str, Any]) -> ServingProfile:
         """Create from dictionary."""
         return cls(
             tensor_parallel_size=data.get("tensor_parallel_size", 1),
@@ -357,19 +356,19 @@ class ModelEntry:
 
     # Ownership & scope
     scope: ModelScope
-    owner_id: Optional[str] = None  # NULL for system models
-    project_id: Optional[str] = None  # NULL for system/user models
+    owner_id: str | None = None  # NULL for system models
+    project_id: str | None = None  # NULL for system/user models
 
     # Storage (legacy field for backwards compatibility)
     storage_ref: str = ""  # Filesystem path to model weights
 
     # ModelRef abstraction (U-808) - preferred over storage_ref
-    model_ref: Optional[ModelRef] = None
+    model_ref: ModelRef | None = None
 
     # Model metadata
     model_type: ModelType = ModelType.LLM
-    huggingface_id: Optional[str] = None  # Source model on HF Hub
-    description: Optional[str] = None
+    huggingface_id: str | None = None  # Source model on HF Hub
+    description: str | None = None
 
     # Serving configuration
     serving_profile: ServingProfile = field(default_factory=ServingProfile)
@@ -384,8 +383,8 @@ class ModelEntry:
     status: ModelStatus = ModelStatus.AVAILABLE
 
     # Timestamps
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
         """Validate model entry after initialization."""
@@ -412,9 +411,8 @@ class ModelEntry:
         elif self.scope == ModelScope.PROJECT:
             if self.project_id is None:
                 raise ValueError("Project models must have a project_id")
-        elif self.scope == ModelScope.USER:
-            if self.owner_id is None:
-                raise ValueError("User models must have an owner_id")
+        elif self.scope == ModelScope.USER and self.owner_id is None:
+            raise ValueError("User models must have an owner_id")
 
     @property
     def display_name(self) -> str:
@@ -426,7 +424,7 @@ class ModelEntry:
         else:
             return f"user:{self.owner_id}/{self.name}"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "model_id": self.model_id,
@@ -448,7 +446,7 @@ class ModelEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelEntry":
+    def from_dict(cls, data: dict[str, Any]) -> ModelEntry:
         """Create from dictionary."""
         model_ref_data = data.get("model_ref")
         return cls(
@@ -485,7 +483,7 @@ class ModelEntry:
         )
 
     @classmethod
-    def from_row(cls, row: tuple) -> "ModelEntry":
+    def from_row(cls, row: tuple) -> ModelEntry:
         """
         Create from database row.
 
@@ -536,12 +534,12 @@ class ModelPolicy:
     model_name: str  # Links to model_catalog_entries.name
 
     # Access control
-    allowed_projects: List[str] = field(default_factory=list)  # Empty = all allowed
-    denied_projects: List[str] = field(default_factory=list)   # Takes precedence
+    allowed_projects: list[str] = field(default_factory=list)  # Empty = all allowed
+    denied_projects: list[str] = field(default_factory=list)   # Takes precedence
 
     # Quota management
-    max_concurrent_endpoints: Optional[int] = None
-    max_tokens_per_day: Optional[int] = None
+    max_concurrent_endpoints: int | None = None
+    max_tokens_per_day: int | None = None
     priority: int = 0
 
     # Warm pool settings
@@ -555,8 +553,8 @@ class ModelPolicy:
     default_serving_profile: ServingProfile = field(default_factory=ServingProfile)
 
     # Timestamps
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     def __post_init__(self) -> None:
         """Convert types after initialization."""
@@ -576,7 +574,7 @@ class ModelPolicy:
             return True  # Empty = all allowed
         return project_id in self.allowed_projects
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization."""
         return {
             "policy_id": self.policy_id,
@@ -597,7 +595,7 @@ class ModelPolicy:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelPolicy":
+    def from_dict(cls, data: dict[str, Any]) -> ModelPolicy:
         """Create from dictionary."""
         return cls(
             policy_id=data["policy_id"],
@@ -628,7 +626,7 @@ class ModelPolicy:
         )
 
     @classmethod
-    def from_row(cls, row: tuple) -> "ModelPolicy":
+    def from_row(cls, row: tuple) -> ModelPolicy:
         """
         Create from database row.
 

@@ -7,17 +7,17 @@ UMRS S3 pipeline from the HMAE_inference branch. Supports three tasks:
   - feature_extraction: encoder-only feature extraction (CLS + patch tokens)
 """
 
-import os
 import io
-import yaml
 import logging
+import os
 
 import cv2
+import matplotlib
 import numpy as np
 import torch
+import yaml
 from torch.amp import autocast
 
-import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -67,7 +67,7 @@ def load_hmae_model(cfg_file, checkpoint_path):
         logger.info("HMAE model already cached, reusing")
         return _model_cache[cache_key]
 
-    with open(cfg_file, "r") as f:
+    with open(cfg_file) as f:
         config = yaml.safe_load(f)
 
     config["inference"]["checkpoint_path"] = checkpoint_path
@@ -299,7 +299,7 @@ def visualize_reconstruction(data, pred, config, mask=None, loss=None):
 
     for ax, canvas, title in zip(axes,
                                   [canvas_orig, canvas_qdt, canvas_recon],
-                                  ["Original", "Quadtree Grid", "Reconstruction"]):
+                                  ["Original", "Quadtree Grid", "Reconstruction"], strict=False):
         if in_channels == 1:
             ax.imshow(canvas, cmap="gray", vmin=0, vmax=1)
         else:
@@ -440,8 +440,8 @@ def make_hmae_compute_func(modality, cfg_file, task=None):
             ``"feature_extraction"``, or ``"embedding"``.
             Defaults to ``"reconstruction"`` when ``None``.
     """
-    with open(cfg_file, "r") as f:
-        config = yaml.safe_load(f)
+    with open(cfg_file) as f:
+        yaml.safe_load(f)
 
     resolved_task = task if task is not None else "reconstruction"
     # embedding uses the same code path as feature_extraction

@@ -10,12 +10,13 @@ existing workflow registry command handlers used by the ZMQ server.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, Field
@@ -23,11 +24,10 @@ from pydantic import BaseModel, Field
 from ..core.TaskCmdStatus import TaskCmd
 from ..jobs.models import JobStatus, JobType
 from ..jobs.store import InvalidTransitionError, JobNotFoundError, JobStore
-from .jobs import get_optional_job_store
 from ..server.file_handling import handle_upload_workflow
 from ..server.job_tracking_handler import DurableJobCommandBackend
-from ..server.workflow_registry_handler import handle_workflow_command
-from ..server.workflow_registry_handler import register_workflow
+from ..server.workflow_registry_handler import handle_workflow_command, register_workflow
+from .jobs import get_optional_job_store
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class WorkflowTriggerRequest(BaseModel):
     """Workflow trigger request body."""
 
     user_id: str = Field(..., min_length=1, description="Workflow owner or caller")
-    params: Dict[str, Any] = Field(
+    params: dict[str, Any] = Field(
         default_factory=dict,
         description="Workflow runtime parameters",
     )
@@ -54,7 +54,7 @@ class WorkflowUploadResponse(BaseModel):
     message: str = Field(..., description="Human-readable result message")
 
 
-def _parse_command_response(raw: str, *, action: str) -> Dict[str, Any]:
+def _parse_command_response(raw: str, *, action: str) -> dict[str, Any]:
     """Parse a workflow command response and map JSON errors to HTTP errors."""
     try:
         data = json.loads(raw)
@@ -111,11 +111,11 @@ def _strict_auth_mode() -> bool:
     return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
 
 
-def _header_str(value: Any) -> Optional[str]:
+def _header_str(value: Any) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _verified_workflow_user(user_id: Optional[str], x_user_id: Optional[str]) -> str:
+def _verified_workflow_user(user_id: str | None, x_user_id: str | None) -> str:
     verified_user_id = _header_str(x_user_id)
     if verified_user_id:
         return verified_user_id
@@ -130,9 +130,9 @@ def _verified_workflow_user(user_id: Optional[str], x_user_id: Optional[str]) ->
 
 
 def _verified_workflow_params(
-    params: Dict[str, Any],
-    x_verified_project_id: Optional[str],
-) -> Dict[str, Any]:
+    params: dict[str, Any],
+    x_verified_project_id: str | None,
+) -> dict[str, Any]:
     verified_project_id = _header_str(x_verified_project_id)
     resolved_params = dict(params)
     if verified_project_id:
@@ -147,8 +147,8 @@ def _verified_workflow_params(
 
 
 def _require_verified_workflow_identity(
-    x_user_id: Optional[str],
-    x_verified_project_id: Optional[str],
+    x_user_id: str | None,
+    x_verified_project_id: str | None,
 ) -> None:
     if _header_str(x_user_id) and _header_str(x_verified_project_id):
         return
@@ -170,12 +170,12 @@ def _workflow_job_status(job_status: JobStatus) -> str:
     }[job_status]
 
 
-def _workflow_job_payload(job) -> Dict[str, Any]:
+def _workflow_job_payload(job) -> dict[str, Any]:
     return job.to_dict() if hasattr(job, "to_dict") else dict(job)
 
 
 def _find_workflow_job_by_execution_id(
-    store: Optional[JobStore],
+    store: JobStore | None,
     execution_id: str,
 ):
     if store is None:
@@ -190,7 +190,7 @@ def _find_workflow_job_by_execution_id(
     return None
 
 
-def _get_job_for_record(store: Optional[JobStore], record) -> Any:
+def _get_job_for_record(store: JobStore | None, record) -> Any:
     if store is None or not record.durable_job_id:
         return None
     try:
@@ -199,7 +199,7 @@ def _get_job_for_record(store: Optional[JobStore], record) -> Any:
         return None
 
 
-def _execution_payload(record, job=None) -> Dict[str, Any]:
+def _execution_payload(record, job=None) -> dict[str, Any]:
     execution = record.to_dict()
     if job is not None:
         execution["durable_job_id"] = job.job_id
@@ -210,14 +210,12 @@ def _execution_payload(record, job=None) -> Dict[str, Any]:
             JobStatus.QUEUED,
             JobStatus.CANCELLED,
             JobStatus.FAILED,
-        }:
-            execution["status"] = durable_status
-        elif execution.get("status") == "submitted":
+        } or execution.get("status") == "submitted":
             execution["status"] = durable_status
     return execution
 
 
-def _execution_payload_from_job(job) -> Dict[str, Any]:
+def _execution_payload_from_job(job) -> dict[str, Any]:
     spec = job.spec
     return {
         "execution_id": spec.get("execution_id"),
@@ -245,11 +243,11 @@ def _execution_payload_from_job(job) -> Dict[str, Any]:
 
 @router.get("")
 async def list_workflows(
-    scope: Optional[str] = Query(None, description="Optional workflow scope filter"),
-    name: Optional[str] = Query(None, description="Optional workflow-name filter"),
-    user_id: Optional[str] = Query(None, description="Optional owner filter"),
-    x_user_id: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
+    scope: str | None = Query(None, description="Optional workflow scope filter"),
+    name: str | None = Query(None, description="Optional workflow-name filter"),
+    user_id: str | None = Query(None, description="Optional owner filter"),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
 ):
     _require_verified_workflow_identity(x_user_id, x_verified_project_id)
     resolved_user_id = _header_str(x_user_id) or user_id
@@ -274,10 +272,10 @@ async def list_workflows(
 async def upload_workflow(
     file: UploadFile = File(...),
     user_id: str = Form(...),
-    workflow_name: Optional[str] = Form(None),
+    workflow_name: str | None = Form(None),
     scope: str = Form("user"),
-    x_user_id: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
 ):
     _require_verified_workflow_identity(x_user_id, x_verified_project_id)
     resolved_user_id = _verified_workflow_user(user_id, x_user_id)
@@ -298,7 +296,7 @@ async def upload_workflow(
 
     workflow_json_path = os.path.join(dest, "workflow.json")
     try:
-        with open(workflow_json_path, "r", encoding="utf-8") as handle:
+        with open(workflow_json_path, encoding="utf-8") as handle:
             workflow_json = json.load(handle)
         version = str(workflow_json.get("version", "0.1"))
     except Exception as exc:
@@ -335,8 +333,8 @@ async def upload_workflow(
 async def trigger_workflow(
     workflow_name: str,
     request: WorkflowTriggerRequest,
-    x_user_id: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
 ):
     user_id = _verified_workflow_user(request.user_id, x_user_id)
     params = _verified_workflow_params(request.params, x_verified_project_id)
@@ -364,8 +362,8 @@ async def trigger_workflow(
 @router.get("/executions/{execution_id}")
 async def get_execution_status(
     execution_id: str,
-    x_user_id: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
 ):
     """Return workflow execution status, backed by durable job state when present."""
     from ..server.workflow_execution_registry import get_execution_registry
@@ -390,8 +388,8 @@ async def get_execution_status(
 @router.get("/executions/{execution_id}/results")
 async def get_execution_results(
     execution_id: str,
-    x_user_id: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
 ):
     """Return the structured outputs of a finished execution.
 
@@ -451,8 +449,8 @@ async def get_execution_results(
 @router.post("/executions/{execution_id}/cancel")
 async def cancel_execution(
     execution_id: str,
-    x_user_id: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
 ):
     """Request cancellation of a workflow execution."""
     from ..server.workflow_execution_registry import get_execution_registry
@@ -467,10 +465,8 @@ async def cancel_execution(
     if job is None:
         job = _find_workflow_job_by_execution_id(store, execution_id)
     if job is not None and store is not None:
-        try:
+        with contextlib.suppress(InvalidTransitionError):
             store.cancel_job(job.job_id, reason="workflow_execution_cancelled")
-        except InvalidTransitionError:
-            pass
 
     if record is None and job is None:
         raise HTTPException(

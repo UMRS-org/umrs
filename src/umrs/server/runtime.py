@@ -17,14 +17,14 @@ _warnings.warn(
     stacklevel=2,
 )
 
-from umrs.server.provisioning import ServerCfg, configure_user  # noqa: F401
+from umrs.server.config import ENABLE_PRETTY_PRINT  # noqa: F401
 from umrs.server.maintenance import (  # noqa: F401
     check_objects,
     recompute_all_objects,
     update_objects,
 )
-from umrs.server.config import ENABLE_PRETTY_PRINT  # noqa: F401
 from umrs.server.processing import process_s3_objects  # noqa: F401
+from umrs.server.provisioning import ServerCfg, configure_user  # noqa: F401
 
 __all__ = [
     "ENABLE_PRETTY_PRINT",

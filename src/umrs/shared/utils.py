@@ -1,5 +1,6 @@
 import hashlib
-import json
+
+
 ################################## json ##################################
 def normalize_json(obj):
     if isinstance(obj, dict):
@@ -280,8 +281,7 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
     # Use plain Python list to ensure DB serialization robustness
     zero_vec = [0.0] * embedding_dim
 
-    index = 0
-    for chunk_list in embeddings:
+    for index, chunk_list in enumerate(embeddings):
         if sizes[index] == 0:
             if len(chunk_list) != 1:
                 print(f"Warining: chunk list len should be 1 and is {len(chunk_list)}. Zeroing everything...")
@@ -292,6 +292,3 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
                 chunk["start"] = 0
                 chunk["end"] = 0
                 chunk["num_tokens"] = 0
-        index += 1
-
-

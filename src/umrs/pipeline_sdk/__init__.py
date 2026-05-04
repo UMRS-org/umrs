@@ -18,6 +18,7 @@ See ``templates/README.md`` for the full guide on creating a new pipeline,
 and ``demos/07_user_model/`` for a workflow.json example.
 """
 
+from .adapter import EmbeddingAdapter
 from .base import (
     ComputeBackend,
     DataItem,
@@ -38,7 +39,6 @@ from .workflow import (
     WorkflowDefinition,
     WorkflowPipeline,
 )
-from .adapter import EmbeddingAdapter
 
 __all__ = [
     # Pipeline SDK core

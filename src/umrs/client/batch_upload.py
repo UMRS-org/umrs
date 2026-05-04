@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
-import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
-from umrs.shared.progress import ProgressGroup, ProgressTracker
+from umrs.shared.progress import ProgressGroup
 
 
 class FileState(str, Enum):
@@ -40,15 +39,15 @@ class FileEntry:
     state: FileState = FileState.PENDING
     attempts: int = 0
     last_error: str = ""
-    uploaded_at: Optional[float] = None
+    uploaded_at: float | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["state"] = self.state.value
         return d
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "FileEntry":
+    def from_dict(cls, d: dict[str, Any]) -> FileEntry:
         d["state"] = FileState(d["state"])
         return cls(**d)
 
@@ -63,7 +62,7 @@ class UploadManifest:
     source_dir: str
     bucket_alias: str
     created_at: float = field(default_factory=time.time)
-    files: Dict[str, FileEntry] = field(default_factory=dict)
+    files: dict[str, FileEntry] = field(default_factory=dict)
 
     @property
     def manifest_path(self) -> Path:
@@ -81,7 +80,7 @@ class UploadManifest:
         tmp.rename(self.manifest_path)
 
     @classmethod
-    def load(cls, path: Path) -> "UploadManifest":
+    def load(cls, path: Path) -> UploadManifest:
         data = json.loads(path.read_text())
         files = {k: FileEntry.from_dict(v) for k, v in data.get("files", {}).items()}
         return cls(
@@ -92,7 +91,7 @@ class UploadManifest:
         )
 
     @classmethod
-    def load_or_create(cls, source_dir: str, bucket_alias: str) -> "UploadManifest":
+    def load_or_create(cls, source_dir: str, bucket_alias: str) -> UploadManifest:
         p = Path(source_dir) / ".umrs_upload_manifest.json"
         if p.exists():
             manifest = cls.load(p)
@@ -101,7 +100,7 @@ class UploadManifest:
         return cls(source_dir=source_dir, bucket_alias=bucket_alias)
 
     @property
-    def pending_files(self) -> List[FileEntry]:
+    def pending_files(self) -> list[FileEntry]:
         return [f for f in self.files.values() if f.state in (FileState.PENDING, FileState.FAILED)]
 
     @property
@@ -157,7 +156,7 @@ class BatchUploadManager:
         self.max_workers = max_workers
         self.max_retries = max_retries
         self.compute_checksums = compute_checksums
-        self._progress_group: Optional[ProgressGroup] = None
+        self._progress_group: ProgressGroup | None = None
 
     def upload_directory(
         self,
@@ -165,7 +164,7 @@ class BatchUploadManager:
         bucket_alias: str,
         pattern: str = "*",
         exclude_hidden: bool = True,
-    ) -> "UploadReport":
+    ) -> UploadReport:
         """Upload all files in a directory with resume support."""
         src = Path(source_dir)
         if not src.is_dir():
@@ -198,7 +197,7 @@ class BatchUploadManager:
 
         # Upload pending files
         pending = manifest.pending_files
-        errors: List[str] = []
+        errors: list[str] = []
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
             futures = {
@@ -255,7 +254,7 @@ class BatchUploadManager:
 class UploadReport:
     """Summary of a batch upload operation."""
     manifest: UploadManifest
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
     @property
     def uploaded(self) -> int:

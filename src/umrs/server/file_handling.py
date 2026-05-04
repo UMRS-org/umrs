@@ -1,15 +1,15 @@
 """Server-side file operations: user config persistence, workflow upload."""
 
 import json
-import os
 import logging
+import os
 
+from umrs.shared.auth import sanitize_username, validate_config_identity
 from umrs.shared.config import (
     get_default_tmp_subdir,
     get_users_default_cfg_subdir,
 )
 from umrs.shared.json_config import load_client_cfg_file
-from umrs.shared.auth import sanitize_username, validate_config_identity
 
 logger = logging.getLogger(__name__)
 
@@ -19,7 +19,7 @@ def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     canonical_user_path = os.path.expanduser(canonical_user_path)
 
     try:
-        with open(conf_path, "r", encoding="utf-8") as f:
+        with open(conf_path, encoding="utf-8") as f:
             conf = json.load(f)
     except Exception as e:
         print(f"Warning: failed to read conf '{conf_path}': {e}")
@@ -39,7 +39,7 @@ def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
             continue
         # Try to read file and inspect username; if mismatch or file missing, keep as-is
         try:
-            with open(p, "r", encoding="utf-8") as f:
+            with open(p, encoding="utf-8") as f:
                 data = json.load(f)
             u = data.get("username")
         except Exception:
@@ -105,6 +105,7 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
     Returns ``(success: bool, dest_dir: str | None, error: str | None)``.
     """
     import zipfile
+
     from umrs.pipeline_sdk.workflow import WorkflowDefinition
 
     if not os.path.isfile(zip_path):
@@ -177,7 +178,7 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
         # Rewrite workflow.json source to UPLOADED type
         actual_wf = os.path.join(dest_dir, "workflow.json")
         if os.path.isfile(actual_wf):
-            with open(actual_wf, "r", encoding="utf-8") as fh:
+            with open(actual_wf, encoding="utf-8") as fh:
                 wf_data = json.load(fh)
 
             source_cfg = wf_data.get("source") or {}
@@ -307,7 +308,7 @@ def persist_uploaded_user_config(
 
     # Atomically replace the destination file
     try:
-        with open(tmp_path, "r", encoding="utf-8") as src:
+        with open(tmp_path, encoding="utf-8") as src:
             content = src.read()
         tmp_out = dest_path + ".tmp"
         with open(tmp_out, "w", encoding="utf-8") as out:

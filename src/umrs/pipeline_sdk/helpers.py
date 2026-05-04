@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, List, Optional
+from collections.abc import Callable
 
 from .base import Result
 
 logger = logging.getLogger(__name__)
 
 
-def poll_until_done(probe: Callable[[], Optional[str]],
+def poll_until_done(probe: Callable[[], str | None],
                     success_values: set = frozenset({"success", "done"}),
                     failure_values: set = frozenset({"failure", "error",
                                                       "cancelled"}),
@@ -58,7 +58,7 @@ def poll_until_done(probe: Callable[[], Optional[str]],
         time.sleep(poll_interval)
 
 
-def format_results_table(results: List[Result]) -> str:
+def format_results_table(results: list[Result]) -> str:
     """Format a list of Results as a human-readable table.
 
     Returns a multi-line string.

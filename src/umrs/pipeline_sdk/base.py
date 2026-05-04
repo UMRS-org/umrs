@@ -22,7 +22,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -46,35 +46,35 @@ class PipelineConfig:
     compute_backend: ComputeBackend
 
     # --- UMRS embedding backend ---
-    user_config_path: Optional[str] = None      # path to user_*.json
-    umrs_server_ip: Optional[str] = None        # ZMQ control plane host
-    umrs_client_bin: Optional[str] = None       # path to client_umrs.py
+    user_config_path: str | None = None      # path to user_*.json
+    umrs_server_ip: str | None = None        # ZMQ control plane host
+    umrs_client_bin: str | None = None       # path to client_umrs.py
 
     # --- BentoML task-queue backend ---
-    bentoml_url: Optional[str] = None           # e.g. http://localhost:3000
-    bentoml_endpoint: Optional[str] = None      # e.g. "infer"
+    bentoml_url: str | None = None           # e.g. http://localhost:3000
+    bentoml_endpoint: str | None = None      # e.g. "infer"
 
     # --- S3 ---
-    s3_endpoint: Optional[str] = None
-    s3_access_key: Optional[str] = None
-    s3_secret_key: Optional[str] = None
-    s3_bucket: Optional[str] = None
+    s3_endpoint: str | None = None
+    s3_access_key: str | None = None
+    s3_secret_key: str | None = None
+    s3_bucket: str | None = None
 
     # --- Database ---
-    db_host: Optional[str] = None
+    db_host: str | None = None
     db_port: int = 5432
-    db_user: Optional[str] = None
-    db_password: Optional[str] = None
+    db_user: str | None = None
+    db_password: str | None = None
 
     # --- RAG (optional) ---
-    rag_url: Optional[str] = None
+    rag_url: str | None = None
 
     # --- Compute limits ---
     timeout_seconds: float = 600.0
     poll_interval: float = 5.0
 
     # --- Free-form extra settings ---
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -88,7 +88,7 @@ class DataItem:
     """
     key: str
     source: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -103,8 +103,8 @@ class TaskHandle:
     """
     task_id: str
     endpoint: str
-    data_item: Optional[DataItem] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    data_item: DataItem | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -119,8 +119,8 @@ class Result:
     """
     task_handle: TaskHandle
     status: str = "success"
-    data: Dict[str, Any] = field(default_factory=dict)
-    error: Optional[str] = None
+    data: dict[str, Any] = field(default_factory=dict)
+    error: str | None = None
 
 
 # ── Phase tracking ───────────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ class Pipeline(abc.ABC):
     """
 
     def __init__(self):
-        self._config: Optional[PipelineConfig] = None
+        self._config: PipelineConfig | None = None
         self._log = logging.getLogger(
             f"{__name__}.{self.__class__.__name__}"
         )
@@ -182,7 +182,7 @@ class Pipeline(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def ingest(self, config: PipelineConfig) -> List[DataItem]:
+    def ingest(self, config: PipelineConfig) -> list[DataItem]:
         """Upload / register input data and return ``DataItem`` handles.
 
         For embedding pipelines this typically uploads files to S3.
@@ -192,7 +192,7 @@ class Pipeline(abc.ABC):
 
     @abc.abstractmethod
     def compute(self, config: PipelineConfig,
-                items: List[DataItem]) -> List[TaskHandle]:
+                items: list[DataItem]) -> list[TaskHandle]:
         """Submit computation and return ``TaskHandle`` references.
 
         - **Embedding backend**: trigger UMRS ``process_objects`` or
@@ -203,7 +203,7 @@ class Pipeline(abc.ABC):
 
     @abc.abstractmethod
     def collect(self, config: PipelineConfig,
-                handles: List[TaskHandle]) -> List[Result]:
+                handles: list[TaskHandle]) -> list[Result]:
         """Wait for computation to finish and return ``Result`` objects.
 
         Implementations typically poll for status until all handles
@@ -212,7 +212,7 @@ class Pipeline(abc.ABC):
         ...
 
     def verify(self, config: PipelineConfig,
-               results: List[Result]) -> bool:
+               results: list[Result]) -> bool:
         """Optional quality check on results.  Return True if OK.
 
         Default implementation returns True if no results have
@@ -227,7 +227,7 @@ class Pipeline(abc.ABC):
         return True
 
     def present(self, config: PipelineConfig,
-                results: List[Result]) -> None:
+                results: list[Result]) -> None:
         """Optional visualization / export step.
 
         Default implementation prints a summary table.
@@ -237,7 +237,7 @@ class Pipeline(abc.ABC):
 
     # ── Orchestrator ─────────────────────────────────────────────────────
 
-    def run(self) -> List[Result]:
+    def run(self) -> list[Result]:
         """Execute the full pipeline lifecycle.
 
         Returns the list of ``Result`` objects, even if some failed.

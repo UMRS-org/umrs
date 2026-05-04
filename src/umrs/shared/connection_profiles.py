@@ -4,7 +4,7 @@ import json
 import os
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from jsonschema import ValidationError, validate
 
@@ -13,7 +13,6 @@ from umrs.shared.config import (
     get_current_connection_profile_file,
     get_resolved_umrs_cfg_dir,
 )
-
 
 UMRS_PROFILE_ENV_VAR_NAME = "UMRS_PROFILE"
 DEFAULT_DATA_PORT = 5556
@@ -31,7 +30,7 @@ class DataPortRange:
             raise ValueError("Data port range end must be greater than or equal to start")
 
     @classmethod
-    def single(cls, port: int) -> "DataPortRange":
+    def single(cls, port: int) -> DataPortRange:
         return cls(start=int(port), end=int(port))
 
     @property
@@ -55,8 +54,8 @@ class DataPortRange:
 def parse_data_port_range(
     raw: Any,
     *,
-    default: Optional[DataPortRange] = None,
-) -> Optional[DataPortRange]:
+    default: DataPortRange | None = None,
+) -> DataPortRange | None:
     if raw is None or raw == "":
         return default
 
@@ -85,21 +84,21 @@ def parse_data_port_range(
     raise ValueError(f"Unsupported data port range value: {raw!r}")
 
 
-def _env_flag(name: str, default: Optional[bool] = None) -> Optional[bool]:
+def _env_flag(name: str, default: bool | None = None) -> bool | None:
     raw = os.environ.get(name)
     if raw is None:
         return default
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _env_int(name: str) -> Optional[int]:
+def _env_int(name: str) -> int | None:
     raw = os.environ.get(name)
     if raw is None or raw == "":
         return None
     return int(raw)
 
 
-def _env_port_range(name: str) -> Optional[DataPortRange]:
+def _env_port_range(name: str) -> DataPortRange | None:
     raw = os.environ.get(name)
     if raw is None or raw == "":
         return None
@@ -111,7 +110,7 @@ def _default_service_url(host: str, port: int, tunnel_mode: bool) -> str:
     return f"http://{service_host}:{port}"
 
 
-def _coerce_minio_url(profile: "ConnectionProfile") -> str:
+def _coerce_minio_url(profile: ConnectionProfile) -> str:
     env_minio_url = os.environ.get("UMRS_MINIO_URL")
     if env_minio_url:
         return env_minio_url
@@ -127,7 +126,7 @@ def _coerce_minio_url(profile: "ConnectionProfile") -> str:
     return _default_service_url(profile.server_host, 9000, profile.tunnel_mode)
 
 
-def _coerce_rag_url(profile: "ConnectionProfile") -> str:
+def _coerce_rag_url(profile: ConnectionProfile) -> str:
     env_rag_url = os.environ.get("RAG_URL")
     if env_rag_url:
         return env_rag_url
@@ -209,12 +208,12 @@ class ConnectionProfile:
     data_port_range: DataPortRange = field(default_factory=lambda: DataPortRange.single(DEFAULT_DATA_PORT))
     tunnel_mode: bool = False
     health_check_timeout_ms: int = 5000
-    minio_url: Optional[str] = None
-    rag_url: Optional[str] = None
-    ssh_host: Optional[str] = None
+    minio_url: str | None = None
+    rag_url: str | None = None
+    ssh_host: str | None = None
     local_forwards: list[dict[str, Any]] = field(default_factory=list)
-    command_hint: Optional[str] = None
-    path: Optional[str] = None
+    command_hint: str | None = None
+    path: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -233,9 +232,9 @@ class ConnectionProfile:
 
 @dataclass
 class ResolvedConnection:
-    profile_name: Optional[str]
-    profile_path: Optional[str]
-    profile_source: Optional[str]
+    profile_name: str | None
+    profile_path: str | None
+    profile_source: str | None
     mode: str
     server_host: str
     control_port: int
@@ -244,10 +243,10 @@ class ResolvedConnection:
     health_check_timeout_ms: int
     minio_url: str
     rag_url: str
-    ssh_host: Optional[str] = None
+    ssh_host: str | None = None
     local_forwards: list[dict[str, Any]] = field(default_factory=list)
-    command_hint: Optional[str] = None
-    allocated_data_port: Optional[int] = None
+    command_hint: str | None = None
+    allocated_data_port: int | None = None
     sources: dict[str, str] = field(default_factory=dict)
 
     @property
@@ -378,7 +377,7 @@ def discover_connection_profiles() -> tuple[list[ConnectionProfile], list[dict[s
     return profiles, errors
 
 
-def get_current_profile_name() -> Optional[str]:
+def get_current_profile_name() -> str | None:
     path = get_current_profile_path()
     if not path.is_file():
         return None
@@ -394,7 +393,7 @@ def set_current_profile_name(name: str) -> Path:
     return path
 
 
-def resolve_profile_name(explicit_name: Optional[str] = None) -> tuple[Optional[str], Optional[str]]:
+def resolve_profile_name(explicit_name: str | None = None) -> tuple[str | None, str | None]:
     if explicit_name:
         return explicit_name, "flag:--profile"
 
@@ -410,9 +409,9 @@ def resolve_profile_name(explicit_name: Optional[str] = None) -> tuple[Optional[
 
 
 def resolve_connection(
-    explicit_profile_name: Optional[str] = None,
-    explicit_server_ip: Optional[str] = None,
-    explicit_control_port: Optional[int] = None,
+    explicit_profile_name: str | None = None,
+    explicit_server_ip: str | None = None,
+    explicit_control_port: int | None = None,
 ) -> ResolvedConnection:
     profile_name, profile_source = resolve_profile_name(explicit_profile_name)
     profile = load_connection_profile(profile_name) if profile_name else None

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Callable, Optional
+from collections.abc import Callable
 
 from .models import Job, JobAttempt
 from .monitor import AttemptCheckResult
@@ -12,7 +12,7 @@ from .scheduler import OrchestratorBackend
 class WorkflowRunBackend(OrchestratorBackend):
     """Adapter hook for routing workflow_run jobs through JobService."""
 
-    def __init__(self, submitter: Optional[Callable[[Job, JobAttempt], str]] = None):
+    def __init__(self, submitter: Callable[[Job, JobAttempt], str] | None = None):
         self._submitter = submitter
 
     @property

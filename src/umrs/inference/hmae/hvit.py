@@ -5,11 +5,9 @@ Architecture uses RoPE (Rotary Position Embedding) on 2D spatial coordinates,
 Flash-Attention-compatible SDPA, and structural embeddings from quadtree depth.
 """
 
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
 
 # --- 1. RoPE (Rotary Position Embedding) ---
 

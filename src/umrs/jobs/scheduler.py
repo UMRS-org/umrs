@@ -10,11 +10,13 @@ The scheduler runs as an async background task.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable, Dict, Optional, Protocol
+from typing import Any, Protocol
 
-from .models import AttemptStatus, Job, JobAttempt, JobStatus, JobType
+from .models import Job, JobAttempt, JobType
 from .store import JobStore, JobStoreError
 
 logger = logging.getLogger(__name__)
@@ -71,7 +73,7 @@ class Scheduler:
         self.batch_size = batch_size
 
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stats = {
             "cycles": 0,
             "jobs_scheduled": 0,
@@ -102,10 +104,8 @@ class Scheduler:
             except asyncio.TimeoutError:
                 logger.warning("Scheduler stop timeout, cancelling")
                 self._task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await self._task
-                except asyncio.CancelledError:
-                    pass
 
         logger.info("Scheduler stopped")
 
@@ -212,7 +212,7 @@ class Scheduler:
             self._stats["jobs_failed"] += 1
 
     @property
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get scheduler statistics."""
         return self._stats.copy()
 

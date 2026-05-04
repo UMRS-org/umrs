@@ -7,7 +7,7 @@ Provides HTTP client with authentication and error handling.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any
 from urllib.parse import urljoin
 
 # Note: Context/memory API imports excluded from selective merge
@@ -17,9 +17,8 @@ try:
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
-    import urllib.request
     import urllib.error
-    import json
+    import urllib.request
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ logger = logging.getLogger(__name__)
 class UMRSError(Exception):
     """Base exception for UMRS client errors."""
 
-    def __init__(self, message: str, status_code: Optional[int] = None, detail: Optional[str] = None):
+    def __init__(self, message: str, status_code: int | None = None, detail: str | None = None):
         super().__init__(message)
         self.status_code = status_code
         self.detail = detail
@@ -68,9 +67,9 @@ class UMRSClient:
     def __init__(
         self,
         base_url: str = "http://localhost:8000",
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-        api_key: Optional[str] = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        api_key: str | None = None,
         timeout: float = 30.0,
     ):
         """
@@ -99,9 +98,9 @@ class UMRSClient:
 
     def _get_headers(
         self,
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-    ) -> Dict[str, str]:
+        user_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, str]:
         """Build request headers."""
         headers = {
             "Content-Type": "application/json",
@@ -125,11 +124,11 @@ class UMRSClient:
         self,
         method: str,
         path: str,
-        json_data: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        json_data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         """
         Make HTTP request to UMRS API.
 
@@ -163,10 +162,10 @@ class UMRSClient:
         self,
         method: str,
         url: str,
-        headers: Dict[str, str],
-        json_data: Optional[Dict[str, Any]],
-        params: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        headers: dict[str, str],
+        json_data: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         """Make request using httpx."""
         try:
             response = self._client.request(
@@ -208,16 +207,16 @@ class UMRSClient:
             return response.json()
 
         except httpx.RequestError as e:
-            raise UMRSError(f"Request failed: {e}")
+            raise UMRSError(f"Request failed: {e}") from e
 
     def _request_urllib(
         self,
         method: str,
         url: str,
-        headers: Dict[str, str],
-        json_data: Optional[Dict[str, Any]],
-        params: Optional[Dict[str, Any]],
-    ) -> Dict[str, Any]:
+        headers: dict[str, str],
+        json_data: dict[str, Any] | None,
+        params: dict[str, Any] | None,
+    ) -> dict[str, Any]:
         """Make request using urllib (fallback)."""
         import json as json_module
 
@@ -241,29 +240,29 @@ class UMRSClient:
                 try:
                     return json_module.loads(body)
                 except (json_module.JSONDecodeError, ValueError) as e:
-                    raise UMRSError(f"Invalid JSON response from server: {e}")
+                    raise UMRSError(f"Invalid JSON response from server: {e}") from e
 
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8") if e.fp else ""
 
             if e.code == 404:
-                raise UMRSNotFoundError("Resource not found", status_code=404, detail=body)
+                raise UMRSNotFoundError("Resource not found", status_code=404, detail=body) from e
             elif e.code == 403:
-                raise UMRSAccessDeniedError("Access denied", status_code=403, detail=body)
+                raise UMRSAccessDeniedError("Access denied", status_code=403, detail=body) from e
             elif e.code == 429:
-                raise UMRSRateLimitError("Rate limit exceeded", status_code=429, detail=body)
+                raise UMRSRateLimitError("Rate limit exceeded", status_code=429, detail=body) from e
             else:
-                raise UMRSError(f"API error: {e.code}", status_code=e.code, detail=body)
+                raise UMRSError(f"API error: {e.code}", status_code=e.code, detail=body) from e
 
         except urllib.error.URLError as e:
-            raise UMRSError(f"Request failed: {e.reason}")
+            raise UMRSError(f"Request failed: {e.reason}") from e
 
     def close(self) -> None:
         """Close the client and release resources."""
         if self._client and HTTPX_AVAILABLE:
             self._client.close()
 
-    def __enter__(self) -> "UMRSClient":
+    def __enter__(self) -> UMRSClient:
         return self
 
     def __exit__(self, *args) -> None:

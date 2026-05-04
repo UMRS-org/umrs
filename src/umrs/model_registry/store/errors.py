@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 from ..models import ModelScope
 
 
@@ -18,7 +16,7 @@ class ModelNotFoundError(Exception):
 class DuplicateModelError(Exception):
     """Raised when a model with the same name already exists in scope."""
 
-    def __init__(self, name: str, scope: ModelScope, project_id: Optional[str] = None):
+    def __init__(self, name: str, scope: ModelScope, project_id: str | None = None):
         self.name = name
         self.scope = scope
         self.project_id = project_id
@@ -38,7 +36,7 @@ class PermissionDeniedError(Exception):
         user_id: str,
         model_id: str,
         action: str = "access",
-        reason: Optional[str] = None,
+        reason: str | None = None,
     ):
         self.user_id = user_id
         self.model_id = model_id
@@ -52,7 +50,7 @@ class PermissionDeniedError(Exception):
 class PathNotAllowedError(Exception):
     """Raised when a storage path is not in the allowed directories."""
 
-    def __init__(self, path: str, allowed_patterns: List[str]):
+    def __init__(self, path: str, allowed_patterns: list[str]):
         self.path = path
         self.allowed_patterns = allowed_patterns
         super().__init__(

@@ -32,13 +32,12 @@ from __future__ import annotations
 
 import importlib
 import importlib.util
+import inspect
 import logging
 import os
 import shutil
 import subprocess
-import inspect
 from pathlib import Path
-from typing import Dict
 
 from .base import VisionModelAdapter
 
@@ -46,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 # ── Adapter registry (starts empty — populated by auto-discovery) ───────
 
-ADAPTER_REGISTRY: Dict[str, VisionModelAdapter] = {}
+ADAPTER_REGISTRY: dict[str, VisionModelAdapter] = {}
 
 
 def register_adapter(name: str, adapter: VisionModelAdapter) -> None:

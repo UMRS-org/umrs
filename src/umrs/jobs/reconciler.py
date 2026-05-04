@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import List, Optional, Tuple
 
 from .models import AttemptStatus, Job, JobStatus, JobType
 from .store import JobStore
@@ -27,11 +26,11 @@ class ReconcileResult:
     """Result of reconciliation process."""
 
     def __init__(self):
-        self.lost_attempts: List[str] = []
-        self.requeued_jobs: List[str] = []
-        self.failed_jobs: List[str] = []  # No more retries
-        self.model_download_recoveries: List[str] = []
-        self.errors: List[Tuple[str, str]] = []  # (id, error_message)
+        self.lost_attempts: list[str] = []
+        self.requeued_jobs: list[str] = []
+        self.failed_jobs: list[str] = []  # No more retries
+        self.model_download_recoveries: list[str] = []
+        self.errors: list[tuple[str, str]] = []  # (id, error_message)
 
     @property
     def total_processed(self) -> int:
@@ -103,7 +102,7 @@ class Reconciler:
         logger.info(f"Boot reconciliation complete: {result}")
         return result
 
-    def _find_stale_attempts(self) -> List[Tuple[str, str, int, Optional[str]]]:
+    def _find_stale_attempts(self) -> list[tuple[str, str, int, str | None]]:
         """
         Find attempts that are stale (from previous UMRS instance).
 
@@ -140,7 +139,7 @@ class Reconciler:
         attempt_id: str,
         job_id: str,
         attempt_no: int,
-        old_instance_id: Optional[str],
+        old_instance_id: str | None,
         result: ReconcileResult,
     ) -> None:
         """

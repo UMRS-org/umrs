@@ -19,7 +19,7 @@ Usage in ``models_loading.py``::
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from umrs.pipeline_sdk.workflow import WorkflowPipeline
 
@@ -40,11 +40,11 @@ class EmbeddingAdapter:
     def compute_embeddings(
         self,
         s3: Any,
-        s3_keys: List[str],
+        s3_keys: list[str],
         path_to_bucket: str,
         output_bucket: str,
         **kwargs,
-    ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
+    ) -> tuple[list[Any], list[str], list[dict[str, Any]], list[str | None]]:
         """Drop-in replacement for ``EmbeddingModel.compute_embeddings``.
 
         Args:

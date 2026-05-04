@@ -1,14 +1,15 @@
-import sqlite3
-from datetime import datetime
-from typing import List, Optional
 import json
 import os
-from tabulate import tabulate
-from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
+import sqlite3
 import textwrap
 import threading
 import time
 import traceback
+from datetime import datetime
+
+from tabulate import tabulate
+
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 
 
 class UMRSTask:
@@ -79,12 +80,11 @@ class UMRSTask:
                     current_status = seen_tasks[key]["status"]
                     if current_status == TaskStatus.COMPLETED and status != TaskStatus.COMPLETED:
                         # Mark older incomplete task as OVERRIDDEN
-                        with self.conn_lock:
-                            with self.conn:
-                                self.conn.execute(
-                                    "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                                    (TaskStatus.OVERRIDDEN, datetime.utcnow().isoformat(), task_id)
-                                )
+                        with self.conn_lock, self.conn:
+                            self.conn.execute(
+                                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
+                                (TaskStatus.OVERRIDDEN, datetime.utcnow().isoformat(), task_id)
+                            )
 
 
         # Return dict of unique tasks not completed
@@ -204,11 +204,7 @@ class UMRSTask:
             str_payload = json.dumps(export_args)
 
         elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
-                     TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW):
-            client_id, payload_str, _zmq_sender_id = full_payload
-            str_payload = payload_str
-
-        elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
+                     TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW) or cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
             client_id, payload_str, _zmq_sender_id = full_payload
             str_payload = payload_str
 
@@ -301,10 +297,10 @@ class UMRSTask:
 
     def get_tasks(
         self,
-        status: Optional[str] = None,
-        client_id: Optional[str] = None,
+        status: str | None = None,
+        client_id: str | None = None,
         verbose: bool = False
-    ) -> List[dict]:
+    ) -> list[dict]:
 
         query = """
         SELECT id, client_id, cmd, payload, status, submitted_at, updated_at

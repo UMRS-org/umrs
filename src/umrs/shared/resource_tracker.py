@@ -12,7 +12,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class ResourceType(str, Enum):
@@ -43,9 +43,9 @@ class ResourceSnapshot:
     storage_bytes: int = 0
     network_bytes_sent: int = 0
     network_bytes_recv: int = 0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "timestamp": self.timestamp,
             "cpu_percent": self.cpu_percent,
@@ -70,7 +70,7 @@ class QuotaPolicy:
     max_concurrent_jobs: int = 10
     action: QuotaAction = QuotaAction.WARN
 
-    def check(self, snapshot: ResourceSnapshot, active_jobs: int = 0) -> List["QuotaViolation"]:
+    def check(self, snapshot: ResourceSnapshot, active_jobs: int = 0) -> list[QuotaViolation]:
         violations = []
         if self.max_cpu_percent > 0 and snapshot.cpu_percent > self.max_cpu_percent:
             violations.append(QuotaViolation(
@@ -133,7 +133,7 @@ class UsageReport:
     max_memory_bytes: int = 0
     total_storage_bytes: int = 0
     total_network_bytes: int = 0
-    violations: List[QuotaViolation] = field(default_factory=list)
+    violations: list[QuotaViolation] = field(default_factory=list)
 
     def summary(self) -> str:
         lines = [
@@ -166,9 +166,9 @@ class ResourceTracker:
     """
 
     def __init__(self, max_history: int = 1000) -> None:
-        self._history: Dict[str, List[ResourceSnapshot]] = {}
-        self._quotas: Dict[str, QuotaPolicy] = {}
-        self._active_jobs: Dict[str, int] = {}
+        self._history: dict[str, list[ResourceSnapshot]] = {}
+        self._quotas: dict[str, QuotaPolicy] = {}
+        self._active_jobs: dict[str, int] = {}
         self._lock = threading.Lock()
         self._max_history = max_history
 
@@ -176,7 +176,7 @@ class ResourceTracker:
         with self._lock:
             self._quotas[user_id] = policy
 
-    def get_quota(self, user_id: str) -> Optional[QuotaPolicy]:
+    def get_quota(self, user_id: str) -> QuotaPolicy | None:
         with self._lock:
             return self._quotas.get(user_id)
 
@@ -222,8 +222,8 @@ class ResourceTracker:
     def check_quota(
         self,
         user_id: str,
-        snapshot: Optional[ResourceSnapshot] = None,
-    ) -> List[QuotaViolation]:
+        snapshot: ResourceSnapshot | None = None,
+    ) -> list[QuotaViolation]:
         with self._lock:
             policy = self._quotas.get(user_id)
         if not policy:
@@ -247,7 +247,7 @@ class ResourceTracker:
         self,
         user_id: str,
         project_id: str = "",
-        since: Optional[float] = None,
+        since: float | None = None,
     ) -> UsageReport:
         with self._lock:
             history = list(self._history.get(user_id, []))
@@ -285,7 +285,7 @@ class ResourceTracker:
         self,
         user_id: str,
         limit: int = 100,
-    ) -> List[ResourceSnapshot]:
+    ) -> list[ResourceSnapshot]:
         with self._lock:
             return list(self._history.get(user_id, [])[-limit:])
 

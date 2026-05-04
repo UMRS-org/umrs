@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any
 
-from .endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
 from .base import OrchestratorBackend
-from .factory import get_orchestrator
 from .detection import detect_backend
+from .endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
+from .factory import get_orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ class JanitorConfig:
     enable_liveness_cleanup: bool = True
 
     @classmethod
-    def from_env(cls) -> "JanitorConfig":
+    def from_env(cls) -> JanitorConfig:
         """Create config from environment variables."""
         import os
 
@@ -71,7 +72,7 @@ class CleanupResult:
     stuck_cleaned: int = 0
     orphans_cleaned: int = 0
     ghosts_pruned: int = 0
-    errors: List[str] = None
+    errors: list[str] = None
 
     def __post_init__(self):
         if self.errors is None:
@@ -82,7 +83,7 @@ class CleanupResult:
         """Total endpoints cleaned."""
         return self.ttl_expired + self.stuck_cleaned + self.orphans_cleaned + self.ghosts_pruned
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "ttl_expired": self.ttl_expired,
@@ -106,17 +107,17 @@ class Janitor:
 
     def __init__(
         self,
-        config: Optional[JanitorConfig] = None,
-        registry: Optional[EndpointRegistry] = None,
-        backend: Optional[OrchestratorBackend] = None,
+        config: JanitorConfig | None = None,
+        registry: EndpointRegistry | None = None,
+        backend: OrchestratorBackend | None = None,
     ):
         self.config = config or JanitorConfig.from_env()
         self._registry = registry
         self._backend = backend
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._running = False
-        self._cleanup_callbacks: List[Callable[[str], None]] = []
-        self._known_jobs: Set[str] = set()  # For orphan detection
+        self._cleanup_callbacks: list[Callable[[str], None]] = []
+        self._known_jobs: set[str] = set()  # For orphan detection
 
     @property
     def registry(self) -> EndpointRegistry:
@@ -388,7 +389,7 @@ class Janitor:
 
 
 # Global singleton
-_janitor: Optional[Janitor] = None
+_janitor: Janitor | None = None
 
 
 def get_janitor() -> Janitor:

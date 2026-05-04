@@ -14,10 +14,6 @@ Indexes:
 from __future__ import annotations
 
 import logging
-from typing import Optional
-
-import psycopg2
-from psycopg2 import sql
 
 logger = logging.getLogger(__name__)
 
@@ -310,5 +306,5 @@ def get_schema_version(conn) -> int:
             """)
             row = cur.fetchone()
             return row[0] if row else 0
-    except:
+    except Exception:
         return 0

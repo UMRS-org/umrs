@@ -14,7 +14,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .models import ModelCapabilities
 
@@ -68,7 +68,7 @@ _FAMILY_MAP = {
 }
 
 
-def _read_json(path: Path) -> Optional[Dict[str, Any]]:
+def _read_json(path: Path) -> dict[str, Any] | None:
     """Read a JSON file, returning None on any error."""
     try:
         with open(path) as f:
@@ -92,7 +92,7 @@ def _normalize_family(model_type: str) -> str:
     return lower
 
 
-def detect_capabilities(model_path: str) -> Optional[ModelCapabilities]:
+def detect_capabilities(model_path: str) -> ModelCapabilities | None:
     """
     Detect model capabilities from files in model_path.
 

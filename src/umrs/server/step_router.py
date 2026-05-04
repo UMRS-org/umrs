@@ -32,8 +32,9 @@ import logging
 import math
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 from umrs.pipeline_sdk.workflow import StepSpec
 
@@ -48,22 +49,22 @@ class StepRoutingError(RuntimeError):
 class RoutingDecision:
     """Concrete upstream parameters resolved by :class:`StepRouter`."""
 
-    api_base: Optional[str] = None
-    api_key: Optional[str] = None
-    model: Optional[str] = None
-    endpoint_id: Optional[str] = None
-    headers: Dict[str, str] = field(default_factory=dict)
+    api_base: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    endpoint_id: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
     resolved_via: str = "env_fallback"
-    routed_capabilities: List[str] = field(default_factory=list)
-    lora: Optional[str] = None
-    model_type: Optional[str] = None
+    routed_capabilities: list[str] = field(default_factory=list)
+    lora: str | None = None
+    model_type: str | None = None
     # Affinity tiebreaker applied inside the registry-capability path.
     # ``affinity_used`` is True when the chosen endpoint matched at least
     # one parent's endpoint id; ``affinity_matched_parents`` lists the
     # parent step names whose endpoint id equals the chosen one. Both
     # default to falsy so existing tests / consumers see no change.
     affinity_used: bool = False
-    affinity_matched_parents: List[str] = field(default_factory=list)
+    affinity_matched_parents: list[str] = field(default_factory=list)
     # Load-aware scoring (Slice 4). ``load_score`` is the normalised
     # utilisation of the chosen endpoint at decision time (0.0 = idle,
     # 1.0 = saturated; values >1 are possible if a backend reports
@@ -102,9 +103,9 @@ class RoutingDecision:
     # Weighted score breakdown (Slice 20-prep).  Each entry is the
     # *weighted* contribution to ``total_score`` (sign-included), so
     # ``sum(decision_breakdown.values()) ≈ total_score``.
-    decision_breakdown: Dict[str, float] = field(default_factory=dict)
+    decision_breakdown: dict[str, float] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         # ``asdict`` produces a JSON-safe view (only primitives + dicts).
         return asdict(self)
 
@@ -126,8 +127,8 @@ class AffinityHints:
     accepted now so the shape is stable; it is not consumed yet.
     """
 
-    parent_endpoint_ids: Dict[str, str] = field(default_factory=dict)
-    lora: Optional[str] = None
+    parent_endpoint_ids: dict[str, str] = field(default_factory=dict)
+    lora: str | None = None
     disabled: bool = False
 
     @classmethod
@@ -135,8 +136,8 @@ class AffinityHints:
         cls,
         step: StepSpec,
         *,
-        parent_endpoint_ids: Optional[Dict[str, str]] = None,
-    ) -> "AffinityHints":
+        parent_endpoint_ids: dict[str, str] | None = None,
+    ) -> AffinityHints:
         """Build hints from a step plus a parent-name -> endpoint_id map.
 
         Reads ``step.routing_hints.affinity`` to decide whether the
@@ -165,15 +166,15 @@ class AffinityHints:
 # ----------------------------------------------------------------------
 
 #: ``find_models(capabilities, model_type) -> list[ModelEntry-as-dict]``.
-ModelLookup = Callable[[List[str], Optional[str]], List[Dict[str, Any]]]
+ModelLookup = Callable[[list[str], str | None], list[dict[str, Any]]]
 
 #: ``find_endpoint(model_name, project_id, owner_hint) -> Optional[EndpointDict]``.
 EndpointLookup = Callable[
-    [str, Optional[str], Optional[str]], Optional[Dict[str, Any]]
+    [str, str | None, str | None], dict[str, Any] | None
 ]
 
 
-def _endpoint_id_of(ep: Dict[str, Any]) -> str:
+def _endpoint_id_of(ep: dict[str, Any]) -> str:
     """Return the stable identity used for affinity matching.
 
     Matches the same precedence used when populating
@@ -184,8 +185,8 @@ def _endpoint_id_of(ep: Dict[str, Any]) -> str:
 
 
 def _score_endpoint_for_affinity(
-    ep: Dict[str, Any], hints: AffinityHints
-) -> tuple[int, List[str]]:
+    ep: dict[str, Any], hints: AffinityHints
+) -> tuple[int, list[str]]:
     """Return ``(score, matched_parent_names)`` for a candidate endpoint.
 
     Score is the count of parent steps whose recorded ``endpoint_id``
@@ -202,7 +203,7 @@ def _score_endpoint_for_affinity(
     return len(matches), matches
 
 
-def _endpoint_load_norm(ep: Dict[str, Any]) -> float:
+def _endpoint_load_norm(ep: dict[str, Any]) -> float:
     """Return the normalised load of an endpoint in approximately ``[0, 1]``.
 
     The router reads load signals out of the endpoint dict so the
@@ -223,7 +224,7 @@ def _endpoint_load_norm(ep: Dict[str, Any]) -> float:
     if not isinstance(md, dict):
         md = {}
 
-    def _as_float(v: Any) -> Optional[float]:
+    def _as_float(v: Any) -> float | None:
         try:
             return float(v)  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -323,9 +324,9 @@ class EndpointFeedbackStore:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._ewma: Dict[str, float] = {}
-        self._failure_ewma: Dict[str, float] = {}
-        self._visits: Dict[str, int] = {}
+        self._ewma: dict[str, float] = {}
+        self._failure_ewma: dict[str, float] = {}
+        self._visits: dict[str, int] = {}
 
     @staticmethod
     def _alpha() -> float:
@@ -436,7 +437,7 @@ def reset_feedback_store() -> None:
     _feedback_store.reset()
 
 
-def _endpoint_feedback_norm(ep: Dict[str, Any]) -> float:
+def _endpoint_feedback_norm(ep: dict[str, Any]) -> float:
     """Return the feedback EWMA norm for an endpoint, or 0.0 if cold.
 
     Always consulted (independent of ``metadata.avg_latency_ms``) so
@@ -448,13 +449,13 @@ def _endpoint_feedback_norm(ep: Dict[str, Any]) -> float:
     return _feedback_store.get_norm(endpoint_id)
 
 
-def _endpoint_failure_norm(ep: Dict[str, Any]) -> float:
+def _endpoint_failure_norm(ep: dict[str, Any]) -> float:
     """Return the failure-rate EWMA for an endpoint, or 0.0 if cold."""
     endpoint_id = _endpoint_id_of(ep)
     return _feedback_store.get_failure_norm(endpoint_id)
 
 
-def _endpoint_latency_norm(ep: Dict[str, Any]) -> float:
+def _endpoint_latency_norm(ep: dict[str, Any]) -> float:
     """Return ``avg_latency_ms / latency_ref_ms`` (0.0 if missing).
 
     Reference configurable via ``UMRS_ROUTER_LATENCY_REF_MS`` (default
@@ -477,7 +478,7 @@ def _endpoint_latency_norm(ep: Dict[str, Any]) -> float:
     return ms / ref
 
 
-def _endpoint_queue_norm(ep: Dict[str, Any]) -> float:
+def _endpoint_queue_norm(ep: dict[str, Any]) -> float:
     """Return ``queue_time_ms / queue_ref_ms`` (0.0 if missing).
 
     Reference configurable via ``UMRS_ROUTER_QUEUE_REF_MS`` (default
@@ -498,8 +499,8 @@ def _endpoint_queue_norm(ep: Dict[str, Any]) -> float:
 
 
 def _capability_match(
-    ep_metadata: Dict[str, Any],
-    preferred: List[Any],
+    ep_metadata: dict[str, Any],
+    preferred: list[Any],
 ) -> float:
     """Score how well an endpoint's metadata matches preferred capabilities.
 
@@ -558,19 +559,19 @@ def _softcap_penalty(load_norm: float) -> float:
 class StepRouter:
     """Resolves :class:`StepSpec` -> :class:`RoutingDecision`."""
 
-    find_models: Optional[ModelLookup] = None
-    find_endpoint: Optional[EndpointLookup] = None
-    default_api_base: Optional[str] = None
-    default_api_key: Optional[str] = None
-    extra_headers: Dict[str, str] = field(default_factory=dict)
+    find_models: ModelLookup | None = None
+    find_endpoint: EndpointLookup | None = None
+    default_api_base: str | None = None
+    default_api_key: str | None = None
+    extra_headers: dict[str, str] = field(default_factory=dict)
 
     def resolve(
         self,
         step: StepSpec,
         *,
-        project_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        affinity_hints: Optional[AffinityHints] = None,
+        project_id: str | None = None,
+        user_id: str | None = None,
+        affinity_hints: AffinityHints | None = None,
     ) -> RoutingDecision:
         # 1. Mock mode short-circuit (affinity has no meaning here).
         if os.environ.get("UMRS_STEP_ROUTER_MOCK") == "1":
@@ -624,9 +625,9 @@ class StepRouter:
         self,
         step: StepSpec,
         *,
-        project_id: Optional[str],
-        affinity_hints: Optional[AffinityHints] = None,
-    ) -> Optional[RoutingDecision]:
+        project_id: str | None,
+        affinity_hints: AffinityHints | None = None,
+    ) -> RoutingDecision | None:
         assert self.find_models is not None  # narrowed by caller
 
         candidates = self.find_models(list(step.requires), step.model_type) or []
@@ -655,7 +656,7 @@ class StepRouter:
         # Resolve every viable candidate so we can score them. Without
         # affinity hints and with no load info, every score is 0 and the
         # first-by-scope candidate wins (legacy behaviour preserved).
-        viable: List[Dict[str, Any]] = []
+        viable: list[dict[str, Any]] = []
         for entry in candidates:
             model_name = str(entry.get("name") or "")
             if not model_name:
@@ -725,7 +726,7 @@ class StepRouter:
         # list.  This is a soft nudge, NOT a hard filter — candidates
         # missing preferred capabilities are still eligible.
         w_cap = _env_float("UMRS_ROUTER_CAPABILITY_WEIGHT", 0.2)
-        preferred_caps: List[Any] = []
+        preferred_caps: list[Any] = []
         if isinstance(step.routing_hints, dict):
             raw_prefer = step.routing_hints.get("prefer")
             if isinstance(raw_prefer, list):
@@ -735,7 +736,7 @@ class StepRouter:
                     or isinstance(c, dict) and isinstance(c.get("name"), str)
                 ]
 
-        scored: List[Dict[str, Any]] = []
+        scored: list[dict[str, Any]] = []
         for idx, item in enumerate(tier_pool):
             if affinity_active:
                 aff_score, matches = _score_endpoint_for_affinity(
@@ -869,7 +870,7 @@ class StepRouter:
             model_type=step.model_type,
         )
 
-    def _env_api_key(self) -> Optional[str]:
+    def _env_api_key(self) -> str | None:
         return self.default_api_key or os.environ.get("OPENAI_API_KEY")
 
     def _mock_decision(self, step: StepSpec) -> RoutingDecision:
@@ -904,7 +905,7 @@ def build_default_router() -> StepRouter:
 
 def build_registry_backed_router(
     *,
-    project_id: Optional[str] = None,
+    project_id: str | None = None,
 ) -> StepRouter:
     """Build a router that consults the live UMRS model + endpoint registries.
 
@@ -913,12 +914,12 @@ def build_registry_backed_router(
     """
 
     def _find_models(
-        capabilities: List[str], model_type: Optional[str]
-    ) -> List[Dict[str, Any]]:
+        capabilities: list[str], model_type: str | None
+    ) -> list[dict[str, Any]]:
         try:
             from umrs.api.endpoints import _capability_satisfied
-            from umrs.model_registry.store import AccessContext
             from umrs.api.models import get_model_store
+            from umrs.model_registry.store import AccessContext
 
             store = get_model_store()
             ctx = AccessContext(user_id="", is_admin=True)
@@ -927,7 +928,7 @@ def build_registry_backed_router(
             logger.debug("Model registry lookup failed: %s", exc)
             return []
 
-        out: List[Dict[str, Any]] = []
+        out: list[dict[str, Any]] = []
         for entry in entries:
             if model_type and entry.get("model_type") != model_type:
                 continue
@@ -940,9 +941,9 @@ def build_registry_backed_router(
 
     def _find_endpoint(
         model_name: str,
-        proj: Optional[str],
-        owner_hint: Optional[str],
-    ) -> Optional[Dict[str, Any]]:
+        proj: str | None,
+        owner_hint: str | None,
+    ) -> dict[str, Any] | None:
         try:
             from umrs.orchestrator.endpoint_registry import (
                 EndpointStatus,

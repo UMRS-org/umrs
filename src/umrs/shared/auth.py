@@ -20,7 +20,6 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -39,16 +38,16 @@ class UserRole(str, Enum):
 
 
 # Commands that require admin role
-ADMIN_ONLY_COMMANDS: Set[str] = frozenset({
+ADMIN_ONLY_COMMANDS: set[str] = frozenset({
     "RELOAD",       # Reload server configuration (global, reprovisioning all users)
+    "RECOMPUTE",    # Recompute embeddings across configured buckets
+    "UPDATE",       # Update embeddings across configured buckets
     "CHECK",        # Global consistency check across all users' buckets
     "ENROLL_USER",  # Admin-only: register a new user on the server
 })
 
 # Commands that users can run on their own data
-USER_ALLOWED_COMMANDS: Set[str] = frozenset({
-    "RECOMPUTE",    # Recompute embeddings (scoped to requesting user's buckets)
-    "UPDATE",       # Update embeddings (scoped to requesting user's buckets)
+USER_ALLOWED_COMMANDS: set[str] = frozenset({
     "PROCESS_OBJECTS",
     "WAIT_OUTPUT",
     "FILE",
@@ -79,9 +78,9 @@ class AuthContext:
     user_id: str  # UUID-based stable identifier
     username: str  # Human-readable username (e.g., s3_username)
     role: UserRole = UserRole.USER
-    project_id: Optional[str] = None
-    email: Optional[str] = None
-    allowed_buckets: Set[str] = field(default_factory=set)
+    project_id: str | None = None
+    email: str | None = None
+    allowed_buckets: set[str] = field(default_factory=set)
 
     @property
     def is_admin(self) -> bool:
@@ -96,7 +95,7 @@ class AuthContext:
     def can_execute_command(
         self,
         command: str,
-        target_user: Optional[str] = None,
+        target_user: str | None = None,
         *,
         log_denial: bool = True,
     ) -> bool:
@@ -249,7 +248,7 @@ class IdentityValidationResult:
 def validate_config_identity(
     config: dict,
     expected_username: str,
-    expected_user_id: Optional[str] = None,
+    expected_user_id: str | None = None,
 ) -> IdentityValidationResult:
     """
     Validate that config identity matches expected values.
@@ -277,13 +276,12 @@ def validate_config_identity(
 
     # Check user_id if provided
     config_user_id = config.get("user_id")
-    if expected_user_id and config_user_id:
-        if config_user_id != expected_user_id:
-            result.valid = False
-            result.errors.append(
-                f"User ID mismatch: config has '{config_user_id}', "
-                f"expected '{expected_user_id}'"
-            )
+    if expected_user_id and config_user_id and config_user_id != expected_user_id:
+        result.valid = False
+        result.errors.append(
+            f"User ID mismatch: config has '{config_user_id}', "
+            f"expected '{expected_user_id}'"
+        )
 
     # Check for suspicious fields
     if config.get("is_admin") or config.get("role") == "admin":
@@ -331,9 +329,9 @@ class ConfigDirectory:
 
     def __init__(self, app_name: str = DEFAULT_DIR_NAME):
         self.app_name = app_name
-        self._config_dir: Optional[Path] = None
-        self._data_dir: Optional[Path] = None
-        self._cache_dir: Optional[Path] = None
+        self._config_dir: Path | None = None
+        self._data_dir: Path | None = None
+        self._cache_dir: Path | None = None
 
     @property
     def config_dir(self) -> Path:
@@ -404,7 +402,7 @@ class ConfigDirectory:
 
 
 # Global config directory instance
-_config_directory: Optional[ConfigDirectory] = None
+_config_directory: ConfigDirectory | None = None
 
 
 def get_config_directory() -> ConfigDirectory:
@@ -427,10 +425,10 @@ class UserIdentityStore:
     Maps usernames to stable UUIDs and stores user metadata.
     """
 
-    def __init__(self, config_dir: Optional[ConfigDirectory] = None):
+    def __init__(self, config_dir: ConfigDirectory | None = None):
         self._config = config_dir or get_config_directory()
         self._identity_file = self._config.get_data_file("user_identities.json")
-        self._cache: Optional[dict] = None
+        self._cache: dict | None = None
 
     def get_or_create_user_id(self, username: str) -> str:
         """
@@ -459,13 +457,13 @@ class UserIdentityStore:
         logger.info(f"Created new user identity: {username} -> {user_id}")
         return user_id
 
-    def get_user_id(self, username: str) -> Optional[str]:
+    def get_user_id(self, username: str) -> str | None:
         """Get user ID for username, or None if not found."""
         identities = self._load()
         entry = identities.get(username)
         return entry["user_id"] if entry else None
 
-    def get_username(self, user_id: str) -> Optional[str]:
+    def get_username(self, user_id: str) -> str | None:
         """Get username for user ID, or None if not found."""
         identities = self._load()
         for username, entry in identities.items():
@@ -510,7 +508,7 @@ class UserIdentityStore:
 
 
 # Global identity store instance
-_identity_store: Optional[UserIdentityStore] = None
+_identity_store: UserIdentityStore | None = None
 
 
 def get_identity_store() -> UserIdentityStore:
@@ -550,7 +548,7 @@ class AdminTokenManager:
     Tokens are stored securely in the config directory.
     """
 
-    def __init__(self, config_dir: Optional[ConfigDirectory] = None):
+    def __init__(self, config_dir: ConfigDirectory | None = None):
         self._config = config_dir or get_config_directory()
         self._tokens_file = self._config.get_config_file("admin_tokens.json")
 
@@ -580,7 +578,7 @@ class AdminTokenManager:
         logger.info(f"Generated admin token: {name}")
         return token
 
-    def validate_token(self, token: str) -> Optional[str]:
+    def validate_token(self, token: str) -> str | None:
         """
         Validate an admin token.
 
@@ -640,7 +638,7 @@ class AdminTokenManager:
             for name, entry in tokens.items()
         ]
 
-    def _hash_token(self, token: str, salt: Optional[str] = None) -> tuple:
+    def _hash_token(self, token: str, salt: str | None = None) -> tuple:
         """Hash a token for storage using PBKDF2 with a per-token salt.
 
         Returns:
@@ -680,8 +678,8 @@ class AdminTokenManager:
 
 def create_auth_context_from_request(
     username: str,
-    token: Optional[str] = None,
-    project_id: Optional[str] = None,
+    token: str | None = None,
+    project_id: str | None = None,
 ) -> AuthContext:
     """
     Create an AuthContext from a request.

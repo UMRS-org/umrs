@@ -16,7 +16,7 @@ Authentication:
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field, model_validator
@@ -46,7 +46,7 @@ def _raise_strict_project_auth_error() -> None:
     )
 
 
-def _header_str(value: Any) -> Optional[str]:
+def _header_str(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 router = APIRouter(prefix="/umrs/endpoints", tags=["endpoints"])
@@ -112,20 +112,13 @@ async def _backend_job_liveness(service: Any, job_id: str) -> bool | None:
         return None
 
     status_value = getattr(info, "status", None)
-    if status_value in (
-        JobStatus.PENDING,
-        JobStatus.STARTING,
-        JobStatus.READY,
-        JobStatus.RUNNING,
-    ):
-        return True
-    return False
+    return status_value in (JobStatus.PENDING, JobStatus.STARTING, JobStatus.READY, JobStatus.RUNNING)
 
 
 async def _filter_live_ready_endpoints(
     registry: EndpointRegistry,
-    endpoints: List[Any],
-) -> List[Any]:
+    endpoints: list[Any],
+) -> list[Any]:
     """Return only endpoints whose backing jobs are still alive.
 
     ``/umrs/endpoints/active`` is a discovery surface, so returning a stale
@@ -147,7 +140,7 @@ async def _filter_live_ready_endpoints(
         )
         return endpoints
 
-    live_endpoints: List[Any] = []
+    live_endpoints: list[Any] = []
     for endpoint in endpoints:
         is_alive = await _backend_job_liveness(service, endpoint.job_id)
         if is_alive is None:
@@ -184,7 +177,7 @@ _READINESS_DETAIL_RULES = (
 )
 
 
-def _short_readiness_error(error: Optional[str], *, limit: int = 96) -> Optional[str]:
+def _short_readiness_error(error: str | None, *, limit: int = 96) -> str | None:
     if not error:
         return None
     cleaned = " ".join(error.split())
@@ -193,7 +186,7 @@ def _short_readiness_error(error: Optional[str], *, limit: int = 96) -> Optional
     return cleaned[: limit - 3] + "..."
 
 
-def _readiness_status_detail(endpoint: Any, error: Optional[str]) -> str:
+def _readiness_status_detail(endpoint: Any, error: str | None) -> str:
     target = f"{endpoint.host}:{endpoint.port}"
     if not error:
         return f"waiting for endpoint readiness ({target})"
@@ -273,18 +266,18 @@ class EndpointResponse(BaseModel):
     port: int
     status: str
     created_at: str
-    ready_at: Optional[str] = None
-    last_used_at: Optional[str] = None
-    expires_at: Optional[str] = None
+    ready_at: str | None = None
+    last_used_at: str | None = None
+    expires_at: str | None = None
     backend: str
-    error_message: Optional[str] = None
+    error_message: str | None = None
     litellm_url: str
-    owner_type: Optional[str] = None
-    owner_id: Optional[str] = None
-    tier: Optional[str] = None
-    served_model_name: Optional[str] = None
-    detail: Optional[str] = None
-    job_status: Optional[str] = None
+    owner_type: str | None = None
+    owner_id: str | None = None
+    tier: str | None = None
+    served_model_name: str | None = None
+    detail: str | None = None
+    job_status: str | None = None
 
     class Config:
         json_schema_extra = {
@@ -314,7 +307,7 @@ class EndpointResponse(BaseModel):
 class EndpointsListResponse(BaseModel):
     """Response for endpoint listing."""
 
-    endpoints: List[EndpointResponse]
+    endpoints: list[EndpointResponse]
     total: int
 
 
@@ -327,15 +320,15 @@ class EndpointRegisterRequest(BaseModel):
     host: str = Field(..., description="Hostname or IP address")
     port: int = Field(..., ge=1, le=65535, description="LiteLLM port")
     backend: str = Field("unknown", description="Backend type (slurm/kubernetes/compose)")
-    ttl_sec: Optional[int] = Field(None, ge=60, description="TTL in seconds")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+    ttl_sec: int | None = Field(None, ge=60, description="TTL in seconds")
+    metadata: dict[str, Any] | None = Field(None, description="Additional metadata")
 
 
 class EndpointStatusUpdate(BaseModel):
     """Request to update endpoint status."""
 
     status: str = Field(..., description="New status")
-    error_message: Optional[str] = Field(None, description="Error message if failed")
+    error_message: str | None = Field(None, description="Error message if failed")
 
 
 class LoraSpec(BaseModel):
@@ -348,7 +341,7 @@ class LoraSpec(BaseModel):
 class ProvisionRequest(BaseModel):
     """Request to provision a new endpoint (U-202)."""
 
-    project_id: Optional[str] = Field(
+    project_id: str | None = Field(
         None,
         description=(
             "Project/tenant identifier. Optional when the Gateway provides "
@@ -356,7 +349,7 @@ class ProvisionRequest(BaseModel):
         ),
     )
     model: str = Field(..., description="Model name (primary; equals models[0])")
-    models: Optional[List[str]] = Field(
+    models: list[str] | None = Field(
         None,
         description=(
             "Optional list of base models for multi-model endpoints. "
@@ -367,11 +360,11 @@ class ProvisionRequest(BaseModel):
         "single",
         description="One of: single, multi-lora, co-located",
     )
-    loras: Optional[List[LoraSpec]] = Field(
+    loras: list[LoraSpec] | None = Field(
         None,
         description="LoRA adapters (multi-lora mode only)",
     )
-    model_path: Optional[str] = Field(
+    model_path: str | None = Field(
         None,
         description="Optional path to model files. If omitted, resolve from the registered model catalog.",
     )
@@ -380,8 +373,8 @@ class ProvisionRequest(BaseModel):
     max_model_len: int = Field(4096, ge=512, description="Max context length")
     prefer_warm: bool = Field(True, description="Prefer reusing existing endpoint")
     wait: bool = Field(True, description="Wait for readiness before responding")
-    partition: Optional[str] = Field(None, description="Override Slurm partition (must be in site candidates)")
-    nodelist: Optional[str] = Field(None, description="Slurm --nodelist hint (e.g. 'ai-h200-brc-00')")
+    partition: str | None = Field(None, description="Override Slurm partition (must be in site candidates)")
+    nodelist: str | None = Field(None, description="Slurm --nodelist hint (e.g. 'ai-h200-brc-00')")
 
     @model_validator(mode="after")
     def _validate_multi_model(self) -> "ProvisionRequest":
@@ -409,7 +402,7 @@ class ProvisionRequest(BaseModel):
                 raise ValueError("loras requires serving_mode=multi-lora")
             if len(self.models) != 1:
                 raise ValueError("multi-lora requires exactly one base model")
-            names = [l.name for l in self.loras]
+            names = [lora.name for lora in self.loras]
             if len(set(names)) != len(names):
                 raise ValueError("LoRA names must be unique")
         elif self.serving_mode == "multi-lora":
@@ -423,18 +416,18 @@ class ProvisionResponse(BaseModel):
     """Response for provision request."""
 
     status: str = Field(..., description="Status: ready, provisioning, failed")
-    job_id: Optional[str] = Field(None, description="Job ID if provisioning started")
-    endpoint: Optional[EndpointResponse] = Field(None, description="Endpoint if ready")
-    retry_after: Optional[int] = Field(None, description="Seconds to wait before retry")
-    error: Optional[str] = Field(None, description="Error message if failed")
+    job_id: str | None = Field(None, description="Job ID if provisioning started")
+    endpoint: EndpointResponse | None = Field(None, description="Endpoint if ready")
+    retry_after: int | None = Field(None, description="Seconds to wait before retry")
+    error: str | None = Field(None, description="Error message if failed")
 
 
 class RegistryStatsResponse(BaseModel):
     """Registry statistics."""
 
     total: int
-    by_status: Dict[str, int]
-    by_backend: Dict[str, int]
+    by_status: dict[str, int]
+    by_backend: dict[str, int]
     ready_count: int
 
 
@@ -448,9 +441,9 @@ class EndpointHealthInfo(BaseModel):
     host: str
     port: int
     healthy: bool
-    last_health_check: Optional[str] = None
-    uptime_seconds: Optional[float] = None
-    error: Optional[str] = None
+    last_health_check: str | None = None
+    uptime_seconds: float | None = None
+    error: str | None = None
 
 
 class HealthResponse(BaseModel):
@@ -462,8 +455,8 @@ class HealthResponse(BaseModel):
     healthy_endpoints: int
     unhealthy_endpoints: int
     provisioning_endpoints: int
-    endpoints: List[EndpointHealthInfo] = Field(default_factory=list)
-    message: Optional[str] = None
+    endpoints: list[EndpointHealthInfo] = Field(default_factory=list)
+    message: str | None = None
 
 
 # =============================================================================
@@ -472,9 +465,9 @@ class HealthResponse(BaseModel):
 
 
 def get_project_id(
-    authorization: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    authorization: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
 ) -> str:
     """
     Extract project_id from request headers.
@@ -510,10 +503,10 @@ def get_project_id(
 
 
 def get_project_id_optional(
-    authorization: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
-) -> Optional[str]:
+    authorization: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
+) -> str | None:
     """Get project_id if available, None otherwise (for admin endpoints)."""
     verified_project_id = _header_str(x_verified_project_id)
     if _strict_auth_mode() and verified_project_id:
@@ -530,7 +523,7 @@ def get_project_id_optional(
 
 def _resolve_provision_project_id(
     request: ProvisionRequest,
-    authenticated_project_id: Optional[str],
+    authenticated_project_id: str | None,
 ) -> str:
     """Resolve the project that owns an endpoint provision request."""
     if authenticated_project_id is not None:
@@ -557,8 +550,8 @@ def _resolve_provision_project_id(
 
 def _resolve_served_model_name(
     model_name: str,
-    model_entry: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
+    model_entry: dict[str, Any] | None = None,
+) -> str | None:
     """Resolve served_model_name from model catalog metadata."""
     entry = model_entry or _resolve_registered_model_entry(model_name)
     if not entry:
@@ -574,7 +567,7 @@ def _resolve_served_model_name(
     return model_name
 
 
-def _resolve_registered_model_entry(model_name: str) -> Optional[Dict[str, Any]]:
+def _resolve_registered_model_entry(model_name: str) -> dict[str, Any] | None:
     """Resolve a registered model entry from the authoritative UMRS catalog."""
     try:
         from ..model_registry.store import AccessContext
@@ -615,9 +608,9 @@ def _resolve_registered_model_entry(model_name: str) -> Optional[Dict[str, Any]]
 
 def _resolve_requested_model_path(
     model_name: str,
-    model_path: Optional[str],
-    model_entry: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
+    model_path: str | None,
+    model_entry: dict[str, Any] | None = None,
+) -> str | None:
     """Resolve the actual model storage path for endpoint provisioning."""
     normalized_path = model_path.strip() if model_path else None
     if normalized_path and normalized_path != _DEFAULT_PROVISION_MODEL_PATH:
@@ -635,7 +628,7 @@ def _resolve_requested_model_path(
 
 def _resolve_readiness_probe_mode(
     model_name: str,
-    model_entry: Optional[Dict[str, Any]] = None,
+    model_entry: dict[str, Any] | None = None,
 ) -> str:
     """Resolve the readiness probe mode for a provisioned endpoint."""
     entry = model_entry or _resolve_registered_model_entry(model_name)
@@ -645,7 +638,7 @@ def _resolve_readiness_probe_mode(
     return "chat"
 
 
-def _enrich_endpoint_response(ep_dict: Dict[str, Any]) -> Dict[str, Any]:
+def _enrich_endpoint_response(ep_dict: dict[str, Any]) -> dict[str, Any]:
     """Add served_model_name to endpoint dict if not already present."""
     if not ep_dict.get("served_model_name"):
         served = _resolve_served_model_name(ep_dict["model"])
@@ -656,7 +649,7 @@ def _enrich_endpoint_response(ep_dict: Dict[str, Any]) -> Dict[str, Any]:
 
 # Mapping of capability tag -> (model_entry path, expected truthy value)
 # ``None`` for the second slot means "boolean: any truthy value is OK".
-_CAPABILITY_TAG_MAP: Dict[str, Any] = {
+_CAPABILITY_TAG_MAP: dict[str, Any] = {
     "vision": ("capabilities.supports_vision", None),
     "tool_calling": ("capabilities.supports_tool_calling", None),
     "structured_output": ("capabilities.supports_structured_output", None),
@@ -668,7 +661,7 @@ _CAPABILITY_TAG_MAP: Dict[str, Any] = {
 }
 
 
-def _entry_field(entry: Dict[str, Any], dotted: str) -> Any:
+def _entry_field(entry: dict[str, Any], dotted: str) -> Any:
     cur: Any = entry
     for part in dotted.split("."):
         if not isinstance(cur, dict) or part not in cur:
@@ -677,7 +670,7 @@ def _entry_field(entry: Dict[str, Any], dotted: str) -> Any:
     return cur
 
 
-def _capability_satisfied(entry: Optional[Dict[str, Any]], tag: str) -> bool:
+def _capability_satisfied(entry: dict[str, Any] | None, tag: str) -> bool:
     """Return True if the model entry advertises the given capability tag."""
     if entry is None:
         return False
@@ -695,9 +688,9 @@ def _capability_satisfied(entry: Optional[Dict[str, Any]], tag: str) -> bool:
 
 
 def _endpoint_passes_capability_filter(
-    ep_dict: Dict[str, Any],
-    capabilities: Optional[List[str]],
-    model_type: Optional[str],
+    ep_dict: dict[str, Any],
+    capabilities: list[str] | None,
+    model_type: str | None,
 ) -> bool:
     """Return True if the endpoint's served model satisfies the filters."""
     if not capabilities and not model_type:
@@ -714,14 +707,14 @@ def _endpoint_passes_capability_filter(
     return True
 
 
-def _parse_capabilities_csv(raw: Optional[str]) -> Optional[List[str]]:
+def _parse_capabilities_csv(raw: str | None) -> list[str] | None:
     if not raw:
         return None
     tags = [t.strip() for t in raw.split(",") if t.strip()]
     return tags or None
 
 
-def _is_all_models_query(model: Optional[str]) -> bool:
+def _is_all_models_query(model: str | None) -> bool:
     """Return True when the caller is requesting all visible models."""
     if model is None:
         return True
@@ -750,15 +743,15 @@ def _is_all_models_query(model: Optional[str]) -> bool:
     """,
 )
 async def get_active_endpoints(
-    model: Optional[str] = Query(None, description="Filter by model name (catalog or served name)"),
-    capabilities: Optional[str] = Query(
+    model: str | None = Query(None, description="Filter by model name (catalog or served name)"),
+    capabilities: str | None = Query(
         None,
         description=(
             "Comma-separated capability tags the served model must advertise. "
             "Known tags: vision, tool_calling, structured_output, embedding, gpu."
         ),
     ),
-    model_type: Optional[str] = Query(
+    model_type: str | None = Query(
         None,
         description="Filter by ModelType: 'llm', 'vision', or 'embedding'.",
     ),
@@ -832,8 +825,8 @@ async def get_active_endpoints(
     description="List all endpoints (for monitoring/admin). Optionally filter by project.",
 )
 async def list_endpoints(
-    project_id: Optional[str] = Depends(get_project_id_optional),
-    status_filter: Optional[str] = Query(None, description="Comma-separated statuses"),
+    project_id: str | None = Depends(get_project_id_optional),
+    status_filter: str | None = Query(None, description="Comma-separated statuses"),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointsListResponse:
     """List all endpoints, optionally filtered.
@@ -851,7 +844,7 @@ async def list_endpoints(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid status filter: {e}",
-            )
+            ) from e
 
     endpoints = registry.list_all(project_id=project_id, status_filter=statuses)
 
@@ -921,7 +914,7 @@ async def update_endpoint_status(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid status: {request.status}",
-        )
+        ) from None
 
     endpoint = registry.update_status(job_id, new_status, request.error_message)
     if not endpoint:
@@ -1134,7 +1127,7 @@ async def get_endpoint(
 )
 async def provision_endpoint(
     request: ProvisionRequest,
-    project_id: Optional[str] = Depends(get_project_id_optional),
+    project_id: str | None = Depends(get_project_id_optional),
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Provision a new endpoint or return existing one."""
@@ -1142,6 +1135,8 @@ async def provision_endpoint(
 
     from ..orchestrator.service import (
         ProvisionRequest as ServiceProvisionRequest,
+    )
+    from ..orchestrator.service import (
         get_orchestration_service,
     )
 
@@ -1216,12 +1211,12 @@ async def provision_endpoint(
             ),
         )
 
-    request_metadata: Dict[str, Any] = {
+    request_metadata: dict[str, Any] = {
         # This route provisions interactive inference endpoints. Require a
         # successful chat path before exposing the endpoint as ready.
         "readiness_probe": "chat"
     }
-    env_vars: Dict[str, str] = {}
+    env_vars: dict[str, str] = {}
     request_metadata.setdefault("owner_type", "user")
     request_metadata.setdefault("tier", request_metadata["owner_type"])
     served_model_name = _resolve_served_model_name(
@@ -1239,7 +1234,7 @@ async def provision_endpoint(
     request_metadata["models"] = list(request.models or [request.model])
     if request.loras:
         request_metadata["loras"] = [
-            {"name": l.name, "source": l.source} for l in request.loras
+            {"name": lora.name, "source": lora.source} for lora in request.loras
         ]
 
     # Create provision request

@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 import numpy as np
 
@@ -35,9 +35,9 @@ class SearchResult:
     content: str
     score: float
     metadata: dict[str, Any] = field(default_factory=dict)
-    vector_score: Optional[float] = None
-    bm25_score: Optional[float] = None
-    rerank_score: Optional[float] = None
+    vector_score: float | None = None
+    bm25_score: float | None = None
+    rerank_score: float | None = None
 
 
 @dataclass
@@ -138,7 +138,7 @@ class BM25:
         scores = []
 
         for i, (doc_tokens, doc_length) in enumerate(
-            zip(self._documents, self._doc_lengths)
+            zip(self._documents, self._doc_lengths, strict=False)
         ):
             score = 0.0
 
@@ -331,7 +331,7 @@ class CrossEncoderReranker:
         self,
         query: str,
         results: list[SearchResult],
-        top_k: Optional[int] = None,
+        top_k: int | None = None,
     ) -> list[SearchResult]:
         """
         Rerank search results using cross-encoder.
@@ -358,7 +358,7 @@ class CrossEncoderReranker:
         scores = self._model.predict(pairs)
 
         # Update results with rerank scores
-        for result, score in zip(results, scores):
+        for result, score in zip(results, scores, strict=False):
             result.rerank_score = float(score)
 
         # Sort by rerank score
@@ -446,7 +446,7 @@ class RAGContentScanner:
 
 
 # Default scanner instance
-_rag_scanner: Optional[RAGContentScanner] = None
+_rag_scanner: RAGContentScanner | None = None
 
 
 def get_rag_scanner() -> RAGContentScanner:
@@ -477,9 +477,9 @@ class ContextAssembler:
         self,
         max_tokens: int = 4000,
         chars_per_token: float = 4.0,
-        context_template: Optional[str] = None,
+        context_template: str | None = None,
         enable_injection_scanning: bool = True,
-        scanner: Optional[RAGContentScanner] = None,
+        scanner: RAGContentScanner | None = None,
     ):
         """
         Initialize context assembler.
@@ -607,10 +607,10 @@ class RAGPipeline:
 
     def __init__(
         self,
-        hybrid_searcher: Optional[HybridSearcher] = None,
-        reranker: Optional[CrossEncoderReranker] = None,
-        context_assembler: Optional[ContextAssembler] = None,
-        gateway_url: Optional[str] = None,
+        hybrid_searcher: HybridSearcher | None = None,
+        reranker: CrossEncoderReranker | None = None,
+        context_assembler: ContextAssembler | None = None,
+        gateway_url: str | None = None,
     ):
         """
         Initialize RAG pipeline.
@@ -632,7 +632,7 @@ class RAGPipeline:
         documents: list[tuple[str, str, float]],
         top_k: int = 5,
         rerank: bool = True,
-        metadata: Optional[dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> RAGContext:
         """
         Execute RAG query pipeline.
@@ -682,7 +682,7 @@ class RAGPipeline:
         query: str,
         context: RAGContext,
         model: str = "rivault-gpt-oss-static",
-        system_prompt: Optional[str] = None,
+        system_prompt: str | None = None,
         max_tokens: int = 1024,
         temperature: float = 0.3,
     ) -> dict[str, Any]:
@@ -726,13 +726,12 @@ class RAGPipeline:
             "temperature": temperature,
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{self.gateway_url}/gw/llm/v1/chat/completions",
-                json=payload,
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as response:
-                result = await response.json()
+        async with aiohttp.ClientSession() as session, session.post(
+            f"{self.gateway_url}/gw/llm/v1/chat/completions",
+            json=payload,
+            timeout=aiohttp.ClientTimeout(total=120),
+        ) as response:
+            result = await response.json()
 
         return {
             "answer": result.get("choices", [{}])[0]

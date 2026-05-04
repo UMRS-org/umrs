@@ -1,14 +1,16 @@
 # A class to manage server threads
 
 import logging
+import sys
 import threading
 import time
-from umrs.shared.pretty_print import pretty_print_thread_status
 from datetime import datetime
-import sys
+
 from diskcache import Cache
+
 from umrs.core.TaskCmdStatus import TaskStatus
-from umrs.core.thread_pool import ThreadPoolManager, PoolConfig, ServerOverloadedError
+from umrs.core.thread_pool import ThreadPoolManager
+from umrs.shared.pretty_print import pretty_print_thread_status
 
 logger = logging.getLogger(__name__)
 
@@ -242,7 +244,7 @@ class UMRSThreads:
 
     def update_thread_dict(self, buckets_cfg, keys_per_bucket, key, thread_ident = "self"):
         array_of_works = []
-        for path_to_bucket in keys_per_bucket.keys():
+        for path_to_bucket in keys_per_bucket:
             selected_fields = ["s3_username", "table_name","modality_name", "db_name"]
             result = buckets_cfg.get(path_to_bucket, fields=selected_fields)
             if result is None:
@@ -331,7 +333,6 @@ class UMRSThreads:
 
     def waitall(self):
         finished_idents = []
-        remaining = []
         with self.lock:
             items = list(self.thread_list)
             self.thread_list.clear()

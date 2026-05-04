@@ -18,7 +18,7 @@ import logging
 import re
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -58,16 +58,16 @@ class AccessLevel(Enum):
     WRITE = 2
     ADMIN = 3
 
-    def __ge__(self, other: "AccessLevel") -> bool:
+    def __ge__(self, other: AccessLevel) -> bool:
         return self.value >= other.value
 
-    def __gt__(self, other: "AccessLevel") -> bool:
+    def __gt__(self, other: AccessLevel) -> bool:
         return self.value > other.value
 
-    def __le__(self, other: "AccessLevel") -> bool:
+    def __le__(self, other: AccessLevel) -> bool:
         return self.value <= other.value
 
-    def __lt__(self, other: "AccessLevel") -> bool:
+    def __lt__(self, other: AccessLevel) -> bool:
         return self.value < other.value
 
 
@@ -83,20 +83,20 @@ class UserContext:
     user_id: str
     project_id: str
     role: UserRole = UserRole.USER
-    groups: List[str] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    groups: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     # Derived from JWT claims or headers
-    display_name: Optional[str] = None
-    email: Optional[str] = None
+    display_name: str | None = None
+    email: str | None = None
 
     # Slurm accounting name used when this user's jobs are submitted via sbatch.
     # Populated from the user record by the auth layer. ``None`` falls back to
     # the site default (see ``site.yaml scheduler.account``).
-    slurm_account: Optional[str] = None
+    slurm_account: str | None = None
 
     @classmethod
-    def anonymous(cls, project_id: str = "default") -> "UserContext":
+    def anonymous(cls, project_id: str = "default") -> UserContext:
         """Create anonymous context (no authentication)."""
         return cls(
             user_id="anonymous",
@@ -107,12 +107,12 @@ class UserContext:
     @classmethod
     def from_headers(
         cls,
-        x_user_id: Optional[str],
-        x_project_id: Optional[str],
-        x_user_role: Optional[str] = None,
-        x_user_groups: Optional[str] = None,
-        x_slurm_account: Optional[str] = None,
-    ) -> "UserContext":
+        x_user_id: str | None,
+        x_project_id: str | None,
+        x_user_role: str | None = None,
+        x_user_groups: str | None = None,
+        x_slurm_account: str | None = None,
+    ) -> UserContext:
         """Create context from HTTP headers."""
         user_id = x_user_id or "anonymous"
         project_id = x_project_id or "default"
@@ -180,7 +180,7 @@ class ResourceOwnership:
     owner_id: str
     project_id: str
     is_shared: bool = False
-    shared_with: Set[str] = field(default_factory=set)  # user_ids or "project:{id}"
+    shared_with: set[str] = field(default_factory=set)  # user_ids or "project:{id}"
 
     def is_accessible_by(self, ctx: UserContext) -> bool:
         """Check if resource is accessible by the given user context."""
@@ -202,10 +202,7 @@ class ResourceOwnership:
 
         # Check project-level sharing
         project_key = f"project:{ctx.project_id}"
-        if project_key in self.shared_with:
-            return True
-
-        return False
+        return project_key in self.shared_with
 
 
 # =============================================================================
@@ -297,8 +294,8 @@ class IsolationValidator:
     def validate_request_isolation(
         self,
         ctx: UserContext,
-        request_data: Dict[str, Any],
-    ) -> List[str]:
+        request_data: dict[str, Any],
+    ) -> list[str]:
         """Validate that request data doesn't violate isolation.
 
         Returns list of violation messages (empty if valid).
@@ -325,20 +322,20 @@ class IsolationValidator:
 
         # Check for path traversal in any path-like fields
         path_fields = ["path", "file_path", "model_path", "output_path"]
-        for field in path_fields:
-            if field in request_data:
-                path_val = request_data[field]
+        for path_field in path_fields:
+            if path_field in request_data:
+                path_val = request_data[path_field]
                 if isinstance(path_val, str):
                     if not self._access_control.validate_path(path_val, ctx):
-                        violations.append(f"Suspicious path in {field}: {path_val}")
+                        violations.append(f"Suspicious path in {path_field}: {path_val}")
 
         return violations
 
     def validate_response_scoping(
         self,
         ctx: UserContext,
-        response_data: Dict[str, Any],
-    ) -> Dict[str, Any]:
+        response_data: dict[str, Any],
+    ) -> dict[str, Any]:
         """Scope response data to user/project context.
 
         Removes or filters data that shouldn't be visible to the user.
@@ -363,7 +360,7 @@ class IsolationValidator:
 
     def _item_visible_to_user(
         self,
-        item: Dict[str, Any],
+        item: dict[str, Any],
         ctx: UserContext,
     ) -> bool:
         """Check if an item should be visible to the user."""
@@ -373,14 +370,13 @@ class IsolationValidator:
                 return False
 
         # Check owner_id match
-        if "owner_id" in item:
-            if item["owner_id"] != ctx.user_id and not ctx.is_admin:
-                # Check if shared
-                if "shared_with" in item:
-                    if ctx.user_id not in item.get("shared_with", []):
-                        return False
-                else:
+        if "owner_id" in item and item["owner_id"] != ctx.user_id and not ctx.is_admin:
+            # Check if shared
+            if "shared_with" in item:
+                if ctx.user_id not in item.get("shared_with", []):
                     return False
+            else:
+                return False
 
         return True
 
@@ -393,10 +389,10 @@ class IsolationValidator:
 class ConfigIsolation:
     """Isolates configuration access for multi-user scenarios."""
 
-    def __init__(self, user_config_map: Optional[Dict[str, str]] = None):
+    def __init__(self, user_config_map: dict[str, str] | None = None):
         """Initialize with user-to-config-path mapping."""
-        self._user_config_map: Dict[str, str] = user_config_map or {}
-        self._config_cache: Dict[str, Dict[str, Any]] = {}
+        self._user_config_map: dict[str, str] = user_config_map or {}
+        self._config_cache: dict[str, dict[str, Any]] = {}
 
     def register_user_config(self, user_id: str, config_path: str) -> None:
         """Register a configuration file path for a user."""
@@ -404,7 +400,7 @@ class ConfigIsolation:
         # Invalidate cache
         self._config_cache.pop(user_id, None)
 
-    def get_user_config_path(self, ctx: UserContext) -> Optional[str]:
+    def get_user_config_path(self, ctx: UserContext) -> str | None:
         """Get configuration file path for user, respecting isolation."""
         # Admins can use any config (for debugging)
         if ctx.is_admin and "target_user" in ctx.metadata:
@@ -413,7 +409,7 @@ class ConfigIsolation:
 
         return self._user_config_map.get(ctx.user_id)
 
-    def get_user_config(self, ctx: UserContext) -> Optional[Dict[str, Any]]:
+    def get_user_config(self, ctx: UserContext) -> dict[str, Any] | None:
         """Get parsed configuration for user."""
         if ctx.user_id in self._config_cache:
             return self._config_cache[ctx.user_id]
@@ -428,7 +424,7 @@ class ConfigIsolation:
         self._config_cache[ctx.user_id] = config
         return config
 
-    def list_user_buckets(self, ctx: UserContext) -> List[str]:
+    def list_user_buckets(self, ctx: UserContext) -> list[str]:
         """List S3 buckets accessible to user.
 
         Ensures users can only see their own buckets.
@@ -441,9 +437,9 @@ class ConfigIsolation:
 # Global Instances
 # =============================================================================
 
-_access_control: Optional[AccessControl] = None
-_isolation_validator: Optional[IsolationValidator] = None
-_config_isolation: Optional[ConfigIsolation] = None
+_access_control: AccessControl | None = None
+_isolation_validator: IsolationValidator | None = None
+_config_isolation: ConfigIsolation | None = None
 
 
 def get_access_control() -> AccessControl:

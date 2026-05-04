@@ -8,7 +8,6 @@ See DEVELOPMENT_OBJECTIVES.md Section 1.9.1 for design details.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import psycopg2
 

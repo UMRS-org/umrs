@@ -32,7 +32,7 @@ import logging
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from umrs.pipeline_sdk.step import Step, StepContext
 from umrs.pipeline_sdk.workflow import (
@@ -70,20 +70,20 @@ class UserWorkflow:
     # ── WorkflowDefinition fields ────────────────────────────────────────
     name: str
     source: SourceSpec
-    steps: List[StepSpec]
+    steps: list[StepSpec]
     version: str = "1.0"
     description: str = ""
-    requirements: List[str] = field(default_factory=list)
-    env: Dict[str, str] = field(default_factory=dict)
+    requirements: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
     resources: ResourceSpec = field(default_factory=ResourceSpec)
     output: OutputSpec = field(default_factory=OutputSpec)
     execution_mode: ExecutionMode = ExecutionMode.IN_PROCESS
 
     # ── PluginSpec-like additions ────────────────────────────────────────
-    env_vars: Dict[str, str] = field(default_factory=dict)
-    output_destinations: List[str] = field(default_factory=list)
-    user_id: Optional[str] = None
-    project_id: Optional[str] = None
+    env_vars: dict[str, str] = field(default_factory=dict)
+    output_destinations: list[str] = field(default_factory=list)
+    user_id: str | None = None
+    project_id: str | None = None
 
     # ── Convenience constructors ─────────────────────────────────────────
 
@@ -92,11 +92,11 @@ class UserWorkflow:
         cls,
         wf: WorkflowDefinition,
         *,
-        env_vars: Optional[Dict[str, str]] = None,
-        output_destinations: Optional[List[str]] = None,
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-    ) -> "UserWorkflow":
+        env_vars: dict[str, str] | None = None,
+        output_destinations: list[str] | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+    ) -> UserWorkflow:
         """Wrap an existing :class:`WorkflowDefinition`."""
         return cls(
             name=wf.name,
@@ -130,7 +130,7 @@ class UserWorkflow:
             execution_mode=self.execution_mode,
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = self.to_workflow_definition().to_dict()
         if self.env_vars:
             d["env_vars"] = self.env_vars
@@ -143,7 +143,7 @@ class UserWorkflow:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "UserWorkflow":
+    def from_dict(cls, data: dict[str, Any]) -> UserWorkflow:
         wf = WorkflowDefinition.from_dict(data)
         return cls.from_workflow_definition(
             wf,
@@ -166,20 +166,20 @@ class UserWorkflowRunner:
     via Slurm, or on Kubernetes.
     """
 
-    def __init__(self, workflow: UserWorkflow, s3: Optional[Any] = None) -> None:
+    def __init__(self, workflow: UserWorkflow, s3: Any | None = None) -> None:
         self.workflow = workflow
         self._s3 = s3
-        self._step_instances: Optional[List[Step]] = None
+        self._step_instances: list[Step] | None = None
 
     # ── Public API ───────────────────────────────────────────────────────
 
     def run(
         self,
         s3: Any,
-        s3_keys: List[str],
+        s3_keys: list[str],
         input_bucket: str,
         output_bucket: str,
-    ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
+    ) -> tuple[list[Any], list[str], list[dict[str, Any]], list[str | None]]:
         """Execute workflow and return ``(embeddings, checksums, metadata, saved_keys)``.
 
         This matches the ``EmbeddingModel.compute_embeddings`` contract.
@@ -202,10 +202,10 @@ class UserWorkflowRunner:
     def _run_in_process(
         self,
         s3: Any,
-        s3_keys: List[str],
+        s3_keys: list[str],
         input_bucket: str,
         output_bucket: str,
-    ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
+    ) -> tuple[list[Any], list[str], list[dict[str, Any]], list[str | None]]:
         """Run steps directly — identical to the original WorkflowPipeline."""
         steps = self._ensure_steps(s3)
 
@@ -217,13 +217,13 @@ class UserWorkflowRunner:
 
         current_keys = list(s3_keys)
         current_bucket = input_bucket
-        shared_metadata: Dict[str, Any] = {}
+        shared_metadata: dict[str, Any] = {}
 
-        last_embeddings: Optional[Any] = None
-        last_checksums: List[str] = []
-        last_metadata: List[Dict[str, Any]] = []
+        last_embeddings: Any | None = None
+        last_checksums: list[str] = []
+        last_metadata: list[dict[str, Any]] = []
 
-        for idx, (step, spec) in enumerate(zip(steps, self.workflow.steps)):
+        for idx, (step, spec) in enumerate(zip(steps, self.workflow.steps, strict=False)):
             # Keep all step outputs in the workflow output bucket so
             # intermediate artifacts do not retrigger the watched input bucket.
             step_output_bucket = output_bucket
@@ -272,11 +272,11 @@ class UserWorkflowRunner:
         if not last_metadata:
             last_metadata = self._collect_metadata(s3, input_bucket, s3_keys)
 
-        embeddings_list: List[Any] = (
+        embeddings_list: list[Any] = (
             list(last_embeddings) if last_embeddings is not None
             else [None] * len(s3_keys)
         )
-        saved_keys: List[Optional[str]] = (
+        saved_keys: list[str | None] = (
             list(current_keys) if current_keys != list(s3_keys)
             else [None] * len(s3_keys)
         )
@@ -290,10 +290,10 @@ class UserWorkflowRunner:
     def _run_subprocess(
         self,
         s3: Any,
-        s3_keys: List[str],
+        s3_keys: list[str],
         input_bucket: str,
         output_bucket: str,
-    ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
+    ) -> tuple[list[Any], list[str], list[dict[str, Any]], list[str | None]]:
         """Run each step in an isolated subprocess."""
         raise NotImplementedError(
             "Subprocess execution mode is planned but not yet implemented. "
@@ -305,10 +305,10 @@ class UserWorkflowRunner:
     def _run_slurm(
         self,
         s3: Any,
-        s3_keys: List[str],
+        s3_keys: list[str],
         input_bucket: str,
         output_bucket: str,
-    ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
+    ) -> tuple[list[Any], list[str], list[dict[str, Any]], list[str | None]]:
         """Submit each step as a Slurm job via SlurmPluginRunner.
 
         Each step is wrapped into a :class:`PluginSpec` using
@@ -342,9 +342,9 @@ class UserWorkflowRunner:
         current_keys = list(s3_keys)
         current_bucket = input_bucket
 
-        last_embeddings: Optional[Any] = None
-        last_checksums: List[str] = []
-        last_metadata: List[Dict[str, Any]] = []
+        last_embeddings: Any | None = None
+        last_checksums: list[str] = []
+        last_metadata: list[dict[str, Any]] = []
 
         for idx, spec in enumerate(self.workflow.steps):
             step_output_bucket = output_bucket
@@ -397,11 +397,11 @@ class UserWorkflowRunner:
                         len(self.workflow.steps), spec.name)
 
         # Build return tuple
-        embeddings_list: List[Any] = (
+        embeddings_list: list[Any] = (
             list(last_embeddings) if last_embeddings is not None
             else [None] * len(s3_keys)
         )
-        saved_keys: List[Optional[str]] = (
+        saved_keys: list[str | None] = (
             list(current_keys) if current_keys != list(s3_keys)
             else [None] * len(s3_keys)
         )
@@ -413,10 +413,10 @@ class UserWorkflowRunner:
     def _run_k8s(
         self,
         s3: Any,
-        s3_keys: List[str],
+        s3_keys: list[str],
         input_bucket: str,
         output_bucket: str,
-    ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
+    ) -> tuple[list[Any], list[str], list[dict[str, Any]], list[str | None]]:
         """Submit each step as a Kubernetes Job via K8sPluginRunner.
 
         Follows the same pattern as ``_run_slurm`` but uses the K8s
@@ -444,9 +444,9 @@ class UserWorkflowRunner:
         current_keys = list(s3_keys)
         current_bucket = input_bucket
 
-        last_embeddings: Optional[Any] = None
-        last_checksums: List[str] = []
-        last_metadata: List[Dict[str, Any]] = []
+        last_embeddings: Any | None = None
+        last_checksums: list[str] = []
+        last_metadata: list[dict[str, Any]] = []
 
         for idx, spec in enumerate(self.workflow.steps):
             step_output_bucket = output_bucket
@@ -499,11 +499,11 @@ class UserWorkflowRunner:
                         len(self.workflow.steps), spec.name)
 
         # Build return tuple
-        embeddings_list: List[Any] = (
+        embeddings_list: list[Any] = (
             list(last_embeddings) if last_embeddings is not None
             else [None] * len(s3_keys)
         )
-        saved_keys: List[Optional[str]] = (
+        saved_keys: list[str | None] = (
             list(current_keys) if current_keys != list(s3_keys)
             else [None] * len(s3_keys)
         )
@@ -516,7 +516,7 @@ class UserWorkflowRunner:
     def _resolve_step_manifest(
         runner: Any,
         result: Any,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Resolve a step manifest from backend-specific result surfaces."""
         metrics = getattr(result, "metrics", None)
         if isinstance(metrics, dict):
@@ -541,7 +541,7 @@ class UserWorkflowRunner:
     @staticmethod
     def _read_step_manifest(
         work_dir: Path, plugin_id: str,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Read result_manifest.json written by the in-container step executor.
 
         Returns the parsed manifest dict, or ``None`` if not found.
@@ -559,7 +559,7 @@ class UserWorkflowRunner:
             logger.warning("Failed to read manifest %s: %s", manifest_path, exc)
             return None
 
-    def _ensure_steps(self, s3: Optional[Any] = None) -> List[Step]:
+    def _ensure_steps(self, s3: Any | None = None) -> list[Step]:
         """Load step instances lazily (in_process mode only)."""
         if self._step_instances is None:
             wf_def = self.workflow.to_workflow_definition()
@@ -568,8 +568,8 @@ class UserWorkflowRunner:
 
     @staticmethod
     def _collect_checksums(
-        s3: Any, bucket: str, keys: List[str],
-    ) -> List[str]:
+        s3: Any, bucket: str, keys: list[str],
+    ) -> list[str]:
         checksums = []
         for key in keys:
             try:
@@ -581,8 +581,8 @@ class UserWorkflowRunner:
 
     @staticmethod
     def _collect_metadata(
-        s3: Any, bucket: str, keys: List[str],
-    ) -> List[Dict[str, Any]]:
+        s3: Any, bucket: str, keys: list[str],
+    ) -> list[dict[str, Any]]:
         meta = []
         for key in keys:
             try:
@@ -594,7 +594,7 @@ class UserWorkflowRunner:
 
     @staticmethod
     def _cleanup_staging(
-        s3: Optional[Any], bucket: str, run_id: str,
+        s3: Any | None, bucket: str, run_id: str,
     ) -> None:
         """Delete intermediate staging objects for this run."""
         if s3 is None or not bucket:
@@ -602,7 +602,7 @@ class UserWorkflowRunner:
         prefix = f"_staging/{run_id}/"
         try:
             paginator = s3.get_paginator("list_objects_v2")
-            to_delete: List[Dict[str, str]] = []
+            to_delete: list[dict[str, str]] = []
             for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
                 for obj in page.get("Contents", []):
                     to_delete.append({"Key": obj["Key"]})

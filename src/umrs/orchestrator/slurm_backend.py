@@ -11,7 +11,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import (
     EndpointInfo,
@@ -38,11 +38,11 @@ class SlurmBackend(OrchestratorBackend):
         """Get path to job info file."""
         return Path(self.config.slurm_job_info_dir) / f"rivault-job-{job_id}.info"
 
-    def _parse_job_info_file(self, path: Path) -> Dict[str, str]:
+    def _parse_job_info_file(self, path: Path) -> dict[str, str]:
         """Parse a job info file into a dict."""
-        info: Dict[str, str] = {}
+        info: dict[str, str] = {}
         if path.exists():
-            with open(path, "r") as f:
+            with open(path) as f:
                 for line in f:
                     line = line.strip()
                     if "=" in line:
@@ -50,7 +50,7 @@ class SlurmBackend(OrchestratorBackend):
                         info[key] = value
         return info
 
-    def _status_from_info(self, info: Dict[str, str]) -> JobStatus:
+    def _status_from_info(self, info: dict[str, str]) -> JobStatus:
         """Convert job info status string to JobStatus enum."""
         status_map = {
             "pending": JobStatus.PENDING,
@@ -68,7 +68,7 @@ class SlurmBackend(OrchestratorBackend):
 
     async def submit_job(
         self,
-        model_path: Optional[str] = None,
+        model_path: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
         """Submit a Slurm job for Mini-RiVault."""
@@ -127,8 +127,8 @@ class SlurmBackend(OrchestratorBackend):
     def _endpoint_from_info(
         self,
         status: JobStatus,
-        info: Dict[str, str],
-    ) -> Optional[EndpointInfo]:
+        info: dict[str, str],
+    ) -> EndpointInfo | None:
         if status not in (JobStatus.READY, JobStatus.RUNNING):
             return None
         return EndpointInfo(
@@ -143,7 +143,7 @@ class SlurmBackend(OrchestratorBackend):
             return status
         return await self._query_sacct_status(job_id)
 
-    async def _query_squeue_status(self, job_id: str) -> Optional[JobStatus]:
+    async def _query_squeue_status(self, job_id: str) -> JobStatus | None:
         proc = await asyncio.create_subprocess_exec(
             "squeue",
             "-j", job_id,
@@ -192,7 +192,7 @@ class SlurmBackend(OrchestratorBackend):
     async def wait_for_ready(
         self,
         job_id: str,
-        timeout_sec: Optional[int] = None,
+        timeout_sec: int | None = None,
     ) -> EndpointInfo:
         """Wait for job to be ready."""
         timeout = timeout_sec or self.config.startup_timeout_sec
@@ -234,8 +234,8 @@ class SlurmBackend(OrchestratorBackend):
 
     async def list_jobs(
         self,
-        status_filter: Optional[List[JobStatus]] = None,
-    ) -> List[JobInfo]:
+        status_filter: list[JobStatus] | None = None,
+    ) -> list[JobInfo]:
         """List all Mini-RiVault jobs."""
         jobs = await self._jobs_from_info_files(status_filter)
         await self._append_squeue_jobs(jobs, status_filter)
@@ -243,9 +243,9 @@ class SlurmBackend(OrchestratorBackend):
 
     async def _jobs_from_info_files(
         self,
-        status_filter: Optional[List[JobStatus]],
-    ) -> List[JobInfo]:
-        jobs: List[JobInfo] = []
+        status_filter: list[JobStatus] | None,
+    ) -> list[JobInfo]:
+        jobs: list[JobInfo] = []
         info_dir = Path(self.config.slurm_job_info_dir)
         if info_dir.exists():
             for info_file in info_dir.glob("rivault-job-*.info"):
@@ -259,8 +259,8 @@ class SlurmBackend(OrchestratorBackend):
 
     async def _append_squeue_jobs(
         self,
-        jobs: List[JobInfo],
-        status_filter: Optional[List[JobStatus]],
+        jobs: list[JobInfo],
+        status_filter: list[JobStatus] | None,
     ) -> None:
         proc = await asyncio.create_subprocess_exec(
             "squeue",
@@ -281,8 +281,8 @@ class SlurmBackend(OrchestratorBackend):
     async def _append_squeue_job(
         self,
         job_id: str,
-        jobs: List[JobInfo],
-        status_filter: Optional[List[JobStatus]],
+        jobs: list[JobInfo],
+        status_filter: list[JobStatus] | None,
     ) -> None:
         if not job_id or any(job.job_id == job_id for job in jobs):
             return
@@ -322,7 +322,7 @@ class SlurmBackend(OrchestratorBackend):
 
         return cleaned
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check if Slurm is accessible."""
         try:
             proc = await asyncio.create_subprocess_exec(

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import Any, Dict, Optional, Tuple, Union, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from umrs.server.sql import DataBase
@@ -21,11 +21,11 @@ class ServerBucketEntry:
     modality_name: str
     task: str
     s3_connection: Any
-    metadata: Dict
+    metadata: dict
     xp_name: str
     num_objects: int
     return_type: str
-    output_path_to_bucket: Optional[str] = None
+    output_path_to_bucket: str | None = None
     reentrant_lock: RLock = field(default_factory=RLock)
 
 
@@ -42,17 +42,17 @@ class ClientBucketEntry:
     metadata: dict
     sql_username: str
     db_name: str
-    output_path_to_bucket: Optional[str] = None
+    output_path_to_bucket: str | None = None
 
 
-BucketEntry = Union[ServerBucketEntry, ClientBucketEntry]
+BucketEntry = ServerBucketEntry | ClientBucketEntry
 
 
 class BucketsCfg:
     """Container for bucket entries used by both client and server flows."""
 
     def __init__(self):
-        self._store: Dict[str, BucketEntry] = {}
+        self._store: dict[str, BucketEntry] = {}
 
     def store(self, key: str, entry: BucketEntry):
         self._store[key] = entry
@@ -60,9 +60,9 @@ class BucketsCfg:
     def get(
         self,
         key: str,
-        fields: Optional[list[str]] = None,
+        fields: list[str] | None = None,
         **kwargs: Any,
-    ) -> Union[BucketEntry, Tuple]:
+    ) -> BucketEntry | tuple:
         if fields is None and "filter" in kwargs:
             fields = kwargs["filter"]
 

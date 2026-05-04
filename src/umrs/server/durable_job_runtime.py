@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import threading
 from concurrent.futures import TimeoutError as FutureTimeoutError
-from typing import Optional
 
 from umrs.orchestrator.durable import DurableOrchestrationService
 from umrs.server.job_tracking_handler import (
@@ -24,14 +24,14 @@ class DurableJobRuntimeError(RuntimeError):
 class DurableJobRuntime:
     """Own a DurableOrchestrationService on a dedicated asyncio loop thread."""
 
-    def __init__(self, db_pool, service: Optional[DurableOrchestrationService] = None):
+    def __init__(self, db_pool, service: DurableOrchestrationService | None = None):
         self._db_pool = db_pool
         self._service = service or DurableOrchestrationService(db_pool=db_pool)
-        self._thread: Optional[threading.Thread] = None
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._command_backend: Optional[DurableJobCommandBackend] = None
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._command_backend: DurableJobCommandBackend | None = None
         self._startup_complete = threading.Event()
-        self._startup_error: Optional[BaseException] = None
+        self._startup_error: BaseException | None = None
         self._lock = threading.Lock()
         self._started = False
 
@@ -89,10 +89,8 @@ class DurableJobRuntime:
             raise DurableJobRuntimeError("Timed out shutting down durable job runtime") from exc
         finally:
             if loop is not None:
-                try:
+                with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(loop.stop)
-                except RuntimeError:
-                    pass
             if thread is not None:
                 thread.join(timeout + 5.0)
             self._thread = None
@@ -143,7 +141,7 @@ class DurableJobRuntime:
             self._db_pool = None
 
 
-def start_durable_job_runtime_from_env(timeout: float = 30.0) -> Optional[DurableJobRuntime]:
+def start_durable_job_runtime_from_env(timeout: float = 30.0) -> DurableJobRuntime | None:
     """Best-effort bootstrap of the process-owned durable jobs runtime."""
     try:
         db_pool = build_durable_job_db_pool_from_env()

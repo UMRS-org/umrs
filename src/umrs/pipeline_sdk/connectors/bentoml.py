@@ -6,7 +6,7 @@ import asyncio
 import logging
 import pickle
 import time
-from typing import Any, Dict, List
+from typing import Any
 
 import bentoml
 
@@ -21,10 +21,10 @@ logger = logging.getLogger(__name__)
 async def async_submit_batch(
     client: bentoml.AsyncHTTPClient,
     endpoint: str,
-    items: List[Dict[str, Any]],
+    items: list[dict[str, Any]],
     timeout: float = 300.0,
     poll_interval: float = 2.0,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Submit multiple tasks and await all results.
 
     Args:
@@ -44,7 +44,7 @@ async def async_submit_batch(
         tasks.append(task)
         logger.info("Submitted %s task %s", endpoint, task.id)
 
-    results: List[Dict[str, Any]] = []
+    results: list[dict[str, Any]] = []
     for task in tasks:
         start = time.monotonic()
         while True:
@@ -70,18 +70,18 @@ async def async_submit_batch(
 def submit_batch(
     service_url: str,
     endpoint: str,
-    items: List[Dict[str, Any]],
+    items: list[dict[str, Any]],
     *,
     token: str | None = None,
     timeout: float = 300.0,
     poll_interval: float = 2.0,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Synchronous wrapper — submit multiple tasks and block until all complete.
 
     Creates a short-lived ``AsyncHTTPClient`` internally.
     """
 
-    async def _run() -> List[Dict[str, Any]]:
+    async def _run() -> list[dict[str, Any]]:
         async with bentoml.AsyncHTTPClient(service_url, token=token) as client:
             return await async_submit_batch(
                 client, endpoint, items,

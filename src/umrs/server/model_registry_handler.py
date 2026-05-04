@@ -24,12 +24,20 @@ import logging
 import os
 import threading
 from datetime import datetime
-from typing import Any, Dict, Set
+from typing import Any
 
 from umrs.model_registry.models import ModelScope, ModelType, ServingProfile
-from umrs.model_registry.store import ACLEnforcer, AccessContext, DuplicateModelError, ModelStore, PathNotAllowedError, PathValidator, PermissionDeniedError
+from umrs.model_registry.store import (
+    AccessContext,
+    ACLEnforcer,
+    DuplicateModelError,
+    ModelStore,
+    PathNotAllowedError,
+    PathValidator,
+    PermissionDeniedError,
+)
 from umrs.shared.auth import create_auth_context_from_request
-from umrs.shared.config import get_default_umrs_cfg_dir
+from umrs.shared.config import get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -131,20 +139,19 @@ class DurableModelCommandBackend:
 
 def _catalog_path() -> str:
     """Return path to the JSON model catalog file."""
-    cfg_dir = get_default_umrs_cfg_dir()
-    return os.path.join(cfg_dir, "model_catalog.json")
+    return get_resolved_umrs_subdir("model_catalog.json")
 
 
-def _load_catalog() -> Dict[str, Any]:
+def _load_catalog() -> dict[str, Any]:
     """Load model catalog from JSON file."""
     path = _catalog_path()
     if not os.path.exists(path):
         return {"models": []}
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def _save_catalog(catalog: Dict[str, Any]) -> None:
+def _save_catalog(catalog: dict[str, Any]) -> None:
     """Save model catalog to JSON file."""
     path = _catalog_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -155,11 +162,11 @@ def _save_catalog(catalog: Dict[str, Any]) -> None:
 def _project_memberships_path() -> str:
     return os.environ.get(
         "UMRS_MODEL_PROJECT_MEMBERSHIPS_FILE",
-        os.path.join(get_default_umrs_cfg_dir(), "model_project_memberships.json"),
+        get_resolved_umrs_subdir("model_project_memberships.json"),
     )
 
 
-def _load_project_memberships() -> Dict[str, Set[str]]:
+def _load_project_memberships() -> dict[str, set[str]]:
     raw_json = os.environ.get("UMRS_MODEL_PROJECT_MEMBERSHIPS")
     raw_data: Any = None
     if raw_json:
@@ -167,13 +174,13 @@ def _load_project_memberships() -> Dict[str, Set[str]]:
     else:
         path = _project_memberships_path()
         if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as handle:
+            with open(path, encoding="utf-8") as handle:
                 raw_data = json.load(handle)
 
     return _normalize_project_memberships(raw_data)
 
 
-def _normalize_project_memberships(raw_data: Any) -> Dict[str, Set[str]]:
+def _normalize_project_memberships(raw_data: Any) -> dict[str, set[str]]:
     if raw_data is None:
         return {}
     if isinstance(raw_data, dict) and isinstance(raw_data.get("users"), dict):
@@ -181,13 +188,13 @@ def _normalize_project_memberships(raw_data: Any) -> Dict[str, Set[str]]:
     if not isinstance(raw_data, dict):
         raise ValueError("Project membership mapping must be a JSON object")
 
-    memberships: Dict[str, Set[str]] = {}
+    memberships: dict[str, set[str]] = {}
     for username, projects in raw_data.items():
         memberships[str(username)] = _normalize_project_list(projects)
     return memberships
 
 
-def _normalize_project_list(projects: Any) -> Set[str]:
+def _normalize_project_list(projects: Any) -> set[str]:
     if isinstance(projects, str):
         return {projects}
     if isinstance(projects, list):
@@ -195,7 +202,7 @@ def _normalize_project_list(projects: Any) -> Set[str]:
     raise ValueError("Project memberships must map usernames to a string or list of strings")
 
 
-def _build_access_context(client_id: str, payload: Dict[str, Any]) -> AccessContext:
+def _build_access_context(client_id: str, payload: dict[str, Any]) -> AccessContext:
     auth_ctx = create_auth_context_from_request(
         client_id,
         token=payload.get("admin_token"),
@@ -209,7 +216,7 @@ def _build_access_context(client_id: str, payload: Dict[str, Any]) -> AccessCont
     )
 
 
-def _parse_scope(payload: Dict[str, Any]) -> ModelScope:
+def _parse_scope(payload: dict[str, Any]) -> ModelScope:
     raw_scope = str(payload.get("scope", "user")).strip().lower()
     try:
         return ModelScope(raw_scope)
@@ -217,7 +224,7 @@ def _parse_scope(payload: Dict[str, Any]) -> ModelScope:
         raise ValueError(f"Invalid model scope: {raw_scope}") from exc
 
 
-def _catalog_identity(entry: Dict[str, Any], scope: ModelScope) -> str | None:
+def _catalog_identity(entry: dict[str, Any], scope: ModelScope) -> str | None:
     if scope == ModelScope.USER:
         return entry.get("owner_id") or entry.get("registered_by")
     if scope == ModelScope.PROJECT:
@@ -234,7 +241,7 @@ def _entry_scope_key(scope: ModelScope, owner_id: str | None, project_id: str | 
 
 
 def _find_duplicate(
-    catalog: Dict[str, Any],
+    catalog: dict[str, Any],
     name: str,
     scope: ModelScope,
     owner_id: str | None,
@@ -251,21 +258,21 @@ def _find_duplicate(
     return False
 
 
-def _parse_register_payload(payload_str: str) -> Dict[str, Any]:
+def _parse_register_payload(payload_str: str) -> dict[str, Any]:
     try:
         return json.loads(payload_str) if payload_str else {}
     except json.JSONDecodeError as exc:
         raise ValueError(f"Invalid JSON: {exc}") from exc
 
 
-def _parse_list_payload(payload_str: str) -> Dict[str, Any]:
+def _parse_list_payload(payload_str: str) -> dict[str, Any]:
     try:
         return json.loads(payload_str) if payload_str else {}
     except json.JSONDecodeError:
         return {}
 
 
-def _validate_register_request(client_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _validate_register_request(client_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     name = payload.get("name", "").strip()
     path = payload.get("path", "").strip()
     project_id = payload.get("project_id")
@@ -300,9 +307,9 @@ def _validate_register_request(client_id: str, payload: Dict[str, Any]) -> Dict[
 def _build_catalog_entry(
     *,
     client_id: str,
-    payload: Dict[str, Any],
-    validated: Dict[str, Any],
-) -> Dict[str, Any]:
+    payload: dict[str, Any],
+    validated: dict[str, Any],
+) -> dict[str, Any]:
     scope = validated["scope"]
     access_ctx = validated["access_ctx"]
     project_id = validated["project_id"]
@@ -348,7 +355,7 @@ def _resolve_target_path(
     return target_path
 
 
-def _is_visible(entry: Dict[str, Any], access_ctx: AccessContext) -> bool:
+def _is_visible(entry: dict[str, Any], access_ctx: AccessContext) -> bool:
     if access_ctx.is_admin:
         return True
     scope = entry.get("scope")
@@ -362,11 +369,11 @@ def _is_visible(entry: Dict[str, Any], access_ctx: AccessContext) -> bool:
     return False
 
 
-def _visible_models(models: list[Dict[str, Any]], access_ctx: AccessContext) -> list[Dict[str, Any]]:
+def _visible_models(models: list[dict[str, Any]], access_ctx: AccessContext) -> list[dict[str, Any]]:
     return [model for model in models if _is_visible(model, access_ctx)]
 
 
-def _filter_models_by_scope(models: list[Dict[str, Any]], scope_filter: str | None) -> list[Dict[str, Any]]:
+def _filter_models_by_scope(models: list[dict[str, Any]], scope_filter: str | None) -> list[dict[str, Any]]:
     if not scope_filter:
         return models
     return [model for model in models if model.get("scope") == scope_filter]

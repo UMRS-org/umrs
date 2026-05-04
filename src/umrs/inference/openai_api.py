@@ -1,8 +1,13 @@
-from openai import OpenAI, OpenAIError
-from typing import Optional
 import hashlib
+
 import httpx
-from umrs.shared.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
+from openai import OpenAI, OpenAIError
+
+from umrs.shared.utils import (
+    add_document_prefix,
+    add_embeddings_to_chunks_dict,
+    flatten_text_chunks,
+)
 
 _clients = {}
 
@@ -23,7 +28,7 @@ def get_client(url, model_name, api_key=None):
 
 def is_server_alive(
     url: str,
-    api_key: Optional[str] = None,
+    api_key: str | None = None,
     timeout: float = 2.0,
 ) -> bool:
     """
@@ -50,7 +55,7 @@ def is_server_alive(
     except httpx.HTTPError:
         return False
 
-def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0, api_key: Optional[str] = None) -> Optional[int]:
+def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0, api_key: str | None = None) -> int | None:
     """
     Query a vLLM OpenAI-compatible server to get the max token length
     supported by a given model.

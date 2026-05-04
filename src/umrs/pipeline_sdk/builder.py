@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set
+from typing import Any
 
 
 class PipelineBuilderError(Exception):
@@ -21,27 +21,27 @@ class StepBuilder:
     """Per-step configuration builder."""
     name: str
     entrypoint: str
-    depends_on: List[str] = field(default_factory=list)
-    config: Dict[str, Any] = field(default_factory=dict)
+    depends_on: list[str] = field(default_factory=list)
+    config: dict[str, Any] = field(default_factory=dict)
     max_retries: int = 0
     retry_delay: float = 1.0
-    extends: Optional[str] = None
+    extends: str | None = None
 
-    def with_config(self, key: str, value: Any) -> "StepBuilder":
+    def with_config(self, key: str, value: Any) -> StepBuilder:
         self.config[key] = value
         return self
 
-    def with_retry(self, max_retries: int, delay: float = 1.0) -> "StepBuilder":
+    def with_retry(self, max_retries: int, delay: float = 1.0) -> StepBuilder:
         self.max_retries = max_retries
         self.retry_delay = delay
         return self
 
-    def extending(self, base_step: str) -> "StepBuilder":
+    def extending(self, base_step: str) -> StepBuilder:
         self.extends = base_step
         return self
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "name": self.name,
             "entrypoint": self.entrypoint,
         }
@@ -78,26 +78,26 @@ class PipelineBuilder:
 
     def __init__(self, name: str) -> None:
         self._name = name
-        self._steps: List[StepBuilder] = []
+        self._steps: list[StepBuilder] = []
         self._source_type: str = "LOCAL_PATH"
         self._source_path: str = "."
-        self._source_ref: Optional[str] = None
+        self._source_ref: str | None = None
         self._execution_mode: str = "IN_PROCESS"
         self._version: str = "1.0"
         self._description: str = ""
-        self._requirements: List[str] = []
-        self._env: Dict[str, str] = {}
-        self._resources: Dict[str, Any] = {}
-        self._output: Dict[str, Any] = {}
+        self._requirements: list[str] = []
+        self._env: dict[str, str] = {}
+        self._resources: dict[str, Any] = {}
+        self._output: dict[str, Any] = {}
 
     def add_step(
         self,
         name: str,
         entrypoint: str,
-        depends_on: Optional[List[str]] = None,
-        config: Optional[Dict[str, Any]] = None,
+        depends_on: list[str] | None = None,
+        config: dict[str, Any] | None = None,
         max_retries: int = 0,
-    ) -> "PipelineBuilder":
+    ) -> PipelineBuilder:
         step = StepBuilder(
             name=name,
             entrypoint=entrypoint,
@@ -108,11 +108,11 @@ class PipelineBuilder:
         self._steps.append(step)
         return self
 
-    def add_step_builder(self, step: StepBuilder) -> "PipelineBuilder":
+    def add_step_builder(self, step: StepBuilder) -> PipelineBuilder:
         self._steps.append(step)
         return self
 
-    def set_execution_mode(self, mode: str) -> "PipelineBuilder":
+    def set_execution_mode(self, mode: str) -> PipelineBuilder:
         if mode not in self.VALID_EXECUTION_MODES:
             raise PipelineBuilderError(
                 f"Invalid execution mode: {mode}. Must be one of {self.VALID_EXECUTION_MODES}"
@@ -124,8 +124,8 @@ class PipelineBuilder:
         self,
         path: str,
         source_type: str = "LOCAL_PATH",
-        ref: Optional[str] = None,
-    ) -> "PipelineBuilder":
+        ref: str | None = None,
+    ) -> PipelineBuilder:
         if source_type not in self.VALID_SOURCE_TYPES:
             raise PipelineBuilderError(
                 f"Invalid source type: {source_type}. Must be one of {self.VALID_SOURCE_TYPES}"
@@ -135,19 +135,19 @@ class PipelineBuilder:
         self._source_ref = ref
         return self
 
-    def set_version(self, version: str) -> "PipelineBuilder":
+    def set_version(self, version: str) -> PipelineBuilder:
         self._version = version
         return self
 
-    def set_description(self, description: str) -> "PipelineBuilder":
+    def set_description(self, description: str) -> PipelineBuilder:
         self._description = description
         return self
 
-    def add_requirement(self, package: str) -> "PipelineBuilder":
+    def add_requirement(self, package: str) -> PipelineBuilder:
         self._requirements.append(package)
         return self
 
-    def set_env(self, key: str, value: str) -> "PipelineBuilder":
+    def set_env(self, key: str, value: str) -> PipelineBuilder:
         self._env[key] = value
         return self
 
@@ -157,7 +157,7 @@ class PipelineBuilder:
         cpu_limit: str = "1",
         memory_limit: str = "1Gi",
         timeout_seconds: int = 3600,
-    ) -> "PipelineBuilder":
+    ) -> PipelineBuilder:
         self._resources = {
             "gpu_count": gpu_count,
             "cpu_limit": cpu_limit,
@@ -170,16 +170,16 @@ class PipelineBuilder:
         self,
         return_type: str = "file",
         embedding_vector_size: int = 0,
-    ) -> "PipelineBuilder":
+    ) -> PipelineBuilder:
         self._output = {
             "return_type": return_type,
             "embedding_vector_size": embedding_vector_size,
         }
         return self
 
-    def validate(self) -> List[str]:
+    def validate(self) -> list[str]:
         """Validate the pipeline configuration. Returns list of errors."""
-        errors: List[str] = []
+        errors: list[str] = []
 
         if not self._name:
             errors.append("Pipeline name is required")
@@ -207,10 +207,10 @@ class PipelineBuilder:
 
         return errors
 
-    def _check_cycles(self) -> Optional[str]:
-        adj: Dict[str, List[str]] = {s.name: s.depends_on for s in self._steps}
-        visited: Set[str] = set()
-        in_stack: Set[str] = set()
+    def _check_cycles(self) -> str | None:
+        adj: dict[str, list[str]] = {s.name: s.depends_on for s in self._steps}
+        visited: set[str] = set()
+        in_stack: set[str] = set()
 
         def dfs(node: str) -> bool:
             visited.add(node)
@@ -218,25 +218,23 @@ class PipelineBuilder:
             for dep in adj.get(node, []):
                 if dep in in_stack:
                     return True
-                if dep not in visited:
-                    if dfs(dep):
-                        return True
+                if dep not in visited and dfs(dep):
+                    return True
             in_stack.discard(node)
             return False
 
         for name in adj:
-            if name not in visited:
-                if dfs(name):
-                    return f"Cycle detected in DAG involving step '{name}'"
+            if name not in visited and dfs(name):
+                return f"Cycle detected in DAG involving step '{name}'"
         return None
 
-    def build(self) -> Dict[str, Any]:
+    def build(self) -> dict[str, Any]:
         """Build the workflow definition dict. Validates DAG integrity."""
         errors = self.validate()
         if errors:
             raise PipelineBuilderError(f"Pipeline validation failed: {'; '.join(errors)}")
 
-        workflow: Dict[str, Any] = {
+        workflow: dict[str, Any] = {
             "name": self._name,
             "source": {
                 "type": self._source_type,

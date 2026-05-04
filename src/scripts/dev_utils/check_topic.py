@@ -1,15 +1,15 @@
 #!/usr/bin/python3
 import sys
-import time 
-from utils import compute_md5
+import time
+
 import spacy
-from sentence_transformers import SentenceTransformer, util
-from transformers import AutoTokenizer
 from charset_normalizer import from_path
-from typing import List, Dict
+from sentence_transformers import SentenceTransformer
+from transformers import AutoTokenizer
+from utils import compute_md5
 
 
-def chunk_text_with_offsets(text: str, tokenizer, max_tokens: int, nlp) -> List[Dict]:
+def chunk_text_with_offsets(text: str, tokenizer, max_tokens: int, nlp) -> list[dict]:
     """
     Split a large text into smaller chunks based on sentences and token count,
     while preserving the exact character offsets (start/end) of each chunk
@@ -56,7 +56,7 @@ def chunk_text_with_offsets(text: str, tokenizer, max_tokens: int, nlp) -> List[
         else:
             # Otherwise, split the sentence into subchunks of max_tokens
             for i in range(0, len(input_ids), max_tokens):
-                sub_ids = input_ids[i:i + max_tokens]
+                input_ids[i:i + max_tokens]
                 sub_offsets = offsets[i:i + max_tokens]
 
                 # Get the character range covered by the token span
@@ -79,7 +79,7 @@ def chunk_text_with_offsets(text: str, tokenizer, max_tokens: int, nlp) -> List[
 
     return chunks
 
-def chunk_text_by_max_tokens(doc, tokenizer, max_tokens: int) -> List[Dict]:
+def chunk_text_by_max_tokens(doc, tokenizer, max_tokens: int) -> list[dict]:
     """
     Split a large text into smaller chunks based on sentences and token count,
     while preserving the exact character offsets (start/end) of each chunk
@@ -125,7 +125,7 @@ def chunk_text_by_max_tokens(doc, tokenizer, max_tokens: int) -> List[Dict]:
             # Otherwise, split the sentence into subchunks of max_tokens
             print("Splitings...")
             for i in range(0, len(input_ids), max_tokens):
-                sub_ids = input_ids[i:i + max_tokens]
+                input_ids[i:i + max_tokens]
                 sub_offsets = offsets[i:i + max_tokens]
 
                 # Get the character range covered by the token span
@@ -207,7 +207,7 @@ print(f"[Timing] Embedding computation: {time.time() - start:.2f}s")
 
 # Étape 5 : Ajout des embeddings dans chaque chunk
 start = time.time()
-for chunk, embedding in zip(chunks, embeddings):
+for chunk, embedding in zip(chunks, embeddings, strict=False):
     chunk["embedding"] = embedding
 print(f"[Timing] Embedding attachment to chunks: {time.time() - start:.2f}s")
 
@@ -218,7 +218,7 @@ print(f"[Embedding Shape] {embeddings.shape}")
 # - `chunks`: list of dictionaries with "start", "end", "md5"
 # - `text`: the original full string
 
-nb_errors = 0;
+nb_errors = 0
 for idx, chunk in enumerate(chunks):
     extracted_text = text[chunk["start"]:chunk["end"]].strip()
     computed_md5 = compute_md5(extracted_text)

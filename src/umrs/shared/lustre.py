@@ -20,7 +20,6 @@ import os
 import shutil
 import subprocess
 from dataclasses import dataclass
-from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +57,7 @@ class StripingInfo:
     is_lustre: bool
 
 
-def check_striping(path: str) -> Optional[StripingInfo]:
+def check_striping(path: str) -> StripingInfo | None:
     """Return the Lustre striping info for *path*, or None on non-Lustre."""
     if not _has_lfs():
         return None
@@ -98,7 +97,7 @@ def optimize_model_striping(
     stripe_size: str = _DEFAULT_STRIPE_SIZE,
     min_file_size: int = _MIN_STRIPE_SIZE,
     dry_run: bool = False,
-) -> List[str]:
+) -> list[str]:
     """Re-stripe large model weight files for parallel I/O on Lustre.
 
     Parameters
@@ -150,7 +149,7 @@ def optimize_model_striping(
             logger.warning("Failed to set directory stripe: %s", e.stderr.strip())
 
     # Find weight files that need re-striping.
-    migrated: List[str] = []
+    migrated: list[str] = []
 
     for root, _dirs, files in os.walk(model_dir):
         for fname in files:

@@ -33,7 +33,7 @@ import io
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import numpy as np
@@ -65,12 +65,12 @@ class StepContext:
 
     s3: Any  # boto3 S3 client
     input_bucket: str
-    input_keys: List[str]
+    input_keys: list[str]
     output_bucket: str
-    config: Dict[str, Any] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     run_id: str = ""
-    parent_results: Dict[str, "StepResult"] = field(default_factory=dict)
+    parent_results: dict[str, StepResult] = field(default_factory=dict)
 
     # ── Progress reporting ───────────────────────────────────────────────
 
@@ -89,13 +89,13 @@ class StepContext:
 
     # ── S3 download helpers ──────────────────────────────────────────────
 
-    def download_bytes(self, key: str, bucket: Optional[str] = None) -> bytes:
+    def download_bytes(self, key: str, bucket: str | None = None) -> bytes:
         """Download an S3 object and return its raw bytes."""
         bkt = bucket or self.input_bucket
         obj = self.s3.get_object(Bucket=bkt, Key=key)
         return obj["Body"].read()
 
-    def download_numpy(self, key: str, bucket: Optional[str] = None) -> "np.ndarray":
+    def download_numpy(self, key: str, bucket: str | None = None) -> np.ndarray:
         """Download a ``.npy`` file from S3 and return a NumPy array."""
         import numpy as np
         raw = self.download_bytes(key, bucket)
@@ -107,13 +107,13 @@ class StepContext:
         self,
         key: str,
         data: bytes,
-        bucket: Optional[str] = None,
+        bucket: str | None = None,
         content_type: str = "application/octet-stream",
-        metadata: Optional[Dict[str, str]] = None,
+        metadata: dict[str, str] | None = None,
     ) -> str:
         """Upload raw bytes to S3 and return the full ``s3://`` URI."""
         bkt = bucket or self.output_bucket
-        extra: Dict[str, Any] = {"ContentType": content_type}
+        extra: dict[str, Any] = {"ContentType": content_type}
         if metadata:
             extra["Metadata"] = metadata
         self.s3.put_object(Bucket=bkt, Key=key, Body=data, **extra)
@@ -122,8 +122,8 @@ class StepContext:
     def upload_numpy(
         self,
         key: str,
-        arr: "np.ndarray",
-        bucket: Optional[str] = None,
+        arr: np.ndarray,
+        bucket: str | None = None,
     ) -> str:
         """Save a NumPy array as ``.npy`` to S3."""
         import numpy as np
@@ -134,7 +134,7 @@ class StepContext:
 
     # ── S3 metadata helpers ──────────────────────────────────────────────
 
-    def head_object(self, key: str, bucket: Optional[str] = None) -> Dict[str, Any]:
+    def head_object(self, key: str, bucket: str | None = None) -> dict[str, Any]:
         """Return S3 HEAD metadata for *key*."""
         bkt = bucket or self.input_bucket
         return self.s3.head_object(Bucket=bkt, Key=key)
@@ -154,11 +154,11 @@ class StepResult:
         extra: Arbitrary key-value bag (logging, metrics, …).
     """
 
-    output_keys: List[str] = field(default_factory=list)
-    embeddings: Optional[Any] = None  # numpy.ndarray when set
-    checksums: List[str] = field(default_factory=list)
-    metadata: List[Dict[str, Any]] = field(default_factory=list)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    output_keys: list[str] = field(default_factory=list)
+    embeddings: Any | None = None  # numpy.ndarray when set
+    checksums: list[str] = field(default_factory=list)
+    metadata: list[dict[str, Any]] = field(default_factory=list)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 # ── Step abstract base class ────────────────────────────────────────────────

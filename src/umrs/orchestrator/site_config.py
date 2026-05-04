@@ -25,14 +25,14 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from umrs.shared.config import get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
 
 
-def _split_partitions(raw: str) -> List[str]:
+def _split_partitions(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
@@ -62,7 +62,7 @@ class SchedulerConfig:
     gpus: int = 1
     cpus: int = 8
     memory: str = "64G"
-    extra_sbatch: List[str] = field(default_factory=list)  # e.g. ["--constraint=a100"]
+    extra_sbatch: list[str] = field(default_factory=list)  # e.g. ["--constraint=a100"]
 
 
 @dataclass
@@ -74,7 +74,7 @@ class RuntimeConfig:
     rivault_dir: str = ""                       # Path to mini-rivault-llm directory
     repo_dir: str = ""                          # Path to UMRS repo root (for builds)
     vision_image: str = "umrs-vision:latest"    # Vision container image name
-    profiles: List[str] = field(default_factory=lambda: ["harness", "vllm", "vision-bentoml"])
+    profiles: list[str] = field(default_factory=lambda: ["harness", "vllm", "vision-bentoml"])
     gpu_passthrough: str = "auto"               # auto | cdi | device
     cdi_spec: str = "/var/run/cdi/nvidia.yaml"  # CDI spec path (if gpu_passthrough=cdi)
     cgroup_manager: str = "cgroupfs"
@@ -168,19 +168,19 @@ class SiteConfig:
     network: NetworkConfig = field(default_factory=NetworkConfig)
     vllm: VllmConfig = field(default_factory=VllmConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
-    partition_profiles: Dict[str, PartitionProfile] = field(default_factory=dict)
-    extra: Dict[str, Any] = field(default_factory=dict)
+    partition_profiles: dict[str, PartitionProfile] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
     # --- helpers -----------------------------------------------------------
 
-    def get_partition_profile(self, partition: str) -> Optional[PartitionProfile]:
+    def get_partition_profile(self, partition: str) -> PartitionProfile | None:
         """Look up a partition profile by name.
 
         Returns ``None`` when no profile is registered for *partition*.
         """
         return self.partition_profiles.get(partition)
 
-    def partition_env(self, partition: str) -> Dict[str, str]:
+    def partition_env(self, partition: str) -> dict[str, str]:
         """Return env vars for a specific partition profile.
 
         Useful for the wrapper to apply declarative overrides
@@ -190,7 +190,7 @@ class SiteConfig:
         pp = self.get_partition_profile(partition)
         if pp is None:
             return {}
-        env: Dict[str, str] = {
+        env: dict[str, str] = {
             "RIVAULT_PARTITION_ARCH": pp.arch,
             "RIVAULT_PARTITION_GPU_VENDOR": pp.gpu_vendor,
             "RIVAULT_PARTITION_OCI_RUNTIME": pp.oci_runtime,
@@ -203,13 +203,13 @@ class SiteConfig:
             env["VLLM_DOCKER_TAG"] = pp.vllm_docker_tag
         return env
 
-    def to_env(self) -> Dict[str, str]:
+    def to_env(self) -> dict[str, str]:
         """Export SiteConfig as a flat dict of environment variables.
 
         This allows existing code that reads ``os.environ`` to work with
         values loaded from ``site.yaml`` without refactoring every call-site.
         """
-        env: Dict[str, str] = {}
+        env: dict[str, str] = {}
 
         # Scheduler
         partition_candidates = _split_partitions(self.scheduler.partition)
@@ -340,7 +340,7 @@ def _dict_to_dataclass(cls, data: dict):
     return cls(**{k: v for k, v in data.items() if k in field_names})
 
 
-def load_site_config(path: Optional[str] = None) -> SiteConfig:
+def load_site_config(path: str | None = None) -> SiteConfig:
     """Load a SiteConfig from a YAML file.
 
     Parameters
@@ -355,7 +355,7 @@ def load_site_config(path: Optional[str] = None) -> SiteConfig:
     """
     import yaml  # deferred to avoid hard dep when unused
 
-    resolved: Optional[str] = None
+    resolved: str | None = None
 
     if path:
         resolved = path
@@ -372,17 +372,17 @@ def load_site_config(path: Optional[str] = None) -> SiteConfig:
             "the working directory or the resolved UMRS config directory."
         )
 
-    with open(resolved, "r") as fh:
+    with open(resolved) as fh:
         raw = _expand_env_refs(yaml.safe_load(fh) or {})
 
     logger.info("Loaded site config from %s", resolved)
     return _parse_raw(raw)
 
 
-def _parse_raw(raw: Dict[str, Any]) -> SiteConfig:
+def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
     """Turn a raw YAML dict into a :class:`SiteConfig`."""
     pp_raw = raw.get("partition_profiles", {})
-    profiles: Dict[str, PartitionProfile] = {}
+    profiles: dict[str, PartitionProfile] = {}
     if isinstance(pp_raw, dict):
         for name, pdata in pp_raw.items():
             if isinstance(pdata, dict):
@@ -469,10 +469,10 @@ def default_site_config() -> SiteConfig:
 # Singleton
 # ---------------------------------------------------------------------------
 
-_site_config: Optional[SiteConfig] = None
+_site_config: SiteConfig | None = None
 
 
-def get_site_config(path: Optional[str] = None) -> SiteConfig:
+def get_site_config(path: str | None = None) -> SiteConfig:
     """Return the global site config singleton.
 
     On first call, tries to load ``site.yaml``; if not found, falls back to

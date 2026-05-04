@@ -23,7 +23,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +73,7 @@ class ConversionConfig:
     conversion_type: ConversionType
 
     # Common parameters
-    output_name: Optional[str] = None  # Override output model name
+    output_name: str | None = None  # Override output model name
     keep_original: bool = True         # Keep source model after conversion
 
     # Quantization parameters
@@ -91,10 +91,10 @@ class ConversionConfig:
 
     # GGUF specific
     gguf_type: str = "q4_k_m"          # Quantization type for GGUF
-    gguf_vocab_type: Optional[str] = None  # Override vocab type
+    gguf_vocab_type: str | None = None  # Override vocab type
 
     # LoRA merge parameters
-    lora_adapter_path: Optional[str] = None
+    lora_adapter_path: str | None = None
     lora_scale: float = 1.0
 
     # Resource requirements
@@ -102,7 +102,7 @@ class ConversionConfig:
     min_gpu_memory_gb: float = 24.0
     estimated_time_minutes: int = 60
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for job spec."""
         return {
             "conversion_type": self.conversion_type.value,
@@ -125,7 +125,7 @@ class ConversionConfig:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ConversionConfig":
+    def from_dict(cls, data: dict[str, Any]) -> ConversionConfig:
         """Create from dictionary."""
         return cls(
             conversion_type=ConversionType(data["conversion_type"]),
@@ -169,18 +169,18 @@ class ConversionJob:
     # Status
     status: ConversionStatus = ConversionStatus.PENDING
     progress_percent: int = 0
-    error_message: Optional[str] = None
+    error_message: str | None = None
 
     # Result
-    output_model_id: Optional[str] = None
-    output_size_bytes: Optional[int] = None
+    output_model_id: str | None = None
+    output_size_bytes: int | None = None
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.now)
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for storage."""
         return {
             "job_id": self.job_id,
@@ -240,7 +240,7 @@ class ConversionPipeline:
     def validate_conversion(
         cls,
         conversion_type: ConversionType,
-        source_format: Optional[str] = None,
+        source_format: str | None = None,
     ) -> bool:
         """Validate if conversion is supported."""
         if conversion_type not in cls.SUPPORTED_CONVERSIONS:
@@ -282,7 +282,7 @@ class ConversionPipeline:
         return int(base * (source_size_gb / 10.0))
 
     @classmethod
-    def generate_container_command(cls, config: ConversionConfig) -> List[str]:
+    def generate_container_command(cls, config: ConversionConfig) -> list[str]:
         """Generate container command for conversion."""
         base_cmd = ["python", "-m", "model_converter"]
 

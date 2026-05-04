@@ -7,7 +7,7 @@ from __future__ import annotations
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 def generate_server_id() -> str:
@@ -28,8 +28,8 @@ class MCPTool:
     server_id: str
     name: str
     description: str = ""
-    input_schema: Dict[str, Any] = field(default_factory=dict)
-    created_at: Optional[datetime] = None
+    input_schema: dict[str, Any] = field(default_factory=dict)
+    created_at: datetime | None = None
 
 
 @dataclass
@@ -44,15 +44,15 @@ class MCPServer:
     status: str = "unknown"
     description: str = ""
     auth_type: str = "none"
-    auth_config: Dict[str, Any] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    registered_by: Optional[str] = None
-    project_id: Optional[str] = None
-    tools: List[MCPTool] = field(default_factory=list)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    auth_config: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    registered_by: str | None = None
+    project_id: str | None = None
+    tools: list[MCPTool] = field(default_factory=list)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to API response format."""
         return {
             "server_id": self.server_id,

@@ -1,11 +1,14 @@
-import sys, os
-import yaml
-import torch
-from torch.utils.data import DataLoader
-import torchvision.transforms as transforms
+import os
+import sys
+
 import numpy as np
-from torch.utils.data import Dataset, DataLoader
+import torch
+import torchvision.transforms as transforms
+import yaml
+from torch.utils.data import DataLoader, Dataset
+
 from umrs.shared.storage.s3 import s3_key_exists, save_tiff_image_to_s3
+
 
 ################################ Masked Autoencoder(  ###########################
 def load_masked_autoencoder(config_path, checkpoint_path):
@@ -17,7 +20,7 @@ def load_masked_autoencoder(config_path, checkpoint_path):
     from external.MAE import MAE
 
     # Load config
-    with open(config_path, 'r') as f:
+    with open(config_path) as f:
         config = yaml.safe_load(f)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -108,7 +111,7 @@ def build_s8d_val_dataloader(s3, s3_keys, path_to_bucket, batch_size, num_worker
     from torch.utils.data._utils.collate import default_collate
 
     def custom_collate(batch):
-        images, checksums, metadatas = zip(*batch)
+        images, checksums, metadatas = zip(*batch, strict=False)
 
         images = default_collate(images)
         checksums = default_collate(checksums)

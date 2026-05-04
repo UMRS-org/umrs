@@ -9,14 +9,13 @@ different UMRS instances.
 from __future__ import annotations
 
 import json
-import os
 import time
 import uuid
 import zipfile
 from dataclasses import asdict, dataclass, field
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -29,17 +28,17 @@ class ExperimentManifest:
     created_at: float = field(default_factory=time.time)
     umrs_version: str = "1.0"
     description: str = ""
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
     config_hash: str = ""
     data_object_count: int = 0
     result_count: int = 0
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ExperimentManifest":
+    def from_dict(cls, d: dict[str, Any]) -> ExperimentManifest:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
@@ -52,11 +51,11 @@ class DataObjectRef:
     size_bytes: int = 0
     content_type: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "DataObjectRef":
+    def from_dict(cls, d: dict[str, Any]) -> DataObjectRef:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
@@ -64,11 +63,11 @@ class DataObjectRef:
 class ExperimentArchive:
     """Represents a complete experiment archive."""
     manifest: ExperimentManifest
-    config: Dict[str, Any] = field(default_factory=dict)
-    data_manifest: List[DataObjectRef] = field(default_factory=list)
-    results: Dict[str, Any] = field(default_factory=dict)
-    pipeline_log: List[Dict[str, Any]] = field(default_factory=list)
-    extra_files: Dict[str, bytes] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
+    data_manifest: list[DataObjectRef] = field(default_factory=list)
+    results: dict[str, Any] = field(default_factory=dict)
+    pipeline_log: list[dict[str, Any]] = field(default_factory=list)
+    extra_files: dict[str, bytes] = field(default_factory=dict)
 
 
 class ExperimentExporter:
@@ -108,12 +107,12 @@ class ExperimentExporter:
         user_id: str = "",
         project_id: str = "",
         description: str = "",
-        tags: Optional[List[str]] = None,
-        config: Optional[Dict[str, Any]] = None,
-        data_objects: Optional[List[DataObjectRef]] = None,
-        results: Optional[Dict[str, Any]] = None,
-        pipeline_log: Optional[List[Dict[str, Any]]] = None,
-        extra_files: Optional[Dict[str, bytes]] = None,
+        tags: list[str] | None = None,
+        config: dict[str, Any] | None = None,
+        data_objects: list[DataObjectRef] | None = None,
+        results: dict[str, Any] | None = None,
+        pipeline_log: list[dict[str, Any]] | None = None,
+        extra_files: dict[str, bytes] | None = None,
         output_dir: str = ".",
     ) -> str:
         """Export experiment to a ZIP file. Returns archive path."""
@@ -229,11 +228,11 @@ class ExperimentImporter:
         manifest_data = json.loads(zf.read("manifest.json"))
         manifest = ExperimentManifest.from_dict(manifest_data)
 
-        config: Dict[str, Any] = {}
-        data_manifest: List[DataObjectRef] = []
-        results: Dict[str, Any] = {}
-        pipeline_log: List[Dict[str, Any]] = []
-        extra_files: Dict[str, bytes] = {}
+        config: dict[str, Any] = {}
+        data_manifest: list[DataObjectRef] = []
+        results: dict[str, Any] = {}
+        pipeline_log: list[dict[str, Any]] = []
+        extra_files: dict[str, bytes] = {}
 
         if "config/user_config.json" in zf.namelist():
             config = json.loads(zf.read("config/user_config.json"))
@@ -261,9 +260,9 @@ class ExperimentImporter:
             extra_files=extra_files,
         )
 
-    def validate_archive(self, archive_path: str) -> List[str]:
+    def validate_archive(self, archive_path: str) -> list[str]:
         """Validate archive structure. Returns list of errors."""
-        errors: List[str] = []
+        errors: list[str] = []
         path = Path(archive_path)
 
         if not path.exists():

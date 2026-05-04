@@ -10,7 +10,7 @@ from __future__ import annotations
 import select
 import sys
 import threading
-from typing import Callable, Optional
+from collections.abc import Callable
 
 
 class KeyReader:
@@ -19,7 +19,7 @@ class KeyReader:
     def __init__(self, on_key: Callable[[str], None]):
         self._on_key = on_key
         self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self._thread: threading.Thread | None = None
 
     def start(self) -> None:
         self._thread = threading.Thread(target=self._run, daemon=True)

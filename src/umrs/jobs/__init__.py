@@ -12,35 +12,6 @@ B. Commit pointer is truth: Only commit_attempt_id outputs visible
 C. No concurrent attempts: Advisory lock per job
 """
 
-from .models import (
-    JobType,
-    JobStatus,
-    AttemptStatus,
-    RestartPolicy,
-    Job,
-    JobAttempt,
-    compute_idempotency_key,
-    generate_job_id,
-    generate_attempt_id,
-)
-from .schema import ensure_schema, get_schema_version
-from .store import (
-    JobStore,
-    JobStoreError,
-    DuplicateJobError,
-    JobNotFoundError,
-    AttemptNotFoundError,
-    InvalidTransitionError,
-)
-from .reconciler import Reconciler, ReconcileResult, reconcile_on_startup
-from .scheduler import Scheduler, SimpleBackendAdapter
-from .monitor import (
-    AttemptMonitor,
-    AttemptCheckResult,
-    CompositeStatusChecker,
-    EndpointProvisionChecker,
-)
-from .service import JobService, create_job_service
 from .adapters import (
     CleanupBackend,
     CleanupStatusChecker,
@@ -51,18 +22,48 @@ from .adapters import (
     create_backend_factory,
     create_status_checker,
 )
-from .workflow_run import WorkflowRunBackend
+
 # Note: context_jobs excluded from selective merge
 from .ha import (
-    HeartbeatManager,
-    DistributedLockManager,
     ClusterCoordinator,
-    InstanceInfo,
+    DistributedLockManager,
     HeartbeatError,
-    LockError,
+    HeartbeatManager,
+    InstanceInfo,
     LockAcquisitionError,
+    LockError,
     LockNotHeldError,
 )
+from .models import (
+    AttemptStatus,
+    Job,
+    JobAttempt,
+    JobStatus,
+    JobType,
+    RestartPolicy,
+    compute_idempotency_key,
+    generate_attempt_id,
+    generate_job_id,
+)
+from .monitor import (
+    AttemptCheckResult,
+    AttemptMonitor,
+    CompositeStatusChecker,
+    EndpointProvisionChecker,
+)
+from .reconciler import Reconciler, ReconcileResult, reconcile_on_startup
+from .scheduler import Scheduler, SimpleBackendAdapter
+from .schema import ensure_schema, get_schema_version
+from .service import JobService, create_job_service
+from .store import (
+    AttemptNotFoundError,
+    DuplicateJobError,
+    InvalidTransitionError,
+    JobNotFoundError,
+    JobStore,
+    JobStoreError,
+)
+from .workflow_run import WorkflowRunBackend
 
 __all__ = [
     # Enums

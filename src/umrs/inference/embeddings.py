@@ -1,17 +1,21 @@
 #!/usr/bin/python3
 #import psycopg2
-import numpy as np
 import json
 import os
-os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
-from sentence_transformers import SentenceTransformer
-import os
-from sklearn.cluster import KMeans
-import ast  # To safely convert strings to lists
 
+import numpy as np
+
+os.environ["TF_ENABLE_ONEDNN_OPTS"] = "0"
+import ast  # To safely convert strings to lists
+import os
+
+from sentence_transformers import SentenceTransformer
+from sklearn.cluster import KMeans
+
+from umrs.server.sql import store_embeddings_in_db
 from umrs.shared.storage.s3 import load_data_from_s3
 from umrs.shared.utils import zero_out_embeddings_for_empty_objects
-from umrs.server.sql import store_embeddings_in_db
+
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 # Modalities where the model handles its own S3 I/O (data loading + output
@@ -125,11 +129,11 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
 def load_embedding_model(model_name):
 
     if not model_name:
-        print("No model...");
+        print("No model...")
         return None
 
     # Load the sentence-transformers model
-    print(f"\t\t\t--> Loading model '{model_name}'...");
+    print(f"\t\t\t--> Loading model '{model_name}'...")
     model = SentenceTransformer(model_name)
     return model
 
@@ -320,13 +324,14 @@ def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
     return centroid_texts
 
 def main():
+    import psycopg2
 
     models = ["all-MiniLM-L6-v2", "all-mpnet-base-v2"]
     dbnames = ["embeddings_db","large_embeddings_db"] #correspinfing DB with same the correct dimensionnality
 
     id = 1 # 0 or 1
 
-    model_name = models[id]
+    model = SentenceTransformer(models[id])
     db_name = dbnames[id]
 
     # Connect to PostgreSQL
@@ -344,58 +349,14 @@ def main():
 
 
 
-    texts1 = [
-    "I love eating a fresh apple every morning.",  # 🍏 Apple as a fruit
-    "Apple Inc. is one of the biggest tech companies in the world.",  # 💻 Apple as a company
-    "She ordered an apple smoothie at the café.",  # 🍹 Apple in food & drinks
-    "The apple fell from the tree and rolled down the hill.",  # 🌳 Apple in nature
-    "I bought a brand-new Apple iPhone yesterday.",  # 📱 Apple as a tech product
-    "The teacher gave Johnny a golden apple for his excellent performance.",  # 🏆 Apple as a symbolic reward
-    "An apple pie was baking in the oven, filling the house with a delicious aroma.",  # 🥧 Apple in desserts
-    "Apple stock prices have risen significantly this quarter.",  # 📈 Apple in finance & stock market
-    "New York is often called the Big Apple.",  # 🏙️ Apple as a nickname for NYC
-    "The old book described the apple as a symbol of forbidden knowledge.",  # 📖 Apple in literature & mythology
-    "He picked a green apple from the tree and took a bite.",  # 🍏 Apple as a natural object
-    "The software update fixed a major security issue in Apple devices.",  # 🔧 Apple in technology & software
-    "The apple doesn’t fall far from the tree.",  # 🧠 Apple in proverbs & wisdom
-    "The artist painted a still-life with an apple and a wine glass.",  # 🎨 Apple in art
-    "A hot cup of spiced apple cider is perfect for cold winter nights.",  # 🍎 Apple in beverages
-    "He gifted her an apple-scented candle for her birthday.",  # 🕯️ Apple in fragrance
-    "The scientist used an apple in his physics experiment.",  # 🍏 Apple in science (Newton reference)
-    "She placed an apple emoji 🍎 at the end of her message.",  # 📱 Apple in digital communication
-    "Farmers are expecting a great apple harvest this year.",  # 🚜 Apple in agriculture
-    "The witch handed Snow White a poisoned apple.",  # 👑 Apple in fairy tales
-    ]
 
-    texts2 = [
-    "The sun rises in the east and sets in the west.",  # 🌅 Direction and nature
-    "Machine learning is transforming the future of technology.",  # 🤖 AI and technology
-    "He played the guitar beautifully in front of a large audience.",  # 🎸 Music and performance
-    "The Eiffel Tower is one of the most famous landmarks in the world.",  # 🗼 Travel and tourism
-    "She brewed a fresh cup of coffee before starting her day.",  # ☕ Morning routine
-    "The stock market fluctuates daily based on economic trends.",  # 📈 Finance and economy
-    "The new electric car model has an impressive battery range.",  # 🚗 Automotive industry
-    "He wrote a heartfelt letter to his childhood friend.",  # 💌 Friendship and emotions
-    "The scientist carefully analyzed the results of the experiment.",  # 🔬 Science and research
-    "A strong earthquake shook the city last night.",  # 🌍 Natural disasters
-    "Yoga and meditation help improve mental well-being.",  # 🧘‍♂️ Health and wellness
-    "The restaurant is famous for its spicy chicken curry.",  # 🍛 Food and cuisine
-    "She won the gold medal in the 100-meter race.",  # 🏅 Sports and competition
-    "The detective examined the clues to solve the mystery.",  # 🔎 Crime and investigation
-    "He enjoys reading science fiction novels in his free time.",  # 📚 Literature and storytelling
-    "The astronaut floated weightlessly inside the space station.",  # 🚀 Space exploration
-    "A majestic tiger roamed through the dense jungle.",  # 🐅 Wildlife and nature
-    "The ancient ruins hold secrets from a lost civilization.",  # 🏛️ History and archaeology
-    "The smartphone app helps users track their daily expenses.",  # 📱 Digital finance
-    "She decorated her house with beautiful handmade crafts.",  # 🏡 Art and creativity
-    ]
 
     # challenge_embeddings(model, conn, cur, texts1);
 
     # print("\n ------- More difficult ----------\n")
 
     # challenge_embeddings(model, conn, cur, texts2);
-    challenge_embeddings(model, conn, cur, ["Adam and Eve, the lost paradize"]);
+    challenge_embeddings(model, conn, cur, ["Adam and Eve, the lost paradize"])
 
     print("\n ------- 4 centroids texts ----------\n")
 
@@ -410,8 +371,11 @@ def main():
 
 
 def open_AI_tokenizer():
+    import openai
+
     # Set your API key
-    openai.api_key = open("API_KEY_INRIA.txt").read().strip()
+    with open("API_KEY_INRIA.txt") as api_key_file:
+        openai.api_key = api_key_file.read().strip()
 
     # Example text to embed
     text = "Artificial intelligence is transforming the world."

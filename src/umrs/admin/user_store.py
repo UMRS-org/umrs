@@ -13,14 +13,15 @@ unchanged.
 
 from __future__ import annotations
 
+import builtins
 import json
 import logging
 import os
 import re
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from umrs.shared.config import resolve_server_user_files_dir
 
@@ -44,18 +45,18 @@ class UserRecord:
     fullname: str = ""
     email: str = ""
     role: str = "user"
-    slurm_account: Optional[str] = None
-    projects: List[str] = field(default_factory=list)
+    slurm_account: str | None = None
+    projects: list[str] = field(default_factory=list)
     disabled: bool = False
-    quota: Dict[str, Any] = field(default_factory=dict)
+    quota: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     last_updated: str = ""
     # Preserve any other top-level keys the daemon cares about
     # (s3_configuration_file, experiences, ...) verbatim.
-    extras: Dict[str, Any] = field(default_factory=dict)
+    extras: dict[str, Any] = field(default_factory=dict)
 
-    def to_json(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {
+    def to_json(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
             "username": self.username,
             "fullname": self.fullname,
             "email": self.email,
@@ -75,7 +76,7 @@ class UserRecord:
         return out
 
     @classmethod
-    def from_json(cls, data: Dict[str, Any]) -> "UserRecord":
+    def from_json(cls, data: dict[str, Any]) -> UserRecord:
         known = {
             "username",
             "fullname",
@@ -119,7 +120,7 @@ def _now_iso() -> str:
 class UserStore:
     """File-backed CRUD over ``<user_files>/<username>.json``."""
 
-    def __init__(self, user_files_dir: Optional[str | Path] = None):
+    def __init__(self, user_files_dir: str | Path | None = None):
         if user_files_dir is None:
             self._dir = Path(resolve_server_user_files_dir())
         else:
@@ -138,11 +139,11 @@ class UserStore:
     def _ensure_dir(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
 
-    def _read(self, path: Path) -> Dict[str, Any]:
+    def _read(self, path: Path) -> dict[str, Any]:
         with path.open("r", encoding="utf-8") as fh:
             return json.load(fh)
 
-    def _write(self, path: Path, data: Dict[str, Any]) -> None:
+    def _write(self, path: Path, data: dict[str, Any]) -> None:
         self._ensure_dir()
         tmp = path.with_suffix(path.suffix + ".tmp")
         with tmp.open("w", encoding="utf-8") as fh:
@@ -166,10 +167,10 @@ class UserStore:
             raise UserStoreError(f"User {username!r} not found at {path}")
         return UserRecord.from_json(self._read(path))
 
-    def list(self) -> List[UserRecord]:
+    def list(self) -> builtins.list[UserRecord]:
         if not self._dir.is_dir():
             return []
-        records: List[UserRecord] = []
+        records: list[UserRecord] = []
         for entry in sorted(self._dir.iterdir()):
             if not entry.is_file() or entry.suffix != ".json":
                 continue
@@ -188,10 +189,10 @@ class UserStore:
         fullname: str = "",
         email: str = "",
         role: str = "user",
-        slurm_account: Optional[str] = None,
-        projects: Optional[List[str]] = None,
-        quota: Optional[Dict[str, Any]] = None,
-        extras: Optional[Dict[str, Any]] = None,
+        slurm_account: str | None = None,
+        projects: builtins.list[str] | None = None,
+        quota: dict[str, Any] | None = None,
+        extras: dict[str, Any] | None = None,
     ) -> UserRecord:
         if role not in VALID_ROLES:
             raise UserStoreError(
@@ -243,7 +244,7 @@ class UserStore:
         return self.update(username, role=role)
 
     def set_slurm_account(
-        self, username: str, slurm_account: Optional[str]
+        self, username: str, slurm_account: str | None
     ) -> UserRecord:
         return self.update(username, slurm_account=slurm_account or None)
 

@@ -12,8 +12,8 @@ Usage:
     client = UMRSClient(base_url="http://umrs:8000")
 """
 
-from .client import UMRSClient
 from .cli import main
+from .client import UMRSClient
 
 __all__ = [
     "UMRSClient",

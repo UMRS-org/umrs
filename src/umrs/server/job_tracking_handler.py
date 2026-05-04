@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import psycopg2
 from psycopg2 import pool as pg_pool
@@ -51,7 +51,7 @@ JOB_CANCEL = "JOB_CANCEL"
 JOB_LIST = "JOB_LIST"
 
 
-def _parse_payload(payload_str: str) -> Dict[str, Any]:
+def _parse_payload(payload_str: str) -> dict[str, Any]:
     if not payload_str:
         return {}
     return json.loads(payload_str)
@@ -65,7 +65,7 @@ def _parse_job_type(job_type: str) -> JobType:
     return JobType(job_type)
 
 
-def _parse_job_status(status: Optional[str]) -> Optional[JobStatus]:
+def _parse_job_status(status: str | None) -> JobStatus | None:
     if not status:
         return None
     if status not in VALID_STATUSES:
@@ -83,28 +83,28 @@ def _parse_restart_policy(restart_policy: str) -> RestartPolicy:
         ) from exc
 
 
-def _require_string(spec: Dict[str, Any], key: str, label: str) -> str:
+def _require_string(spec: dict[str, Any], key: str, label: str) -> str:
     value = spec.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{label} is required")
     return value.strip()
 
 
-def _validate_index_build_spec(spec: Dict[str, Any]) -> None:
+def _validate_index_build_spec(spec: dict[str, Any]) -> None:
     _require_string(spec, "database", "index_build spec.database")
     _require_string(spec, "table", "index_build spec.table")
     if "rebuild" in spec and not isinstance(spec["rebuild"], bool):
         raise ValueError("index_build spec.rebuild must be a boolean")
 
 
-def _validate_workflow_run_spec(spec: Dict[str, Any]) -> None:
+def _validate_workflow_run_spec(spec: dict[str, Any]) -> None:
     _require_string(spec, "workflow_name", "workflow_run spec.workflow_name")
     _require_string(spec, "execution_id", "workflow_run spec.execution_id")
     if "params" in spec and not isinstance(spec["params"], dict):
         raise ValueError("workflow_run spec.params must be an object")
 
 
-def _validate_cleanup_spec(spec: Dict[str, Any]) -> None:
+def _validate_cleanup_spec(spec: dict[str, Any]) -> None:
     target = _require_string(spec, "target", "cleanup spec.target").lower()
     if target != "endpoint":
         raise ValueError("cleanup currently supports only spec.target='endpoint'")
@@ -118,7 +118,7 @@ _JOB_SPEC_VALIDATORS = {
 }
 
 
-def _validate_job_spec(job_type: JobType, spec: Any) -> Dict[str, Any]:
+def _validate_job_spec(job_type: JobType, spec: Any) -> dict[str, Any]:
     if not isinstance(spec, dict):
         raise ValueError("spec must be a JSON object")
 
@@ -128,13 +128,13 @@ def _validate_job_spec(job_type: JobType, spec: Any) -> Dict[str, Any]:
     return spec
 
 
-def _serialize_attempt(attempt) -> Dict[str, Any]:
+def _serialize_attempt(attempt) -> dict[str, Any]:
     data = attempt.to_dict()
     data.setdefault("exit_reason", None)
     return data
 
 
-def _serialize_job(job, attempts: Optional[List[Any]] = None) -> Dict[str, Any]:
+def _serialize_job(job, attempts: list[Any] | None = None) -> dict[str, Any]:
     data = job.to_dict()
     data["attempts"] = [_serialize_attempt(attempt) for attempt in (attempts or [])]
     return data
@@ -383,7 +383,7 @@ def build_durable_job_db_pool_from_env():
     return db_pool
 
 
-def build_durable_job_backend_from_env() -> Optional[DurableJobCommandBackend]:
+def build_durable_job_backend_from_env() -> DurableJobCommandBackend | None:
     """Best-effort bootstrap of the durable job backend from process env."""
     try:
         db_pool = build_durable_job_db_pool_from_env()
@@ -404,7 +404,7 @@ def _backend_unavailable_response() -> str:
     )
 
 
-def handle_job_command(cmd: str, client_id: str, payload_str: str, backend: Optional[DurableJobCommandBackend] = None) -> str:
+def handle_job_command(cmd: str, client_id: str, payload_str: str, backend: DurableJobCommandBackend | None = None) -> str:
     """
     Dispatch a job tracking command and return a JSON response string.
 

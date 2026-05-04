@@ -11,7 +11,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .models import PluginAuditEntry
 
@@ -30,8 +30,8 @@ class PluginAuditLog:
 
     def __init__(
         self,
-        db_url: Optional[str] = None,
-        file_path: Optional[str] = None,
+        db_url: str | None = None,
+        file_path: str | None = None,
         log_to_stdout: bool = True,
     ):
         """
@@ -94,9 +94,9 @@ class PluginAuditLog:
         self,
         plugin_id: str,
         event_type: str,
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-        details: Optional[Dict[str, Any]] = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        details: dict[str, Any] | None = None,
     ) -> PluginAuditEntry:
         """
         Log an audit event.
@@ -170,14 +170,14 @@ class PluginAuditLog:
 
     async def get_events(
         self,
-        plugin_id: Optional[str] = None,
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-        event_type: Optional[str] = None,
-        since: Optional[datetime] = None,
-        until: Optional[datetime] = None,
+        plugin_id: str | None = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        event_type: str | None = None,
+        since: datetime | None = None,
+        until: datetime | None = None,
         limit: int = 100,
-    ) -> List[PluginAuditEntry]:
+    ) -> list[PluginAuditEntry]:
         """
         Query audit events.
 
@@ -264,7 +264,7 @@ class PluginAuditLog:
     async def get_plugin_history(
         self,
         plugin_id: str,
-    ) -> List[PluginAuditEntry]:
+    ) -> list[PluginAuditEntry]:
         """Get full audit history for a plugin."""
         return await self.get_events(plugin_id=plugin_id, limit=1000)
 

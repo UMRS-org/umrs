@@ -11,7 +11,7 @@ Provided as a separate entrypoint for ergonomics in ``workflow.json``::
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 from .vision_step import VisionStep
 
@@ -21,7 +21,7 @@ class OCRStep(VisionStep):
 
     name = "ocr"
 
-    def setup(self, config: Dict[str, Any]) -> None:
+    def setup(self, config: dict[str, Any]) -> None:
         config = dict(config)
         config["mode"] = "ocr"
         super().setup(config)

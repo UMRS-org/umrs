@@ -796,7 +796,12 @@ class TestAdapters:
         assert endpoint.host == "gpu-node-1"
         assert result.metrics["host"] == "gpu-node-1"
         mock_orchestrator.get_job_status.assert_awaited_once_with("slurm-123")
-        mock_readiness.check_ready_detail.assert_awaited_once_with("gpu-node-1", 11434)
+        mock_readiness.check_ready_detail.assert_awaited_once_with(
+            "gpu-node-1",
+            11434,
+            probe_model="test-model",
+            probe_kind="chat",
+        )
 
     def test_backend_factory_creation(self):
         """Test create_backend_factory."""
@@ -1105,9 +1110,15 @@ class TestOrchestrationServiceConfig:
         assert result.success is True
         mock_backend.get_job_status.assert_awaited_once_with("slurm-654")
         register_kwargs = mock_registry.register.call_args.kwargs
-        assert register_kwargs["host"] == "gpu-node-1"
+        assert register_kwargs["host"] == "pending"
         assert register_kwargs["port"] == 11434
         assert register_kwargs["metadata"]["allocated_host"] == "pending"
+        mock_registry.update_location.assert_called_with(
+            "slurm-654",
+            host="gpu-node-1",
+            port=11434,
+            metadata={"detail": "container starting on gpu-node-1:11434"},
+        )
         readiness_kwargs = mock_readiness.wait_for_ready.await_args.kwargs
         assert readiness_kwargs["host"] == "gpu-node-1"
         assert readiness_kwargs["port"] == 11434

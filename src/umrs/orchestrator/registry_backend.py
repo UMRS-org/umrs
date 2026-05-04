@@ -19,7 +19,10 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .endpoint_registry import RegisteredEndpoint
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +31,7 @@ logger = logging.getLogger(__name__)
 # These will be imported at runtime
 
 
-def _resolve_backend_type(backend_type: Optional[str] = None) -> str:
+def _resolve_backend_type(backend_type: str | None = None) -> str:
     """Resolve the registry backend type from explicit input or environment."""
     if backend_type:
         return backend_type.lower()
@@ -43,7 +46,7 @@ def _resolve_backend_type(backend_type: Optional[str] = None) -> str:
     return "memory"
 
 
-def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+def _parse_datetime(value: str | None) -> datetime | None:
     """Parse ISO format datetime string."""
     if not value:
         return None
@@ -64,15 +67,15 @@ class RegistryBackend(ABC):
     """
 
     @abstractmethod
-    def save(self, endpoint: "RegisteredEndpoint") -> None:
+    def save(self, endpoint: RegisteredEndpoint) -> None:
         """Save or update an endpoint."""
 
     @abstractmethod
-    def load(self, project_id: str, model: str) -> Optional["RegisteredEndpoint"]:
+    def load(self, project_id: str, model: str) -> RegisteredEndpoint | None:
         """Load an endpoint by (project_id, model)."""
 
     @abstractmethod
-    def load_by_job_id(self, job_id: str) -> Optional["RegisteredEndpoint"]:
+    def load_by_job_id(self, job_id: str) -> RegisteredEndpoint | None:
         """Load an endpoint by job_id."""
 
     @abstractmethod
@@ -82,9 +85,9 @@ class RegistryBackend(ABC):
     @abstractmethod
     def list_all(
         self,
-        project_id: Optional[str] = None,
-        status_filter: Optional[List[str]] = None,
-    ) -> List["RegisteredEndpoint"]:
+        project_id: str | None = None,
+        status_filter: list[str] | None = None,
+    ) -> list[RegisteredEndpoint]:
         """List all endpoints with optional filters."""
 
     @abstractmethod
@@ -106,20 +109,20 @@ class InMemoryBackend(RegistryBackend):
     """
 
     def __init__(self):
-        self._by_key: Dict[Tuple[str, str], "RegisteredEndpoint"] = {}
-        self._by_job_id: Dict[str, "RegisteredEndpoint"] = {}
+        self._by_key: dict[tuple[str, str], RegisteredEndpoint] = {}
+        self._by_job_id: dict[str, RegisteredEndpoint] = {}
 
-    def save(self, endpoint: "RegisteredEndpoint") -> None:
+    def save(self, endpoint: RegisteredEndpoint) -> None:
         """Save or update an endpoint."""
         key = (endpoint.project_id, endpoint.model)
         self._by_key[key] = endpoint
         self._by_job_id[endpoint.job_id] = endpoint
 
-    def load(self, project_id: str, model: str) -> Optional["RegisteredEndpoint"]:
+    def load(self, project_id: str, model: str) -> RegisteredEndpoint | None:
         """Load an endpoint by (project_id, model)."""
         return self._by_key.get((project_id, model))
 
-    def load_by_job_id(self, job_id: str) -> Optional["RegisteredEndpoint"]:
+    def load_by_job_id(self, job_id: str) -> RegisteredEndpoint | None:
         """Load an endpoint by job_id."""
         return self._by_job_id.get(job_id)
 
@@ -135,9 +138,9 @@ class InMemoryBackend(RegistryBackend):
 
     def list_all(
         self,
-        project_id: Optional[str] = None,
-        status_filter: Optional[List[str]] = None,
-    ) -> List["RegisteredEndpoint"]:
+        project_id: str | None = None,
+        status_filter: list[str] | None = None,
+    ) -> list[RegisteredEndpoint]:
         """List all endpoints with optional filters."""
         endpoints = list(self._by_key.values())
 
@@ -195,7 +198,7 @@ class PostgresBackend(RegistryBackend):
         CREATE INDEX idx_registry_status ON endpoint_registry(status);
     """
 
-    def __init__(self, dsn: Optional[str] = None):
+    def __init__(self, dsn: str | None = None):
         """
         Initialize Postgres backend.
 
@@ -217,7 +220,7 @@ class PostgresBackend(RegistryBackend):
         try:
             import psycopg2
         except ImportError:
-            raise ImportError("psycopg2 required for PostgreSQL backend: pip install psycopg2-binary")
+            raise ImportError("psycopg2 required for PostgreSQL backend: pip install psycopg2-binary") from None
 
         if self._conn is None or self._conn.closed:
             self._conn = psycopg2.connect(self._dsn)
@@ -257,7 +260,7 @@ class PostgresBackend(RegistryBackend):
             """)
         logger.info("PostgreSQL registry schema initialized")
 
-    def _row_to_endpoint(self, row) -> "RegisteredEndpoint":
+    def _row_to_endpoint(self, row) -> RegisteredEndpoint:
         """Convert database row to RegisteredEndpoint."""
         from .endpoint_registry import EndpointStatus, RegisteredEndpoint
 
@@ -278,7 +281,7 @@ class PostgresBackend(RegistryBackend):
             metadata=row[13] or {},
         )
 
-    def save(self, endpoint: "RegisteredEndpoint") -> None:
+    def save(self, endpoint: RegisteredEndpoint) -> None:
         """Save or update an endpoint."""
         conn = self._get_connection()
         with conn.cursor() as cur:
@@ -322,7 +325,7 @@ class PostgresBackend(RegistryBackend):
             )
         logger.debug(f"Saved endpoint {endpoint.job_id} to Postgres")
 
-    def load(self, project_id: str, model: str) -> Optional["RegisteredEndpoint"]:
+    def load(self, project_id: str, model: str) -> RegisteredEndpoint | None:
         """Load an endpoint by (project_id, model)."""
         conn = self._get_connection()
         with conn.cursor() as cur:
@@ -339,7 +342,7 @@ class PostgresBackend(RegistryBackend):
             row = cur.fetchone()
             return self._row_to_endpoint(row) if row else None
 
-    def load_by_job_id(self, job_id: str) -> Optional["RegisteredEndpoint"]:
+    def load_by_job_id(self, job_id: str) -> RegisteredEndpoint | None:
         """Load an endpoint by job_id."""
         conn = self._get_connection()
         with conn.cursor() as cur:
@@ -371,9 +374,9 @@ class PostgresBackend(RegistryBackend):
 
     def list_all(
         self,
-        project_id: Optional[str] = None,
-        status_filter: Optional[List[str]] = None,
-    ) -> List["RegisteredEndpoint"]:
+        project_id: str | None = None,
+        status_filter: list[str] | None = None,
+    ) -> list[RegisteredEndpoint]:
         """List all endpoints with optional filters."""
         conn = self._get_connection()
         query = """
@@ -382,7 +385,7 @@ class PostgresBackend(RegistryBackend):
                    error_message, consecutive_failures, metadata
             FROM endpoint_registry WHERE 1=1
         """
-        params: List[Any] = []
+        params: list[Any] = []
 
         if project_id:
             query += " AND project_id = %s"
@@ -418,7 +421,7 @@ class PostgresBackend(RegistryBackend):
             return False
 
 
-def get_backend(backend_type: Optional[str] = None) -> RegistryBackend:
+def get_backend(backend_type: str | None = None) -> RegistryBackend:
     """
     Get the appropriate registry backend based on configuration.
 

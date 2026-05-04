@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any
 
 from .models import ChunkerType, EmbedderType, RerankerType
 
@@ -36,11 +36,11 @@ class ChunkerEntry:
     description: str
     default_chunk_size: int = 512
     default_overlap: int = 50
-    supports_languages: List[str] = field(default_factory=lambda: ["en"])
+    supports_languages: list[str] = field(default_factory=lambda: ["en"])
     requires_model: bool = False
     is_builtin: bool = True
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "chunker_type": self.chunker_type.value,
@@ -66,11 +66,11 @@ class EmbedderEntry:
     max_seq_length: int = 512
     requires_gpu: bool = False
     model_size_mb: int = 0
-    languages: List[str] = field(default_factory=lambda: ["en"])
+    languages: list[str] = field(default_factory=lambda: ["en"])
     is_builtin: bool = True
-    model_path: Optional[str] = None  # For pre-staged models
+    model_path: str | None = None  # For pre-staged models
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "embedder_type": self.embedder_type.value,
@@ -98,9 +98,9 @@ class RerankerEntry:
     requires_gpu: bool = False
     model_size_mb: int = 0
     is_builtin: bool = True
-    model_path: Optional[str] = None
+    model_path: str | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "reranker_type": self.reranker_type.value,
@@ -128,7 +128,7 @@ class ChunkerRegistry:
     """
 
     def __init__(self):
-        self._chunkers: Dict[str, ChunkerEntry] = {}
+        self._chunkers: dict[str, ChunkerEntry] = {}
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -190,15 +190,15 @@ class ChunkerRegistry:
         self._chunkers[entry.name] = entry
         logger.info(f"Registered chunker: {entry.name}")
 
-    def get(self, name: str) -> Optional[ChunkerEntry]:
+    def get(self, name: str) -> ChunkerEntry | None:
         """Get chunker by name."""
         return self._chunkers.get(name)
 
-    def list_all(self) -> List[ChunkerEntry]:
+    def list_all(self) -> list[ChunkerEntry]:
         """List all registered chunkers."""
         return list(self._chunkers.values())
 
-    def list_names(self) -> List[str]:
+    def list_names(self) -> list[str]:
         """List all chunker names."""
         return list(self._chunkers.keys())
 
@@ -221,7 +221,7 @@ class EmbedderRegistry:
     """
 
     def __init__(self):
-        self._embedders: Dict[str, EmbedderEntry] = {}
+        self._embedders: dict[str, EmbedderEntry] = {}
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -314,15 +314,15 @@ class EmbedderRegistry:
         self._embedders[entry.model_name] = entry
         logger.info(f"Registered embedder: {entry.model_name}")
 
-    def get(self, model_name: str) -> Optional[EmbedderEntry]:
+    def get(self, model_name: str) -> EmbedderEntry | None:
         """Get embedder by model name."""
         return self._embedders.get(model_name)
 
-    def list_all(self) -> List[EmbedderEntry]:
+    def list_all(self) -> list[EmbedderEntry]:
         """List all registered embedders."""
         return list(self._embedders.values())
 
-    def list_names(self) -> List[str]:
+    def list_names(self) -> list[str]:
         """List all embedder model names."""
         return list(self._embedders.keys())
 
@@ -330,7 +330,7 @@ class EmbedderRegistry:
         """Check if embedder model name is valid."""
         return model_name in self._embedders
 
-    def filter_by_language(self, language: str) -> List[EmbedderEntry]:
+    def filter_by_language(self, language: str) -> list[EmbedderEntry]:
         """Filter embedders by supported language."""
         return [
             e
@@ -338,7 +338,7 @@ class EmbedderRegistry:
             if language in e.languages or "multilingual" in e.languages
         ]
 
-    def filter_by_gpu(self, requires_gpu: bool) -> List[EmbedderEntry]:
+    def filter_by_gpu(self, requires_gpu: bool) -> list[EmbedderEntry]:
         """Filter embedders by GPU requirement."""
         return [e for e in self._embedders.values() if e.requires_gpu == requires_gpu]
 
@@ -357,7 +357,7 @@ class RerankerRegistry:
     """
 
     def __init__(self):
-        self._rerankers: Dict[str, RerankerEntry] = {}
+        self._rerankers: dict[str, RerankerEntry] = {}
         self._register_builtins()
 
     def _register_builtins(self) -> None:
@@ -419,15 +419,15 @@ class RerankerRegistry:
         self._rerankers[entry.model_name] = entry
         logger.info(f"Registered reranker: {entry.model_name}")
 
-    def get(self, model_name: str) -> Optional[RerankerEntry]:
+    def get(self, model_name: str) -> RerankerEntry | None:
         """Get reranker by model name."""
         return self._rerankers.get(model_name)
 
-    def list_all(self) -> List[RerankerEntry]:
+    def list_all(self) -> list[RerankerEntry]:
         """List all registered rerankers."""
         return list(self._rerankers.values())
 
-    def list_names(self) -> List[str]:
+    def list_names(self) -> list[str]:
         """List all reranker model names."""
         return list(self._rerankers.keys())
 
@@ -451,15 +451,15 @@ class ComponentValidator:
 
     def __init__(
         self,
-        chunker_registry: Optional[ChunkerRegistry] = None,
-        embedder_registry: Optional[EmbedderRegistry] = None,
-        reranker_registry: Optional[RerankerRegistry] = None,
+        chunker_registry: ChunkerRegistry | None = None,
+        embedder_registry: EmbedderRegistry | None = None,
+        reranker_registry: RerankerRegistry | None = None,
     ):
         self.chunker_registry = chunker_registry or ChunkerRegistry()
         self.embedder_registry = embedder_registry or EmbedderRegistry()
         self.reranker_registry = reranker_registry or RerankerRegistry()
 
-    def validate_chunker(self, chunker_type: str) -> List[str]:
+    def validate_chunker(self, chunker_type: str) -> list[str]:
         """Validate chunker type. Returns list of errors."""
         errors = []
         if not self.chunker_registry.is_valid(chunker_type):
@@ -470,7 +470,7 @@ class ComponentValidator:
             )
         return errors
 
-    def validate_embedder(self, model_name: str) -> List[str]:
+    def validate_embedder(self, model_name: str) -> list[str]:
         """Validate embedder model. Returns list of errors."""
         errors = []
         if not self.embedder_registry.is_valid(model_name):
@@ -481,7 +481,7 @@ class ComponentValidator:
             )
         return errors
 
-    def validate_reranker(self, model_name: str) -> List[str]:
+    def validate_reranker(self, model_name: str) -> list[str]:
         """Validate reranker model. Returns list of errors."""
         errors = []
         if not self.reranker_registry.is_valid(model_name):
@@ -498,9 +498,9 @@ class ComponentValidator:
 # =============================================================================
 
 
-_chunker_registry: Optional[ChunkerRegistry] = None
-_embedder_registry: Optional[EmbedderRegistry] = None
-_reranker_registry: Optional[RerankerRegistry] = None
+_chunker_registry: ChunkerRegistry | None = None
+_embedder_registry: EmbedderRegistry | None = None
+_reranker_registry: RerankerRegistry | None = None
 
 
 def get_chunker_registry() -> ChunkerRegistry:

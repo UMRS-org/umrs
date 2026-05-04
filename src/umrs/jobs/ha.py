@@ -20,8 +20,8 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional
+from datetime import datetime
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -63,8 +63,8 @@ class InstanceInfo:
         started_at: datetime,
         last_heartbeat_at: datetime,
         status: str = "active",
-        capabilities: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        capabilities: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
     ):
         self.instance_id = instance_id
         self.hostname = hostname
@@ -98,7 +98,7 @@ class HeartbeatManager:
     def __init__(
         self,
         db_pool,
-        instance_id: Optional[str] = None,
+        instance_id: str | None = None,
         heartbeat_interval: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         dead_threshold: float = DEFAULT_DEAD_THRESHOLD_SECONDS,
     ):
@@ -110,9 +110,9 @@ class HeartbeatManager:
         self.dead_threshold = dead_threshold
 
         self._stop_event = threading.Event()
-        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_thread: threading.Thread | None = None
         self._registered = False
-        self._capabilities: Dict[str, Any] = {}
+        self._capabilities: dict[str, Any] = {}
 
         # Register cleanup on exit
         atexit.register(self._cleanup_on_exit)
@@ -121,7 +121,7 @@ class HeartbeatManager:
         """Generate unique instance ID."""
         return f"umrs-{socket.gethostname()}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
-    def register(self, capabilities: Optional[Dict[str, Any]] = None) -> None:
+    def register(self, capabilities: dict[str, Any] | None = None) -> None:
         """
         Register this instance in the cluster.
 
@@ -193,7 +193,6 @@ class HeartbeatManager:
 
     def send_heartbeat(self) -> None:
         """Send heartbeat to update last_heartbeat_at."""
-        import json
 
         with self.db_pool.get_conn() as conn:
             with conn.cursor() as cur:
@@ -210,24 +209,23 @@ class HeartbeatManager:
                     self.register(self._capabilities)
             conn.commit()
 
-    def list_instances(self, include_dead: bool = False) -> List[InstanceInfo]:
+    def list_instances(self, include_dead: bool = False) -> list[InstanceInfo]:
         """
         List all known UMRS instances.
 
         Args:
             include_dead: Include instances that missed heartbeats
         """
-        with self.db_pool.get_conn() as conn:
-            with conn.cursor() as cur:
-                if include_dead:
-                    cur.execute("""
+        with self.db_pool.get_conn() as conn, conn.cursor() as cur:
+            if include_dead:
+                cur.execute("""
                         SELECT instance_id, hostname, pid, started_at,
                                last_heartbeat_at, status, capabilities, metadata
                         FROM umrs_instances
                         ORDER BY started_at DESC
                     """)
-                else:
-                    cur.execute("""
+            else:
+                cur.execute("""
                         SELECT instance_id, hostname, pid, started_at,
                                last_heartbeat_at, status, capabilities, metadata
                         FROM umrs_instances
@@ -236,7 +234,7 @@ class HeartbeatManager:
                         ORDER BY started_at DESC
                     """, (self.dead_threshold,))
 
-                rows = cur.fetchall()
+            rows = cur.fetchall()
 
         return [
             InstanceInfo(
@@ -252,11 +250,10 @@ class HeartbeatManager:
             for row in rows
         ]
 
-    def find_dead_instances(self) -> List[InstanceInfo]:
+    def find_dead_instances(self) -> list[InstanceInfo]:
         """Find instances that have missed heartbeats."""
-        with self.db_pool.get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self.db_pool.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     SELECT instance_id, hostname, pid, started_at,
                            last_heartbeat_at, status, capabilities, metadata
                     FROM umrs_instances
@@ -264,7 +261,7 @@ class HeartbeatManager:
                       AND last_heartbeat_at < NOW() - INTERVAL '%s seconds'
                 """, (self.dead_threshold,))
 
-                rows = cur.fetchall()
+            rows = cur.fetchall()
 
         return [
             InstanceInfo(
@@ -339,7 +336,7 @@ class DistributedLockManager:
         self.instance_id = instance_id
         self.hostname = socket.gethostname()
         self.default_ttl = default_ttl
-        self._held_locks: Dict[str, datetime] = {}  # lock_id -> acquired_at
+        self._held_locks: dict[str, datetime] = {}  # lock_id -> acquired_at
 
     def _generate_lock_id(self, lock_type: str, resource_id: str) -> str:
         """Generate deterministic lock ID."""
@@ -349,10 +346,10 @@ class DistributedLockManager:
         self,
         lock_type: str,
         resource_id: str,
-        ttl: Optional[float] = None,
+        ttl: float | None = None,
         wait: bool = False,
         wait_timeout: float = 30.0,
-        metadata: Optional[Dict[str, Any]] = None,
+        metadata: dict[str, Any] | None = None,
     ) -> bool:
         """
         Acquire a distributed lock.
@@ -477,7 +474,7 @@ class DistributedLockManager:
 
         return False
 
-    def refresh(self, lock_type: str, resource_id: str, ttl: Optional[float] = None) -> bool:
+    def refresh(self, lock_type: str, resource_id: str, ttl: float | None = None) -> bool:
         """
         Refresh lock TTL (extend expiration).
 
@@ -516,7 +513,7 @@ class DistributedLockManager:
         self,
         lock_type: str,
         resource_id: str,
-        ttl: Optional[float] = None,
+        ttl: float | None = None,
         wait: bool = True,
         wait_timeout: float = 30.0,
     ):
@@ -554,19 +551,18 @@ class DistributedLockManager:
         lock_id = self._generate_lock_id(lock_type, resource_id)
         return lock_id in self._held_locks
 
-    def get_lock_owner(self, lock_type: str, resource_id: str) -> Optional[str]:
+    def get_lock_owner(self, lock_type: str, resource_id: str) -> str | None:
         """Get the instance that holds a lock (if any)."""
         lock_id = self._generate_lock_id(lock_type, resource_id)
 
-        with self.db_pool.get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self.db_pool.get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     SELECT owner_instance_id
                     FROM job_locks
                     WHERE lock_id = %s AND expires_at > NOW()
                 """, (lock_id,))
 
-                result = cur.fetchone()
+            result = cur.fetchone()
 
         return result[0] if result else None
 
@@ -621,8 +617,8 @@ class ClusterCoordinator:
     def __init__(
         self,
         db_pool,
-        instance_id: Optional[str] = None,
-        capabilities: Optional[Dict[str, Any]] = None,
+        instance_id: str | None = None,
+        capabilities: dict[str, Any] | None = None,
     ):
         self.db_pool = db_pool
 
@@ -683,7 +679,7 @@ class ClusterCoordinator:
         """Check if we are currently the scheduler."""
         return self._is_scheduler and self.locks.is_held("scheduler", "leader")
 
-    def get_scheduler_instance(self) -> Optional[str]:
+    def get_scheduler_instance(self) -> str | None:
         """Get the current scheduler instance ID (if any)."""
         return self.locks.get_lock_owner("scheduler", "leader")
 

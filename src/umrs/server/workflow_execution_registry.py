@@ -19,6 +19,7 @@ execution sets the cancel flag (cooperatively checked by the runner).
 
 from __future__ import annotations
 
+import builtins
 import json
 import logging
 import os
@@ -26,8 +27,9 @@ import threading
 import time
 import traceback
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +44,13 @@ class StepProgress:
 
     name: str
     status: str = "pending"  # pending | running | succeeded | failed | skipped
-    started_at: Optional[float] = None
-    finished_at: Optional[float] = None
-    error: Optional[str] = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    error: str | None = None
     progress: float = 0.0
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "status": self.status,
@@ -67,21 +69,21 @@ class ExecutionRecord:
     execution_id: str
     workflow_name: str
     user_id: str
-    params: Dict[str, Any] = field(default_factory=dict)
+    params: dict[str, Any] = field(default_factory=dict)
     status: str = "submitted"
     submitted_at: float = field(default_factory=time.time)
-    started_at: Optional[float] = None
-    finished_at: Optional[float] = None
-    error: Optional[str] = None
+    started_at: float | None = None
+    finished_at: float | None = None
+    error: str | None = None
     progress: float = 0.0
-    steps: Dict[str, StepProgress] = field(default_factory=dict)
-    results: Dict[str, Any] = field(default_factory=dict)
-    artifacts: List[str] = field(default_factory=list)
-    durable_job_id: Optional[str] = None
+    steps: dict[str, StepProgress] = field(default_factory=dict)
+    results: dict[str, Any] = field(default_factory=dict)
+    artifacts: list[str] = field(default_factory=list)
+    durable_job_id: str | None = None
     cancel_requested: bool = False
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         with self._lock:
             return {
                 "execution_id": self.execution_id,
@@ -127,10 +129,10 @@ class WorkflowExecutionRegistry:
     """Thread-safe in-memory registry of workflow executions."""
 
     def __init__(self, max_records: int = 1000) -> None:
-        self._records: Dict[str, ExecutionRecord] = {}
+        self._records: dict[str, ExecutionRecord] = {}
         self._max = max_records
         self._lock = threading.Lock()
-        self._workers: Dict[str, threading.Thread] = {}
+        self._workers: dict[str, threading.Thread] = {}
 
     # ------------------------------------------------------------------
     # CRUD
@@ -140,9 +142,9 @@ class WorkflowExecutionRegistry:
         self,
         workflow_name: str,
         user_id: str,
-        params: Optional[Dict[str, Any]] = None,
-        execution_id: Optional[str] = None,
-        durable_job_id: Optional[str] = None,
+        params: dict[str, Any] | None = None,
+        execution_id: str | None = None,
+        durable_job_id: str | None = None,
     ) -> ExecutionRecord:
         record = ExecutionRecord(
             execution_id=execution_id or f"wf-{uuid.uuid4().hex[:12]}",
@@ -156,11 +158,11 @@ class WorkflowExecutionRegistry:
             self._gc_locked()
         return record
 
-    def get(self, execution_id: str) -> Optional[ExecutionRecord]:
+    def get(self, execution_id: str) -> ExecutionRecord | None:
         with self._lock:
             return self._records.get(execution_id)
 
-    def list(self, *, user_id: Optional[str] = None) -> List[ExecutionRecord]:
+    def list(self, *, user_id: str | None = None) -> builtins.list[ExecutionRecord]:
         with self._lock:
             records = list(self._records.values())
         if user_id is not None:
@@ -168,7 +170,7 @@ class WorkflowExecutionRegistry:
         records.sort(key=lambda r: r.submitted_at, reverse=True)
         return records
 
-    def cancel(self, execution_id: str) -> Optional[ExecutionRecord]:
+    def cancel(self, execution_id: str) -> ExecutionRecord | None:
         record = self.get(execution_id)
         if record is None:
             return None
@@ -229,7 +231,7 @@ class WorkflowExecutionRegistry:
             self._workers[record.execution_id] = thread
         thread.start()
 
-    def join(self, execution_id: str, timeout: Optional[float] = None) -> bool:
+    def join(self, execution_id: str, timeout: float | None = None) -> bool:
         """Wait for ``execution_id`` to leave the running state.
 
         Returns ``True`` if it reached a terminal state within the
@@ -267,7 +269,7 @@ class WorkflowExecutionRegistry:
 # Module-level singleton
 # ----------------------------------------------------------------------
 
-_registry: Optional[WorkflowExecutionRegistry] = None
+_registry: WorkflowExecutionRegistry | None = None
 _registry_lock = threading.Lock()
 
 
