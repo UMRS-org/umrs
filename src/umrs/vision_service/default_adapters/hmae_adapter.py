@@ -52,6 +52,47 @@ def _upload_result(s3, dst_bucket, out_key, data, content_type,
 class HMAEAdapter(VisionModelAdapter):
     """Load and run HMAE inference (reconstruction / mae_reconstruction / feature_extraction)."""
 
+    def capabilities(self):
+        return {
+            "name": "hmae",
+            "description": "Hierarchical Masked Autoencoder for CT/volume analysis",
+            "supported_tasks": [
+                "custom:reconstruction",
+                "custom:mae-reconstruction",
+                "custom:feature-extraction",
+            ],
+            "supported_inputs": ["single_image", "volume_slices"],
+            "output_types": ["reconstructed_image", "feature_tensors", "embeddings"],
+            "gpu_memory_mb": 8000,
+            "supports_batch": False,
+            "max_batch_size": 1,
+            "typical_inference_seconds": 10.0,
+            "model_source": "custom",
+            "framework": "pytorch",
+        }
+
+    def estimate_gpu_memory_mb(self, config: Dict[str, Any]) -> int:
+        # HMAE with ViT-Base needs ~6-8GB depending on image size
+        img_size = config.get("img_size", 128)
+        if img_size >= 256:
+            return 12000
+        return 8000
+
+    def warmup(self, model: Any, config: Dict[str, Any]) -> bool:
+        """Verify HMAE model loaded correctly by checking structure."""
+        try:
+            if model is None or "model" not in model:
+                return False
+            if model["device"] is None:
+                return False
+            if model["config"] is None:
+                return False
+            logger.info("HMAE warmup: model loaded on device=%s", model["device"])
+            return True
+        except Exception as exc:
+            logger.warning("HMAE warmup failed: %s", exc)
+            return False
+
     def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
         return describe_output_artifacts("hmae", key, config)
 
@@ -130,13 +171,21 @@ class HMAEAdapter(VisionModelAdapter):
             image_conv.save(buf, format="PNG")
             image_bytes = buf.getvalue()
 
-        data = preprocess_image_from_bytes(
-            image_bytes,
-            img_size=model_cfg["img_size"],
-            in_channels=model_cfg.get("in_channels", 1),
-            fixed_length=model_cfg.get("fixed_length", 1024),
-            patch_size=model_cfg["patch_size"],
-        )
+        try:
+            data = preprocess_image_from_bytes(
+                image_bytes,
+                img_size=model_cfg["img_size"],
+                in_channels=model_cfg.get("in_channels", 1),
+                fixed_length=model_cfg.get("fixed_length", 1024),
+                patch_size=model_cfg["patch_size"],
+            )
+        except Exception as exc:
+            logger.error("[HMAE] Preprocessing failed for %s: %s", key, exc)
+            return {
+                "error": f"Preprocessing failed: {exc}",
+                "source_image": f"s3://{bucket}/{key}",
+                "task": task,
+            }
 
         described_outputs = self.describe_outputs(key, config)
         dst_bucket = output_bucket or bucket
@@ -145,101 +194,125 @@ class HMAEAdapter(VisionModelAdapter):
             "task": task,
         }
 
-        if task == "reconstruction":
-            pred = infer_reconstruct(model["model"], data, device,
-                                     hmae_config, use_bf16)
-            png_bytes = visualize_reconstruction(data, pred, hmae_config)
-            out_key = next(iter(described_outputs))
-            _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
-                           presigned_output_urls)
-            response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
-            response["prediction"] = pred
-
-            # Upload pickled result arrays
-            pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
-            pkl_data = pickle.dumps(
-                {
-                    "prediction": pred,
-                    "coords": data["coords"],
-                    "patches": data["patches"],
-                    "depths": data["depths"],
-                },
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )
-            _upload_result(s3, dst_bucket, pkl_key, pkl_data,
-                           "application/octet-stream", presigned_output_urls)
-            response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
-
-        elif task == "mae_reconstruction":
-            pred, mask, loss = infer_mae(model["model"], data, device,
+        try:
+            if task == "reconstruction":
+                pred = infer_reconstruct(model["model"], data, device,
                                          hmae_config, use_bf16)
-            png_bytes = visualize_reconstruction(data, pred, hmae_config,
-                                                 mask=mask, loss=loss)
-            out_key = next(iter(described_outputs))
-            _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
-                           presigned_output_urls)
-            response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
-            response["mae_loss"] = loss
-            response["prediction"] = pred
-            response["mae_mask"] = mask
+                png_bytes = visualize_reconstruction(data, pred, hmae_config)
+                out_key = next(iter(described_outputs))
+                _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
+                               presigned_output_urls)
+                response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
+                response["prediction"] = pred
 
-            # Upload pickled result arrays
-            pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
-            pkl_data = pickle.dumps(
-                {
-                    "prediction": pred,
-                    "mask": mask,
-                    "loss": loss,
-                    "coords": data["coords"],
-                    "patches": data["patches"],
-                    "depths": data["depths"],
-                },
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )
-            _upload_result(s3, dst_bucket, pkl_key, pkl_data,
-                           "application/octet-stream", presigned_output_urls)
-            response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
+                # Upload pickled result arrays
+                pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
+                pkl_data = pickle.dumps(
+                    {
+                        "prediction": pred,
+                        "coords": data["coords"],
+                        "patches": data["patches"],
+                        "depths": data["depths"],
+                    },
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+                _upload_result(s3, dst_bucket, pkl_key, pkl_data,
+                               "application/octet-stream", presigned_output_urls)
+                response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
-        elif task == "feature_extraction":
-            features = infer_features(model["model"], data, device,
-                                      hmae_config, use_bf16)
-            cls_token = features[:, 0, :]
-            patch_tokens = features[:, 1:, :]
+            elif task == "mae_reconstruction":
+                pred, mask, loss = infer_mae(model["model"], data, device,
+                                             hmae_config, use_bf16)
+                png_bytes = visualize_reconstruction(data, pred, hmae_config,
+                                                     mask=mask, loss=loss)
+                out_key = next(iter(described_outputs))
+                _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
+                               presigned_output_urls)
+                response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
+                response["mae_loss"] = loss
+                response["prediction"] = pred
+                response["mae_mask"] = mask
 
-            out_key = next(iter(described_outputs))
-            feat_buf = io.BytesIO()
-            torch.save({"cls": cls_token, "patches": patch_tokens,
-                        "coords": data["coords"]}, feat_buf)
-            feat_buf.seek(0)
-            feat_data = feat_buf.getvalue()
-            _upload_result(s3, dst_bucket, out_key, feat_data,
-                           "application/octet-stream", presigned_output_urls)
-            response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
-            response["cls_shape"] = list(cls_token.shape)
-            response["patch_shape"] = list(patch_tokens.shape)
-            response["cls_token"] = cls_token
-            response["patch_tokens"] = patch_tokens
-            response["coords"] = data["coords"]
+                # Upload pickled result arrays
+                pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
+                pkl_data = pickle.dumps(
+                    {
+                        "prediction": pred,
+                        "mask": mask,
+                        "loss": loss,
+                        "coords": data["coords"],
+                        "patches": data["patches"],
+                        "depths": data["depths"],
+                    },
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+                _upload_result(s3, dst_bucket, pkl_key, pkl_data,
+                               "application/octet-stream", presigned_output_urls)
+                response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
-            # Upload pickled result arrays
-            pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
-            pkl_data = pickle.dumps(
-                {
-                    "cls_token": cls_token,
-                    "patch_tokens": patch_tokens,
-                    "coords": data["coords"],
-                },
-                protocol=pickle.HIGHEST_PROTOCOL,
-            )
-            _upload_result(s3, dst_bucket, pkl_key, pkl_data,
-                           "application/octet-stream", presigned_output_urls)
-            response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
+            elif task == "feature_extraction":
+                features = infer_features(model["model"], data, device,
+                                          hmae_config, use_bf16)
+                cls_token = features[:, 0, :]
+                patch_tokens = features[:, 1:, :]
 
-        else:
-            raise ValueError(
-                f"Unknown HMAE task: {task}. "
-                "Use 'reconstruction', 'mae_reconstruction', or 'feature_extraction'."
-            )
+                out_key = next(iter(described_outputs))
+                feat_buf = io.BytesIO()
+                torch.save({"cls": cls_token, "patches": patch_tokens,
+                            "coords": data["coords"]}, feat_buf)
+                feat_buf.seek(0)
+                feat_data = feat_buf.getvalue()
+                _upload_result(s3, dst_bucket, out_key, feat_data,
+                               "application/octet-stream", presigned_output_urls)
+                response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
+                response["cls_shape"] = list(cls_token.shape)
+                response["patch_shape"] = list(patch_tokens.shape)
+                response["cls_token"] = cls_token
+                response["patch_tokens"] = patch_tokens
+                response["coords"] = data["coords"]
+
+                # Upload pickled result arrays
+                pkl_key = next(k for k in described_outputs if k.endswith(".pkl"))
+                pkl_data = pickle.dumps(
+                    {
+                        "cls_token": cls_token,
+                        "patch_tokens": patch_tokens,
+                        "coords": data["coords"],
+                    },
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
+                _upload_result(s3, dst_bucket, pkl_key, pkl_data,
+                               "application/octet-stream", presigned_output_urls)
+                response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
+
+            else:
+                raise ValueError(
+                    f"Unknown HMAE task: {task}. "
+                    "Use 'reconstruction', 'mae_reconstruction', or 'feature_extraction'."
+                )
+
+        except torch.cuda.OutOfMemoryError as oom_exc:
+            logger.error("[HMAE] CUDA OOM during %s for %s: %s", task, key, oom_exc)
+            # Attempt to free GPU memory for subsequent requests
+            torch.cuda.empty_cache()
+            return {
+                "error": f"CUDA out of memory during {task}: {oom_exc}",
+                "source_image": f"s3://{bucket}/{key}",
+                "task": task,
+                "recoverable": True,
+            }
+        except RuntimeError as rt_exc:
+            # Catch CUDA-related RuntimeErrors (device-side asserts, etc.)
+            if "CUDA" in str(rt_exc) or "device-side" in str(rt_exc):
+                logger.error("[HMAE] CUDA error during %s for %s: %s", task, key, rt_exc)
+                torch.cuda.empty_cache()
+                return {
+                    "error": f"CUDA error during {task}: {rt_exc}",
+                    "source_image": f"s3://{bucket}/{key}",
+                    "task": task,
+                    "recoverable": True,
+                }
+            raise
 
         logger.info("HMAE %s completed for s3://%s/%s", task, bucket, key)
         return response

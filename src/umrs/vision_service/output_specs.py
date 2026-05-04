@@ -16,6 +16,21 @@ _HMAE_MODE_TO_TASK = {
     "features": "feature_extraction",
 }
 
+# HuggingFace task → primary output suffix mapping
+_HF_TASK_SUFFIXES: Dict[str, str] = {
+    "image-classification": "_results.pkl",
+    "zero-shot-image-classification": "_results.pkl",
+    "object-detection": "_results.pkl",
+    "zero-shot-object-detection": "_results.pkl",
+    "image-segmentation": "_seg.png",
+    "semantic-segmentation": "_seg.png",
+    "instance-segmentation": "_seg.png",
+    "panoptic-segmentation": "_seg.png",
+    "image-feature-extraction": "_features.pt",
+    "depth-estimation": "_depth.png",
+    "image-to-image": "_output.png",
+}
+
 
 def resolve_hmae_task(config: dict) -> str:
     """Resolve the effective HMAE task from adapter config."""
@@ -53,5 +68,16 @@ def describe_output_artifacts(model_type: str, key: str, config: dict) -> Dict[s
                 f"{base}_features.pt": "application/octet-stream",
                 f"{base}_features_results.pkl": "application/octet-stream",
             }
+
+    if model_type == "huggingface":
+        hf_task = config.get("task", "image-classification")
+        suffix = _HF_TASK_SUFFIXES.get(hf_task, "_results.pkl")
+        outputs: Dict[str, str] = {}
+        if suffix.endswith(".png"):
+            outputs[f"{base}{suffix}"] = "image/png"
+        elif suffix.endswith(".pt"):
+            outputs[f"{base}{suffix}"] = "application/octet-stream"
+        outputs[f"{base}_hf_results.pkl"] = "application/octet-stream"
+        return outputs
 
     return {}

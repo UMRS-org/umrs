@@ -57,6 +57,15 @@ class ModelCache:
         logger.info("Cache miss — loading model: %s", key)
         model = adapter.load(config)
 
+        # Run warmup/self-test if the adapter supports it
+        if hasattr(adapter, "warmup"):
+            try:
+                ok = adapter.warmup(model, config)
+                if not ok:
+                    logger.warning("Warmup returned False for %s — model may be unhealthy", key)
+            except Exception as exc:
+                logger.warning("Warmup raised for %s: %s — continuing anyway", key, exc)
+
         with self._lock:
             # Double-check: another thread may have loaded it concurrently
             if key in self._entries:

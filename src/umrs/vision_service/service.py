@@ -150,6 +150,11 @@ class VisionModelService:
 
     Models are loaded lazily on first request and kept in an LRU cache.
     Multiple models can be resident concurrently (up to MAX_VISION_MODELS).
+
+    Endpoints:
+        POST /infer/submit  — async task inference
+        GET  /models        — list available adapters and capabilities
+        GET  /health        — readiness check
     """
 
     def __init__(self):
@@ -160,6 +165,27 @@ class VisionModelService:
         if self._s3 is None:
             self._s3 = _get_s3_client()
         return self._s3
+
+    @bentoml.api
+    def models(self) -> dict:
+        """List available vision model adapters and their capabilities."""
+        result = {}
+        for name, adapter in ADAPTER_REGISTRY.items():
+            caps = None
+            if hasattr(adapter, "capabilities"):
+                caps = adapter.capabilities()
+            result[name] = caps or {"name": name, "description": "No capabilities declared"}
+        return {"adapters": result, "count": len(result)}
+
+    @bentoml.api
+    def health(self) -> dict:
+        """Readiness check — returns OK if service is accepting requests."""
+        return {
+            "status": "healthy",
+            "adapters_loaded": len(ADAPTER_REGISTRY),
+            "adapter_names": sorted(ADAPTER_REGISTRY.keys()),
+            "cache_capacity": self._cache._max,
+        }
 
     @bentoml.task
     def infer(
