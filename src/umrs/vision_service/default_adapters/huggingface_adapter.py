@@ -37,9 +37,9 @@ Usage::
     }
 
 Environment variables:
-    HF_HOME             — HuggingFace cache directory (model weights)
-    HF_OFFLINE          — Set "1" to disable network access (use pre-staged)
-    HF_DEFAULT_DEVICE   — Default device ("cuda", "cpu", "auto")
+    HF_HOME             - HuggingFace cache directory (model weights)
+    TRANSFORMERS_OFFLINE - Set "1" to disable network access (use pre-staged)
+    HF_DEFAULT_DEVICE   - Default device ("cuda", "cpu", "auto")
 """
 
 from __future__ import annotations
@@ -49,11 +49,10 @@ import logging
 import os
 import pickle
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import numpy as np
 from PIL import Image
-
 from umrs.vision_service.adapters.base import VisionModelAdapter
 
 logger = logging.getLogger(__name__)
@@ -119,13 +118,17 @@ def _upload_result(s3, dst_bucket, out_key, data, content_type,
                       Body=data, ContentType=content_type)
 
 
-def _resolve_task(config: Dict[str, Any]) -> str:
+def _resolve_task(config: dict[str, Any]) -> str:
     """Resolve the HuggingFace pipeline task from config."""
     task = config.get("task", "")
     if task and task in _ALL_SUPPORTED_TASKS:
         return task
-    # Fall back to auto-detection by the pipeline
-    return task or "image-classification"
+    if task:
+        raise ValueError(
+            f"Unsupported HuggingFace vision task '{task}'. "
+            f"Supported tasks: {sorted(_ALL_SUPPORTED_TASKS)}"
+        )
+    return "image-classification"
 
 
 def _output_suffix_for_task(task: str) -> str:
@@ -138,7 +141,7 @@ def _output_suffix_for_task(task: str) -> str:
         return "_features.pt"
     if task == "image-to-image":
         return "_output.png"
-    # Classification, detection → results pickle only
+    # Classification and detection produce results pickle only.
     return "_results.pkl"
 
 
@@ -149,26 +152,26 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
     correct model class, processor, and inference logic.
     """
 
-    def capabilities(self) -> Optional[Dict[str, Any]]:
+    def capabilities(self) -> dict[str, Any] | None:
         return {
             "name": "huggingface",
             "description": "Generic HuggingFace vision model adapter",
             "supported_tasks": sorted(_ALL_SUPPORTED_TASKS),
             "supported_inputs": ["single_image", "image_with_text"],
             "gpu_memory_mb": 4096,
-            "supports_batch": True,
-            "max_batch_size": 8,
+            "supports_batch": False,
+            "max_batch_size": 1,
             "model_source": "huggingface",
             "framework": "pytorch",
         }
 
-    def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
+    def describe_outputs(self, key: str, config: dict[str, Any]) -> dict[str, str]:
         """Describe output artifacts based on the task type."""
         task = _resolve_task(config)
         base = key.rsplit(".", 1)[0] if "." in key else key
         suffix = _output_suffix_for_task(task)
 
-        outputs: Dict[str, str] = {}
+        outputs: dict[str, str] = {}
 
         # Primary output (image or tensor)
         if suffix.endswith(".png"):
@@ -181,16 +184,16 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
 
         return outputs
 
-    def cache_key(self, config: Dict[str, Any]) -> str:
+    def cache_key(self, config: dict[str, Any]) -> str:
         model_id = config.get("model_id", "")
         task = _resolve_task(config)
         revision = config.get("revision", "main")
         return f"hf:{model_id}:{task}:{revision}"
 
-    def load(self, config: Dict[str, Any]) -> Any:
+    def load(self, config: dict[str, Any]) -> Any:
         """Load model via transformers.pipeline()."""
-        from transformers import pipeline as hf_pipeline
         import torch
+        from transformers import pipeline as hf_pipeline
 
         model_id = config.get("model_id")
         if not model_id:
@@ -217,7 +220,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             model_id, task, device, torch_dtype,
         )
 
-        pipe_kwargs: Dict[str, Any] = {
+        pipe_kwargs: dict[str, Any] = {
             "model": model_id,
             "revision": revision,
         }
@@ -230,7 +233,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         if resolved_dtype != "auto":
             pipe_kwargs["torch_dtype"] = resolved_dtype
 
-        # Create pipeline — handles model + processor loading
+        # Create pipeline. It handles model and processor loading.
         if task:
             pipe_kwargs["task"] = task
 
@@ -243,7 +246,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             "device": str(pipe.device) if hasattr(pipe, "device") else device,
         }
 
-    def warmup(self, model: Any, config: Dict[str, Any]) -> bool:
+    def warmup(self, model: Any, _config: dict[str, Any]) -> bool:
         """Run a quick inference on a tiny synthetic image to verify the model."""
         try:
             pipe = model["pipeline"]
@@ -251,11 +254,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             # Create a tiny test image
             test_img = Image.new("RGB", (64, 64), color=(128, 128, 128))
 
-            if task in _CLASSIFICATION_TASKS:
-                pipe(test_img)
-            elif task in _FEATURE_TASKS:
-                pipe(test_img)
-            elif task in _DEPTH_TASKS:
+            if task in _CLASSIFICATION_TASKS or task in _FEATURE_TASKS or task in _DEPTH_TASKS:
                 pipe(test_img)
             # Skip warmup for detection/segmentation (may need valid prompts)
             else:
@@ -267,7 +266,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             logger.warning("Warmup failed for %s: %s", model.get("model_id"), exc)
             return False
 
-    def estimate_gpu_memory_mb(self, config: Dict[str, Any]) -> int:
+    def estimate_gpu_memory_mb(self, config: dict[str, Any]) -> int:
         """Estimate GPU memory based on model size hints."""
         # Rough heuristics based on model name
         model_id = config.get("model_id", "").lower()
@@ -285,13 +284,15 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         image: Image.Image,
         bucket: str,
         key: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         s3,
         output_bucket: str,
-        presigned_output_urls: Dict[str, str] | None = None,
+        presigned_output_urls: dict[str, str] | None = None,
         raw_image_bytes: bytes | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run inference using the HuggingFace pipeline."""
+        del raw_image_bytes
+
         pipe = model["pipeline"]
         task = model["task"]
         dst_bucket = output_bucket or bucket
@@ -303,17 +304,17 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         )
 
         # Build pipeline kwargs based on task
-        pipe_kwargs: Dict[str, Any] = {}
+        pipe_kwargs: dict[str, Any] = {}
         if task in {"zero-shot-image-classification", "zero-shot-object-detection"}:
             candidate_labels = config.get("candidate_labels", config.get("labels", []))
             if isinstance(candidate_labels, str):
-                candidate_labels = [l.strip() for l in candidate_labels.split(",")]
+                candidate_labels = [label.strip() for label in candidate_labels.split(",")]
             pipe_kwargs["candidate_labels"] = candidate_labels
 
         # Run inference
         result = pipe(image, **pipe_kwargs)
 
-        response: Dict[str, Any] = {
+        response: dict[str, Any] = {
             "source_image": f"s3://{bucket}/{key}",
             "model_id": model["model_id"],
             "task": task,
@@ -323,32 +324,27 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         if task in _CLASSIFICATION_TASKS:
             response.update(self._handle_classification(result))
         elif task in _DETECTION_TASKS:
-            response.update(
-                self._handle_detection(result, image, key, dst_bucket,
-                                       described, s3, presigned_output_urls)
-            )
+            response.update(self._handle_detection(result))
         elif task in _SEGMENTATION_TASKS:
             response.update(
-                self._handle_segmentation(result, image, key, dst_bucket,
+                self._handle_segmentation(result, image, dst_bucket,
                                           described, s3, presigned_output_urls)
             )
         elif task in _FEATURE_TASKS:
             response.update(
-                self._handle_features(result, key, dst_bucket,
-                                      described, s3, presigned_output_urls)
+                self._handle_features(result, dst_bucket, described, s3, presigned_output_urls)
             )
         elif task in _DEPTH_TASKS:
             response.update(
-                self._handle_depth(result, key, dst_bucket,
-                                   described, s3, presigned_output_urls)
+                self._handle_depth(result, dst_bucket, described, s3, presigned_output_urls)
             )
         elif task == "image-to-image":
             response.update(
-                self._handle_image_to_image(result, key, dst_bucket,
+                self._handle_image_to_image(result, dst_bucket,
                                             described, s3, presigned_output_urls)
             )
         else:
-            # Generic fallback — pickle the raw result
+            # Generic fallback: pickle the raw result.
             response["raw_result"] = result
 
         # Always upload results pickle
@@ -369,44 +365,16 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
     def infer_batch(
         self,
         model: Any,
-        images: List[Image.Image],
-        keys: List[str],
+        images: list[Image.Image],
+        keys: list[str],
         bucket: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         s3,
         output_bucket: str,
-        presigned_output_urls_list: Optional[List[Dict[str, str]]] = None,
-        raw_image_bytes_list: Optional[List[bytes]] = None,
-    ) -> List[Dict[str, Any]]:
-        """Batch inference — let the HF pipeline handle batching internally."""
-        pipe = model["pipeline"]
-        task = model["task"]
-
-        # For tasks that support native batching (classification, features)
-        if task in (_CLASSIFICATION_TASKS | _FEATURE_TASKS):
-            try:
-                batch_results = pipe(images)
-                results = []
-                for i, (result, key) in enumerate(zip(batch_results, keys)):
-                    presigned = (
-                        presigned_output_urls_list[i]
-                        if presigned_output_urls_list else None
-                    )
-                    # Process each result individually for upload
-                    single_result = self.infer(
-                        model, images[i], bucket, key, config, s3,
-                        output_bucket, presigned_output_urls=presigned,
-                        raw_image_bytes=(
-                            raw_image_bytes_list[i]
-                            if raw_image_bytes_list else None
-                        ),
-                    )
-                    results.append(single_result)
-                return results
-            except Exception:
-                logger.warning("Batch inference failed, falling back to sequential")
-
-        # Fall back to sequential for unsupported tasks
+        presigned_output_urls_list: list[dict[str, str]] | None = None,
+        raw_image_bytes_list: list[bytes] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Batch inference fallback that preserves per-object artifact uploads."""
         return super().infer_batch(
             model, images, keys, bucket, config, s3, output_bucket,
             presigned_output_urls_list, raw_image_bytes_list,
@@ -416,7 +384,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
     # Task-specific result handlers
     # ------------------------------------------------------------------
 
-    def _handle_classification(self, result: Any) -> Dict[str, Any]:
+    def _handle_classification(self, result: Any) -> dict[str, Any]:
         """Process classification results."""
         if isinstance(result, list):
             predictions = [
@@ -431,11 +399,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             "top_score": predictions[0]["score"] if predictions else 0.0,
         }
 
-    def _handle_detection(
-        self, result: Any, image: Image.Image, key: str,
-        dst_bucket: str, described: Dict[str, str],
-        s3, presigned_output_urls: Optional[Dict[str, str]],
-    ) -> Dict[str, Any]:
+    def _handle_detection(self, result: Any) -> dict[str, Any]:
         """Process object detection results."""
         detections = []
         if isinstance(result, list):
@@ -451,18 +415,18 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         }
 
     def _handle_segmentation(
-        self, result: Any, image: Image.Image, key: str,
-        dst_bucket: str, described: Dict[str, str],
-        s3, presigned_output_urls: Optional[Dict[str, str]],
-    ) -> Dict[str, Any]:
+        self, result: Any, image: Image.Image,
+        dst_bucket: str, described: dict[str, str],
+        s3, presigned_output_urls: dict[str, str] | None,
+    ) -> dict[str, Any]:
         """Process segmentation results and upload mask overlay."""
-        response: Dict[str, Any] = {}
+        response: dict[str, Any] = {}
 
         # Find the PNG output key
         png_key = next((k for k in described if k.endswith(".png")), None)
 
         if isinstance(result, list) and result:
-            # Instance/panoptic segmentation — list of segments
+            # Instance/panoptic segmentation: list of segments.
             segments = []
             combined_mask = np.zeros(
                 (image.height, image.width), dtype=np.uint8
@@ -495,12 +459,9 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
                 response["output_s3_key"] = f"s3://{dst_bucket}/{png_key}"
 
         elif isinstance(result, dict) and "mask" in result:
-            # Semantic segmentation — single mask
+            # Semantic segmentation: single mask.
             mask = result["mask"]
-            if isinstance(mask, Image.Image):
-                mask_np = np.array(mask)
-            else:
-                mask_np = np.array(mask)
+            mask_np = np.array(mask)
             response["num_segments"] = int(mask_np.max())
 
             if png_key:
@@ -515,10 +476,10 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         return response
 
     def _handle_features(
-        self, result: Any, key: str, dst_bucket: str,
-        described: Dict[str, str],
-        s3, presigned_output_urls: Optional[Dict[str, str]],
-    ) -> Dict[str, Any]:
+        self, result: Any, dst_bucket: str,
+        described: dict[str, str],
+        s3, presigned_output_urls: dict[str, str] | None,
+    ) -> dict[str, Any]:
         """Process feature extraction results and upload tensor."""
         import torch
 
@@ -534,7 +495,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         else:
             features = torch.tensor(np.array(result))
 
-        response: Dict[str, Any] = {
+        response: dict[str, Any] = {
             "feature_shape": list(features.shape),
         }
 
@@ -549,13 +510,13 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         return response
 
     def _handle_depth(
-        self, result: Any, key: str, dst_bucket: str,
-        described: Dict[str, str],
-        s3, presigned_output_urls: Optional[Dict[str, str]],
-    ) -> Dict[str, Any]:
+        self, result: Any, dst_bucket: str,
+        described: dict[str, str],
+        s3, presigned_output_urls: dict[str, str] | None,
+    ) -> dict[str, Any]:
         """Process depth estimation results and upload depth map."""
         png_key = next((k for k in described if k.endswith(".png")), None)
-        response: Dict[str, Any] = {}
+        response: dict[str, Any] = {}
 
         depth_map = result.get("depth") if isinstance(result, dict) else result
         if isinstance(depth_map, Image.Image):
@@ -589,13 +550,13 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         return response
 
     def _handle_image_to_image(
-        self, result: Any, key: str, dst_bucket: str,
-        described: Dict[str, str],
-        s3, presigned_output_urls: Optional[Dict[str, str]],
-    ) -> Dict[str, Any]:
+        self, result: Any, dst_bucket: str,
+        described: dict[str, str],
+        s3, presigned_output_urls: dict[str, str] | None,
+    ) -> dict[str, Any]:
         """Process image-to-image results."""
         png_key = next((k for k in described if k.endswith(".png")), None)
-        response: Dict[str, Any] = {}
+        response: dict[str, Any] = {}
 
         if isinstance(result, Image.Image):
             output_img = result
@@ -645,7 +606,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         return composite.convert("RGB")
 
 
-def _generate_colors(n: int) -> List[tuple]:
+def _generate_colors(n: int) -> list[tuple]:
     """Generate n visually distinct RGB colors."""
     if n == 0:
         return [(255, 0, 0)]

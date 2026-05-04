@@ -19,6 +19,7 @@ import logging
 import os
 
 import bentoml
+from botocore.exceptions import ClientError
 
 from umrs.shared.storage.s3_presign import (
     generate_presigned_get,
@@ -180,8 +181,8 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                 for idx, s3_key in enumerate(s3_keys):
                     logger.info("[%d/%d] BentoML %s: %s",
                                 idx + 1, len(s3_keys), model_type, s3_key)
-                    logger.warning("[DEBUG-ADAPTER] path_to_bucket=%s output_bucket=%s",
-                                   path_to_bucket, output_bucket)
+                    logger.debug("Vision adapter buckets: input=%s output=%s",
+                                 path_to_bucket, output_bucket)
 
                     obj = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
                     checksums.append(obj["ETag"].strip('"'))
@@ -199,25 +200,32 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                         )
 
                     # Skip if output already exists in the output bucket
-                    if skip_existing and output_bucket:
-                        if predicted:
-                            all_exist = True
-                            first_key = None
-                            for out_key in predicted:
-                                if first_key is None:
-                                    first_key = out_key
-                                try:
-                                    s3.head_object(Bucket=output_bucket, Key=out_key)
-                                except Exception:
-                                    all_exist = False
-                                    break
-                            if all_exist:
-                                logger.info("[%d/%d] Skipping %s — output already exists in %s",
-                                            idx + 1, len(s3_keys), s3_key, output_bucket)
-                                output_s3_uri = f"s3://{output_bucket}/{first_key}"
-                                saved_keys.append(output_s3_uri)
-                                results.append({"status": "skipped", "output_s3_key": output_s3_uri})
-                                continue
+                    if skip_existing and output_bucket and predicted:
+                        all_exist = True
+                        first_key = None
+                        for out_key in predicted:
+                            if first_key is None:
+                                first_key = out_key
+                            try:
+                                s3.head_object(Bucket=output_bucket, Key=out_key)
+                            except ClientError as exc:
+                                error_code = exc.response.get("Error", {}).get("Code")
+                                if error_code not in {"404", "NoSuchKey", "NotFound"}:
+                                    raise
+                                all_exist = False
+                                break
+                        if all_exist:
+                            logger.info(
+                                "[%d/%d] Skipping %s; output already exists in %s",
+                                idx + 1,
+                                len(s3_keys),
+                                s3_key,
+                                output_bucket,
+                            )
+                            output_s3_uri = f"s3://{output_bucket}/{first_key}"
+                            saved_keys.append(output_s3_uri)
+                            results.append({"status": "skipped", "output_s3_key": output_s3_uri})
+                            continue
 
                     image_url = f"s3://{path_to_bucket}/{s3_key}"
                     target_bucket = output_bucket or path_to_bucket
@@ -241,8 +249,8 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                         for out_key, content_type in predicted.items()
                     }
 
-                    logger.warning(
-                        "[DEBUG-ADAPTER] Submitting task: model_type=%s image_url=%s "
+                    logger.debug(
+                        "Submitting BentoML vision task: model_type=%s image_url=%s "
                         "presigned_input=%s presigned_output_keys=%s endpoint=%s",
                         model_type, image_url,
                         bool(presigned_input_url),
@@ -263,8 +271,10 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                         presigned_output_urls=presigned_output_urls,
                     )
 
-                    logger.warning("[DEBUG-ADAPTER] Result keys=%s",
-                                   list(result.keys()) if isinstance(result, dict) else type(result))
+                    logger.debug(
+                        "BentoML vision result keys=%s",
+                        list(result.keys()) if isinstance(result, dict) else type(result),
+                    )
 
                     if "error" in result:
                         raise RuntimeError(

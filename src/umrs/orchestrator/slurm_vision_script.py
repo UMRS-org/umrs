@@ -9,8 +9,12 @@ Singularity for LLM mini-RiVault jobs).
 
 from __future__ import annotations
 
+import re
+import shlex
 from dataclasses import dataclass, field
-from typing import Any, List, Optional
+from typing import Any
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass
@@ -23,9 +27,9 @@ class VisionJobConfig:
     gpus: int = 1
     cpus: int = 8
     mem: str = "32G"
-    nodelist_hint: Optional[str] = None
+    nodelist_hint: str | None = None
     slurm_log_dir: str = "/tmp/umrs-vision-logs"
-    slurm_modules: List[str] = field(default_factory=list)
+    slurm_modules: list[str] = field(default_factory=list)
 
     # Container configuration
     container_image: str = "umrs-vision-service:latest"
@@ -50,6 +54,25 @@ class VisionJobConfig:
     # S3 configuration for presigned URL generation
     s3_endpoint_url: str = ""
     s3_presign_endpoint: str = ""
+
+
+def _shell_quote(value: object) -> str:
+    """Return a value safely quoted for POSIX shell assignment/use."""
+    return shlex.quote(str(value))
+
+
+def _shell_assignment(name: str, value: object) -> str:
+    """Render a shell assignment with a quoted value."""
+    if not _ENV_NAME_RE.match(name):
+        raise ValueError(f"Invalid shell variable name: {name}")
+    return f"{name}={_shell_quote(value)}"
+
+
+def _podman_env_flag(name: str, value: object) -> str:
+    """Render a safely quoted Podman environment flag."""
+    if not _ENV_NAME_RE.match(name):
+        raise ValueError(f"Invalid environment variable name: {name}")
+    return f"-e {_shell_quote(f'{name}={value}')}"
 
 
 def render_vision_sbatch_script(cfg: VisionJobConfig, **kwargs: Any) -> str:
@@ -89,7 +112,7 @@ def _vision_header(cfg: VisionJobConfig) -> str:
 #SBATCH --error={cfg.slurm_log_dir}/vision-job-%j.err
 
 # =============================================================================
-# UMRS Generic Vision Model Service — Slurm Job (Podman)
+# UMRS Generic Vision Model Service - Slurm Job (Podman)
 # =============================================================================
 
 set -e"""
@@ -97,14 +120,14 @@ set -e"""
 
 def _vision_config(cfg: VisionJobConfig) -> str:
     env_lines = []
-    env_lines.append(f'CONTAINER_IMAGE="{cfg.container_image}"')
-    env_lines.append(f"BENTOML_PORT={cfg.bentoml_port}")
-    env_lines.append(f'MODEL_PATH="{cfg.model_path}"')
-    env_lines.append(f'ADAPTER_PATH="{cfg.adapter_path}"')
-    env_lines.append(f'MODEL_TYPE="{cfg.model_type}"')
-    env_lines.append(f"MAX_VISION_MODELS={cfg.max_vision_models}")
-    env_lines.append(f'JOB_INFO_DIR="{cfg.job_info_dir}"')
-    env_lines.append(f'CONTAINER_RUNTIME="{cfg.container_runtime}"')
+    env_lines.append(_shell_assignment("CONTAINER_IMAGE", cfg.container_image))
+    env_lines.append(_shell_assignment("BENTOML_PORT", cfg.bentoml_port))
+    env_lines.append(_shell_assignment("MODEL_PATH", cfg.model_path))
+    env_lines.append(_shell_assignment("ADAPTER_PATH", cfg.adapter_path))
+    env_lines.append(_shell_assignment("MODEL_TYPE", cfg.model_type))
+    env_lines.append(_shell_assignment("MAX_VISION_MODELS", cfg.max_vision_models))
+    env_lines.append(_shell_assignment("JOB_INFO_DIR", cfg.job_info_dir))
+    env_lines.append(_shell_assignment("CONTAINER_RUNTIME", cfg.container_runtime))
 
     return f"""
 # Configuration
@@ -185,20 +208,20 @@ fi"""
 def _vision_launch(cfg: VisionJobConfig) -> str:
     # Build environment variable flags
     env_flags = []
-    env_flags.append('-e "VISION_ADAPTERS_DIR=/adapters/system:/adapters/user"')
-    env_flags.append(f'-e "MAX_VISION_MODELS={cfg.max_vision_models}"')
-    env_flags.append(f'-e "TRANSFORMERS_OFFLINE={1 if cfg.hf_offline else 0}"')
-    env_flags.append(f'-e "HF_HOME=/models/.hf_cache"')
+    env_flags.append(_podman_env_flag("VISION_ADAPTERS_DIR", "/adapters/system:/adapters/user"))
+    env_flags.append(_podman_env_flag("MAX_VISION_MODELS", cfg.max_vision_models))
+    env_flags.append(_podman_env_flag("TRANSFORMERS_OFFLINE", 1 if cfg.hf_offline else 0))
+    env_flags.append(_podman_env_flag("HF_HOME", "/models/.hf_cache"))
 
     if cfg.vision_require_presigned_urls:
-        env_flags.append('-e "VISION_REQUIRE_PRESIGNED_URLS=true"')
+        env_flags.append(_podman_env_flag("VISION_REQUIRE_PRESIGNED_URLS", "true"))
     if cfg.s3_endpoint_url:
-        env_flags.append(f'-e "S3_ENDPOINT_URL={cfg.s3_endpoint_url}"')
+        env_flags.append(_podman_env_flag("S3_ENDPOINT_URL", cfg.s3_endpoint_url))
     if cfg.s3_presign_endpoint:
-        env_flags.append(f'-e "VISION_S3_PRESIGN_ENDPOINT={cfg.s3_presign_endpoint}"')
+        env_flags.append(_podman_env_flag("VISION_S3_PRESIGN_ENDPOINT", cfg.s3_presign_endpoint))
 
     for k, v in cfg.extra_env.items():
-        env_flags.append(f'-e "{k}={v}"')
+        env_flags.append(_podman_env_flag(k, v))
 
     env_str = " \\\n    ".join(env_flags)
 
@@ -206,14 +229,14 @@ def _vision_launch(cfg: VisionJobConfig) -> str:
     volume_flags = []
     volume_flags.append('-v "${MODEL_PATH}:/models:ro"')
     if cfg.adapter_path:
-        volume_flags.append(f'-v "{cfg.adapter_path}:/adapters/user:ro"')
+        volume_flags.append(f"-v {_shell_quote(f'{cfg.adapter_path}:/adapters/user:ro')}")
 
     volume_str = " \\\n    ".join(volume_flags)
 
     modules_str = ""
     if cfg.slurm_modules:
         modules_str = "\n".join(
-            f"module load {m} 2>/dev/null || true" for m in cfg.slurm_modules
+            f"module load {_shell_quote(m)} 2>/dev/null || true" for m in cfg.slurm_modules
         )
         modules_str = f"\n# Load site modules\n{modules_str}\n"
 
@@ -244,7 +267,7 @@ for i in $(seq 1 {max_checks}); do
         READY=true
         break
     fi
-    echo "  Attempt $i/{max_checks} — waiting..."
+    echo "  Attempt $i/{max_checks} - waiting..."
     sleep 5
 done
 

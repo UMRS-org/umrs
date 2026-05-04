@@ -7,17 +7,14 @@ dependencies.
 
 from __future__ import annotations
 
-from typing import Dict
-
-
 _HMAE_MODE_TO_TASK = {
     "reconstruct": "reconstruction",
     "mae": "mae_reconstruction",
     "features": "feature_extraction",
 }
 
-# HuggingFace task → primary output suffix mapping
-_HF_TASK_SUFFIXES: Dict[str, str] = {
+# HuggingFace task to primary output suffix mapping.
+_HF_TASK_SUFFIXES: dict[str, str] = {
     "image-classification": "_results.pkl",
     "zero-shot-image-classification": "_results.pkl",
     "object-detection": "_results.pkl",
@@ -41,7 +38,7 @@ def resolve_hmae_task(config: dict) -> str:
     return _HMAE_MODE_TO_TASK.get(mode, "reconstruction")
 
 
-def describe_output_artifacts(model_type: str, key: str, config: dict) -> Dict[str, str]:
+def describe_output_artifacts(model_type: str, key: str, config: dict) -> dict[str, str]:
     """Return deterministic output keys and content types for built-in adapters."""
     base = key.rsplit(".", 1)[0] if "." in key else key
 
@@ -72,7 +69,7 @@ def describe_output_artifacts(model_type: str, key: str, config: dict) -> Dict[s
     if model_type == "huggingface":
         hf_task = config.get("task", "image-classification")
         suffix = _HF_TASK_SUFFIXES.get(hf_task, "_results.pkl")
-        outputs: Dict[str, str] = {}
+        outputs: dict[str, str] = {}
         if suffix.endswith(".png"):
             outputs[f"{base}{suffix}"] = "image/png"
         elif suffix.endswith(".pt"):

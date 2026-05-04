@@ -7,10 +7,9 @@ import logging
 import os
 import pickle
 import urllib.request
-from typing import Any, Dict
+from typing import Any
 
 from PIL import Image
-
 from umrs.vision_service.adapters.base import VisionModelAdapter
 from umrs.vision_service.output_specs import describe_output_artifacts
 
@@ -29,8 +28,8 @@ def _include_full_masks_in_results() -> bool:
     }
 
 
-def _build_results_payload(result: Dict[str, Any], prompt: str, source_image: str) -> Dict[str, Any]:
-    payload: Dict[str, Any] = {
+def _build_results_payload(result: dict[str, Any], prompt: str, source_image: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "boxes": result["boxes"],
         "scores": result["scores"],
         "num_objects": result["num_objects"],
@@ -65,22 +64,22 @@ class SAM3Adapter(VisionModelAdapter):
             "framework": "pytorch",
         }
 
-    def estimate_gpu_memory_mb(self, config: Dict[str, Any]) -> int:
+    def estimate_gpu_memory_mb(self, config: dict[str, Any]) -> int:
         checkpoint = config.get("checkpoint",
                                 os.environ.get("SAM3_MODEL_PATH", "facebook/sam3"))
         if "large" in checkpoint.lower():
             return 8000
         return 6000
 
-    def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
+    def describe_outputs(self, key: str, config: dict[str, Any]) -> dict[str, str]:
         return describe_output_artifacts("sam3", key, config)
 
-    def cache_key(self, config: Dict[str, Any]) -> str:
+    def cache_key(self, config: dict[str, Any]) -> str:
         checkpoint = config.get("checkpoint",
                                 os.environ.get("SAM3_MODEL_PATH", "facebook/sam3"))
         return f"sam3:{checkpoint}"
 
-    def load(self, config: Dict[str, Any]) -> Any:
+    def load(self, config: dict[str, Any]) -> Any:
         from umrs.inference.sam3_segmentation import load_sam3_model
 
         checkpoint = config.get("checkpoint",
@@ -94,15 +93,17 @@ class SAM3Adapter(VisionModelAdapter):
         image: Image.Image,
         bucket: str,
         key: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         s3,
         output_bucket: str,
-        presigned_output_urls: Dict[str, str] | None = None,
+        presigned_output_urls: dict[str, str] | None = None,
         raw_image_bytes: bytes | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
+        del raw_image_bytes
+
         from umrs.inference.sam3_segmentation import (
-            segment_image_with_text,
             overlay_masks_on_image,
+            segment_image_with_text,
         )
 
         prompt = config.get("prompt", "object")
@@ -110,17 +111,19 @@ class SAM3Adapter(VisionModelAdapter):
         mask_threshold = config.get("mask_threshold", 0.5)
         device = model["device"]
 
-        logger.warning("[DEBUG-SAM3] infer: bucket=%s key=%s prompt=%s device=%s "
-                       "output_bucket=%s presigned_output_urls=%s",
-                       bucket, key, prompt, device, output_bucket,
-                       list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)")
+        logger.debug(
+            "SAM3 infer: bucket=%s key=%s prompt=%s device=%s "
+            "output_bucket=%s presigned_output_urls=%s",
+            bucket, key, prompt, device, output_bucket,
+            list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
+        )
 
         result = segment_image_with_text(
             model["model"], model["processor"], image, prompt,
             device, threshold, mask_threshold,
         )
 
-        response: Dict[str, Any] = {
+        response: dict[str, Any] = {
             "num_objects": result["num_objects"],
             "boxes": result["boxes"],
             "scores": result["scores"],
@@ -138,10 +141,13 @@ class SAM3Adapter(VisionModelAdapter):
             dst_bucket = output_bucket or bucket
             png_data = buf.getvalue()
 
-            logger.warning("[DEBUG-SAM3] Uploading overlay: key=%s dst_bucket=%s "
-                           "s3=%s presigned=%s",
-                           overlay_key, dst_bucket, s3 is not None,
-                           overlay_key in (presigned_output_urls or {}))
+            logger.debug(
+                "SAM3 uploading overlay: key=%s dst_bucket=%s s3=%s presigned=%s",
+                overlay_key,
+                dst_bucket,
+                s3 is not None,
+                overlay_key in (presigned_output_urls or {}),
+            )
 
             # Prefer presigned PUT URL when available
             presigned_url = (presigned_output_urls or {}).get(overlay_key)

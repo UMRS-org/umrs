@@ -6,11 +6,11 @@ import logging
 import os
 import threading
 import time
-from typing import Any, Dict, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
-_CacheEntry = Tuple[Any, float]  # (model_object, last_used_timestamp)
+_CacheEntry = tuple[Any, float]  # (model_object, last_used_timestamp)
 
 
 class ModelCache:
@@ -28,11 +28,16 @@ class ModelCache:
             max_models = int(os.environ.get("MAX_VISION_MODELS", "3"))
         self._max = max_models
         self._lock = threading.Lock()
-        self._entries: Dict[str, _CacheEntry] = {}
+        self._entries: dict[str, _CacheEntry] = {}
 
     # ------------------------------------------------------------------
     # public API
     # ------------------------------------------------------------------
+
+    @property
+    def capacity(self) -> int:
+        """Maximum number of model objects this cache can retain."""
+        return self._max
 
     def get_or_load(self, adapter, config: dict) -> Any:
         """Return a cached model or load a new one via *adapter*.
@@ -54,7 +59,7 @@ class ModelCache:
                 return model
 
         # Load outside the lock (may be slow / GPU-heavy)
-        logger.info("Cache miss — loading model: %s", key)
+        logger.info("Cache miss; loading model: %s", key)
         model = adapter.load(config)
 
         # Run warmup/self-test if the adapter supports it
@@ -62,9 +67,9 @@ class ModelCache:
             try:
                 ok = adapter.warmup(model, config)
                 if not ok:
-                    logger.warning("Warmup returned False for %s — model may be unhealthy", key)
+                    logger.warning("Warmup returned False for %s; model may be unhealthy", key)
             except Exception as exc:
-                logger.warning("Warmup raised for %s: %s — continuing anyway", key, exc)
+                logger.warning("Warmup raised for %s: %s; continuing anyway", key, exc)
 
         with self._lock:
             # Double-check: another thread may have loaded it concurrently

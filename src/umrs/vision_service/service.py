@@ -4,11 +4,11 @@ Provides a single ``/infer`` async task-queue endpoint that dispatches to
 pluggable model adapters (SAM3, HMAE, or any future vision model).
 
 BentoML auto-generates from ``@bentoml.task``:
-    POST /infer/submit  — submit a task, returns task_id immediately
-    GET  /infer/status  — check task status by task_id
-    GET  /infer/get     — retrieve task result by task_id
-    POST /infer/cancel  — cancel a pending task
-    PUT  /infer/retry   — retry a failed task
+    POST /infer/submit  - submit a task, returns task_id immediately
+    GET  /infer/status  - check task status by task_id
+    GET  /infer/get     - retrieve task result by task_id
+    POST /infer/cancel  - cancel a pending task
+    PUT  /infer/retry   - retry a failed task
 
 Request payload for ``/infer/submit``::
 
@@ -20,18 +20,18 @@ Request payload for ``/infer/submit``::
     }
 
 Environment variables:
-        S3_ENDPOINT_URL      — MinIO/S3 endpoint for optional direct fallback
-        S3_ACCESS_KEY        — S3 access key for optional direct fallback
-        S3_SECRET_KEY        — S3 secret key for optional direct fallback
+        S3_ENDPOINT_URL      - MinIO/S3 endpoint for optional direct fallback
+        S3_ACCESS_KEY        - S3 access key for optional direct fallback
+        S3_SECRET_KEY        - S3 secret key for optional direct fallback
         VISION_REQUIRE_PRESIGNED_URLS
-                                                — Require presigned GET for input and presigned PUT
+                                                - Require presigned GET for input and presigned PUT
                                                     for all declared outputs. Direct S3 fallback is
                                                     disabled when true.
-    MAX_VISION_MODELS    — LRU model cache capacity (default 3)
-    VISION_ADAPTERS_DIR  — colon-separated directories of custom adapter .py
+    MAX_VISION_MODELS    - LRU model cache capacity (default 3)
+    VISION_ADAPTERS_DIR  - colon-separated directories of custom adapter .py
                            files (default /adapters).  Each directory may also
                            contain a requirements.txt for auto-installation.
-    VISION_ADAPTERS      — comma-separated ``module:ClassName`` entries for
+    VISION_ADAPTERS      - comma-separated ``module:ClassName`` entries for
                            custom adapters on the Python path
 """
 
@@ -40,11 +40,11 @@ import logging
 import os
 import pickle
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
-import cv2  # noqa: F401 — preload before torch/sam3 to prevent libpng conflicts
 import bentoml
+import cv2  # noqa: F401 - preload before torch/sam3 to prevent libpng conflicts
 from PIL import Image
 
 from umrs.vision_service.adapters import ADAPTER_REGISTRY
@@ -82,11 +82,7 @@ def _get_s3_client():
 
 def _download_image_from_s3(s3, image_url):
     """Parse an S3 URL (s3://bucket/key) and download as PIL Image."""
-    if image_url.startswith("s3://"):
-        path = image_url[5:]
-    else:
-        path = image_url
-
+    path = image_url[5:] if image_url.startswith("s3://") else image_url
     parts = path.split("/", 1)
     if len(parts) != 2:
         raise ValueError(f"Invalid S3 image URL: {image_url}. Expected format: s3://bucket/key")
@@ -103,13 +99,10 @@ def _download_image_from_presigned_url(presigned_url, image_url):
     Retries up to 3 times with exponential backoff for transient failures.
 
     Returns the same 3-tuple as ``_download_image_from_s3``:
-    ``(PIL.Image, bucket, key)`` — bucket/key are parsed from ``image_url``
+    ``(PIL.Image, bucket, key)`` - bucket/key are parsed from ``image_url``
     so that downstream code can still construct output keys.
     """
-    if image_url.startswith("s3://"):
-        path = image_url[5:]
-    else:
-        path = image_url
+    path = image_url[5:] if image_url.startswith("s3://") else image_url
     parts = path.split("/", 1)
     if len(parts) != 2:
         raise ValueError(f"Invalid S3 image URL: {image_url}")
@@ -152,9 +145,9 @@ class VisionModelService:
     Multiple models can be resident concurrently (up to MAX_VISION_MODELS).
 
     Endpoints:
-        POST /infer/submit  — async task inference
-        GET  /models        — list available adapters and capabilities
-        GET  /health        — readiness check
+        POST /infer/submit  - async task inference
+        GET  /models        - list available adapters and capabilities
+        GET  /health        - readiness check
     """
 
     def __init__(self):
@@ -174,17 +167,20 @@ class VisionModelService:
             caps = None
             if hasattr(adapter, "capabilities"):
                 caps = adapter.capabilities()
-            result[name] = caps or {"name": name, "description": "No capabilities declared"}
+            result[name] = caps or {
+                "name": name,
+                "description": "No capabilities declared",
+            }
         return {"adapters": result, "count": len(result)}
 
     @bentoml.api
     def health(self) -> dict:
-        """Readiness check — returns OK if service is accepting requests."""
+        """Readiness check returning OK if service accepts requests."""
         return {
             "status": "healthy",
             "adapters_loaded": len(ADAPTER_REGISTRY),
             "adapter_names": sorted(ADAPTER_REGISTRY.keys()),
-            "cache_capacity": self._cache._max,
+            "cache_capacity": self._cache.capacity,
         }
 
     @bentoml.task
@@ -203,7 +199,7 @@ class VisionModelService:
             model_type: Adapter key registered in ADAPTER_REGISTRY
                         (e.g. ``"sam3"``, ``"hmae"``).
             inference_config: Adapter-specific configuration (checkpoint paths,
-                              task, prompt, thresholds, …).
+                              task, prompt, thresholds, etc.).
             image_url: S3 URL of the input image (``s3://bucket/key``).
             output_bucket: Bucket for output artifacts.  Defaults to the
                            source bucket when empty.
@@ -219,8 +215,8 @@ class VisionModelService:
             The dict may include numpy arrays and torch tensors.
             Clients must ``pickle.loads()`` the return value.
         """
-        logger.warning(
-            "[DEBUG-INFER] model_type=%s image_url=%s output_bucket=%s "
+        logger.info(
+            "Vision infer request: model_type=%s image_url=%s output_bucket=%s "
             "presigned_input=%s presigned_output_keys=%s",
             model_type, image_url, output_bucket,
             bool(presigned_input_url),
@@ -229,7 +225,7 @@ class VisionModelService:
 
         adapter = ADAPTER_REGISTRY.get(model_type)
         if adapter is None:
-            logger.error("[DEBUG-INFER] Unknown model_type '%s'. Available: %s",
+            logger.error("Unknown vision model_type '%s'. Available: %s",
                          model_type, sorted(ADAPTER_REGISTRY))
             return pickle.dumps({
                 "error": (
@@ -250,16 +246,22 @@ class VisionModelService:
 
             # Download input image: prefer presigned URL, fall back to direct S3
             if presigned_input_url:
-                logger.warning("[DEBUG-INFER] Downloading via presigned URL")
+                logger.debug("Downloading vision input via presigned URL")
                 image, bucket, key, raw_image_bytes = _download_image_from_presigned_url(
                     presigned_input_url, image_url,
                 )
-                s3 = None if (_require_presigned_urls() or presigned_output_urls) else self._ensure_s3()
+                s3 = (
+                    None
+                    if (_require_presigned_urls() or presigned_output_urls)
+                    else self._ensure_s3()
+                )
             else:
-                logger.warning("[DEBUG-INFER] Downloading via direct S3: %s", image_url)
+                logger.debug("Downloading vision input via direct S3: %s", image_url)
                 s3 = self._ensure_s3()
-                logger.warning("[DEBUG-INFER] S3 endpoint: %s",
-                               os.environ.get('S3_ENDPOINT_URL', '(not set)'))
+                logger.debug(
+                    "Vision direct S3 endpoint: %s",
+                    os.environ.get("S3_ENDPOINT_URL", "(not set)"),
+                )
                 image, bucket, key, raw_image_bytes = _download_image_from_s3(s3, image_url)
 
             expected_outputs = adapter.describe_outputs(key, inference_config)
@@ -278,12 +280,11 @@ class VisionModelService:
                         "source_image": image_url,
                     }, protocol=pickle.HIGHEST_PROTOCOL)
 
-            logger.warning("[DEBUG-INFER] Image downloaded: bucket=%s key=%s size=%s",
-                           bucket, key, image.size)
+            logger.debug("Vision input downloaded: bucket=%s key=%s size=%s",
+                         bucket, key, image.size)
 
             model = self._cache.get_or_load(adapter, inference_config)
-            logger.warning("[DEBUG-INFER] Model loaded, dispatching to adapter %s",
-                           type(adapter).__name__)
+            logger.debug("Dispatching vision request to adapter %s", type(adapter).__name__)
 
             result = adapter.infer(
                 model, image, bucket, key,
@@ -291,10 +292,14 @@ class VisionModelService:
                 presigned_output_urls=presigned_output_urls or {},
                 raw_image_bytes=raw_image_bytes,
             )
-            logger.warning("[DEBUG-INFER] Adapter returned keys: %s",
-                           list(result.keys()) if isinstance(result, dict) else type(result))
+            logger.debug(
+                "Vision adapter returned keys: %s",
+                list(result.keys()) if isinstance(result, dict) else type(result),
+            )
             return pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:
-            logger.exception("[DEBUG-INFER] infer FAILED (model_type=%s): %s",
-                             model_type, exc)
-            return pickle.dumps({"error": str(exc), "source_image": image_url}, protocol=pickle.HIGHEST_PROTOCOL)
+            logger.exception("Vision inference failed (model_type=%s): %s", model_type, exc)
+            return pickle.dumps(
+                {"error": str(exc), "source_image": image_url},
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
