@@ -88,12 +88,7 @@ $CLIENT upload-workflow "${WORKFLOW_SOURCE_DIR}" --name "video-motion-analysis" 
 ok "Workflow uploaded"
 
 log "Reloading server configuration..."
-if [[ -n "${UMRS_ADMIN_TOKEN:-}" ]]; then
-    $CLIENT --admin-token "$UMRS_ADMIN_TOKEN" reload 2>/dev/null || warn "reload returned non-zero"
-else
-    warn "UMRS_ADMIN_TOKEN not set; reload may be rejected on auth-enforced deployments"
-    $CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
-fi
+admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
 sleep 3
 
 # ---------- Step 4: Upload videos ----------

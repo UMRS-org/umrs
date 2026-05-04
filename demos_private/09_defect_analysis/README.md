@@ -58,7 +58,7 @@ umrs-client ping
 # 2. Reload server configuration
 #    Ensures the server has the latest bucket aliases and
 #    output buckets created for the SAM3 experience.
-umrs-client reload
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 
 # 3. Verify that the SAM3 model is already visible to the server
 umrs-client model list --scope system

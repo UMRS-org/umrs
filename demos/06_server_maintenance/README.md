@@ -108,14 +108,14 @@ If your deployment does not enforce admin tokens, omit `--admin-token`.
 
 ```
 Upload finished, not sure if everything processed?
-  └─ umrs-client check
+  └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" check
        └─ All consistent? → Done
        └─ Mismatches found?
-            └─ umrs-client update   (fix only broken entries)
+            └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" update   (fix only broken entries)
 
 Changed the embedding model in user config?
-  └─ umrs-client reload            (pick up new model)
-  └─ umrs-client recompute         (re-embed everything)
+  └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload       (pick up new model)
+  └─ umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute    (re-embed everything)
 
 First time, don't know what's configured?
   └─ umrs-client list_buckets      (discover your buckets)

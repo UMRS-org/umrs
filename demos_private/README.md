@@ -22,6 +22,8 @@ bash run_demo.sh
 ```
 
 They source `demos/lib/common.sh` so the UMRS server must be reachable.
+On auth-enforced deployments, export `UMRS_ADMIN_TOKEN` before running private
+demos because reload/recompute are admin-only maintenance operations.
 
 ## Public Replacements
 

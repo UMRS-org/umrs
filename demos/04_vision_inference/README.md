@@ -13,6 +13,7 @@ vision model.
 - `umrs-client` installed and in PATH (see [demos/README.md](../README.md#prerequisites))
 - User onboarded (see [Demo 00](../00_onboarding/))
 - Server config with a vision experience (e.g. SAM3 Segmentation)
+- `UMRS_ADMIN_TOKEN` exported when reloading or recomputing on auth-enforced deployments
 
 ## Quick Start
 
@@ -31,7 +32,7 @@ umrs-client ping
 # 2. Reload server configuration
 #    Ensures the server picks up any recent config changes
 #    (e.g. new vision experience, bucket alias, model path).
-umrs-client reload
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 
 # 3. Upload images to the vision bucket
 #    Images are stored in S3 and the server dispatches each one
@@ -48,7 +49,7 @@ umrs-client download_results user1-sam3 results/ --force-overwrite
 # 5. (Optional) Force re-processing of all images
 #    Useful after changing the model or config. Recomputes embeddings
 #    and inference for every object in the bucket.
-umrs-client recompute
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute
 ```
 
 ## Plugging in a Different Vision Model
@@ -58,7 +59,7 @@ your own model:
 
 1. **Register** the model with UMRS:
    ```bash
-   umrs-client model register my-model /path/to/model --type embedding --scope user
+   umrs-client model register my-model /path/to/model --type vision --scope user
    ```
 
    On a local-client / remote-server deployment, use `model upload` with an
@@ -69,7 +70,7 @@ your own model:
 
 3. **Reload** the server:
    ```bash
-   umrs-client reload
+   umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
    ```
 
 4. **Run** with a custom bucket:

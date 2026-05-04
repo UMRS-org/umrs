@@ -123,7 +123,7 @@ ok "Images uploaded — server will process automatically"
 
 if [[ -n "$FORCE_RECOMPUTE" ]]; then
     log "FORCE_RECOMPUTE set — triggering full recompute..."
-    $CLIENT recompute || warn "recompute returned non-zero"
+    admin_recompute || warn "recompute returned non-zero"
 fi
 UPLOAD_DONE=$SECONDS
 
