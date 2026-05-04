@@ -250,13 +250,14 @@ class TestLoadSiteConfig:
 
         assert cfg.network.litellm_master_key == "sk-from-env"
 
-    def test_rccs_cloud_site_config_uses_operator_user_placeholder(self, monkeypatch):
-        monkeypatch.setenv("USER", "test-operator")
-
+    def test_rccs_cloud_site_config_uses_deployed_runtime_paths(self):
         cfg = load_site_config(RCCS_CLOUD_SITE_CONFIG)
 
-        assert "/test-operator/" in cfg.runtime.repo_dir
-        assert "/mnagaso/" not in cfg.runtime.repo_dir
+        assert cfg.runtime.repo_dir == "/lvs0/rccs-dmp/mnagaso/ai4s-platform/umrs"
+        assert (
+            cfg.runtime.rivault_dir
+            == "/lvs0/rccs-dmp/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm"
+        )
 
     def test_search_path_umrs_site_config_env(self, tmp_path):
         p = tmp_path / "custom_site.yaml"

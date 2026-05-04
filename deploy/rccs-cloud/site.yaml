@@ -28,8 +28,8 @@ scheduler:
 
 runtime:
   kind: podman-compose
-  rivault_dir: /lvs0/dne1/rccs-dmp/test-operator/ai4s-platform/umrs/src/umrs/mini-rivault-llm
-  repo_dir: /lvs0/dne1/rccs-dmp/test-operator/ai4s-platform/umrs
+  rivault_dir: /lvs0/rccs-dmp/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm
+  repo_dir: /lvs0/rccs-dmp/mnagaso/ai4s-platform/umrs
   vision_image: umrs-vision:latest
   compose_file: ""                       # defaults to serve-model.yaml inside rivault_dir
   profiles:
