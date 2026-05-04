@@ -1,5 +1,5 @@
 # Generic Vision Model Serving Container
-# ──────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 # OCI-compatible image for serving any vision model via BentoML.
 # Primary runtime: Podman (with CDI for GPU passthrough on Slurm nodes)
 # Also works with Docker and Singularity.
@@ -21,7 +21,7 @@
 #     -e VISION_ADAPTERS_DIR=/adapters/system:/adapters/user \
 #     -p $PORT:3000 \
 #     umrs-vision-service:latest
-# ──────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 FROM python:3.11-slim AS base
 
@@ -30,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 libgl1 curl && \
     rm -rf /var/lib/apt/lists/*
 
-# Install uv (fast Python package manager) — kept at runtime for custom
+# Install uv (fast Python package manager). Kept at runtime for custom
 # adapter dependency installation via requirements.txt auto-discovery.
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
 ENV UV_SYSTEM_PYTHON=1 UV_NO_CACHE=1
@@ -46,8 +46,8 @@ RUN uv pip install \
 COPY src/umrs/vision_service/requirements-vision.txt .
 RUN uv pip install -r requirements-vision.txt
 
-# Install HuggingFace transformers for the generic adapter
-RUN uv pip install transformers>=4.50.0 accelerate
+# Install HuggingFace transformers for the generic adapter.
+RUN uv pip install "transformers>=4.50.0" accelerate
 
 # Install decord for video support
 RUN uv pip install decord==0.6.0 || uv pip install decord2==3.2.0 || true

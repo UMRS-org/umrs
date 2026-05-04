@@ -11,12 +11,9 @@ To add a new vision model to the BentoML service:
 from __future__ import annotations
 
 import abc
-import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from PIL import Image
-
-logger = logging.getLogger(__name__)
 
 
 class VisionModelAdapter(abc.ABC):
@@ -34,7 +31,7 @@ class VisionModelAdapter(abc.ABC):
     # ------------------------------------------------------------------
 
     @abc.abstractmethod
-    def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
+    def describe_outputs(self, key: str, config: dict[str, Any]) -> dict[str, str]:
         """Describe deterministic output artifacts for a given source object.
 
         Returns:
@@ -46,7 +43,7 @@ class VisionModelAdapter(abc.ABC):
         """
 
     @abc.abstractmethod
-    def load(self, config: Dict[str, Any]) -> Any:
+    def load(self, config: dict[str, Any]) -> Any:
         """Load model weights into GPU/CPU memory.
 
         Args:
@@ -64,12 +61,12 @@ class VisionModelAdapter(abc.ABC):
         image: Image.Image,
         bucket: str,
         key: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         s3,
         output_bucket: str,
-        presigned_output_urls: Dict[str, str] | None = None,
+        presigned_output_urls: dict[str, str] | None = None,
         raw_image_bytes: bytes | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Run inference on a single image.
 
         Args:
@@ -77,7 +74,7 @@ class VisionModelAdapter(abc.ABC):
             image: PIL RGB image already downloaded from S3.
             bucket: Source S3 bucket.
             key: Source S3 object key.
-            config: Same config dict as ``load()`` — may contain per-request
+            config: Same config dict as ``load()``; may contain per-request
                     parameters (e.g. ``mode``, ``prompt``).
             s3: boto3 S3 client for uploading results. May be ``None`` when
                 presigned output URLs are provided.
@@ -92,12 +89,12 @@ class VisionModelAdapter(abc.ABC):
 
         Returns:
             Result dict.  May contain non-JSON-serialisable objects
-            (numpy arrays, torch tensors) — the service layer handles
+            (numpy arrays, torch tensors); the service layer handles
             pickle serialization before returning to the client.
         """
 
     @abc.abstractmethod
-    def cache_key(self, config: Dict[str, Any]) -> str:
+    def cache_key(self, config: dict[str, Any]) -> str:
         """Return a stable string key that uniquely identifies the loaded model.
 
         Two configs that would produce the same in-memory model **must**
@@ -108,7 +105,7 @@ class VisionModelAdapter(abc.ABC):
     # Optional v2 methods (with default implementations)
     # ------------------------------------------------------------------
 
-    def capabilities(self) -> Optional[Dict[str, Any]]:
+    def capabilities(self) -> dict[str, Any] | None:
         """Declare model capabilities for orchestrator resource planning.
 
         Override to return a dict compatible with ``ModelCapabilities.to_dict()``.
@@ -130,15 +127,15 @@ class VisionModelAdapter(abc.ABC):
     def infer_batch(
         self,
         model: Any,
-        images: List[Image.Image],
-        keys: List[str],
+        images: list[Image.Image],
+        keys: list[str],
         bucket: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         s3,
         output_bucket: str,
-        presigned_output_urls_list: Optional[List[Dict[str, str]]] = None,
-        raw_image_bytes_list: Optional[List[bytes]] = None,
-    ) -> List[Dict[str, Any]]:
+        presigned_output_urls_list: list[dict[str, str]] | None = None,
+        raw_image_bytes_list: list[bytes] | None = None,
+    ) -> list[dict[str, Any]]:
         """Run inference on a batch of images.
 
         Default implementation processes images sequentially via ``infer()``.
@@ -159,7 +156,7 @@ class VisionModelAdapter(abc.ABC):
             List of result dicts, one per input image.
         """
         results = []
-        for i, (image, key) in enumerate(zip(images, keys)):
+        for i, (image, key) in enumerate(zip(images, keys, strict=True)):
             presigned = (
                 presigned_output_urls_list[i]
                 if presigned_output_urls_list
@@ -178,7 +175,7 @@ class VisionModelAdapter(abc.ABC):
             results.append(result)
         return results
 
-    def estimate_gpu_memory_mb(self, config: Dict[str, Any]) -> int:
+    def estimate_gpu_memory_mb(self, _config: dict[str, Any]) -> int:
         """Estimate GPU memory in MB needed for this model + config.
 
         Used by the orchestrator for Slurm resource allocation.
@@ -186,7 +183,7 @@ class VisionModelAdapter(abc.ABC):
         """
         return 4096
 
-    def warmup(self, model: Any, config: Dict[str, Any]) -> bool:
+    def warmup(self, _model: Any, _config: dict[str, Any]) -> bool:
         """Run a self-test after loading to verify the model works.
 
         Called by ModelCache after ``load()`` succeeds. Return True if
@@ -196,4 +193,3 @@ class VisionModelAdapter(abc.ABC):
         to catch initialization issues early.
         """
         return True
-

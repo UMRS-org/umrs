@@ -7,11 +7,10 @@ import logging
 import os
 import pickle
 import urllib.request
-from typing import Any, Dict
+from typing import Any
 
 import torch
 from PIL import Image
-
 from umrs.vision_service.adapters.base import VisionModelAdapter
 from umrs.vision_service.output_specs import (
     describe_output_artifacts,
@@ -71,14 +70,14 @@ class HMAEAdapter(VisionModelAdapter):
             "framework": "pytorch",
         }
 
-    def estimate_gpu_memory_mb(self, config: Dict[str, Any]) -> int:
+    def estimate_gpu_memory_mb(self, config: dict[str, Any]) -> int:
         # HMAE with ViT-Base needs ~6-8GB depending on image size
         img_size = config.get("img_size", 128)
         if img_size >= 256:
             return 12000
         return 8000
 
-    def warmup(self, model: Any, config: Dict[str, Any]) -> bool:
+    def warmup(self, model: Any, _config: dict[str, Any]) -> bool:
         """Verify HMAE model loaded correctly by checking structure."""
         try:
             if model is None or "model" not in model:
@@ -93,10 +92,10 @@ class HMAEAdapter(VisionModelAdapter):
             logger.warning("HMAE warmup failed: %s", exc)
             return False
 
-    def describe_outputs(self, key: str, config: Dict[str, Any]) -> Dict[str, str]:
+    def describe_outputs(self, key: str, config: dict[str, Any]) -> dict[str, str]:
         return describe_output_artifacts("hmae", key, config)
 
-    def cache_key(self, config: Dict[str, Any]) -> str:
+    def cache_key(self, config: dict[str, Any]) -> str:
         cfg_path = config.get(
             "config_path",
             os.environ.get("HMAE_CONFIG_PATH",
@@ -109,7 +108,7 @@ class HMAEAdapter(VisionModelAdapter):
         )
         return f"hmae:{cfg_path}:{checkpoint}"
 
-    def load(self, config: Dict[str, Any]) -> Any:
+    def load(self, config: dict[str, Any]) -> Any:
         from umrs.inference.hmae_inference import load_hmae_model
 
         cfg_path = config.get(
@@ -131,17 +130,17 @@ class HMAEAdapter(VisionModelAdapter):
         image: Image.Image,
         bucket: str,
         key: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         s3,
         output_bucket: str,
-        presigned_output_urls: Dict[str, str] | None = None,
+        presigned_output_urls: dict[str, str] | None = None,
         raw_image_bytes: bytes | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         from umrs.inference.hmae_inference import (
-            preprocess_image_from_bytes,
-            infer_reconstruct,
-            infer_mae,
             infer_features,
+            infer_mae,
+            infer_reconstruct,
+            preprocess_image_from_bytes,
             visualize_reconstruction,
         )
 
@@ -189,7 +188,7 @@ class HMAEAdapter(VisionModelAdapter):
 
         described_outputs = self.describe_outputs(key, config)
         dst_bucket = output_bucket or bucket
-        response: Dict[str, Any] = {
+        response: dict[str, Any] = {
             "source_image": f"s3://{bucket}/{key}",
             "task": task,
         }

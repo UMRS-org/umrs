@@ -11,27 +11,21 @@ any vision model through a unified BentoML-based API. It supports:
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  BentoML Vision Service (Podman container on Slurm node)                │
-│                                                                         │
-│  Endpoints:                                                             │
-│    POST /infer/submit  → Async inference task                           │
-│    GET  /models        → List available adapters + capabilities          │
-│    GET  /health        → Readiness check                                │
-│                                                                         │
-│  ┌───────────────────────────────────────────────────────────────────┐  │
-│  │  Adapter Registry (auto-discovered from /adapters/)              │  │
-│  │  ┌────────┐  ┌──────┐  ┌──────────────┐  ┌─────────────────┐   │  │
-│  │  │  SAM3  │  │ HMAE │  │ HuggingFace  │  │ User adapters   │   │  │
-│  │  │(custom)│  │(cust)│  │  (generic)   │  │ (/adapters/user) │   │  │
-│  │  └────────┘  └──────┘  └──────────────┘  └─────────────────┘   │  │
-│  └───────────────────────────────────────────────────────────────────┘  │
-│                                                                         │
-│  ┌─────────────────────────────────┐                                    │
-│  │  LRU Model Cache (GPU memory)   │                                    │
-│  │  MAX_VISION_MODELS=3            │                                    │
-│  └─────────────────────────────────┘                                    │
-└─────────────────────────────────────────────────────────────────────────┘
+BentoML Vision Service (Podman container on Slurm node)
+
+Endpoints:
+  POST /infer/submit  -> async inference task
+  GET  /models        -> list available adapters and capabilities
+  GET  /health        -> readiness check
+
+Adapter Registry (auto-discovered from /adapters/)
+  - sam3: custom SAM3 adapter
+  - hmae: custom HMAE adapter
+  - huggingface: generic HuggingFace adapter
+  - user adapters: mounted from /adapters/user
+
+LRU Model Cache:
+  MAX_VISION_MODELS=3
 ```
 
 ## Quick Start
