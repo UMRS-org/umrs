@@ -25,9 +25,6 @@ vision service; the thumbnail branch runs on CPU and finishes quickly.
 ## Quick Start
 
 ```bash
-# Auth-enforced deployments need an admin token for reload
-export UMRS_ADMIN_TOKEN=...
-
 bash 10_vision_multi_mode/run_demo.sh
 
 # Custom image directory
@@ -71,19 +68,14 @@ umrs-client ping
 #    thumbnails). Each branch processes the same input images independently.
 umrs-client upload-workflow workflow/ --name "vision-multi-mode"
 
-# 3. Reload server configuration
-#    Picks up the newly uploaded workflow definition.
-#    On auth-enforced deployments, reload is admin-only.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
-
-# 4. Upload images to the multi-mode bucket
+# 3. Upload images to the multi-mode bucket
 #    All 3 branches receive the same images simultaneously:
 #    - segment:    runs GPU-based segmentation (bounding boxes)
 #    - features:   runs GPU-based feature extraction (embedding vectors)
 #    - thumbnails: runs CPU-based thumbnail generation (128px, 256px)
 umrs-client upload_dir ../sample_data/images user1-multi
 
-# 5. Download results from all 3 branches
+# 4. Download results from all 3 branches
 #    Results are organized by branch in the output:
 #    S3 objects are written under segment/, features/, and thumbnails/.
 #    The local client currently flattens those prefixes when downloading.
@@ -114,6 +106,10 @@ Swap the vision model in `workflow/workflow.json`:
 ```
 
 Register the model first via Demo 07 (`umrs-client model register ...`).
+
+This demo is intentionally written from the general-user point of view: the user
+uploads the workflow and data, and the server executes the configured branches.
+Operator-only reload/maintenance steps are omitted from the normal flow.
 
 ## Output
 

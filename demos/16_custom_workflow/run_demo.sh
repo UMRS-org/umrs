@@ -18,6 +18,7 @@ DEMO_TAG="custom_wf" source "${SCRIPT_DIR}/../lib/common.sh"
 WORKFLOW_DIR="${SCRIPT_DIR}/workflow"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 BUCKET_ALIAS="${TEXT_BUCKET:-user1-custom-text}"
+RESULT_DOWNLOAD_TIMEOUT="${RESULT_DOWNLOAD_TIMEOUT:-20}"
 
 banner "Demo 16: Custom Server-Side Workflow"
 echo "Config       : ${CONF}"
@@ -108,8 +109,10 @@ $CLIENT upload-workflow "$WORKFLOW_DIR" --name "custom-text-counter" 2>&1 \
     | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
 
-log "Reloading server configuration..."
-admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+log "Skipping admin reload — this demo shows the general-user upload and run path."
+if [[ "${DEMO_ADMIN_ACTIONS:-0}" = "1" ]]; then
+    maybe_admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+fi
 
 # ---------- Step 4: Upload sample data ----------
 log ""
@@ -130,9 +133,51 @@ log ""
 log "Step 5: Waiting for workflow outputs..."
 rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
-$CLIENT download_results "$BUCKET_ALIAS" "${RESULTS_DIR}/" --force-overwrite \
-    && ok "Results downloaded to ${RESULTS_DIR}/" \
-    || warn "Could not download results — check server logs"
+set +e
+DOWNLOAD_OUTPUT=$(CLIENT="$CLIENT" BUCKET_ALIAS="$BUCKET_ALIAS" RESULTS_DIR="$RESULTS_DIR" RESULT_DOWNLOAD_TIMEOUT="$RESULT_DOWNLOAD_TIMEOUT" python3 - <<'PY' 2>&1
+import os
+import shlex
+import subprocess
+import sys
+
+timeout = float(os.environ["RESULT_DOWNLOAD_TIMEOUT"])
+results_dir = os.environ["RESULTS_DIR"].rstrip("/") + "/"
+cmd = shlex.split(os.environ["CLIENT"]) + [
+    "download_results",
+    os.environ["BUCKET_ALIAS"],
+    results_dir,
+    "--force-overwrite",
+]
+
+try:
+    proc = subprocess.run(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
+except subprocess.TimeoutExpired as exc:
+    output = exc.stdout or ""
+    if isinstance(output, bytes):
+        output = output.decode(errors="replace")
+    sys.stdout.write(output)
+    print(f"download_results timed out after {timeout:g}s")
+    raise SystemExit(124)
+
+sys.stdout.write(proc.stdout or "")
+raise SystemExit(proc.returncode)
+PY
+)
+DOWNLOAD_STATUS=$?
+set -e
+echo "$DOWNLOAD_OUTPUT" | while IFS= read -r line; do log "  $line"; done
+if [[ "$DOWNLOAD_STATUS" -eq 0 ]]; then
+    ok "Results downloaded to ${RESULTS_DIR}/"
+else
+    warn "Could not download results within ${RESULT_DOWNLOAD_TIMEOUT}s — check server logs"
+fi
 
 if [[ -f "${RESULTS_DIR}/word_count_results.json" ]]; then
     log "Results:"

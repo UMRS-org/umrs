@@ -73,7 +73,9 @@ All demos source `lib/common.sh` which provides the `$CLIENT` command,
 profile-derived connection defaults, `preflight()`, `wait_tasks()`, and
 logging helpers. Maintenance commands (`reload`, `check`, `update`,
 `recompute`) are routed through admin-aware helpers and require
-`UMRS_ADMIN_TOKEN` on auth-enforced deployments.
+`UMRS_ADMIN_TOKEN` on auth-enforced deployments. Normal user demos avoid those
+admin-only actions by default and assume the site/operator has already prepared
+the server-side configuration.
 
 ## Getting Started
 
@@ -82,11 +84,9 @@ logging helpers. Maintenance commands (`reload`, `check`, `update`,
 | 00 | [User Onboarding](00_onboarding/) | Push user config → server provisions buckets + DB automatically |
 | 01 | [Health Check](01_health_check/) | Ping server, verify connectivity |
 
-> **Note:** All server-backed demos call the shared `onboard()` helper which
-> runs `reload` + `status reload` + `list_buckets`.  This is idempotent — the
-> server skips provisioning when the config hasn't changed.  Demos 08, 12, and
-> 13 run locally and do not require onboarding. Export `UMRS_ADMIN_TOKEN`
-> before running server-backed demos against role-enforced deployments.
+> **Note:** The normal user-facing demos assume the site/operator has already
+> prepared the server-side configuration. Admin-token flows are demonstrated
+> separately in the maintenance and auth demos.
 
 ## Basic Usage
 
@@ -181,7 +181,7 @@ Want to search over embeddings?
   → Demo 05 (RAG search) — needs Demo 02 data first
 
 Something seems wrong with my data?
-  → Demo 06 (check + update; requires UMRS_ADMIN_TOKEN when auth is enforced)
+  → Demo 06 (check + update; operator/admin workflow)
 
 Need a custom model or pipeline?
   → Demo 08 (Step) or Demo 09 (multi-step vision pipeline)
@@ -240,7 +240,7 @@ Need to manage files with presigned URLs?
 | Command | Demo | Description |
 |---------|------|-------------|
 | `ping` | 00, 01 | Check server connectivity |
-| `reload` | 00, 03, 04, 09, 10, 14, 16 | Push config/workflow changes to the server |
+| `reload` | 00, 06, 23 | Push config/workflow changes to the server |
 | `upload_file` | 17, 18, 24 | Upload a single file |
 | `upload_dir` | 02, 03, 04, 09, 10, 14 | Upload a directory |
 | `download_results` | 03, 04, 09, 10, 14 | Download computed outputs |
@@ -249,7 +249,7 @@ Need to manage files with presigned URLs?
 | `status` | 00, 02, 06, 20, 24 | Query task or pool status |
 | `check` | 06 | Verify S3 ↔ DB consistency |
 | `update` | 06 | Fix missing/mismatched embeddings |
-| `recompute` | 03, 04, 06 | Force full re-processing |
+| `recompute` | 06 | Force full re-processing |
 | `model register` | 07 | Register a local model |
 | `model list` | 07 | List registered models |
 | `model upload` | 07 | Upload model to staging root |
@@ -267,13 +267,13 @@ Need to manage files with presigned URLs?
 | `UMRS_PROFILE` | all | Named connection profile to use for the demo commands |
 | `UMRS_USER_CONF` | all | Path to the user config JSON (default: `~/.config/umrs/users/user1.json`) |
 | `UMRS_CONF` | all | Explicit config override used by the demo helper (legacy/manual override) |
-| `UMRS_ADMIN_TOKEN` | 06, 09, 10, 14, 16, 23 | Admin token for reload and maintenance on auth-enforced deployments |
+| `UMRS_ADMIN_TOKEN` | 06, 23 | Admin token for operator/maintenance flows on auth-enforced deployments |
 | `TEXT_BUCKET` | 02, 18, 24 | Bucket alias for text uploads |
 | `SAM3_BUCKET` | 03 | Bucket alias for SAM3 segmentation uploads |
 | `VISION_BUCKET` | 04 | Bucket alias for generic vision inference |
 | `PIPELINE_BUCKET` | 09 | Bucket alias for the multi-step vision pipeline |
 | `MULTI_BUCKET` | 10 | Bucket alias for the multi-mode vision workflow |
-| `FORCE_RECOMPUTE` | 03, 04 | Set to `1` to trigger full recompute after upload |
+| `FORCE_RECOMPUTE` | 03, 04 | Operator-only maintenance; ignored in normal user mode unless `DEMO_ADMIN_ACTIONS=1` |
 | `MAX_IMAGES` | 03, 04, 09, 10 | Limit number of images to upload |
 | `MODEL_STAGING_DIR` | 02, 07, 18 | Writable server-side staging directory for model downloads |
 | `DEMO_LOCAL_MODEL_UPLOAD` | 07, 18 | Enable the optional local model upload steps |

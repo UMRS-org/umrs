@@ -55,12 +55,7 @@ DEFECT_BUCKET=my-segmentation-bucket bash run_demo.sh
 # 1. Verify server connectivity
 umrs-client ping
 
-# 2. Reload server configuration
-#    Ensures the server has the latest bucket aliases and
-#    output buckets created for the SAM3 experience.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
-
-# 3. Verify that the SAM3 model is already visible to the server
+# 2. Verify that the SAM3 model is already visible to the server
 umrs-client model list --scope system
 umrs-client model list --scope user
 
@@ -74,13 +69,13 @@ umrs-client upload-workflow workflow/ --name structural-defect-analysis
 # or the Slurm-oriented variant:
 # umrs-client upload-workflow workflow_slurm/ --name defect-analysis-slurm
 
-# 4. Upload images for defect analysis
+# 3. Upload images for defect analysis
 #    Images are dispatched to SAM3 segmentation on the GPU node.
 #    The segmentation model detects structural features and defects
 #    using text-prompted segmentation.
-umrs-client upload_dir ../../demos/03_sam3_segmentation/test_data_full user1-sam3
+umrs-client upload_dir ../../tmp/hmae/images user1-sam3
 
-# 5. Download segmentation results
+# 4. Download segmentation results
 #    Retrieves bounding boxes, masks, scores, and overlay images.
 umrs-client download_results user1-sam3 ./results --force-overwrite
 ```
@@ -90,7 +85,10 @@ umrs-client download_results user1-sam3 ./results --force-overwrite
 | Setting | Default |
 |---|---|
 | Bucket alias | `user1-sam3` |
-| Image source | `../../demos/03_sam3_segmentation/test_data_full` |
+| Image source | `../../tmp/hmae/images` |
+
+This private demo now follows the same general-user shape as the public vision
+paths: it assumes the SAM3 experience is already available on the site.
 | Result dir | `results/` |
 
 ## Public Analogue

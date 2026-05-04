@@ -2,7 +2,7 @@
 # =============================================================================
 # Demo 27: Pipeline CRUD & RAG Profiles
 # =============================================================================
-# Shows: /umrs/pipelines CRUD, RAG profiles, component registry
+# Shows: /umrs/pipelines CRUD, /umrs/rag-profiles, /umrs/components/*
 #
 # Prerequisites:
 #   - UMRS server reachable via HTTP (default: localhost:8001)
@@ -12,7 +12,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="pipe_crud" source "${SCRIPT_DIR}/../lib/common.sh"
 
-UMRS_URL="${UMRS_URL:-http://localhost:8001}"
+UMRS_URL="${UMRS_URL:-${UMRS_HTTP_URL:-http://localhost:8001}}"
 
 banner "Demo 27: Pipeline CRUD & RAG Profiles"
 echo ""
@@ -48,10 +48,10 @@ echo ""
 echo "  RAG profiles compose: chunker + embedder + reranker"
 echo ""
 echo "  # List profiles"
-echo "  GET /umrs/pipelines/rag-profiles"
+echo "  GET /umrs/rag-profiles"
 echo ""
 echo "  # Create profile"
-echo "  POST /umrs/pipelines/rag-profiles"
+echo "  POST /umrs/rag-profiles"
 echo '  {
     "name": "scientific-papers",
     "chunker": {"method": "sentence", "max_tokens": 512, "overlap": 50},
@@ -60,7 +60,7 @@ echo '  {
   }'
 echo ""
 
-PROFILES=$(curl -sf "${UMRS_URL}/umrs/pipelines/rag-profiles" 2>/dev/null || echo '{"profiles":[]}')
+PROFILES=$(curl -sf "${UMRS_URL}/umrs/rag-profiles" 2>/dev/null || echo '{"profiles":[]}')
 echo "  Current profiles:"
 echo "$PROFILES" | python3 -m json.tool 2>/dev/null || echo "$PROFILES"
 echo ""
@@ -69,18 +69,18 @@ echo ""
 log "Step 4: Available components"
 echo ""
 echo "  # List available chunkers"
-echo "  GET /umrs/pipelines/components/chunkers"
+echo "  GET /umrs/components/chunkers"
 echo ""
 echo "  # List available embedders"
-echo "  GET /umrs/pipelines/components/embedders"
+echo "  GET /umrs/components/embedders"
 echo ""
 echo "  # List available rerankers"
-echo "  GET /umrs/pipelines/components/rerankers"
+echo "  GET /umrs/components/rerankers"
 echo ""
 
 for component in chunkers embedders rerankers; do
     echo "  ${component}:"
-    COMPS=$(curl -sf "${UMRS_URL}/umrs/pipelines/components/${component}" 2>/dev/null || echo '[]')
+    COMPS=$(curl -sf "${UMRS_URL}/umrs/components/${component}" 2>/dev/null || echo '[]')
     echo "$COMPS" | python3 -m json.tool 2>/dev/null || echo "    (not available)"
     echo ""
 done

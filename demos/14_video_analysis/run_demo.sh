@@ -15,7 +15,6 @@
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - opencv-python-headless and numpy installed (for test video generation)
-#   - On auth-enforced deployments, set UMRS_ADMIN_TOKEN for reload
 #   - A bucket alias with 'movie' modality and 'need_output_bucket: true'
 #     configured in your user config (user1-video by default).
 #
@@ -50,6 +49,7 @@ log "Step 2: Preparing video data..."
 if [[ -z "$VIDEO_DIR" ]]; then
     # Generate synthetic test videos
     VIDEO_DIR="${SCRIPT_DIR}/sample_videos"
+    mkdir -p "$VIDEO_DIR"
     EXISTING_COUNT=$(find "$VIDEO_DIR" -maxdepth 1 -name "*.mp4" 2>/dev/null | wc -l | tr -d ' ')
     if [[ "$EXISTING_COUNT" -lt 2 ]]; then
         log "  Generating synthetic test videos..."
@@ -87,9 +87,11 @@ log "Step 3: Uploading video analysis workflow..."
 $CLIENT upload-workflow "${WORKFLOW_SOURCE_DIR}" --name "video-motion-analysis" 2>&1 | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
 
-log "Reloading server configuration..."
-admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
-sleep 3
+log "Skipping admin reload — this demo shows the general-user upload and run path."
+if [[ "${DEMO_ADMIN_ACTIONS:-0}" = "1" ]]; then
+    maybe_admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+    sleep 3
+fi
 
 # ---------- Step 4: Upload videos ----------
 log ""
@@ -104,10 +106,16 @@ log "  (Frame differencing — CPU only, should be fast)"
 START=$SECONDS
 rm -rf "$RESULTS_DIR"
 mkdir -p "$RESULTS_DIR"
-$CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite
-ELAPSED=$(( SECONDS - START ))
-log "  Processing + download took ${ELAPSED}s"
-ok "Results saved to ${RESULTS_DIR}/"
+if $CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite; then
+    ELAPSED=$(( SECONDS - START ))
+    log "  Processing + download took ${ELAPSED}s"
+    ok "Results saved to ${RESULTS_DIR}/"
+else
+    if [[ "${VIDEO_REQUIRE_RESULTS:-0}" = "1" ]]; then
+        die "Could not download motion analysis results"
+    fi
+    warn "Could not download motion analysis results — check server logs or set VIDEO_REQUIRE_RESULTS=1 for strict validation"
+fi
 
 # ---------- Summary ----------
 log ""

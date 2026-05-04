@@ -25,7 +25,95 @@ echo ""
 
 model_visible() {
     local scope="$1" name="$2"
-    $CLIENT model list --scope "$scope" 2>/dev/null | grep -q "\"name\": \"${name}\""
+    MODEL_SCOPE="$scope" MODEL_NAME="$name" MODEL_LIST_TIMEOUT="${MODEL_LIST_TIMEOUT:-12}" \
+        python3 - "${CLIENT_ARGS[@]}" <<'PY'
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+scope = os.environ["MODEL_SCOPE"]
+target = os.environ["MODEL_NAME"]
+timeout = float(os.environ.get("MODEL_LIST_TIMEOUT", "12"))
+cmd = sys.argv[1:] + ["--output", "json", "model", "list", "--scope", scope]
+
+process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+deadline = time.monotonic() + timeout
+while process.poll() is None:
+    if time.monotonic() >= deadline:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        raise SystemExit(1)
+    time.sleep(0.1)
+stdout = process.stdout.read() if process.stdout is not None else ""
+if process.returncode != 0:
+    raise SystemExit(1)
+
+decoder = json.JSONDecoder()
+payload = None
+for index, char in enumerate(stdout):
+    if char not in "[{":
+        continue
+    try:
+        payload, _ = decoder.raw_decode(stdout[index:])
+    except json.JSONDecodeError:
+        continue
+    break
+
+def names(value):
+    if isinstance(value, dict):
+        if isinstance(value.get("name"), str):
+            yield value["name"]
+        for child in value.values():
+            yield from names(child)
+    elif isinstance(value, list):
+        for item in value:
+            yield from names(item)
+
+raise SystemExit(0 if payload is not None and target in set(names(payload)) else 1)
+PY
+}
+
+model_list_text() {
+    local scope="$1"
+    MODEL_SCOPE="$scope" MODEL_LIST_TIMEOUT="${MODEL_LIST_TIMEOUT:-12}" \
+        python3 - "${CLIENT_ARGS[@]}" <<'PY'
+import os
+import signal
+import subprocess
+import sys
+import time
+
+scope = os.environ["MODEL_SCOPE"]
+timeout = float(os.environ.get("MODEL_LIST_TIMEOUT", "12"))
+cmd = sys.argv[1:] + ["model", "list", "--scope", scope]
+
+process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, start_new_session=True)
+deadline = time.monotonic() + timeout
+while process.poll() is None:
+    if time.monotonic() >= deadline:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        print(f"model list --scope {scope} timed out after {timeout:g}s")
+        raise SystemExit(1)
+    time.sleep(0.1)
+stdout = process.stdout.read() if process.stdout is not None else ""
+
+print(stdout, end="")
+raise SystemExit(process.returncode)
+PY
+}
+
+log_model_list() {
+    local scope="$1" indent="$2" output
+    if output="$(model_list_text "$scope" 2>&1)"; then
+        while IFS= read -r line; do log "${indent}${line}"; done <<< "$output"
+    else
+        while IFS= read -r line; do log "${indent}${line}"; done <<< "$output"
+        warn "Could not retrieve ${scope} models"
+    fi
 }
 
 # ---------- Step 1: Pre-flight ----------
@@ -38,12 +126,10 @@ log ""
 log "Step 2: Listing existing models..."
 
 log "  System models:"
-$CLIENT model list --scope system 2>&1 \
-    | while IFS= read -r line; do log "    $line"; done
+log_model_list system "    "
 
 log "  User models:"
-$CLIENT model list --scope user 2>&1 \
-    | while IFS= read -r line; do log "    $line"; done
+log_model_list user "    "
 ok "Current model inventory retrieved"
 
 # ---------- Step 3: Download a system model ----------
@@ -97,12 +183,11 @@ fi
 # ---------- Step 5: Verify registration ----------
 log ""
 log "Step 5: Verifying model registration..."
-$CLIENT model list --scope user 2>&1 \
-    | while IFS= read -r line; do log "  $line"; done
+log_model_list user "  "
 
 # Check if our model appears
 if [[ "$USER_MODEL_REGISTERED" = "1" ]]; then
-    if $CLIENT model list --scope user 2>&1 | grep -qi "demo-custom-model"; then
+    if model_visible user "demo-custom-model"; then
         ok "demo-custom-model found in user registry"
     else
         warn "demo-custom-model not found — may need time to index"
@@ -116,21 +201,22 @@ BUCKET_ALIAS="${TEXT_BUCKET:-user1-textfiles}"
 
 # Upload a small test file
 echo "Testing the model lifecycle with a sample sentence." > "${RESULTS_DIR}/lifecycle_test.txt"
-$CLIENT upload_file "${RESULTS_DIR}/lifecycle_test.txt" "$BUCKET_ALIAS" 2>&1 \
-    | while IFS= read -r line; do log "  $line"; done
-ok "Inference triggered (server will embed automatically)"
+if $CLIENT upload_file "${RESULTS_DIR}/lifecycle_test.txt" "$BUCKET_ALIAS" 2>&1 \
+    | while IFS= read -r line; do log "  $line"; done; then
+    ok "Inference triggered (server will embed automatically)"
+else
+    warn "Could not trigger inference upload; continuing because model lifecycle inventory was already exercised"
+fi
 
 # ---------- Step 7: Model status check ----------
 log ""
 log "Step 7: Final model inventory..."
 
 log "  System models:"
-$CLIENT model list --scope system 2>&1 \
-    | while IFS= read -r line; do log "    $line"; done
+log_model_list system "    "
 
 log "  User models:"
-$CLIENT model list --scope user 2>&1 \
-    | while IFS= read -r line; do log "    $line"; done
+log_model_list user "    "
 
 # ---------- Summary ----------
 log ""

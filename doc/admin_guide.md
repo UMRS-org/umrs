@@ -646,7 +646,7 @@ env = cfg.to_env()
 print('VISION_STACK:', env.get('VISION_STACK', '(not set — using default umrs)'))
 "
 
-# 2. Run SAM3 demo (from local Mac, with UMRS server using Jens stack)
+# 2. Run isolated Jens SAM3 demo (from local Mac, with UMRS server using Jens stack)
 source .venv/bin/activate
-bash demos/03_sam3_segmentation/run_demo.sh
+bash demos_jens/11_sam3_direct/run_demo.sh
 ```

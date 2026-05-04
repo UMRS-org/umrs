@@ -13,7 +13,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="mcp_srv" source "${SCRIPT_DIR}/../lib/common.sh"
 
-UMRS_URL="${UMRS_URL:-http://localhost:8001}"
+UMRS_URL="${UMRS_URL:-${UMRS_HTTP_URL:-http://localhost:8001}}"
 
 banner "Demo 26: MCP Server Management"
 echo ""
@@ -57,7 +57,7 @@ echo "$TOOLS" | python3 -m json.tool 2>/dev/null || echo "$TOOLS"
 echo ""
 
 # Step 4: Invoke a tool
-log "Step 4: Invoke a tool (POST /umrs/mcp/invoke)"
+log "Step 4: Invoke a tool (POST /umrs/mcp/invoke or /umrs/mcp/call)"
 echo ""
 echo "  Request body:"
 echo '  {
@@ -66,7 +66,7 @@ echo '  {
   }'
 echo ""
 echo "  Response:"
-echo '  {"tool_name": "calculator", "result": "4", "success": true}'
+echo '  {"content": [{"type": "text", "text": "4"}], "isError": false, "server": "demo-calculator"}'
 echo ""
 echo "  Security: All tool outputs are scanned for injection attacks (T-214)."
 echo ""

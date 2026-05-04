@@ -18,6 +18,10 @@ SSH tunnel guidance.
 > and the later admin-authorized `umrs-client reload` still triggers provisioning. End
 > users never run `umrs-client profile init` or open an SSH tunnel themselves.
 
+> **Operator-assisted note:** This onboarding flow provisions server-side state.
+> On operator-managed deployments, treat provisioning as an operator/site step.
+> The normal user demos assume that onboarding has already been completed.
+
 ## Quick Start
 
 ```bash
@@ -47,7 +51,9 @@ umrs-client profile show || true
 umrs-client ping
 
 # 3. Trigger onboarding (idempotent).
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
+#    On local/dev or non-role-enforced deployments this may work directly.
+#    On operator-managed sites, ask the site/operator to complete provisioning.
+umrs-client reload
 
 # 4. Optional: show an overall server summary.
 umrs-client status all
@@ -179,10 +185,11 @@ enrolled.
 3. The user creates or updates their local config with
    `umrs-client config init`.
 
-4. The user can now connect and run commands normally. Running
-   `umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload` uploads the full
-   config for the already-enrolled user and triggers provisioning of MinIO IAM,
-   Postgres roles, and buckets.
+4. The user can now connect and run commands normally. On local/dev or
+   non-role-enforced deployments, `umrs-client reload` can upload the full
+   config for the already-enrolled user and trigger provisioning of MinIO IAM,
+   Postgres roles, and buckets. On operator-managed sites, treat that sync step
+   as an operator/site action.
 
 #### Listing / Removing Users
 
@@ -193,10 +200,12 @@ umrs-server admin user disable alice
 umrs-server admin user delete alice --purge -y
 ```
 
-#### Config Update (Non-Admin)
+#### Config Update (Operator-Assisted)
 
-After enrollment, update user config through an admin-authorized reload:
-`umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload -c updated_user.json`.
+After enrollment, update user config using the mechanism supported by your
+deployment. On local/dev or non-role-enforced deployments that can be:
+`umrs-client reload -c updated_user.json`.
+On operator-managed sites, ask the operator/site to apply the updated config.
 The server will accept the update only if the username already exists in the
 server's user registry.
 

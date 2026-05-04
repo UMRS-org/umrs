@@ -22,9 +22,6 @@ Step/`workflow.json` pattern.
 ## Quick Start
 
 ```bash
-# Auth-enforced deployments need an admin token for reload
-export UMRS_ADMIN_TOKEN=...
-
 # From demos/ directory
 bash 09_multistep_vision_pipeline/run_demo.sh
 
@@ -54,17 +51,12 @@ umrs-client ping
 #    will execute it when data arrives in the associated bucket.
 umrs-client upload-workflow workflow/ --name "vision-pipeline-demo"
 
-# 3. Reload server configuration
-#    Tells the server to pick up the newly uploaded workflow.
-#    On auth-enforced deployments, reload is admin-only.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
-
-# 4. Upload images to the pipeline's bucket
+# 3. Upload images to the pipeline's bucket
 #    Images uploaded here will trigger the 3-step pipeline:
 #    segment → crop → stats. Each step's output feeds into the next.
 umrs-client upload_dir ../sample_data/images user1-pipeline
 
-# 5. Download results once all 3 steps complete
+# 4. Download results once all 3 steps complete
 #    Results include segmentation metadata, cropped patches, and
 #    per-patch statistics. The download blocks until processing finishes.
 #    If you rerun against a shared bucket, clear the corresponding
@@ -100,6 +92,10 @@ Edit `workflow.json` → `steps[0].config`:
 1. Create `steps/my_step.py` implementing `Step`
 2. Add an entry to `workflow/workflow.json → steps[]`
 3. Re-upload the workflow: `umrs-client upload-workflow workflow/`
+
+This demo shows the normal user path: upload the workflow bundle, upload data,
+and collect outputs. If your site requires extra server-side activation, that is
+an operator concern rather than part of the user demo.
 
 ## Output
 

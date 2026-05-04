@@ -3,6 +3,8 @@
 Data integrity and maintenance operations — discover, audit, and repair
 the consistency between S3 objects and the pgvector embedding database.
 
+This is intentionally an operator/admin workflow, not a normal end-user demo.
+
 ## Prerequisites
 
 - UMRS server running and reachable
@@ -103,6 +105,8 @@ umrs-client status recompute || true
 ```
 
 If your deployment does not enforce admin tokens, omit `--admin-token`.
+That relaxation is deployment-specific; the conceptual role of this demo is
+still operator/admin maintenance.
 
 ## When to Use What
 

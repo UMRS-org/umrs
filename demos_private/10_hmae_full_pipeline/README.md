@@ -167,7 +167,7 @@ umrs-client upload-workflow ./workflow --name hmae-full-pipeline
 umrs-client --output text workflow list --name hmae-full-pipeline
 
 # 3. Upload input images to the bucket you want the workflow to use
-umrs-client upload_dir ../../tmp/spring8-data/spring8concrete user1-hmae
+umrs-client upload_dir ../../tmp/hmae/images user1-hmae
 
 # 4. Trigger the registered workflow against that bucket
 umrs-client workflow run hmae-full-pipeline --bucket user1-hmae
@@ -194,7 +194,7 @@ Useful overrides:
 
 ```bash
 MAX_IMAGES=5 bash run_demo.sh
-IMAGE_DIR=../../tmp/spring8-data/spring8concrete bash run_demo.sh
+IMAGE_DIR=../../tmp/hmae/images bash run_demo.sh
 HMAE_BUCKET=my-hmae-bucket bash run_demo.sh
 ```
 
@@ -204,28 +204,30 @@ The full pipeline runs 3 HMAE tasks sequentially, each using a different
 bucket alias configured in `user1.json`:
 
 ```bash
-# 1. Verify server connectivity and reload config
+# 1. Verify server connectivity
 umrs-client ping
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 
 # 2. Task 1: Reconstruction (bucket: user1-hmae)
 #    Full image reconstruction — the model reconstructs the input image
 #    and outputs the reconstructed version as PNG + pkl.
-umrs-client upload_dir ../../tmp/spring8-data/spring8concrete user1-hmae
+umrs-client upload_dir ../../tmp/hmae/images user1-hmae
 umrs-client download_results user1-hmae ./results/reconstruction --force-overwrite
 
 # 3. Task 2: MAE Reconstruction (bucket: user1-hmae-mae)
 #    Masked autoencoder reconstruction — the model masks random patches,
 #    reconstructs them, and reports the reconstruction loss (anomaly score).
-umrs-client upload_dir ../../tmp/spring8-data/spring8concrete user1-hmae-mae
+umrs-client upload_dir ../../tmp/hmae/images user1-hmae-mae
 umrs-client download_results user1-hmae-mae ./results/mae_reconstruction --force-overwrite
 
 # 4. Task 3: Feature Extraction (bucket: user1-hmae-features)
 #    Extracts CLS and patch-level feature vectors for downstream analysis.
 #    Outputs .pt (PyTorch tensor) files plus pkl metadata.
-umrs-client upload_dir ../../tmp/spring8-data/spring8concrete user1-hmae-features
+umrs-client upload_dir ../../tmp/hmae/images user1-hmae-features
 umrs-client download_results user1-hmae-features ./results/feature_extraction --force-overwrite
 ```
+
+This private demo assumes the HMAE task buckets are already configured by the
+site. It does not treat admin reload as part of the normal user flow.
 
 > **Note**: Running all 3 tasks sequentially may cause CUDA out-of-memory on
 > the third task if the GPU does not release memory between tasks. If this
@@ -236,7 +238,7 @@ umrs-client download_results user1-hmae-features ./results/feature_extraction --
 | Setting | Default |
 |---|---|
 | Bucket alias | `user1-hmae` |
-| Image source | `../../tmp/spring8-data/spring8concrete` |
+| Image source | `../../tmp/hmae/images` |
 | Result dir | `results/` |
 
 ## Public Analogue

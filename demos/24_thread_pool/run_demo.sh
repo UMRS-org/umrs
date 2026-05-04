@@ -52,6 +52,7 @@ echo ""
 # Step 1: Query pool metrics from status endpoint
 log "Step 1: Query pool metrics..."
 STATUS_JSON="$($CLIENT --output json status all 2>/dev/null || echo '{}')"
+STATUS_JSON="$(printf '%s\n' "$STATUS_JSON" | extract_json_payload)"
 echo "$STATUS_JSON" | python3 -c "
 import sys, json
 
@@ -150,6 +151,7 @@ if [[ "${DEMO_SUBMIT_TASK:-0}" = "1" ]]; then
 
     # Re-query pool metrics
     POST_STATUS="$($CLIENT --output json status all 2>/dev/null || echo '{}')"
+    POST_STATUS="$(printf '%s\n' "$POST_STATUS" | extract_json_payload)"
     echo "$POST_STATUS" | python3 -c "
 import sys, json
 

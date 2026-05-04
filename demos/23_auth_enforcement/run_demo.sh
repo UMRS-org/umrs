@@ -73,11 +73,21 @@ echo ""
 # Step 1: Generate a token
 log "Step 1: Generate admin token '${TOKEN_NAME}'..."
 GEN_OUTPUT="$(admin_cli token generate "$TOKEN_NAME" --description "Demo 23 test token" --json)"
-echo "$GEN_OUTPUT"
-GENERATED_TOKEN="$(echo "$GEN_OUTPUT" | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])")"
+GEN_OUTPUT_JSON="$(printf '%s\n' "$GEN_OUTPUT" | extract_json_payload)"
+GENERATED_TOKEN="$(echo "$GEN_OUTPUT_JSON" | python3 -c "import sys, json; print(json.load(sys.stdin)['token'])")"
 if [[ -z "$GENERATED_TOKEN" ]]; then
     die "Failed to generate admin token"
 fi
+echo "$GEN_OUTPUT_JSON" | python3 -c '
+import json
+import sys
+
+data = json.load(sys.stdin)
+token = data.get("token")
+if token:
+    data["token"] = token[:15] + "...redacted"
+print(json.dumps(data, indent=2))
+'
 ok "Token generated (starts with ${GENERATED_TOKEN:0:15}...)"
 echo ""
 
@@ -128,6 +138,7 @@ log "Step 5: Attempt maintenance 'check' WITHOUT admin token (user role)..."
 $CLIENT check || true
 sleep 2
 CHECK_STATUS="$($CLIENT --output json status check 2>/dev/null || echo '{}')"
+CHECK_STATUS="$(printf '%s\n' "$CHECK_STATUS" | extract_json_payload)"
 echo "$CHECK_STATUS"
 
 # The check command may show no status (if never run) or ERROR (if auth denied).
@@ -138,9 +149,10 @@ echo ""
 
 # Step 6: Connect WITH admin token — admin role
 log "Step 6: Attempt maintenance 'check' WITH admin token (admin role)..."
-$CLIENT --admin-token "$GENERATED_TOKEN" check
+$CLIENT --admin-token "$GENERATED_TOKEN" check || warn "admin check returned non-zero"
 sleep 3
 CHECK_STATUS_ADMIN="$($CLIENT --admin-token "$GENERATED_TOKEN" --output json status check 2>/dev/null || echo '{}')"
+CHECK_STATUS_ADMIN="$(printf '%s\n' "$CHECK_STATUS_ADMIN" | extract_json_payload)"
 echo "$CHECK_STATUS_ADMIN"
 
 # Verify the admin check produced a successful result
@@ -158,6 +170,7 @@ echo ""
 # Step 7: Verify pool metrics are visible in status
 log "Step 7: Verify pool metrics in status response..."
 POOL_STATUS="$($CLIENT --admin-token "$GENERATED_TOKEN" --output json status all 2>/dev/null || echo '{}')"
+POOL_STATUS="$(printf '%s\n' "$POOL_STATUS" | extract_json_payload)"
 echo "$POOL_STATUS" | python3 -c "
 import sys, json
 data = json.load(sys.stdin)
