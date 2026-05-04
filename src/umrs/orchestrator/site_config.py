@@ -332,6 +332,17 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def _apply_env_fallbacks(raw: dict[str, Any]) -> dict[str, Any]:
+    """Fill intentionally blank YAML values from environment variables."""
+    merged = dict(raw)
+    network = dict(merged.get("network") or {})
+    if not network.get("litellm_master_key") and os.getenv("LITELLM_MASTER_KEY"):
+        network["litellm_master_key"] = os.environ["LITELLM_MASTER_KEY"]
+    if network:
+        merged["network"] = network
+    return merged
+
+
 def _dict_to_dataclass(cls, data: dict):
     """Construct a dataclass from a dict, ignoring unknown keys."""
     import dataclasses
@@ -376,6 +387,7 @@ def load_site_config(path: str | None = None) -> SiteConfig:
         raw = _expand_env_refs(yaml.safe_load(fh) or {})
 
     logger.info("Loaded site config from %s", resolved)
+    raw = _apply_env_fallbacks(raw)
     return _parse_raw(raw)
 
 
