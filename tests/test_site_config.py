@@ -7,21 +7,19 @@ import textwrap
 from unittest.mock import patch
 
 import pytest
-
 from umrs.orchestrator.site_config import (
-    SiteConfig,
-    SchedulerConfig,
-    RuntimeConfig,
-    NetworkConfig,
-    VllmConfig,
     DatabaseConfig,
-    default_site_config,
-    load_site_config,
-    get_site_config,
-    reset_site_config,
+    NetworkConfig,
+    RuntimeConfig,
+    SchedulerConfig,
+    SiteConfig,
+    VllmConfig,
     _parse_raw,
+    default_site_config,
+    get_site_config,
+    load_site_config,
+    reset_site_config,
 )
-
 
 UMRS_ROOT = os.path.dirname(os.path.dirname(__file__))
 RCCS_CLOUD_SITE_CONFIG = os.path.join(UMRS_ROOT, "deploy", "rccs-cloud", "site.yaml")
@@ -237,6 +235,20 @@ class TestLoadSiteConfig:
         assert cfg.runtime.rivault_dir == "/shared/alice/rivault"
         assert cfg.runtime.repo_dir == "/lvs0/dne1/rccs-dmp/alice/ai4s-platform/umrs"
         assert cfg.storage.model_cache_dir == os.path.expanduser("~/umrs_models/hf")
+
+    def test_blank_litellm_key_uses_environment_fallback(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-from-env")
+        p = tmp_path / "site.yaml"
+        p.write_text(textwrap.dedent("""\
+            name: env-key-site
+            network:
+              litellm_port: 8001
+              litellm_master_key: ""
+        """))
+
+        cfg = load_site_config(str(p))
+
+        assert cfg.network.litellm_master_key == "sk-from-env"
 
     def test_rccs_cloud_site_config_uses_operator_user_placeholder(self, monkeypatch):
         monkeypatch.setenv("USER", "test-operator")

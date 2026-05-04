@@ -10,6 +10,13 @@ if [[ ! -x "${VENV_PYTHON}" ]]; then
     exit 1
 fi
 
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+    set -o allexport
+    # shellcheck disable=SC1091
+    source "${SCRIPT_DIR}/.env"
+    set +o allexport
+fi
+
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 exec "${VENV_PYTHON}" "${REPO_ROOT}/deploy/harness_validate.py" \
