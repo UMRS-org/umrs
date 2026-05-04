@@ -42,11 +42,11 @@ umrs-client model register e5-base-v2 /shared/models/e5-base-v2 \
 
 # User's own model (only visible to the user):
 umrs-client model register my-finetuned-mae /home/user/models/mae-finetuned \
-    --type embedding --scope user --description "Fine-tuned MAE for defect detection"
+    --type vision --scope user --description "Fine-tuned MAE for defect detection"
 
 # Project-scoped model (visible to project members):
 umrs-client model register project-vit /shared/projects/spring8/models/vit \
-    --type embedding --scope project --description "ViT trained on Spring-8 data"
+    --type vision --scope project --description "ViT trained on Spring-8 data"
 ```
 
 ### 3. List registered models
@@ -68,6 +68,7 @@ cd "$REPO_ROOT/umrs/demos/07_model_registry"
 
 CONF="${UMRS_USER_CONF:-$HOME/.config/umrs/users/user1.json}"
 MODEL_SCOPE="${MODEL_SCOPE:-user}"
+MODEL_TYPE="${MODEL_TYPE:-embedding}"
 umrs-client config use --user "$CONF"
 
 # 0. Verify connectivity.
@@ -80,7 +81,7 @@ umrs-client model list || true
 if [[ -n "${UMRS_SHARED_MODEL_PATH:-}" ]]; then
   MODEL_NAME="$(basename "$UMRS_SHARED_MODEL_PATH")"
   umrs-client model register "$MODEL_NAME" "$UMRS_SHARED_MODEL_PATH" \
-    --type embedding --scope "$MODEL_SCOPE" \
+    --type "$MODEL_TYPE" --scope "$MODEL_SCOPE" \
     --description "Auto-registered from shared models directory"
 fi
 

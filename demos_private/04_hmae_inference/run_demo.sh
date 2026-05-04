@@ -84,7 +84,7 @@ if [[ -n "${HMAE_LOCAL_MODEL_DIR:-}" ]]; then
         log "Step 2: Uploading HMAE model from ${HMAE_LOCAL_MODEL_DIR}..."
         $CLIENT model upload "${HMAE_LOCAL_MODEL_DIR}" \
             --name "hmae-pretrained" \
-            --type embedding --scope user \
+            --type vision --scope user \
             --description "HMAE ViT pretrained checkpoint" \
             --register-path "$REMOTE_HMAE_MODEL_PATH" \
             --force || warn "model upload returned non-zero"

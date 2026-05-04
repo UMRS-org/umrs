@@ -23,7 +23,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="rag_search" source "${SCRIPT_DIR}/../lib/common.sh"
 
-RAG_URL="${RAG_URL:-http://localhost:8081}"
+RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
 RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-${TEXT_BUCKET:-user1-textfiles}}"
 RAG_MODALITY="${RAG_MODALITY:-text_file}"
 
@@ -115,7 +115,7 @@ rag_search() {
 
     log "  Query: \"$query\""
     local response
-    response="$(curl -sf -X POST "$RAG_URL/rag/search" \
+    response="$(curl -sf -X POST "${RAG_URL%/}/rag/search" \
         -H 'Content-Type: application/json' \
         -d "$json_payload" 2>&1)" || {
         warn "  Search request failed"
@@ -134,7 +134,7 @@ rag_qa() {
 
     log "  Query: \"$query\""
     local response
-    response="$(curl -sf -X POST "$RAG_URL/rag/qa" \
+    response="$(curl -sf -X POST "${RAG_URL%/}/rag/qa" \
         -H 'Content-Type: application/json' \
         -d "$json_payload" 2>&1)" || {
         warn "  QA request failed (is LLM/vLLM running for /rag/qa?)"
@@ -157,7 +157,7 @@ preflight
 log "Checking RAG service at $RAG_URL ..."
 attempts=5
 for i in $(seq 1 "$attempts"); do
-    if curl -sf "$RAG_URL/docs" >/dev/null 2>&1; then
+    if curl -sf "${RAG_URL%/}/docs" >/dev/null 2>&1; then
         ok "RAG service is ready"
         break
     fi
@@ -232,4 +232,4 @@ rag_qa "Explain how machine learning is applied to geophysical data analysis, ci
 # ==========================================================================
 log ""
 banner "Demo 05 Complete"
-log "API endpoints: POST $RAG_URL/rag/search | POST $RAG_URL/rag/qa | GET $RAG_URL/docs"
+log "API endpoints: POST ${RAG_URL%/}/rag/search | POST ${RAG_URL%/}/rag/qa | GET ${RAG_URL%/}/docs"

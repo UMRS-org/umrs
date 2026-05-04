@@ -26,7 +26,7 @@ ZMQ_PORT="${UMRS_ZMQ_PORT:-5555}"
 ZMQ_DATA_PORT="${UMRS_ZMQ_DATA_PORT:-5556}"
 MINIO_HOST="${UMRS_MINIO_HOST:-localhost}"
 MINIO_PORT="${UMRS_MINIO_PORT:-9000}"
-RAG_URL="${RAG_URL:-http://localhost:8081}"
+RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
 
 passed=0
 failed=0
@@ -76,7 +76,7 @@ echo ""
 
 # ---------- Step 3: RAG service (optional) ----------
 log "Step 3: Check RAG service (optional)..."
-if curl -sf "${RAG_URL}/docs" >/dev/null 2>&1; then
+if curl -sf "${RAG_URL%/}/docs" >/dev/null 2>&1; then
     ok "RAG service  (${RAG_URL})"; passed=$((passed + 1))
 else
     log "  RAG service  (${RAG_URL}) — not available (optional, needs UMRS_RAG_ENABLE=1)"
