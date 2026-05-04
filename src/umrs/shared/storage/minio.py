@@ -1,11 +1,9 @@
-import subprocess
-import os
-import json
-import secrets
-import string
 import configparser
-import textwrap
+import json
+import os
 import subprocess
+import textwrap
+
 from umrs.shared.utils import normalize_json
 
 MC_TIMEOUT = 30  # seconds, timeout for mc CLI subprocess calls
@@ -186,7 +184,7 @@ def minio_check_create_list_only_policy(target):
     }
 
     policy_json = json.dumps(policy, indent=2)
-    policy_name = f"listonly"
+    policy_name = "listonly"
     policy_file = "/tmp/policy.json"
 
     # Check if the policy already exists
@@ -335,7 +333,7 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         print(f"==> Configuration file written to: {user_s3_configuration_file}")
     else:
         print(f"==> S3 configuration file '{user_s3_configuration_file}' allready exists for user '{username}' and alias '{alias}'.")
-        print(f"==> Delete this file manually if you want to reconfigure the user.")
+        print("==> Delete this file manually if you want to reconfigure the user.")
         # Read existing user config
         user_cfg_path = os.path.expanduser(user_s3_configuration_file)
         ucfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))

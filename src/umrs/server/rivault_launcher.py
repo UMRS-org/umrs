@@ -1,22 +1,26 @@
-from umrs.inference.loading import load_model, EmbeddingModel
-from umrs.shared.config import *
-from umrs.server.config import *
-
-
-import subprocess
-import time
-import re
-import requests
-import socket
-import os
-from contextlib import redirect_stderr, redirect_stdout
 import io
+import os
+import re
+import socket
+import subprocess
 import threading
+import time
+from contextlib import redirect_stderr, redirect_stdout
 
+import requests
+
+from umrs.inference.loading import EmbeddingModel, load_model
 from umrs.orchestrator.endpoint_registry import (
     EndpointStatus,
     get_registry,
 )
+from umrs.server.config import (
+    VISION_STACK,
+    get_jens_rivault_slurm_script,
+    get_rivault_remote_port,
+    get_rivault_slurm_script,
+)
+from umrs.shared.config import get_default_tmp_subdir, get_default_umrs_cfg_dir
 
 # Ephemeral in-memory cache for models
 model_cache = {}
@@ -222,8 +226,7 @@ def load_model_as_bentoml(model_name, return_type, vector_size, input_type, comp
 def get_slurm_job_state(job_id):
     result = subprocess.run(
         ["squeue", "-h", "-j", str(job_id), "-o", "%T"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         text=True,
         timeout=15,
     )
@@ -412,7 +415,7 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
 
 def get_slurm_script_from_host():
     # Get the hostname
-    hostname = socket.gethostname()
+    socket.gethostname()
 
     # Get the full domain name
     fqdn = socket.getfqdn()
@@ -445,7 +448,7 @@ def extract_node_address(slurm_output_file, timeout=300):
 
     print(f"{slurm_output_file} ready")
     while True:
-        with open(slurm_output_file, "r") as f:
+        with open(slurm_output_file) as f:
             for line in f:
                 line = line.strip()
                 # print(f"{line=}")
@@ -469,7 +472,7 @@ def wait_for_local_port(port, host="127.0.0.1", timeout=5.0):
             except OSError:
                 time.sleep(0.1)
                 if time.time() - start > timeout:
-                    raise TimeoutError(f"Port {port} on {host} did not open in {timeout}s")
+                    raise TimeoutError(f"Port {port} on {host} did not open in {timeout}s") from None
 
 def ssh_tunnel_forward_to_remote(remote_host: str, remote_port: int = 8001) -> tuple[int, threading.Thread, subprocess.Popen]:
     """
@@ -551,7 +554,7 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=300.0, 
                 data = resp.json().get("data", [])
                 if any(m.get("id") == model_name for m in data):
                     return True
-        except requests.RequestException as e:
+        except requests.RequestException:
             # print(f"{type(e).__name__}: {e}")
             pass
 
@@ -810,4 +813,3 @@ def launch_rivault_model(model_cfg):
     model_cache[model_type_key] = (model, thread_tunnel, proc_tunnel)
     _cache_job(model_type_key, job_id, host=server_address, port=local_port, metadata=job_metadata)
     return model
-

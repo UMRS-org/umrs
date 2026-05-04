@@ -29,9 +29,9 @@ import uuid
 from collections import deque
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Query, status
 from pydantic import BaseModel, Field
 
 logger = logging.getLogger(__name__)
@@ -50,19 +50,19 @@ class EgressAuditRecord(BaseModel):
     request_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: str
     project_id: str
-    agent_session_id: Optional[str] = None
-    tool_name: Optional[str] = None
+    agent_session_id: str | None = None
+    tool_name: str | None = None
     destination_url: str
     destination_domain: str
     method: str = "GET"
     payload_hash: str = ""
     payload_size_bytes: int = 0
-    sensitivity_flags: Dict[str, Any] = Field(default_factory=dict)
-    user_tags: List[str] = Field(default_factory=list)
+    sensitivity_flags: dict[str, Any] = Field(default_factory=dict)
+    user_tags: list[str] = Field(default_factory=list)
     action: str = Field(..., pattern="^(allowed|denied)$")
-    deny_reason: Optional[str] = None
-    response_status: Optional[int] = None
-    response_size_bytes: Optional[int] = None
+    deny_reason: str | None = None
+    response_status: int | None = None
+    response_size_bytes: int | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -72,7 +72,7 @@ class EgressAuditCreateResponse(BaseModel):
 
 
 class EgressAuditListResponse(BaseModel):
-    items: List[EgressAuditRecord]
+    items: list[EgressAuditRecord]
     count: int
 
 
@@ -89,7 +89,7 @@ class _EgressAuditStore:
 
     def __init__(self) -> None:
         self._lock = RLock()
-        self._buffer: Deque[EgressAuditRecord] = deque(maxlen=_INMEMORY_LIMIT)
+        self._buffer: deque[EgressAuditRecord] = deque(maxlen=_INMEMORY_LIMIT)
         self._db_url = os.getenv("UMRS_DB_URL", "").strip() or None
         self._psycopg2 = None
         if self._db_url:
@@ -159,12 +159,12 @@ class _EgressAuditStore:
     def query(
         self,
         *,
-        user_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-        action: Optional[str] = None,
-        since: Optional[datetime] = None,
+        user_id: str | None = None,
+        project_id: str | None = None,
+        action: str | None = None,
+        since: datetime | None = None,
         limit: int = 100,
-    ) -> List[EgressAuditRecord]:
+    ) -> list[EgressAuditRecord]:
         if self.db_enabled:
             try:
                 return self._query_db(
@@ -189,16 +189,16 @@ class _EgressAuditStore:
     def _query_memory(
         self,
         *,
-        user_id: Optional[str],
-        project_id: Optional[str],
-        action: Optional[str],
-        since: Optional[datetime],
+        user_id: str | None,
+        project_id: str | None,
+        action: str | None,
+        since: datetime | None,
         limit: int,
-    ) -> List[EgressAuditRecord]:
+    ) -> list[EgressAuditRecord]:
         with self._lock:
             items = list(self._buffer)
         items.reverse()  # newest first
-        out: List[EgressAuditRecord] = []
+        out: list[EgressAuditRecord] = []
         for r in items:
             if user_id and r.user_id != user_id:
                 continue
@@ -216,15 +216,15 @@ class _EgressAuditStore:
     def _query_db(
         self,
         *,
-        user_id: Optional[str],
-        project_id: Optional[str],
-        action: Optional[str],
-        since: Optional[datetime],
+        user_id: str | None,
+        project_id: str | None,
+        action: str | None,
+        since: datetime | None,
         limit: int,
-    ) -> List[EgressAuditRecord]:
+    ) -> list[EgressAuditRecord]:
         assert self._psycopg2 is not None and self._db_url is not None
-        clauses: List[str] = []
-        params: List[Any] = []
+        clauses: list[str] = []
+        params: list[Any] = []
         if user_id:
             clauses.append("user_id = %s")
             params.append(user_id)
@@ -247,10 +247,9 @@ class _EgressAuditStore:
             "ORDER BY created_at DESC LIMIT %s"
         )
         params.append(limit)
-        with self._psycopg2.connect(self._db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(sql, params)
-                rows = cur.fetchall()
+        with self._psycopg2.connect(self._db_url) as conn, conn.cursor() as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
         return [self._row_to_record(row) for row in rows]
 
     @staticmethod
@@ -281,7 +280,7 @@ class _EgressAuditStore:
         return json.dumps(value or {}, default=str)
 
 
-_store: Optional[_EgressAuditStore] = None
+_store: _EgressAuditStore | None = None
 
 
 def get_store() -> _EgressAuditStore:
@@ -311,10 +310,10 @@ def create_audit(record: EgressAuditRecord) -> EgressAuditCreateResponse:
 
 @router.get("/audit", response_model=EgressAuditListResponse)
 def list_audit(
-    user_id: Optional[str] = Query(None),
-    project_id: Optional[str] = Query(None),
-    action: Optional[str] = Query(None, pattern="^(allowed|denied)$"),
-    since: Optional[datetime] = Query(None),
+    user_id: str | None = Query(None),
+    project_id: str | None = Query(None),
+    action: str | None = Query(None, pattern="^(allowed|denied)$"),
+    since: datetime | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
 ) -> EgressAuditListResponse:
     items = get_store().query(

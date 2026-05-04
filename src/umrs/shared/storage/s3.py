@@ -1,23 +1,20 @@
 #!/usr/bin/python3
-import os
-import boto3
-from botocore.exceptions import ClientError
-import json
-import warnings
-from PIL import Image
-import mimetypes
-from io import BytesIO
 import configparser
-from charset_normalizer import from_path, from_bytes
-from typing import List, Dict
-from umrs.shared.utils import compute_md5, md5_of_file
-
+import mimetypes
+import os
 import secrets
 import string
-import subprocess
+import warnings
+from io import BytesIO
 
-
+import boto3
 import urllib3
+from botocore.exceptions import ClientError
+from charset_normalizer import from_bytes, from_path
+from PIL import Image
+
+from umrs.shared.utils import compute_md5, md5_of_file
+
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
 
@@ -90,7 +87,7 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
             )
 
     if server_name == "MinIO":
-        from umrs.shared.storage.minio import minio_s3_create_user, minio_grant_user_access
+        from umrs.shared.storage.minio import minio_grant_user_access, minio_s3_create_user
         alias = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)
         if alias:
             for bucket in bucket_list:
@@ -150,10 +147,10 @@ def connect_to_s3(config_file):
 
     # Test connection
     try:
-        response = s3.list_buckets()
+        s3.list_buckets()
         print("--> Succesfully connected to S3 service.")
     except Exception as e:
-        raise RuntimeError(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.")
+        raise RuntimeError(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.") from e
 
 
     return s3, bucket_location
@@ -215,7 +212,7 @@ def configure_bucket(s3, bucket_alias, xp_name, username, bucket_location, outpu
                 'LocationConstraint': bucket_location  # Match your desired region
             }
         )
-        print(f"\t\t\t--> Bucket {path_to_bucket} created");
+        print(f"\t\t\t--> Bucket {path_to_bucket} created")
 
     print("\t\t\t--> S3 Bucket Configuration Successful")
     return path_to_bucket
@@ -280,7 +277,7 @@ def list_s3_bucket(s3, bucket_name, prefix=""):
     checksums = []
     total_size = 0
 
-    prefix = "" if prefix == None else prefix
+    prefix = "" if prefix is None else prefix
 
     try:
         continuation_token = None
@@ -319,7 +316,7 @@ def load_data_from_s3(s3, path_to_bucket, s3_keys, modality_name):
     metadata = []
     checksums = []
     sizes = []
-    has_at_least_a_zero = False;
+    has_at_least_a_zero = False
     for s3_key in s3_keys:
         obj = s3.get_object(Bucket=path_to_bucket, Key=s3_key)
         checksums.append(obj['ETag'].strip('"'))
@@ -371,7 +368,7 @@ def download_objects(s3, objects_list, checksums, local_path, files_allready_rec
 
     # print(f"Downloading {len(objects_list)} objects into {local_path}")
 
-    for s3_uri, s3_etag in zip(objects_list, checksums):
+    for s3_uri, s3_etag in zip(objects_list, checksums, strict=False):
 
         # Extract bucket + key
         # e.g. "s3://my-bucket/path/to/file" → bucket="my-bucket", key="path/to/file"
@@ -431,7 +428,7 @@ def s3_store_txt(s3, path_to_bucket, subdir, text_data, mq, metadata_args):
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
 
-    return s3_key;
+    return s3_key
 
 def is_image_by_extension(filename):
     mime_type, _ = mimetypes.guess_type(filename)
@@ -442,7 +439,7 @@ def is_image_by_opening(filename):
         with Image.open(filename) as img:
             img.verify()  # Verify if it's a valid image
         return True
-    except (IOError, SyntaxError):
+    except (OSError, SyntaxError):
         return False
 
 def is_an_image(filename):
@@ -470,7 +467,7 @@ def s3_store_image(s3, path_to_bucket, subdir, in_path, mq, metadata_args, check
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
 
-    return s3_key;
+    return s3_key
 
 def is_a_text_file(in_path):
     try:
@@ -524,5 +521,5 @@ def s3_store_text_file(s3, path_to_bucket, subdir, in_path, mq, metadata_args):
     s3_object = f"s3://{path_to_bucket}/{s3_key}"
     mq.notify_s3(s3_object)
 
-    return s3_key;
+    return s3_key
 

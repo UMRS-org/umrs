@@ -5,7 +5,6 @@
 # Must be checked by client and server.
 
 import sys
-from typing import Optional, Tuple
 
 # ── Pure data-type modalities ──────────────────────────────────────────────
 VALID_MODALITIES = [
@@ -41,7 +40,7 @@ DEFAULT_TASK = "embedding"
 # Old configs used a single ``modality_name`` that mixed data type and
 # processing intent.  This mapping translates them into the new two-axis
 # scheme.
-LEGACY_MAPPING: dict[str, Tuple[str, str]] = {
+LEGACY_MAPPING: dict[str, tuple[str, str]] = {
     # pure data types (task defaults to embedding)
     "image":                           ("image",  "embedding"),
     "text":                            ("text",   "embedding"),
@@ -76,8 +75,8 @@ _MODALITY_UPLOAD_CATEGORY: dict[str, str] = {
 
 def resolve_modality_task(
     modality_name: str,
-    task: Optional[str] = None,
-) -> Tuple[str, str]:
+    task: str | None = None,
+) -> tuple[str, str]:
     """Resolve a (possibly legacy) modality_name + optional task into a
     canonical ``(modality, task)`` pair.
 

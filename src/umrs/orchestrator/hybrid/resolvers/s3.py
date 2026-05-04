@@ -6,8 +6,6 @@ import asyncio
 import hashlib
 import logging
 import os
-from datetime import datetime
-from typing import Optional
 
 from umrs.model_registry.models import ExecutionAuthority, ModelRef, ModelRefType
 
@@ -111,4 +109,4 @@ class S3Resolver(ModelRefResolver):
                 raise ResolutionError(f"S3 download failed: {stderr.decode()}")
 
         except Exception as e:
-            raise ResolutionError(f"S3 download failed: {e}")
+            raise ResolutionError(f"S3 download failed: {e}") from e

@@ -7,10 +7,10 @@ import json
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..targets import AllocationInfo
-from .base import ContainerEndpoint, LaunchError, LaunchSpec, MountSpec, RuntimeWrapper
+from .base import ContainerEndpoint, LaunchError, LaunchSpec, RuntimeWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class K8sJobWrapper(RuntimeWrapper):
     def __init__(
         self,
         namespace: str = "rivault-system",
-        kubeconfig: Optional[str] = None,
+        kubeconfig: str | None = None,
     ):
         self.namespace = namespace or os.getenv("K8S_NAMESPACE", "rivault-system")
         self.kubeconfig = kubeconfig or os.getenv("KUBECONFIG")
@@ -93,7 +93,7 @@ class K8sJobWrapper(RuntimeWrapper):
             )
 
         except Exception as e:
-            raise LaunchError(f"Failed to update K8s Job: {e}")
+            raise LaunchError(f"Failed to update K8s Job: {e}") from e
 
     async def teardown(self, endpoint: ContainerEndpoint) -> bool:
         """Delete K8s Service (Job cleanup is separate)."""
@@ -135,9 +135,9 @@ class K8sJobWrapper(RuntimeWrapper):
         except Exception:
             return False
 
-    def _build_job_patch(self, spec: LaunchSpec) -> Dict[str, Any]:
+    def _build_job_patch(self, spec: LaunchSpec) -> dict[str, Any]:
         """Build strategic merge patch for Job."""
-        container_spec: Dict[str, Any] = {
+        container_spec: dict[str, Any] = {
             "name": "rivault",
             "image": spec.image,
             "env": [
@@ -146,7 +146,7 @@ class K8sJobWrapper(RuntimeWrapper):
             ],
             "ports": [
                 {"containerPort": port}
-                for port in spec.ports.keys()
+                for port in spec.ports
             ],
         }
 
@@ -179,7 +179,7 @@ class K8sJobWrapper(RuntimeWrapper):
         name: str,
         job_name: str,
         port: int,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build K8s Service manifest."""
         return {
             "apiVersion": "v1",
@@ -247,7 +247,7 @@ class K8sBootstrapWrapper(RuntimeWrapper):
         self.k3s_data_dir = k3s_data_dir
         self.k3s_timeout_sec = k3s_timeout_sec
         self.namespace = namespace
-        self._kubeconfig: Optional[str] = None
+        self._kubeconfig: str | None = None
 
     def _check_feature_flag(self) -> None:
         """Check that experimental feature is enabled."""
@@ -438,11 +438,12 @@ class K8sBootstrapWrapper(RuntimeWrapper):
     ) -> ContainerEndpoint:
         """Deploy Mini-RiVault workload to ephemeral k3s."""
         import tempfile
+
         import yaml
 
         await self._kubectl(kubeconfig, ["create", "namespace", self.namespace])
 
-        deployment: Dict[str, Any] = {
+        deployment: dict[str, Any] = {
             "apiVersion": "apps/v1",
             "kind": "Deployment",
             "metadata": {
@@ -468,7 +469,7 @@ class K8sBootstrapWrapper(RuntimeWrapper):
                                 {"name": k, "value": v}
                                 for k, v in spec.env.items()
                             ],
-                            "ports": [{"containerPort": p} for p in spec.ports.keys()],
+                            "ports": [{"containerPort": p} for p in spec.ports],
                             "volumeMounts": [
                                 {
                                     "name": f"mount-{i}",
@@ -514,7 +515,7 @@ class K8sBootstrapWrapper(RuntimeWrapper):
         await self._kubectl(kubeconfig, ["apply", "-f", manifest_path])
         os.unlink(manifest_path)
 
-        service: Dict[str, Any] = {
+        service: dict[str, Any] = {
             "apiVersion": "v1",
             "kind": "Service",
             "metadata": {
@@ -553,7 +554,7 @@ class K8sBootstrapWrapper(RuntimeWrapper):
     async def _kubectl(
         self,
         kubeconfig: str,
-        args: List[str],
+        args: list[str],
     ) -> str:
         """Execute kubectl command."""
         proc = await asyncio.create_subprocess_exec(

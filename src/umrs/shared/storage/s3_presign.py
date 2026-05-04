@@ -12,10 +12,12 @@ from __future__ import annotations
 import logging
 import os
 import urllib.request
-from typing import Any, Dict, Sequence
+from collections.abc import Sequence
+from typing import Any
 
 import boto3
 from botocore.config import Config as BotoConfig
+
 from umrs.shared.config import get_resolved_umrs_subdir
 
 logger = logging.getLogger(__name__)
@@ -35,10 +37,10 @@ DEFAULT_TTL_SEC = 3600
 #
 # Example: ``S3_PRESIGN_ENDPOINT=http://minio-host:19000``
 
-_presign_clients: Dict[str, Any] = {}
+_presign_clients: dict[str, Any] = {}
 
 
-def _get_presign_endpoint(endpoint_override: Optional[str] = None):
+def _get_presign_endpoint(endpoint_override: str | None = None):
     """Read the presign endpoint from env or config file.
 
     Checks (in order):
@@ -63,7 +65,7 @@ def _get_presign_endpoint(endpoint_override: Optional[str] = None):
     return endpoint
 
 
-def _get_presign_client(s3_client, endpoint_override: Optional[str] = None):
+def _get_presign_client(s3_client, endpoint_override: str | None = None):
     """Return a boto3 S3 client configured for external presigned URLs.
 
     If ``S3_PRESIGN_ENDPOINT`` is set (env or config file), creates a
@@ -100,7 +102,7 @@ def generate_presigned_get(
     key: str,
     ttl: int = DEFAULT_TTL_SEC,
     use_external_endpoint: bool = True,
-    endpoint_override: Optional[str] = None,
+    endpoint_override: str | None = None,
 ) -> str:
     """Generate a presigned GET URL for downloading an S3 object.
 
@@ -135,7 +137,7 @@ def generate_presigned_put(
     content_type: str = "application/octet-stream",
     ttl: int = DEFAULT_TTL_SEC,
     use_external_endpoint: bool = True,
-    endpoint_override: Optional[str] = None,
+    endpoint_override: str | None = None,
 ) -> str:
     """Generate a presigned PUT URL for uploading an S3 object.
 
@@ -176,8 +178,8 @@ def generate_presigned_urls_for_keys(
     content_type: str = "application/octet-stream",
     ttl: int = DEFAULT_TTL_SEC,
     use_external_endpoint: bool = True,
-    endpoint_override: Optional[str] = None,
-) -> Dict[str, str]:
+    endpoint_override: str | None = None,
+) -> dict[str, str]:
     """Generate presigned URLs for a batch of S3 keys.
 
     Args:
@@ -195,7 +197,7 @@ def generate_presigned_urls_for_keys(
         Dict mapping each key to its presigned URL.
     """
     gen = generate_presigned_get if operation == "get" else generate_presigned_put
-    result: Dict[str, str] = {}
+    result: dict[str, str] = {}
     for key in keys:
         if operation == "put":
             result[key] = gen(

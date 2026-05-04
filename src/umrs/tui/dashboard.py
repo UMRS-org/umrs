@@ -39,12 +39,13 @@ Keyboard shortcuts (Models / Workflows tabs):
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import threading
 import time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from rich.console import Console, Group
 from rich.layout import Layout
@@ -109,7 +110,7 @@ LOGO_HEIGHT = max(
 ) + 2
 
 # ── Status colour mapping ────────────────────────────────────────────
-STATUS_STYLES: Dict[str, str] = {
+STATUS_STYLES: dict[str, str] = {
     "running": "bold yellow",
     "queued": "cyan",
     "planned": "dim cyan",
@@ -139,7 +140,7 @@ def _short_id(job_id: str) -> str:
     return job_id[-8:] if len(job_id) > 8 else job_id
 
 
-def _ago(iso_str: Optional[str]) -> str:
+def _ago(iso_str: str | None) -> str:
     """Human-readable relative time from ISO timestamp."""
     if not iso_str:
         return "—"
@@ -162,14 +163,14 @@ def _ago(iso_str: Optional[str]) -> str:
         return str(iso_str)[:19]
 
 
-def _ts_short(ts: Optional[float]) -> str:
+def _ts_short(ts: float | None) -> str:
     """Compact HH:MM:SS from unix timestamp."""
     if ts is None:
         return "—"
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
-def _one_line(text: Optional[str], *, limit: int = 72) -> str:
+def _one_line(text: str | None, *, limit: int = 72) -> str:
     """Collapse multiline text into a single preview line."""
     collapsed = " ".join((text or "").split()) or "(no summary)"
     if len(collapsed) <= limit:
@@ -177,7 +178,7 @@ def _one_line(text: Optional[str], *, limit: int = 72) -> str:
     return collapsed[: limit - 1] + "…"
 
 
-def _iso_label(iso_str: Optional[str]) -> str:
+def _iso_label(iso_str: str | None) -> str:
     if not iso_str:
         return "—"
     try:
@@ -186,11 +187,11 @@ def _iso_label(iso_str: Optional[str]) -> str:
         return str(iso_str)
 
 
-def _canonical_status_key(task_key: Optional[str]) -> str:
+def _canonical_status_key(task_key: str | None) -> str:
     return str(task_key or "").strip().lower()
 
 
-def _iso_sort_value(iso_str: Optional[str]) -> tuple[int, str]:
+def _iso_sort_value(iso_str: str | None) -> tuple[int, str]:
     if not iso_str:
         return (0, "")
     try:
@@ -200,21 +201,21 @@ def _iso_sort_value(iso_str: Optional[str]) -> tuple[int, str]:
         return (0, str(iso_str))
 
 
-def _latest_iso(*values: Optional[str]) -> Optional[str]:
+def _latest_iso(*values: str | None) -> str | None:
     present = [value for value in values if value]
     if not present:
         return None
     return max(present, key=_iso_sort_value)
 
 
-def _status_entry_rank(entry: Dict[str, Any]) -> tuple[int, int, int, tuple[int, str]]:
+def _status_entry_rank(entry: dict[str, Any]) -> tuple[int, int, int, tuple[int, str]]:
     data = entry.get("data") or []
     summary = str(entry.get("summary") or "")
     timestamp = entry.get("last_updated_at") or entry.get("generated_at")
     return (1 if data else 0, len(data), len(summary), _iso_sort_value(timestamp))
 
 
-def _merge_status_entries(existing: Dict[str, Any], candidate: Dict[str, Any]) -> Dict[str, Any]:
+def _merge_status_entries(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     preferred = candidate if _status_entry_rank(candidate) >= _status_entry_rank(existing) else existing
     fallback = existing if preferred is candidate else candidate
     merged = dict(fallback)
@@ -242,15 +243,15 @@ class Dashboard:
         control_mq: Any,
         client_id: str,
         interval: float = 3.0,
-        status_filter: Optional[str] = None,
-        project_filter: Optional[str] = None,
-        console: Optional[Console] = None,
+        status_filter: str | None = None,
+        project_filter: str | None = None,
+        console: Console | None = None,
         *,
         initial_tab: str = TAB_JOBS,
-        config_path: Optional[str] = None,
-        user_cfg: Optional[Dict[str, Any]] = None,
-        connection_info: Optional[Dict[str, Any]] = None,
-        capabilities: Optional[Dict[str, Any]] = None,
+        config_path: str | None = None,
+        user_cfg: dict[str, Any] | None = None,
+        connection_info: dict[str, Any] | None = None,
+        capabilities: dict[str, Any] | None = None,
     ):
         self._mq = control_mq
         self._api = UMRSControlAPI(control_mq, client_id, config_path)
@@ -273,52 +274,52 @@ class Dashboard:
 
         # ── per-tab data caches ──
         # Jobs
-        self._jobs: List[Dict[str, Any]] = []
+        self._jobs: list[dict[str, Any]] = []
         self._jobs_cursor = 0
-        self._detail_job_id: Optional[str] = None
+        self._detail_job_id: str | None = None
         self._compact = True
 
         # Status
-        self._status_data: Dict[str, Any] = {}
-        self._status_items: List[Dict[str, Any]] = []
+        self._status_data: dict[str, Any] = {}
+        self._status_items: list[dict[str, Any]] = []
         self._status_cursor = 0
 
         # Models
-        self._models: List[Dict[str, Any]] = []
+        self._models: list[dict[str, Any]] = []
         self._models_cursor = 0
-        self._model_detail_name: Optional[str] = None
-        self._model_scope_filter: Optional[str] = None
+        self._model_detail_name: str | None = None
+        self._model_scope_filter: str | None = None
 
         # Workflows
-        self._workflows: List[Dict[str, Any]] = []
+        self._workflows: list[dict[str, Any]] = []
         self._wf_cursor = 0
-        self._wf_detail_name: Optional[str] = None
-        self._workflow_scope_filter: Optional[str] = None
-        self._workflow_user_filter: Optional[str] = None
-        self._workflow_name_filter: Optional[str] = None
+        self._wf_detail_name: str | None = None
+        self._workflow_scope_filter: str | None = None
+        self._workflow_user_filter: str | None = None
+        self._workflow_name_filter: str | None = None
 
         # Connection
-        self._ping_ok: Optional[bool] = None
-        self._ping_ms: Optional[float] = None
+        self._ping_ok: bool | None = None
+        self._ping_ms: float | None = None
 
         # UI state
         self._quit = threading.Event()
         self._force_refresh = threading.Event()
-        self._last_error: Optional[str] = None
-        self._last_refresh: Optional[float] = None
+        self._last_error: str | None = None
+        self._last_refresh: float | None = None
         self._show_help = False
-        self._flash_message: Optional[str] = None
+        self._flash_message: str | None = None
         self._flash_expire: float = 0
 
         # Track which tabs have been fetched at least once
-        self._fetched: Dict[str, bool] = {}
+        self._fetched: dict[str, bool] = {}
 
         # Spinner animation frame counter
         self._spinner_frame = 0
         self._is_fetching = False
 
         # Activity log (client-side event capture)
-        self._log_entries: List[Dict[str, str]] = []
+        self._log_entries: list[dict[str, str]] = []
         self._log_cursor = 0
         self._log_auto_scroll = True
 
@@ -327,7 +328,7 @@ class Dashboard:
         self._action_cursor = 0
 
         # Stats summary cache
-        self._stats: Dict[str, Any] = {}
+        self._stats: dict[str, Any] = {}
 
         # Text search state
         self._search_active = False
@@ -341,7 +342,7 @@ class Dashboard:
         self._form_active = False
         self._form_title = ""
         self._form_submit_action = ""
-        self._form_fields: List[Dict[str, Any]] = []
+        self._form_fields: list[dict[str, Any]] = []
         self._form_cursor = 0
 
     # ==================================================================
@@ -370,7 +371,7 @@ class Dashboard:
         self._update_stats()
 
     def _fetch_jobs(self) -> None:
-        filters: Dict[str, Any] = {}
+        filters: dict[str, Any] = {}
         if self._status_filter:
             filters["status"] = self._status_filter
         if self._project_filter:
@@ -532,10 +533,10 @@ class Dashboard:
             self._log("ERROR", f"Workflow error: {e}")
         self._force_refresh.set()
 
-    def _build_status_items(self, parsed: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _build_status_items(self, parsed: dict[str, Any]) -> list[dict[str, Any]]:
         summaries = parsed.get("summaries") or {}
         pending = {_canonical_status_key(item) for item in (parsed.get("uncompleted_key_list") or [])}
-        normalized: Dict[str, Dict[str, Any]] = {}
+        normalized: dict[str, dict[str, Any]] = {}
         for task_key, entry in summaries.items():
             if not isinstance(entry, dict):
                 continue
@@ -545,7 +546,7 @@ class Dashboard:
             existing = normalized.get(canonical_key)
             normalized[canonical_key] = _merge_status_entries(existing, entry) if existing else dict(entry)
 
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         seen = set()
         for task_key in STATUS_TASK_ORDER:
             entry = normalized.get(task_key)
@@ -560,7 +561,7 @@ class Dashboard:
                 items.append(self._make_status_item(task_key, entry, pending))
         return items
 
-    def _make_status_item(self, task_key: str, entry: Dict[str, Any], pending: set[str]) -> Dict[str, Any]:
+    def _make_status_item(self, task_key: str, entry: dict[str, Any], pending: set[str]) -> dict[str, Any]:
         generated_at = entry.get("generated_at")
         last_updated_at = entry.get("last_updated_at") or generated_at
         process_data = entry.get("data") or []
@@ -585,10 +586,8 @@ class Dashboard:
                 user = work.get("user")
                 if user:
                     users.add(str(user))
-                try:
+                with contextlib.suppress(TypeError, ValueError):
                     object_count += int(work.get("nb_objects", 0))
-                except (TypeError, ValueError):
-                    pass
 
         if process_rows:
             preview_parts = [f"{process_count} process" + ("es" if process_count != 1 else "")]
@@ -623,8 +622,8 @@ class Dashboard:
         }
 
     @staticmethod
-    def _iter_status_process_rows(status_data: List[Dict[str, Any]]) -> List[List[str]]:
-        rows: List[List[str]] = []
+    def _iter_status_process_rows(status_data: list[dict[str, Any]]) -> list[list[str]]:
+        rows: list[list[str]] = []
         for entry in status_data:
             thread_id = str(entry.get("thread_id", "—"))
             status = str(entry.get("status", "—"))
@@ -669,7 +668,7 @@ class Dashboard:
             self._set_flash(f"Status refresh error: {e}")
             self._log("ERROR", f"Status refresh error: {e}")
 
-    def _apply_control_result(self, command_text: str, parsed: Dict[str, Any]) -> None:
+    def _apply_control_result(self, command_text: str, parsed: dict[str, Any]) -> None:
         normalized = command_text.strip().lower()
         if parsed.get("status") == "ok":
             self._set_flash(f"Executed: {command_text}")
@@ -703,7 +702,7 @@ class Dashboard:
         self._command_active = True
         self._command_query = default
 
-    def _start_form(self, title: str, submit_action: str, fields: List[Dict[str, Any]]) -> None:
+    def _start_form(self, title: str, submit_action: str, fields: list[dict[str, Any]]) -> None:
         self._form_active = True
         self._form_title = title
         self._form_submit_action = submit_action
@@ -731,7 +730,7 @@ class Dashboard:
             idx = 0
         field["value"] = choices[(idx + delta) % len(choices)]
 
-    def _validate_required_fields(self, values: Dict[str, str]) -> None:
+    def _validate_required_fields(self, values: dict[str, str]) -> None:
         for field in self._form_fields:
             name = field["name"]
             if field.get("required") and not values.get(name, ""):
@@ -840,13 +839,14 @@ class Dashboard:
         workflow_name = ""
         if self._workflows:
             workflow_name = self._workflows[self._wf_cursor].get("name", "")
+        bucket_choices = ["", *sorted(self._capabilities.get("bucket_aliases") or [])]
         self._start_form(
             "Run Workflow",
             "run_workflow_form",
             [
                 {"name": "workflow_name", "label": "Workflow", "value": workflow_name, "required": True},
                 {"name": "params", "label": "Params JSON", "value": "{}", "required": False},
-                {"name": "bucket", "label": "Bucket", "value": "", "required": False},
+                {"name": "bucket", "label": "Bucket", "value": "", "required": False, "choices": bucket_choices},
             ],
         )
 
@@ -929,7 +929,7 @@ class Dashboard:
 
     def _update_stats(self) -> None:
         """Compute summary stats from cached data."""
-        job_counts: Dict[str, int] = {}
+        job_counts: dict[str, int] = {}
         for j in self._jobs:
             s = j.get("status", "unknown")
             job_counts[s] = job_counts.get(s, 0) + 1
@@ -1024,15 +1024,14 @@ class Dashboard:
                 if self._form_fields:
                     value = str(self._form_fields[self._form_cursor].get("value", ""))
                     self._form_fields[self._form_cursor]["value"] = value[:-1]
-            elif len(key) == 1 and key.isprintable():
-                if self._form_fields:
-                    field = self._form_fields[self._form_cursor]
-                    if field.get("choices"):
-                        # Field with choices: ignore free text, use h/l to cycle
-                        pass
-                    else:
-                        value = str(field.get("value", ""))
-                        field["value"] = value + key
+            elif len(key) == 1 and key.isprintable() and self._form_fields:
+                field = self._form_fields[self._form_cursor]
+                if field.get("choices"):
+                    # Field with choices: ignore free text, use h/l to cycle
+                    pass
+                else:
+                    value = str(field.get("value", ""))
+                    field["value"] = value + key
             return
 
         # If quick actions overlay is open, handle it
@@ -1139,19 +1138,25 @@ class Dashboard:
         self._log_cursor = 0
         self._log_auto_scroll = False
 
-    def _get_actions(self) -> List[Dict[str, str]]:
+    def _get_actions(self) -> list[dict[str, str]]:
         """Return available command actions for current context."""
         actions = [
             {"label": "Force Refresh", "key": "r", "action": "refresh"},
             {"label": "Ping Server", "key": "", "action": "ping"},
             {"label": "Toggle Help", "key": "?", "action": "help"},
             {"label": "Submit Job...", "key": "", "action": "submit_job_form"},
-            {"label": "Trigger Recompute", "key": "", "action": "recompute"},
-            {"label": "Trigger Update", "key": "", "action": "update"},
-            {"label": "Run Consistency Check", "key": "", "action": "check"},
             {"label": "Download Model...", "key": "", "action": "model_download_form"},
             {"label": "Register Model...", "key": "", "action": "model_register_form"},
         ]
+        allowed_actions = self._capabilities.get("allowed_actions", {})
+        if self._capabilities.get("is_admin"):
+            for label, action in (
+                ("Trigger Recompute", "recompute"),
+                ("Trigger Update", "update"),
+                ("Run Consistency Check", "check"),
+            ):
+                if allowed_actions.get(action, True):
+                    actions.append({"label": label, "key": "", "action": action})
         if self._config_path:
             actions.append({"label": "Reload Server Config", "key": "R", "action": "reload"})
         if self._tab == TAB_STATUS and self._status_items:
@@ -1311,7 +1316,7 @@ class Dashboard:
                 f"{choice_hint}"
             )
 
-        common = "[dim]:[/dim] cmd  [dim]a[/dim] actions  [dim]?[/dim] help  [dim]1-6[/dim] tabs"
+        common = "[dim]a[/dim] actions  [dim]?[/dim] help  [dim]1-6[/dim] tabs"
         if self._tab == TAB_JOBS:
             return Text.from_markup(
                 "[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  "
@@ -1321,7 +1326,7 @@ class Dashboard:
         elif self._tab == TAB_STATUS:
             reload_hint = "[dim]R[/dim] reload" if self._config_path else "[dim strikethrough]R reload (no --conf)[/dim strikethrough]"
             return Text.from_markup(
-                f"[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  [dim]Enter[/dim] refresh item  [dim]:[/dim] cmd  {reload_hint}  [dim]a[/dim] actions  [dim]?[/dim] help"
+                f"[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  [dim]Enter[/dim] refresh item  {reload_hint}  [dim]a[/dim] actions  [dim]?[/dim] help"
             )
         elif self._tab in (TAB_MODELS, TAB_WORKFLOWS):
             return Text.from_markup(
@@ -1413,7 +1418,7 @@ class Dashboard:
 
         return table
 
-    def _build_job_detail_panel(self) -> Optional[Panel]:
+    def _build_job_detail_panel(self) -> Panel | None:
         if not self._detail_job_id or not self._jobs:
             return None
         job = next((j for j in self._jobs if j.get("job_id") == self._detail_job_id), None)
@@ -1676,7 +1681,7 @@ class Dashboard:
             )
         return layout
 
-    def _build_model_detail_panel(self) -> Optional[Panel]:
+    def _build_model_detail_panel(self) -> Panel | None:
         if not self._model_detail_name or not self._models:
             return None
         model = next((m for m in self._models if m.get("name") == self._model_detail_name), None)
@@ -1766,7 +1771,7 @@ class Dashboard:
             )
         return layout
 
-    def _build_workflow_detail_panel(self) -> Optional[Panel]:
+    def _build_workflow_detail_panel(self) -> Panel | None:
         if not self._wf_detail_name or not self._workflows:
             return None
         wf = next((w for w in self._workflows if w.get("name") == self._wf_detail_name), None)

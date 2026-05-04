@@ -12,9 +12,10 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -113,7 +114,7 @@ class ThreadPoolManager:
         back to 16 workers / 64 pending.
     """
 
-    def __init__(self, config: Optional[PoolConfig] = None) -> None:
+    def __init__(self, config: PoolConfig | None = None) -> None:
         self._config = config or PoolConfig()
         self._executor = ThreadPoolExecutor(
             max_workers=self._config.max_workers,

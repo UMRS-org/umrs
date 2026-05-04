@@ -13,10 +13,10 @@ Implements:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
-from typing import Optional
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
@@ -33,14 +33,14 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/llm", tags=["llm-proxy"])
 
-def _resolve_litellm_service_key() -> Optional[str]:
+def _resolve_litellm_service_key() -> str | None:
     return os.environ.get("GATEWAY_LITELLM_SERVICE_KEY") or os.environ.get("LITELLM_MASTER_KEY")
 
 
 # LiteLLM service key — injected as Authorization header when proxying.
 # Prefer the Gateway-specific env var, but fall back to the mini-RiVault key
 # used by readiness probes and Slurm-launched LiteLLM.
-_LITELLM_SERVICE_KEY: Optional[str] = _resolve_litellm_service_key()
+_LITELLM_SERVICE_KEY: str | None = _resolve_litellm_service_key()
 
 # Timeouts
 _CONNECT_TIMEOUT = float(os.environ.get("LLM_PROXY_CONNECT_TIMEOUT", "10"))
@@ -73,7 +73,7 @@ def _recognized_model_names(endpoint: RegisteredEndpoint) -> set[str]:
     return names
 
 
-def _json_body(body: bytes) -> Optional[dict]:
+def _json_body(body: bytes) -> dict | None:
     try:
         decoded = json.loads(body)
     except (ValueError, json.JSONDecodeError):
@@ -81,7 +81,7 @@ def _json_body(body: bytes) -> Optional[dict]:
     return decoded if isinstance(decoded, dict) else None
 
 
-def _model_needs_rewrite(req_model: Optional[str], endpoint: RegisteredEndpoint) -> bool:
+def _model_needs_rewrite(req_model: str | None, endpoint: RegisteredEndpoint) -> bool:
     if not req_model:
         return False
     return req_model in _recognized_model_names(endpoint) and req_model != _upstream_model_name(endpoint)
@@ -207,14 +207,14 @@ async def _proxy_streaming(
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="Request to upstream service timed out",
-        )
+        ) from None
     except httpx.RequestError as exc:
         await client.aclose()
         logger.error("Error proxying to %s: %s", upstream_url, exc)
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="Failed to connect to upstream service",
-        )
+        ) from exc
 
     async def _yield():
         try:
@@ -257,13 +257,13 @@ async def _proxy_oneshot(
             raise HTTPException(
                 status_code=status.HTTP_504_GATEWAY_TIMEOUT,
                 detail="Request to upstream service timed out",
-            )
+            ) from None
         except httpx.RequestError as exc:
             logger.error("Error proxying to %s: %s", upstream_url, exc)
             raise HTTPException(
                 status_code=status.HTTP_502_BAD_GATEWAY,
                 detail="Failed to connect to upstream service",
-            )
+            ) from exc
 
 
 async def _proxy_to_litellm(
@@ -289,10 +289,8 @@ async def _proxy_to_litellm(
     # Check if streaming
     is_streaming = False
     if body:
-        try:
+        with contextlib.suppress(ValueError, json.JSONDecodeError):
             is_streaming = json.loads(body).get("stream", False)
-        except (ValueError, json.JSONDecodeError):
-            pass
 
     if is_streaming:
         return await _proxy_streaming(request, upstream_url, headers, body)

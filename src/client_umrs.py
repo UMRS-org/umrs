@@ -1,16 +1,19 @@
 #!/usr/bin/env python3
 
+import argparse
+import contextlib
+import json as _json
 import os
 import sys
-from umrs.shared.sql_helpers import create_db_name, metadata_dict
-from umrs.shared.storage.s3 import *
-from umrs.core.MessageQueue import MessageQueue
-from umrs.client.metadata import check_and_build_metadata
+import time
+import traceback
+from glob import glob
+from pathlib import Path
+
 from umrs.client.control_api import UMRSControlAPI
 from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
     MODEL_TYPE_CHOICES,
-    STATUS_CHOICES,
     configure_admin_token_parser,
     configure_admin_user_parser,
     configure_job_cancel_parser,
@@ -26,8 +29,14 @@ from umrs.client.control_commands import (
     configure_workflow_run_parser,
     parse_json_object_arg,
 )
-from umrs.shared.modality import *
-from umrs.shared.modality import resolve_modality_task
+from umrs.client.metadata import check_and_build_metadata
+from umrs.core.MessageQueue import MessageQueue
+from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.shared.auth import create_auth_context_from_request
+from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
+from umrs.shared.config import (
+    get_default_docker_s3cfg,
+)
 from umrs.shared.connection_profiles import (
     discover_connection_profiles,
     get_profile_path,
@@ -35,6 +44,7 @@ from umrs.shared.connection_profiles import (
     resolve_connection,
     set_current_profile_name,
 )
+from umrs.shared.json_config import load_client_cfg_file
 from umrs.shared.loaded_config_profiles import (
     apply_s3_config_override,
     discover_loaded_config_profiles,
@@ -44,21 +54,19 @@ from umrs.shared.loaded_config_profiles import (
     set_current_server_config,
     set_current_user_config,
 )
-from umrs.shared.json_config import load_client_cfg_file
-from umrs.shared.pretty_print import pretty_print_user_cfg
-from umrs.shared.auth import create_auth_context_from_request
-from umrs.shared.config import (
-    get_default_docker_s3cfg,
+from umrs.shared.modality import modality_category, resolve_modality_task
+from umrs.shared.sql_helpers import create_db_name, metadata_dict
+from umrs.shared.storage.s3 import (
+    check_bucket_name,
+    connect_to_s3,
+    decompose_bucket_alias_arg,
+    download_objects,
+    list_s3_bucket,
+    make_path_to_bucket_string,
+    s3_store_image,
+    s3_store_text_file,
+    s3_store_txt,
 )
-from glob import glob
-from pathlib import Path
-import argparse
-from collections import defaultdict
-import traceback
-import json as _json
-import time
-from umrs.core.TaskCmdStatus import TaskCmd
-from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
 
 
 # ---------------------------------------------------------------------------
@@ -229,10 +237,7 @@ def _print_config_candidates_text(discovered, *, show_server=False):
             print("")
             continue
         for candidate in candidates:
-            if candidate.current:
-                marker = _green("▸")
-            else:
-                marker = " "
+            marker = _green("▸") if candidate.current else " "
             dot = _status_dot(candidate.valid)
             path_str = _bold(candidate.path) if candidate.current else candidate.path
             print(f"  {marker} {dot} {path_str}")
@@ -366,9 +371,9 @@ def _handle_config_init(args):
     else:
         print(f"{_green('✓')} Created {_bold(str(out_path))}")
         print(f"  Set as current user config: {_dim(str(saved))}")
-        print(f"  Open the JSON file in an editor to customise experiences and modalities.")
+        print("  Open the JSON file in an editor to customise experiences and modalities.")
         print(f"  {_dim('Do not run the .json path directly in the shell.')}")
-        print(f"  Then run:")
+        print("  Then run:")
         print(f"  {_cyan('umrs-client reload')}")
     return 0
 
@@ -450,7 +455,7 @@ def _handle_admin_user_command(args):
 
         # Peek at the username for display
         try:
-            with open(config_path, "r", encoding="utf-8") as fh:
+            with open(config_path, encoding="utf-8") as fh:
                 cfg_data = _json_mod.load(fh)
             username = cfg_data.get("username", "<unknown>")
         except Exception:
@@ -485,10 +490,8 @@ def _handle_admin_user_command(args):
                 print(f"{_red('✗')} Failed to enroll user: {e}")
             return 1
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 control_mq.close()
-            except Exception:
-                pass
 
         if args.output == 'json':
             print(api_json(action='user_add', **result, output_format=args.output))
@@ -526,10 +529,8 @@ def _handle_admin_user_command(args):
                 print(f"{_red('✗')} Failed to query server: {e}")
             return 1
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 control_mq.close()
-            except Exception:
-                pass
 
         # Extract enrolled users from status data
         users = set()
@@ -715,9 +716,9 @@ def _handle_profile_init(args):
         print(f"{_green('✓')} Created {_bold(str(out_path))}")
         print(f"  Set as current profile: {_bold(name)}")
         if args.mode == "ssh_tunnel":
-            print(f"  Open the JSON file in an editor to customise SSH tunnels.")
+            print("  Open the JSON file in an editor to customise SSH tunnels.")
             print(f"  {_dim('Do not run the .json path directly in the shell.')}")
-            print(f"  Then run:")
+            print("  Then run:")
             print(f"  {_cyan(profile_data['ssh']['command_hint'])}")
     return 0
 
@@ -872,7 +873,7 @@ def merge_metadata(base_metadata, override_meta_dict):
     # base_metadata is the structure produced by metadata_dict(sql_conf).
     # For now we only inject overrides into a flat list under Metadata (matching existing code paths)
     # Existing code path expects metadata_args = { 'Metadata': {...}}
-    merged = {k: v for k, v in base_metadata.items()} if base_metadata else {}
+    merged = dict(base_metadata.items()) if base_metadata else {}
     md = merged.get('Metadata', {})
     md.update(override_meta_dict)
     merged['Metadata'] = md
@@ -1088,7 +1089,7 @@ def main():
     subparsers.add_parser('recompute', help='Recompute embeddings for your own buckets (admin: all users)')
     subparsers.add_parser('update', help='Update embeddings for missing/mismatched entries in your own buckets (admin: all users)')
     subparsers.add_parser('check', help='Check consistency between S3 objects and DB (admin-only: checks all users)')
-    rl_p = subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart (admin-only); if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
+    subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart (admin-only); if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
 
     # Export embeddings from pgvector (server-mediated)
     ee_p = subparsers.add_parser('export_embeddings', help='Export computed embeddings to a local file (via server)')
@@ -1287,12 +1288,16 @@ def main():
         prefer_env_server_host=False,
     )
 
-    if not args.no_check_server and args.action != 'ping':
-        if not control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms):
-            sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
+    if (
+        not args.no_check_server
+        and args.action != 'ping'
+        and not control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms)
+    ):
+        sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
 
     if args.action != 'ping':
-        profile_label = _bold(connection.profile_name) if connection.profile_name else _dim("(none)")
+        profile_name = getattr(connection, "profile_name", None)
+        profile_label = _bold(profile_name) if profile_name else _dim("(none)")
         print(f"{_green('✓')} Server ready  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}")
 
     # Resolve admin token from CLI flag or environment
@@ -1472,7 +1477,7 @@ def main():
                     os.makedirs(staging_root, exist_ok=True)
                     print(f'Copying {src_path} → {target_path} ...')
                     shutil.copytree(src_path, target_path)
-                    print(f'Copy complete. Registering model ...')
+                    print('Copy complete. Registering model ...')
                     register_path = args.register_path or os.path.abspath(target_path)
                     parsed = api.register_model(
                         name=args.name,
@@ -1713,11 +1718,10 @@ def main():
             workflow_name = args.name or os.path.basename(src_path)
             # Create a zip archive of the directory
             try:
-                tmp_zip = tempfile.NamedTemporaryFile(suffix='.zip', delete=False)
-                tmp_zip_path = tmp_zip.name
-                tmp_zip.close()
+                with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_zip:
+                    tmp_zip_path = tmp_zip.name
                 with zipfile.ZipFile(tmp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for root, dirs, files in os.walk(src_path):
+                    for root, _dirs, files in os.walk(src_path):
                         for f in files:
                             abs_path = os.path.join(root, f)
                             arc_name = os.path.relpath(abs_path, src_path)
@@ -1738,20 +1742,16 @@ def main():
                         print(f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully")
                 finally:
                     control_mq.set_timeouts(control_mq.timeout, control_mq.timeout)
-                    try:
+                    with contextlib.suppress(Exception):
                         data_mq.close()
-                    except Exception:
-                        pass
             except Exception as e:
                 exit_code = 1
                 print(api_json(status='error', action='upload-workflow', message=str(e), output_format=args.output))
                 if args.verbose:
                     traceback.print_exc()
             finally:
-                try:
+                with contextlib.suppress(Exception):
                     os.remove(tmp_zip_path)
-                except Exception:
-                    pass
                 control_mq.close()
             sys.exit(exit_code)
         if args.action == 'run-workflow':
@@ -1887,7 +1887,7 @@ def main():
                     with open(local_path, 'w', encoding='utf-8') as f:
                         for row in rows:
                             record = {}
-                            for col, val in zip(columns, row):
+                            for col, val in zip(columns, row, strict=False):
                                 record[col] = val
                             f.write(_json.dumps(record, ensure_ascii=False) + '\n')
                 print(api_json(
@@ -1948,8 +1948,10 @@ def main():
     if args.action == "download_results":
         full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
         if full_bucket_name != path_to_bucket:
-                sys.exit(f"Error:\tNo output bucket for {bucket_alias} for  modality {modality} and for user {username}\n"
-                         f"\tCheck that this modality has 'need_output_bucket' set to 'true'")
+            sys.exit(
+                f"Error:\tNo output bucket for {bucket_alias} for  modality {modality} and for user {username}\n"
+                f"\tCheck that this modality has 'need_output_bucket' set to 'true'"
+            )
         if not success:
             # Output bucket may not exist yet if the workflow/processing hasn't started.
             # Proceed anyway — download_results will poll and wait for server completion.
@@ -1967,7 +1969,9 @@ def main():
         metadata_args = check_and_build_metadata(metadata, args.k)
     except Exception as e:
         print(api_json(status="error", message=f"Metadata error: {e}", output_format=args.output))
-        control_mq.close(); data_mq.close(); sys.exit(1)
+        control_mq.close()
+        data_mq.close()
+        sys.exit(1)
 
     # In API mode, metadata is provided via repeated -k flags like legacy mode
 
@@ -1975,7 +1979,6 @@ def main():
        action = "Retreiving" if args.action == "download_results" else "Storing"
        print(f"{action} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
 
-    server_notify_result = None
 
 
     def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=True):
@@ -1998,7 +2001,7 @@ def main():
             return s3_key, 1
         elif category == "text":  # consider each line of the file as a string to be processed
             try:
-                with open(file_path,"r") as file:
+                with open(file_path) as file:
                     nb_objects = 0
                     s3_key_list = []
                     for line in file.readlines():
@@ -2084,7 +2087,7 @@ def main():
             # those transient files locally.
             raw_response = control_mq.request_status(effective_username, TaskCmd.PROCESS_OBJECTS)
             if raw_response is None:
-                break;
+                break
             # raw response is a string of a serialized json. transform it into json dict
             parsed = _json.loads(raw_response)
 

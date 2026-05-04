@@ -6,7 +6,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any
 
 from umrs.model_registry.models import ExecutionAuthority, ModelRef, ModelRefType
 
@@ -29,7 +29,7 @@ class HuggingFaceResolver(ModelRefResolver):
     def __init__(
         self,
         cache_dir: str = "",
-        umrs_client: Optional[Any] = None,
+        umrs_client: Any | None = None,
         download_timeout_sec: int = 3600,
     ):
         self.cache_dir = cache_dir or os.getenv(
@@ -138,7 +138,7 @@ class HuggingFaceResolver(ModelRefResolver):
             return result.get("path", self._get_cache_path(repo_id, revision))
 
         except Exception as e:
-            raise ResolutionError(f"Model download failed: {e}")
+            raise ResolutionError(f"Model download failed: {e}") from e
 
     async def _wait_for_download(self, job_id: str) -> None:
         """Wait for download job to complete."""

@@ -22,7 +22,7 @@ See DEVELOPMENT_OBJECTIVES.md Section 1.9.2 for design details.
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -58,7 +58,7 @@ router = APIRouter(prefix="/umrs/models", tags=["models"])
 # =============================================================================
 
 # Global model store instance (set during app startup)
-_model_store: Optional[ModelStore] = None
+_model_store: ModelStore | None = None
 
 
 def set_model_store(store: ModelStore) -> None:
@@ -86,12 +86,12 @@ class ServingProfileRequest(BaseModel):
     """Serving configuration for vLLM/LiteLLM."""
 
     tensor_parallel_size: int = Field(1, ge=1, le=8, description="Number of GPUs for tensor parallelism")
-    max_model_len: Optional[int] = Field(None, description="Maximum context length")
+    max_model_len: int | None = Field(None, description="Maximum context length")
     gpu_memory_utilization: float = Field(0.9, ge=0.1, le=1.0, description="GPU memory fraction")
     dtype: str = Field("auto", description="Data type: auto, float16, bfloat16")
-    quantization: Optional[str] = Field(None, description="Quantization: awq, gptq, None")
-    served_model_name: Optional[str] = Field(None, description="Override model name in API")
-    min_gpu_memory_gb: Optional[float] = Field(None, description="Minimum GPU memory required")
+    quantization: str | None = Field(None, description="Quantization: awq, gptq, None")
+    served_model_name: str | None = Field(None, description="Override model name in API")
+    min_gpu_memory_gb: float | None = Field(None, description="Minimum GPU memory required")
     recommended_gpu_count: int = Field(1, ge=1, description="Recommended number of GPUs")
 
 
@@ -101,8 +101,8 @@ class CapabilitiesRequest(BaseModel):
     supports_tool_calling: bool = Field(False, description="Whether the model supports tool/function calling")
     supports_vision: bool = Field(False, description="Whether the model supports vision/image input")
     supports_structured_output: bool = Field(False, description="Whether the model supports structured (JSON) output")
-    max_output_tokens: Optional[int] = Field(None, description="Maximum output tokens")
-    model_family: Optional[str] = Field(None, description="Model family: qwen, llama, mistral, etc.")
+    max_output_tokens: int | None = Field(None, description="Maximum output tokens")
+    model_family: str | None = Field(None, description="Model family: qwen, llama, mistral, etc.")
 
 
 class ModelCreateRequest(BaseModel):
@@ -113,13 +113,13 @@ class ModelCreateRequest(BaseModel):
     storage_ref: str = Field(..., description="Filesystem path to model weights")
     model_type: str = Field("llm", description="Type: llm or embedding")
 
-    owner_id: Optional[str] = Field(None, description="Owner user ID (required for user scope)")
-    project_id: Optional[str] = Field(None, description="Project ID (required for project scope)")
+    owner_id: str | None = Field(None, description="Owner user ID (required for user scope)")
+    project_id: str | None = Field(None, description="Project ID (required for project scope)")
 
-    huggingface_id: Optional[str] = Field(None, description="Source HuggingFace model ID")
-    description: Optional[str] = Field(None, max_length=1000, description="Model description")
-    serving_profile: Optional[ServingProfileRequest] = Field(None, description="Serving configuration")
-    capabilities: Optional[CapabilitiesRequest] = Field(None, description="Model capabilities")
+    huggingface_id: str | None = Field(None, description="Source HuggingFace model ID")
+    description: str | None = Field(None, max_length=1000, description="Model description")
+    serving_profile: ServingProfileRequest | None = Field(None, description="Serving configuration")
+    capabilities: CapabilitiesRequest | None = Field(None, description="Model capabilities")
 
     class Config:
         json_schema_extra = {
@@ -148,9 +148,9 @@ class ModelStageRequest(BaseModel):
     scope: str = Field("user", description="Target scope: project or user")
     model_type: str = Field("llm", description="Type: llm or embedding")
 
-    project_id: Optional[str] = Field(None, description="Project ID (for project scope)")
-    description: Optional[str] = Field(None, description="Model description")
-    serving_profile: Optional[ServingProfileRequest] = Field(None, description="Serving configuration")
+    project_id: str | None = Field(None, description="Project ID (for project scope)")
+    description: str | None = Field(None, description="Model description")
+    serving_profile: ServingProfileRequest | None = Field(None, description="Serving configuration")
 
     class Config:
         json_schema_extra = {
@@ -168,10 +168,10 @@ class ModelStageRequest(BaseModel):
 class ModelUpdateRequest(BaseModel):
     """Request to update model metadata."""
 
-    description: Optional[str] = Field(None, description="New description")
-    serving_profile: Optional[ServingProfileRequest] = Field(None, description="New serving profile")
-    status: Optional[str] = Field(None, description="New status: available, deprecated")
-    capabilities: Optional[CapabilitiesRequest] = Field(None, description="Model capabilities")
+    description: str | None = Field(None, description="New description")
+    serving_profile: ServingProfileRequest | None = Field(None, description="New serving profile")
+    status: str | None = Field(None, description="New status: available, deprecated")
+    capabilities: CapabilitiesRequest | None = Field(None, description="Model capabilities")
 
 
 class ModelResponse(BaseModel):
@@ -180,19 +180,19 @@ class ModelResponse(BaseModel):
     model_id: str
     name: str
     scope: str
-    owner_id: Optional[str]
-    project_id: Optional[str]
+    owner_id: str | None
+    project_id: str | None
     storage_ref: str
-    model_ref: Optional[Dict[str, Any]] = None
+    model_ref: dict[str, Any] | None = None
     model_type: str
-    huggingface_id: Optional[str]
-    description: Optional[str]
-    serving_profile: Dict[str, Any]
-    capabilities: Dict[str, Any] = {}
+    huggingface_id: str | None
+    description: str | None
+    serving_profile: dict[str, Any]
+    capabilities: dict[str, Any] = {}
     execution_authority_default: str = "compose"
     status: str
-    created_at: Optional[str]
-    updated_at: Optional[str]
+    created_at: str | None
+    updated_at: str | None
 
     @classmethod
     def from_entry(cls, entry: ModelEntry) -> "ModelResponse":
@@ -220,7 +220,7 @@ class ModelResponse(BaseModel):
 class ModelListResponse(BaseModel):
     """Response for model list endpoint."""
 
-    models: List[ModelResponse]
+    models: list[ModelResponse]
     total: int
     limit: int
     offset: int
@@ -239,8 +239,8 @@ class ModelDownloadRequest(BaseModel):
     """Request to download a system model to user space (U-818)."""
 
     target_scope: str = Field("user", description="Target scope: project or user")
-    project_id: Optional[str] = Field(None, description="Target project (for project scope)")
-    custom_name: Optional[str] = Field(None, description="Custom name for the copy")
+    project_id: str | None = Field(None, description="Target project (for project scope)")
+    custom_name: str | None = Field(None, description="Custom name for the copy")
 
     class Config:
         json_schema_extra = {
@@ -271,17 +271,17 @@ class PolicyCreateRequest(BaseModel):
     """Request to create a model policy."""
 
     model_name: str = Field(..., description="Model name this policy applies to")
-    allowed_projects: List[str] = Field(default_factory=list, description="Allowed project IDs")
-    denied_projects: List[str] = Field(default_factory=list, description="Denied project IDs")
-    max_concurrent_endpoints: Optional[int] = Field(None, description="Max concurrent endpoints")
-    max_tokens_per_day: Optional[int] = Field(None, description="Daily token quota")
+    allowed_projects: list[str] = Field(default_factory=list, description="Allowed project IDs")
+    denied_projects: list[str] = Field(default_factory=list, description="Denied project IDs")
+    max_concurrent_endpoints: int | None = Field(None, description="Max concurrent endpoints")
+    max_tokens_per_day: int | None = Field(None, description="Daily token quota")
     priority: int = Field(0, description="Scheduling priority")
     warm_pool_min: int = Field(0, description="Minimum warm endpoints")
     warm_pool_max: int = Field(0, description="Maximum warm endpoints")
     warm_pool_ttl_seconds: int = Field(3600, description="Warm endpoint TTL")
     enable_warm_pool: bool = Field(False, description="Enable warm pooling")
     is_system_model: bool = Field(False, description="Mark as system model")
-    default_serving_profile: Optional[ServingProfileRequest] = Field(None)
+    default_serving_profile: ServingProfileRequest | None = Field(None)
 
     class Config:
         json_schema_extra = {
@@ -299,12 +299,12 @@ class PolicyCreateRequest(BaseModel):
 class PolicyUpdateRequest(BaseModel):
     """Request to update a model policy."""
 
-    allowed_projects: Optional[List[str]] = Field(None)
-    denied_projects: Optional[List[str]] = Field(None)
-    max_concurrent_endpoints: Optional[int] = Field(None)
-    enable_warm_pool: Optional[bool] = Field(None)
-    warm_pool_min: Optional[int] = Field(None)
-    warm_pool_max: Optional[int] = Field(None)
+    allowed_projects: list[str] | None = Field(None)
+    denied_projects: list[str] | None = Field(None)
+    max_concurrent_endpoints: int | None = Field(None)
+    enable_warm_pool: bool | None = Field(None)
+    warm_pool_min: int | None = Field(None)
+    warm_pool_max: int | None = Field(None)
 
 
 class PolicyResponse(BaseModel):
@@ -312,19 +312,19 @@ class PolicyResponse(BaseModel):
 
     policy_id: str
     model_name: str
-    allowed_projects: List[str]
-    denied_projects: List[str]
-    max_concurrent_endpoints: Optional[int]
-    max_tokens_per_day: Optional[int]
+    allowed_projects: list[str]
+    denied_projects: list[str]
+    max_concurrent_endpoints: int | None
+    max_tokens_per_day: int | None
     priority: int
     warm_pool_min: int
     warm_pool_max: int
     warm_pool_ttl_seconds: int
     enable_warm_pool: bool
     is_system_model: bool
-    default_serving_profile: Dict[str, Any]
-    created_at: Optional[str]
-    updated_at: Optional[str]
+    default_serving_profile: dict[str, Any]
+    created_at: str | None
+    updated_at: str | None
 
     @classmethod
     def from_policy(cls, policy: ModelPolicy) -> "PolicyResponse":
@@ -351,7 +351,7 @@ class PolicyResponse(BaseModel):
 class PolicyListResponse(BaseModel):
     """Response for policy list endpoint."""
 
-    policies: List[PolicyResponse]
+    policies: list[PolicyResponse]
     total: int
     limit: int
     offset: int
@@ -361,7 +361,7 @@ class PolicyCheckResponse(BaseModel):
     """Response for policy access check."""
 
     allowed: bool
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
 # =============================================================================
@@ -376,13 +376,13 @@ def _strict_auth_mode() -> bool:
 def get_access_context(
     user_id: str = Query("", description="User ID (legacy, ignored in strict mode)"),
     is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
-    project_memberships: Optional[str] = Query(
+    project_memberships: str | None = Query(
         None, description="Comma-separated project IDs (legacy)"
     ),
-    x_user_id: Optional[str] = Header(None),
-    x_verified_is_admin: Optional[str] = Header(None),
-    x_verified_project_memberships: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    x_verified_project_memberships: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
 ) -> AccessContext:
     """
     Build access context from Gateway-verified headers, falling back to
@@ -431,8 +431,8 @@ def get_access_context(
 
 
 def serving_profile_from_request(
-    req: Optional[ServingProfileRequest],
-) -> Optional[ServingProfile]:
+    req: ServingProfileRequest | None,
+) -> ServingProfile | None:
     """Convert request to ServingProfile."""
     if req is None:
         return None
@@ -449,8 +449,8 @@ def serving_profile_from_request(
 
 
 def capabilities_from_request(
-    req: Optional[CapabilitiesRequest],
-) -> Optional[ModelCapabilities]:
+    req: CapabilitiesRequest | None,
+) -> ModelCapabilities | None:
     """Convert request to ModelCapabilities."""
     if req is None:
         return None
@@ -464,8 +464,8 @@ def capabilities_from_request(
 
 
 def _resolve_job_project_id(
-    caller_project_id: Optional[str],
-    requested_project_id: Optional[str],
+    caller_project_id: str | None,
+    requested_project_id: str | None,
     ctx: AccessContext,
 ) -> str:
     """Resolve the durable-job project partition used for job API access."""
@@ -477,7 +477,7 @@ def _submit_model_download_job(
     *,
     project_id: str,
     ctx: AccessContext,
-    spec: Dict[str, Any],
+    spec: dict[str, Any],
 ) -> str:
     """Create and enqueue a durable model_download job."""
     try:
@@ -498,7 +498,7 @@ def _submit_model_download_job(
     return job_id
 
 
-def _build_stage_job_spec(model: ModelEntry) -> Dict[str, Any]:
+def _build_stage_job_spec(model: ModelEntry) -> dict[str, Any]:
     """Build the durable job spec for Hugging Face model staging."""
     return {
         "source": "huggingface",
@@ -524,7 +524,7 @@ def _build_stage_job_spec(model: ModelEntry) -> Dict[str, Any]:
 def _build_copy_job_spec(
     source_model: ModelEntry,
     target_model: ModelEntry,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Build the durable job spec for system-model copy requests."""
     return {
         "source": "local",
@@ -568,10 +568,10 @@ def _rollback_staged_model(
 
 @router.get("", response_model=ModelListResponse)
 async def list_models(
-    scope: Optional[str] = Query(None, description="Filter by scope"),
-    model_type: Optional[str] = Query(None, description="Filter by type"),
-    status: Optional[str] = Query(None, description="Filter by status"),
-    project_id: Optional[str] = Query(None, description="Filter by project"),
+    scope: str | None = Query(None, description="Filter by scope"),
+    model_type: str | None = Query(None, description="Filter by type"),
+    status: str | None = Query(None, description="Filter by status"),
+    project_id: str | None = Query(None, description="Filter by project"),
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     ctx: AccessContext = Depends(get_access_context),
@@ -623,12 +623,12 @@ async def get_model(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model not found: {model_id}",
-        )
+        ) from None
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
 @router.post("", response_model=ModelResponse, status_code=status.HTTP_201_CREATED)
@@ -681,28 +681,28 @@ async def create_model(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
     except PathNotAllowedError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
     except DuplicateModelError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
 
 
 @router.post("/stage", response_model=ModelStageResponse, status_code=status.HTTP_202_ACCEPTED)
 async def stage_model(
     request: ModelStageRequest,
-    caller_project_id: Optional[str] = Query(
+    caller_project_id: str | None = Query(
         None,
         description="Caller active project ID for durable job scoping",
     ),
@@ -794,12 +794,12 @@ async def stage_model(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
 
 
 @router.patch("/{model_id}", response_model=ModelResponse)
@@ -834,12 +834,12 @@ async def update_model(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model not found: {model_id}",
-        )
+        ) from None
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
 @router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -860,12 +860,12 @@ async def delete_model(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model not found: {model_id}",
-        )
+        ) from None
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
 # =============================================================================
@@ -878,7 +878,7 @@ class ModelDetectResponse(BaseModel):
 
     model_id: str
     name: str
-    detected: Dict[str, Any] = Field(default_factory=dict)
+    detected: dict[str, Any] = Field(default_factory=dict)
     updated: bool = False
     message: str = ""
 
@@ -904,7 +904,7 @@ async def detect_model_capabilities(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model not found: {model_id}",
-        )
+        ) from None
 
     if not model.storage_ref:
         return ModelDetectResponse(
@@ -938,7 +938,7 @@ async def detect_model_capabilities(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to update capabilities: {e}",
-        )
+        ) from e
 
     return ModelDetectResponse(
         model_id=model.model_id,
@@ -953,7 +953,7 @@ class ModelPublishRequest(BaseModel):
     """Request to publish a user model to project scope."""
 
     target_project_id: str = Field(..., description="Target project ID to publish to")
-    new_name: Optional[str] = Field(None, description="Override model name in target scope")
+    new_name: str | None = Field(None, description="Override model name in target scope")
 
     class Config:
         json_schema_extra = {
@@ -1028,25 +1028,25 @@ async def publish_model(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model not found: {model_id}",
-        )
+        ) from None
     except DuplicateModelError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
-@router.get("/{model_id}/path", response_model=Dict[str, str])
+@router.get("/{model_id}/path", response_model=dict[str, str])
 async def resolve_model_path(
     model_id: str,
     ctx: AccessContext = Depends(get_access_context),
     store: ModelStore = Depends(get_model_store),
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """
     Resolve model ID to storage path (for endpoint provisioning).
 
@@ -1060,12 +1060,12 @@ async def resolve_model_path(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model not found: {model_id}",
-        )
+        ) from None
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
 # =============================================================================
@@ -1075,8 +1075,8 @@ async def resolve_model_path(
 
 @router.get("/system", response_model=ModelListResponse)
 async def list_system_models(
-    model_type: Optional[str] = Query(None, description="Filter by type"),
-    status: Optional[str] = Query("available", description="Filter by status"),
+    model_type: str | None = Query(None, description="Filter by type"),
+    status: str | None = Query("available", description="Filter by status"),
     prefer_system: bool = Query(True, description="Include system models first"),
     limit: int = Query(100, ge=1, le=1000, description="Max results"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
@@ -1117,9 +1117,9 @@ class SystemModelCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=256, description="Model name")
     storage_ref: str = Field(..., description="Filesystem path to model weights")
     model_type: str = Field("llm", description="Type: llm or embedding")
-    huggingface_id: Optional[str] = Field(None, description="Source HuggingFace model ID")
-    description: Optional[str] = Field(None, max_length=1000, description="Model description")
-    serving_profile: Optional[ServingProfileRequest] = Field(None, description="Serving configuration")
+    huggingface_id: str | None = Field(None, description="Source HuggingFace model ID")
+    description: str | None = Field(None, max_length=1000, description="Model description")
+    serving_profile: ServingProfileRequest | None = Field(None, description="Serving configuration")
     execution_authority_default: str = Field("compose", description="Default authority: slurm, k8s, compose")
 
     # Policy settings
@@ -1127,9 +1127,9 @@ class SystemModelCreateRequest(BaseModel):
     warm_pool_max: int = Field(1, ge=0, description="Maximum warm endpoints")
     warm_pool_ttl_seconds: int = Field(3600, ge=60, description="Warm endpoint TTL")
     enable_warm_pool: bool = Field(False, description="Enable warm pooling")
-    allowed_projects: List[str] = Field(default_factory=list, description="Allowed project IDs (empty = all)")
-    denied_projects: List[str] = Field(default_factory=list, description="Denied project IDs")
-    max_concurrent_endpoints: Optional[int] = Field(None, description="Max concurrent endpoints")
+    allowed_projects: list[str] = Field(default_factory=list, description="Allowed project IDs (empty = all)")
+    denied_projects: list[str] = Field(default_factory=list, description="Denied project IDs")
+    max_concurrent_endpoints: int | None = Field(None, description="Max concurrent endpoints")
     priority: int = Field(0, description="Scheduling priority")
 
     class Config:
@@ -1215,29 +1215,29 @@ async def create_system_model(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
     except PathNotAllowedError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
     except DuplicateModelError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
-        )
+        ) from e
 
 
 @router.post("/{model_name}/download", response_model=ModelDownloadResponse, status_code=status.HTTP_202_ACCEPTED)
 async def download_model_to_user_space(
     model_name: str,
     request: ModelDownloadRequest,
-    caller_project_id: Optional[str] = Query(
+    caller_project_id: str | None = Query(
         None,
         description="Caller active project ID for durable job scoping",
     ),
@@ -1349,12 +1349,12 @@ async def download_model_to_user_space(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"System model not found: {model_name}",
-        )
+        ) from None
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
 # =============================================================================
@@ -1365,12 +1365,12 @@ async def download_model_to_user_space(
 class ModelPolicyUpdateRequest(BaseModel):
     """Request to update a model's policy by model name (U-820)."""
 
-    allowed_projects: Optional[List[str]] = Field(None, description="New allowed projects list")
-    denied_projects: Optional[List[str]] = Field(None, description="New denied projects list")
-    max_concurrent_endpoints: Optional[int] = Field(None, description="Max concurrent endpoints")
-    enable_warm_pool: Optional[bool] = Field(None, description="Enable/disable warm pooling")
-    warm_pool_min: Optional[int] = Field(None, ge=0, description="Minimum warm endpoints")
-    warm_pool_max: Optional[int] = Field(None, ge=0, description="Maximum warm endpoints")
+    allowed_projects: list[str] | None = Field(None, description="New allowed projects list")
+    denied_projects: list[str] | None = Field(None, description="New denied projects list")
+    max_concurrent_endpoints: int | None = Field(None, description="Max concurrent endpoints")
+    enable_warm_pool: bool | None = Field(None, description="Enable/disable warm pooling")
+    warm_pool_min: int | None = Field(None, ge=0, description="Minimum warm endpoints")
+    warm_pool_max: int | None = Field(None, ge=0, description="Maximum warm endpoints")
 
 
 @router.get("/{model_name}/policy", response_model=PolicyResponse)
@@ -1437,12 +1437,12 @@ async def update_model_policy(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"No policy found for model: {model_name}",
-        )
+        ) from None
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
 # =============================================================================
@@ -1454,7 +1454,7 @@ policy_router = APIRouter(prefix="/umrs/models/policies", tags=["policies"])
 
 @policy_router.get("", response_model=PolicyListResponse)
 async def list_policies(
-    is_system_model: Optional[bool] = Query(None, description="Filter by system model flag"),
+    is_system_model: bool | None = Query(None, description="Filter by system model flag"),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     store: ModelStore = Depends(get_model_store),
@@ -1517,7 +1517,7 @@ async def create_policy(
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
 @policy_router.get("/{policy_id}", response_model=PolicyResponse)
@@ -1533,7 +1533,7 @@ async def get_policy(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Policy not found: {policy_id}",
-        )
+        ) from None
 
 
 @policy_router.get("/check/{model_name}", response_model=PolicyCheckResponse)
@@ -1581,12 +1581,12 @@ async def update_policy(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Policy not found: {policy_id}",
-        )
+        ) from None
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e
 
 
 @policy_router.delete("/{policy_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -1607,9 +1607,9 @@ async def delete_policy(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Policy not found: {policy_id}",
-        )
+        ) from None
     except PermissionDeniedError as e:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=str(e),
-        )
+        ) from e

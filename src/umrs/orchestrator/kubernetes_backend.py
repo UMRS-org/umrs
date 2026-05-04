@@ -25,7 +25,7 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urlparse
 
 from .base import (
@@ -44,7 +44,7 @@ _DEFAULT_EGRESS_NO_PROXY = (
 )
 
 
-def _k8s_egress_allowed_cidrs() -> List[str]:
+def _k8s_egress_allowed_cidrs() -> list[str]:
     """Return optional site-specific CIDRs allowed outside EgressGuard."""
     return [
         cidr.strip()
@@ -62,7 +62,7 @@ def _proxy_port(proxy_url: str) -> int:
     return 80
 
 
-def _dns_egress_rule() -> Dict[str, Any]:
+def _dns_egress_rule() -> dict[str, Any]:
     return {
         "to": [
             {
@@ -77,7 +77,7 @@ def _dns_egress_rule() -> Dict[str, Any]:
     }
 
 
-def _egress_guard_rule(proxy_port: int) -> Dict[str, Any]:
+def _egress_guard_rule(proxy_port: int) -> dict[str, Any]:
     return {
         "to": [
             {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "egress-guard"}}},
@@ -87,13 +87,13 @@ def _egress_guard_rule(proxy_port: int) -> Dict[str, Any]:
     }
 
 
-def _cidr_egress_rule(allowed_cidrs: List[str]) -> Dict[str, Any]:
+def _cidr_egress_rule(allowed_cidrs: list[str]) -> dict[str, Any]:
     return {
         "to": [{"ipBlock": {"cidr": cidr}} for cidr in allowed_cidrs],
     }
 
 
-def _egress_proxy_env_vars(cfg: OrchestratorConfig) -> List[Dict[str, str]]:
+def _egress_proxy_env_vars(cfg: OrchestratorConfig) -> list[dict[str, str]]:
     egress_proxy_url = cfg.egress_proxy_url or _DEFAULT_EGRESS_PROXY_URL
     egress_no_proxy = cfg.egress_no_proxy or _DEFAULT_EGRESS_NO_PROXY
     return [
@@ -117,7 +117,7 @@ class KubernetesBackend(OrchestratorBackend):
     persistent endpoints. Supports GPU scheduling via NVIDIA device plugin.
     """
 
-    def __init__(self, config: Optional[OrchestratorConfig] = None):
+    def __init__(self, config: OrchestratorConfig | None = None):
         super().__init__(config)
         self._k8s_client = None
         self._k8s_available = None
@@ -132,7 +132,8 @@ class KubernetesBackend(OrchestratorBackend):
             return
 
         try:
-            from kubernetes import client, config as k8s_config
+            from kubernetes import client
+            from kubernetes import config as k8s_config
             from kubernetes.client import ApiException
 
             # Try in-cluster config first, then kubeconfig
@@ -155,10 +156,10 @@ class KubernetesBackend(OrchestratorBackend):
             raise RuntimeError(
                 "kubernetes Python package not installed. "
                 "Install with: pip install kubernetes"
-            )
+            ) from None
         except Exception as e:
             self._k8s_available = False
-            raise RuntimeError(f"Failed to initialize Kubernetes client: {e}")
+            raise RuntimeError(f"Failed to initialize Kubernetes client: {e}") from e
 
     def _job_name(self, suffix: str = "") -> str:
         """Generate a unique job name."""
@@ -168,7 +169,7 @@ class KubernetesBackend(OrchestratorBackend):
 
     def _build_network_policy(
         self, job_name: str, namespace: str
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build a NetworkPolicy that denies egress except to allowed CIDRs.
 
         R-8 (Phase 2k): enforces the offline-inference invariant by allowing
@@ -178,7 +179,7 @@ class KubernetesBackend(OrchestratorBackend):
         # 53/UDP+TCP for DNS, plus EgressGuard for all HTTP(S) egress.
         # Site-specific private CIDRs may be added explicitly through
         # K8S_EGRESS_ALLOWED_CIDRS, but the default is no direct CIDR egress.
-        egress_rules: List[Dict[str, Any]] = [
+        egress_rules: list[dict[str, Any]] = [
             _dns_egress_rule(),
             _egress_guard_rule(_proxy_port(self.config.egress_proxy_url)),
         ]
@@ -214,7 +215,7 @@ class KubernetesBackend(OrchestratorBackend):
         job_name: str,
         model_path: str,
         **kwargs: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Build Kubernetes Job manifest for Mini-RiVault."""
         cfg = self.config
         namespace = kwargs.get("namespace", cfg.k8s_namespace)
@@ -255,7 +256,7 @@ class KubernetesBackend(OrchestratorBackend):
             env_vars.append({"name": key, "value": str(value)})
 
         # R-10: conditional subPath in the volumeMount.
-        model_volume_mount: Dict[str, Any] = {
+        model_volume_mount: dict[str, Any] = {
             "name": "models",
             "mountPath": "/models",
             "readOnly": True,
@@ -366,7 +367,7 @@ class KubernetesBackend(OrchestratorBackend):
 
         return manifest
 
-    def _build_service_manifest(self, job_name: str, namespace: str) -> Dict[str, Any]:
+    def _build_service_manifest(self, job_name: str, namespace: str) -> dict[str, Any]:
         """Build Kubernetes Service manifest for the job."""
         cfg = self.config
 
@@ -398,7 +399,7 @@ class KubernetesBackend(OrchestratorBackend):
 
     async def submit_job(
         self,
-        model_path: Optional[str] = None,
+        model_path: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
         """Submit a Kubernetes Job for Mini-RiVault."""
@@ -486,13 +487,13 @@ class KubernetesBackend(OrchestratorBackend):
                 label_selector=self._JOB_NAME_SELECTOR_LEGACY.format(job=job_id),
             )
 
-    def _capture_pod_logs(self, namespace: str, job_id: str, tail: int = 200) -> Optional[str]:
+    def _capture_pod_logs(self, namespace: str, job_id: str, tail: int = 200) -> str | None:
         """R-11: pull last N lines of pod logs into the JobInfo error_message."""
         try:
             pods = self._select_job_pods(namespace, job_id)
         except self._k8s_client["ApiException"]:
             return None
-        snippets: List[str] = []
+        snippets: list[str] = []
         for pod in pods.items:
             try:
                 log = self._k8s_client["core"].read_namespaced_pod_log(
@@ -508,7 +509,7 @@ class KubernetesBackend(OrchestratorBackend):
     def _job_to_info(self, job, namespace: str) -> JobInfo:
         """Build a JobInfo from a V1Job, with R-9 readiness deferral."""
         status = JobStatus.PENDING
-        error_message: Optional[str] = None
+        error_message: str | None = None
 
         if job.status.succeeded and job.status.succeeded > 0:
             status = JobStatus.STOPPED
@@ -528,7 +529,7 @@ class KubernetesBackend(OrchestratorBackend):
         # R-9: never promote to READY here. The endpoint coordinates are set
         # once the pod is Running so UMRS's ReadinessPoller can take over;
         # the registry transitions to READY when the poller succeeds.
-        endpoint: Optional[EndpointInfo] = None
+        endpoint: EndpointInfo | None = None
         if status == JobStatus.STARTING:
             try:
                 pods = self._select_job_pods(namespace, job.metadata.name)
@@ -578,7 +579,7 @@ class KubernetesBackend(OrchestratorBackend):
     async def wait_for_ready(
         self,
         job_id: str,
-        timeout_sec: Optional[int] = None,
+        timeout_sec: int | None = None,
     ) -> EndpointInfo:
         """Wait for job to be ready."""
         timeout = timeout_sec or self.config.startup_timeout_sec
@@ -636,8 +637,8 @@ class KubernetesBackend(OrchestratorBackend):
 
     async def list_jobs(
         self,
-        status_filter: Optional[List[JobStatus]] = None,
-    ) -> List[JobInfo]:
+        status_filter: list[JobStatus] | None = None,
+    ) -> list[JobInfo]:
         """List all Mini-RiVault Jobs.
 
         R-12 (Phase 2k): build :class:`JobInfo` directly from the bulk list
@@ -652,9 +653,9 @@ class KubernetesBackend(OrchestratorBackend):
                 label_selector="app.kubernetes.io/name=mini-rivault",
             )
         except self._k8s_client["ApiException"] as e:
-            raise RuntimeError(f"Failed to list Jobs: {e}")
+            raise RuntimeError(f"Failed to list Jobs: {e}") from e
 
-        result: List[JobInfo] = []
+        result: list[JobInfo] = []
         for job in jobs.items:
             job_info = self._job_to_info(job, namespace)
             if status_filter is None or job_info.status in status_filter:
@@ -687,7 +688,7 @@ class KubernetesBackend(OrchestratorBackend):
 
         return cleaned
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check if Kubernetes cluster is accessible."""
         try:
             await self._ensure_k8s_client()

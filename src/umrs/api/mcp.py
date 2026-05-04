@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import aiohttp
 from fastapi import APIRouter, HTTPException, Query, status
@@ -37,7 +37,7 @@ router = APIRouter(prefix="/umrs/mcp", tags=["mcp"])
 # Module-level store (set by HTTP sidecar on startup)
 # =============================================================================
 
-_store: Optional[MCPServerStore] = None
+_store: MCPServerStore | None = None
 
 
 def set_mcp_store(store: MCPServerStore) -> None:
@@ -70,10 +70,10 @@ class ServerRegistrationRequest(BaseModel):
     transport: str = Field(default="http", description="Transport protocol")
     description: str = Field(default="", description="Server description")
     auth_type: str = Field(default="none", description="Auth type: none, api_key, oauth")
-    auth_config: Dict[str, Any] = Field(default_factory=dict, description="Auth configuration")
-    metadata: Dict[str, Any] = Field(default_factory=dict, description="Custom metadata")
-    tools: List[Dict[str, Any]] = Field(default_factory=list, description="Tool definitions")
-    project_id: Optional[str] = Field(default=None, description="Owning project ID")
+    auth_config: dict[str, Any] = Field(default_factory=dict, description="Auth configuration")
+    metadata: dict[str, Any] = Field(default_factory=dict, description="Custom metadata")
+    tools: list[dict[str, Any]] = Field(default_factory=list, description="Tool definitions")
+    project_id: str | None = Field(default=None, description="Owning project ID")
 
 
 class ServerResponse(BaseModel):
@@ -87,13 +87,13 @@ class ServerResponse(BaseModel):
     status: str
     description: str
     auth_type: str
-    auth_config: Dict[str, Any] = Field(default_factory=dict)
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    registered_by: Optional[str] = None
-    project_id: Optional[str] = None
-    tools: List[Dict[str, Any]] = Field(default_factory=list)
-    created_at: Optional[str] = None
-    updated_at: Optional[str] = None
+    auth_config: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    registered_by: str | None = None
+    project_id: str | None = None
+    tools: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: str | None = None
+    updated_at: str | None = None
 
 
 class ToolResponse(BaseModel):
@@ -101,24 +101,24 @@ class ToolResponse(BaseModel):
 
     name: str
     description: str
-    inputSchema: Dict[str, Any] = Field(default_factory=dict)
-    server: Optional[str] = None
+    inputSchema: dict[str, Any] = Field(default_factory=dict)
+    server: str | None = None
 
 
 class ToolCallRequest(BaseModel):
     """Request to invoke an MCP tool."""
 
     tool: str = Field(..., description="Tool name to invoke")
-    arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
-    metadata: Dict[str, Any] = Field(default_factory=dict, alias="_meta")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+    metadata: dict[str, Any] = Field(default_factory=dict, alias="_meta")
 
 
 class ToolCallResponse(BaseModel):
     """Response from tool invocation."""
 
-    content: List[Dict[str, Any]]
+    content: list[dict[str, Any]]
     isError: bool = False
-    server: Optional[str] = None
+    server: str | None = None
 
 
 # Configuration for tool proxying
@@ -131,11 +131,11 @@ _MCP_MAX_RETRIES = int(os.getenv("MCP_MAX_RETRIES", "3"))
 # =============================================================================
 
 
-@router.get("/servers", response_model=List[ServerResponse])
+@router.get("/servers", response_model=list[ServerResponse])
 async def list_servers(
-    project_id: Optional[str] = Query(None, description="Filter by project"),
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status"),
-) -> List[ServerResponse]:
+    project_id: str | None = Query(None, description="Filter by project"),
+    status_filter: str | None = Query(None, alias="status", description="Filter by status"),
+) -> list[ServerResponse]:
     """List all registered MCP servers."""
     store = _get_store()
     servers = store.list_servers(project_id=project_id, status_filter=status_filter)
@@ -181,12 +181,12 @@ async def get_server(server_id_or_name: str) -> ServerResponse:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Server not found: {server_id_or_name}",
-        )
+        ) from None
     return _server_to_response(server)
 
 
 @router.delete("/servers/{server_id_or_name}")
-async def unregister_server(server_id_or_name: str) -> Dict[str, str]:
+async def unregister_server(server_id_or_name: str) -> dict[str, str]:
     """Unregister an MCP server by ID or name."""
     store = _get_store()
     if server_id_or_name.startswith("mcp-"):
@@ -207,10 +207,10 @@ async def unregister_server(server_id_or_name: str) -> Dict[str, str]:
 # =============================================================================
 
 
-@router.get("/tools", response_model=List[ToolResponse])
+@router.get("/tools", response_model=list[ToolResponse])
 async def list_tools(
-    server: Optional[str] = Query(None, description="Filter by server name"),
-) -> List[ToolResponse]:
+    server: str | None = Query(None, description="Filter by server name"),
+) -> list[ToolResponse]:
     """List all tools across registered MCP servers."""
     store = _get_store()
     tools = store.list_tools(server_name=server)
@@ -225,10 +225,10 @@ async def list_tools(
     ]
 
 
-@router.get("/tools/lookup", response_model=Optional[ServerResponse])
+@router.get("/tools/lookup", response_model=ServerResponse | None)
 async def lookup_tool_server(
     tool: str = Query(..., description="Tool name to look up"),
-) -> Optional[ServerResponse]:
+) -> ServerResponse | None:
     """Find which server provides a given tool."""
     store = _get_store()
     server = store.get_server_for_tool(tool)
@@ -246,7 +246,7 @@ async def lookup_tool_server(
 
 
 @router.get("/health")
-async def mcp_health() -> Dict[str, Any]:
+async def mcp_health() -> dict[str, Any]:
     """MCP subsystem health check."""
     store = _get_store()
     stats = store.get_stats()
@@ -346,7 +346,7 @@ class _MCPProxyError(Exception):
     """Error proxying request to MCP server."""
 
 
-async def _discover_server_tools(url: str) -> List[Dict[str, Any]]:
+async def _discover_server_tools(url: str) -> list[dict[str, Any]]:
     """Try to discover tools from an HTTP MCP server."""
     if not url.startswith("http"):
         return []
@@ -372,7 +372,7 @@ async def _discover_server_tools(url: str) -> List[Dict[str, Any]]:
     return [_normalize_tool_def(t) for t in tools if isinstance(t, dict)]
 
 
-def _normalize_tool_def(tool: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_tool_def(tool: dict[str, Any]) -> dict[str, Any]:
     """Normalize MCP tool definitions."""
     normalized = dict(tool)
     if "inputSchema" not in normalized and "parameters" in normalized:
@@ -382,7 +382,7 @@ def _normalize_tool_def(tool: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-async def _parse_tool_response(response: aiohttp.ClientResponse, tool_name: str) -> Optional[Dict[str, Any]]:
+async def _parse_tool_response(response: aiohttp.ClientResponse, tool_name: str) -> dict[str, Any] | None:
     """Parse the JSON-RPC response from a tool call. Returns None for retryable 5xx."""
     if response.status == 200:
         result = await response.json()
@@ -406,9 +406,9 @@ async def _proxy_tool_call(
     server_url: str,
     transport: str,
     tool_name: str,
-    arguments: Dict[str, Any],
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
+    arguments: dict[str, Any],
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Proxy a tool call to the MCP server via HTTP."""
     if transport not in ("http", "sse") and not server_url.startswith("http"):
         raise _MCPProxyError(
@@ -416,7 +416,7 @@ async def _proxy_tool_call(
         )
 
     url = f"{server_url.rstrip('/')}/tools/call"
-    params: Dict[str, Any] = {"name": tool_name, "arguments": arguments}
+    params: dict[str, Any] = {"name": tool_name, "arguments": arguments}
     if metadata:
         params["_meta"] = metadata
 
@@ -430,24 +430,23 @@ async def _proxy_tool_call(
 
     for attempt in range(_MCP_MAX_RETRIES):
         try:
-            async with aiohttp.ClientSession(timeout=timeout) as session:
-                async with session.post(
-                    url,
-                    json=payload,
-                    headers={"Content-Type": "application/json"},
-                ) as response:
-                    result = await _parse_tool_response(response, tool_name)
-                    if result is not None:
-                        return result
-                    if attempt < _MCP_MAX_RETRIES - 1:
-                        await asyncio.sleep(2**attempt)
-                        continue
-                    raise _MCPProxyError(f"HTTP {response.status} after retries")
+            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
+                url,
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            ) as response:
+                result = await _parse_tool_response(response, tool_name)
+                if result is not None:
+                    return result
+                if attempt < _MCP_MAX_RETRIES - 1:
+                    await asyncio.sleep(2**attempt)
+                    continue
+                raise _MCPProxyError(f"HTTP {response.status} after retries")
 
         except aiohttp.ClientError as e:
             if attempt < _MCP_MAX_RETRIES - 1:
                 await asyncio.sleep(2**attempt)
                 continue
-            raise _MCPProxyError(f"Connection error: {e}")
+            raise _MCPProxyError(f"Connection error: {e}") from e
 
     raise _MCPProxyError("Max retries exceeded")

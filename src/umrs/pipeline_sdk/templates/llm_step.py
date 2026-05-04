@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
@@ -34,22 +34,22 @@ class LLMStep(Step):
 
     name = "llm"
 
-    def setup(self, config: Dict[str, Any]) -> None:
+    def setup(self, config: dict[str, Any]) -> None:
         self.model: str = str(config.get("model", "rivault-llm-static"))
         self.system_prompt: str = str(config.get("system_prompt", "")).strip()
         self.prompt_template: str = str(config.get("prompt_template", ""))
         if not self.prompt_template:
             raise ValueError("LLMStep requires a non-empty prompt_template")
-        self.output_schema: Optional[Dict[str, Any]] = config.get("output_schema")
+        self.output_schema: dict[str, Any] | None = config.get("output_schema")
         self.temperature: float = float(config.get("temperature", 0.0))
         self.max_tokens: int = int(config.get("max_tokens", 1024))
         self.timeout_sec: float = float(config.get("timeout_sec", 60.0))
-        self.api_base: Optional[str] = (
+        self.api_base: str | None = (
             config.get("api_base")
             or os.environ.get("OPENAI_BASE_URL")
             or os.environ.get("R4_GATEWAY_URL")
         )
-        self.api_key: Optional[str] = (
+        self.api_key: str | None = (
             config.get("api_key") or os.environ.get("OPENAI_API_KEY")
         )
 
@@ -72,12 +72,12 @@ class LLMStep(Step):
                 )
                 response_text = self._mock_response(prompt, fallback_error=str(exc))
 
-        structured: Optional[Dict[str, Any]] = None
-        validation_error: Optional[str] = None
+        structured: dict[str, Any] | None = None
+        validation_error: str | None = None
         if self.output_schema:
             structured, validation_error = self._extract_structured(response_text)
 
-        extra: Dict[str, Any] = {
+        extra: dict[str, Any] = {
             "prompt": prompt,
             "response_text": response_text,
             "model": self.model,
@@ -101,7 +101,7 @@ class LLMStep(Step):
                 ensure_ascii=False,
             ).encode("utf-8")
             ctx.upload_bytes(out_key, payload, content_type="application/json")
-            output_keys: List[str] = [out_key]
+            output_keys: list[str] = [out_key]
         except Exception as exc:  # noqa: BLE001
             logger.warning("LLMStep: failed to upload response JSON: %s", exc)
             output_keys = []
@@ -114,7 +114,7 @@ class LLMStep(Step):
     # ------------------------------------------------------------------
 
     def _render_template(self, ctx: StepContext) -> str:
-        scope: Dict[str, Any] = {
+        scope: dict[str, Any] = {
             "steps": {
                 name: getattr(result, "extra", {}) or {}
                 for name, result in (ctx.parent_results or {}).items()
@@ -122,7 +122,7 @@ class LLMStep(Step):
             "params": ctx.config,
         }
 
-        def _replace(match: "re.Match[str]") -> str:
+        def _replace(match: re.Match[str]) -> str:
             expr = match.group(1).strip()
             try:
                 value = _resolve_dotted(scope, expr)
@@ -155,12 +155,12 @@ class LLMStep(Step):
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        messages: List[Dict[str, Any]] = []
+        messages: list[dict[str, Any]] = []
         if self.system_prompt:
             messages.append({"role": "system", "content": self.system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        body: Dict[str, Any] = {
+        body: dict[str, Any] = {
             "model": self.model,
             "messages": messages,
             "temperature": self.temperature,
@@ -182,7 +182,7 @@ class LLMStep(Step):
             content = "".join(p.get("text", "") for p in content if isinstance(p, dict))
         return str(content)
 
-    def _mock_response(self, prompt: str, *, fallback_error: Optional[str] = None) -> str:
+    def _mock_response(self, prompt: str, *, fallback_error: str | None = None) -> str:
         if self.output_schema:
             mock_obj = {
                 "_mock": True,
@@ -197,7 +197,7 @@ class LLMStep(Step):
     # Output validation
     # ------------------------------------------------------------------
 
-    def _extract_structured(self, text: str) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def _extract_structured(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
         """Try to parse the model's text as JSON conforming to ``output_schema``.
 
         Returns ``(structured, error)``.  ``error`` is a string when the
@@ -227,14 +227,11 @@ class LLMStep(Step):
 # ----------------------------------------------------------------------
 
 
-def _resolve_dotted(scope: Dict[str, Any], expr: str) -> Any:
+def _resolve_dotted(scope: dict[str, Any], expr: str) -> Any:
     """Resolve ``a.b.c`` against ``scope``.  Returns ``None`` if not found."""
     current: Any = scope
     for part in expr.split("."):
-        if isinstance(current, dict):
-            current = current.get(part)
-        else:
-            current = getattr(current, part, None)
+        current = current.get(part) if isinstance(current, dict) else getattr(current, part, None)
         if current is None:
             return None
     return current

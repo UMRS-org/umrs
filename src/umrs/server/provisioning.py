@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import os
 import threading
-from datetime import datetime
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
-from typing import Optional
 from urllib.parse import quote
 
 import requests
 
+from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.inference.loading import load_model
+from umrs.server.sql import configure_table, create_db, create_db_user
+from umrs.shared.buckets import BucketsCfg, ServerBucketEntry
 from umrs.shared.cache_paths import find_model_cache
 from umrs.shared.modality import resolve_modality_task
-from umrs.inference.loading import load_model
 from umrs.shared.pretty_print import pretty_print_thread_status
 from umrs.shared.storage.s3 import (
     configure_bucket,
@@ -23,9 +25,6 @@ from umrs.shared.storage.s3 import (
     make_path_to_bucket_string,
     s3_create_users_and_buckets,
 )
-from umrs.shared.buckets import BucketsCfg, ServerBucketEntry
-from umrs.core.TaskCmdStatus import TaskCmd
-from umrs.server.sql import create_db, create_db_user, configure_table
 
 
 @dataclass
@@ -46,7 +45,7 @@ def _normalize_rivault_endpoint(raw_endpoint: str) -> str:
 
 
 @lru_cache(maxsize=32)
-def _get_rivault_endpoint() -> Optional[str]:
+def _get_rivault_endpoint() -> str | None:
     raw = os.getenv("RIVAULT_ENDPOINT")
     if not raw:
         return None
@@ -57,7 +56,7 @@ def _make_safe_model_name(model_name: str) -> str:
     return model_name.replace("/", "__")
 
 
-def _tar_model_cache(model_name: str, tmp_root: str) -> Optional[str]:
+def _tar_model_cache(model_name: str, tmp_root: str) -> str | None:
     """Create a tarball containing cached model files for RiVault uploads."""
 
     import tarfile
@@ -154,10 +153,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
 
 
 def is_client_configured(client_id, server_cfg):
-    for entry in server_cfg.buckets_cfg.values():
-        if entry.s3_username == client_id:
-            return True
-    return False
+    return any(entry.s3_username == client_id for entry in server_cfg.buckets_cfg.values())
 
 
 def reconcile_status_on_startup(active_threads, buckets_cfg):

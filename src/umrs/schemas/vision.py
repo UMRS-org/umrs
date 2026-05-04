@@ -23,11 +23,10 @@ UMRS stack.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
-
+from typing import Any
 
 # Type alias for an axis-aligned bounding box: (x1, y1, x2, y2) in pixels.
-BoundingBox = Tuple[float, float, float, float]
+BoundingBox = tuple[float, float, float, float]
 
 
 @dataclass
@@ -36,11 +35,11 @@ class DetectedObject:
 
     label: str
     score: float = 1.0
-    bbox: Optional[BoundingBox] = None
-    attributes: Dict[str, Any] = field(default_factory=dict)
+    bbox: BoundingBox | None = None
+    attributes: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"label": self.label, "score": float(self.score)}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"label": self.label, "score": float(self.score)}
         if self.bbox is not None:
             out["bbox"] = list(self.bbox)
         if self.attributes:
@@ -48,7 +47,7 @@ class DetectedObject:
         return out
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "DetectedObject":
+    def from_dict(cls, data: dict[str, Any]) -> DetectedObject:
         bbox = data.get("bbox")
         if bbox is not None:
             bbox = tuple(float(v) for v in bbox)  # type: ignore[assignment]
@@ -66,16 +65,16 @@ class OCRItem:
 
     text: str
     score: float = 1.0
-    bbox: Optional[BoundingBox] = None
+    bbox: BoundingBox | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"text": self.text, "score": float(self.score)}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"text": self.text, "score": float(self.score)}
         if self.bbox is not None:
             out["bbox"] = list(self.bbox)
         return out
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "OCRItem":
+    def from_dict(cls, data: dict[str, Any]) -> OCRItem:
         bbox = data.get("bbox")
         if bbox is not None:
             bbox = tuple(float(v) for v in bbox)  # type: ignore[assignment]
@@ -92,11 +91,11 @@ class ImageInfo:
 
     width: int = 0
     height: int = 0
-    sha256: Optional[str] = None
-    source: Optional[str] = None  # original path, S3 URI, or presigned URL hash
+    sha256: str | None = None
+    source: str | None = None  # original path, S3 URI, or presigned URL hash
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {"width": int(self.width), "height": int(self.height)}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {"width": int(self.width), "height": int(self.height)}
         if self.sha256:
             out["sha256"] = self.sha256
         if self.source:
@@ -104,7 +103,7 @@ class ImageInfo:
         return out
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ImageInfo":
+    def from_dict(cls, data: dict[str, Any]) -> ImageInfo:
         return cls(
             width=int(data.get("width", 0)),
             height=int(data.get("height", 0)),
@@ -120,11 +119,11 @@ class ModelInfo:
     name: str = ""
     version: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "version": self.version}
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelInfo":
+    def from_dict(cls, data: dict[str, Any]) -> ModelInfo:
         return cls(
             name=str(data.get("name", "")),
             version=str(data.get("version", "")),
@@ -141,21 +140,21 @@ class VisionPerception:
     :meth:`merge` when several tools run on the same image.
     """
 
-    caption: Optional[str] = None
-    dense_description: Optional[str] = None
-    objects: List[DetectedObject] = field(default_factory=list)
-    ocr: List[OCRItem] = field(default_factory=list)
-    embeddings_ref: Optional[str] = None  # S3 URI; raw embeddings are never inlined.
+    caption: str | None = None
+    dense_description: str | None = None
+    objects: list[DetectedObject] = field(default_factory=list)
+    ocr: list[OCRItem] = field(default_factory=list)
+    embeddings_ref: str | None = None  # S3 URI; raw embeddings are never inlined.
     image: ImageInfo = field(default_factory=ImageInfo)
     model: ModelInfo = field(default_factory=ModelInfo)
-    meta: Dict[str, Any] = field(default_factory=dict)
+    meta: dict[str, Any] = field(default_factory=dict)
 
     # ------------------------------------------------------------------
     # Serialisation
     # ------------------------------------------------------------------
 
-    def to_dict(self) -> Dict[str, Any]:
-        out: Dict[str, Any] = {}
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {}
         if self.caption is not None:
             out["caption"] = self.caption
         if self.dense_description is not None:
@@ -173,7 +172,7 @@ class VisionPerception:
         return out
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "VisionPerception":
+    def from_dict(cls, data: dict[str, Any]) -> VisionPerception:
         return cls(
             caption=data.get("caption"),
             dense_description=data.get("dense_description"),
@@ -189,7 +188,7 @@ class VisionPerception:
     # Merge
     # ------------------------------------------------------------------
 
-    def merge(self, other: "VisionPerception") -> "VisionPerception":
+    def merge(self, other: VisionPerception) -> VisionPerception:
         """Return a new perception combining ``self`` and ``other``.
 
         Scalar fields prefer the non-empty value from ``other`` (the
@@ -220,7 +219,7 @@ class VisionPerception:
         rather than raw JSON so smaller models reason about it more
         reliably.  Truncation guards against excessively large outputs.
         """
-        parts: List[str] = []
+        parts: list[str] = []
         if self.caption:
             parts.append(f"caption: {self.caption}")
         if self.dense_description:

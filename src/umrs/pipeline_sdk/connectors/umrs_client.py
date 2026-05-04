@@ -6,7 +6,6 @@ import json
 import logging
 import subprocess
 import time
-from typing import Dict, List, Optional
 
 from umrs.shared.config import get_resolved_umrs_subdir, get_users_default_cfg_subdir
 
@@ -35,9 +34,9 @@ class UMRSClientConnector:
     """
 
     def __init__(self, client_bin: str = "/opt/umrs/client_umrs.py",
-                 user_config: Optional[str] = None,
-                 server_ip: Optional[str] = None,
-                 container: Optional[str] = None):
+                 user_config: str | None = None,
+                 server_ip: str | None = None,
+                 container: str | None = None):
         self.client_bin = client_bin
         self.user_config = user_config or _default_user_config_path()
         self.server_ip = server_ip
@@ -62,7 +61,7 @@ class UMRSClientConnector:
         # This is a no-op placeholder for pipelines that need explicit trigger.
         logger.info("Process trigger: UMRS auto-processes on upload")
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         """Query the status of all tasks (``status all --output json``)."""
         out = self._run_client("--output", "json", "status", "all",
                                capture=True)
@@ -106,8 +105,8 @@ class UMRSClientConnector:
     def export_embeddings(self, bucket_alias: str, local_path: str,
                           fmt: str = "csv",
                           profile: str = "minimal",
-                          db_host: Optional[str] = None,
-                          db_user: Optional[str] = None) -> str:
+                          db_host: str | None = None,
+                          db_user: str | None = None) -> str:
         """Export embeddings to a local file."""
         args = ["--no-check-server", "export_embeddings",
                 bucket_alias, local_path, "--format", fmt, "--profile", profile]
@@ -120,7 +119,7 @@ class UMRSClientConnector:
 
     # ── internal ─────────────────────────────────────────────────────────
 
-    def _build_cmd(self, *args: str) -> List[str]:
+    def _build_cmd(self, *args: str) -> list[str]:
         cmd = []
         if self.container:
             cmd = ["podman", "exec", self.container]
@@ -144,7 +143,7 @@ class UMRSClientConnector:
         return ""
 
     @staticmethod
-    def _parse_task_states(status: Dict) -> tuple:
+    def _parse_task_states(status: dict) -> tuple:
         """Return (running_count, error_count) from a status JSON payload."""
         running = 0
         errors = 0

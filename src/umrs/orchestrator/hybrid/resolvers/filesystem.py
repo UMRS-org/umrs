@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime
-from typing import Optional
 
 from umrs.model_registry.models import ExecutionAuthority, ModelRef, ModelRefType
 
@@ -24,7 +23,7 @@ class FilesystemResolver(ModelRefResolver):
 
     def __init__(
         self,
-        allowed_prefixes: Optional[list[str]] = None,
+        allowed_prefixes: list[str] | None = None,
         container_path: str = "/models",
     ):
         self.allowed_prefixes = allowed_prefixes or [

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import psycopg2
 
@@ -52,11 +52,11 @@ class MCPServerStore:
         transport: str = "http",
         description: str = "",
         auth_type: str = "none",
-        auth_config: Optional[Dict[str, Any]] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        tools: Optional[List[Dict[str, Any]]] = None,
-        registered_by: Optional[str] = None,
-        project_id: Optional[str] = None,
+        auth_config: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        registered_by: str | None = None,
+        project_id: str | None = None,
     ) -> MCPServer:
         """
         Register or update an MCP server and its tools.
@@ -223,9 +223,9 @@ class MCPServerStore:
 
     def list_servers(
         self,
-        project_id: Optional[str] = None,
-        status_filter: Optional[str] = None,
-    ) -> List[MCPServer]:
+        project_id: str | None = None,
+        status_filter: str | None = None,
+    ) -> list[MCPServer]:
         """List all registered servers, optionally filtered."""
         conditions = []
         params: list = []
@@ -316,8 +316,8 @@ class MCPServerStore:
 
     def list_tools(
         self,
-        server_name: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        server_name: str | None = None,
+    ) -> list[dict[str, Any]]:
         """
         List all tools, optionally filtered by server name.
 
@@ -354,7 +354,7 @@ class MCPServerStore:
                 for row in cur.fetchall()
             ]
 
-    def get_server_for_tool(self, tool_name: str) -> Optional[MCPServer]:
+    def get_server_for_tool(self, tool_name: str) -> MCPServer | None:
         """Find which server provides a given tool."""
         with self.conn.cursor() as cur:
             cur.execute(
@@ -381,7 +381,7 @@ class MCPServerStore:
     # Stats
     # -------------------------------------------------------------------------
 
-    def get_stats(self) -> Dict[str, int]:
+    def get_stats(self) -> dict[str, int]:
         """Get registry statistics."""
         with self.conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM mcp_servers")
@@ -420,7 +420,7 @@ class MCPServerStore:
             updated_at=row[13],
         )
 
-    def _get_tools_for_server(self, cur, server_id: str) -> List[MCPTool]:
+    def _get_tools_for_server(self, cur, server_id: str) -> list[MCPTool]:
         """Get all tools for a server."""
         cur.execute(
             """

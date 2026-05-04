@@ -13,9 +13,9 @@ https://www.sbert.net/docs/package_reference/SentenceTransformer.html).
 from __future__ import annotations
 
 import os
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Optional
 
 CACHE_KIND_SENTENCE_TRANSFORMERS = "sentence_transformers"
 CACHE_KIND_HF_HUB = "huggingface_hub"
@@ -105,7 +105,7 @@ def _iter_hf_hub_bases() -> Iterator[str]:
     yield from _deduplicate(path for path in fallback if path)
 
 
-def _resolve_sentence_transformers(model_name: str) -> Optional[CacheEntry]:
+def _resolve_sentence_transformers(model_name: str) -> CacheEntry | None:
     """Resolve a SentenceTransformers cache directory for ``model_name``.
 
     The library commonly stores models under directory names such as
@@ -141,7 +141,7 @@ def _resolve_sentence_transformers(model_name: str) -> Optional[CacheEntry]:
     return None
 
 
-def _resolve_hf_snapshots(model_name: str) -> Optional[CacheEntry]:
+def _resolve_hf_snapshots(model_name: str) -> CacheEntry | None:
     """Resolve HF hub snapshots for a given model.
 
     For SentenceTransformers models it is common for the underlying HF
@@ -181,7 +181,7 @@ def _resolve_hf_snapshots(model_name: str) -> Optional[CacheEntry]:
     return None
 
 
-def find_model_cache(model_name: str) -> Optional[CacheEntry]:
+def find_model_cache(model_name: str) -> CacheEntry | None:
     """Return information about a locally cached model, if any."""
 
     for resolver in (_resolve_sentence_transformers, _resolve_hf_snapshots):

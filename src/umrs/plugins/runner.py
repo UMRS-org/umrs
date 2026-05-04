@@ -12,9 +12,9 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from .models import PluginSpec, PluginResult, PluginStatus
+from .models import PluginResult, PluginSpec, PluginStatus
 
 if TYPE_CHECKING:
     from .audit import PluginAuditLog
@@ -49,7 +49,7 @@ class PluginRunner(abc.ABC):
 
     def __init__(
         self,
-        audit_log: Optional[PluginAuditLog] = None,
+        audit_log: PluginAuditLog | None = None,
         base_image: str = DEFAULT_PLUGIN_IMAGE,
     ):
         """
@@ -61,7 +61,7 @@ class PluginRunner(abc.ABC):
         """
         self.audit_log = audit_log
         self.base_image = base_image
-        self._active_plugins: Dict[str, PluginSpec] = {}
+        self._active_plugins: dict[str, PluginSpec] = {}
 
     def generate_plugin_id(self) -> str:
         """Generate unique plugin execution ID."""
@@ -224,7 +224,7 @@ class PluginRunner(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def get_status(self, plugin_id: str) -> Optional[PluginStatus]:
+    async def get_status(self, plugin_id: str) -> PluginStatus | None:
         """
         Get current status of a plugin execution.
 
@@ -236,7 +236,7 @@ class PluginRunner(abc.ABC):
         """
         ...
 
-    def _generate_container_env(self, spec: PluginSpec) -> Dict[str, str]:
+    def _generate_container_env(self, spec: PluginSpec) -> dict[str, str]:
         """Generate environment variables for container."""
         env = {
             "PLUGIN_ENTRYPOINT": spec.entrypoint,

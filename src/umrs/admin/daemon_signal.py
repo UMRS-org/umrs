@@ -11,14 +11,13 @@ daemon process and the offline CLI without dragging in ZMQ/server internals.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import os
 import signal
 from dataclasses import dataclass
-from typing import Optional
 
 from umrs.shared.config import get_resolved_umrs_cfg_dir
-
 
 PID_FILE_ENV_VAR = "UMRS_SERVER_PID_FILE"
 DEFAULT_PID_FILE_NAME = "umrs-server.pid"
@@ -29,7 +28,7 @@ DEFAULT_PID_FILE_NAME = "umrs-server.pid"
 # ---------------------------------------------------------------------------
 
 
-def resolve_pid_file_path(cfg_dir: Optional[str] = None) -> str:
+def resolve_pid_file_path(cfg_dir: str | None = None) -> str:
     """Return the canonical path for the daemon's PID file.
 
     Resolution order:
@@ -49,7 +48,7 @@ def resolve_pid_file_path(cfg_dir: Optional[str] = None) -> str:
 # ---------------------------------------------------------------------------
 
 
-def write_pid_file(path: Optional[str] = None) -> str:
+def write_pid_file(path: str | None = None) -> str:
     """Write the current process PID to *path* (or the resolved default).
 
     Creates the parent directory if missing. Written atomically (tmp + rename)
@@ -60,15 +59,13 @@ def write_pid_file(path: Optional[str] = None) -> str:
     tmp = f"{target}.tmp.{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(f"{os.getpid()}\n")
-    try:
+    with contextlib.suppress(OSError):
         os.chmod(tmp, 0o600)
-    except OSError:
-        pass
     os.replace(tmp, target)
     return target
 
 
-def remove_pid_file(path: Optional[str] = None, only_if_ours: bool = True) -> bool:
+def remove_pid_file(path: str | None = None, only_if_ours: bool = True) -> bool:
     """Remove the PID file. Returns True if a file was actually removed.
 
     When *only_if_ours* is True (default), the file is only removed if it
@@ -94,11 +91,11 @@ def remove_pid_file(path: Optional[str] = None, only_if_ours: bool = True) -> bo
 # ---------------------------------------------------------------------------
 
 
-def read_pid_file(path: Optional[str] = None) -> Optional[int]:
+def read_pid_file(path: str | None = None) -> int | None:
     """Read a PID from the pid file. Returns None if missing or malformed."""
     target = path or resolve_pid_file_path()
     try:
-        with open(target, "r", encoding="utf-8") as fh:
+        with open(target, encoding="utf-8") as fh:
             raw = fh.read().strip()
     except OSError:
         return None
@@ -123,9 +120,7 @@ def is_process_alive(pid: int) -> bool:
         # Process exists but we cannot signal it; treat as alive.
         return True
     except OSError as exc:
-        if exc.errno == errno.ESRCH:
-            return False
-        return True
+        return exc.errno != errno.ESRCH
     return True
 
 
@@ -137,14 +132,14 @@ def is_process_alive(pid: int) -> bool:
 @dataclass(frozen=True)
 class SignalResult:
     sent: bool
-    pid: Optional[int]
+    pid: int | None
     reason: str
 
     def to_dict(self) -> dict:
         return {"sent": self.sent, "pid": self.pid, "reason": self.reason}
 
 
-def signal_reload(path: Optional[str] = None) -> SignalResult:
+def signal_reload(path: str | None = None) -> SignalResult:
     """Send ``SIGHUP`` to the daemon identified by the PID file.
 
     Best-effort: returns a :class:`SignalResult` describing what happened

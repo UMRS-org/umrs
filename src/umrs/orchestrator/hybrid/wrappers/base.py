@@ -8,11 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from ..targets import AllocationInfo
 
@@ -31,7 +30,7 @@ class MountSpec:
     target: str           # Container path
     mount_type: str = "bind"  # "bind", "volume", "pvc", "tmpfs"
     read_only: bool = False
-    options: Dict[str, str] = field(default_factory=dict)
+    options: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -45,20 +44,20 @@ class LaunchSpec:
 
     # Container
     image: str
-    command: List[str] = field(default_factory=list)
-    args: List[str] = field(default_factory=list)
+    command: list[str] = field(default_factory=list)
+    args: list[str] = field(default_factory=list)
 
     # Model
     model_path: str = ""  # Resolved path inside container
 
     # Environment
-    env: Dict[str, str] = field(default_factory=dict)
+    env: dict[str, str] = field(default_factory=dict)
 
     # Mounts
-    mounts: List[MountSpec] = field(default_factory=list)
+    mounts: list[MountSpec] = field(default_factory=list)
 
     # Networking
-    ports: Dict[int, int] = field(default_factory=dict)  # container:host
+    ports: dict[int, int] = field(default_factory=dict)  # container:host
 
     # Resources (for runtimes that need explicit limits)
     gpus: int = 1
@@ -66,10 +65,10 @@ class LaunchSpec:
     memory_mb: int = 65536
 
     # Labels/annotations
-    labels: Dict[str, str] = field(default_factory=dict)
+    labels: dict[str, str] = field(default_factory=dict)
 
     # Extra options
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -85,8 +84,8 @@ class ContainerEndpoint:
     port: int
     container_id: str = ""
     model_name: str = "rivault-gpt-oss-static"
-    launched_at: Optional[datetime] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    launched_at: datetime | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def litellm_url(self) -> str:
@@ -204,14 +203,13 @@ class RuntimeWrapper(ABC):
 
         while True:
             try:
-                async with aiohttp.ClientSession() as session:
-                    async with session.get(
-                        endpoint.models_url,
-                        headers=headers,
-                        timeout=aiohttp.ClientTimeout(total=10),
-                    ) as resp:
-                        if resp.status == 200:
-                            return True
+                async with aiohttp.ClientSession() as session, session.get(
+                    endpoint.models_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        return True
             except Exception:
                 pass
 

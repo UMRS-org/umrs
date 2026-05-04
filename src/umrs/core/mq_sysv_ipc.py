@@ -1,6 +1,5 @@
+
 import sysv_ipc
-import warnings
-import signal
 
 # Global configuration of the message queue
 target_nb_messages = 10
@@ -36,7 +35,7 @@ def wait_for_s3_events(debug=False):
     messages = []
 
     print("Listening for new messages...")
-    try : 
+    try :
         # Blocking read for the first message
         message, msg_type = mq.receive(type=1)  # Blocking wait for message of type 1
         message_decoded = message.decode()
@@ -56,7 +55,7 @@ def wait_for_s3_events(debug=False):
                     print("No more messages in queue.")
             break
 
-    except sysv_ipc.Error as e:
+    except sysv_ipc.Error:
         # Handle the 'Signaled while waiting' error silently
         print("\nReceived signal, exiting gracefully...")
 
@@ -64,7 +63,7 @@ def wait_for_s3_events(debug=False):
         # Handling  Ctrl+C interruption is done by the caller.
         pass
 
-        
+
     return messages
 
 # Example Usage:

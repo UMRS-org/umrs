@@ -5,19 +5,19 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any, Callable, Dict, List, Optional, Sequence, cast
+from collections.abc import Callable, Sequence
+from typing import Any, cast
 
-from umrs.admin.user_store import (
-    UserRecord,
-    UserStore,
-    UserStoreError,
-    VALID_ROLES,
-)
 from umrs.admin.daemon_signal import (
     resolve_pid_file_path,
     signal_reload,
 )
-
+from umrs.admin.user_store import (
+    VALID_ROLES,
+    UserRecord,
+    UserStore,
+    UserStoreError,
+)
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -64,7 +64,7 @@ def _print_json(obj: Any) -> None:
     print(json.dumps(obj, indent=2, sort_keys=False, default=str))
 
 
-def _record_row(rec: UserRecord) -> Dict[str, Any]:
+def _record_row(rec: UserRecord) -> dict[str, Any]:
     return {
         "username": rec.username,
         "role": rec.role,
@@ -75,7 +75,7 @@ def _record_row(rec: UserRecord) -> Dict[str, Any]:
     }
 
 
-def _print_table(rows: List[Dict[str, Any]]) -> None:
+def _print_table(rows: list[dict[str, Any]]) -> None:
     if not rows:
         print("(no users)")
         return
@@ -283,11 +283,11 @@ def _build_jwt_payload(
     user: str,
     email: str,
     project: str,
-    roles: List[str],
+    roles: list[str],
     days: int,
     *,
-    projects: Optional[List[str]] = None,
-) -> Dict[str, Any]:
+    projects: list[str] | None = None,
+) -> dict[str, Any]:
     """Build the JWT claims payload.
 
     When *projects* is supplied the token carries a
@@ -301,7 +301,7 @@ def _build_jwt_payload(
     effective_project = project
     if projects:
         effective_project = projects[0]
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "sub": user,
         "email": email,
         "project_id": effective_project,
@@ -379,7 +379,7 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
                 file=sys.stderr,
             )
         print()
-        print(f"  Use with: r4 auth login --api-key <token>")
+        print("  Use with: r4 auth login --api-key <token>")
     return 0
 
 
@@ -434,13 +434,13 @@ def _cmd_bootstrap(args: argparse.Namespace, store: UserStore) -> int:
 
     mgr = _token_manager()
     existing = mgr.list_tokens()
-    token: Optional[str] = None
+    token: str | None = None
     if not any(t.get("name") == args.token_name for t in existing):
         token = mgr.generate_token(
             args.token_name, description="Bootstrap admin token"
         )
 
-    result: Dict[str, Any] = {
+    result: dict[str, Any] = {
         "admin_user": rec.username,
         "created_user": created_user,
         "token_name": args.token_name,
@@ -741,7 +741,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Optional[Sequence[str]] = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     store = UserStore(user_files_dir=args.user_files_dir)

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, Optional
+from typing import Any
 
-from .models import PluginSpec, PluginSourceType
+from .models import PluginSourceType, PluginSpec
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def step_to_plugin_spec(
     step_name: str,
     entrypoint: str,
     script_dir: str,
-    step_config: Dict[str, Any],
+    step_config: dict[str, Any],
     input_bucket: str,
     input_keys: list,
     output_bucket: str,
@@ -32,9 +32,9 @@ def step_to_plugin_spec(
     memory_limit: str = "1Gi",
     gpu_count: int = 0,
     timeout_seconds: int = 3600,
-    env_vars: Optional[Dict[str, str]] = None,
-    user_id: Optional[str] = None,
-    output_destinations: Optional[list] = None,
+    env_vars: dict[str, str] | None = None,
+    user_id: str | None = None,
+    output_destinations: list | None = None,
 ) -> PluginSpec:
     """Create a ``PluginSpec`` that runs a single pipeline Step remotely.
 
@@ -49,7 +49,7 @@ def step_to_plugin_spec(
     - ``UMRS_OUTPUT_BUCKET`` — S3 bucket for output data
     - ``UMRS_RUN_ID`` — unique run identifier
     """
-    user_env: Dict[str, str] = {}
+    user_env: dict[str, str] = {}
     if env_vars:
         for key, value in env_vars.items():
             if key.startswith(_RESERVED_STEP_ENV_PREFIXES):
@@ -57,7 +57,7 @@ def step_to_plugin_spec(
                 continue
             user_env[key] = value
 
-    step_env: Dict[str, str] = {
+    step_env: dict[str, str] = {
         "UMRS_STEP_NAME": step_name,
         "UMRS_STEP_ENTRYPOINT": entrypoint,
         "UMRS_STEP_CONFIG": json.dumps(step_config),

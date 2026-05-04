@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
 
 from ..jobs import (
     JobService,
@@ -57,13 +56,13 @@ class DurableProvisionRequest:
     max_model_len: int = 4096
 
     # Compute node selection
-    partition_override: Optional[str] = None
-    nodelist_hint: Optional[str] = None
+    partition_override: str | None = None
+    nodelist_hint: str | None = None
 
     # Job settings
     priority: int = 0
     max_attempts: int = 3
-    idempotency_key: Optional[str] = None
+    idempotency_key: str | None = None
 
 
 class DurableOrchestrationService:
@@ -83,7 +82,7 @@ class DurableOrchestrationService:
     def __init__(
         self,
         db_pool,
-        orchestration_service: Optional[OrchestrationService] = None,
+        orchestration_service: OrchestrationService | None = None,
         scheduler_interval: float = 1.0,
         monitor_interval: float = 5.0,
     ):
@@ -98,7 +97,7 @@ class DurableOrchestrationService:
         """
         self.db_pool = db_pool
         self._orchestration_service = orchestration_service
-        self._job_service: Optional[JobService] = None
+        self._job_service: JobService | None = None
         self._model_store_conn = None
         self._scheduler_interval = scheduler_interval
         self._monitor_interval = monitor_interval
@@ -290,8 +289,8 @@ class DurableOrchestrationService:
 
     def list_jobs(
         self,
-        project_id: Optional[str] = None,
-        status: Optional[str] = None,
+        project_id: str | None = None,
+        status: str | None = None,
         limit: int = 100,
     ):
         """List jobs with optional filters."""
@@ -324,6 +323,7 @@ class DurableOrchestrationService:
             ProvisionResult with success/failure
         """
         import asyncio
+
         from ..jobs import JobStatus
 
         # Submit job
@@ -393,7 +393,7 @@ class DurableOrchestrationService:
 
 
 # Singleton instance
-_durable_service: Optional[DurableOrchestrationService] = None
+_durable_service: DurableOrchestrationService | None = None
 
 
 def get_durable_orchestration_service() -> DurableOrchestrationService:
@@ -409,7 +409,7 @@ def get_durable_orchestration_service() -> DurableOrchestrationService:
 
 def init_durable_orchestration_service(
     db_pool,
-    orchestration_service: Optional[OrchestrationService] = None,
+    orchestration_service: OrchestrationService | None = None,
 ) -> DurableOrchestrationService:
     """
     Initialize the global durable orchestration service.

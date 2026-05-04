@@ -142,8 +142,10 @@ class TestImportCache:
         _write_step_module(tmp_path, "pop_mod", "PopStep")
         spec = StepSpec(name="s1", entrypoint="pop_mod:PopStep", config={})
         _import_step_class(spec, tmp_path)
-        cache_key = ("pop_mod:PopStep", str(tmp_path))
-        assert cache_key in _step_class_cache
+        assert any(
+            key[0] == "pop_mod:PopStep" and key[1] == str(tmp_path)
+            for key in _step_class_cache
+        )
 
 
 # =========================================================================

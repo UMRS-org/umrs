@@ -1,12 +1,15 @@
+import contextlib
+import json
+import logging
 import os
 import socket
 import tempfile
 import time
-import json
-import logging
+
 from umrs.core.TaskCmdStatus import TaskCmd
-from umrs.shared.connection_profiles import DataPortRange, parse_data_port_range
 from umrs.shared.auth import AuthContext, UserRole, create_auth_context_from_request
+from umrs.shared.connection_profiles import DataPortRange, parse_data_port_range
+
 try:
     import zmq
 except ImportError as e:
@@ -296,9 +299,9 @@ class MessageQueue:
         try:
             self.socket.send_multipart(frames)
         except zmq.Again:
-            raise RuntimeError("Timeout while sending message")
+            raise RuntimeError("Timeout while sending message") from None
         except zmq.ZMQError as e:
-            raise RuntimeError(f"ZMQ error while sending: {e}")
+            raise RuntimeError(f"ZMQ error while sending: {e}") from e
 
     def send_string(self, string, client_id=None):
         if self.debug:
@@ -345,13 +348,13 @@ class MessageQueue:
                 raise RuntimeError(f"Unknown queue type: {self.type}")
 
         except zmq.Again:
-            raise RuntimeError("Timeout while sending message")
+            raise RuntimeError("Timeout while sending message") from None
 
         except zmq.ZMQError as e:
-            raise RuntimeError(f"ZMQ error while sending: {e}")
+            raise RuntimeError(f"ZMQ error while sending: {e}") from e
 
         except Exception as e:
-            raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}")
+            raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}") from e
 
     def recv_string(self):
         """
@@ -429,7 +432,7 @@ class MessageQueue:
                 # Send end signal (can be empty frame)
                 self.socket.send(b'__END_OF_FILE__')
             except zmq.ZMQError as e:
-                raise RuntimeError(f"Failed to send file: {e}")
+                raise RuntimeError(f"Failed to send file: {e}") from e
 
 
     def recv_file(self, out_dir="/tmp"):
@@ -500,10 +503,8 @@ class MessageQueue:
                         "CREATE_DATA_QUEUE missing client_id: %s",
                         self._redact_control_message(msg),
                     )
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
                 client_id = splited_msg[1]
 
@@ -523,10 +524,8 @@ class MessageQueue:
 
                 port, port_range = self._ensure_client_data_queue(client_id)
                 if port is None:
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string(f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
 
                 reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
@@ -541,20 +540,16 @@ class MessageQueue:
                         "PROCESS_OBJECTS missing fields: %s",
                         self._redact_control_message(msg),
                     )
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
                 client_id = splited_msg[1]
                 try:
                     nb_objects = int(splited_msg[2])
                 except ValueError:
                     logger.error("PROCESS_OBJECTS invalid count: %s", splited_msg[2])
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
                 return self._process_object_cmd(client_id, nb_objects, zmq_sender_id)
 
@@ -564,20 +559,16 @@ class MessageQueue:
                         "FILE missing fields: %s",
                         self._redact_control_message(msg),
                     )
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
                 client_id = splited_msg[1]
                 try:
                     nb_files = int(splited_msg[2])
                 except ValueError:
                     logger.error("FILE invalid count: %s", splited_msg[2])
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
                 # include client_id in the payload for server-side identity enforcement
                 return self._process_file_cmd(client_id, nb_files, zmq_sender_id)
@@ -588,20 +579,16 @@ class MessageQueue:
                         "ENROLL_USER missing fields: %s",
                         self._redact_control_message(msg),
                     )
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
                 client_id = splited_msg[1]
                 try:
                     nb_files = int(splited_msg[2])
                 except ValueError:
                     logger.error("ENROLL_USER invalid count: %s", splited_msg[2])
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
                 # Refresh auth session with admin token (same pattern as
                 # maintenance commands) so server_umrs._authorize() sees
@@ -630,10 +617,8 @@ class MessageQueue:
                         "UPLOAD_WORKFLOW missing fields: %s",
                         self._redact_control_message(msg),
                     )
-                    try:
+                    with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError:
-                        pass
                     continue
                 client_id = splited_msg[1]
                 workflow_name = splited_msg[2]
@@ -844,10 +829,10 @@ class MessageQueue:
 
     def is_server_ready(self, timeout_ms=5000):
         if self.role != "client":
-            raise PermissionError(f"Only client can call 'get_data_queue'")
+            raise PermissionError("Only client can call 'get_data_queue'")
 
         if self.type != "control":
-            raise PermissionError(f"Only control message queue can check server")
+            raise PermissionError("Only control message queue can check server")
 
         logger.debug("Checking for server availability...")
         if timeout_ms < 1500:
@@ -888,7 +873,7 @@ class MessageQueue:
                 server grants ``UserRole.ADMIN`` for this session.
         """
         if self.role != "client":
-            raise PermissionError(f"Only client can call 'get_data_queue'")
+            raise PermissionError("Only client can call 'get_data_queue'")
 
         self.send_control_request(
             [TaskCmd.CREATE_DATA_QUEUE, client_id],
@@ -899,7 +884,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in get_data_queue")
+            raise RuntimeError("Timeout waiting for server response in get_data_queue") from None
         except (AttributeError, TypeError, ValueError):
             reply = self.socket.recv_string()
 
@@ -928,7 +913,7 @@ class MessageQueue:
 
     def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None):
         if self.role != "client":
-            raise PermissionError(f"Only client can call 'notify_server'")
+            raise PermissionError("Only client can call 'notify_server'")
 
         self.send_control_request(
             [notification_type, client_id, nb_objects],
@@ -938,7 +923,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in notify_server")
+            raise RuntimeError("Timeout waiting for server response in notify_server") from None
 
         if reply is None:
             raise RuntimeError(
@@ -968,7 +953,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_status")
+            raise RuntimeError("Timeout waiting for server response in request_status") from None
 
         return reply
 
@@ -989,7 +974,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_export_embeddings")
+            raise RuntimeError("Timeout waiting for server response in request_export_embeddings") from None
         finally:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
 
@@ -1013,7 +998,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_status")
+            raise RuntimeError("Timeout waiting for server response in request_status") from None
 
         finally:
             self.set_timeouts(self.timeout,self.timeout)
@@ -1059,10 +1044,8 @@ class MessageQueue:
         # Collect pool metrics when available
         pool_metrics = None
         if self.task_manager is not None:
-            try:
+            with contextlib.suppress(Exception):
                 pool_metrics = self.task_manager.active_threads.pool.metrics().to_dict()
-            except Exception:
-                pass
 
         client_store = store.get(client_id, {})
         if key in ("all", "*"):
@@ -1115,7 +1098,7 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_model_command")
+            raise RuntimeError("Timeout waiting for server response in request_model_command") from None
         finally:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
 
@@ -1133,7 +1116,6 @@ class MessageQueue:
         payload = json.dumps(filters or {})
         raw = self.request_model_command(client_id, TaskCmd.JOB_LIST, payload)
         return json.loads(raw)
-
 
 
 

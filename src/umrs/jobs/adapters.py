@@ -12,12 +12,13 @@ Architecture:
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any
 
+from ..server.sql import maintain_pgvector_index
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
 from .scheduler import OrchestratorBackend
-from ..server.sql import maintain_pgvector_index
 
 if TYPE_CHECKING:
     from umrs.orchestrator.base import OrchestratorBackend as BaseOrchestrator
@@ -27,12 +28,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def _parse_backend_ref(backend_ref: str) -> Dict[str, str]:
+def _parse_backend_ref(backend_ref: str) -> dict[str, str]:
     parts = backend_ref.split("|")
     if len(parts) < 2:
         raise ValueError(f"Malformed backend reference: {backend_ref}")
 
-    parsed: Dict[str, str] = {"kind": parts[0]}
+    parsed: dict[str, str] = {"kind": parts[0]}
     for item in parts[1:]:
         if "=" not in item:
             continue
@@ -41,7 +42,7 @@ def _parse_backend_ref(backend_ref: str) -> Dict[str, str]:
     return parsed
 
 
-def _resolve_registered_model(model_name: str) -> Optional[Dict[str, Any]]:
+def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
     """Resolve a model name from the native UMRS catalog when no path is supplied."""
     try:
         from umrs.server.model_registry_handler import _load_catalog
@@ -59,7 +60,7 @@ def _resolve_registered_model(model_name: str) -> Optional[Dict[str, Any]]:
     return matches[0]
 
 
-def _short_progress_text(value: Optional[str], *, limit: int = 96) -> str:
+def _short_progress_text(value: str | None, *, limit: int = 96) -> str:
     """Normalize and shorten progress text stored in job/endpoint metadata."""
     cleaned = " ".join((value or "").split())
     if len(cleaned) <= limit:
@@ -93,7 +94,7 @@ def _backend_progress_detail(job_info: Any) -> str:
     return "waiting for backend status"
 
 
-def _readiness_progress_detail(endpoint: Any, error: Optional[str]) -> str:
+def _readiness_progress_detail(endpoint: Any, error: str | None) -> str:
     """Describe readiness-probe progress in a user-facing way."""
     target = f"{endpoint.host}:{endpoint.port}"
     if not error:
@@ -124,8 +125,8 @@ class EndpointProvisionBackend(OrchestratorBackend):
 
     def __init__(
         self,
-        orchestrator: "BaseOrchestrator",
-        registry: "EndpointRegistry",
+        orchestrator: BaseOrchestrator,
+        registry: EndpointRegistry,
         port_manager,
     ):
         """
@@ -297,9 +298,9 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
 
     def __init__(
         self,
-        readiness_poller: "ReadinessPoller",
-        registry: "EndpointRegistry",
-        orchestrator: Optional["BaseOrchestrator"] = None,
+        readiness_poller: ReadinessPoller,
+        registry: EndpointRegistry,
+        orchestrator: BaseOrchestrator | None = None,
     ):
         """
         Initialize checker.
@@ -312,9 +313,9 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         self.readiness_poller = readiness_poller
         self.registry = registry
         self.orchestrator = orchestrator
-        self._readiness_attempts: Dict[str, int] = {}
-        self._last_readiness_error: Dict[str, str] = {}
-        self._last_readiness_target: Dict[str, tuple[str, int]] = {}
+        self._readiness_attempts: dict[str, int] = {}
+        self._last_readiness_error: dict[str, str] = {}
+        self._last_readiness_target: dict[str, tuple[str, int]] = {}
 
     @property
     def job_type(self) -> JobType:
@@ -469,7 +470,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         """Backward-compatible wrapper for older tests/callers."""
         return await self.check_status(attempt, job)
 
-    async def _refresh_from_backend(self, backend_ref: str) -> Optional[str]:
+    async def _refresh_from_backend(self, backend_ref: str) -> str | None:
         """Refresh endpoint coordinates and coarse status from backend state."""
         if self.orchestrator is None:
             return None
@@ -647,8 +648,8 @@ class CleanupBackend(OrchestratorBackend):
     def __init__(
         self,
         orchestrator,
-        registry: "EndpointRegistry",
-        get_job_with_attempts: Optional[Callable[[str], tuple[Job, list[JobAttempt]]]] = None,
+        registry: EndpointRegistry,
+        get_job_with_attempts: Callable[[str], tuple[Job, list[JobAttempt]]] | None = None,
     ):
         self.orchestrator = orchestrator
         self.registry = registry
@@ -734,7 +735,7 @@ class CleanupBackend(OrchestratorBackend):
 class CleanupStatusChecker(BackendStatusChecker):
     """Status checker for synchronous cleanup jobs."""
 
-    def __init__(self, registry: "EndpointRegistry"):
+    def __init__(self, registry: EndpointRegistry):
         self.registry = registry
 
     @property
@@ -791,10 +792,10 @@ class CleanupStatusChecker(BackendStatusChecker):
 
 
 def create_backend_factory(
-    orchestrator: "BaseOrchestrator",
-    registry: "EndpointRegistry",
+    orchestrator: BaseOrchestrator,
+    registry: EndpointRegistry,
     port_manager,
-    get_job_with_attempts: Optional[Callable[[str], tuple[Job, list[JobAttempt]]]] = None,
+    get_job_with_attempts: Callable[[str], tuple[Job, list[JobAttempt]]] | None = None,
     embedding_worker=None,
     s3_client=None,
     model_store=None,
@@ -863,9 +864,9 @@ def create_backend_factory(
 
 
 def create_status_checker(
-    readiness_poller: "ReadinessPoller",
-    registry: "EndpointRegistry",
-    orchestrator: Optional["BaseOrchestrator"] = None,
+    readiness_poller: ReadinessPoller,
+    registry: EndpointRegistry,
+    orchestrator: BaseOrchestrator | None = None,
     embedding_worker=None,
     include_model_download: bool = True,
 ):

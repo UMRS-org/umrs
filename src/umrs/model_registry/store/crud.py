@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import psycopg2
 
@@ -26,7 +26,7 @@ from ..models import (
     generate_model_id,
     generate_policy_id,
 )
-from .acl import ACLEnforcer, AccessContext
+from .acl import AccessContext, ACLEnforcer
 from .errors import DuplicateModelError, ModelNotFoundError, PermissionDeniedError
 from .path_validator import PathValidator
 
@@ -43,8 +43,8 @@ class ModelStore:
     def __init__(
         self,
         conn: psycopg2.extensions.connection,
-        path_validator: Optional[PathValidator] = None,
-        acl_enforcer: Optional[ACLEnforcer] = None,
+        path_validator: PathValidator | None = None,
+        acl_enforcer: ACLEnforcer | None = None,
     ):
         self.conn = conn
         self.path_validator = path_validator or PathValidator()
@@ -60,16 +60,16 @@ class ModelStore:
         scope: ModelScope,
         storage_ref: str,
         model_type: ModelType = ModelType.LLM,
-        owner_id: Optional[str] = None,
-        project_id: Optional[str] = None,
-        huggingface_id: Optional[str] = None,
-        description: Optional[str] = None,
-        serving_profile: Optional[ServingProfile] = None,
-        capabilities: Optional[ModelCapabilities] = None,
+        owner_id: str | None = None,
+        project_id: str | None = None,
+        huggingface_id: str | None = None,
+        description: str | None = None,
+        serving_profile: ServingProfile | None = None,
+        capabilities: ModelCapabilities | None = None,
         status: ModelStatus = ModelStatus.AVAILABLE,
-        model_ref: Optional[ModelRef] = None,
+        model_ref: ModelRef | None = None,
         execution_authority_default: ExecutionAuthority = ExecutionAuthority.COMPOSE,
-        ctx: Optional[AccessContext] = None,
+        ctx: AccessContext | None = None,
     ) -> ModelEntry:
         """
         Create a new model entry.
@@ -145,7 +145,7 @@ class ModelStore:
 
         except psycopg2.errors.UniqueViolation:
             self.conn.rollback()
-            raise DuplicateModelError(name, scope, project_id)
+            raise DuplicateModelError(name, scope, project_id) from None
 
         logger.info(
             "Created model %s (%s) in %s scope",
@@ -162,7 +162,7 @@ class ModelStore:
     def get_model(
         self,
         model_id: str,
-        ctx: Optional[AccessContext] = None,
+        ctx: AccessContext | None = None,
     ) -> ModelEntry:
         """Get a model by ID."""
         with self.conn.cursor() as cur:
@@ -193,9 +193,9 @@ class ModelStore:
         self,
         name: str,
         scope: ModelScope,
-        project_id: Optional[str] = None,
-        owner_id: Optional[str] = None,
-        ctx: Optional[AccessContext] = None,
+        project_id: str | None = None,
+        owner_id: str | None = None,
+        ctx: AccessContext | None = None,
     ) -> ModelEntry:
         """Get a model by name within a scope."""
         with self.conn.cursor() as cur:
@@ -251,16 +251,16 @@ class ModelStore:
     def list_models(
         self,
         ctx: AccessContext,
-        scope: Optional[ModelScope] = None,
-        model_type: Optional[ModelType] = None,
-        status: Optional[ModelStatus] = None,
-        project_id: Optional[str] = None,
+        scope: ModelScope | None = None,
+        model_type: ModelType | None = None,
+        status: ModelStatus | None = None,
+        project_id: str | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[ModelEntry]:
+    ) -> list[ModelEntry]:
         """List models visible to the user."""
         conditions = []
-        params: List[Any] = []
+        params: list[Any] = []
 
         if not ctx.is_admin:
             visibility_parts = ["scope = 'system'"]
@@ -320,17 +320,17 @@ class ModelStore:
         self,
         model_id: str,
         ctx: AccessContext,
-        description: Optional[str] = None,
-        serving_profile: Optional[ServingProfile] = None,
-        status: Optional[ModelStatus] = None,
-        capabilities: Optional[ModelCapabilities] = None,
+        description: str | None = None,
+        serving_profile: ServingProfile | None = None,
+        status: ModelStatus | None = None,
+        capabilities: ModelCapabilities | None = None,
     ) -> ModelEntry:
         """Update model metadata."""
         model = self.get_model(model_id)
         self.acl.enforce_write(model, ctx)
 
         updates = []
-        params: List[Any] = []
+        params: list[Any] = []
 
         if description is not None:
             updates.append("description = %s")
@@ -364,7 +364,7 @@ class ModelStore:
                 """,
                 params,
             )
-            row = cur.fetchone()
+            cur.fetchone()
             self.conn.commit()
 
         return self.get_model(model_id)
@@ -373,7 +373,7 @@ class ModelStore:
         self,
         model_id: str,
         status: ModelStatus,
-        ctx: Optional[AccessContext] = None,
+        ctx: AccessContext | None = None,
     ) -> None:
         """Update model status (convenience method)."""
         if ctx:
@@ -399,7 +399,7 @@ class ModelStore:
         self,
         model_id: str,
         capabilities: ModelCapabilities,
-        ctx: Optional[AccessContext] = None,
+        ctx: AccessContext | None = None,
     ) -> None:
         """Update model capabilities."""
         if ctx:
@@ -452,7 +452,7 @@ class ModelStore:
         model_id: str,
         target_project_id: str,
         ctx: AccessContext,
-        new_name: Optional[str] = None,
+        new_name: str | None = None,
     ) -> ModelEntry:
         """Publish a user model to project scope (U-815)."""
         model = self.get_model(model_id)
@@ -513,8 +513,8 @@ class ModelStore:
         self,
         name: str,
         scope: ModelScope,
-        project_id: Optional[str] = None,
-    ) -> Optional[ModelEntry]:
+        project_id: str | None = None,
+    ) -> ModelEntry | None:
         """Find a model by name in scope (helper for duplicate checking)."""
         with self.conn.cursor() as cur:
             if scope == ModelScope.PROJECT:
@@ -579,18 +579,18 @@ class ModelStore:
     def create_policy(
         self,
         model_name: str,
-        allowed_projects: Optional[List[str]] = None,
-        denied_projects: Optional[List[str]] = None,
-        max_concurrent_endpoints: Optional[int] = None,
-        max_tokens_per_day: Optional[int] = None,
+        allowed_projects: list[str] | None = None,
+        denied_projects: list[str] | None = None,
+        max_concurrent_endpoints: int | None = None,
+        max_tokens_per_day: int | None = None,
         priority: int = 0,
         warm_pool_min: int = 0,
         warm_pool_max: int = 0,
         warm_pool_ttl_seconds: int = 3600,
         enable_warm_pool: bool = False,
         is_system_model: bool = False,
-        default_serving_profile: Optional[ServingProfile] = None,
-        ctx: Optional[AccessContext] = None,
+        default_serving_profile: ServingProfile | None = None,
+        ctx: AccessContext | None = None,
     ) -> ModelPolicy:
         """Create a model policy (U-805)."""
         if ctx and not ctx.is_admin:
@@ -675,7 +675,7 @@ class ModelStore:
 
         return ModelPolicy.from_row(row)
 
-    def get_policy_by_model_name(self, model_name: str) -> Optional[ModelPolicy]:
+    def get_policy_by_model_name(self, model_name: str) -> ModelPolicy | None:
         """Get policy for a model by name."""
         with self.conn.cursor() as cur:
             cur.execute(
@@ -698,13 +698,13 @@ class ModelStore:
 
     def list_policies(
         self,
-        is_system_model: Optional[bool] = None,
+        is_system_model: bool | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[ModelPolicy]:
+    ) -> list[ModelPolicy]:
         """List model policies."""
         conditions = []
-        params: List[Any] = []
+        params: list[Any] = []
 
         if is_system_model is not None:
             conditions.append("is_system_model = %s")
@@ -732,13 +732,13 @@ class ModelStore:
     def update_policy(
         self,
         policy_id: str,
-        allowed_projects: Optional[List[str]] = None,
-        denied_projects: Optional[List[str]] = None,
-        max_concurrent_endpoints: Optional[int] = None,
-        enable_warm_pool: Optional[bool] = None,
-        warm_pool_min: Optional[int] = None,
-        warm_pool_max: Optional[int] = None,
-        ctx: Optional[AccessContext] = None,
+        allowed_projects: list[str] | None = None,
+        denied_projects: list[str] | None = None,
+        max_concurrent_endpoints: int | None = None,
+        enable_warm_pool: bool | None = None,
+        warm_pool_min: int | None = None,
+        warm_pool_max: int | None = None,
+        ctx: AccessContext | None = None,
     ) -> ModelPolicy:
         """Update a model policy."""
         if ctx and not ctx.is_admin:
@@ -749,7 +749,7 @@ class ModelStore:
         self.get_policy(policy_id)
 
         updates = []
-        params: List[Any] = []
+        params: list[Any] = []
 
         if allowed_projects is not None:
             updates.append("allowed_projects = %s")
@@ -794,7 +794,7 @@ class ModelStore:
 
         return self.get_policy(policy_id)
 
-    def delete_policy(self, policy_id: str, ctx: Optional[AccessContext] = None) -> None:
+    def delete_policy(self, policy_id: str, ctx: AccessContext | None = None) -> None:
         """Delete a model policy."""
         if ctx and not ctx.is_admin:
             raise PermissionDeniedError(
@@ -815,13 +815,13 @@ class ModelStore:
     def update_policy_by_model_name(
         self,
         model_name: str,
-        allowed_projects: Optional[List[str]] = None,
-        denied_projects: Optional[List[str]] = None,
-        max_concurrent_endpoints: Optional[int] = None,
-        enable_warm_pool: Optional[bool] = None,
-        warm_pool_min: Optional[int] = None,
-        warm_pool_max: Optional[int] = None,
-        ctx: Optional[AccessContext] = None,
+        allowed_projects: list[str] | None = None,
+        denied_projects: list[str] | None = None,
+        max_concurrent_endpoints: int | None = None,
+        enable_warm_pool: bool | None = None,
+        warm_pool_min: int | None = None,
+        warm_pool_max: int | None = None,
+        ctx: AccessContext | None = None,
     ) -> ModelPolicy:
         """Update a model policy by model name (U-820)."""
         if ctx and not ctx.is_admin:
@@ -849,20 +849,20 @@ class ModelStore:
         name: str,
         storage_ref: str,
         model_type: ModelType = ModelType.LLM,
-        huggingface_id: Optional[str] = None,
-        description: Optional[str] = None,
-        serving_profile: Optional[ServingProfile] = None,
-        capabilities: Optional[ModelCapabilities] = None,
+        huggingface_id: str | None = None,
+        description: str | None = None,
+        serving_profile: ServingProfile | None = None,
+        capabilities: ModelCapabilities | None = None,
         execution_authority_default: ExecutionAuthority = ExecutionAuthority.COMPOSE,
         warm_pool_min: int = 0,
         warm_pool_max: int = 1,
         warm_pool_ttl_seconds: int = 3600,
         enable_warm_pool: bool = False,
-        allowed_projects: Optional[List[str]] = None,
-        denied_projects: Optional[List[str]] = None,
-        max_concurrent_endpoints: Optional[int] = None,
+        allowed_projects: list[str] | None = None,
+        denied_projects: list[str] | None = None,
+        max_concurrent_endpoints: int | None = None,
         priority: int = 0,
-        ctx: Optional[AccessContext] = None,
+        ctx: AccessContext | None = None,
     ) -> tuple[ModelEntry, ModelPolicy]:
         """
         Register a system-level model with an associated policy (U-817).
@@ -955,7 +955,7 @@ class ModelStore:
         self,
         model_name: str,
         project_id: str,
-    ) -> tuple[bool, Optional[str]]:
+    ) -> tuple[bool, str | None]:
         """Check if a project has access to a model based on policy."""
         policy = self.get_policy_by_model_name(model_name)
 

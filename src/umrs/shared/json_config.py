@@ -2,8 +2,9 @@ import json
 import os
 import sys
 
-from jsonschema import validate, ValidationError
-from umrs.shared.modality import VALID_MODALITIES, LEGACY_MAPPING
+from jsonschema import ValidationError, validate
+
+from umrs.shared.modality import LEGACY_MAPPING, VALID_MODALITIES
 
 _ALL_ACCEPTED_MODALITY_NAMES = sorted(set(VALID_MODALITIES) | set(LEGACY_MAPPING.keys()))
 

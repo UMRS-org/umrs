@@ -15,7 +15,6 @@ from __future__ import annotations
 import logging
 import os
 import threading
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -146,9 +145,9 @@ def _create_app():
 
 
 def start_http_sidecar(
-    port: Optional[int] = None,
+    port: int | None = None,
     host: str | None = None,
-) -> Optional[threading.Thread]:
+) -> threading.Thread | None:
     """
     Start the HTTP sidecar in a daemon thread.
 

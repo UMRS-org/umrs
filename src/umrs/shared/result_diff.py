@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import difflib
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any
 
 
 class DiffType(str, Enum):
@@ -30,9 +31,9 @@ class DiffEntry:
     diff_type: DiffType
     value_a: Any
     value_b: Any
-    delta: Optional[float] = None
-    similarity: Optional[float] = None
-    details: Dict[str, Any] = field(default_factory=dict)
+    delta: float | None = None
+    similarity: float | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
     @property
     def is_identical(self) -> bool:
@@ -46,8 +47,8 @@ class DiffReport:
     """Structured comparison report."""
     label_a: str
     label_b: str
-    entries: List[DiffEntry] = field(default_factory=list)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    entries: list[DiffEntry] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def total_comparisons(self) -> int:
@@ -81,7 +82,7 @@ class DiffReport:
         ]
         return "\n".join(lines)
 
-    def changed_entries(self) -> List[DiffEntry]:
+    def changed_entries(self) -> list[DiffEntry]:
         return [e for e in self.entries if not e.is_identical]
 
 
@@ -115,7 +116,7 @@ class NumericDiff:
             )
 
         cos_sim = NumericDiff._cosine_similarity(a, b)
-        mse = sum((x - y) ** 2 for x, y in zip(a, b)) / len(a)
+        mse = sum((x - y) ** 2 for x, y in zip(a, b, strict=False)) / len(a)
         return DiffEntry(
             key=key,
             diff_type=DiffType.NUMERIC,
@@ -127,7 +128,7 @@ class NumericDiff:
 
     @staticmethod
     def _cosine_similarity(a: Sequence[float], b: Sequence[float]) -> float:
-        dot = sum(x * y for x, y in zip(a, b))
+        dot = sum(x * y for x, y in zip(a, b, strict=False))
         norm_a = math.sqrt(sum(x * x for x in a))
         norm_b = math.sqrt(sum(x * x for x in b))
         if norm_a < 1e-10 or norm_b < 1e-10:
@@ -137,9 +138,9 @@ class NumericDiff:
     @staticmethod
     def compare_dicts(
         key_prefix: str,
-        a: Dict[str, float],
-        b: Dict[str, float],
-    ) -> List[DiffEntry]:
+        a: dict[str, float],
+        b: dict[str, float],
+    ) -> list[DiffEntry]:
         entries = []
         all_keys = sorted(set(a.keys()) | set(b.keys()))
         for k in all_keys:
@@ -214,7 +215,7 @@ class ImageDiff:
                 details={"error": "size mismatch"},
             )
 
-        mse = sum((x - y) ** 2 for x, y in zip(a, b)) / len(a)
+        mse = sum((x - y) ** 2 for x, y in zip(a, b, strict=False)) / len(a)
         if mse < 1e-10:
             psnr = float("inf")
             similarity = 1.0
@@ -253,8 +254,8 @@ class ResultComparator:
 
     def compare(
         self,
-        results_a: Dict[str, Any],
-        results_b: Dict[str, Any],
+        results_a: dict[str, Any],
+        results_b: dict[str, Any],
         label_a: str = "A",
         label_b: str = "B",
     ) -> DiffReport:
@@ -281,7 +282,7 @@ class ResultComparator:
 
         return report
 
-    def _compare_values(self, key: str, a: Any, b: Any) -> List[DiffEntry]:
+    def _compare_values(self, key: str, a: Any, b: Any) -> list[DiffEntry]:
         if isinstance(a, str) and isinstance(b, str):
             return [TextDiff.compare(key, a, b)]
 
@@ -303,7 +304,7 @@ class ResultComparator:
         # Fallback: string comparison
         return [TextDiff.compare(key, str(a), str(b))]
 
-    def _compare_sequences(self, key: str, a: list, b: list) -> List[DiffEntry]:
+    def _compare_sequences(self, key: str, a: list, b: list) -> list[DiffEntry]:
         entries = []
         max_len = max(len(a), len(b))
         for i in range(max_len):
@@ -320,7 +321,7 @@ class ResultComparator:
                 ))
         return entries
 
-    def _compare_dicts(self, key: str, a: dict, b: dict) -> List[DiffEntry]:
+    def _compare_dicts(self, key: str, a: dict, b: dict) -> list[DiffEntry]:
         entries = []
         all_keys = sorted(set(a.keys()) | set(b.keys()))
         for k in all_keys:

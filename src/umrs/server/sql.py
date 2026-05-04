@@ -1,22 +1,26 @@
 #!/usr/bin/python3
+import contextlib
+import json
 import os
 import sys
 import time
-import psycopg2
-import json
-from psycopg2 import sql
-from psycopg2 import pool as pg_pool
 from datetime import datetime
+
+import psycopg2
+from psycopg2 import pool as pg_pool
+from psycopg2 import sql
+
+from umrs.core.TaskCmdStatus import TaskStatus
 from umrs.shared.buckets import BucketsCfg
 from umrs.shared.sql_helpers import create_db_name, metadata_dict
-from umrs.core.TaskCmdStatus import TaskStatus
+
 
 class DataBase:
     def __init__(self, db_pool, db_name, username):
         self.db_pool = db_pool
         self.db_name = db_name
         self.username = username
-        self.tables = dict()
+        self.tables = {}
 
     def put_conn(self, conn, close=False):
         """
@@ -46,7 +50,7 @@ class DataBase:
                     raise RuntimeError("Unable to get a live connection from the pool")
             return conn
         except Exception as e:
-            raise RuntimeError(f"Failed to get connection: {e}")
+            raise RuntimeError(f"Failed to get connection: {e}") from e
 
     def add_table(self, table_name, columns):
         """
@@ -273,10 +277,8 @@ def export_embeddings(active_threads, user, export_args, buckets_cfg, control_mq
 
             status = TaskStatus.COMPLETED
 
-    try:
+    with contextlib.suppress(RuntimeError):
         control_mq.send_string(results, zmq_sender_id)
-    except RuntimeError:
-        pass
 
     active_threads.update_status_to_done()
     active_threads.record_status_for_users_by_key([user], key)
@@ -303,10 +305,7 @@ def wait_table_modification_on_db(active_threads, user, key, data_base, table_na
             f"Error while waiting for table '{table_name}' update: {e}"
         ) from e
 
-    if res is None :
-        msg = "TIMEOUT"
-    else :
-        msg = res
+    msg = "TIMEOUT" if res is None else res
 
     control_mq.send_string(msg, zmq_sender_id)
 
@@ -450,7 +449,7 @@ def get_table_columns_and_types(conn, table_name, schema='public'):
             rows = cur.fetchall()
 
             # Populate dictionary with column names and types
-            column_info = {column: data_type for column, data_type in rows}
+            column_info = dict(rows)
 
     except Exception as e:
         print(f"Error fetching column info: {e}")
@@ -587,7 +586,7 @@ def get_vector_size(cursor, table_name):
     Returns:
         int: Vector size (dimension) if found, else None
     """
-    query = f"""
+    query = """
     SELECT atttypmod AS vector_size
     FROM pg_attribute
     WHERE attrelid = %s::regclass AND attname = 'embedding';
@@ -675,7 +674,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
 
     table_name = sql_cfg['table_name'].lower()
     (f"\t\t\t--> Configuring table '{table_name}'...")
-    table_columns = [];
+    table_columns = []
     column = {"name": "id", "type": "SERIAL PRIMARY KEY"}
     table_columns.append(column)
     column = {"name": "s3_object", "type": "TEXT"}
@@ -952,7 +951,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
                     try:
                         value = int(value)
                     except (ValueError, TypeError):
-                        raise ValueError(f"Metadata '{key}' must be INT but value '{value}' is not.")
+                        raise ValueError(f"Metadata '{key}' must be INT but value '{value}' is not.") from None
                 elif not is_string_type(sql_type):
                     # For non-string/non-int types, rely on DB to validate
                     pass
@@ -971,7 +970,7 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         if not silent :
             print(f"\t--> Stored/Updated embedding in '{table_name}' for '{s3_object}'")
             if metadata:
-                print(f"\t--> metadata have been added/updated'")
+                print("\t--> metadata have been added/updated'")
             if saved_s3_object:
                   print(f"\t--> Output saved in {saved_s3_object}'")
 
@@ -1011,7 +1010,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     if modality_name in ("image", "tomography", "volume"):
         # One embedding per image file
-        for embedding, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
+        for embedding, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums, strict=False):
             # print(f"storing embedding for {s3_key}... ")
             store_one_embedding_in_db(
                 data_base,
@@ -1029,7 +1028,7 @@ def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_ke
 
     elif modality_name in ("text", "text_file", "text file"):
         # Multiple embeddings per file (one per text chunk)
-        for chunked_embeddings, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums):
+        for chunked_embeddings, s3_key, saved_s3_object, metadata, checksum in zip(embeddings, s3_keys, saved_s3_objects, metadata_list, checksums, strict=False):
             sorted_chunks = sorted(chunked_embeddings, key=lambda chunk: chunk["start"])
             for chunk in sorted_chunks:
                 store_one_embedding_in_db(

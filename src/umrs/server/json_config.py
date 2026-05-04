@@ -2,7 +2,8 @@ import json
 import os
 import sys
 
-from jsonschema import validate, ValidationError
+from jsonschema import ValidationError, validate
+
 from umrs.shared.config import resolve_config_path
 from umrs.shared.json_config import load_client_cfg_file
 
@@ -35,7 +36,7 @@ def load_server_cfg_json(json_filename):
       sys.exit(f"Server JSON file {json_filename} does not exist. Exiting...")
 
     try:
-      with open(json_filename, "r", encoding="utf-8") as file:
+      with open(json_filename, encoding="utf-8") as file:
         content = json.load(file)
     except json.decoder.JSONDecodeError as e:
         sys.exit(f"Error: Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos}).\nExiting...")

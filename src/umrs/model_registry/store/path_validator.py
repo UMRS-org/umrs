@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import List, Optional
 
 from ..models import ModelScope
 from .errors import PathNotAllowedError
@@ -23,7 +22,7 @@ DEFAULT_ALLOWED_PATHS = [
 ]
 
 
-def _append_unique(patterns: List[str], candidate: Optional[str]) -> None:
+def _append_unique(patterns: list[str], candidate: str | None) -> None:
     if not candidate:
         return
     normalized = os.path.normpath(candidate)
@@ -31,7 +30,7 @@ def _append_unique(patterns: List[str], candidate: Optional[str]) -> None:
         patterns.append(normalized)
 
 
-def _site_scope_patterns(scope: Optional[ModelScope] = None) -> List[str]:
+def _site_scope_patterns(scope: ModelScope | None = None) -> list[str]:
     try:
         from umrs.orchestrator.site_config import get_site_config
 
@@ -39,7 +38,7 @@ def _site_scope_patterns(scope: Optional[ModelScope] = None) -> List[str]:
     except Exception:
         return []
 
-    patterns: List[str] = []
+    patterns: list[str] = []
 
     if scope in (None, ModelScope.SYSTEM):
         model_cache_dir = getattr(storage, "model_cache_dir", "")
@@ -66,9 +65,9 @@ class PathValidator:
     This prevents users from serving arbitrary filesystem paths.
     """
 
-    allowed_patterns: List[str]
+    allowed_patterns: list[str]
 
-    def __init__(self, allowed_patterns: Optional[List[str]] = None):
+    def __init__(self, allowed_patterns: list[str] | None = None):
         if allowed_patterns is not None:
             self.allowed_patterns = allowed_patterns
         else:
@@ -84,10 +83,7 @@ class PathValidator:
     def is_allowed(self, path: str) -> bool:
         """Check if a path matches any allowed pattern."""
         path = os.path.normpath(path)
-        for pattern in self.allowed_patterns:
-            if self._match_pattern(path, pattern):
-                return True
-        return False
+        return any(self._match_pattern(path, pattern) for pattern in self.allowed_patterns)
 
     def validate(self, path: str) -> None:
         """Validate a path, raising PathNotAllowedError if not allowed."""
@@ -98,8 +94,8 @@ class PathValidator:
         self,
         pattern: str,
         *,
-        owner_id: Optional[str] = None,
-        project_id: Optional[str] = None,
+        owner_id: str | None = None,
+        project_id: str | None = None,
     ) -> str:
         regex_pattern = re.escape(pattern)
         regex_pattern = regex_pattern.replace(
@@ -118,8 +114,8 @@ class PathValidator:
         path: str,
         pattern: str,
         *,
-        owner_id: Optional[str] = None,
-        project_id: Optional[str] = None,
+        owner_id: str | None = None,
+        project_id: str | None = None,
     ) -> bool:
         """Match path against a glob-like pattern."""
         regex_pattern = self._compile_pattern(
@@ -129,7 +125,7 @@ class PathValidator:
         )
         return bool(re.match(regex_pattern, path))
 
-    def _scope_patterns(self, scope: ModelScope) -> List[str]:
+    def _scope_patterns(self, scope: ModelScope) -> list[str]:
         if scope == ModelScope.SYSTEM:
             patterns = self._system_patterns()
             for pattern in _site_scope_patterns(ModelScope.SYSTEM):
@@ -149,7 +145,7 @@ class PathValidator:
             _append_unique(patterns, pattern)
         return patterns
 
-    def _system_patterns(self) -> List[str]:
+    def _system_patterns(self) -> list[str]:
         return [
             pattern for pattern in self.allowed_patterns
             if "{owner_id}" not in pattern and "{project_id}" not in pattern
@@ -159,8 +155,8 @@ class PathValidator:
         self,
         path: str,
         scope: ModelScope,
-        owner_id: Optional[str] = None,
-        project_id: Optional[str] = None,
+        owner_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """
         Validate that path matches the claimed scope.

@@ -26,8 +26,9 @@ import os
 import re
 import threading
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 
 from umrs.pipeline_sdk.dag import DAGScheduler, DAGValidationError
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
@@ -97,20 +98,20 @@ class _InMemoryS3Client:
         self,
         record: ExecutionRecord,
         *,
-        state_lock: Optional[threading.Lock] = None,
+        state_lock: threading.Lock | None = None,
     ) -> None:
         self._record = record
         self._lock = state_lock or threading.Lock()
         record.results.setdefault("blobs", {})
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: Any) -> Dict[str, Any]:
+    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: Any) -> dict[str, Any]:
         full_key = f"{Bucket}/{Key}"
         with self._lock:
             self._record.results["blobs"][full_key] = Body
         self._record.add_artifact(full_key)
         return {"ETag": '"in-memory"', "VersionId": "0"}
 
-    def get_object(self, *, Bucket: str, Key: str, **_: Any) -> Dict[str, Any]:
+    def get_object(self, *, Bucket: str, Key: str, **_: Any) -> dict[str, Any]:
         full_key = f"{Bucket}/{Key}"
         with self._lock:
             body = self._record.results.get("blobs", {}).get(full_key)
@@ -126,7 +127,7 @@ class _InMemoryS3Client:
 
         return {"Body": _Body(body)}
 
-    def head_object(self, *, Bucket: str, Key: str, **_: Any) -> Dict[str, Any]:
+    def head_object(self, *, Bucket: str, Key: str, **_: Any) -> dict[str, Any]:
         full_key = f"{Bucket}/{Key}"
         with self._lock:
             body = self._record.results.get("blobs", {}).get(full_key)
@@ -164,7 +165,7 @@ def _load_step_class(entrypoint: str) -> type[Step]:
 # ----------------------------------------------------------------------
 
 
-def _topo_sort(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _topo_sort(steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Topologically sort steps by ``depends_on``.
 
     Steps without explicit deps run in declaration order after all of
@@ -175,9 +176,9 @@ def _topo_sort(steps: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     runner itself now uses :class:`umrs.pipeline_sdk.dag.DAGScheduler`
     so that independent steps in the same wave can run in parallel.
     """
-    by_name: Dict[str, Dict[str, Any]] = {s["name"]: s for s in steps if s.get("name")}
-    visited: Dict[str, str] = {}  # name -> "temp" | "perm"
-    ordered: List[Dict[str, Any]] = []
+    by_name: dict[str, dict[str, Any]] = {s["name"]: s for s in steps if s.get("name")}
+    visited: dict[str, str] = {}  # name -> "temp" | "perm"
+    ordered: list[dict[str, Any]] = []
 
     def _visit(node_name: str) -> None:
         state = visited.get(node_name)
@@ -213,20 +214,20 @@ class _DAGAdapter:
 
     __slots__ = ("name", "depends_on", "_dict")
 
-    def __init__(self, raw: Dict[str, Any], synthetic_name: str) -> None:
+    def __init__(self, raw: dict[str, Any], synthetic_name: str) -> None:
         self.name: str = raw.get("name") or synthetic_name
         deps = raw.get("depends_on")
         # Preserve None vs [] distinction for DAGScheduler's "linear
         # fallback when no step declares depends_on" rule.
-        self.depends_on: Optional[List[str]] = (
+        self.depends_on: list[str] | None = (
             list(deps) if isinstance(deps, list) else None
         )
         self._dict = raw
 
 
 def _build_levels(
-    steps_spec: List[Dict[str, Any]],
-) -> Tuple[List[List[Dict[str, Any]]], List[Dict[str, Any]]]:
+    steps_spec: list[dict[str, Any]],
+) -> tuple[list[list[dict[str, Any]]], list[dict[str, Any]]]:
     """Return (levels, all_named_specs) computed from the workflow spec.
 
     Each ``levels[i]`` is the list of step dicts that can run concurrently
@@ -234,8 +235,8 @@ def _build_levels(
     name so the DAG layer can address them, matching the legacy runner
     behaviour where unnamed steps got the same fallback label.
     """
-    adapters: List[_DAGAdapter] = []
-    canonical_specs: List[Dict[str, Any]] = []
+    adapters: list[_DAGAdapter] = []
+    canonical_specs: list[dict[str, Any]] = []
     for idx, raw in enumerate(steps_spec):
         synthetic = f"step_{idx}"
         adapter = _DAGAdapter(raw, synthetic)
@@ -248,7 +249,7 @@ def _build_levels(
 
     scheduler = DAGScheduler(adapters)
     level_indices = scheduler.execution_levels()
-    levels: List[List[Dict[str, Any]]] = [
+    levels: list[list[dict[str, Any]]] = [
         [canonical_specs[idx] for idx in level] for level in level_indices
     ]
     return levels, canonical_specs
@@ -260,22 +261,22 @@ def _build_levels(
 
 
 def _execute_step(
-    spec: Dict[str, Any],
+    spec: dict[str, Any],
     *,
     wave_index: int,
     record: ExecutionRecord,
     router: StepRouter,
-    project_id: Optional[str],
-    user_id: Optional[str],
-    parent_results_snapshot: Dict[str, StepResult],
-    parent_results: Dict[str, StepResult],
-    routing_log: Dict[str, Dict[str, Any]],
-    affinity_state: Dict[str, str],
+    project_id: str | None,
+    user_id: str | None,
+    parent_results_snapshot: dict[str, StepResult],
+    parent_results: dict[str, StepResult],
+    routing_log: dict[str, dict[str, Any]],
+    affinity_state: dict[str, str],
     s3_client: _InMemoryS3Client,
     bucket: str,
     state_lock: threading.Lock,
     executor: StepExecutor,
-) -> Tuple[str, Optional[StepResult], Optional[str]]:
+) -> tuple[str, StepResult | None, str | None]:
     """Execute a single step. Returns ``(step_name, result_or_None, error_or_None)``.
 
     All shared-state writes (``parent_results``, ``routing_log``) happen
@@ -317,7 +318,7 @@ def _execute_step(
         # on. Read under the shared lock so we observe a consistent view
         # of completed parents (parents are by definition in earlier
         # waves, so this is mostly a memory-visibility safeguard).
-        parent_endpoint_ids: Dict[str, str] = {}
+        parent_endpoint_ids: dict[str, str] = {}
         with state_lock:
             for parent in spec.get("depends_on") or []:
                 ep_id = affinity_state.get(parent)
@@ -400,13 +401,13 @@ def _execute_step(
         routing_log[step_name] = decision_dict
 
     # ---- Build context ----------------------------------------------------
-    upstream_keys: List[str] = []
+    upstream_keys: list[str] = []
     for dep in spec.get("depends_on") or []:
         dep_result = parent_results_snapshot.get(dep)
         if dep_result is not None:
             upstream_keys.extend(dep_result.output_keys)
 
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
     if image_hint is not None:
         metadata[EXECUTOR_IMAGE_METADATA_KEY] = image_hint
     if gpu_hint is not None:
@@ -529,12 +530,12 @@ def _execute_step(
 def run_workflow_record(
     record: ExecutionRecord,
     *,
-    source_path: Optional[str],
-    workflow_json: Dict[str, Any],
-    router: Optional[StepRouter] = None,
-    project_id: Optional[str] = None,
-    user_id: Optional[str] = None,
-    executor: Optional[StepExecutor] = None,
+    source_path: str | None,
+    workflow_json: dict[str, Any],
+    router: StepRouter | None = None,
+    project_id: str | None = None,
+    user_id: str | None = None,
+    executor: StepExecutor | None = None,
 ) -> None:
     """Execute the workflow described by ``workflow_json`` in-process.
 
@@ -560,7 +561,7 @@ def run_workflow_record(
     """
     record.update(status="running", started_at=time.time())
 
-    steps_spec: List[Dict[str, Any]] = list(workflow_json.get("steps", []))
+    steps_spec: list[dict[str, Any]] = list(workflow_json.get("steps", []))
     if not steps_spec:
         record.update(
             status="succeeded",
@@ -587,19 +588,19 @@ def run_workflow_record(
     state_lock = threading.Lock()
     s3_client = _InMemoryS3Client(record, state_lock=state_lock)
     bucket = "wf-runner"
-    parent_results: Dict[str, StepResult] = {}
-    routing_log: Dict[str, Dict[str, Any]] = {}
+    parent_results: dict[str, StepResult] = {}
+    routing_log: dict[str, dict[str, Any]] = {}
     # Per-execution map: step_name -> endpoint_id of the endpoint the
     # step ran on. Populated under ``state_lock`` after each step
     # succeeds; consumed by dependents to bias routing toward the same
     # endpoint (best-effort tiebreaker, not a constraint).
-    affinity_state: Dict[str, str] = {}
+    affinity_state: dict[str, str] = {}
     record.results.setdefault("_routing", routing_log)
 
     total = sum(len(level) for level in levels)
     completed = 0
     max_workers_cap = _max_parallel_steps()
-    first_error: Optional[str] = None
+    first_error: str | None = None
 
     for wave_index, level in enumerate(levels):
         if record.cancel_requested:
@@ -628,7 +629,7 @@ def run_workflow_record(
             snapshot = dict(parent_results)
 
         wave_started = time.monotonic()
-        wave_errors: List[str] = []
+        wave_errors: list[str] = []
 
         if len(level) == 1:
             spec = level[0]
@@ -762,11 +763,11 @@ def _try_shutdown_executor(executor: StepExecutor) -> None:
 
 
 def _mark_skipped(
-    spec: Dict[str, Any],
+    spec: dict[str, Any],
     *,
     wave_index: int,
     record: ExecutionRecord,
-    routing_log: Dict[str, Dict[str, Any]],
+    routing_log: dict[str, dict[str, Any]],
     state_lock: threading.Lock,
 ) -> None:
     """Mark a step as ``skipped`` because an earlier wave failed."""
@@ -787,9 +788,9 @@ def _mark_skipped(
 
 
 
-def _serialise_step_extra(result: StepResult) -> Dict[str, Any]:
+def _serialise_step_extra(result: StepResult) -> dict[str, Any]:
     """Return a JSON-safe view of ``result.extra`` plus output keys."""
-    safe_extra: Dict[str, Any] = {}
+    safe_extra: dict[str, Any] = {}
     for key, value in (result.extra or {}).items():
         try:
             import json as _json
@@ -801,20 +802,20 @@ def _serialise_step_extra(result: StepResult) -> Dict[str, Any]:
     return {"output_keys": list(result.output_keys or []), "extra": safe_extra}
 
 
-def get_blob(record: ExecutionRecord, key: str) -> Optional[bytes]:
+def get_blob(record: ExecutionRecord, key: str) -> bytes | None:
     """Return raw bytes for an artifact key, or ``None`` if missing."""
     return record.results.get("blobs", {}).get(key)
 
 
-def list_artifacts(record: ExecutionRecord) -> Iterable[Tuple[str, int]]:
+def list_artifacts(record: ExecutionRecord) -> Iterable[tuple[str, int]]:
     """Yield ``(key, size_bytes)`` pairs for every uploaded artifact."""
-    blobs: Dict[str, bytes] = record.results.get("blobs", {}) or {}
+    blobs: dict[str, bytes] = record.results.get("blobs", {}) or {}
     for key, body in blobs.items():
         yield key, len(body)
 
 
 def _apply_routing_decision_to_config(
-    config: Dict[str, Any], decision: RoutingDecision
+    config: dict[str, Any], decision: RoutingDecision
 ) -> None:
     """Merge a routing decision into the per-step config dict.
 

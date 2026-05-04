@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import sys
 
-
 ADMIN_DENIED_MESSAGE = (
     "umrs-client admin is disabled. Use 'umrs-server admin' for offline "
     "operator tasks."

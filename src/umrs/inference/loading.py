@@ -1,14 +1,11 @@
 
+
 import spacy
 import torch
 
-from typing import Optional
-
-
-
 
 class EmbeddingModel:
-    def __init__(self, model_name: str, type: str, return_type: str, embedding_vector_size: int, max_tokens: Optional[int], model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
+    def __init__(self, model_name: str, type: str, return_type: str, embedding_vector_size: int, max_tokens: int | None, model, input_type: str, compute_embeddings, modality, spacy_model, tokenizer):
         self.model_name = model_name
         self.type = type
         self.return_type = return_type
@@ -56,22 +53,28 @@ def load_model(model_cfg, modality, task=None):
         type = "loaded"
         tokenizer = model._first_module().tokenizer
         max_tokens = getattr(tokenizer, "model_max_length", None)
-        compute_embeddings_func, input_type = sentence_transformers(modality);
+        compute_embeddings_func, input_type = sentence_transformers(modality)
     elif model_type == "Resnet-50":
-        from .resnet_50 import load_resnet50, compute_embeddings_resnet_50
+        from .resnet_50 import compute_embeddings_resnet_50, load_resnet50
         model = load_resnet50(checkpoint_path)
         type = "loaded"
         compute_embeddings_func = compute_embeddings_resnet_50
         input_type = "image"
     elif model_type == "TransformerEncoder":
-        from .transformer_encoder import load_transformer_encoder, compute_embeddings_transformer_encoder
+        from .transformer_encoder import (
+            compute_embeddings_transformer_encoder,
+            load_transformer_encoder,
+        )
         model, tokenizer = load_transformer_encoder(model_name)
         type = "loaded"
         max_tokens = tokenizer.model_max_length
         compute_embeddings_func = compute_embeddings_transformer_encoder
         input_type = "text"
     elif model_type == "MAE" :
-        from .masked_autoencoder import load_masked_autoencoder, compute_embeddings_masked_autoencoder
+        from .masked_autoencoder import (
+            compute_embeddings_masked_autoencoder,
+            load_masked_autoencoder,
+        )
         model = load_masked_autoencoder(cfg_file, checkpoint_path)
         type = "loaded"
         compute_embeddings_func = compute_embeddings_masked_autoencoder
@@ -85,7 +88,7 @@ def load_model(model_cfg, modality, task=None):
         # Store config on the EmbeddingModel for use by the compute function
         _hmae_config = hmae_config
     elif model_type == "SAM3":
-        from .sam3_segmentation import load_sam3_model, compute_sam3_segmentation
+        from .sam3_segmentation import compute_sam3_segmentation, load_sam3_model
         sam3_model, sam3_processor, sam3_device = load_sam3_model(model_name)
         model = sam3_model
         type = "loaded"
@@ -94,10 +97,14 @@ def load_model(model_cfg, modality, task=None):
         _sam3_processor = sam3_processor
     elif model_type.startswith("openai://"):
         # Import OpenAI-compatible embedding utilities and vLLM liveness / capability checks
-        from .openai_api import make_openai_compute_embeddings, is_server_alive, get_max_tokens_from_vllm
-
         # Import HuggingFace tokenizer to locally mirror the server-side tokenization logic
         from transformers import AutoTokenizer
+
+        from .openai_api import (
+            get_max_tokens_from_vllm,
+            is_server_alive,
+            make_openai_compute_embeddings,
+        )
 
         # Extract the actual server URL from the openai:// pseudo-scheme
         model_url = model_type[len("openai://"):]
@@ -132,8 +139,8 @@ def load_model(model_cfg, modality, task=None):
         # Declare that this embedding model expects raw text as input
         input_type = "text"
     elif model_type.startswith("user_script://"):
-        from umrs.pipeline_sdk.workflow import WorkflowPipeline
         from umrs.pipeline_sdk.adapter import EmbeddingAdapter
+        from umrs.pipeline_sdk.workflow import WorkflowPipeline
 
         source_uri = model_type[len("user_script://"):]
         pipeline = WorkflowPipeline(source_uri)
@@ -151,9 +158,9 @@ def load_model(model_cfg, modality, task=None):
         vector_size = pipeline.workflow.output.embedding_vector_size or vector_size
 
     elif model_type.startswith("user_workflow://"):
-        from umrs.pipeline_sdk.workflow import WorkflowPipeline
-        from umrs.pipeline_sdk.adapter import EmbeddingAdapter
         from umrs.inference.plugins.user_workflow import UserWorkflow, UserWorkflowRunner
+        from umrs.pipeline_sdk.adapter import EmbeddingAdapter
+        from umrs.pipeline_sdk.workflow import WorkflowPipeline
 
         source_uri = model_type[len("user_workflow://"):]
         pipeline = WorkflowPipeline(source_uri)

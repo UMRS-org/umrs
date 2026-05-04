@@ -14,7 +14,7 @@ import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 @dataclass
@@ -26,18 +26,18 @@ class ObjectRecord:
     content_type: str = ""
     last_modified: float = 0.0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ObjectRecord":
+    def from_dict(cls, d: dict[str, Any]) -> ObjectRecord:
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
 
 
 @dataclass
 class VersionManifest:
     """Mapping of object keys to their ETags/checksums at a point in time."""
-    objects: Dict[str, ObjectRecord] = field(default_factory=dict)
+    objects: dict[str, ObjectRecord] = field(default_factory=dict)
 
     @property
     def object_count(self) -> int:
@@ -52,7 +52,7 @@ class VersionManifest:
         parts = sorted(f"{k}:{v.etag}:{v.size_bytes}" for k, v in self.objects.items())
         return hashlib.sha256("\n".join(parts).encode()).hexdigest()[:16]
 
-    def diff(self, other: "VersionManifest") -> "ManifestDiff":
+    def diff(self, other: VersionManifest) -> ManifestDiff:
         """Compare two manifests."""
         keys_a = set(self.objects.keys())
         keys_b = set(other.objects.keys())
@@ -68,11 +68,11 @@ class VersionManifest:
             unchanged=sorted(unchanged),
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {"objects": {k: v.to_dict() for k, v in self.objects.items()}}
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "VersionManifest":
+    def from_dict(cls, d: dict[str, Any]) -> VersionManifest:
         objects = {k: ObjectRecord.from_dict(v) for k, v in d.get("objects", {}).items()}
         return cls(objects=objects)
 
@@ -80,10 +80,10 @@ class VersionManifest:
 @dataclass
 class ManifestDiff:
     """Diff between two version manifests."""
-    added: List[str] = field(default_factory=list)
-    removed: List[str] = field(default_factory=list)
-    modified: List[str] = field(default_factory=list)
-    unchanged: List[str] = field(default_factory=list)
+    added: list[str] = field(default_factory=list)
+    removed: list[str] = field(default_factory=list)
+    modified: list[str] = field(default_factory=list)
+    unchanged: list[str] = field(default_factory=list)
 
     @property
     def has_changes(self) -> bool:
@@ -106,14 +106,14 @@ class DataVersion:
     description: str = ""
     created_at: float = field(default_factory=time.time)
     created_by: str = ""
-    parent_version_id: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    parent_version_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def fingerprint(self) -> str:
         return self.manifest.fingerprint()
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "version_id": self.version_id,
             "bucket": self.bucket,
@@ -127,7 +127,7 @@ class DataVersion:
         }
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "DataVersion":
+    def from_dict(cls, d: dict[str, Any]) -> DataVersion:
         return cls(
             version_id=d["version_id"],
             bucket=d["bucket"],
@@ -170,12 +170,12 @@ class DataVersionManager:
     def create_version(
         self,
         bucket: str,
-        objects: List[ObjectRecord],
+        objects: list[ObjectRecord],
         tag: str = "",
         description: str = "",
         created_by: str = "",
-        parent_version_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        parent_version_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> DataVersion:
         """Create a new version from a list of object records."""
         version_id = f"v-{uuid.uuid4().hex[:12]}"
@@ -202,7 +202,7 @@ class DataVersionManager:
         self._save_version(version)
         return version
 
-    def get_version(self, version_id: str) -> Optional[DataVersion]:
+    def get_version(self, version_id: str) -> DataVersion | None:
         path = self._version_path(version_id)
         if not path.exists():
             return None
@@ -210,9 +210,9 @@ class DataVersionManager:
 
     def list_versions(
         self,
-        bucket: Optional[str] = None,
-        tag: Optional[str] = None,
-    ) -> List[DataVersion]:
+        bucket: str | None = None,
+        tag: str | None = None,
+    ) -> list[DataVersion]:
         versions = []
         for p in sorted(self._store_dir.glob("v-*.json")):
             try:
@@ -226,7 +226,7 @@ class DataVersionManager:
                 continue
         return sorted(versions, key=lambda v: v.created_at)
 
-    def get_by_tag(self, bucket: str, tag: str) -> Optional[DataVersion]:
+    def get_by_tag(self, bucket: str, tag: str) -> DataVersion | None:
         for v in self.list_versions(bucket=bucket, tag=tag):
             return v
         return None
@@ -235,18 +235,18 @@ class DataVersionManager:
         self,
         version_id_a: str,
         version_id_b: str,
-    ) -> Optional[ManifestDiff]:
+    ) -> ManifestDiff | None:
         a = self.get_version(version_id_a)
         b = self.get_version(version_id_b)
         if not a or not b:
             return None
         return a.manifest.diff(b.manifest)
 
-    def lineage(self, version_id: str) -> List[DataVersion]:
+    def lineage(self, version_id: str) -> list[DataVersion]:
         """Trace the lineage of a version back to the root."""
-        chain: List[DataVersion] = []
+        chain: list[DataVersion] = []
         seen: set = set()
-        current_id: Optional[str] = version_id
+        current_id: str | None = version_id
         while current_id and current_id not in seen:
             seen.add(current_id)
             v = self.get_version(current_id)

@@ -5,8 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 PROFILE_ENV_VARS = ("UMRS_SITE_PROFILE", "RIVAULT_SITE_PROFILE")
 PROFILE_DATA_DIR = Path(__file__).with_name("site_profiles")
@@ -20,13 +19,13 @@ class SiteProfile:
     description: str = ""
     scheduler_kind: str = ""
     runtime_kind: str = ""
-    slurm_modules: List[str] = field(default_factory=list)
+    slurm_modules: list[str] = field(default_factory=list)
     slurm_log_dir: str = ""
     slurm_job_info_dir: str = ""
 
-    def to_env(self) -> Dict[str, str]:
+    def to_env(self) -> dict[str, str]:
         """Export profile defaults as environment variables."""
-        env: Dict[str, str] = {}
+        env: dict[str, str] = {}
         if self.scheduler_kind:
             env["RIVAULT_ORCHESTRATOR"] = self.scheduler_kind
         if self.runtime_kind:
@@ -40,12 +39,12 @@ class SiteProfile:
         return env
 
 
-def available_site_profiles() -> List[str]:
+def available_site_profiles() -> list[str]:
     """Return shipped site profile names."""
     return sorted(path.stem for path in PROFILE_DATA_DIR.glob("*.yaml"))
 
 
-def selected_site_profile_name() -> Optional[str]:
+def selected_site_profile_name() -> str | None:
     """Return the selected profile name from environment, if any."""
     for env_name in PROFILE_ENV_VARS:
         value = os.environ.get(env_name, "").strip()
@@ -67,7 +66,7 @@ def load_site_profile(name: str) -> SiteProfile:
     return _profile_from_raw(raw)
 
 
-def load_selected_site_profile() -> Optional[SiteProfile]:
+def load_selected_site_profile() -> SiteProfile | None:
     """Load the profile named by UMRS_SITE_PROFILE/RIVAULT_SITE_PROFILE."""
     name = selected_site_profile_name()
     if not name:
@@ -75,7 +74,7 @@ def load_selected_site_profile() -> Optional[SiteProfile]:
     return load_site_profile(name)
 
 
-def inject_site_profile_env(overwrite: bool = False) -> Optional[SiteProfile]:
+def inject_site_profile_env(overwrite: bool = False) -> SiteProfile | None:
     """Inject selected site-profile defaults into os.environ."""
     profile = load_selected_site_profile()
     if profile is None:
@@ -96,7 +95,7 @@ def _expand_env_refs(value: Any) -> Any:
     return value
 
 
-def _profile_from_raw(raw: Dict[str, Any]) -> SiteProfile:
+def _profile_from_raw(raw: dict[str, Any]) -> SiteProfile:
     modules = raw.get("slurm_modules", [])
     if isinstance(modules, str):
         modules = modules.replace(",", " ").split()

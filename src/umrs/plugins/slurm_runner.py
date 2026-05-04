@@ -12,11 +12,10 @@ import logging
 import os
 import subprocess
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
-from .models import PluginSpec, PluginResult, PluginStatus
+from .models import PluginResult, PluginSpec, PluginStatus
 from .runner import PluginRunner
 
 logger = logging.getLogger(__name__)
@@ -45,7 +44,7 @@ class SlurmPluginRunner(PluginRunner):
         self,
         partition: str = SLURM_PARTITION,
         singularity_image: str = SINGULARITY_IMAGE_PATH,
-        work_dir: Optional[str] = None,
+        work_dir: str | None = None,
         **kwargs,
     ):
         """
@@ -63,7 +62,7 @@ class SlurmPluginRunner(PluginRunner):
         self.work_dir.mkdir(parents=True, exist_ok=True)
 
         # Track submitted jobs: plugin_id -> slurm_job_id
-        self._slurm_jobs: Dict[str, str] = {}
+        self._slurm_jobs: dict[str, str] = {}
 
     async def _execute_backend(
         self,
@@ -283,7 +282,7 @@ exit $EXIT_CODE
             stderr = stderr_file[0].read_text()[-50000:]
 
         # Read metrics
-        metrics: Dict[str, Any] = {"slurm_job_id": slurm_job_id}
+        metrics: dict[str, Any] = {"slurm_job_id": slurm_job_id}
         metrics_file = job_dir / "metrics.txt"
         if metrics_file.exists():
             for line in metrics_file.read_text().splitlines():
@@ -335,7 +334,7 @@ exit $EXIT_CODE
             logger.exception(f"Failed to cancel Slurm job {slurm_job_id}")
             return False
 
-    async def get_status(self, plugin_id: str) -> Optional[PluginStatus]:
+    async def get_status(self, plugin_id: str) -> PluginStatus | None:
         """Get current status of a plugin execution."""
         slurm_job_id = self._slurm_jobs.get(plugin_id)
         if not slurm_job_id:

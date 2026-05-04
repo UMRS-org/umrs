@@ -41,18 +41,17 @@ import zipfile
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any
 
 from umrs.pipeline_sdk.base import (
     ComputeBackend,
     DataItem,
-    Phase,
     Pipeline,
     PipelineConfig,
     Result,
     TaskHandle,
 )
-from umrs.pipeline_sdk.step import Step, StepContext, StepResult
+from umrs.pipeline_sdk.step import Step
 
 logger = logging.getLogger(__name__)
 
@@ -62,7 +61,7 @@ _ENTRYPOINT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*:[A-Za-z_][A-Za-z0-9_]*$")
 # Thread-safe cache for imported step classes.
 # Include the resolved module path and mtime so a workflow re-upload to the
 # same directory invalidates the stale class definition automatically.
-_step_class_cache: Dict[Tuple[str, str, str, Optional[int]], Type[Step]] = {}
+_step_class_cache: dict[tuple[str, str, str, int | None], type[Step]] = {}
 _step_cache_lock = threading.Lock()
 
 
@@ -91,7 +90,7 @@ class SourceSpec:
     """Location of the user's Python scripts."""
     type: SourceType
     path: str
-    ref: Optional[str] = None  # git commit hash
+    ref: str | None = None  # git commit hash
 
     def validate(self) -> None:
         if self.type == SourceType.GIT and not self.ref:
@@ -103,14 +102,14 @@ class SourceSpec:
         if self.type == SourceType.UPLOADED and not self.path:
             raise ValueError("Uploaded source requires a non-empty path")
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {"type": self.type.value, "path": self.path}
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"type": self.type.value, "path": self.path}
         if self.ref:
             d["ref"] = self.ref
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "SourceSpec":
+    def from_dict(cls, data: dict[str, Any]) -> SourceSpec:
         return cls(
             type=SourceType(data["type"]),
             path=data["path"],
@@ -125,9 +124,9 @@ class ResourceSpec:
     cpu_limit: str = "1"
     memory_limit: str = "1Gi"
     timeout_seconds: int = 3600
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = {
             "gpu_count": self.gpu_count,
             "cpu_limit": self.cpu_limit,
@@ -139,7 +138,7 @@ class ResourceSpec:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ResourceSpec":
+    def from_dict(cls, data: dict[str, Any]) -> ResourceSpec:
         return cls(
             gpu_count=data.get("gpu_count", 0),
             cpu_limit=data.get("cpu_limit", "1"),
@@ -173,17 +172,17 @@ class StepSpec:
     """One processing step inside a workflow."""
     name: str
     entrypoint: str  # "module:ClassName"
-    config: Dict[str, Any] = field(default_factory=dict)
-    extends: Optional[str] = None  # "name@version" reference to a registered step
-    depends_on: Optional[List[str]] = None  # step names this step depends on
+    config: dict[str, Any] = field(default_factory=dict)
+    extends: str | None = None  # "name@version" reference to a registered step
+    depends_on: list[str] | None = None  # step names this step depends on
     max_retries: int = 0  # per-step retry count (0 = no retries)
     retry_delay: float = 1.0  # seconds between retries
     # ---- routing / resource hints (all optional, default-omitted in to_dict) ----
-    requires: List[str] = field(default_factory=list)  # capability tags
-    model: Optional[str] = None  # symbolic model alias (e.g. "vlm-large")
-    lora: Optional[str] = None  # adapter name (passthrough)
-    model_type: Optional[str] = None  # "llm" | "vision" | "embedding"
-    routing_hints: Dict[str, Any] = field(default_factory=dict)
+    requires: list[str] = field(default_factory=list)  # capability tags
+    model: str | None = None  # symbolic model alias (e.g. "vlm-large")
+    lora: str | None = None  # adapter name (passthrough)
+    model_type: str | None = None  # "llm" | "vision" | "embedding"
+    routing_hints: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         if not self.name:
@@ -214,8 +213,8 @@ class StepSpec:
                 f"{sorted(KNOWN_MODEL_TYPES)}, got '{self.model_type}'"
             )
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "name": self.name,
             "entrypoint": self.entrypoint,
             "config": self.config,
@@ -242,7 +241,7 @@ class StepSpec:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "StepSpec":
+    def from_dict(cls, data: dict[str, Any]) -> StepSpec:
         return cls(
             name=data["name"],
             entrypoint=data["entrypoint"],
@@ -260,9 +259,9 @@ class StepSpec:
 
 
 def _normalize_execution_parallel_steps(
-    steps_data: List[Dict[str, Any]],
-    execution_data: Dict[str, Any],
-) -> List[Dict[str, Any]]:
+    steps_data: list[dict[str, Any]],
+    execution_data: dict[str, Any],
+) -> list[dict[str, Any]]:
     """Translate legacy ``execution.parallel`` shorthand into ``depends_on``.
 
     The workflow engine only executes DAGs expressed via ``depends_on``.
@@ -296,8 +295,8 @@ def _normalize_execution_parallel_steps(
         return normalized_steps
 
     parallel_set = set(parallel_names)
-    previous_serial_name: Optional[str] = None
-    current_parallel_group: List[str] = []
+    previous_serial_name: str | None = None
+    current_parallel_group: list[str] = []
 
     for step in normalized_steps:
         step_name = step.get("name")
@@ -324,14 +323,14 @@ class OutputSpec:
     return_type: str = "file"  # "file" | "vector"
     embedding_vector_size: int = 0
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "return_type": self.return_type,
             "embedding_vector_size": self.embedding_vector_size,
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "OutputSpec":
+    def from_dict(cls, data: dict[str, Any]) -> OutputSpec:
         return cls(
             return_type=data.get("return_type", "file"),
             embedding_vector_size=data.get("embedding_vector_size", 0),
@@ -347,12 +346,12 @@ class WorkflowDefinition:
 
     name: str
     source: SourceSpec
-    steps: List[StepSpec]
+    steps: list[StepSpec]
 
     version: str = "1.0"
     description: str = ""
-    requirements: List[str] = field(default_factory=list)
-    env: Dict[str, str] = field(default_factory=dict)
+    requirements: list[str] = field(default_factory=list)
+    env: dict[str, str] = field(default_factory=dict)
     resources: ResourceSpec = field(default_factory=ResourceSpec)
     output: OutputSpec = field(default_factory=OutputSpec)
     execution_mode: ExecutionMode = ExecutionMode.IN_PROCESS
@@ -394,8 +393,8 @@ class WorkflowDefinition:
             except DAGValidationError as exc:
                 raise ValueError(str(exc)) from exc
 
-    def to_dict(self) -> Dict[str, Any]:
-        d: Dict[str, Any] = {
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
             "name": self.name,
             "version": self.version,
             "description": self.description,
@@ -411,7 +410,7 @@ class WorkflowDefinition:
         return d
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "WorkflowDefinition":
+    def from_dict(cls, data: dict[str, Any]) -> WorkflowDefinition:
         mode_str = data.get("execution_mode", "in_process")
         steps_data = _normalize_execution_parallel_steps(
             data["steps"],
@@ -431,7 +430,7 @@ class WorkflowDefinition:
         )
 
     @classmethod
-    def from_file(cls, path: str | Path) -> "WorkflowDefinition":
+    def from_file(cls, path: str | Path) -> WorkflowDefinition:
         """Load and validate a workflow from a JSON file."""
         path = Path(path)
         if not path.is_file():
@@ -453,7 +452,7 @@ class ScriptLoadError(Exception):
 
 def _resolve_source(
     workflow: WorkflowDefinition,
-    s3: Optional[Any] = None,
+    s3: Any | None = None,
 ) -> Path:
     """Return a local directory containing the user's Python modules."""
     src = workflow.source
@@ -513,7 +512,7 @@ def _download_s3_source(s3: Any, s3_uri: str) -> Path:
     return tmp_dir
 
 
-def _import_step_class(spec: StepSpec, script_dir: Path) -> Type[Step]:
+def _import_step_class(spec: StepSpec, script_dir: Path) -> type[Step]:
     """Import and validate a single step class.
 
     Uses ``importlib.util.spec_from_file_location`` for thread-safe
@@ -637,11 +636,11 @@ def load_workflow(source_uri: str) -> WorkflowDefinition:
 
 def load_steps(
     workflow: WorkflowDefinition,
-    s3: Optional[Any] = None,
-) -> List[Step]:
+    s3: Any | None = None,
+) -> list[Step]:
     """Import and instantiate every step declared in *workflow*."""
     script_dir = _resolve_source(workflow, s3)
-    instances: List[Step] = []
+    instances: list[Step] = []
     for spec in workflow.steps:
         cls = _import_step_class(spec, script_dir)
         instance = cls()
@@ -673,8 +672,8 @@ class WorkflowPipeline(Pipeline):
     def __init__(
         self,
         source_uri: str,
-        s3: Optional[Any] = None,
-        s3_keys: Optional[List[str]] = None,
+        s3: Any | None = None,
+        s3_keys: list[str] | None = None,
         input_bucket: str = "",
         output_bucket: str = "",
     ) -> None:
@@ -690,12 +689,12 @@ class WorkflowPipeline(Pipeline):
     def from_workflow(
         cls,
         workflow: WorkflowDefinition,
-        steps: List[Step],
-        s3: Optional[Any] = None,
-        s3_keys: Optional[List[str]] = None,
+        steps: list[Step],
+        s3: Any | None = None,
+        s3_keys: list[str] | None = None,
         input_bucket: str = "",
         output_bucket: str = "",
-    ) -> "WorkflowPipeline":
+    ) -> WorkflowPipeline:
         """Construct from a pre-built WorkflowDefinition + step instances.
 
         Useful when the workflow definition was patched (e.g. for testing)
@@ -725,15 +724,15 @@ class WorkflowPipeline(Pipeline):
             },
         )
 
-    def ingest(self, config: PipelineConfig) -> List[DataItem]:
+    def ingest(self, config: PipelineConfig) -> list[DataItem]:
         return [
             DataItem(key=k, source=f"s3://{self._input_bucket}/{k}")
             for k in self._s3_keys
         ]
 
     def compute(
-        self, config: PipelineConfig, items: List[DataItem],
-    ) -> List[TaskHandle]:
+        self, config: PipelineConfig, items: list[DataItem],
+    ) -> list[TaskHandle]:
         """Chain steps: step N+1's input = step N's output.
 
         When steps declare ``depends_on``, uses DAG scheduling for
@@ -743,7 +742,7 @@ class WorkflowPipeline(Pipeline):
 
         run_id = uuid.uuid4().hex[:12]
         input_keys = [item.key for item in items]
-        shared_metadata: Dict[str, Any] = {}
+        shared_metadata: dict[str, Any] = {}
 
         scheduler = DAGScheduler(self.workflow.steps)
         step_results = execute_dag(
@@ -794,8 +793,8 @@ class WorkflowPipeline(Pipeline):
         ]
 
     def collect(
-        self, config: PipelineConfig, handles: List[TaskHandle],
-    ) -> List[Result]:
+        self, config: PipelineConfig, handles: list[TaskHandle],
+    ) -> list[Result]:
         handle = handles[0]
         meta = handle.metadata
         return [
@@ -816,10 +815,10 @@ class WorkflowPipeline(Pipeline):
     def run_as_embeddings(
         self,
         s3: Any,
-        s3_keys: List[str],
+        s3_keys: list[str],
         path_to_bucket: str,
         output_bucket: str,
-    ) -> Tuple[List[Any], List[str], List[Dict[str, Any]], List[Optional[str]]]:
+    ) -> tuple[list[Any], list[str], list[dict[str, Any]], list[str | None]]:
         """Execute like ``WorkflowExecutor.run()`` — drop-in for
         ``EmbeddingModel.compute_embeddings``.
 
@@ -846,7 +845,7 @@ class WorkflowPipeline(Pipeline):
             len(s3_keys),
         )
 
-        shared_metadata: Dict[str, Any] = {}
+        shared_metadata: dict[str, Any] = {}
 
         scheduler = DAGScheduler(self.workflow.steps)
         step_results = execute_dag(
@@ -872,11 +871,11 @@ class WorkflowPipeline(Pipeline):
             last_metadata = self._collect_metadata(s3, path_to_bucket, s3_keys)
 
         if last_embeddings is not None:
-            embeddings_list: List[Any] = list(last_embeddings)
+            embeddings_list: list[Any] = list(last_embeddings)
         else:
             embeddings_list = [None] * len(s3_keys)
 
-        saved_keys: List[Optional[str]] = (
+        saved_keys: list[str | None] = (
             list(current_keys)
             if current_keys != list(s3_keys)
             else [None] * len(s3_keys)
@@ -899,10 +898,10 @@ class WorkflowPipeline(Pipeline):
 
     @staticmethod
     def _aggregate_dag_results(
-        step_results: Dict[str, Any],
+        step_results: dict[str, Any],
         scheduler: Any,
-        input_keys: List[str],
-    ) -> Tuple[Any, List[str], List[Dict[str, Any]], List[str]]:
+        input_keys: list[str],
+    ) -> tuple[Any, list[str], list[dict[str, Any]], list[str]]:
         """Extract final outputs from the DAG execution results.
 
         Walks execution levels in reverse to find the last step(s) that
@@ -911,9 +910,9 @@ class WorkflowPipeline(Pipeline):
         Returns ``(embeddings, checksums, metadata_list, output_keys)``.
         """
         last_embeddings: Any = None
-        last_checksums: List[str] = []
-        last_metadata: List[Dict[str, Any]] = []
-        current_keys: List[str] = list(input_keys)
+        last_checksums: list[str] = []
+        last_metadata: list[dict[str, Any]] = []
+        current_keys: list[str] = list(input_keys)
 
         # Iterate levels forward so later steps override earlier ones
         for level in scheduler.execution_levels():
@@ -935,8 +934,8 @@ class WorkflowPipeline(Pipeline):
 
     @staticmethod
     def _collect_checksums(
-        s3: Any, bucket: str, keys: List[str],
-    ) -> List[str]:
+        s3: Any, bucket: str, keys: list[str],
+    ) -> list[str]:
         checksums = []
         for key in keys:
             try:
@@ -948,8 +947,8 @@ class WorkflowPipeline(Pipeline):
 
     @staticmethod
     def _collect_metadata(
-        s3: Any, bucket: str, keys: List[str],
-    ) -> List[Dict[str, Any]]:
+        s3: Any, bucket: str, keys: list[str],
+    ) -> list[dict[str, Any]]:
         meta = []
         for key in keys:
             try:
@@ -961,7 +960,7 @@ class WorkflowPipeline(Pipeline):
 
     @staticmethod
     def _cleanup_staging(
-        s3: Optional[Any], bucket: str, run_id: str,
+        s3: Any | None, bucket: str, run_id: str,
     ) -> None:
         """Delete intermediate staging objects for this run."""
         if s3 is None or not bucket:
@@ -969,7 +968,7 @@ class WorkflowPipeline(Pipeline):
         prefix = f"_staging/{run_id}/"
         try:
             paginator = s3.get_paginator("list_objects_v2")
-            to_delete: List[Dict[str, str]] = []
+            to_delete: list[dict[str, str]] = []
             for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
                 for obj in page.get("Contents", []):
                     to_delete.append({"Key": obj["Key"]})

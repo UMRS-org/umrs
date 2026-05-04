@@ -13,11 +13,12 @@ import re
 import threading
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 
 class ScheduleType(Enum):
@@ -39,7 +40,7 @@ class Schedule:
     schedule_id: str
     name: str
     schedule_type: ScheduleType
-    job_spec: Dict[str, Any]
+    job_spec: dict[str, Any]
 
     # For fixed interval
     interval_seconds: int = 0
@@ -48,26 +49,26 @@ class Schedule:
     cron_expression: str = ""
 
     # For one-shot
-    run_at: Optional[str] = None  # ISO-8601
+    run_at: str | None = None  # ISO-8601
 
     status: ScheduleStatus = ScheduleStatus.ACTIVE
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    last_run_at: Optional[str] = None
-    next_run_at: Optional[str] = None
+    last_run_at: str | None = None
+    next_run_at: str | None = None
     run_count: int = 0
     max_runs: int = 0  # 0 = unlimited
     user_id: str = ""
     project_id: str = ""
-    tags: List[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d["schedule_type"] = self.schedule_type.value
         d["status"] = self.status.value
         return d
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "Schedule":
+    def from_dict(cls, d: dict[str, Any]) -> Schedule:
         d = dict(d)
         d["schedule_type"] = ScheduleType(d["schedule_type"])
         d["status"] = ScheduleStatus(d["status"])
@@ -80,7 +81,7 @@ class ScheduleEvent:
     schedule_id: str
     run_number: int
     triggered_at: str
-    job_spec: Dict[str, Any]
+    job_spec: dict[str, Any]
     success: bool = True
     error: str = ""
 
@@ -148,13 +149,13 @@ class ScheduleStore:
         self._path = Path(store_path)
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
-    def save(self, schedules: Dict[str, Schedule]) -> None:
+    def save(self, schedules: dict[str, Schedule]) -> None:
         data = {sid: s.to_dict() for sid, s in schedules.items()}
         tmp = self._path.with_suffix(".tmp")
         tmp.write_text(json.dumps(data, indent=2, default=str))
         tmp.replace(self._path)
 
-    def load(self) -> Dict[str, Schedule]:
+    def load(self) -> dict[str, Schedule]:
         if not self._path.exists():
             return {}
         data = json.loads(self._path.read_text())
@@ -193,10 +194,10 @@ class JobScheduler:
         scheduler.start(callback=my_job_submitter, poll_interval=60)
     """
 
-    def __init__(self, store_path: Optional[str] = None):
-        self._schedules: Dict[str, Schedule] = {}
+    def __init__(self, store_path: str | None = None):
+        self._schedules: dict[str, Schedule] = {}
         self._store = ScheduleStore(store_path) if store_path else None
-        self._event_log: List[ScheduleEvent] = []
+        self._event_log: list[ScheduleEvent] = []
         self._lock = threading.Lock()
         self._running = False
 
@@ -211,11 +212,11 @@ class JobScheduler:
         self,
         name: str,
         interval: str,
-        job_spec: Dict[str, Any],
+        job_spec: dict[str, Any],
         user_id: str = "",
         project_id: str = "",
         max_runs: int = 0,
-        tags: Optional[List[str]] = None,
+        tags: list[str] | None = None,
     ) -> Schedule:
         """Add a fixed-interval schedule."""
         seconds = parse_interval(interval)
@@ -241,11 +242,11 @@ class JobScheduler:
         self,
         name: str,
         cron: str,
-        job_spec: Dict[str, Any],
+        job_spec: dict[str, Any],
         user_id: str = "",
         project_id: str = "",
         max_runs: int = 0,
-        tags: Optional[List[str]] = None,
+        tags: list[str] | None = None,
     ) -> Schedule:
         """Add a cron-based schedule."""
         # Validate expression
@@ -273,10 +274,10 @@ class JobScheduler:
         self,
         name: str,
         run_at: str,
-        job_spec: Dict[str, Any],
+        job_spec: dict[str, Any],
         user_id: str = "",
         project_id: str = "",
-        tags: Optional[List[str]] = None,
+        tags: list[str] | None = None,
     ) -> Schedule:
         """Add a one-shot delayed execution."""
         sched = Schedule(
@@ -327,9 +328,9 @@ class JobScheduler:
 
     def list_schedules(
         self,
-        status: Optional[ScheduleStatus] = None,
-        user_id: Optional[str] = None,
-    ) -> List[Schedule]:
+        status: ScheduleStatus | None = None,
+        user_id: str | None = None,
+    ) -> list[Schedule]:
         with self._lock:
             result = list(self._schedules.values())
         if status:
@@ -338,16 +339,16 @@ class JobScheduler:
             result = [s for s in result if s.user_id == user_id]
         return result
 
-    def get_schedule(self, schedule_id: str) -> Optional[Schedule]:
+    def get_schedule(self, schedule_id: str) -> Schedule | None:
         with self._lock:
             return self._schedules.get(schedule_id)
 
-    def get_event_log(self, schedule_id: Optional[str] = None) -> List[ScheduleEvent]:
+    def get_event_log(self, schedule_id: str | None = None) -> list[ScheduleEvent]:
         if schedule_id:
             return [e for e in self._event_log if e.schedule_id == schedule_id]
         return list(self._event_log)
 
-    def tick(self, callback: Callable[[Dict[str, Any]], None]) -> int:
+    def tick(self, callback: Callable[[dict[str, Any]], None]) -> int:
         """Check all schedules and fire due ones. Returns count of fired schedules."""
         now = datetime.now(timezone.utc)
         fired = 0
@@ -382,13 +383,12 @@ class JobScheduler:
                         if (now - last).total_seconds() < 60:
                             should_fire = False
 
-                elif sched.schedule_type == ScheduleType.ONE_SHOT:
-                    if sched.run_at:
-                        run_dt = datetime.fromisoformat(sched.run_at)
-                        if run_dt.tzinfo is None:
-                            run_dt = run_dt.replace(tzinfo=timezone.utc)
-                        if now >= run_dt:
-                            should_fire = True
+                elif sched.schedule_type == ScheduleType.ONE_SHOT and sched.run_at:
+                    run_dt = datetime.fromisoformat(sched.run_at)
+                    if run_dt.tzinfo is None:
+                        run_dt = run_dt.replace(tzinfo=timezone.utc)
+                    if now >= run_dt:
+                        should_fire = True
 
                 if should_fire:
                     event = ScheduleEvent(
@@ -421,7 +421,7 @@ class JobScheduler:
 
     def start(
         self,
-        callback: Callable[[Dict[str, Any]], None],
+        callback: Callable[[dict[str, Any]], None],
         poll_interval: int = 60,
     ) -> None:
         """Run polling loop (blocking). Set self._running = False to stop."""

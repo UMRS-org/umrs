@@ -1,11 +1,10 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import shlex
-from typing import Any, Dict, Optional
-
-from umrs.core.TaskCmdStatus import TaskCmd
+from typing import Any
 
 from umrs.client.control_commands import (
     MAINTENANCE_ACTIONS,
@@ -13,6 +12,7 @@ from umrs.client.control_commands import (
     parse_json_object_arg,
     prepare_control_command_line,
 )
+from umrs.core.TaskCmdStatus import TaskCmd
 
 
 class UMRSControlAPI:
@@ -22,8 +22,8 @@ class UMRSControlAPI:
         self,
         control_mq: Any,
         client_id: str,
-        config_path: Optional[str] = None,
-        admin_token: Optional[str] = None,
+        config_path: str | None = None,
+        admin_token: str | None = None,
     ):
         self._mq = control_mq
         self._client_id = client_id
@@ -34,18 +34,18 @@ class UMRSControlAPI:
     def client_id(self) -> str:
         return self._client_id
 
-    def ping(self, timeout_ms: int = 2000) -> Dict[str, Any]:
+    def ping(self, timeout_ms: int = 2000) -> dict[str, Any]:
         ready = self._mq.is_server_ready(timeout_ms=timeout_ms)
         return {"status": "ok", "server_ready": ready}
 
-    def request_status(self, target: str = "all") -> Dict[str, Any]:
+    def request_status(self, target: str = "all") -> dict[str, Any]:
         raw = self._mq.request_status(self._client_id, target)
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             raise RuntimeError("Invalid status response")
         return parsed
 
-    def list_models(self, scope: Optional[str] = None) -> Dict[str, Any]:
+    def list_models(self, scope: str | None = None) -> dict[str, Any]:
         payload = json.dumps({"scope": scope}) if scope else ""
         raw = self._mq.request_model_command(self._client_id, TaskCmd.MODEL_LIST, payload)
         if raw.startswith("UNAUTHORIZED:"):
@@ -64,10 +64,10 @@ class UMRSControlAPI:
         path: str,
         model_type: str,
         scope: str = "user",
-        project_id: Optional[str] = None,
-        description: Optional[str] = None,
-        huggingface_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        project_id: str | None = None,
+        description: str | None = None,
+        huggingface_id: str | None = None,
+    ) -> dict[str, Any]:
         body = {
             "name": name,
             "path": os.path.abspath(path),
@@ -87,10 +87,10 @@ class UMRSControlAPI:
         *,
         repo_id: str,
         scope: str = "user",
-        name: Optional[str] = None,
-        project_id: Optional[str] = None,
-        staging_dir: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        name: str | None = None,
+        project_id: str | None = None,
+        staging_dir: str | None = None,
+    ) -> dict[str, Any]:
         body = {
             "repo_id": repo_id,
             "name": name or repo_id.split("/")[-1],
@@ -107,13 +107,13 @@ class UMRSControlAPI:
         self,
         *,
         job_type: str,
-        spec: Optional[Dict[str, Any]] = None,
-        project: Optional[str] = None,
+        spec: dict[str, Any] | None = None,
+        project: str | None = None,
         max_attempts: int = 3,
         keep_alive: bool = False,
-        partition: Optional[str] = None,
-        node: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        partition: str | None = None,
+        node: str | None = None,
+    ) -> dict[str, Any]:
         job_spec = dict(spec or {})
         if partition:
             job_spec["partition_override"] = partition
@@ -130,20 +130,20 @@ class UMRSControlAPI:
         )
         return self._request_json(TaskCmd.JOB_SUBMIT, payload)
 
-    def cancel_job(self, job_id: str) -> Dict[str, Any]:
+    def cancel_job(self, job_id: str) -> dict[str, Any]:
         return self._request_json(TaskCmd.JOB_CANCEL, json.dumps({"job_id": job_id}))
 
     def list_jobs(
         self,
         *,
-        job_id: Optional[str] = None,
-        project: Optional[str] = None,
-        status: Optional[str] = None,
-        job_type: Optional[str] = None,
+        job_id: str | None = None,
+        project: str | None = None,
+        status: str | None = None,
+        job_type: str | None = None,
         limit: int = 200,
         offset: int = 0,
-    ) -> Dict[str, Any]:
-        filters: Dict[str, Any] = {
+    ) -> dict[str, Any]:
+        filters: dict[str, Any] = {
             "limit": limit,
             "offset": offset,
         }
@@ -157,7 +157,7 @@ class UMRSControlAPI:
             filters["job_type"] = job_type
         return self._mq.request_job_list(self._client_id, filters)
 
-    def get_job(self, job_id: str) -> Dict[str, Any]:
+    def get_job(self, job_id: str) -> dict[str, Any]:
         parsed = self.list_jobs(job_id=job_id, limit=1)
         if parsed.get("status") != "ok":
             return parsed
@@ -169,11 +169,11 @@ class UMRSControlAPI:
     def list_workflows(
         self,
         *,
-        scope: Optional[str] = None,
-        user: Optional[str] = None,
-        name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        filter_payload: Dict[str, Any] = {}
+        scope: str | None = None,
+        user: str | None = None,
+        name: str | None = None,
+    ) -> dict[str, Any]:
+        filter_payload: dict[str, Any] = {}
         if scope:
             filter_payload["scope"] = scope
         if user:
@@ -187,16 +187,16 @@ class UMRSControlAPI:
         self,
         *,
         workflow_name: str,
-        params: Optional[Dict[str, Any]] = None,
-        bucket: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        params: dict[str, Any] | None = None,
+        bucket: str | None = None,
+    ) -> dict[str, Any]:
         workflow_params = dict(params or {})
         if bucket:
             workflow_params["bucket"] = bucket
         payload = json.dumps({"workflow_name": workflow_name, "params": workflow_params})
         return self._request_json(TaskCmd.RUN_WORKFLOW, payload)
 
-    def maintenance(self, action: str, config_path: Optional[str] = None) -> Dict[str, Any]:
+    def maintenance(self, action: str, config_path: str | None = None) -> dict[str, Any]:
         action = action.lower()
         if action not in MAINTENANCE_ACTIONS:
             raise ValueError(f"Unsupported maintenance action: {action}")
@@ -214,7 +214,7 @@ class UMRSControlAPI:
             return {"status": "ok", "action": action, "accepted": True}
         return {"status": "error", "action": action, "accepted": False, "message": "Command rejected by server"}
 
-    def enroll_user(self, config_path: str) -> Dict[str, Any]:
+    def enroll_user(self, config_path: str) -> dict[str, Any]:
         """Enroll a new user on the server (admin-only).
 
         Uploads the user config JSON via the data queue and sends the
@@ -225,7 +225,7 @@ class UMRSControlAPI:
             return {"status": "error", "message": f"File not found: {config_path}"}
 
         try:
-            with open(config_path, "r", encoding="utf-8") as fh:
+            with open(config_path, encoding="utf-8") as fh:
                 cfg_json = json.load(fh)
             upload_user = cfg_json.get("username")
             if not upload_user:
@@ -243,17 +243,15 @@ class UMRSControlAPI:
                 admin_token=self._admin_token,
             )
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 data_mq.close()
-            except Exception:
-                pass
 
         if ok:
             return {"status": "ok", "username": upload_user, "accepted": True}
         return {"status": "error", "username": upload_user, "accepted": False,
                 "message": "Server rejected ENROLL_USER (check admin token)"}
 
-    def execute_command(self, command_line: str) -> Dict[str, Any]:
+    def execute_command(self, command_line: str) -> dict[str, Any]:
         parser = build_control_command_parser()
         args = parser.parse_args(shlex.split(prepare_control_command_line(command_line)))
 
@@ -317,7 +315,7 @@ class UMRSControlAPI:
 
         raise ValueError(f"Unsupported command: {command_line}")
 
-    def _request_json(self, task_cmd: str, payload: str) -> Dict[str, Any]:
+    def _request_json(self, task_cmd: str, payload: str) -> dict[str, Any]:
         raw = self._mq.request_model_command(self._client_id, task_cmd, payload)
         if raw.startswith("UNAUTHORIZED:"):
             return {"status": "error", "message": f"Authorization denied for {task_cmd}", "code": "UNAUTHORIZED"}
@@ -328,12 +326,12 @@ class UMRSControlAPI:
             raise RuntimeError(f"Invalid response for {task_cmd}")
         return parsed
 
-    def _upload_reload_config(self, config_path: Optional[str]) -> None:
+    def _upload_reload_config(self, config_path: str | None) -> None:
         if not config_path or not os.path.isfile(config_path):
             return
 
         try:
-            with open(config_path, "r", encoding="utf-8") as handle:
+            with open(config_path, encoding="utf-8") as handle:
                 cfg_json = json.load(handle)
             upload_user = cfg_json.get("username") or self._client_id
         except Exception:
@@ -344,7 +342,5 @@ class UMRSControlAPI:
             data_mq.send_file(config_path)
             self._mq.notify_server(upload_user, TaskCmd.FILE, 1)
         finally:
-            try:
+            with contextlib.suppress(Exception):
                 data_mq.close()
-            except Exception:
-                pass

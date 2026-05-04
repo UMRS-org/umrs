@@ -9,7 +9,7 @@ if len(sys.argv) != 2:
 filename = sys.argv[1]
 
 try:
-    with open(filename, 'r') as f:
+    with open(filename) as f:
         data = json.load(f)
     print("Valid JSON!")
     print(json.dumps(data, indent=2))

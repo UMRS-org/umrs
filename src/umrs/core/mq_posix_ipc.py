@@ -1,5 +1,6 @@
+
 import posix_ipc
-from time import sleep
+
 ## Global configuration of the message queue
 target_nb_messages = 10
 target_message_size = 4096
@@ -27,13 +28,13 @@ def close_message_queue():
 
 
 def notify_s3(s3_object):
-    print(f"Notyfying {s3_object}");
+    print(f"Notyfying {s3_object}")
     mq.send(s3_object)
 
 
 def wait_for_s3_events(debug=False):
     """Blocks execution until a new message arrives, then reads all available messages."""
-    
+
     # BLOCKING: Wait for the first message
     print(f"Listening the queue ({mq.current_messages} pending msg)...")
     message, _ = mq.receive()
@@ -41,9 +42,9 @@ def wait_for_s3_events(debug=False):
 
     messages = [message.decode()]  # Store messages
 
-    if 0 == mq.current_messages:
+    if mq.current_messages == 0:
         return messages
-    
+
     print("More to come...")
     # NON-BLOCKING: Read remaining messages without blocking
     while True:

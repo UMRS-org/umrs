@@ -21,7 +21,7 @@ import os
 import threading
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from umrs.shared.config import get_resolved_umrs_subdir
 
@@ -38,16 +38,16 @@ def _catalog_path() -> str:
     return get_resolved_umrs_subdir("workflow_catalog.json")
 
 
-def _load_catalog() -> Dict[str, Any]:
+def _load_catalog() -> dict[str, Any]:
     """Load workflow catalog from JSON file."""
     path = _catalog_path()
     if not os.path.exists(path):
         return {"workflows": []}
-    with open(path, "r", encoding="utf-8") as f:
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
-def _save_catalog(catalog: Dict[str, Any]) -> None:
+def _save_catalog(catalog: dict[str, Any]) -> None:
     """Save workflow catalog to JSON file."""
     path = _catalog_path()
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -60,10 +60,10 @@ def register_workflow(
     version: str,
     user_id: str,
     source_path: str,
-    workflow_json: Dict[str, Any],
+    workflow_json: dict[str, Any],
     scope: str = "user",
-    description: Optional[str] = None,
-) -> Dict[str, Any]:
+    description: str | None = None,
+) -> dict[str, Any]:
     """Register a workflow in the catalog.
 
     Called internally by the upload handler (auto-registration) or
@@ -82,7 +82,7 @@ def register_workflow(
         Dict with "status" ("ok" or "error") and details.
     """
     # Extract step metadata from workflow_json
-    steps_meta: List[Dict[str, str]] = []
+    steps_meta: list[dict[str, str]] = []
     for step in workflow_json.get("steps", []):
         steps_meta.append({
             "name": step.get("name", ""),
@@ -184,8 +184,8 @@ def _workflow_project_id(params: Any) -> str:
 def _workflow_run_context(
     workflow_name: str,
     client_id: str,
-    source_path: Optional[str] = None,
-) -> tuple[str, Dict[str, Any], int]:
+    source_path: str | None = None,
+) -> tuple[str, dict[str, Any], int]:
     if source_path is None:
         with _CATALOG_LOCK:
             catalog = _load_catalog()
@@ -211,7 +211,7 @@ def _workflow_run_context(
         raise ValueError(f"workflow.json missing at {source_path}")
 
     try:
-        with open(wf_json_path, "r", encoding="utf-8") as handle:
+        with open(wf_json_path, encoding="utf-8") as handle:
             workflow_json = json.load(handle)
     except Exception as exc:
         raise ValueError(f"Failed to load workflow.json: {exc}") from exc
@@ -223,10 +223,10 @@ def _launch_workflow_from_catalog(
     *,
     workflow_name: str,
     client_id: str,
-    params: Dict[str, Any],
-    execution_id: Optional[str] = None,
-    durable_job_id: Optional[str] = None,
-    source_path: Optional[str] = None,
+    params: dict[str, Any],
+    execution_id: str | None = None,
+    durable_job_id: str | None = None,
+    source_path: str | None = None,
 ):
     source_path, workflow_json, step_count = _workflow_run_context(
         workflow_name,
@@ -277,11 +277,11 @@ def _submit_durable_workflow_run(
     *,
     client_id: str,
     workflow_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
     execution_id: str,
     source_path: str,
     step_count: int,
-    job_backend: "DurableJobCommandBackend",
+    job_backend: DurableJobCommandBackend,
 ) -> str:
     raw = job_backend.submit(
         client_id,
@@ -333,7 +333,7 @@ def _submit_durable_workflow_run(
 def _handle_run_workflow(
     client_id: str,
     payload_str: str,
-    job_backend: Optional["DurableJobCommandBackend"] = None,
+    job_backend: DurableJobCommandBackend | None = None,
 ) -> str:
     """Trigger execution of a registered workflow.
 
@@ -395,7 +395,7 @@ def handle_workflow_command(
     cmd: str,
     client_id: str,
     payload_str: str,
-    job_backend: Optional["DurableJobCommandBackend"] = None,
+    job_backend: DurableJobCommandBackend | None = None,
 ) -> str:
     """Dispatch a workflow registry command and return a JSON response string.
 

@@ -51,7 +51,7 @@ import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Deque, Dict, List, Optional, Protocol, Tuple
+from typing import Any, Protocol
 
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
@@ -126,7 +126,7 @@ class StepExecutor(Protocol):
         self,
         *,
         entrypoint: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult: ...
 
@@ -171,7 +171,7 @@ def _load_step_class(entrypoint: str) -> type[Step]:
 
 def _drive_lifecycle(
     cls: type[Step],
-    config: Dict[str, Any],
+    config: dict[str, Any],
     ctx: StepContext,
 ) -> StepResult:
     """Run ``setup → run → teardown`` and translate failures."""
@@ -246,7 +246,7 @@ class InProcessExecutor:
         self,
         *,
         entrypoint: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
         if EXECUTOR_IMAGE_METADATA_KEY in ctx.metadata:
@@ -288,14 +288,14 @@ class SubprocessExecutor:
     """
 
     name: str = "subprocess"
-    timeout_seconds: Optional[float] = None
-    python_executable: Optional[str] = None
+    timeout_seconds: float | None = None
+    python_executable: str | None = None
 
     def execute(
         self,
         *,
         entrypoint: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
         if EXECUTOR_IMAGE_METADATA_KEY in ctx.metadata:
@@ -393,7 +393,7 @@ class SubprocessExecutor:
         )
 
 
-def _serialise_s3_client_config(s3: Any) -> Dict[str, Any]:
+def _serialise_s3_client_config(s3: Any) -> dict[str, Any]:
     """Best-effort capture of a boto3 client's connection settings.
 
     The worker uses these to rebuild an equivalent client without
@@ -404,7 +404,7 @@ def _serialise_s3_client_config(s3: Any) -> Dict[str, Any]:
     """
     if s3 is None:
         return {}
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     meta = getattr(s3, "meta", None)
     if meta is not None:
         endpoint = getattr(meta, "endpoint_url", None)
@@ -463,18 +463,18 @@ class PodmanExecutor:
 
     image: str
     name: str = "podman"
-    timeout_seconds: Optional[float] = None
+    timeout_seconds: float | None = None
     podman_bin: str = "podman"
     network: str = "host"
     gpu: bool = False
-    extra_args: List[str] = field(default_factory=list)
+    extra_args: list[str] = field(default_factory=list)
     keep_workdir: bool = False
 
     def execute(
         self,
         *,
         entrypoint: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
         # Slice 10: per-step image override.
@@ -539,8 +539,8 @@ class PodmanExecutor:
             payload_s3_cfg is not None
             and payload_size >= _PAYLOAD_THRESHOLD_BYTES
         )
-        input_s3_key: Optional[str] = None
-        output_s3_key: Optional[str] = None
+        input_s3_key: str | None = None
+        output_s3_key: str | None = None
 
         try:
             if use_s3:
@@ -667,7 +667,7 @@ class PodmanExecutor:
 
     def _resolve_payload_s3(
         self, ctx: StepContext
-    ) -> Optional[Dict[str, str]]:
+    ) -> dict[str, str] | None:
         """Return S3 payload config if the runner enabled it, else None.
 
         Expected shape in ``ctx.metadata``::
@@ -716,7 +716,7 @@ class PodmanExecutor:
     @staticmethod
     def _read_local_reply(
         output_path: str, completed: Any
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         if not os.path.isfile(output_path):
             stderr = (completed.stderr or b"").decode(errors="replace")
             raise StepExecutionError(
@@ -742,7 +742,7 @@ class PodmanExecutor:
         bucket: str,
         key: str,
         completed: Any,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         try:
             obj = s3.get_object(Bucket=bucket, Key=key)
             return pickle.loads(obj["Body"].read())
@@ -756,7 +756,7 @@ class PodmanExecutor:
             ) from exc
 
     @staticmethod
-    def _interpret_reply(reply: Dict[str, Any]) -> StepResult:
+    def _interpret_reply(reply: dict[str, Any]) -> StepResult:
         if not isinstance(reply, dict) or "status" not in reply:
             raise StepExecutionError(
                 "worker", f"malformed podman worker reply: {reply!r}"
@@ -783,15 +783,15 @@ class PodmanExecutor:
         *,
         container_name: str,
         workdir: str,
-        s3_config: Dict[str, Any],
+        s3_config: dict[str, Any],
         image: str,
         gpu: bool,
-        input_s3_key: Optional[str] = None,
-        output_s3_key: Optional[str] = None,
-        payload_s3_bucket: Optional[str] = None,
-    ) -> List[str]:
+        input_s3_key: str | None = None,
+        output_s3_key: str | None = None,
+        payload_s3_bucket: str | None = None,
+    ) -> list[str]:
         """Construct the ``podman run`` invocation for the step worker."""
-        cmd: List[str] = [
+        cmd: list[str] = [
             self.podman_bin,
             "run",
             "--rm",
@@ -907,7 +907,7 @@ class _PooledWorker:
     def is_alive(self) -> bool:
         return self.proc.poll() is None
 
-    def run_task(self, payload_blob: bytes, timeout: Optional[float] = None) -> Dict[str, Any]:
+    def run_task(self, payload_blob: bytes, timeout: float | None = None) -> dict[str, Any]:
         """Send a task and block until the reply arrives.
 
         Raises :class:`StepExecutionError` on protocol or worker
@@ -1016,32 +1016,32 @@ class WorkerPoolExecutor:
 
     image: str
     name: str = "pool"
-    timeout_seconds: Optional[float] = None
+    timeout_seconds: float | None = None
     podman_bin: str = "podman"
     network: str = "host"
     gpu: bool = False
-    extra_args: List[str] = field(default_factory=list)
+    extra_args: list[str] = field(default_factory=list)
 
     # -- Slice 14 pool controls --
     max_workers_per_key: int = 4
-    acquire_timeout: Optional[float] = 30.0
-    idle_timeout: Optional[float] = 300.0
+    acquire_timeout: float | None = 30.0
+    idle_timeout: float | None = 300.0
     prewarm: bool = False
 
     # -- internal state --
-    _pool: Dict[Tuple[str, bool], Deque[_PooledWorker]] = field(
+    _pool: dict[tuple[str, bool], deque[_PooledWorker]] = field(
         default_factory=dict, init=False, repr=False
     )
-    _all_workers: List[_PooledWorker] = field(
+    _all_workers: list[_PooledWorker] = field(
         default_factory=list, init=False, repr=False
     )
-    _active_count: Dict[Tuple[str, bool], int] = field(
+    _active_count: dict[tuple[str, bool], int] = field(
         default_factory=dict, init=False, repr=False
     )
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
-    _conds: Dict[Tuple[str, bool], threading.Condition] = field(
+    _conds: dict[tuple[str, bool], threading.Condition] = field(
         default_factory=dict, init=False, repr=False
     )
 
@@ -1049,7 +1049,7 @@ class WorkerPoolExecutor:
         self,
         *,
         entrypoint: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
         # Resolve per-step overrides (same pattern as PodmanExecutor).
@@ -1121,7 +1121,7 @@ class WorkerPoolExecutor:
     # Pool management (Slice 14: condition-variable blocking)
     # ------------------------------------------------------------------
 
-    def _cond_for(self, key: Tuple[str, bool]) -> threading.Condition:
+    def _cond_for(self, key: tuple[str, bool]) -> threading.Condition:
         """Return (or lazily create) the condition variable for *key*."""
         cond = self._conds.get(key)
         if cond is None:
@@ -1130,7 +1130,7 @@ class WorkerPoolExecutor:
         return cond
 
     def _acquire_worker(
-        self, key: Tuple[str, bool], image: str, gpu: bool
+        self, key: tuple[str, bool], image: str, gpu: bool
     ) -> _PooledWorker:
         deadline = (
             time.monotonic() + self.acquire_timeout
@@ -1186,7 +1186,7 @@ class WorkerPoolExecutor:
 
         return worker
 
-    def _pop_idle(self, key: Tuple[str, bool]) -> Optional[_PooledWorker]:
+    def _pop_idle(self, key: tuple[str, bool]) -> _PooledWorker | None:
         """Pop a live idle worker, evicting stale / dead ones.
 
         Must be called with ``_lock`` held.
@@ -1227,7 +1227,7 @@ class WorkerPoolExecutor:
         return None
 
     def _release_worker(
-        self, key: Tuple[str, bool], worker: _PooledWorker
+        self, key: tuple[str, bool], worker: _PooledWorker
     ) -> None:
         cond = self._cond_for(key)
         with cond:
@@ -1245,7 +1245,7 @@ class WorkerPoolExecutor:
             cond.notify()
 
     def _discard_worker(
-        self, key: Tuple[str, bool], worker: _PooledWorker
+        self, key: tuple[str, bool], worker: _PooledWorker
     ) -> None:
         """Stop a failed worker without returning it to the pool."""
         cond = self._cond_for(key)
@@ -1260,7 +1260,7 @@ class WorkerPoolExecutor:
             pass
 
     def _prewarm_key(
-        self, key: Tuple[str, bool], image: str, gpu: bool
+        self, key: tuple[str, bool], image: str, gpu: bool
     ) -> None:
         """Spawn one extra idle worker for *key* if under cap."""
         cond = self._cond_for(key)
@@ -1285,7 +1285,7 @@ class WorkerPoolExecutor:
     def _start_worker(self, image: str, gpu: bool) -> _PooledWorker:
         """Launch a persistent Podman container in pool mode."""
         container_name = f"umrs-pool-{uuid.uuid4().hex[:12]}"
-        cmd: List[str] = [
+        cmd: list[str] = [
             self.podman_bin,
             "run",
             "-i",          # keep stdin open
@@ -1406,7 +1406,7 @@ class WorkerPoolExecutor:
         return override
 
     @staticmethod
-    def _interpret_reply(reply: Dict[str, Any]) -> StepResult:
+    def _interpret_reply(reply: dict[str, Any]) -> StepResult:
         if not isinstance(reply, dict) or "status" not in reply:
             raise StepExecutionError(
                 "worker", f"malformed pool worker reply: {reply!r}"
@@ -1462,7 +1462,7 @@ class _RemoteWorker:
         *,
         address: str,
         zmq_context: Any,
-        timeout: Optional[float] = None,
+        timeout: float | None = None,
         cooldown_sec: float = _REMOTE_WORKER_COOLDOWN,
     ) -> None:
         import zmq  # type: ignore
@@ -1473,18 +1473,18 @@ class _RemoteWorker:
         self._timeout = timeout
         self._cooldown_sec = cooldown_sec
         self._alive = True
-        self._last_failure_at: Optional[float] = None
+        self._last_failure_at: float | None = None
         self.last_used_at: float = time.monotonic()
         self._sock = self._make_socket()
         # Slice 17: capability cache (no RPC in router; cached here).
-        self.capabilities: Dict[str, Any] = {}
+        self.capabilities: dict[str, Any] = {}
         self._last_capability_refresh: float = 0
         self._capability_ttl = _WORKER_CAPABILITY_TTL
         # Slice 18a/19: dynamic capacity (slots). Starts at env or 1;
         # updated by capability refresh when GPU info is available.
         self.capacity: int = int(os.environ.get("UMRS_REMOTE_WORKER_SLOTS", "1"))
         # Slice 19: previous slots for smoothing (shrink fast, grow slow).
-        self._prev_slots: Optional[int] = None
+        self._prev_slots: int | None = None
 
     def _make_socket(self) -> Any:
         sock = self._zmq_ctx.socket(self._zmq.REQ)
@@ -1519,7 +1519,7 @@ class _RemoteWorker:
         self._alive = False
         self._last_failure_at = time.monotonic()
 
-    def refresh_capabilities(self) -> Dict[str, Any]:
+    def refresh_capabilities(self) -> dict[str, Any]:
         """Lazy-fetch capabilities from the remote worker via ZMQ ping.
 
         Returns cached capabilities if the TTL has not expired.
@@ -1565,7 +1565,7 @@ class _RemoteWorker:
             )
         self._prev_slots = self.capacity
 
-    def run_task(self, payload_blob: bytes, timeout: Optional[float] = None) -> Dict[str, Any]:
+    def run_task(self, payload_blob: bytes, timeout: float | None = None) -> dict[str, Any]:
         """Send a task and block until the reply arrives.
 
         Raises :class:`StepExecutionError` on transport failure.
@@ -1583,7 +1583,7 @@ class _RemoteWorker:
             raise StepExecutionError(
                 "worker",
                 f"remote worker {self.address} send timeout",
-            )
+            ) from None
         except Exception as exc:  # noqa: BLE001
             self._mark_failed()
             self._recreate_socket()
@@ -1599,7 +1599,7 @@ class _RemoteWorker:
             raise StepExecutionError(
                 "worker",
                 f"remote worker {self.address} timeout after {self._timeout}s",
-            )
+            ) from None
         except Exception as exc:  # noqa: BLE001
             self._mark_failed()
             self._recreate_socket()
@@ -1638,23 +1638,23 @@ class RemotePoolExecutor:
         ``UMRS_STEP_EXECUTOR_TIMEOUT`` — per-task timeout on the REQ/REP round-trip
     """
 
-    workers: List[str] = field(default_factory=list)
+    workers: list[str] = field(default_factory=list)
     name: str = "remote"
-    timeout_seconds: Optional[float] = None
-    acquire_timeout: Optional[float] = 30.0
+    timeout_seconds: float | None = None
+    acquire_timeout: float | None = 30.0
 
     # -- internal state --
     _zmq_ctx: Any = field(default=None, init=False, repr=False)
-    _pool: Dict[str, Deque[_RemoteWorker]] = field(
+    _pool: dict[str, deque[_RemoteWorker]] = field(
         default_factory=dict, init=False, repr=False
     )
-    _active_count: Dict[str, int] = field(
+    _active_count: dict[str, int] = field(
         default_factory=dict, init=False, repr=False
     )
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
-    _conds: Dict[str, threading.Condition] = field(
+    _conds: dict[str, threading.Condition] = field(
         default_factory=dict, init=False, repr=False
     )
     _rr_index: int = field(default=0, init=False, repr=False)
@@ -1668,7 +1668,7 @@ class RemotePoolExecutor:
         self,
         *,
         entrypoint: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
         _INTERNAL_KEYS = {
@@ -1881,18 +1881,18 @@ class RouterPoolExecutor:
 
     bind_address: str = "tcp://0.0.0.0:5560"
     name: str = "router"
-    timeout_seconds: Optional[float] = None
+    timeout_seconds: float | None = None
 
     # -- internal state --
     _zmq_ctx: Any = field(default=None, init=False, repr=False)
     _sock: Any = field(default=None, init=False, repr=False)
-    _pending: Dict[str, Any] = field(
+    _pending: dict[str, Any] = field(
         default_factory=dict, init=False, repr=False
     )
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
-    _recv_thread: Optional[threading.Thread] = field(
+    _recv_thread: threading.Thread | None = field(
         default=None, init=False, repr=False
     )
     _shutdown_event: threading.Event = field(
@@ -1941,7 +1941,7 @@ class RouterPoolExecutor:
         self,
         *,
         entrypoint: str,
-        config: Dict[str, Any],
+        config: dict[str, Any],
         ctx: StepContext,
     ) -> StepResult:
         _INTERNAL_KEYS = {
@@ -1983,7 +1983,7 @@ class RouterPoolExecutor:
                 f"({_PAYLOAD_MAX_BYTES}); use S3 for large data",
             )
 
-        future: Dict[str, Any] = {
+        future: dict[str, Any] = {
             "event": threading.Event(),
             "reply": None,
         }
@@ -2046,7 +2046,7 @@ class RouterPoolExecutor:
 
 
 def build_step_executor(
-    name: Optional[str] = None,
+    name: str | None = None,
 ) -> StepExecutor:
     """Return the executor named by ``UMRS_STEP_EXECUTOR`` (or ``name``).
 
@@ -2139,7 +2139,7 @@ def build_step_executor(
     return InProcessExecutor()
 
 
-def _executor_timeout() -> Optional[float]:
+def _executor_timeout() -> float | None:
     """Parse ``UMRS_STEP_EXECUTOR_TIMEOUT`` shared by subprocess + podman."""
     raw = os.environ.get("UMRS_STEP_EXECUTOR_TIMEOUT")
     if not raw:
@@ -2161,7 +2161,7 @@ def _parse_int_env(name: str, default: int) -> int:
         return default
 
 
-def _parse_float_env(name: str, default: Optional[float]) -> Optional[float]:
+def _parse_float_env(name: str, default: float | None) -> float | None:
     raw = os.environ.get(name, "").strip()
     if not raw:
         return default

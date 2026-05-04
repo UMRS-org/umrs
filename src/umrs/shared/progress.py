@@ -11,9 +11,10 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Protocol
 
 
 class ProgressState(str, Enum):
@@ -34,7 +35,7 @@ class ProgressEvent:
     total: int
     message: str = ""
     timestamp: float = field(default_factory=time.time)
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def fraction(self) -> float:
@@ -74,10 +75,10 @@ class ProgressTracker:
         self._current = 0
         self._state = ProgressState.PENDING
         self._message = ""
-        self._metadata: Dict[str, Any] = {}
-        self._callbacks: List[ProgressCallback] = []
+        self._metadata: dict[str, Any] = {}
+        self._callbacks: list[ProgressCallback] = []
         self._lock = threading.Lock()
-        self._history: List[ProgressEvent] = []
+        self._history: list[ProgressEvent] = []
 
     @property
     def state(self) -> ProgressState:
@@ -171,7 +172,7 @@ class ProgressTracker:
             self._message = message
             return self._emit()
 
-    def get_history(self) -> List[ProgressEvent]:
+    def get_history(self) -> list[ProgressEvent]:
         with self._lock:
             return list(self._history)
 
@@ -245,7 +246,7 @@ class ProgressGroup:
 
     def __init__(self, group_id: str) -> None:
         self.group_id = group_id
-        self._trackers: Dict[str, ProgressTracker] = {}
+        self._trackers: dict[str, ProgressTracker] = {}
         self._lock = threading.Lock()
 
     def create_tracker(self, tracker_id: str, total: int = 0) -> ProgressTracker:
@@ -254,12 +255,12 @@ class ProgressGroup:
             self._trackers[tracker_id] = tracker
             return tracker
 
-    def get_tracker(self, tracker_id: str) -> Optional[ProgressTracker]:
+    def get_tracker(self, tracker_id: str) -> ProgressTracker | None:
         with self._lock:
             return self._trackers.get(tracker_id)
 
     @property
-    def trackers(self) -> Dict[str, ProgressTracker]:
+    def trackers(self) -> dict[str, ProgressTracker]:
         with self._lock:
             return dict(self._trackers)
 

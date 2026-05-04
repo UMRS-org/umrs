@@ -23,10 +23,9 @@ See DEVELOPMENT_OBJECTIVES.md Section 11.1 for design details.
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -63,8 +62,8 @@ class PipelineStore:
     """In-memory store for pipeline definitions."""
 
     def __init__(self):
-        self._pipelines: Dict[str, PipelineDefinition] = {}
-        self._rag_profiles: Dict[str, RAGProfile] = {}
+        self._pipelines: dict[str, PipelineDefinition] = {}
+        self._rag_profiles: dict[str, RAGProfile] = {}
 
     # Pipeline operations
     def create_pipeline(self, pipeline: PipelineDefinition) -> PipelineDefinition:
@@ -88,16 +87,16 @@ class PipelineStore:
         self._pipelines[pipeline.pipeline_id] = pipeline
         return pipeline
 
-    def get_pipeline(self, pipeline_id: str) -> Optional[PipelineDefinition]:
+    def get_pipeline(self, pipeline_id: str) -> PipelineDefinition | None:
         """Get pipeline by ID."""
         return self._pipelines.get(pipeline_id)
 
     def list_pipelines(
         self,
-        project_id: Optional[str] = None,
-        owner_id: Optional[str] = None,
-        status_filter: Optional[PipelineStatus] = None,
-    ) -> List[PipelineDefinition]:
+        project_id: str | None = None,
+        owner_id: str | None = None,
+        status_filter: PipelineStatus | None = None,
+    ) -> list[PipelineDefinition]:
         """List pipelines with optional filters."""
         result = list(self._pipelines.values())
 
@@ -113,8 +112,8 @@ class PipelineStore:
     def update_pipeline(
         self,
         pipeline_id: str,
-        updates: Dict[str, Any],
-    ) -> Optional[PipelineDefinition]:
+        updates: dict[str, Any],
+    ) -> PipelineDefinition | None:
         """Update pipeline fields."""
         pipeline = self._pipelines.get(pipeline_id)
         if not pipeline:
@@ -157,16 +156,16 @@ class PipelineStore:
         self._rag_profiles[profile.profile_id] = profile
         return profile
 
-    def get_rag_profile(self, profile_id: str) -> Optional[RAGProfile]:
+    def get_rag_profile(self, profile_id: str) -> RAGProfile | None:
         """Get RAG profile by ID."""
         return self._rag_profiles.get(profile_id)
 
     def list_rag_profiles(
         self,
-        project_id: Optional[str] = None,
-        owner_id: Optional[str] = None,
-        status_filter: Optional[PipelineStatus] = None,
-    ) -> List[RAGProfile]:
+        project_id: str | None = None,
+        owner_id: str | None = None,
+        status_filter: PipelineStatus | None = None,
+    ) -> list[RAGProfile]:
         """List RAG profiles with optional filters."""
         result = list(self._rag_profiles.values())
 
@@ -182,8 +181,8 @@ class PipelineStore:
     def update_rag_profile(
         self,
         profile_id: str,
-        updates: Dict[str, Any],
-    ) -> Optional[RAGProfile]:
+        updates: dict[str, Any],
+    ) -> RAGProfile | None:
         """Update RAG profile fields."""
         profile = self._rag_profiles.get(profile_id)
         if not profile:
@@ -206,7 +205,7 @@ class PipelineStore:
 
 
 # Global store instance
-_pipeline_store: Optional[PipelineStore] = None
+_pipeline_store: PipelineStore | None = None
 
 
 def get_pipeline_store() -> PipelineStore:
@@ -234,12 +233,12 @@ class ChunkerSpecRequest(BaseModel):
     chunker_type: str = Field("token", description="Chunker type: token, sentence, etc.")
     chunk_size: int = Field(512, ge=10, le=10000, description="Chunk size")
     chunk_overlap: int = Field(50, ge=0, le=1000, description="Chunk overlap")
-    separator: Optional[str] = Field(None, description="Custom separator")
+    separator: str | None = Field(None, description="Custom separator")
     min_chunk_size: int = Field(100, ge=1, description="Minimum chunk size")
-    max_chunk_size: Optional[int] = Field(None, description="Maximum chunk size")
+    max_chunk_size: int | None = Field(None, description="Maximum chunk size")
     respect_boundaries: bool = Field(True, description="Respect sentence boundaries")
     language: str = Field("en", description="Language code")
-    code_language: Optional[str] = Field(None, description="Code language for code chunker")
+    code_language: str | None = Field(None, description="Code language for code chunker")
 
 
 class EmbedderSpecRequest(BaseModel):
@@ -247,28 +246,28 @@ class EmbedderSpecRequest(BaseModel):
 
     embedder_type: str = Field("sentence_transformer", description="Embedder type")
     model_name: str = Field("all-MiniLM-L6-v2", description="Model name")
-    model_path: Optional[str] = Field(None, description="Local model path")
+    model_path: str | None = Field(None, description="Local model path")
     dimension: int = Field(384, ge=1, description="Embedding dimension")
     batch_size: int = Field(32, ge=1, le=256, description="Batch size")
     normalize: bool = Field(True, description="Normalize embeddings")
     device: str = Field("auto", description="Device: auto, cuda, cpu")
-    max_seq_length: Optional[int] = Field(None, description="Max sequence length")
-    instruction: Optional[str] = Field(None, description="Instruction prefix")
+    max_seq_length: int | None = Field(None, description="Max sequence length")
+    instruction: str | None = Field(None, description="Instruction prefix")
 
 
 class PipelineCreateRequest(BaseModel):
     """Request to create a pipeline definition (X-001)."""
 
     name: str = Field(..., min_length=1, max_length=256, description="Pipeline name")
-    chunker: Optional[ChunkerSpecRequest] = Field(None, description="Chunker config")
-    embedder: Optional[EmbedderSpecRequest] = Field(None, description="Embedder config")
-    description: Optional[str] = Field(None, max_length=1000, description="Description")
+    chunker: ChunkerSpecRequest | None = Field(None, description="Chunker config")
+    embedder: EmbedderSpecRequest | None = Field(None, description="Embedder config")
+    description: str | None = Field(None, max_length=1000, description="Description")
     is_default: bool = Field(False, description="Set as default for project")
-    supported_extensions: Optional[List[str]] = Field(
+    supported_extensions: list[str] | None = Field(
         None, description="Supported file extensions"
     )
     extract_metadata: bool = Field(True, description="Extract metadata from files")
-    metadata_fields: Optional[List[str]] = Field(
+    metadata_fields: list[str] | None = Field(
         None, description="Metadata fields to extract"
     )
 
@@ -294,13 +293,13 @@ class PipelineCreateRequest(BaseModel):
 class PipelineUpdateRequest(BaseModel):
     """Request to update a pipeline definition."""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=256)
-    description: Optional[str] = Field(None, max_length=1000)
-    status: Optional[str] = Field(None, description="Status: active, draft, deprecated")
-    is_default: Optional[bool] = Field(None)
-    chunker: Optional[ChunkerSpecRequest] = Field(None)
-    embedder: Optional[EmbedderSpecRequest] = Field(None)
-    supported_extensions: Optional[List[str]] = Field(None)
+    name: str | None = Field(None, min_length=1, max_length=256)
+    description: str | None = Field(None, max_length=1000)
+    status: str | None = Field(None, description="Status: active, draft, deprecated")
+    is_default: bool | None = Field(None)
+    chunker: ChunkerSpecRequest | None = Field(None)
+    embedder: EmbedderSpecRequest | None = Field(None)
+    supported_extensions: list[str] | None = Field(None)
 
 
 class PipelineResponse(BaseModel):
@@ -310,14 +309,14 @@ class PipelineResponse(BaseModel):
     name: str
     project_id: str
     owner_id: str
-    description: Optional[str]
+    description: str | None
     status: str
     is_default: bool
-    chunker: Dict[str, Any]
-    embedder: Dict[str, Any]
-    supported_extensions: List[str]
+    chunker: dict[str, Any]
+    embedder: dict[str, Any]
+    supported_extensions: list[str]
     extract_metadata: bool
-    metadata_fields: List[str]
+    metadata_fields: list[str]
     created_at: str
     updated_at: str
 
@@ -334,10 +333,10 @@ class RerankerSpecRequest(BaseModel):
     model_name: str = Field(
         "cross-encoder/ms-marco-MiniLM-L-6-v2", description="Model name"
     )
-    model_path: Optional[str] = Field(None, description="Local model path")
+    model_path: str | None = Field(None, description="Local model path")
     top_k: int = Field(5, ge=1, le=100, description="Top K results")
     batch_size: int = Field(32, ge=1, le=256, description="Batch size")
-    score_threshold: Optional[float] = Field(None, description="Score threshold")
+    score_threshold: float | None = Field(None, description="Score threshold")
     device: str = Field("auto", description="Device: auto, cuda, cpu")
 
 
@@ -349,15 +348,15 @@ class RAGProfileCreateRequest(BaseModel):
     vector_weight: float = Field(0.7, ge=0, le=1, description="Vector search weight")
     keyword_weight: float = Field(0.3, ge=0, le=1, description="Keyword search weight")
     top_k_retrieval: int = Field(20, ge=1, le=100, description="Initial retrieval count")
-    reranker: Optional[RerankerSpecRequest] = Field(None, description="Reranker config")
+    reranker: RerankerSpecRequest | None = Field(None, description="Reranker config")
     max_context_tokens: int = Field(4096, ge=256, le=32768, description="Max context tokens")
-    context_template: Optional[str] = Field(None, description="Custom context template")
+    context_template: str | None = Field(None, description="Custom context template")
     include_sources: bool = Field(True, description="Include source citations")
     default_model: str = Field("rivault-gpt-oss-static", description="Default LLM model")
-    system_prompt: Optional[str] = Field(None, description="System prompt for LLM")
+    system_prompt: str | None = Field(None, description="System prompt for LLM")
     temperature: float = Field(0.3, ge=0, le=2, description="LLM temperature")
     max_tokens: int = Field(1024, ge=1, le=8192, description="Max LLM tokens")
-    description: Optional[str] = Field(None, max_length=1000, description="Description")
+    description: str | None = Field(None, max_length=1000, description="Description")
     is_default: bool = Field(False, description="Set as default for project")
 
     class Config:
@@ -381,18 +380,18 @@ class RAGProfileCreateRequest(BaseModel):
 class RAGProfileUpdateRequest(BaseModel):
     """Request to update a RAG profile."""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=256)
-    description: Optional[str] = Field(None, max_length=1000)
-    status: Optional[str] = Field(None)
-    is_default: Optional[bool] = Field(None)
-    search_type: Optional[str] = Field(None)
-    vector_weight: Optional[float] = Field(None, ge=0, le=1)
-    keyword_weight: Optional[float] = Field(None, ge=0, le=1)
-    top_k_retrieval: Optional[int] = Field(None, ge=1, le=100)
-    reranker: Optional[RerankerSpecRequest] = Field(None)
-    max_context_tokens: Optional[int] = Field(None, ge=256, le=32768)
-    default_model: Optional[str] = Field(None)
-    temperature: Optional[float] = Field(None, ge=0, le=2)
+    name: str | None = Field(None, min_length=1, max_length=256)
+    description: str | None = Field(None, max_length=1000)
+    status: str | None = Field(None)
+    is_default: bool | None = Field(None)
+    search_type: str | None = Field(None)
+    vector_weight: float | None = Field(None, ge=0, le=1)
+    keyword_weight: float | None = Field(None, ge=0, le=1)
+    top_k_retrieval: int | None = Field(None, ge=1, le=100)
+    reranker: RerankerSpecRequest | None = Field(None)
+    max_context_tokens: int | None = Field(None, ge=256, le=32768)
+    default_model: str | None = Field(None)
+    temperature: float | None = Field(None, ge=0, le=2)
 
 
 class RAGProfileResponse(BaseModel):
@@ -402,19 +401,19 @@ class RAGProfileResponse(BaseModel):
     name: str
     project_id: str
     owner_id: str
-    description: Optional[str]
+    description: str | None
     status: str
     is_default: bool
     search_type: str
     vector_weight: float
     keyword_weight: float
     top_k_retrieval: int
-    reranker: Dict[str, Any]
+    reranker: dict[str, Any]
     max_context_tokens: int
-    context_template: Optional[str]
+    context_template: str | None
     include_sources: bool
     default_model: str
-    system_prompt: Optional[str]
+    system_prompt: str | None
     temperature: float
     max_tokens: int
     created_at: str
@@ -427,8 +426,8 @@ class RAGProfileResponse(BaseModel):
 
 
 def extract_user_project(
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
 ) -> tuple[str, str]:
     """Extract user and project IDs from headers."""
     user_id = x_user_id or "anonymous"
@@ -436,7 +435,7 @@ def extract_user_project(
     return user_id, project_id
 
 
-def chunker_request_to_spec(req: Optional[ChunkerSpecRequest]) -> ChunkerSpec:
+def chunker_request_to_spec(req: ChunkerSpecRequest | None) -> ChunkerSpec:
     """Convert request to ChunkerSpec."""
     if not req:
         return ChunkerSpec()
@@ -453,7 +452,7 @@ def chunker_request_to_spec(req: Optional[ChunkerSpecRequest]) -> ChunkerSpec:
     )
 
 
-def embedder_request_to_spec(req: Optional[EmbedderSpecRequest]) -> EmbedderSpec:
+def embedder_request_to_spec(req: EmbedderSpecRequest | None) -> EmbedderSpec:
     """Convert request to EmbedderSpec."""
     if not req:
         return EmbedderSpec()
@@ -470,7 +469,7 @@ def embedder_request_to_spec(req: Optional[EmbedderSpecRequest]) -> EmbedderSpec
     )
 
 
-def reranker_request_to_spec(req: Optional[RerankerSpecRequest]) -> RerankerSpec:
+def reranker_request_to_spec(req: RerankerSpecRequest | None) -> RerankerSpec:
     """Convert request to RerankerSpec."""
     if not req:
         return RerankerSpec()
@@ -540,8 +539,8 @@ def rag_profile_to_response(profile: RAGProfile) -> RAGProfileResponse:
 @router.post("/pipelines", response_model=PipelineResponse, status_code=status.HTTP_201_CREATED)
 async def create_pipeline(
     request: PipelineCreateRequest,
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> PipelineResponse:
     """
@@ -583,19 +582,19 @@ async def create_pipeline(
     try:
         pipeline = store.create_pipeline(pipeline)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
     logger.info(f"Created pipeline {pipeline.pipeline_id} for project {project_id}")
     return pipeline_to_response(pipeline)
 
 
-@router.get("/pipelines", response_model=List[PipelineResponse])
+@router.get("/pipelines", response_model=list[PipelineResponse])
 async def list_pipelines(
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
-    status_filter: Optional[str] = Query(None, description="Filter by status"),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
+    status_filter: str | None = Query(None, description="Filter by status"),
     store: PipelineStore = Depends(get_pipeline_store),
-) -> List[PipelineResponse]:
+) -> list[PipelineResponse]:
     """List pipeline definitions for the current project."""
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
 
@@ -608,8 +607,8 @@ async def list_pipelines(
 @router.get("/pipelines/{pipeline_id}", response_model=PipelineResponse)
 async def get_pipeline(
     pipeline_id: str,
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> PipelineResponse:
     """Get pipeline definition by ID."""
@@ -630,8 +629,8 @@ async def get_pipeline(
 async def update_pipeline(
     pipeline_id: str,
     request: PipelineUpdateRequest,
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> PipelineResponse:
     """Update pipeline definition."""
@@ -668,8 +667,8 @@ async def update_pipeline(
 @router.delete("/pipelines/{pipeline_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_pipeline(
     pipeline_id: str,
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> None:
     """Delete pipeline definition."""
@@ -696,8 +695,8 @@ async def delete_pipeline(
 )
 async def create_rag_profile(
     request: RAGProfileCreateRequest,
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> RAGProfileResponse:
     """
@@ -741,19 +740,19 @@ async def create_rag_profile(
     try:
         profile = store.create_rag_profile(profile)
     except ValueError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+        raise HTTPException(status_code=409, detail=str(e)) from e
 
     logger.info(f"Created RAG profile {profile.profile_id} for project {project_id}")
     return rag_profile_to_response(profile)
 
 
-@router.get("/rag-profiles", response_model=List[RAGProfileResponse])
+@router.get("/rag-profiles", response_model=list[RAGProfileResponse])
 async def list_rag_profiles(
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
-    status_filter: Optional[str] = Query(None, description="Filter by status"),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
+    status_filter: str | None = Query(None, description="Filter by status"),
     store: PipelineStore = Depends(get_pipeline_store),
-) -> List[RAGProfileResponse]:
+) -> list[RAGProfileResponse]:
     """List RAG profiles for the current project."""
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
 
@@ -766,8 +765,8 @@ async def list_rag_profiles(
 @router.get("/rag-profiles/{profile_id}", response_model=RAGProfileResponse)
 async def get_rag_profile(
     profile_id: str,
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> RAGProfileResponse:
     """Get RAG profile by ID."""
@@ -787,8 +786,8 @@ async def get_rag_profile(
 async def update_rag_profile(
     profile_id: str,
     request: RAGProfileUpdateRequest,
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> RAGProfileResponse:
     """Update RAG profile."""
@@ -835,8 +834,8 @@ async def update_rag_profile(
 @router.delete("/rag-profiles/{profile_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_rag_profile(
     profile_id: str,
-    x_user_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    x_user_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
     store: PipelineStore = Depends(get_pipeline_store),
 ) -> None:
     """Delete RAG profile."""
@@ -859,7 +858,7 @@ async def delete_rag_profile(
 
 
 @router.get("/components/chunkers")
-async def list_chunkers() -> List[Dict[str, Any]]:
+async def list_chunkers() -> list[dict[str, Any]]:
     """List available chunking methods (X-003)."""
     registry = get_chunker_registry()
     return [entry.to_dict() for entry in registry.list_all()]
@@ -867,9 +866,9 @@ async def list_chunkers() -> List[Dict[str, Any]]:
 
 @router.get("/components/embedders")
 async def list_embedders(
-    language: Optional[str] = Query(None, description="Filter by language"),
-    gpu_only: Optional[bool] = Query(None, description="Filter by GPU requirement"),
-) -> List[Dict[str, Any]]:
+    language: str | None = Query(None, description="Filter by language"),
+    gpu_only: bool | None = Query(None, description="Filter by GPU requirement"),
+) -> list[dict[str, Any]]:
     """List available embedding models (X-004)."""
     registry = get_embedder_registry()
 
@@ -887,7 +886,7 @@ async def list_embedders(
 
 
 @router.get("/components/rerankers")
-async def list_rerankers() -> List[Dict[str, Any]]:
+async def list_rerankers() -> list[dict[str, Any]]:
     """List available reranking methods (X-005)."""
     registry = get_reranker_registry()
     return [entry.to_dict() for entry in registry.list_all()]

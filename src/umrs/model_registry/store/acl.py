@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Set
 
 from ..models import ModelEntry, ModelScope
 from .errors import PermissionDeniedError
@@ -15,8 +14,8 @@ class AccessContext:
 
     user_id: str
     is_admin: bool = False
-    project_memberships: Set[str] = None  # Projects user belongs to
-    admin_project_ids: Set[str] = None    # Projects where user is admin (U-815)
+    project_memberships: set[str] = None  # Projects user belongs to
+    admin_project_ids: set[str] = None    # Projects where user is admin (U-815)
 
     def __post_init__(self):
         if self.project_memberships is None:
@@ -63,7 +62,7 @@ class ACLEnforcer:
         self,
         scope: ModelScope,
         ctx: AccessContext,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
     ) -> bool:
         """Check if user can create a model in the given scope."""
         if ctx.is_admin:
@@ -74,9 +73,7 @@ class ACLEnforcer:
             if not project_id:
                 return False
             return project_id in ctx.project_memberships
-        if scope == ModelScope.USER:
-            return True
-        return False
+        return scope == ModelScope.USER
 
     def enforce_read(self, model: ModelEntry, ctx: AccessContext) -> None:
         """Raise PermissionDeniedError if user cannot read model."""
@@ -102,7 +99,7 @@ class ACLEnforcer:
         self,
         scope: ModelScope,
         ctx: AccessContext,
-        project_id: Optional[str] = None,
+        project_id: str | None = None,
     ) -> None:
         """Raise PermissionDeniedError if user cannot create in scope."""
         if not self.can_create(scope, ctx, project_id):

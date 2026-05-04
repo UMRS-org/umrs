@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import Optional
 
 from umrs.model_registry.models import ExecutionAuthority, ModelRef, ModelRefType
 

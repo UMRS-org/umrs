@@ -16,38 +16,40 @@ import logging
 import os
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Type
+from typing import Any
+
+from umrs.model_registry.models import ExecutionAuthority, ModelRef
 
 from ..base import (
     DEFAULT_MINI_RIVAULT_IMAGE,
-    EndpointInfo as BaseEndpointInfo,
     JobInfo,
     JobStatus,
     OrchestratorBackend,
     OrchestratorConfig,
 )
-from umrs.model_registry.models import ModelRef, ExecutionAuthority
-
+from ..base import (
+    EndpointInfo as BaseEndpointInfo,
+)
+from .resolvers import (
+    ResolverRegistry,
+)
 from .targets import (
-    ExecutionTarget,
-    SlurmTarget,
-    K8sTarget,
-    ComposeTarget,
     AllocationInfo,
     AllocationStatus,
+    ComposeTarget,
+    ExecutionTarget,
     JobSpec,
+    K8sTarget,
+    SlurmTarget,
 )
 from .wrappers import (
-    RuntimeWrapper,
-    SingularityWrapper,
+    ContainerEndpoint,
     DockerWrapper,
     K8sJobWrapper,
     LaunchSpec,
     MountSpec,
-    ContainerEndpoint,
-)
-from .resolvers import (
-    ResolverRegistry,
+    RuntimeWrapper,
+    SingularityWrapper,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,14 +73,14 @@ class DeploymentProfile:
     name: str
     description: str
     execution_authority: ExecutionAuthority
-    target_class: Type[ExecutionTarget]
-    wrapper_class: Type[RuntimeWrapper]
-    target_kwargs: Dict[str, Any] = field(default_factory=dict)
-    wrapper_kwargs: Dict[str, Any] = field(default_factory=dict)
+    target_class: type[ExecutionTarget]
+    wrapper_class: type[RuntimeWrapper]
+    target_kwargs: dict[str, Any] = field(default_factory=dict)
+    wrapper_kwargs: dict[str, Any] = field(default_factory=dict)
 
 
 # Predefined deployment profiles
-DEPLOYMENT_PROFILES: Dict[str, DeploymentProfile] = {
+DEPLOYMENT_PROFILES: dict[str, DeploymentProfile] = {
     "slurm-singularity": DeploymentProfile(
         name="slurm-singularity",
         description="Experimental, not for HPC production: Slurm + Singularity",
@@ -134,11 +136,11 @@ class HybridOrchestrator(OrchestratorBackend):
 
     def __init__(
         self,
-        config: Optional[OrchestratorConfig] = None,
-        profile: Optional[str] = None,
-        target: Optional[ExecutionTarget] = None,
-        wrapper: Optional[RuntimeWrapper] = None,
-        resolver_registry: Optional[ResolverRegistry] = None,
+        config: OrchestratorConfig | None = None,
+        profile: str | None = None,
+        target: ExecutionTarget | None = None,
+        wrapper: RuntimeWrapper | None = None,
+        resolver_registry: ResolverRegistry | None = None,
     ):
         """
         Initialize hybrid orchestrator.
@@ -180,7 +182,7 @@ class HybridOrchestrator(OrchestratorBackend):
         self._resolvers = resolver_registry or ResolverRegistry.default()
 
         # Track active jobs (job_id -> allocation, endpoint)
-        self._jobs: Dict[str, tuple[AllocationInfo, Optional[ContainerEndpoint]]] = {}
+        self._jobs: dict[str, tuple[AllocationInfo, ContainerEndpoint | None]] = {}
 
         logger.info(
             f"HybridOrchestrator initialized: "
@@ -211,8 +213,8 @@ class HybridOrchestrator(OrchestratorBackend):
 
     async def submit_job(
         self,
-        model_path: Optional[str] = None,
-        model_ref: Optional[ModelRef] = None,
+        model_path: str | None = None,
+        model_ref: ModelRef | None = None,
         **kwargs: Any,
     ) -> JobInfo:
         """
@@ -250,8 +252,8 @@ class HybridOrchestrator(OrchestratorBackend):
 
     async def _resolve_model_mount(
         self,
-        model_path: Optional[str],
-        model_ref: Optional[ModelRef],
+        model_path: str | None,
+        model_ref: ModelRef | None,
     ) -> tuple[str, MountSpec]:
         if model_ref:
             resolved = await self._resolvers.resolve(model_ref, self._authority)
@@ -275,7 +277,7 @@ class HybridOrchestrator(OrchestratorBackend):
             self._authority.value,
         )
 
-    def _build_job_spec(self, job_name: str, kwargs: Dict[str, Any]) -> JobSpec:
+    def _build_job_spec(self, job_name: str, kwargs: dict[str, Any]) -> JobSpec:
         return JobSpec(
             name=job_name,
             execution_authority=self._authority.value,
@@ -329,14 +331,14 @@ class HybridOrchestrator(OrchestratorBackend):
             },
         )
 
-    def _cached_endpoint(self, job_id: str) -> Optional[ContainerEndpoint]:
+    def _cached_endpoint(self, job_id: str) -> ContainerEndpoint | None:
         cached = self._jobs.get(job_id)
         return cached[1] if cached else None
 
     async def _job_status_from_allocation(
         self,
         allocation: AllocationInfo,
-        endpoint: Optional[ContainerEndpoint],
+        endpoint: ContainerEndpoint | None,
     ) -> JobStatus:
         status_map = {
             AllocationStatus.PENDING: JobStatus.PENDING,
@@ -351,7 +353,7 @@ class HybridOrchestrator(OrchestratorBackend):
 
     async def _running_job_status(
         self,
-        endpoint: Optional[ContainerEndpoint],
+        endpoint: ContainerEndpoint | None,
     ) -> JobStatus:
         if not endpoint or not await self._wrapper.is_running(endpoint):
             return JobStatus.RUNNING
@@ -364,7 +366,7 @@ class HybridOrchestrator(OrchestratorBackend):
     async def wait_for_ready(
         self,
         job_id: str,
-        timeout_sec: Optional[int] = None,
+        timeout_sec: int | None = None,
     ) -> BaseEndpointInfo:
         """Wait until job is ready to serve requests."""
         timeout = timeout_sec or self.config.startup_timeout_sec
@@ -405,8 +407,8 @@ class HybridOrchestrator(OrchestratorBackend):
 
     async def list_jobs(
         self,
-        status_filter: Optional[List[JobStatus]] = None,
-    ) -> List[JobInfo]:
+        status_filter: list[JobStatus] | None = None,
+    ) -> list[JobInfo]:
         """List all Mini-RiVault jobs."""
         allocations = await self._target.list_jobs(
             labels={"app.kubernetes.io/name": "rivault"}
@@ -451,7 +453,7 @@ class HybridOrchestrator(OrchestratorBackend):
         self,
         model_path: str,
         mount: MountSpec,
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
     ) -> LaunchSpec:
         """Build LaunchSpec from config and kwargs."""
         cfg = self.config
@@ -508,13 +510,12 @@ class HybridOrchestrator(OrchestratorBackend):
             headers["Authorization"] = f"Bearer {self.config.litellm_master_key}"
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    endpoint.models_url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    return resp.status == 200
+            async with aiohttp.ClientSession() as session, session.get(
+                endpoint.models_url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status == 200
         except Exception:
             return False
 

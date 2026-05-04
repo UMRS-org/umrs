@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Connect directly to BentoML container IP."""
 import http.client
+
 conn = http.client.HTTPConnection("192.168.4.35", 3000, timeout=3)
 try:
     conn.request("GET", "/readyz")

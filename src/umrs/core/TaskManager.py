@@ -1,7 +1,7 @@
-from umrs.core.UMRSThreads import UMRSThreads
-from umrs.core.UMRSTask import UMRSTask
-
 import threading
+
+from umrs.core.UMRSTask import UMRSTask
+from umrs.core.UMRSThreads import UMRSThreads
 
 
 class TaskManager:

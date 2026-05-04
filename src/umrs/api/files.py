@@ -14,7 +14,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 import boto3
 from botocore.config import Config as BotoConfig
@@ -64,7 +64,7 @@ class S3Config:
         )
 
 
-_s3_config: Optional[S3Config] = None
+_s3_config: S3Config | None = None
 
 
 def get_s3_config() -> S3Config:
@@ -96,16 +96,16 @@ class PresignRequest(BaseModel):
     key: str = Field(
         ..., description="S3 object key (path within bucket)"
     )
-    bucket: Optional[str] = Field(
+    bucket: str | None = Field(
         None, description="Bucket name (uses default if not specified)"
     )
-    ttl_sec: Optional[int] = Field(
+    ttl_sec: int | None = Field(
         None, ge=60, le=86400, description="TTL in seconds (60-86400)"
     )
-    content_type: Optional[str] = Field(
+    content_type: str | None = Field(
         None, description="Content-Type for upload operations"
     )
-    metadata: Optional[Dict[str, str]] = Field(
+    metadata: dict[str, str] | None = Field(
         None, description="Custom metadata for upload operations"
     )
 
@@ -129,7 +129,7 @@ class PresignResponse(BaseModel):
     ttl_sec: int = Field(..., description="TTL in seconds")
     key: str = Field(..., description="S3 object key")
     bucket: str = Field(..., description="S3 bucket name")
-    headers: Optional[Dict[str, str]] = Field(
+    headers: dict[str, str] | None = Field(
         None, description="Required headers for the request"
     )
 
@@ -140,10 +140,10 @@ class FileMetadata(BaseModel):
     key: str
     bucket: str
     size: int
-    content_type: Optional[str] = None
-    last_modified: Optional[str] = None
-    etag: Optional[str] = None
-    metadata: Dict[str, str] = Field(default_factory=dict)
+    content_type: str | None = None
+    last_modified: str | None = None
+    etag: str | None = None
+    metadata: dict[str, str] = Field(default_factory=dict)
 
 
 class PresignBatchRequest(BaseModel):
@@ -158,7 +158,7 @@ class PresignBatchResponse(BaseModel):
     """Batch presigned URL response."""
 
     results: list[PresignResponse]
-    errors: list[Dict[str, Any]] = Field(default_factory=list)
+    errors: list[dict[str, Any]] = Field(default_factory=list)
 
 
 # =============================================================================
@@ -166,14 +166,14 @@ class PresignBatchResponse(BaseModel):
 # =============================================================================
 
 
-def _header_str(value: Any) -> Optional[str]:
+def _header_str(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def get_project_id(
-    authorization: Optional[str] = Header(None),
-    x_verified_project_id: Optional[str] = Header(None),
-    x_project_id: Optional[str] = Header(None),
+    authorization: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
 ) -> str:
     """
     Extract project_id from request headers.
@@ -279,7 +279,7 @@ async def generate_presigned_url(
             # NOTE: for metadata support we still call boto3 directly here
             # because the shared utility doesn't handle per-object metadata.
             if request.metadata:
-                params: Dict[str, Any] = {
+                params: dict[str, Any] = {
                     "Bucket": bucket,
                     "Key": key,
                     "Metadata": request.metadata,
@@ -339,13 +339,13 @@ async def generate_presigned_url(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate presigned URL: {e.response['Error']['Message']}",
-        )
+        ) from e
     except Exception as e:
         logger.error(f"Error generating presigned URL: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to generate presigned URL",
-        )
+        ) from e
 
 
 @router.post(
@@ -392,7 +392,7 @@ async def generate_presigned_urls_batch(
 )
 async def get_file_metadata(
     file_id: str,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
 ) -> FileMetadata:
@@ -422,12 +422,12 @@ async def get_file_metadata(
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"File not found: {key}",
-            )
+            ) from e
         logger.error(f"S3 error getting file metadata: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to get file metadata",
-        )
+        ) from e
 
 
 @router.delete(
@@ -438,7 +438,7 @@ async def get_file_metadata(
 )
 async def delete_file(
     file_id: str,
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
 ) -> None:
@@ -452,7 +452,7 @@ async def delete_file(
         s3_client.delete_object(Bucket=bucket_name, Key=key)
 
         logger.info(
-            f"Deleted file",
+            "Deleted file",
             extra={
                 "project_id": project_id,
                 "key": key,
@@ -465,7 +465,7 @@ async def delete_file(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to delete file",
-        )
+        ) from e
 
 
 @router.post(
@@ -475,10 +475,10 @@ async def delete_file(
 )
 async def check_files_exist(
     keys: list[str],
-    bucket: Optional[str] = None,
+    bucket: str | None = None,
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
-) -> Dict[str, bool]:
+) -> dict[str, bool]:
     """Check if files exist."""
 
     bucket_name = bucket or config.bucket
@@ -505,4 +505,4 @@ async def check_files_exist(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to check files",
-        )
+        ) from e

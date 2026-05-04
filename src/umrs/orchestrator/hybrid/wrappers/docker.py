@@ -6,10 +6,9 @@ import asyncio
 import logging
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
 
 from ..targets import AllocationInfo
-from .base import ContainerEndpoint, LaunchError, LaunchSpec, MountSpec, RuntimeWrapper
+from .base import ContainerEndpoint, LaunchError, LaunchSpec, RuntimeWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +75,7 @@ class DockerWrapper(RuntimeWrapper):
             )
 
         except Exception as e:
-            raise LaunchError(f"Failed to launch Docker container: {e}")
+            raise LaunchError(f"Failed to launch Docker container: {e}") from e
 
     async def teardown(self, endpoint: ContainerEndpoint) -> bool:
         """Stop and remove Docker container."""
@@ -122,7 +121,7 @@ class DockerWrapper(RuntimeWrapper):
         except Exception:
             return False
 
-    def _build_command(self, name: str, spec: LaunchSpec) -> List[str]:
+    def _build_command(self, name: str, spec: LaunchSpec) -> list[str]:
         """Build docker run command."""
         cmd = [self.runtime, "run", "-d", "--name", name]
 

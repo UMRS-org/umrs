@@ -16,8 +16,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Dict, List, Optional
+from collections.abc import Callable
+from dataclasses import dataclass, field, is_dataclass, replace
+from typing import Any
 
 from .base import JobStatus, OrchestratorBackend
 from .detection import BackendType, detect_backend
@@ -98,10 +99,10 @@ class ProvisionRequest:
     prefer_warm: bool = True  # Try to reuse existing endpoint
     wait_for_ready: bool = True  # Return only after readiness unless disabled
     min_ttl_for_reuse_sec: int = 60  # Min TTL remaining for reuse
-    env_vars: Dict[str, str] = field(default_factory=dict)
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    partition_override: Optional[str] = None  # Override site partition for this request
-    nodelist_hint: Optional[str] = None  # Slurm --nodelist hint (e.g. "ai-h200-brc-00")
+    env_vars: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    partition_override: str | None = None  # Override site partition for this request
+    nodelist_hint: str | None = None  # Slurm --nodelist hint (e.g. "ai-h200-brc-00")
 
 
 @dataclass
@@ -109,14 +110,14 @@ class ProvisionResult:
     """Result of a provision request."""
 
     success: bool
-    endpoint: Optional[RegisteredEndpoint] = None
-    job_id: Optional[str] = None
-    error: Optional[str] = None
+    endpoint: RegisteredEndpoint | None = None
+    job_id: str | None = None
+    error: str | None = None
     reused: bool = False  # True if existing endpoint was reused
     provisioning_time_sec: float = 0.0
 
     @property
-    def litellm_url(self) -> Optional[str]:
+    def litellm_url(self) -> str | None:
         """Get LiteLLM URL if endpoint is available."""
         return self.endpoint.litellm_url if self.endpoint else None
 
@@ -140,16 +141,16 @@ class OrchestrationService:
 
     def __init__(
         self,
-        registry: Optional[EndpointRegistry] = None,
-        port_manager: Optional[PortManager] = None,
-        readiness_poller: Optional[ReadinessPoller] = None,
-        backend: Optional[OrchestratorBackend] = None,
+        registry: EndpointRegistry | None = None,
+        port_manager: PortManager | None = None,
+        readiness_poller: ReadinessPoller | None = None,
+        backend: OrchestratorBackend | None = None,
     ):
         self._registry = registry
         self._port_manager = port_manager
         self._readiness_poller = readiness_poller
         self._backend = backend
-        self._backend_type: Optional[BackendType] = None
+        self._backend_type: BackendType | None = None
 
     @property
     def registry(self) -> EndpointRegistry:
@@ -185,7 +186,7 @@ class OrchestrationService:
         return BackendType.UNKNOWN
 
     @staticmethod
-    def _configured_backend_name() -> Optional[str]:
+    def _configured_backend_name() -> str | None:
         """Return an explicitly configured backend, if one exists."""
         explicit = (os.getenv("RIVAULT_ORCHESTRATOR") or "").strip()
         if explicit:
@@ -295,9 +296,9 @@ class OrchestrationService:
         host: str,
         port: int,
         deadline: float,
-        probe_model: Optional[str] = None,
+        probe_model: str | None = None,
         probe_kind: str = "models",
-        on_progress: Optional[Callable[[Any], None]] = None,
+        on_progress: Callable[[Any], None] | None = None,
     ):
         """Run readiness polling within the remaining provision budget."""
         loop = asyncio.get_running_loop()
@@ -308,14 +309,17 @@ class OrchestrationService:
             )
 
         poller = self.readiness_poller
-        temp_poller: Optional[ReadinessPoller] = None
+        temp_poller: ReadinessPoller | None = None
         target_timeout = max(1, int(remaining))
 
         if target_timeout != poller.config.timeout_sec:
-            temp_poller = ReadinessPoller(
-                replace(poller.config, timeout_sec=target_timeout)
-            )
-            poller = temp_poller
+            if is_dataclass(poller.config):
+                temp_poller = ReadinessPoller(
+                    replace(poller.config, timeout_sec=target_timeout)
+                )
+                poller = temp_poller
+            else:
+                poller.config.timeout_sec = target_timeout
 
         try:
             return await poller.wait_for_ready(
@@ -333,7 +337,7 @@ class OrchestrationService:
     async def provision(
         self,
         request: ProvisionRequest,
-        on_progress: Optional[Callable[[str, Any], None]] = None,
+        on_progress: Callable[[str, Any], None] | None = None,
     ) -> ProvisionResult:
         """
         Provision a Mini-RiVault endpoint.
@@ -416,7 +420,7 @@ class OrchestrationService:
             )
         progress("port_allocated", {"port": port})
 
-        job_id: Optional[str] = None
+        job_id: str | None = None
         actual_host = target_host
         actual_port = port
         backend_startup_timeout = int(
@@ -556,7 +560,7 @@ class OrchestrationService:
         actual_host: str,
         actual_port: int,
         deadline: float,
-        progress: Optional[Callable[[str, Any], None]],
+        progress: Callable[[str, Any], None] | None,
         start_time: float,
     ) -> ProvisionResult:
         """Resolve backend assignment and readiness for a submitted job."""
@@ -710,7 +714,7 @@ class OrchestrationService:
         self,
         project_id: str,
         model: str,
-    ) -> Optional[RegisteredEndpoint]:
+    ) -> RegisteredEndpoint | None:
         """
         Get an existing ready endpoint.
 
@@ -721,8 +725,8 @@ class OrchestrationService:
 
     def list_endpoints(
         self,
-        project_id: Optional[str] = None,
-    ) -> List[RegisteredEndpoint]:
+        project_id: str | None = None,
+    ) -> list[RegisteredEndpoint]:
         """List all endpoints, optionally filtered by project."""
         return self.registry.list_all(project_id=project_id)
 
@@ -757,7 +761,7 @@ class OrchestrationService:
         job_id: str,
         host: str,
         port: int,
-        allocated_host: Optional[str] = None,
+        allocated_host: str | None = None,
     ):
         """Clean up resources after a failed provision."""
         try:
@@ -777,7 +781,7 @@ class OrchestrationService:
 
 
 # Global singleton
-_service: Optional[OrchestrationService] = None
+_service: OrchestrationService | None = None
 
 
 def get_orchestration_service() -> OrchestrationService:

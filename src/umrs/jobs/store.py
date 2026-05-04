@@ -20,7 +20,7 @@ import logging
 import uuid
 from contextlib import contextmanager
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -73,7 +73,7 @@ class JobStore:
     Supports Postgres advisory locks for Invariant C (no concurrent attempts).
     """
 
-    def __init__(self, db_pool, umrs_instance_id: Optional[str] = None):
+    def __init__(self, db_pool, umrs_instance_id: str | None = None):
         """
         Initialize JobStore.
 
@@ -140,8 +140,8 @@ class JobStore:
         project_id: str,
         user_id: str,
         job_type: JobType,
-        spec: Dict[str, Any],
-        idempotency_key: Optional[str] = None,
+        spec: dict[str, Any],
+        idempotency_key: str | None = None,
         priority: int = 0,
         max_attempts: int = 3,
         restart_policy: RestartPolicy = RestartPolicy.ON_CRASH,
@@ -174,10 +174,9 @@ class JobStore:
 
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                try:
-                    cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            try:
+                cur.execute("""
                         INSERT INTO jobs (
                             job_id, project_id, user_id, job_type, spec,
                             idempotency_key, status, priority,
@@ -190,51 +189,49 @@ class JobStore:
                             %s, %s
                         )
                     """, (
-                        job_id, project_id, user_id, job_type.value, json.dumps(spec),
-                        idempotency_key, JobStatus.PLANNED.value, priority,
-                        max_attempts, restart_policy.value,
-                        now, now,
-                    ))
-                    conn.commit()
-                    logger.info(f"Created job {job_id} (type={job_type.value})")
-                    return job_id
+                    job_id, project_id, user_id, job_type.value, json.dumps(spec),
+                    idempotency_key, JobStatus.PLANNED.value, priority,
+                    max_attempts, restart_policy.value,
+                    now, now,
+                ))
+                conn.commit()
+                logger.info(f"Created job {job_id} (type={job_type.value})")
+                return job_id
 
-                except psycopg2.errors.UniqueViolation:
-                    conn.rollback()
-                    # Find existing job
-                    cur.execute("""
+            except psycopg2.errors.UniqueViolation:
+                conn.rollback()
+                # Find existing job
+                cur.execute("""
                         SELECT job_id FROM jobs
                         WHERE project_id = %s AND idempotency_key = %s
                     """, (project_id, idempotency_key))
-                    row = cur.fetchone()
-                    existing_id = row[0] if row else "unknown"
-                    raise DuplicateJobError(existing_id)
+                row = cur.fetchone()
+                existing_id = row[0] if row else "unknown"
+                raise DuplicateJobError(existing_id) from None
 
     def get_job(self, job_id: str) -> Job:
         """Get job by ID."""
-        with self._get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("SELECT * FROM jobs WHERE job_id = %s", (job_id,))
-                row = cur.fetchone()
-                if not row:
-                    raise JobNotFoundError(f"Job not found: {job_id}")
-                return self._row_to_job(row)
+        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT * FROM jobs WHERE job_id = %s", (job_id,))
+            row = cur.fetchone()
+            if not row:
+                raise JobNotFoundError(f"Job not found: {job_id}")
+            return self._row_to_job(row)
 
     def get_job_by_idempotency_key(
         self, project_id: str, idempotency_key: str
-    ) -> Optional[Job]:
+    ) -> Job | None:
         """Get job by idempotency key (for duplicate detection)."""
-        with self._get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
                     SELECT * FROM jobs
                     WHERE project_id = %s AND idempotency_key = %s
                 """, (project_id, idempotency_key))
-                row = cur.fetchone()
-                return self._row_to_job(row) if row else None
+            row = cur.fetchone()
+            return self._row_to_job(row) if row else None
 
     def enqueue_job(
-        self, job_id: str, when: Optional[datetime] = None
+        self, job_id: str, when: datetime | None = None
     ) -> None:
         """
         Enqueue a job for scheduling.
@@ -244,9 +241,8 @@ class JobStore:
         when = when or datetime.utcnow()
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     UPDATE jobs SET
                         status = %s,
                         next_run_at = %s,
@@ -254,22 +250,22 @@ class JobStore:
                     WHERE job_id = %s AND status = %s
                     RETURNING job_id
                 """, (
-                    JobStatus.QUEUED.value,
-                    when,
-                    now,
-                    job_id,
-                    JobStatus.PLANNED.value,
-                ))
+                JobStatus.QUEUED.value,
+                when,
+                now,
+                job_id,
+                JobStatus.PLANNED.value,
+            ))
 
-                if cur.fetchone() is None:
-                    conn.rollback()
-                    raise InvalidTransitionError(
-                        f"Cannot enqueue job {job_id} (not in PLANNED status)"
-                    )
-                conn.commit()
-                logger.debug(f"Enqueued job {job_id} for {when}")
+            if cur.fetchone() is None:
+                conn.rollback()
+                raise InvalidTransitionError(
+                    f"Cannot enqueue job {job_id} (not in PLANNED status)"
+                )
+            conn.commit()
+            logger.debug(f"Enqueued job {job_id} for {when}")
 
-    def claim_next_jobs(self, limit: int = 10) -> List[str]:
+    def claim_next_jobs(self, limit: int = 10) -> list[str]:
         """
         Claim QUEUED jobs ready to run.
 
@@ -280,10 +276,9 @@ class JobStore:
         """
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                # Use FOR UPDATE SKIP LOCKED for concurrent schedulers
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            # Use FOR UPDATE SKIP LOCKED for concurrent schedulers
+            cur.execute("""
                     SELECT job_id FROM jobs
                     WHERE status = %s AND next_run_at <= %s
                     ORDER BY priority DESC, next_run_at ASC
@@ -291,16 +286,16 @@ class JobStore:
                     FOR UPDATE SKIP LOCKED
                 """, (JobStatus.QUEUED.value, now, limit))
 
-                return [row[0] for row in cur.fetchall()]
+            return [row[0] for row in cur.fetchall()]
 
     def list_jobs(
         self,
-        project_id: Optional[str] = None,
-        status: Optional[JobStatus] = None,
-        job_type: Optional[JobType] = None,
+        project_id: str | None = None,
+        status: JobStatus | None = None,
+        job_type: JobType | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Job]:
+    ) -> list[Job]:
         """List jobs with optional filters."""
         conditions = []
         params = []
@@ -317,16 +312,15 @@ class JobStore:
 
         where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-        with self._get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(f"""
+        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(f"""
                     SELECT * FROM jobs
                     {where_clause}
                     ORDER BY created_at DESC
                     LIMIT %s OFFSET %s
                 """, params + [limit, offset])
 
-                return [self._row_to_job(row) for row in cur.fetchall()]
+            return [self._row_to_job(row) for row in cur.fetchall()]
 
     # =========================================================================
     # Attempt Lifecycle Methods
@@ -342,19 +336,18 @@ class JobStore:
         attempt_id = generate_attempt_id()
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with self._advisory_lock(conn, job_id):
-                with conn.cursor() as cur:
-                    # Get current attempt count
-                    cur.execute("""
+        with self._get_conn() as conn, self._advisory_lock(conn, job_id):
+            with conn.cursor() as cur:
+                # Get current attempt count
+                cur.execute("""
                         SELECT COALESCE(MAX(attempt_no), 0) FROM job_attempts
                         WHERE job_id = %s
                     """, (job_id,))
-                    max_attempt = cur.fetchone()[0]
-                    attempt_no = max_attempt + 1
+                max_attempt = cur.fetchone()[0]
+                attempt_no = max_attempt + 1
 
-                    # Create attempt
-                    cur.execute("""
+                # Create attempt
+                cur.execute("""
                         INSERT INTO job_attempts (
                             attempt_id, job_id, attempt_no, backend, status,
                             umrs_instance_id, scheduler_claimed_at, created_at
@@ -363,63 +356,60 @@ class JobStore:
                             %s, %s, %s
                         )
                     """, (
-                        attempt_id, job_id, attempt_no, backend,
-                        AttemptStatus.CREATED.value,
-                        self.umrs_instance_id, now, now,
-                    ))
+                    attempt_id, job_id, attempt_no, backend,
+                    AttemptStatus.CREATED.value,
+                    self.umrs_instance_id, now, now,
+                ))
 
-                    # Update job state
-                    cur.execute("""
+                # Update job state
+                cur.execute("""
                         UPDATE jobs SET
                             status = %s,
                             active_attempt_id = %s,
                             last_state_change_at = %s
                         WHERE job_id = %s
                     """, (
-                        JobStatus.RUNNING.value,
-                        attempt_id,
-                        now,
-                        job_id,
-                    ))
+                    JobStatus.RUNNING.value,
+                    attempt_id,
+                    now,
+                    job_id,
+                ))
 
-                    conn.commit()
-                    logger.info(f"Created attempt {attempt_id} (job={job_id}, no={attempt_no})")
-                    return attempt_id
+                conn.commit()
+                logger.info(f"Created attempt {attempt_id} (job={job_id}, no={attempt_no})")
+                return attempt_id
 
     def get_attempt(self, attempt_id: str) -> JobAttempt:
         """Get attempt by ID."""
-        with self._get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute(
-                    "SELECT * FROM job_attempts WHERE attempt_id = %s",
-                    (attempt_id,)
-                )
-                row = cur.fetchone()
-                if not row:
-                    raise AttemptNotFoundError(f"Attempt not found: {attempt_id}")
-                return self._row_to_attempt(row)
+        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM job_attempts WHERE attempt_id = %s",
+                (attempt_id,)
+            )
+            row = cur.fetchone()
+            if not row:
+                raise AttemptNotFoundError(f"Attempt not found: {attempt_id}")
+            return self._row_to_attempt(row)
 
-    def get_attempts_for_job(self, job_id: str) -> List[JobAttempt]:
+    def get_attempts_for_job(self, job_id: str) -> list[JobAttempt]:
         """Get all attempts for a job, ordered by attempt_no."""
-        with self._get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
                     SELECT * FROM job_attempts
                     WHERE job_id = %s
                     ORDER BY attempt_no ASC
                 """, (job_id,))
-                return [self._row_to_attempt(row) for row in cur.fetchall()]
+            return [self._row_to_attempt(row) for row in cur.fetchall()]
 
-    def get_active_attempts(self) -> List[JobAttempt]:
+    def get_active_attempts(self) -> list[JobAttempt]:
         """Get all attempts in SUBMITTED or RUNNING status."""
-        with self._get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("""
                     SELECT * FROM job_attempts
                     WHERE status IN (%s, %s)
                     ORDER BY created_at ASC
                 """, (AttemptStatus.SUBMITTED.value, AttemptStatus.RUNNING.value))
-                return [self._row_to_attempt(row) for row in cur.fetchall()]
+            return [self._row_to_attempt(row) for row in cur.fetchall()]
 
     def mark_attempt_submitted(
         self, attempt_id: str, backend_ref: str
@@ -431,9 +421,8 @@ class JobStore:
         """
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     UPDATE job_attempts SET
                         status = %s,
                         backend_ref = %s,
@@ -442,56 +431,55 @@ class JobStore:
                     WHERE attempt_id = %s AND status = %s
                     RETURNING attempt_id
                 """, (
-                    AttemptStatus.SUBMITTED.value,
-                    backend_ref,
-                    now,
-                    attempt_id,
-                    AttemptStatus.CREATED.value,
-                ))
+                AttemptStatus.SUBMITTED.value,
+                backend_ref,
+                now,
+                attempt_id,
+                AttemptStatus.CREATED.value,
+            ))
 
-                if cur.fetchone() is None:
-                    conn.rollback()
-                    raise InvalidTransitionError(
-                        f"Cannot mark attempt {attempt_id} as submitted"
-                    )
-                conn.commit()
-                logger.debug(f"Attempt {attempt_id} submitted (ref={backend_ref})")
+            if cur.fetchone() is None:
+                conn.rollback()
+                raise InvalidTransitionError(
+                    f"Cannot mark attempt {attempt_id} as submitted"
+                )
+            conn.commit()
+            logger.debug(f"Attempt {attempt_id} submitted (ref={backend_ref})")
 
     def mark_attempt_running(
-        self, attempt_id: str, status_detail: Optional[str] = None
+        self, attempt_id: str, status_detail: str | None = None
     ) -> None:
         """
         Mark attempt as running.
 
         Transitions: SUBMITTED → RUNNING
         """
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     UPDATE job_attempts SET
                         status = %s,
                         status_detail = COALESCE(%s, 'running')
                     WHERE attempt_id = %s AND status = %s
                     RETURNING attempt_id
                 """, (
-                    AttemptStatus.RUNNING.value,
-                    status_detail,
-                    attempt_id,
-                    AttemptStatus.SUBMITTED.value,
-                ))
+                AttemptStatus.RUNNING.value,
+                status_detail,
+                attempt_id,
+                AttemptStatus.SUBMITTED.value,
+            ))
 
-                if cur.fetchone() is None:
-                    conn.rollback()
-                    raise InvalidTransitionError(
-                        f"Cannot mark attempt {attempt_id} as running"
-                    )
-                conn.commit()
+            if cur.fetchone() is None:
+                conn.rollback()
+                raise InvalidTransitionError(
+                    f"Cannot mark attempt {attempt_id} as running"
+                )
+            conn.commit()
 
     def mark_attempt_succeeded(
         self,
         attempt_id: str,
         commit: bool = True,
-        metrics: Optional[Dict[str, Any]] = None,
+        metrics: dict[str, Any] | None = None,
     ) -> None:
         """
         Mark attempt as succeeded.
@@ -501,10 +489,9 @@ class JobStore:
         """
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                # Update attempt
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            # Update attempt
+            cur.execute("""
                     UPDATE job_attempts SET
                         status = %s,
                         ended_at = %s,
@@ -514,46 +501,46 @@ class JobStore:
                     WHERE attempt_id = %s AND status IN (%s, %s)
                     RETURNING job_id
                 """, (
-                    AttemptStatus.SUCCEEDED.value,
-                    now,
-                    json.dumps(metrics or {}),
-                    attempt_id,
-                    AttemptStatus.SUBMITTED.value,
-                    AttemptStatus.RUNNING.value,
-                ))
+                AttemptStatus.SUCCEEDED.value,
+                now,
+                json.dumps(metrics or {}),
+                attempt_id,
+                AttemptStatus.SUBMITTED.value,
+                AttemptStatus.RUNNING.value,
+            ))
 
-                row = cur.fetchone()
-                if row is None:
-                    conn.rollback()
-                    raise InvalidTransitionError(
-                        f"Cannot mark attempt {attempt_id} as succeeded"
-                    )
+            row = cur.fetchone()
+            if row is None:
+                conn.rollback()
+                raise InvalidTransitionError(
+                    f"Cannot mark attempt {attempt_id} as succeeded"
+                )
 
-                job_id = row[0]
+            job_id = row[0]
 
-                # Update job
-                update_fields = ["status = %s", "active_attempt_id = NULL", "last_state_change_at = %s"]
-                update_values = [JobStatus.COMPLETED.value, now]
+            # Update job
+            update_fields = ["status = %s", "active_attempt_id = NULL", "last_state_change_at = %s"]
+            update_values = [JobStatus.COMPLETED.value, now]
 
-                if commit:
-                    update_fields.append("commit_attempt_id = %s")
-                    update_values.append(attempt_id)
+            if commit:
+                update_fields.append("commit_attempt_id = %s")
+                update_values.append(attempt_id)
 
-                update_values.append(job_id)
+            update_values.append(job_id)
 
-                cur.execute(f"""
+            cur.execute(f"""
                     UPDATE jobs SET {', '.join(update_fields)}
                     WHERE job_id = %s
                 """, update_values)
 
-                conn.commit()
-                logger.info(f"Attempt {attempt_id} succeeded (commit={commit})")
+            conn.commit()
+            logger.info(f"Attempt {attempt_id} succeeded (commit={commit})")
 
     def mark_attempt_failed(
         self,
         attempt_id: str,
         exit_reason: str,
-        retry_delay: Optional[int] = None,
+        retry_delay: int | None = None,
     ) -> bool:
         """
         Mark attempt as failed.
@@ -571,10 +558,9 @@ class JobStore:
         now = datetime.utcnow()
         requeued = False
 
-        with self._get_conn() as conn:
-            with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                # Update attempt
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            # Update attempt
+            cur.execute("""
                     UPDATE job_attempts SET
                         status = %s,
                         ended_at = %s,
@@ -583,36 +569,36 @@ class JobStore:
                     WHERE attempt_id = %s AND status IN (%s, %s, %s)
                     RETURNING job_id, attempt_no
                 """, (
-                    AttemptStatus.FAILED.value,
-                    now,
-                    exit_reason,
-                    attempt_id,
-                    AttemptStatus.CREATED.value,
-                    AttemptStatus.SUBMITTED.value,
-                    AttemptStatus.RUNNING.value,
-                ))
+                AttemptStatus.FAILED.value,
+                now,
+                exit_reason,
+                attempt_id,
+                AttemptStatus.CREATED.value,
+                AttemptStatus.SUBMITTED.value,
+                AttemptStatus.RUNNING.value,
+            ))
 
-                row = cur.fetchone()
-                if row is None:
-                    conn.rollback()
-                    raise InvalidTransitionError(
-                        f"Cannot mark attempt {attempt_id} as failed"
-                    )
+            row = cur.fetchone()
+            if row is None:
+                conn.rollback()
+                raise InvalidTransitionError(
+                    f"Cannot mark attempt {attempt_id} as failed"
+                )
 
-                job_id = row["job_id"]
-                attempt_no = row["attempt_no"]
+            job_id = row["job_id"]
+            attempt_no = row["attempt_no"]
 
-                # Get job to check retry policy
-                cur.execute("SELECT * FROM jobs WHERE job_id = %s", (job_id,))
-                job_row = cur.fetchone()
-                job = self._row_to_job(job_row)
+            # Get job to check retry policy
+            cur.execute("SELECT * FROM jobs WHERE job_id = %s", (job_id,))
+            job_row = cur.fetchone()
+            job = self._row_to_job(job_row)
 
-                # Check if we should retry
-                if job.can_retry(attempt_no):
-                    delay = retry_delay or job.get_backoff_delay(attempt_no)
-                    next_run = now + timedelta(seconds=delay)
+            # Check if we should retry
+            if job.can_retry(attempt_no):
+                delay = retry_delay or job.get_backoff_delay(attempt_no)
+                next_run = now + timedelta(seconds=delay)
 
-                    cur.execute("""
+                cur.execute("""
                         UPDATE jobs SET
                             status = %s,
                             active_attempt_id = NULL,
@@ -621,13 +607,13 @@ class JobStore:
                         WHERE job_id = %s
                     """, (JobStatus.QUEUED.value, next_run, now, job_id))
 
-                    requeued = True
-                    logger.info(
-                        f"Attempt {attempt_id} failed, job {job_id} requeued for {next_run}"
-                    )
-                else:
-                    # No more retries
-                    cur.execute("""
+                requeued = True
+                logger.info(
+                    f"Attempt {attempt_id} failed, job {job_id} requeued for {next_run}"
+                )
+            else:
+                # No more retries
+                cur.execute("""
                         UPDATE jobs SET
                             status = %s,
                             active_attempt_id = NULL,
@@ -635,12 +621,12 @@ class JobStore:
                         WHERE job_id = %s
                     """, (JobStatus.FAILED.value, now, job_id))
 
-                    logger.warning(
-                        f"Attempt {attempt_id} failed, job {job_id} exhausted retries"
-                    )
+                logger.warning(
+                    f"Attempt {attempt_id} failed, job {job_id} exhausted retries"
+                )
 
-                conn.commit()
-                return requeued
+            conn.commit()
+            return requeued
 
     def mark_attempt_lost(
         self,
@@ -655,9 +641,8 @@ class JobStore:
         """
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     UPDATE job_attempts SET
                         status = %s,
                         ended_at = %s,
@@ -668,48 +653,46 @@ class JobStore:
                     WHERE attempt_id = %s AND status IN (%s, %s)
                     RETURNING job_id
                 """, (
-                    AttemptStatus.LOST.value,
-                    now,
-                    now,
-                    ignore_reason,
-                    attempt_id,
-                    AttemptStatus.SUBMITTED.value,
-                    AttemptStatus.RUNNING.value,
-                ))
+                AttemptStatus.LOST.value,
+                now,
+                now,
+                ignore_reason,
+                attempt_id,
+                AttemptStatus.SUBMITTED.value,
+                AttemptStatus.RUNNING.value,
+            ))
 
-                if cur.fetchone() is None:
-                    conn.rollback()
-                    # May have already been marked - not an error
-                    logger.debug(f"Attempt {attempt_id} already processed")
-                    return
+            if cur.fetchone() is None:
+                conn.rollback()
+                # May have already been marked - not an error
+                logger.debug(f"Attempt {attempt_id} already processed")
+                return
 
-                conn.commit()
-                logger.info(f"Marked attempt {attempt_id} as LOST ({ignore_reason})")
+            conn.commit()
+            logger.info(f"Marked attempt {attempt_id} as LOST ({ignore_reason})")
 
     def update_attempt_status_detail(
         self, attempt_id: str, status_detail: str
     ) -> None:
         """Update status_detail for progress tracking."""
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     UPDATE job_attempts SET status_detail = %s
                     WHERE attempt_id = %s
                 """, (status_detail, attempt_id))
-                conn.commit()
+            conn.commit()
 
     def update_attempt_metrics(
-        self, attempt_id: str, metrics: Dict[str, Any]
+        self, attempt_id: str, metrics: dict[str, Any]
     ) -> None:
         """Merge metrics into attempt record."""
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     UPDATE job_attempts SET
                         metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
                     WHERE attempt_id = %s
                 """, (json.dumps(metrics), attempt_id))
-                conn.commit()
+            conn.commit()
 
     # =========================================================================
     # Job Control Methods
@@ -723,10 +706,9 @@ class JobStore:
         """
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                # Mark job as cancelled
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            # Mark job as cancelled
+            cur.execute("""
                     UPDATE jobs SET
                         status = %s,
                         active_attempt_id = NULL,
@@ -734,38 +716,38 @@ class JobStore:
                     WHERE job_id = %s AND status NOT IN (%s, %s, %s)
                     RETURNING job_id
                 """, (
-                    JobStatus.CANCELLED.value,
-                    now,
-                    job_id,
-                    JobStatus.COMPLETED.value,
-                    JobStatus.FAILED.value,
-                    JobStatus.CANCELLED.value,
-                ))
+                JobStatus.CANCELLED.value,
+                now,
+                job_id,
+                JobStatus.COMPLETED.value,
+                JobStatus.FAILED.value,
+                JobStatus.CANCELLED.value,
+            ))
 
-                if cur.fetchone() is None:
-                    raise InvalidTransitionError(
-                        f"Cannot cancel job {job_id} (already terminal)"
-                    )
+            if cur.fetchone() is None:
+                raise InvalidTransitionError(
+                    f"Cannot cancel job {job_id} (already terminal)"
+                )
 
-                # Mark any active attempts as failed
-                cur.execute("""
+            # Mark any active attempts as failed
+            cur.execute("""
                     UPDATE job_attempts SET
                         status = %s,
                         ended_at = %s,
                         exit_reason = %s
                     WHERE job_id = %s AND status IN (%s, %s, %s)
                 """, (
-                    AttemptStatus.FAILED.value,
-                    now,
-                    f"cancelled: {reason}",
-                    job_id,
-                    AttemptStatus.CREATED.value,
-                    AttemptStatus.SUBMITTED.value,
-                    AttemptStatus.RUNNING.value,
-                ))
+                AttemptStatus.FAILED.value,
+                now,
+                f"cancelled: {reason}",
+                job_id,
+                AttemptStatus.CREATED.value,
+                AttemptStatus.SUBMITTED.value,
+                AttemptStatus.RUNNING.value,
+            ))
 
-                conn.commit()
-                logger.info(f"Cancelled job {job_id}: {reason}")
+            conn.commit()
+            logger.info(f"Cancelled job {job_id}: {reason}")
 
     def retry_job(self, job_id: str) -> None:
         """
@@ -775,9 +757,8 @@ class JobStore:
         """
         now = datetime.utcnow()
 
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     UPDATE jobs SET
                         status = %s,
                         active_attempt_id = NULL,
@@ -786,37 +767,36 @@ class JobStore:
                     WHERE job_id = %s AND status IN (%s, %s)
                     RETURNING job_id
                 """, (
-                    JobStatus.QUEUED.value,
-                    now,
-                    now,
-                    job_id,
-                    JobStatus.FAILED.value,
-                    JobStatus.CANCELLED.value,
-                ))
+                JobStatus.QUEUED.value,
+                now,
+                now,
+                job_id,
+                JobStatus.FAILED.value,
+                JobStatus.CANCELLED.value,
+            ))
 
-                if cur.fetchone() is None:
-                    raise InvalidTransitionError(
-                        f"Cannot retry job {job_id} (not in terminal status)"
-                    )
+            if cur.fetchone() is None:
+                raise InvalidTransitionError(
+                    f"Cannot retry job {job_id} (not in terminal status)"
+                )
 
-                conn.commit()
-                logger.info(f"Force-requeued job {job_id}")
+            conn.commit()
+            logger.info(f"Force-requeued job {job_id}")
 
     def update_heartbeat(self, job_id: str) -> None:
         """Update job heartbeat timestamp (for HA detection)."""
-        with self._get_conn() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
+        with self._get_conn() as conn, conn.cursor() as cur:
+            cur.execute("""
                     UPDATE jobs SET last_heartbeat_at = NOW()
                     WHERE job_id = %s
                 """, (job_id,))
-                conn.commit()
+            conn.commit()
 
     # =========================================================================
     # Helper Methods
     # =========================================================================
 
-    def _row_to_job(self, row: Dict) -> Job:
+    def _row_to_job(self, row: dict) -> Job:
         """Convert database row to Job object."""
         return Job(
             job_id=row["job_id"],
@@ -838,7 +818,7 @@ class JobStore:
             last_heartbeat_at=row.get("last_heartbeat_at"),
         )
 
-    def _row_to_attempt(self, row: Dict) -> JobAttempt:
+    def _row_to_attempt(self, row: dict) -> JobAttempt:
         """Convert database row to JobAttempt object."""
         metrics = row.get("metrics", {})
         if isinstance(metrics, str):

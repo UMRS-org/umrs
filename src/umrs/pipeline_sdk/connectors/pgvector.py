@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,7 @@ class PgVectorConnector:
             dbname=dbname,
         )
 
-    def list_user_databases(self) -> List[str]:
+    def list_user_databases(self) -> list[str]:
         """Return names of non-system databases."""
         system_dbs = {"postgres", "template0", "template1", "umrs"}
         conn = self._connect("postgres")
@@ -46,7 +46,7 @@ class PgVectorConnector:
             conn.close()
 
     def count_embeddings(self, dbname: str,
-                         table: Optional[str] = None) -> Dict[str, Any]:
+                         table: str | None = None) -> dict[str, Any]:
         """Count total rows and non-null embeddings in *table*.
 
         If *table* is ``None``, scans all tables with an ``embedding`` column.
@@ -81,7 +81,7 @@ class PgVectorConnector:
         finally:
             conn.close()
 
-    def verify_all(self) -> Tuple[bool, str]:
+    def verify_all(self) -> tuple[bool, str]:
         """Check all user databases for complete embeddings.
 
         Returns ``(ok, summary_text)``.
@@ -102,7 +102,7 @@ class PgVectorConnector:
         return ok, summary
 
     @staticmethod
-    def _find_embedding_tables(conn) -> List[str]:
+    def _find_embedding_tables(conn) -> list[str]:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT table_name FROM information_schema.columns "

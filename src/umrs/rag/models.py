@@ -17,8 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 # =============================================================================
 # Enums and Type Definitions
@@ -77,16 +76,16 @@ class ChunkerSpec:
     chunker_type: ChunkerType = ChunkerType.TOKEN
     chunk_size: int = 512  # Tokens or characters per chunk
     chunk_overlap: int = 50  # Overlap between chunks
-    separator: Optional[str] = None  # Custom separator for splitting
+    separator: str | None = None  # Custom separator for splitting
     min_chunk_size: int = 100  # Minimum chunk size
-    max_chunk_size: Optional[int] = None  # Maximum chunk size
+    max_chunk_size: int | None = None  # Maximum chunk size
 
     # Advanced options
     respect_boundaries: bool = True  # Don't split mid-sentence
     language: str = "en"  # Language for sentence detection
-    code_language: Optional[str] = None  # For code chunker
+    code_language: str | None = None  # For code chunker
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "chunker_type": self.chunker_type.value,
@@ -101,7 +100,7 @@ class ChunkerSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ChunkerSpec":
+    def from_dict(cls, data: dict[str, Any]) -> ChunkerSpec:
         """Create from dictionary."""
         return cls(
             chunker_type=ChunkerType(data.get("chunker_type", "token")),
@@ -122,17 +121,17 @@ class EmbedderSpec:
 
     embedder_type: EmbedderType = EmbedderType.SENTENCE_TRANSFORMER
     model_name: str = "all-MiniLM-L6-v2"  # Model identifier
-    model_path: Optional[str] = None  # Local model path
+    model_path: str | None = None  # Local model path
     dimension: int = 384  # Embedding dimension
     batch_size: int = 32  # Batch size for embedding
     normalize: bool = True  # Normalize embeddings to unit length
 
     # Advanced options
     device: str = "auto"  # cuda, cpu, or auto
-    max_seq_length: Optional[int] = None  # Max sequence length
-    instruction: Optional[str] = None  # Instruction for instruction-tuned models
+    max_seq_length: int | None = None  # Max sequence length
+    instruction: str | None = None  # Instruction for instruction-tuned models
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "embedder_type": self.embedder_type.value,
@@ -147,7 +146,7 @@ class EmbedderSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "EmbedderSpec":
+    def from_dict(cls, data: dict[str, Any]) -> EmbedderSpec:
         """Create from dictionary."""
         return cls(
             embedder_type=EmbedderType(data.get("embedder_type", "sentence_transformer")),
@@ -168,15 +167,15 @@ class RerankerSpec:
 
     reranker_type: RerankerType = RerankerType.CROSS_ENCODER
     model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-    model_path: Optional[str] = None  # Local model path
+    model_path: str | None = None  # Local model path
     top_k: int = 5  # Number of documents to keep after reranking
     batch_size: int = 32  # Batch size for reranking
 
     # Advanced options
-    score_threshold: Optional[float] = None  # Minimum score threshold
+    score_threshold: float | None = None  # Minimum score threshold
     device: str = "auto"  # cuda, cpu, or auto
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "reranker_type": self.reranker_type.value,
@@ -189,7 +188,7 @@ class RerankerSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RerankerSpec":
+    def from_dict(cls, data: dict[str, Any]) -> RerankerSpec:
         """Create from dictionary."""
         return cls(
             reranker_type=RerankerType(data.get("reranker_type", "cross_encoder")),
@@ -239,24 +238,24 @@ class PipelineDefinition:
     embedder: EmbedderSpec = field(default_factory=EmbedderSpec)
 
     # Configuration
-    description: Optional[str] = None
+    description: str | None = None
     status: PipelineStatus = PipelineStatus.ACTIVE
     is_default: bool = False  # Default pipeline for project
 
     # Supported file types
-    supported_extensions: List[str] = field(
+    supported_extensions: list[str] = field(
         default_factory=lambda: [".txt", ".md", ".pdf", ".html", ".json"]
     )
 
     # Metadata extraction
     extract_metadata: bool = True
-    metadata_fields: List[str] = field(
+    metadata_fields: list[str] = field(
         default_factory=lambda: ["title", "author", "date", "source"]
     )
 
     # Pre/post processing hooks (plugin references)
-    pre_processors: List[str] = field(default_factory=list)
-    post_processors: List[str] = field(default_factory=list)
+    pre_processors: list[str] = field(default_factory=list)
+    post_processors: list[str] = field(default_factory=list)
 
     # Timestamps
     created_at: datetime = field(default_factory=lambda: datetime.now())
@@ -269,7 +268,7 @@ class PipelineDefinition:
         project_id: str,
         owner_id: str,
         **kwargs: Any,
-    ) -> "PipelineDefinition":
+    ) -> PipelineDefinition:
         """Create a new pipeline definition."""
         return cls(
             pipeline_id=generate_pipeline_id(),
@@ -279,7 +278,7 @@ class PipelineDefinition:
             **kwargs,
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for storage."""
         return {
             "pipeline_id": self.pipeline_id,
@@ -301,7 +300,7 @@ class PipelineDefinition:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PipelineDefinition":
+    def from_dict(cls, data: dict[str, Any]) -> PipelineDefinition:
         """Create from dictionary."""
         return cls(
             pipeline_id=data["pipeline_id"],
@@ -364,17 +363,17 @@ class RAGProfile:
 
     # Context assembly
     max_context_tokens: int = 4096  # Maximum tokens in context
-    context_template: Optional[str] = None  # Custom context template
+    context_template: str | None = None  # Custom context template
     include_sources: bool = True  # Include source citations
 
     # LLM integration
     default_model: str = "rivault-gpt-oss-static"
-    system_prompt: Optional[str] = None
+    system_prompt: str | None = None
     temperature: float = 0.3
     max_tokens: int = 1024
 
     # Configuration
-    description: Optional[str] = None
+    description: str | None = None
     status: PipelineStatus = PipelineStatus.ACTIVE
     is_default: bool = False
 
@@ -389,7 +388,7 @@ class RAGProfile:
         project_id: str,
         owner_id: str,
         **kwargs: Any,
-    ) -> "RAGProfile":
+    ) -> RAGProfile:
         """Create a new RAG profile."""
         return cls(
             profile_id=generate_rag_profile_id(),
@@ -399,7 +398,7 @@ class RAGProfile:
             **kwargs,
         )
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for storage."""
         return {
             "profile_id": self.profile_id,
@@ -426,7 +425,7 @@ class RAGProfile:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RAGProfile":
+    def from_dict(cls, data: dict[str, Any]) -> RAGProfile:
         """Create from dictionary."""
         return cls(
             profile_id=data["profile_id"],

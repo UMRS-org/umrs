@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
@@ -50,7 +50,7 @@ class RAGQueryRequest(BaseModel):
     top_k: int = Field(5, ge=1, le=20, description="Number of results")
     threshold: float = Field(0.7, ge=0.0, le=1.0, description="Similarity threshold")
     include_sources: bool = Field(True, description="Include source documents")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Metadata filters")
+    filters: dict[str, Any] | None = Field(None, description="Metadata filters")
 
 
 class RAGSource(BaseModel):
@@ -59,15 +59,15 @@ class RAGSource(BaseModel):
     document_id: str
     content: str
     score: float
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class RAGQueryResponse(BaseModel):
     """RAG query response."""
 
     answer: str
-    sources: List[RAGSource] = Field(default_factory=list)
-    usage: Optional[Dict[str, int]] = None
+    sources: list[RAGSource] = Field(default_factory=list)
+    usage: dict[str, int] | None = None
 
 
 class DocumentInfo(BaseModel):
@@ -77,7 +77,7 @@ class DocumentInfo(BaseModel):
     filename: str
     project_id: str
     chunks: int = 0
-    metadata: Dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class UploadResponse(BaseModel):
@@ -200,7 +200,7 @@ async def query_rag(
 
     except httpx.RequestError as e:
         logger.exception("RAG query request failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable")
+        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
 
 
 @router.post("/upload", response_model=UploadResponse)
@@ -251,10 +251,10 @@ async def upload_document(
 
     except httpx.RequestError as e:
         logger.exception("Upload request failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable")
+        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
 
 
-@router.get("/documents", response_model=List[DocumentInfo])
+@router.get("/documents", response_model=list[DocumentInfo])
 async def list_documents(
     request: Request,
     registry: EndpointRegistry = Depends(get_registry),
@@ -289,7 +289,7 @@ async def list_documents(
 
     except httpx.RequestError as e:
         logger.exception("List documents failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable")
+        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
 
 
 @router.delete("/documents/{document_id}")
@@ -321,7 +321,7 @@ async def delete_document(
 
     except httpx.RequestError as e:
         logger.exception("Delete document failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable")
+        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
 
 
 @router.get("/documents/{document_id}", response_model=DocumentInfo)
@@ -360,4 +360,4 @@ async def get_document(
 
     except httpx.RequestError as e:
         logger.exception("Get document failed: %s", e)
-        raise HTTPException(status_code=503, detail="RAG service unavailable")
+        raise HTTPException(status_code=503, detail="RAG service unavailable") from e

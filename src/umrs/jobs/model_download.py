@@ -17,8 +17,9 @@ import asyncio
 import logging
 import os
 import shutil
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Callable, Optional
+from typing import TYPE_CHECKING
 
 from .model_download_sources import download_from_huggingface
 from .model_download_state import (
@@ -35,14 +36,14 @@ from .monitor import AttemptCheckResult, BackendStatusChecker
 from .scheduler import OrchestratorBackend
 
 if TYPE_CHECKING:
-    from umrs.model_registry.models import ModelEntry, ModelScope, ServingProfile
-    from umrs.model_registry.store import AccessContext, ModelStore, PathValidator
+    from umrs.model_registry.models import ModelCapabilities
+    from umrs.model_registry.store import ModelStore, PathValidator
 
 logger = logging.getLogger(__name__)
 
 
 def _notify_download_progress(
-    progress_callback: Optional[Callable[[DownloadProgress], None]],
+    progress_callback: Callable[[DownloadProgress], None] | None,
     progress: DownloadProgress,
 ) -> None:
     if progress_callback:
@@ -78,10 +79,10 @@ class ModelDownloadBackend(OrchestratorBackend):
 
     def __init__(
         self,
-        model_store: "ModelStore",
-        path_validator: "PathValidator",
-        download_registry: Optional[DownloadTaskRegistry] = None,
-        default_hf_token: Optional[str] = None,
+        model_store: ModelStore,
+        path_validator: PathValidator,
+        download_registry: DownloadTaskRegistry | None = None,
+        default_hf_token: str | None = None,
     ):
         """
         Initialize adapter.
@@ -279,7 +280,7 @@ class ModelDownloadBackend(OrchestratorBackend):
             )
             # Don't fail the download - model can be registered manually
 
-    def _detect_capabilities(self, model_path: str) -> "ModelCapabilities | None":
+    def _detect_capabilities(self, model_path: str) -> ModelCapabilities | None:
         """Detect model capabilities from downloaded files."""
         try:
             from umrs.model_registry.detect import detect_capabilities
@@ -388,7 +389,7 @@ class ModelDownloadBackend(OrchestratorBackend):
     async def _download_from_http(
         self,
         ctx: DownloadTaskContext,
-        progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+        progress_callback: Callable[[DownloadProgress], None] | None = None,
     ) -> DownloadProgress:
         """Download from HTTP/HTTPS URL."""
         progress = DownloadProgress(
@@ -523,7 +524,7 @@ class ModelDownloadStatusChecker(BackendStatusChecker):
 
     def __init__(
         self,
-        download_registry: Optional[DownloadTaskRegistry] = None,
+        download_registry: DownloadTaskRegistry | None = None,
     ):
         """
         Initialize checker.
@@ -579,8 +580,8 @@ class ModelDownloadStatusChecker(BackendStatusChecker):
 
 
 def create_model_download_backend(
-    model_store: "ModelStore",
-    path_validator: "PathValidator",
+    model_store: ModelStore,
+    path_validator: PathValidator,
 ) -> ModelDownloadBackend:
     """
     Create a ModelDownloadBackend with default settings.

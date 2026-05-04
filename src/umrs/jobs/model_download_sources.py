@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Callable, Optional
+from typing import Any
 
 from .model_download_state import DownloadProgress
 
@@ -107,7 +108,7 @@ def _mark_completed(
 
 
 def _notify_progress(
-    progress_callback: Optional[Callable[[DownloadProgress], None]],
+    progress_callback: Callable[[DownloadProgress], None] | None,
     progress: DownloadProgress,
 ) -> None:
     """Notify callers of a progress update when a callback was supplied."""
@@ -119,9 +120,9 @@ def _prepare_huggingface_repo(
     deps: HuggingFaceDeps,
     progress: DownloadProgress,
     repo_id: str,
-    token: Optional[str],
-    revision: Optional[str],
-) -> Optional[DownloadProgress]:
+    token: str | None,
+    revision: str | None,
+) -> DownloadProgress | None:
     """Fetch repository metadata and return failed progress on access errors."""
     try:
         api = deps.api_class(token=token)
@@ -141,8 +142,8 @@ async def _run_huggingface_snapshot(
     deps: HuggingFaceDeps,
     repo_id: str,
     target_path: str,
-    token: Optional[str],
-    revision: Optional[str],
+    token: str | None,
+    revision: str | None,
 ) -> None:
     """Execute `snapshot_download` off the event loop."""
     await asyncio.get_event_loop().run_in_executor(
@@ -179,9 +180,9 @@ def _finalize_huggingface_download(
 async def download_from_huggingface(
     repo_id: str,
     target_path: str,
-    token: Optional[str] = None,
-    revision: Optional[str] = None,
-    progress_callback: Optional[Callable[[DownloadProgress], None]] = None,
+    token: str | None = None,
+    revision: str | None = None,
+    progress_callback: Callable[[DownloadProgress], None] | None = None,
 ) -> DownloadProgress:
     """Download a model from HuggingFace Hub into a local target path."""
     progress = DownloadProgress(

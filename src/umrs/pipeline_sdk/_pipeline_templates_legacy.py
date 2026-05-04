@@ -8,10 +8,9 @@ Templates are parameterized workflow.json skeletons that users fill in.
 from __future__ import annotations
 
 import copy
-import json
 from dataclasses import asdict, dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class ParameterType(str, Enum):
@@ -32,11 +31,11 @@ class TemplateParameter:
     description: str = ""
     default: Any = None
     required: bool = True
-    choices: List[str] = field(default_factory=list)
-    min_value: Optional[float] = None
-    max_value: Optional[float] = None
+    choices: list[str] = field(default_factory=list)
+    min_value: float | None = None
+    max_value: float | None = None
 
-    def validate(self, value: Any) -> Optional[str]:
+    def validate(self, value: Any) -> str | None:
         """Return error message if invalid, None if valid."""
         if value is None:
             return f"Parameter '{self.name}' is required" if self.required else None
@@ -74,13 +73,13 @@ class PipelineTemplate:
     template_id: str
     name: str
     description: str
-    parameters: List[TemplateParameter] = field(default_factory=list)
-    workflow_skeleton: Dict[str, Any] = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
+    parameters: list[TemplateParameter] = field(default_factory=list)
+    workflow_skeleton: dict[str, Any] = field(default_factory=dict)
+    tags: list[str] = field(default_factory=list)
     version: str = "1.0"
     author: str = ""
 
-    def validate_params(self, params: Dict[str, Any]) -> List[str]:
+    def validate_params(self, params: dict[str, Any]) -> list[str]:
         """Validate all parameters. Returns list of errors."""
         errors = []
         for p in self.parameters:
@@ -90,7 +89,7 @@ class PipelineTemplate:
                 errors.append(err)
         return errors
 
-    def render(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def render(self, params: dict[str, Any]) -> dict[str, Any]:
         """Render workflow.json by substituting parameters into skeleton."""
         errors = self.validate_params(params)
         if errors:
@@ -105,7 +104,7 @@ class PipelineTemplate:
         workflow = copy.deepcopy(self.workflow_skeleton)
         return self._substitute(workflow, full_params)
 
-    def _substitute(self, obj: Any, params: Dict[str, Any]) -> Any:
+    def _substitute(self, obj: Any, params: dict[str, Any]) -> Any:
         if isinstance(obj, str):
             # Replace {{param_name}} placeholders
             for key, value in params.items():
@@ -121,7 +120,7 @@ class PipelineTemplate:
             return [self._substitute(item, params) for item in obj]
         return obj
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "template_id": self.template_id,
             "name": self.name,
@@ -282,7 +281,7 @@ class TemplateRegistry:
     """
 
     def __init__(self, include_builtins: bool = True) -> None:
-        self._templates: Dict[str, PipelineTemplate] = {}
+        self._templates: dict[str, PipelineTemplate] = {}
         if include_builtins:
             self._register_builtins()
 
@@ -303,16 +302,16 @@ class TemplateRegistry:
     def unregister(self, template_id: str) -> bool:
         return self._templates.pop(template_id, None) is not None
 
-    def get(self, template_id: str) -> Optional[PipelineTemplate]:
+    def get(self, template_id: str) -> PipelineTemplate | None:
         return self._templates.get(template_id)
 
-    def list_templates(self, tag: Optional[str] = None) -> List[PipelineTemplate]:
+    def list_templates(self, tag: str | None = None) -> list[PipelineTemplate]:
         templates = list(self._templates.values())
         if tag:
             templates = [t for t in templates if tag in t.tags]
         return sorted(templates, key=lambda t: t.template_id)
 
-    def search(self, query: str) -> List[PipelineTemplate]:
+    def search(self, query: str) -> list[PipelineTemplate]:
         query_lower = query.lower()
         return [
             t for t in self._templates.values()
@@ -321,7 +320,7 @@ class TemplateRegistry:
             or any(query_lower in tag for tag in t.tags)
         ]
 
-    def render(self, template_id: str, params: Dict[str, Any]) -> Dict[str, Any]:
+    def render(self, template_id: str, params: dict[str, Any]) -> dict[str, Any]:
         t = self.get(template_id)
         if not t:
             raise KeyError(f"Template not found: {template_id}")

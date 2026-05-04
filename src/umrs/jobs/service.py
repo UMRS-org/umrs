@@ -25,7 +25,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .models import (
     Job,
@@ -49,11 +49,11 @@ class JobSubmission:
     project_id: str
     user_id: str
     job_type: JobType
-    spec: Dict[str, Any]
+    spec: dict[str, Any]
     priority: int = 0
     max_attempts: int = 3
     restart_policy: RestartPolicy = RestartPolicy.ON_CRASH
-    idempotency_key: Optional[str] = None
+    idempotency_key: str | None = None
     enqueue: bool = True
 
 
@@ -90,13 +90,13 @@ class JobService:
         self.instance_id = str(uuid.uuid4())
 
         # Components (initialized during startup)
-        self._job_store: Optional[JobStore] = None
-        self._scheduler: Optional[Scheduler] = None
-        self._monitor: Optional[AttemptMonitor] = None
+        self._job_store: JobStore | None = None
+        self._scheduler: Scheduler | None = None
+        self._monitor: AttemptMonitor | None = None
 
         # Backend factory (set by caller)
         self._backend_factory = None
-        self._status_checker: Optional[CompositeStatusChecker] = None
+        self._status_checker: CompositeStatusChecker | None = None
 
         self._started = False
 
@@ -215,7 +215,7 @@ class JobService:
 
     def submit_job(
         self,
-        request: Optional[JobSubmission | str] = None,
+        request: JobSubmission | str | None = None,
         *args: Any,
         **kwargs: Any,
     ) -> str:
@@ -251,9 +251,9 @@ class JobService:
 
     def _coerce_submission(
         self,
-        request: Optional[JobSubmission | str],
+        request: JobSubmission | str | None,
         args: tuple[Any, ...],
-        kwargs: Dict[str, Any],
+        kwargs: dict[str, Any],
     ) -> JobSubmission:
         """Normalize legacy keyword arguments into a JobSubmission."""
         if isinstance(request, JobSubmission):
@@ -269,7 +269,7 @@ class JobService:
         if len(positional_values) > len(field_names):
             raise TypeError("submit_job received too many positional fields")
 
-        for field_name, value in zip(field_names, positional_values):
+        for field_name, value in zip(field_names, positional_values, strict=False):
             if field_name in kwargs:
                 raise TypeError(f"submit_job got multiple values for {field_name}")
             kwargs[field_name] = value
@@ -282,7 +282,7 @@ class JobService:
         model_path: str,
         model_name: str = "rivault-gpt-oss-static",
         ttl_sec: int = 3600,
-        env_vars: Optional[Dict[str, str]] = None,
+        env_vars: dict[str, str] | None = None,
         priority: int = 10,  # Higher priority for endpoint jobs
     ) -> str:
         """
@@ -375,7 +375,7 @@ class JobService:
         """Get job by ID."""
         return self.job_store.get_job(job_id)
 
-    def get_job_with_attempts(self, job_id: str) -> tuple[Job, List[JobAttempt]]:
+    def get_job_with_attempts(self, job_id: str) -> tuple[Job, list[JobAttempt]]:
         """Get job with all its attempts."""
         job = self.job_store.get_job(job_id)
         attempts = self.job_store.get_attempts_for_job(job_id)
@@ -383,12 +383,12 @@ class JobService:
 
     def list_jobs(
         self,
-        project_id: Optional[str] = None,
-        status: Optional[JobStatus] = None,
-        job_type: Optional[JobType] = None,
+        project_id: str | None = None,
+        status: JobStatus | None = None,
+        job_type: JobType | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Job]:
+    ) -> list[Job]:
         """List jobs with filters."""
         return self.job_store.list_jobs(
             project_id=project_id,
@@ -415,7 +415,7 @@ class JobService:
     # =========================================================================
 
     @property
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get service statistics."""
         stats = {
             "instance_id": self.instance_id,

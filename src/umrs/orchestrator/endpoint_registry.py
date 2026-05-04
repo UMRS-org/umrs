@@ -16,12 +16,11 @@ Storage backends (U-109):
 from __future__ import annotations
 
 import logging
-import os
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .registry_backend import RegistryBackend
@@ -67,19 +66,19 @@ class RegisteredEndpoint:
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.utcnow)
-    ready_at: Optional[datetime] = None
-    last_used_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
+    ready_at: datetime | None = None
+    last_used_at: datetime | None = None
+    expires_at: datetime | None = None
 
     # Backend info
     backend: str = "unknown"  # slurm, kubernetes, compose
 
     # Error tracking
-    error_message: Optional[str] = None
+    error_message: str | None = None
     consecutive_failures: int = 0
 
     # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     @property
     def litellm_url(self) -> str:
@@ -97,14 +96,14 @@ class RegisteredEndpoint:
         return self.status in (EndpointStatus.READY, EndpointStatus.DEGRADED)
 
     @property
-    def ttl_remaining_sec(self) -> Optional[float]:
+    def ttl_remaining_sec(self) -> float | None:
         """Seconds until expiration, or None if no expiry set."""
         if not self.expires_at:
             return None
         delta = self.expires_at - datetime.utcnow()
         return max(0, delta.total_seconds())
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for API response."""
         owner_type = self.metadata.get("owner_type") or self.metadata.get("tier")
         if owner_type is None:
@@ -162,11 +161,11 @@ class EndpointRegistry:
         self,
         default_ttl_sec: int = 3600,  # 1 hour default TTL
         min_ttl_for_reuse_sec: int = 60,  # Min 1 minute remaining for reuse
-        backend: Optional["RegistryBackend"] = None,
+        backend: RegistryBackend | None = None,
     ):
         # In-memory cache (always used for fast lookups)
-        self._endpoints: Dict[Tuple[str, str], RegisteredEndpoint] = {}
-        self._by_job_id: Dict[str, RegisteredEndpoint] = {}
+        self._endpoints: dict[tuple[str, str], RegisteredEndpoint] = {}
+        self._by_job_id: dict[str, RegisteredEndpoint] = {}
         self._lock = threading.RLock()
         self._default_ttl_sec = default_ttl_sec
         self._min_ttl_for_reuse_sec = min_ttl_for_reuse_sec
@@ -216,8 +215,8 @@ class EndpointRegistry:
         host: str,
         port: int,
         backend: str = "unknown",
-        ttl_sec: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
+        ttl_sec: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> RegisteredEndpoint:
         """
         Register a new endpoint (status=PROVISIONING).
@@ -267,8 +266,8 @@ class EndpointRegistry:
         self,
         job_id: str,
         status: EndpointStatus,
-        error_message: Optional[str] = None,
-    ) -> Optional[RegisteredEndpoint]:
+        error_message: str | None = None,
+    ) -> RegisteredEndpoint | None:
         """
         Update endpoint status by job_id.
 
@@ -299,10 +298,10 @@ class EndpointRegistry:
     def update_location(
         self,
         job_id: str,
-        host: Optional[str] = None,
-        port: Optional[int] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> Optional[RegisteredEndpoint]:
+        host: str | None = None,
+        port: int | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> RegisteredEndpoint | None:
         """Update backend-discovered endpoint coordinates by job_id."""
         with self._lock:
             endpoint = self._by_job_id.get(job_id)
@@ -328,8 +327,8 @@ class EndpointRegistry:
     def update_metadata(
         self,
         job_id: str,
-        metadata: Dict[str, Any],
-    ) -> Optional[RegisteredEndpoint]:
+        metadata: dict[str, Any],
+    ) -> RegisteredEndpoint | None:
         """Merge progress metadata without changing endpoint coordinates."""
         with self._lock:
             endpoint = self._by_job_id.get(job_id)
@@ -340,15 +339,15 @@ class EndpointRegistry:
             self._persist(endpoint)
             return endpoint
 
-    def mark_ready(self, job_id: str) -> Optional[RegisteredEndpoint]:
+    def mark_ready(self, job_id: str) -> RegisteredEndpoint | None:
         """Mark endpoint as ready (passed readiness check)."""
         return self.update_status(job_id, EndpointStatus.READY)
 
-    def mark_failed(self, job_id: str, error: str) -> Optional[RegisteredEndpoint]:
+    def mark_failed(self, job_id: str, error: str) -> RegisteredEndpoint | None:
         """Mark endpoint as failed."""
         return self.update_status(job_id, EndpointStatus.FAILED, error)
 
-    def mark_used(self, job_id: str) -> Optional[RegisteredEndpoint]:
+    def mark_used(self, job_id: str) -> RegisteredEndpoint | None:
         """Update last_used_at timestamp."""
         with self._lock:
             endpoint = self._by_job_id.get(job_id)
@@ -362,8 +361,8 @@ class EndpointRegistry:
         project_id: str,
         model: str,
         prefer_warm: bool = True,
-        min_ttl_sec: Optional[int] = None,
-    ) -> Optional[RegisteredEndpoint]:
+        min_ttl_sec: int | None = None,
+    ) -> RegisteredEndpoint | None:
         """
         Get an endpoint for (project_id, model).
 
@@ -410,12 +409,12 @@ class EndpointRegistry:
 
             return endpoint
 
-    def get_by_job_id(self, job_id: str) -> Optional[RegisteredEndpoint]:
+    def get_by_job_id(self, job_id: str) -> RegisteredEndpoint | None:
         """Get endpoint by job_id."""
         with self._lock:
             return self._by_job_id.get(job_id)
 
-    def remove(self, job_id: str) -> Optional[RegisteredEndpoint]:
+    def remove(self, job_id: str) -> RegisteredEndpoint | None:
         """
         Remove an endpoint by job_id.
 
@@ -436,9 +435,9 @@ class EndpointRegistry:
 
     def list_all(
         self,
-        project_id: Optional[str] = None,
-        status_filter: Optional[List[EndpointStatus]] = None,
-    ) -> List[RegisteredEndpoint]:
+        project_id: str | None = None,
+        status_filter: list[EndpointStatus] | None = None,
+    ) -> list[RegisteredEndpoint]:
         """
         List all registered endpoints.
 
@@ -460,7 +459,7 @@ class EndpointRegistry:
 
         return endpoints
 
-    def list_expired(self) -> List[RegisteredEndpoint]:
+    def list_expired(self) -> list[RegisteredEndpoint]:
         """List endpoints that have expired."""
         now = datetime.utcnow()
         with self._lock:
@@ -469,7 +468,7 @@ class EndpointRegistry:
                 if e.expires_at and e.expires_at < now
             ]
 
-    def list_idle(self, idle_threshold_sec: int = 1800) -> List[RegisteredEndpoint]:
+    def list_idle(self, idle_threshold_sec: int = 1800) -> list[RegisteredEndpoint]:
         """List endpoints that have been idle for too long."""
         threshold = datetime.utcnow() - timedelta(seconds=idle_threshold_sec)
         with self._lock:
@@ -498,7 +497,7 @@ class EndpointRegistry:
         logger.warning(f"Cleared all {count} endpoints from registry")
         return count
 
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get registry statistics."""
         with self._lock:
             endpoints = list(self._endpoints.values())
@@ -520,7 +519,7 @@ class EndpointRegistry:
 
 
 # Global singleton instance
-_registry: Optional[EndpointRegistry] = None
+_registry: EndpointRegistry | None = None
 _registry_lock = threading.Lock()
 
 

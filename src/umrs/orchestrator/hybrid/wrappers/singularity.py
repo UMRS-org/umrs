@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import os
 import signal
 from datetime import datetime
-from typing import List, Optional
 
 from ..targets import AllocationInfo
 from .base import ContainerEndpoint, LaunchError, LaunchSpec, RuntimeWrapper
@@ -25,7 +25,7 @@ class SingularityWrapper(RuntimeWrapper):
     def __init__(
         self,
         default_image: str = "",
-        bind_paths: Optional[List[str]] = None,
+        bind_paths: list[str] | None = None,
         nvidia_support: bool = True,
     ):
         self.default_image = default_image or os.getenv(
@@ -81,7 +81,7 @@ class SingularityWrapper(RuntimeWrapper):
             )
 
         except Exception as e:
-            raise LaunchError(f"Failed to launch Singularity container: {e}")
+            raise LaunchError(f"Failed to launch Singularity container: {e}") from e
 
     async def teardown(self, endpoint: ContainerEndpoint) -> bool:
         """Stop Singularity container."""
@@ -93,10 +93,8 @@ class SingularityWrapper(RuntimeWrapper):
         try:
             os.kill(pid, signal.SIGTERM)
             await asyncio.sleep(5)
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
             return True
         except Exception as e:
             logger.warning(f"Failed to teardown Singularity container: {e}")
@@ -146,7 +144,7 @@ class SingularityWrapper(RuntimeWrapper):
         allocation: AllocationInfo,
         spec: LaunchSpec,
         image: str,
-    ) -> List[str]:
+    ) -> list[str]:
         """Build singularity exec command."""
         cmd = ["singularity", "exec"]
 
@@ -183,8 +181,8 @@ class SingularityWrapper(RuntimeWrapper):
     def _with_slurm_launch(
         self,
         allocation: AllocationInfo,
-        cmd: List[str],
-    ) -> List[str]:
+        cmd: list[str],
+    ) -> list[str]:
         """Wrap a local command in `srun` when launched from Slurm."""
         if not self._requires_slurm_launch(allocation):
             return cmd

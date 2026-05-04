@@ -1,6 +1,11 @@
 import torch
-from umrs.shared.utils import flatten_text_chunks, add_embeddings_to_chunks_dict, add_document_prefix
 from sentence_transformers import SentenceTransformer
+
+from umrs.shared.utils import (
+    add_document_prefix,
+    add_embeddings_to_chunks_dict,
+    flatten_text_chunks,
+)
 
 ################################ Sentence Transformers ###########################
 #  Sentence Transformer Loader
@@ -20,7 +25,7 @@ def load_sentence_transformers_model(model_name):
         print("\t\t\t--> Downloaded and cached model.")
 
     _model_cache[model_name] = model
-    return model;
+    return model
 
 
 #  Compute Embeddings for Text

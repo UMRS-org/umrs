@@ -1,5 +1,6 @@
-import zmq
 from time import sleep
+
+import zmq
 
 # Global configuration of the message queue
 target_nb_messages = 10

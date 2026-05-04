@@ -12,8 +12,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
-
+from typing import Any
 
 DEFAULT_MINI_RIVAULT_IMAGE = "mini-rivault:latest"
 
@@ -31,7 +30,7 @@ def _inject_orchestrator_env_defaults() -> None:
         pass  # graceful fallback when no named profile is selected
 
 
-def _env_list(name: str, default: str) -> List[str]:
+def _env_list(name: str, default: str) -> list[str]:
     return os.getenv(name, default).replace(",", " ").split()
 
 
@@ -85,14 +84,14 @@ class JobInfo:
 
     job_id: str  # Backend-specific ID (Slurm job ID, K8s Job name, etc.)
     status: JobStatus
-    endpoint: Optional[EndpointInfo] = None
+    endpoint: EndpointInfo | None = None
     model_path: str = ""
-    created_at: Optional[datetime] = None
-    ready_at: Optional[datetime] = None
-    stopped_at: Optional[datetime] = None
-    error_message: Optional[str] = None
+    created_at: datetime | None = None
+    ready_at: datetime | None = None
+    stopped_at: datetime | None = None
+    error_message: str | None = None
     backend: str = "unknown"  # "slurm", "kubernetes", "docker-compose"
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_active(self) -> bool:
         """Check if job is in an active state."""
@@ -130,7 +129,7 @@ class OrchestratorConfig:
     slurm_mem: str = "64G"
     slurm_log_dir: str = "/var/log/rivault"
     slurm_job_info_dir: str = "/var/run/rivault"
-    slurm_modules: List[str] = field(default_factory=lambda: ["cuda/12.1", "singularity"])
+    slurm_modules: list[str] = field(default_factory=lambda: ["cuda/12.1", "singularity"])
     singularity_image: str = "/opt/singularity/mini-rivault.sif"
 
     # Kubernetes-specific
@@ -152,7 +151,7 @@ class OrchestratorConfig:
     )
 
     @classmethod
-    def from_env(cls) -> "OrchestratorConfig":
+    def from_env(cls) -> OrchestratorConfig:
         """Load configuration from environment variables.
 
         If a ``site.yaml`` is available, its values are injected into
@@ -215,7 +214,7 @@ class OrchestratorBackend(ABC):
     inference endpoint lifecycle.
     """
 
-    def __init__(self, config: Optional[OrchestratorConfig] = None):
+    def __init__(self, config: OrchestratorConfig | None = None):
         self.config = config or OrchestratorConfig.from_env()
 
     @property
@@ -227,7 +226,7 @@ class OrchestratorBackend(ABC):
     @abstractmethod
     async def submit_job(
         self,
-        model_path: Optional[str] = None,
+        model_path: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
         """
@@ -259,7 +258,7 @@ class OrchestratorBackend(ABC):
     async def wait_for_ready(
         self,
         job_id: str,
-        timeout_sec: Optional[int] = None,
+        timeout_sec: int | None = None,
     ) -> EndpointInfo:
         """
         Wait until job is ready to serve requests.
@@ -291,8 +290,8 @@ class OrchestratorBackend(ABC):
     @abstractmethod
     async def list_jobs(
         self,
-        status_filter: Optional[List[JobStatus]] = None,
-    ) -> List[JobInfo]:
+        status_filter: list[JobStatus] | None = None,
+    ) -> list[JobInfo]:
         """
         List all Mini-RiVault jobs.
 
@@ -328,17 +327,16 @@ class OrchestratorBackend(ABC):
             headers["Authorization"] = f"Bearer {self.config.litellm_master_key}"
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    endpoint.models_url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    return resp.status == 200
+            async with aiohttp.ClientSession() as session, session.get(
+                endpoint.models_url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status == 200
         except Exception:
             return False
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """
         Check health of the orchestrator backend itself.
 

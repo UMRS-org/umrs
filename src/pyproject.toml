@@ -62,3 +62,26 @@ include = ["umrs*"]
 
 [tool.setuptools]
 py-modules = ["client_umrs", "server_umrs"]
+
+[tool.ruff]
+target-version = "py310"
+
+[tool.ruff.lint]
+ignore = [
+    # UMRS uses callback and backend interfaces where method signatures must
+    # remain stable even when an implementation does not consume every argument.
+    "ARG002",
+    # Pipeline steps expose optional setup/teardown hooks with default no-op
+    # implementations.
+    "B027",
+    # Legacy control-flow and cleanup blocks are intentionally left explicit
+    # where rewriting them would make review harder without changing behavior.
+    "SIM102",
+    "SIM105",
+    "SIM117",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"umrs/jobs/ha.py" = ["E402"]
+"umrs/mini-rivault-llm/tests/model-mcp-test2.py" = ["E402"]
+"umrs/server/runtime.py" = ["E402"]

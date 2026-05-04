@@ -7,10 +7,11 @@ Provides a simple local development experience using Docker Compose.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from .base import (
     EndpointInfo,
@@ -30,8 +31,8 @@ class DockerComposeBackend(OrchestratorBackend):
 
     def __init__(
         self,
-        config: Optional[OrchestratorConfig] = None,
-        compose_dir: Optional[str] = None,
+        config: OrchestratorConfig | None = None,
+        compose_dir: str | None = None,
     ):
         super().__init__(config)
         self.compose_dir = compose_dir or os.environ.get(
@@ -43,7 +44,7 @@ class DockerComposeBackend(OrchestratorBackend):
     def backend_name(self) -> str:
         return "docker-compose"
 
-    def _compose_cmd(self, *args: str, use_gpu: bool = True) -> List[str]:
+    def _compose_cmd(self, *args: str, use_gpu: bool = True) -> list[str]:
         """Build docker compose command."""
         cfg = self.config
         cmd = ["docker", "compose"]
@@ -78,7 +79,7 @@ class DockerComposeBackend(OrchestratorBackend):
 
     async def submit_job(
         self,
-        model_path: Optional[str] = None,
+        model_path: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
         """Start Mini-RiVault via docker compose."""
@@ -140,10 +141,8 @@ class DockerComposeBackend(OrchestratorBackend):
         containers = []
         for line in stdout.strip().split("\n"):
             if line:
-                try:
+                with contextlib.suppress(json.JSONDecodeError):
                     containers.append(json.loads(line))
-                except json.JSONDecodeError:
-                    pass
 
         if not containers:
             return JobInfo(
@@ -175,10 +174,7 @@ class DockerComposeBackend(OrchestratorBackend):
                 litellm_port=self.config.litellm_port,
                 vllm_port=self.config.vllm_port,
             )
-            if await self.check_readiness(endpoint):
-                status = JobStatus.READY
-            else:
-                status = JobStatus.STARTING
+            status = JobStatus.READY if await self.check_readiness(endpoint) else JobStatus.STARTING
         else:
             status = JobStatus.STARTING
 
@@ -200,7 +196,7 @@ class DockerComposeBackend(OrchestratorBackend):
     async def wait_for_ready(
         self,
         job_id: str,
-        timeout_sec: Optional[int] = None,
+        timeout_sec: int | None = None,
     ) -> EndpointInfo:
         """Wait for docker compose stack to be ready."""
         timeout = timeout_sec or self.config.startup_timeout_sec
@@ -234,8 +230,8 @@ class DockerComposeBackend(OrchestratorBackend):
 
     async def list_jobs(
         self,
-        status_filter: Optional[List[JobStatus]] = None,
-    ) -> List[JobInfo]:
+        status_filter: list[JobStatus] | None = None,
+    ) -> list[JobInfo]:
         """List docker compose stacks (just the current one)."""
         job = await self.get_job_status(self.config.compose_project_name)
 
@@ -249,7 +245,7 @@ class DockerComposeBackend(OrchestratorBackend):
         returncode, _, _ = await self._run_compose("down", "--remove-orphans")
         return 1 if returncode == 0 else 0
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """Check if Docker is accessible."""
         try:
             proc = await asyncio.create_subprocess_exec(
