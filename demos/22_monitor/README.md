@@ -107,7 +107,7 @@ umrs-client monitor --project myproject  # filter jobs by project
 
 | Key | Action |
 |-----|--------|
-| `R` | Trigger server reload (requires `--conf` / `-c`) |
+| `R` | Trigger server reload (operator/admin action; requires `--conf` / `-c`) |
 
 ### Models / Workflows Tabs
 
@@ -138,6 +138,9 @@ When you pass `-c` / `--conf` pointing to a user config JSON file:
 - Pressing `R` uploads the config to the server and triggers a RELOAD
 - This is equivalent to running `umrs-client reload` but from
   within the dashboard
+
+Treat the `R` key as an operator/admin workflow. Normal end-user monitoring does
+not require reload access.
 
 ## Expected Output (One-Shot)
 

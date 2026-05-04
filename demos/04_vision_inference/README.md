@@ -13,7 +13,7 @@ vision model.
 - `umrs-client` installed and in PATH (see [demos/README.md](../README.md#prerequisites))
 - User onboarded (see [Demo 00](../00_onboarding/))
 - Server config with a vision experience (e.g. SAM3 Segmentation)
-- `UMRS_ADMIN_TOKEN` exported when reloading or recomputing on auth-enforced deployments
+- A site/user bucket already configured for the vision model you want to exercise
 
 ## Quick Start
 
@@ -29,27 +29,17 @@ bash run_demo.sh
 #    Sends a ZMQ ping to confirm the server is alive.
 umrs-client ping
 
-# 2. Reload server configuration
-#    Ensures the server picks up any recent config changes
-#    (e.g. new vision experience, bucket alias, model path).
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
-
-# 3. Upload images to the vision bucket
+# 2. Upload images to the vision bucket
 #    Images are stored in S3 and the server dispatches each one
 #    to the BentoML vision model running on HPC via Slurm.
 #    The first upload may trigger a cold start (Slurm job launch).
 umrs-client upload_dir ../sample_data/images user1-sam3
 
-# 4. Download inference results
+# 3. Download inference results
 #    Polls the server until processing completes, then retrieves
 #    all output files (JSON metadata, overlay images, etc.) to
 #    the local results/ directory.
 umrs-client download_results user1-sam3 results/ --force-overwrite
-
-# 5. (Optional) Force re-processing of all images
-#    Useful after changing the model or config. Recomputes embeddings
-#    and inference for every object in the bucket.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" recompute
 ```
 
 ## Plugging in a Different Vision Model
@@ -68,15 +58,13 @@ your own model:
 
 2. **Add an experience** to your config JSON that references the model.
 
-3. **Reload** the server:
+3. **Run** with a custom bucket or a user-visible model name:
    ```bash
-   umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
+   VISION_BUCKET=my-bucket VISION_MODEL_NAME=my-model bash run_demo.sh /path/to/images
    ```
 
-4. **Run** with a custom bucket:
-   ```bash
-   VISION_BUCKET=my-bucket bash run_demo.sh /path/to/images
-   ```
+If the bucket/experience itself needs to be created or rewired, that is a site
+operator task rather than part of the normal user demo.
 
 ## Environment Variables
 
@@ -84,7 +72,7 @@ your own model:
 |----------|---------|-------------|
 | `VISION_BUCKET` | `user1-sam3` | Bucket alias for image uploads |
 | `MAX_IMAGES` | `3` | Limit number of images to upload |
-| `FORCE_RECOMPUTE` | *(unset)* | Set to `1` to force re-processing |
+| `FORCE_RECOMPUTE` | *(unset)* | Operator-only maintenance; ignored in normal user mode unless `DEMO_ADMIN_ACTIONS=1` |
 | `IMAGE_DIR` | `../sample_data/images` | Override via first argument |
 
 ## How It Works
@@ -99,3 +87,6 @@ your own model:
 For SAM3-backed experiences, the result pickle is compact by default so demo
 downloads stay practical. Full-resolution mask arrays can be re-enabled on the
 server with `SAM3_INCLUDE_MASKS_IN_RESULTS=1`.
+
+This demo intentionally assumes a general-user deployment model: the server-side
+bucket alias and model wiring already exist before the user runs the demo.

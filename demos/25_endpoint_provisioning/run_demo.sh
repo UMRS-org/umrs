@@ -2,7 +2,7 @@
 # =============================================================================
 # Demo 25: Endpoint Provisioning API
 # =============================================================================
-# Shows: POST /umrs/endpoints/provision, GET /umrs/endpoints,
+# Shows: POST /umrs/endpoints/provision, GET /umrs/endpoints/active,
 #        warm pool reuse, multi-model endpoints, LoRA support
 #
 # Prerequisites:
@@ -14,7 +14,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="ep_prov" source "${SCRIPT_DIR}/../lib/common.sh"
 
-UMRS_URL="${UMRS_URL:-http://localhost:8001}"
+UMRS_URL="${UMRS_URL:-${UMRS_HTTP_URL:-http://localhost:8001}}"
 
 banner "Demo 25: Endpoint Provisioning API"
 echo ""
@@ -25,11 +25,11 @@ preflight
 echo ""
 
 # Step 1: List current endpoints
-log "Step 1: List active endpoints (GET /umrs/endpoints)"
+log "Step 1: List active endpoints (GET /umrs/endpoints/active)"
 echo ""
-echo "  curl -s ${UMRS_URL}/umrs/endpoints | jq '.'"
+echo "  curl -s -H 'X-Project-ID: demo25' ${UMRS_URL}/umrs/endpoints/active | jq '.'"
 echo ""
-ENDPOINTS=$(curl -sf "${UMRS_URL}/umrs/endpoints" 2>/dev/null || echo '{"endpoints":[]}')
+ENDPOINTS=$(curl -sf -H "X-Project-ID: demo25" "${UMRS_URL}/umrs/endpoints/active" 2>/dev/null || echo '{"endpoints":[]}')
 echo "$ENDPOINTS" | python3 -m json.tool 2>/dev/null || echo "$ENDPOINTS"
 echo ""
 

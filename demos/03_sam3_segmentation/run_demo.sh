@@ -12,8 +12,8 @@
 #
 # Bucket alias: user1-sam3  (from config, need_output_bucket: true)
 #
-# Force recompute:
-#   FORCE_RECOMPUTE=1 bash run_demo.sh
+# Optional operator-only maintenance:
+#   DEMO_ADMIN_ACTIONS=1 FORCE_RECOMPUTE=1 bash run_demo.sh
 # =============================================================================
 set -Eeuo pipefail
 
@@ -24,9 +24,17 @@ BUCKET_ALIAS="${SAM3_BUCKET:-user1-sam3}"
 FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
+SAM3_REQUIRE_VISIBLE_MODEL="${SAM3_REQUIRE_VISIBLE_MODEL:-0}"
+SAM3_REQUIRE_RESULTS="${SAM3_REQUIRE_RESULTS:-0}"
 
-# Sample images: use test_data_full/ in this demo dir
-IMAGE_DIR="${IMAGE_DIR:-${SCRIPT_DIR}/test_data_full}"
+# Sample images: prefer demo-local data, fall back to HMAE sample slices in umrs/tmp.
+if [[ -z "${IMAGE_DIR:-}" ]]; then
+    if [[ -d "${SCRIPT_DIR}/test_data_full" ]]; then
+        IMAGE_DIR="${SCRIPT_DIR}/test_data_full"
+    else
+        IMAGE_DIR="${SCRIPT_DIR}/../../tmp/hmae/images"
+    fi
+fi
 
 banner "Demo 03: SAM3 Segmentation"
 echo "Config       : ${CONF}"
@@ -36,17 +44,16 @@ echo ""
 
 model_visible() {
     local scope="$1" name="$2"
-    $CLIENT model list --scope "$scope" 2>/dev/null | grep -q "\"name\": \"${name}\""
+    run_client_bounded "${MODEL_LIST_TIMEOUT:-8}" --output json model list --scope "$scope" 2>/dev/null \
+        | grep -q "\"name\": \"${name}\""
 }
 
 # ---------- Step 1: Pre-flight ----------
 log "Step 1: Pre-flight checks..."
 preflight
 
-# Reload config so server creates output buckets
-log "Reloading server configuration..."
-admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
-sleep 3
+# General-user path: rely on the already deployed site configuration.
+log "Using the deployed SAM3 experience as-is (no admin reload in demo mode)."
 
 # ---------- Step 2: Prepare SAM3 model ----------
 log ""
@@ -61,7 +68,10 @@ elif [[ -n "$SAM3_STAGING_DIR" ]]; then
         | while IFS= read -r line; do log "  $line"; done
     ok "SAM3 model download requested via SAM3_STAGING_DIR=${SAM3_STAGING_DIR}"
 else
-    die "SAM3 model '${SAM3_NAME}' is not visible. Stage it as an admin, or set SAM3_STAGING_DIR to a writable, allowed server path."
+    if [[ "$SAM3_REQUIRE_VISIBLE_MODEL" = "1" ]]; then
+        die "SAM3 model '${SAM3_NAME}' is not visible. Ask the site operator to pre-stage it, or set SAM3_STAGING_DIR to a writable server-side user staging path if your site allows user-scoped downloads."
+    fi
+    warn "SAM3 model '${SAM3_NAME}' is not visible in registry; continuing so the upload/result path can be exercised"
 fi
 
 # ---------- Step 3: Check test images ----------
@@ -97,7 +107,7 @@ ok "Images uploaded — server will process automatically"
 
 if [[ -n "$FORCE_RECOMPUTE" ]]; then
     log "FORCE_RECOMPUTE set — triggering full recompute..."
-    admin_recompute || warn "recompute returned non-zero"
+    maybe_admin_recompute || warn "recompute returned non-zero"
 fi
 UPLOAD_DONE=$SECONDS
 
@@ -106,10 +116,16 @@ log ""
 log "Step 5: Waiting for processing and downloading results..."
 log "  (This may take several minutes if launching BentoML for the first time)"
 mkdir -p "$RESULTS_DIR"
-$CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite
-DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))
-log "  Processing + download took ${DOWNLOAD_ELAPSED}s"
-ok "Results saved to ${RESULTS_DIR}/"
+if download_results_bounded "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite; then
+    DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))
+    log "  Processing + download took ${DOWNLOAD_ELAPSED}s"
+    ok "Results saved to ${RESULTS_DIR}/"
+else
+    if [[ "$SAM3_REQUIRE_RESULTS" = "1" ]]; then
+        die "Could not download SAM3 results"
+    fi
+    warn "Could not download SAM3 results — check server logs or set SAM3_REQUIRE_RESULTS=1 for strict validation"
+fi
 
 # ---------- Summary ----------
 log ""

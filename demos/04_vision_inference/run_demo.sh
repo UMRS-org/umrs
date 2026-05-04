@@ -10,9 +10,9 @@
 # invoked through the same interface.
 #
 # To plug in a different model:
-#   1. Register it: umrs-client model register <name> <path> --type vision
-#   2. Update your config experience to reference the new model
-#   3. Reload the server: umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
+#   1. Register it in a user-visible scope or ask the site operator to pre-stage it
+#   2. Use a user bucket / experience already configured for that model
+#   3. Run this demo against that bucket alias
 #
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
@@ -33,6 +33,8 @@ FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 IMAGE_DIR="${1:-${SCRIPT_DIR}/../sample_data/images}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
+VISION_MODEL_NAME="${VISION_MODEL_NAME:-sam3}"
+REQUIRE_VISIBLE_MODEL="${REQUIRE_VISIBLE_MODEL:-1}"
 
 banner "Demo 04: Vision Model Inference"
 echo "Config       : ${CONF}"
@@ -40,18 +42,32 @@ echo "Bucket alias : ${BUCKET_ALIAS}"
 echo "Image dir    : ${IMAGE_DIR}"
 echo ""
 
+model_visible() {
+    local scope="$1" name="$2"
+    $CLIENT --output json model list --scope "$scope" 2>/dev/null | grep -q "\"name\": \"${name}\""
+}
+
 # ---------- Step 1: Pre-flight ----------
 log "Step 1: Pre-flight checks..."
 preflight
 
-# Reload config to ensure bucket exists
-log "Reloading server configuration..."
-admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
-sleep 3
+# General-user path: rely on the deployed site configuration and user-visible buckets.
+log "Using the deployed vision experience as-is (no admin reload in demo mode)."
 
-# ---------- Step 2: Prepare images ----------
+# ---------- Step 2: Check model availability ----------
+if [[ "$REQUIRE_VISIBLE_MODEL" != "0" ]]; then
+    log ""
+    log "Step 2: Checking vision model availability..."
+    if model_visible system "$VISION_MODEL_NAME" || model_visible user "$VISION_MODEL_NAME"; then
+        ok "Vision model already visible in the registry: ${VISION_MODEL_NAME}"
+    else
+        die "Vision model '${VISION_MODEL_NAME}' is not visible. Ask the site operator to pre-stage it, switch VISION_MODEL_NAME, or set REQUIRE_VISIBLE_MODEL=0 when you are targeting a site-specific custom bucket that is already wired server-side."
+    fi
+fi
+
+# ---------- Step 3: Prepare images ----------
 log ""
-log "Step 2: Checking images..."
+log "Step 3: Checking images..."
 if [[ ! -d "$IMAGE_DIR" ]]; then
     die "Image directory not found: $IMAGE_DIR
   Place .jpg/.png/.tiff images in demos/sample_data/images/ or provide a path."
@@ -75,21 +91,21 @@ else
     log "  Using all ${IMAGE_COUNT} images"
 fi
 
-# ---------- Step 3: Upload images ----------
+# ---------- Step 4: Upload images ----------
 log ""
-log "Step 3: Uploading images to bucket '${BUCKET_ALIAS}'..."
+log "Step 4: Uploading images to bucket '${BUCKET_ALIAS}'..."
 $CLIENT upload_dir "$UPLOAD_DIR" "$BUCKET_ALIAS"
 ok "Images uploaded — server will dispatch to vision model"
 
 if [[ -n "$FORCE_RECOMPUTE" ]]; then
     log "FORCE_RECOMPUTE set — triggering full recompute..."
-    admin_recompute || warn "recompute returned non-zero"
+    maybe_admin_recompute || warn "recompute returned non-zero"
 fi
 UPLOAD_DONE=$SECONDS
 
-# ---------- Step 4: Wait & Download results ----------
+# ---------- Step 5: Wait & Download results ----------
 log ""
-log "Step 4: Waiting for processing and downloading results..."
+log "Step 5: Waiting for processing and downloading results..."
 log "  (May take several minutes if launching the vision service for the first time)"
 mkdir -p "$RESULTS_DIR"
 $CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite
@@ -104,7 +120,6 @@ ls -lh "$RESULTS_DIR/" 2>/dev/null || true
 log "Results in: ${RESULTS_DIR}/"
 log ""
 log "To use a different vision model:"
-log "  1. Register:  umrs-client model register <name> <path> --type vision"
-log "  2. Configure: add an experience referencing the model in your config"
-log "  3. Reload:    umrs-client --admin-token \"\$UMRS_ADMIN_TOKEN\" reload"
-log "  4. Re-run:    VISION_BUCKET=<alias> bash run_demo.sh"
+log "  1. Register or stage the model in a user-visible scope supported by your site"
+log "  2. Use a bucket/experience that already points at that model"
+log "  3. Re-run: VISION_BUCKET=<alias> VISION_MODEL_NAME=<name> bash run_demo.sh"

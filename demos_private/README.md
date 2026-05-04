@@ -8,8 +8,6 @@ or engines.  **Do not commit this directory to the public repository.**
 | 04 | HMAE Inference | Site-provided HMAE checkpoint and vision runtime |
 | 09 | Defect Analysis | HMAE + SAM3 combined pipeline |
 | 10 | HMAE Full Pipeline | HMAE reconstruct + MAE + features |
-| 11 | SAM3 Jens Direct | Jens VisionFrontend + SAM3 model (direct BentoML) |
-| 12 | HMAE Jens Direct | Jens VisionFrontend + HMAE model (direct BentoML) |
 | 14 | Opossum Analysis | External opossum video analysis engine |
 
 ## Usage
@@ -17,13 +15,19 @@ or engines.  **Do not commit this directory to the public repository.**
 These demos follow the same conventions as the public demos in `demos/`:
 
 ```bash
+cd demos_private/
+./run_all.sh
+
 cd demos_private/04_hmae_inference
 bash run_demo.sh
 ```
 
 They source `demos/lib/common.sh` so the UMRS server must be reachable.
-On auth-enforced deployments, export `UMRS_ADMIN_TOKEN` before running private
-demos because reload/recompute are admin-only maintenance operations.
+
+The current private demo suite intentionally omits the Jens direct stack. The
+Jens-specific direct demos are isolated under `demos_jens/`, and the supported
+private demos here all use the normal UMRS user path instead of calling a
+direct VisionFrontend service.
 
 ## Public Replacements
 

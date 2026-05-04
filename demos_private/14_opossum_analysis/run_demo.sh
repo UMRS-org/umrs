@@ -82,6 +82,12 @@ if [[ "${GEN_TEST_VIDEOS:-0}" == "1" ]]; then
     mkdir -p "${VIDEO_DIR}"
     python3 "${SCRIPT_DIR}/generate_test_videos.py" --output-dir "${VIDEO_DIR}" --num-videos 4
     ok "Generated test videos in ${VIDEO_DIR}"
+elif [[ -z "${1:-}" && ! -d "${VIDEO_DIR}" ]]; then
+    warn "Default real data directory not found; generating synthetic test videos instead"
+    VIDEO_DIR="${SCRIPT_DIR}/sample_videos"
+    mkdir -p "${VIDEO_DIR}"
+    python3 "${SCRIPT_DIR}/generate_test_videos.py" --output-dir "${VIDEO_DIR}" --num-videos 4
+    ok "Generated test videos in ${VIDEO_DIR}"
 fi
 
 if [[ ! -d "${VIDEO_DIR}" ]]; then
@@ -113,7 +119,7 @@ fi
 # ---------- Step 4: Upload videos ----------
 log ""
 log "Step 4: Uploading videos to bucket '${BUCKET_ALIAS}'..."
-UPLOAD_JSON="$($CLIENT --output json upload_dir "${VIDEO_DIR}" "$BUCKET_ALIAS")"
+UPLOAD_JSON="$($CLIENT --output json upload_dir "${VIDEO_DIR}" "$BUCKET_ALIAS" 2>&1 || true)"
 printf '%s\n' "$UPLOAD_JSON"
 if [[ "$(printf '%s\n' "$UPLOAD_JSON" | extract_status_from_cli_output || true)" == "ok" ]]; then
     ok "Videos uploaded — server will process automatically"

@@ -19,9 +19,6 @@ timestamps plus duration for each event.
 ## Quick Start
 
 ```bash
-# Auth-enforced deployments need an admin token for reload
-export UMRS_ADMIN_TOKEN=...
-
 # Generate synthetic test videos + analyse them
 bash 14_video_analysis/run_demo.sh
 
@@ -70,20 +67,20 @@ python3 generate_test_videos.py -o sample_videos/ --count 4 --fps 15
 #    motion events with timestamps.
 umrs-client upload-workflow workflow/ --name "video-motion-analysis"
 
-# 4. Reload server configuration
-#    On auth-enforced deployments, reload is admin-only.
-umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
-
-# 5. Upload videos to the analysis bucket
+# 4. Upload videos to the analysis bucket
 #    Each video will be processed by the MotionDetectStep,
 #    producing a per-video JSON report with motion events.
 umrs-client upload_dir ./sample_videos user1-video
 
-# 6. Download analysis results
+# 5. Download analysis results
 #    Results include per-video motion reports and an aggregate
 #    summary.json with total events across all videos.
 umrs-client download_results user1-video ./results --force-overwrite
 ```
+
+This demo shows the normal user path: upload the workflow bundle, upload data,
+and collect outputs. If your site requires extra server-side activation, that is
+an operator concern rather than part of the user demo.
 
 If you rerun the demo against a shared bucket, clear the corresponding
 `*-output` bucket first or use unique filenames so old reports do not mix into

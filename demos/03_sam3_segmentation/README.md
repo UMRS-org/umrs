@@ -6,7 +6,7 @@ Mini-Rivault's BentoML vision service, and retrieve results.
 ## Prerequisites
 
 - UMRS server running and reachable
-- **SAM3 model weights pre-staged** by admin at `$SAM3_MODEL_PATH`
+- **SAM3 model weights pre-staged** by the site/operator at `$SAM3_MODEL_PATH`
   (default: `./rivault/models/sam3`)
 - UMRS client installed (see [demos/README.md](../README.md#prerequisites) — `uv pip install -e src/`)
 
@@ -113,7 +113,7 @@ SAM3_MODEL_PATH=./rivault/models/sam3
 RIVAULT_PROFILES="harness vllm vision-bentoml"
 ```
 
-On shared deployments, `sam3` is usually pre-staged by an administrator.
+On shared deployments, `sam3` is usually pre-staged by the site/operator.
 Normal users should not expect to create a new `system`-scoped SAM3 model from
 the demo shell.
 

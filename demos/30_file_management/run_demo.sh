@@ -2,8 +2,8 @@
 # =============================================================================
 # Demo 30: File Management API
 # =============================================================================
-# Shows: POST /umrs/files/upload, POST /umrs/files/bulk-upload,
-#        GET /umrs/files/{key}, DELETE /umrs/files/{key}
+# Shows: POST /umrs/files/presign, POST /umrs/files/presign/batch,
+#        GET /umrs/files/{key}/metadata, DELETE /umrs/files/{key}
 #
 # Prerequisites:
 #   - UMRS server with MinIO/S3 configured
@@ -13,7 +13,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="file_mgmt" source "${SCRIPT_DIR}/../lib/common.sh"
 
-UMRS_URL="${UMRS_URL:-http://localhost:8001}"
+UMRS_URL="${UMRS_URL:-${UMRS_HTTP_URL:-http://localhost:8001}}"
+PROJECT_ID="${UMRS_PROJECT_ID:-demo30}"
 
 banner "Demo 30: File Management API"
 echo ""
@@ -22,59 +23,58 @@ log "Step 0: Server connectivity..."
 preflight
 echo ""
 
-# Step 1: Upload a file
-log "Step 1: Upload a file (POST /umrs/files/upload)"
+# Step 1: Generate upload URL
+log "Step 1: Generate an upload URL (POST /umrs/files/presign)"
 echo ""
-echo "  curl -X POST ${UMRS_URL}/umrs/files/upload \\"
-echo "      -F 'file=@document.pdf' \\"
-echo "      -F 'bucket=my-project'"
+echo "  curl -X POST ${UMRS_URL}/umrs/files/presign \\"
+echo "      -H 'X-Project-ID: ${PROJECT_ID}' \\"
+echo "      -H 'Content-Type: application/json' \\"
+echo "      -d '{\"operation\":\"upload\",\"key\":\"document.pdf\",\"content_type\":\"application/pdf\"}'"
 echo ""
 echo "  Response:"
-echo '  {"file_key": "my-project/document.pdf", "size_bytes": 1024, "status": "uploaded"}'
+echo '  {"url": "http://...", "method": "PUT", "key": "demo30/document.pdf", "ttl_sec": 3600}'
 echo ""
 
-# Create a temp file for actual upload test
-TMPFILE=$(mktemp)
-echo "Demo 30 test content" > "$TMPFILE"
-trap "rm -f $TMPFILE" EXIT
-
-UPLOAD_RESULT=$(curl -sf -X POST "${UMRS_URL}/umrs/files/upload" \
-    -F "file=@${TMPFILE};filename=demo30_test.txt" \
-    -F "bucket=demo30" 2>/dev/null || echo '{"status": "upload API not available in this deployment"}')
+UPLOAD_RESULT=$(curl -sf -X POST "${UMRS_URL}/umrs/files/presign" \
+    -H "X-Project-ID: ${PROJECT_ID}" \
+    -H "Content-Type: application/json" \
+    -d '{"operation":"upload","key":"demo30_test.txt","ttl_sec":3600,"content_type":"text/plain"}' \
+    2>/dev/null || echo '{"status": "presign API not available in this deployment"}')
 echo "  Result: $UPLOAD_RESULT"
 echo ""
 
-# Step 2: Bulk upload
-log "Step 2: Bulk upload (POST /umrs/files/bulk-upload)"
+# Step 2: Batch presign
+log "Step 2: Batch presign (POST /umrs/files/presign/batch)"
 echo ""
-echo "  curl -X POST ${UMRS_URL}/umrs/files/bulk-upload \\"
-echo "      -F 'files=@file1.txt' \\"
-echo "      -F 'files=@file2.txt' \\"
-echo "      -F 'files=@file3.txt' \\"
-echo "      -F 'bucket=my-project'"
+echo "  curl -X POST ${UMRS_URL}/umrs/files/presign/batch \\"
+echo "      -H 'X-Project-ID: ${PROJECT_ID}' \\"
+echo "      -H 'Content-Type: application/json' \\"
+echo "      -d '{\"requests\":[{\"operation\":\"upload\",\"key\":\"file1.txt\"}]}'"
 echo ""
 echo "  Response:"
-echo '  {"uploaded": 3, "results": [...]}'
+echo '  {"results": [{"url": "http://...", "method": "PUT"}], "errors": []}'
 echo ""
 
-# Step 3: Download (presigned URL)
-log "Step 3: Download via presigned URL (GET /umrs/files/{key})"
+# Step 3: Download URL and metadata
+log "Step 3: Download URL and metadata"
 echo ""
-echo "  curl -s ${UMRS_URL}/umrs/files/my-project/document.pdf -o output.pdf"
+echo "  curl -X POST ${UMRS_URL}/umrs/files/presign \\"
+echo "      -H 'X-Project-ID: ${PROJECT_ID}' \\"
+echo "      -H 'Content-Type: application/json' \\"
+echo "      -d '{\"operation\":\"download\",\"key\":\"document.pdf\"}'"
 echo ""
-echo "  Or get a presigned URL:"
-echo "  curl -s ${UMRS_URL}/umrs/files/my-project/document.pdf?presign=true"
+echo "  curl -s -H 'X-Project-ID: ${PROJECT_ID}' ${UMRS_URL}/umrs/files/document.pdf/metadata"
 echo ""
 echo "  Presigned URL properties:"
 echo "    • Time-limited (default: 3600s)"
 echo "    • No MinIO credentials needed"
-echo "    • Audited access"
+echo "    • Namespaced by project ID"
 echo ""
 
 # Step 4: Delete
 log "Step 4: Delete a file (DELETE /umrs/files/{key})"
 echo ""
-echo "  curl -X DELETE ${UMRS_URL}/umrs/files/my-project/document.pdf"
+echo "  curl -X DELETE -H 'X-Project-ID: ${PROJECT_ID}' ${UMRS_URL}/umrs/files/document.pdf"
 echo ""
 
 # Step 5: Comparison with CLI/SDK

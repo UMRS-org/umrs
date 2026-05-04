@@ -217,15 +217,23 @@ Private demos in `demos_private/` follow the same local execution model:
 
 | Demo | Requires | Test data source |
 |------|----------|-----------------|
-| 04 HMAE Inference | Vision service on Slurm | `demos_private/03_sam3_segmentation/test_data_full` or custom |
-| 09 Defect Analysis | SAM3 + HMAE services | Same as above |
-| 10 HMAE Full Pipeline | HMAE service | Same as above |
-| 11 SAM3 Jens Direct | VisionFrontend at `:3000` | `demos/03_sam3_segmentation/test_data_full` |
-| 12 HMAE Jens Direct | VisionFrontend at `:3000` | Same as above |
+| 04 HMAE Inference | Vision service on Slurm | `tmp/hmae/images` or custom |
+| 09 Defect Analysis | SAM3 + HMAE services | `tmp/hmae/images` or custom |
+| 10 HMAE Full Pipeline | HMAE service | `tmp/hmae/images` or custom |
 | 14 Opossum Analysis | Opossum engine | `tmp/opossum/data/` |
 
-Demos 11, 12 bypass UMRS and call BentoML directly — they still run **locally**
-but need VisionFrontend accessible (typically via SSH tunnel or direct network).
+The Jens direct demos were removed from the active repository surface. Private
+demos now assume the UMRS-mediated path only.
+
+## Isolated Jens Demos
+
+Jens-specific direct VisionFrontend demos live in `demos_jens/` and are not
+part of the active public or private demo suites.
+
+| Demo | Requires | Test data source |
+|------|----------|-----------------|
+| 11 SAM3 Direct | VisionFrontend at `:3000` | `tmp/hmae/images` or custom |
+| 12 HMAE Direct | VisionFrontend at `:3000` | `tmp/hmae/images` or custom |
 
 ## Two Venvs — Don't Confuse Them
 

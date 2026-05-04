@@ -28,10 +28,16 @@ DEMO_TAG="hmae_full" source "${SCRIPT_DIR}/../lib/common.sh"
 
 MAX_IMAGES="${MAX_IMAGES:-3}"
 FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
+RELOAD_SETTLE_SECONDS="${RELOAD_SETTLE_SECONDS:-30}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
+HMAE_ASSET_ROOT="${HMAE_ASSET_ROOT:-${SCRIPT_DIR}/../../tmp/hmae}"
+HMAE_INFER_DIR="${HMAE_INFER_DIR:-${SCRIPT_DIR}/../../tmp/hmae-infer}"
+HMAE_LOCAL_CHECKPOINT="${HMAE_LOCAL_CHECKPOINT:-${HMAE_ASSET_ROOT}/latest_checkpoint.pth}"
+HMAE_LOCAL_CONFIG="${HMAE_LOCAL_CONFIG:-${HMAE_INFER_DIR}/configs/infer_hmae_vit_b.yaml}"
+HMAE_REQUIRE_RESULTS="${HMAE_REQUIRE_RESULTS:-0}"
 
-# Test images: use SAM3 demo's test_data_full
-IMAGE_DIR="${IMAGE_DIR:-${SCRIPT_DIR}/../../demos/03_sam3_segmentation/test_data_full}"
+# Test images: use local HMAE sample slices staged in umrs/tmp/hmae.
+IMAGE_DIR="${IMAGE_DIR:-${HMAE_ASSET_ROOT}/images}"
 
 # All 3 HMAE tasks and their bucket aliases
 HMAE_TASKS=("reconstruction" "mae_reconstruction" "feature_extraction")
@@ -82,6 +88,9 @@ PY
 banner "Demo 10: HMAE Full Pipeline (all 3 tasks)"
 echo "User config  : ${CONF}"
 echo "Image dir    : ${IMAGE_DIR}"
+echo "HMAE assets  : ${HMAE_ASSET_ROOT}"
+echo "HMAE config  : ${HMAE_LOCAL_CONFIG}"
+echo "Checkpoint   : ${HMAE_LOCAL_CHECKPOINT}"
 echo "Tasks        : ${HMAE_TASKS[*]}"
 echo "Force recomp : ${FORCE_RECOMPUTE:-no}"
 echo ""
@@ -89,8 +98,11 @@ echo ""
 # ──────────────────────────────────────────────────────────────────────────
 log "Step 1: Pre-flight checks..."
 preflight
-admin_reload 2>/dev/null || warn "reload returned non-zero"
-sleep 30  # server needs time to restart after reload
+[[ -d "$HMAE_INFER_DIR" ]] || die "HMAE inference checkout not found: ${HMAE_INFER_DIR}"
+[[ -f "$HMAE_LOCAL_CONFIG" ]] || die "HMAE config not found: ${HMAE_LOCAL_CONFIG}"
+[[ -f "$HMAE_LOCAL_CHECKPOINT" ]] || die "HMAE checkpoint not found: ${HMAE_LOCAL_CHECKPOINT}"
+ok "Using hmae-infer config and checkpoint from umrs/tmp"
+log "Using the deployed HMAE experiences as-is (no admin reload in demo mode)."
 
 # ──────────────────────────────────────────────────────────────────────────
 log ""
@@ -139,7 +151,7 @@ for i in "${!HMAE_TASKS[@]}"; do
 
     if [[ -n "$FORCE_RECOMPUTE" ]]; then
         log "FORCE_RECOMPUTE set — triggering full recompute..."
-        admin_recompute || warn "recompute returned non-zero"
+        maybe_admin_recompute || warn "recompute returned non-zero"
     fi
     UPLOAD_DONE=$SECONDS
 
@@ -147,12 +159,17 @@ for i in "${!HMAE_TASKS[@]}"; do
     log "  (This may take several minutes for HMAE model loading + inference)"
     rm -rf "$TASK_RESULTS_DIR"
     mkdir -p "$TASK_RESULTS_DIR"
-    $CLIENT download_results "$BUCKET" "$TASK_RESULTS_DIR" --force-overwrite
-    DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))
-    log "  ${TASK} processing + download took ${DOWNLOAD_ELAPSED}s"
-
-    RESULT_COUNT=$(find "$TASK_RESULTS_DIR" -type f 2>/dev/null | wc -l)
-    ok "${TASK}: ${RESULT_COUNT} file(s) downloaded to ${TASK_RESULTS_DIR}"
+    if download_results_bounded "$BUCKET" "$TASK_RESULTS_DIR" --force-overwrite; then
+        DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))
+        log "  ${TASK} processing + download took ${DOWNLOAD_ELAPSED}s"
+        RESULT_COUNT=$(find "$TASK_RESULTS_DIR" -type f 2>/dev/null | wc -l)
+        ok "${TASK}: ${RESULT_COUNT} file(s) downloaded to ${TASK_RESULTS_DIR}"
+    else
+        if [[ "$HMAE_REQUIRE_RESULTS" = "1" ]]; then
+            die "Could not download ${TASK} results"
+        fi
+        warn "Could not download ${TASK} results — check server logs or set HMAE_REQUIRE_RESULTS=1 for strict validation"
+    fi
     ls -lh "$TASK_RESULTS_DIR/" 2>/dev/null || true
     log ""
 done

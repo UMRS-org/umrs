@@ -134,18 +134,17 @@ def main() -> int:
         out_dir.mkdir(parents=True, exist_ok=True)
         img_stem = Path(args.image).stem
         out_file = out_dir / f"{img_stem}_{args.model}_{args.task}.pkl"
-        with open(out_file, "wb") as f:
-            pickle.dump(result, f)
+        with open(out_file, "wb") as handle:
+            pickle.dump(result, handle)
         print(f"[jens] Saved result to {out_file}")
 
     if status in ("ok", "success"):
-        # Print a brief summary of the result keys
-        data_keys = [k for k in result if k not in ("status",)]
+        data_keys = [key for key in result if key not in ("status",)]
         print(f"[jens] Result keys: {data_keys}")
         return 0
-    else:
-        print(f"[jens] ERROR: {result}", file=sys.stderr)
-        return 1
+
+    print(f"[jens] ERROR: {result}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":

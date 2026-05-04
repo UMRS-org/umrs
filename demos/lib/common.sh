@@ -64,6 +64,8 @@ PY
 
 _apply_umrs_profile_defaults
 
+UMRS_URL="${UMRS_URL:-${UMRS_HTTP_URL:-http://localhost:8001}}"
+
 if [[ -n "${UMRS_CONF:-}" ]]; then
     CONF="${UMRS_CONF}"
 elif [[ -n "${UMRS_USER_CONF:-}" ]]; then
@@ -129,6 +131,24 @@ admin_recompute() {
     "${ADMIN_CLIENT_ARGS[@]}" recompute "$@"
 }
 
+maybe_admin_reload() {
+    if [[ "${DEMO_ADMIN_ACTIONS:-0}" = "1" ]]; then
+        admin_reload "$@"
+    else
+        log "Skipping admin reload — demos assume the site/operator already activated the required config."
+        return 0
+    fi
+}
+
+maybe_admin_recompute() {
+    if [[ "${DEMO_ADMIN_ACTIONS:-0}" = "1" ]]; then
+        admin_recompute "$@"
+    else
+        warn "Ignoring recompute request in general-user mode. Recompute is an operator/admin workflow, not part of the normal user demos."
+        return 0
+    fi
+}
+
 # --- Banner ---
 banner() {
     echo "=========================================="
@@ -137,10 +157,86 @@ banner() {
 }
 
 # --- Pre‑flight check ---
+client_ping() {
+    UMRS_PING_TIMEOUT="${UMRS_PING_TIMEOUT:-20}" python3 - "${CLIENT_ARGS[@]}" <<'PY'
+import os
+import subprocess
+import sys
+
+timeout = float(os.environ.get("UMRS_PING_TIMEOUT", "20"))
+cmd = sys.argv[1:] + ["ping"]
+
+try:
+    completed = subprocess.run(
+        cmd,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=timeout,
+        check=False,
+    )
+except subprocess.TimeoutExpired:
+    raise SystemExit(124)
+
+raise SystemExit(completed.returncode)
+PY
+}
+
 preflight() {
     which umrs-client >/dev/null 2>&1 || die "umrs-client not in PATH"
-    $CLIENT ping >/dev/null 2>&1    || die "Server not reachable (is the SSH tunnel running?)"
+    client_ping || die "Server not reachable within ${UMRS_PING_TIMEOUT:-20}s (is the SSH tunnel running?)"
     log "Server is ready."
+}
+
+run_client_bounded() {
+    local client_timeout="$1"
+    shift
+    CLIENT_TIMEOUT="$client_timeout" python3 - "${CLIENT_ARGS[@]}" "$@" <<'PY'
+import os
+import subprocess
+import sys
+
+timeout = float(os.environ["CLIENT_TIMEOUT"])
+cmd = sys.argv[1:]
+
+try:
+    completed = subprocess.run(cmd, timeout=timeout, check=False)
+except subprocess.TimeoutExpired:
+    print(f"command timed out after {timeout:g}s: {' '.join(cmd)}", file=sys.stderr)
+    raise SystemExit(124)
+
+raise SystemExit(completed.returncode)
+PY
+}
+
+download_results_bounded() {
+    run_client_bounded "${RESULT_DOWNLOAD_TIMEOUT:-20}" download_results "$@"
+}
+
+http_api_available() {
+    local url="${1:-${UMRS_URL}}"
+    curl -sf "${url%/}/openapi.json" >/dev/null 2>&1 \
+        || curl -sf "${url%/}/docs" >/dev/null 2>&1
+}
+
+extract_json_payload() {
+    python3 -c '
+import json
+import sys
+
+text = sys.stdin.read()
+decoder = json.JSONDecoder()
+for index, char in enumerate(text):
+    if char not in "[{":
+        continue
+    try:
+        payload, _ = decoder.raw_decode(text[index:])
+    except json.JSONDecodeError:
+        continue
+    print(json.dumps(payload))
+    raise SystemExit(0)
+
+print("{}")
+'
 }
 
 # --- Onboard active user (idempotent) ---
@@ -165,12 +261,16 @@ onboard() {
         || die "reload failed for ${conf}"
     ok "reload succeeded"
 
-    $client_cmd status all 2>&1 \
-        | head -20 | while IFS= read -r line; do log "  $line"; done
+    local status_output
+    status_output="$($client_cmd status all 2>&1)" || die "status failed for ${conf}"
+    while IFS= read -r line; do log "  $line"; done \
+        <<< "$(printf '%s\n' "$status_output" | awk 'NR <= 20')"
     ok "status summary OK"
 
-    $client_cmd list_buckets 2>&1 \
-        | head -10 | while IFS= read -r line; do log "  $line"; done
+    local bucket_output
+    bucket_output="$($client_cmd list_buckets 2>&1)" || die "list_buckets failed for ${conf}"
+    while IFS= read -r line; do log "  $line"; done \
+        <<< "$(printf '%s\n' "$bucket_output" | awk 'NR <= 10')"
     ok "bucket listing OK"
 }
 

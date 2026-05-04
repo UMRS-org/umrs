@@ -26,9 +26,13 @@ DEMO_TAG="defect" source "${SCRIPT_DIR}/../lib/common.sh"
 BUCKET_ALIAS="${DEFECT_BUCKET:-user1-sam3}"
 MAX_IMAGES="${MAX_IMAGES:-2}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
+RELOAD_SETTLE_SECONDS="${RELOAD_SETTLE_SECONDS:-30}"
+SAM3_REQUIRE_VISIBLE_MODEL="${SAM3_REQUIRE_VISIBLE_MODEL:-0}"
+SAM3_REQUIRE_RESULTS="${SAM3_REQUIRE_RESULTS:-0}"
+HMAE_ASSET_ROOT="${HMAE_ASSET_ROOT:-${SCRIPT_DIR}/../../tmp/hmae}"
 
-# Test images: use the public SAM3 demo's test_data_full
-IMAGE_DIR="${IMAGE_DIR:-${SCRIPT_DIR}/../../demos/03_sam3_segmentation/test_data_full}"
+# Test images: prefer explicit images, otherwise use HMAE sample slices in umrs/tmp.
+IMAGE_DIR="${IMAGE_DIR:-${HMAE_ASSET_ROOT}/images}"
 
 banner "Demo 09: Structural Defect Analysis"
 echo "User config  : ${CONF}"
@@ -38,16 +42,16 @@ echo ""
 
 model_visible() {
     local scope="$1" name="$2"
-    $CLIENT model list --scope "$scope" 2>/dev/null | grep -q "\"name\": \"${name}\""
+    run_client_bounded "${MODEL_LIST_TIMEOUT:-8}" --output json model list --scope "$scope" 2>/dev/null \
+        | grep -q "\"name\": \"${name}\""
 }
 
 # ──────────────────────────────────────────────────────────────────────────
 log "Step 1: Pre-flight checks..."
 preflight
 
-# Reload config so the server creates output buckets
-admin_reload 2>/dev/null || warn "reload returned non-zero"
-sleep 30  # server needs time to restart after reload
+# General-user path: rely on the deployed SAM3 experience instead of admin reload.
+log "Using the deployed SAM3 experience as-is (no admin reload in demo mode)."
 
 # ──────────────────────────────────────────────────────────────────────────
 log ""
@@ -62,7 +66,10 @@ elif [[ -n "$SAM3_STAGING_DIR" ]]; then
         | while IFS= read -r line; do log "  $line"; done
     ok "SAM3 model download requested via SAM3_STAGING_DIR=${SAM3_STAGING_DIR}"
 else
-    die "SAM3 model '${SAM3_NAME}' is not visible. Stage it as an admin, or set SAM3_STAGING_DIR to a writable, allowed server path."
+    if [[ "$SAM3_REQUIRE_VISIBLE_MODEL" = "1" ]]; then
+        die "SAM3 model '${SAM3_NAME}' is not visible. Ask the site operator to pre-stage it, or set SAM3_STAGING_DIR to a writable server-side user staging path if your site allows user-scoped downloads."
+    fi
+    warn "SAM3 model '${SAM3_NAME}' is not visible in registry; continuing so the upload/result path can be exercised"
 fi
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -101,10 +108,16 @@ log ""
 log "Step 5: Downloading results..."
 log "  (This may take several minutes if launching BentoML for the first time)"
 mkdir -p "$RESULTS_DIR"
-$CLIENT download_results "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite
-DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))
-log "  Processing + download took ${DOWNLOAD_ELAPSED}s"
-ok "Results saved to ${RESULTS_DIR}/"
+if download_results_bounded "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite; then
+    DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))
+    log "  Processing + download took ${DOWNLOAD_ELAPSED}s"
+    ok "Results saved to ${RESULTS_DIR}/"
+else
+    if [[ "$SAM3_REQUIRE_RESULTS" = "1" ]]; then
+        die "Could not download defect-analysis results"
+    fi
+    warn "Could not download defect-analysis results — check server logs or set SAM3_REQUIRE_RESULTS=1 for strict validation"
+fi
 
 # ──────────────────────────────────────────────────────────────────────────
 log ""

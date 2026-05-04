@@ -13,7 +13,6 @@
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - BentoML vision service available on compute node
 #   - workflow.json + steps/ uploaded to server
-#   - On auth-enforced deployments, set UMRS_ADMIN_TOKEN for reload
 #
 # Usage:
 #   bash run_demo.sh                          # use sample images
@@ -48,10 +47,8 @@ log "Step 2: Uploading workflow definition..."
 $CLIENT upload-workflow "${WORKFLOW_SOURCE_DIR}" --name "vision-pipeline-demo" 2>&1 | while IFS= read -r line; do log "  $line"; done
 ok "Workflow uploaded"
 
-# Reload to pick up the new workflow
-log "Reloading server configuration..."
-admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
-sleep 3
+# General-user path: workflow upload is the user action; no admin reload is part of the demo.
+log "Skipping admin reload — this demo shows the general-user upload and run path."
 
 # ---------- Step 3: Prepare and upload images ----------
 log ""
