@@ -206,7 +206,7 @@ bucket alias configured in `user1.json`:
 ```bash
 # 1. Verify server connectivity and reload config
 umrs-client ping
-umrs-client reload
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 
 # 2. Task 1: Reconstruction (bucket: user1-hmae)
 #    Full image reconstruction — the model reconstructs the input image

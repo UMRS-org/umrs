@@ -10,7 +10,10 @@
 # =============================================================================
 set -euo pipefail
 
-REPO="/lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${UMRS_REPO:-$(cd "${SCRIPT_DIR}/../.." && pwd)}"
+MODEL_ROOT="${MODEL_ROOT:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models}"
+VISION_TARBALL="${VISION_TARBALL:-${MODEL_ROOT}/umrs-vision.tar}"
 RESULTS_DIR="${REPO}/tmp/harness_probe_$(date +%Y%m%d%H%M%S)"
 mkdir -p "$RESULTS_DIR"
 
@@ -44,6 +47,8 @@ set -x
 
 RESULT_FILE="$1"
 PARTITION_NAME="$2"
+TARBALL="$3"
+REPO_PATH="$4"
 
 exec > "$RESULT_FILE" 2>&1
 
@@ -181,7 +186,6 @@ fi
 # 8. Vision tarball check
 echo ""
 echo "--- VISION IMAGE ---"
-TARBALL="/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar"
 if [[ -f "$TARBALL" ]]; then
     echo "VISION_TARBALL=found ($(stat -c%s "$TARBALL" 2>/dev/null || stat -f%z "$TARBALL" 2>/dev/null) bytes)"
     if podman load -i "$TARBALL" 2>&1; then
@@ -209,7 +213,7 @@ fi
 # 9. Lustre access check
 echo ""
 echo "--- LUSTRE ---"
-ls /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm/serve-model.slurm >/dev/null 2>&1 \
+ls "${REPO_PATH}/src/umrs/mini-rivault-llm/serve-model.slurm" >/dev/null 2>&1 \
     && echo "LUSTRE_REPO=accessible" || echo "LUSTRE_REPO=not_accessible"
 
 # Cleanup
@@ -248,7 +252,7 @@ for PART in "${PARTITIONS[@]}"; do
            --job-name="probe-${PART}" \
            --output=/dev/null \
            --error=/dev/null \
-           "$PROBE_SCRIPT" "$RESULT_FILE" "$PART" 2>&1 || \
+           "$PROBE_SCRIPT" "$RESULT_FILE" "$PART" "$VISION_TARBALL" "$REPO" 2>&1 || \
     echo "SBATCH_FAIL: $PART" | tee -a "$RESULT_FILE"
 done
 

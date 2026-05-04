@@ -46,7 +46,7 @@ log "Step 1: Pre-flight checks..."
 preflight
 
 # Reload config so the server creates output buckets
-$CLIENT reload 2>/dev/null || warn "reload returned non-zero"
+admin_reload 2>/dev/null || warn "reload returned non-zero"
 sleep 30  # server needs time to restart after reload
 
 # ──────────────────────────────────────────────────────────────────────────

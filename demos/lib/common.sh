@@ -91,12 +91,43 @@ if [[ -n "${UMRS_ZMQ_PORT:-}" ]]; then
 fi
 CLIENT="${CLIENT_ARGS[*]}"
 
+ADMIN_CLIENT_ARGS=("${CLIENT_ARGS[@]}")
+if [[ -n "${UMRS_ADMIN_TOKEN:-}" ]]; then
+    ADMIN_CLIENT_ARGS+=(--admin-token "${UMRS_ADMIN_TOKEN}")
+fi
+
 # --- Logging helpers ---
 _TAG="${DEMO_TAG:-demo}"
 log()  { echo "[${_TAG}] $*"; }
 ok()   { echo "[${_TAG}]   ✓ $1"; }
 warn() { echo "[${_TAG}] WARNING: $*"; }
 die()  { echo "[${_TAG}] ERROR: $*" >&2; exit 1; }
+
+admin_hint() {
+    if [[ -z "${UMRS_ADMIN_TOKEN:-}" ]]; then
+        warn "UMRS_ADMIN_TOKEN is not set; admin-only commands may be denied on auth-enforced deployments."
+    fi
+}
+
+admin_reload() {
+    admin_hint
+    "${ADMIN_CLIENT_ARGS[@]}" reload "$@"
+}
+
+admin_check() {
+    admin_hint
+    "${ADMIN_CLIENT_ARGS[@]}" check "$@"
+}
+
+admin_update() {
+    admin_hint
+    "${ADMIN_CLIENT_ARGS[@]}" update "$@"
+}
+
+admin_recompute() {
+    admin_hint
+    "${ADMIN_CLIENT_ARGS[@]}" recompute "$@"
+}
 
 # --- Banner ---
 banner() {
@@ -129,7 +160,8 @@ onboard() {
     fi
 
     log "Onboarding user config: ${conf}"
-    $client_cmd reload >/dev/null 2>&1 \
+    admin_hint
+    "${ADMIN_CLIENT_ARGS[@]}" reload >/dev/null 2>&1 \
         || die "reload failed for ${conf}"
     ok "reload succeeded"
 

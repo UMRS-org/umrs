@@ -199,7 +199,7 @@ These conditions are specific to the RIKEN rccs-cloud HPC cluster.
   `lsetxattr: operation not supported`.
 - **Podman graphroot**: Must be redirected to a local filesystem
   (e.g. `/var/tmp/$USER/containers/storage`) via `~/.config/containers/storage.conf`.
-- **Model cache**: `/lvs0/rccs-dmp/mnagaso/umrs_models` — accessible from both
+- **Model cache**: `/lvs0/dne1/rccs-dmp/${USER}/umrs_models` — accessible from both
   login and compute nodes.
 
 ### 3.3 Container runtime

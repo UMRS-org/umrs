@@ -23,7 +23,7 @@ git push origin ai4s-platform
 
 # ── On rccs-cloud (via SSH) ──────────────────────────────────────────────
 ssh rccs-cloud
-cd /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform
+cd /lvs0/dne1/rccs-dmp/${USER}/ai4s-platform
 
 # 2. Pull latest code
 git pull origin ai4s-platform
@@ -143,7 +143,7 @@ automatically by `serve-model.slurm`. See [Step 0b](#step-0b--enable-compute--lo
 ## Prerequisites
 
 - SSH access: `ssh rccs-cloud` works without a password (key configured).
-- The repo is cloned on rccs-cloud (e.g. at `/lvs0/rccs-dmp/mnagaso/umrs`).
+- The repo is cloned on rccs-cloud (e.g. at `/lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs`).
 - `podman` is available on rccs-cloud.
 - `podman-compose` is installed (`pip install --user podman-compose`). Ensure
   `~/.local/bin` is in your `PATH` (add `export PATH="$HOME/.local/bin:$PATH"`
@@ -232,7 +232,7 @@ All deployment files are in `deploy/rccs-cloud/` inside the repo.
 
 ```bash
 # On rccs-cloud:
-cd /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs/deploy/rccs-cloud
+cd /lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs/deploy/rccs-cloud
 cp env.example .env
 nano .env          # or vim / any editor
 ```

@@ -45,7 +45,7 @@ preflight
 
 # Reload config so server creates output buckets
 log "Reloading server configuration..."
-$CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
 sleep 3
 
 # ---------- Step 2: Prepare SAM3 model ----------
@@ -97,7 +97,7 @@ ok "Images uploaded — server will process automatically"
 
 if [[ -n "$FORCE_RECOMPUTE" ]]; then
     log "FORCE_RECOMPUTE set — triggering full recompute..."
-    $CLIENT recompute || warn "recompute returned non-zero"
+    admin_recompute || warn "recompute returned non-zero"
 fi
 UPLOAD_DONE=$SECONDS
 

@@ -15,7 +15,7 @@ SSH tunnel guidance.
 > for the admin enrollment step. The provisioning described here (MinIO IAM,
 > Postgres role, per-experience buckets) is the same — the admin now creates
 > the server-side user record with `umrs-server admin user add <username> ...`,
-> and the user's later `umrs-client reload` still triggers provisioning. End
+> and the later admin-authorized `umrs-client reload` still triggers provisioning. End
 > users never run `umrs-client profile init` or open an SSH tunnel themselves.
 
 ## Quick Start
@@ -47,7 +47,7 @@ umrs-client profile show || true
 umrs-client ping
 
 # 3. Trigger onboarding (idempotent).
-umrs-client reload
+umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 
 # 4. Optional: show an overall server summary.
 umrs-client status all
@@ -180,8 +180,9 @@ enrolled.
    `umrs-client config init`.
 
 4. The user can now connect and run commands normally. Running
-   `umrs-client reload` uploads the full config for the already-enrolled user
-   and triggers provisioning of MinIO IAM, Postgres roles, and buckets.
+   `umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload` uploads the full
+   config for the already-enrolled user and triggers provisioning of MinIO IAM,
+   Postgres roles, and buckets.
 
 #### Listing / Removing Users
 
@@ -194,9 +195,10 @@ umrs-server admin user delete alice --purge -y
 
 #### Config Update (Non-Admin)
 
-After enrollment, a user can update their own config by running
-`umrs-client reload -c updated_user.json`. The server will accept the update
-only if the username already exists in the server's user registry.
+After enrollment, update user config through an admin-authorized reload:
+`umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload -c updated_user.json`.
+The server will accept the update only if the username already exists in the
+server's user registry.
 
 ### Data Flow
 

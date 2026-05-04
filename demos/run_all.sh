@@ -22,7 +22,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEMO_TAG="run_all" source "${SCRIPT_DIR}/lib/common.sh"
 SKIP_VISION="${1:-}"
+RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
 
 passed=0
 failed=0
@@ -54,6 +56,10 @@ run_demo() {
         echo "=== Demo ${num} FAILED ==="
         failed=$((failed + 1))
     fi
+}
+
+check_rag() {
+    curl -sf "${RAG_URL%/}/docs" >/dev/null
 }
 
 # ---------- Pre-flight ----------
@@ -89,7 +95,7 @@ fi
 
 # RAG (requires RAG service)
 run_demo "05" "RAG Search"           "05_rag_search/run_demo.sh" \
-    "curl -sf http://localhost:8081/docs"
+    "check_rag"
 
 run_demo "06" "Server Maintenance"   "06_server_maintenance/run_demo.sh"
 run_demo "07" "Model Registry"       "07_model_registry/run_demo.sh"

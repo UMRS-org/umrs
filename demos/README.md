@@ -70,7 +70,10 @@ All demos (except 08, 12, 13 which run locally) require:
   ```
 
 All demos source `lib/common.sh` which provides the `$CLIENT` command,
-`preflight()`, `wait_tasks()`, `banner()`, `log()`, `ok()`, `warn()`, `die()`.
+profile-derived connection defaults, `preflight()`, `wait_tasks()`, and
+logging helpers. Maintenance commands (`reload`, `check`, `update`,
+`recompute`) are routed through admin-aware helpers and require
+`UMRS_ADMIN_TOKEN` on auth-enforced deployments.
 
 ## Getting Started
 
@@ -82,7 +85,8 @@ All demos source `lib/common.sh` which provides the `$CLIENT` command,
 > **Note:** All server-backed demos call the shared `onboard()` helper which
 > runs `reload` + `status reload` + `list_buckets`.  This is idempotent — the
 > server skips provisioning when the config hasn't changed.  Demos 08, 12, and
-> 13 run locally and do not require onboarding.
+> 13 run locally and do not require onboarding. Export `UMRS_ADMIN_TOKEN`
+> before running server-backed demos against role-enforced deployments.
 
 ## Basic Usage
 
@@ -101,7 +105,7 @@ Manage models and maintain data integrity.
 
 | # | Demo | What you'll learn |
 |---|------|-------------------|
-| 06 | [Server Maintenance](06_server_maintenance/) | `list_buckets`, `check`, `update`, `recompute` — data integrity |
+| 06 | [Server Maintenance](06_server_maintenance/) | `list_buckets`, admin-only `check`, `update`, `recompute` — data integrity |
 | 07 | [Model Registry](07_model_registry/) | Register, list, download models (HuggingFace + local + user) |
 
 ## Advanced Workflows
@@ -177,7 +181,7 @@ Want to search over embeddings?
   → Demo 05 (RAG search) — needs Demo 02 data first
 
 Something seems wrong with my data?
-  → Demo 06 (check + update)
+  → Demo 06 (check + update; requires UMRS_ADMIN_TOKEN when auth is enforced)
 
 Need a custom model or pipeline?
   → Demo 08 (Step) or Demo 09 (multi-step vision pipeline)
@@ -273,7 +277,7 @@ Need to manage files with presigned URLs?
 | `MAX_IMAGES` | 03, 04, 09, 10 | Limit number of images to upload |
 | `MODEL_STAGING_DIR` | 02, 07, 18 | Writable server-side staging directory for model downloads |
 | `DEMO_LOCAL_MODEL_UPLOAD` | 07, 18 | Enable the optional local model upload steps |
-| `RAG_URL` | 05 | RAG service URL (default: `http://localhost:8081`) |
+| `RAG_URL` | 05 | RAG service URL (profile-derived, default: `http://127.0.0.1:8081`) |
 | `DEMO_RECOMPUTE` | 06 | Set to `1` to run full recompute step |
 | `DEMO_DOWNLOAD` | 07 | Set to `1` to download model from HuggingFace |
 | `VIDEO_BUCKET` | 14 | Bucket alias for video uploads (default: `user1-video`) |

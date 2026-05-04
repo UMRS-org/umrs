@@ -58,10 +58,11 @@ resolve_model_layout() {
         if PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
             UMRS_SITE_CONFIG="$SITE_CONFIG_PATH" \
             "$VENV_PYTHON" - <<'PY' 2>/dev/null
+import os
 from pathlib import Path
 from umrs.orchestrator.site_config import load_site_config
 
-default_root = Path("/lvs0/dne1/rccs-dmp/mnagaso/umrs_models")
+default_root = Path(f"/lvs0/dne1/rccs-dmp/{os.environ.get('USER', 'test-operator')}/umrs_models")
 try:
     cfg = load_site_config()
     hf_cache = Path(cfg.storage.model_cache_dir) if cfg.storage.model_cache_dir else default_root / "hf"
@@ -79,9 +80,9 @@ PY
     fi
 
     printf '%s\n%s\n%s\n' \
-        "/lvs0/dne1/rccs-dmp/mnagaso/umrs_models" \
-        "/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hf" \
-        "/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/sentence_transformers"
+        "/lvs0/dne1/rccs-dmp/${USER}/umrs_models" \
+        "/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hf" \
+        "/lvs0/dne1/rccs-dmp/${USER}/umrs_models/sentence_transformers"
 }
 
 # Load .env if present (for POSTGRES_USER, POSTGRES_PASSWORD etc.)

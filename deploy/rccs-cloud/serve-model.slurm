@@ -132,12 +132,12 @@ mask_secret_state() {
 # from compute nodes. Override via RIVAULT_DIR env var.
 # Prefer SLURM_SUBMIT_DIR (the cwd of the sbatch invocation) so the
 # inner script is always picked from the same worktree as the wrapper.
-_DEFAULT_REPO="${SLURM_SUBMIT_DIR:-/lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs}"
+_DEFAULT_REPO="${SLURM_SUBMIT_DIR:-/lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs}"
 RIVAULT_DIR="${RIVAULT_DIR:-${_DEFAULT_REPO}/src/umrs/mini-rivault-llm}"
 
 if [[ ! -d "$RIVAULT_DIR" ]]; then
     echo "ERROR: RIVAULT_DIR not found: $RIVAULT_DIR"
-    echo "  Check that the repo is cloned at /lvs0/dne1/rccs-dmp/mnagaso/ai4s-platform/umrs"
+    echo "  Check that the repo is cloned at /lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs or set RIVAULT_DIR."
     exit 1
 fi
 
@@ -167,10 +167,10 @@ export NGINX_LITELLM_DOCKER_PORT="${NGINX_LITELLM_DOCKER_PORT:-8001}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}"
 
 # ─── Model cache on Lustre (inherit from server or set default) ──────────────
-export SAM3_MODEL_PATH="${SAM3_MODEL_PATH:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/sam3}"
-export HMAE_MODEL_PATH="${HMAE_MODEL_PATH:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae}"
-export HMAE_CONFIG_PATH="${HMAE_CONFIG_PATH:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/infer_hmae_vit_b.yaml}"
-export HMAE_CHECKPOINT="${HMAE_CHECKPOINT:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hmae/latest_checkpoint.pth}"
+export SAM3_MODEL_PATH="${SAM3_MODEL_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/sam3}"
+export HMAE_MODEL_PATH="${HMAE_MODEL_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae}"
+export HMAE_CONFIG_PATH="${HMAE_CONFIG_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/infer_hmae_vit_b.yaml}"
+export HMAE_CHECKPOINT="${HMAE_CHECKPOINT:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/latest_checkpoint.pth}"
 export USER_MODEL_PATH="${USER_MODEL_PATH:-/tmp}"
 
 # ─── vLLM configuration (embedding model on GPU) ─────────────────────────────
@@ -180,7 +180,7 @@ export USER_MODEL_PATH="${USER_MODEL_PATH:-/tmp}"
 #   aarch64 → cu130-nightly-aarch64   (Blackwell, GB10)
 #   x86_64  → cu130-nightly-x86_64    (H200, L40S, etc.)
 # VLLM_GPU_MEM_UTIL: low memory fraction — keep room for BentoML vision
-export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/hf}"
+export VLLM_PATH_TO_HUGGINGFACE="${VLLM_PATH_TO_HUGGINGFACE:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hf}"
 export VLLM_MODEL="${VLLM_MODEL:-intfloat/e5-base-v2}"
 # VLLM_DOCKER_TAG: prefer partition profile value; fall back to arch auto-detect.
 if [[ -z "${VLLM_DOCKER_TAG:-}" ]]; then
@@ -341,7 +341,7 @@ fi
 #     /lvs0/.../umrs-vision-amd64.tar   (for x86_64 nodes: ai-h200-brc, ai-l40s, genoa, etc.)
 #   This avoids cross-arch overwrites when jobs run on different node types.
 _VISION_IMAGE="${BENTOML_VISION_IMAGE:-umrs-vision:latest}"
-_VISION_TARBALL_BASE="${VISION_TARBALL:-/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/umrs-vision.tar}"
+_VISION_TARBALL_BASE="${VISION_TARBALL:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/umrs-vision.tar}"
 _UMRS_REPO="${UMRS_REPO:-${_DEFAULT_REPO}}"
 
 # Derive per-arch tarball path from base

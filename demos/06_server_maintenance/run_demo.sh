@@ -2,7 +2,7 @@
 # =============================================================================
 # Demo 06: Server Maintenance
 # =============================================================================
-# Shows: list_buckets, check, update, recompute, status
+# Shows: list_buckets, admin-only check/update/recompute, status
 #
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
@@ -34,7 +34,7 @@ echo ""
 
 # Step 2: Check S3 ↔ DB consistency
 log "Step 2: Check S3 vs DB consistency..."
-$CLIENT check
+admin_check || warn "check returned non-zero"
 echo ""
 
 # Step 3: Wait for check to complete, then show result
@@ -45,7 +45,7 @@ echo ""
 
 # Step 4: Update missing/mismatched entries
 log "Step 4: Update missing or mismatched entries..."
-$CLIENT update
+admin_update || warn "update returned non-zero"
 echo ""
 
 # Step 5: Wait and show update result
@@ -57,7 +57,7 @@ echo ""
 # Step 6: Full recompute (optional — slow and destructive)
 if [ "${DEMO_RECOMPUTE:-0}" = "1" ]; then
     log "Step 6: Recompute all embeddings..."
-    $CLIENT recompute
+    admin_recompute || warn "recompute returned non-zero"
     echo ""
 
     log "Step 7: Show recompute result..."

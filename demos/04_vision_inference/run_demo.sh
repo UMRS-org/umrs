@@ -10,9 +10,9 @@
 # invoked through the same interface.
 #
 # To plug in a different model:
-#   1. Register it: umrs-client model register <name> <path> --type embedding
+#   1. Register it: umrs-client model register <name> <path> --type vision
 #   2. Update your config experience to reference the new model
-#   3. Reload the server: umrs-client reload
+#   3. Reload the server: umrs-client --admin-token "$UMRS_ADMIN_TOKEN" reload
 #
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
@@ -46,7 +46,7 @@ preflight
 
 # Reload config to ensure bucket exists
 log "Reloading server configuration..."
-$CLIENT reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
 sleep 3
 
 # ---------- Step 2: Prepare images ----------
@@ -83,7 +83,7 @@ ok "Images uploaded — server will dispatch to vision model"
 
 if [[ -n "$FORCE_RECOMPUTE" ]]; then
     log "FORCE_RECOMPUTE set — triggering full recompute..."
-    $CLIENT recompute || warn "recompute returned non-zero"
+    admin_recompute || warn "recompute returned non-zero"
 fi
 UPLOAD_DONE=$SECONDS
 
@@ -104,7 +104,7 @@ ls -lh "$RESULTS_DIR/" 2>/dev/null || true
 log "Results in: ${RESULTS_DIR}/"
 log ""
 log "To use a different vision model:"
-log "  1. Register:  umrs-client model register <name> <path> --type embedding"
+log "  1. Register:  umrs-client model register <name> <path> --type vision"
 log "  2. Configure: add an experience referencing the model in your config"
-log "  3. Reload:    umrs-client reload"
+log "  3. Reload:    umrs-client --admin-token \"\$UMRS_ADMIN_TOKEN\" reload"
 log "  4. Re-run:    VISION_BUCKET=<alias> bash run_demo.sh"

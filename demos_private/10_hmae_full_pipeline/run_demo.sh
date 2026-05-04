@@ -89,7 +89,7 @@ echo ""
 # ──────────────────────────────────────────────────────────────────────────
 log "Step 1: Pre-flight checks..."
 preflight
-$CLIENT reload 2>/dev/null || warn "reload returned non-zero"
+admin_reload 2>/dev/null || warn "reload returned non-zero"
 sleep 30  # server needs time to restart after reload
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -139,7 +139,7 @@ for i in "${!HMAE_TASKS[@]}"; do
 
     if [[ -n "$FORCE_RECOMPUTE" ]]; then
         log "FORCE_RECOMPUTE set — triggering full recompute..."
-        $CLIENT recompute || warn "recompute returned non-zero"
+        admin_recompute || warn "recompute returned non-zero"
     fi
     UPLOAD_DONE=$SECONDS
 
