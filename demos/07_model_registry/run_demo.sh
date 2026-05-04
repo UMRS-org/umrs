@@ -32,6 +32,7 @@ STAGING_ROOT="${UMRS_MODEL_STAGING_ROOT:-/shared/models}"
 REMOTE_HMAE_MODEL_PATH="${UMRS_REMOTE_HMAE_MODEL_PATH:-/shared/models/hmae}"
 DEMO_LOCAL_MODEL_UPLOAD="${DEMO_LOCAL_MODEL_UPLOAD:-0}"
 MODEL_SCOPE="${MODEL_SCOPE:-user}"
+MODEL_TYPE="${MODEL_TYPE:-embedding}"
 MODEL_STAGING_DIR="${MODEL_STAGING_DIR:-}"
 
 banner "Demo 07: Model Registration & Staging"
@@ -54,7 +55,7 @@ if [[ -n "$SHARED_MODEL_PATH" && -d "$SHARED_MODEL_PATH" ]]; then
     MODEL_NAME=$(basename "$SHARED_MODEL_PATH")
     log "  Registering '${MODEL_NAME}' at ${SHARED_MODEL_PATH}..."
     $CLIENT model register "${MODEL_NAME}" "${SHARED_MODEL_PATH}" \
-        --type embedding --scope "$MODEL_SCOPE" \
+        --type "$MODEL_TYPE" --scope "$MODEL_SCOPE" \
         --description "Auto-registered from shared models directory" || true
 else
     log "  Skipping — set UMRS_SHARED_MODEL_PATH to a server-side model dir"
@@ -70,7 +71,7 @@ if [[ -n "$HMAE_LOCAL_MODEL_DIR" ]] && [[ -d "$HMAE_LOCAL_MODEL_DIR" ]]; then
         log "  Register path (HPC): $REMOTE_HMAE_MODEL_PATH"
         $CLIENT model upload "$HMAE_LOCAL_MODEL_DIR" \
             --name "hmae-pretrained" \
-            --type embedding --scope "$MODEL_SCOPE" \
+            --type vision --scope "$MODEL_SCOPE" \
             --description "HMAE ViT pretrained checkpoint" \
             --register-path "$REMOTE_HMAE_MODEL_PATH" \
             --force

@@ -41,13 +41,14 @@ This demo queries the RAG service directly via `curl` rather than through
 ```bash
 # 1. Verify server and RAG service connectivity
 umrs-client ping
-curl -sf http://localhost:8081/docs >/dev/null && echo "RAG service OK"
+RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
+curl -sf "${RAG_URL%/}/docs" >/dev/null && echo "RAG service OK"
 
 # 2. Vector-only search
 #    Uses pgvector's HNSW index for cosine similarity.
 #    Best for semantic meaning — finds conceptually similar content
 #    even when exact keywords don't match.
-curl -s -X POST http://localhost:8081/rag/search \
+curl -s -X POST "${RAG_URL%/}/rag/search" \
   -H "Content-Type: application/json" \
   -d '{"query": "What is the main topic of the documents?", "top_k": 3, "user": "user1", "bucket_alias": "user1-textfiles", "modality": "text_file"}'
 
@@ -55,7 +56,7 @@ curl -s -X POST http://localhost:8081/rag/search \
 #    Combines vector and BM25 results using RRF to get the best of
 #    both semantic and lexical matching. Usually provides the most
 #    balanced results.
-curl -s -X POST http://localhost:8081/rag/search \
+curl -s -X POST "${RAG_URL%/}/rag/search" \
   -H "Content-Type: application/json" \
   -d '{"query": "What is the main topic of the documents?", "top_k": 3, "user": "user1", "bucket_alias": "user1-textfiles", "modality": "text_file", "search_method": "hybrid"}'
 
@@ -63,7 +64,7 @@ curl -s -X POST http://localhost:8081/rag/search \
 #    Starts with hybrid search, then applies a cross-encoder model
 #    to rerank the results. Most accurate but slower due to the
 #    additional reranking pass.
-curl -s -X POST http://localhost:8081/rag/search \
+curl -s -X POST "${RAG_URL%/}/rag/search" \
   -H "Content-Type: application/json" \
   -d '{"query": "What is the main topic of the documents?", "top_k": 3, "user": "user1", "bucket_alias": "user1-textfiles", "modality": "text_file", "search_method": "hybrid", "enable_reranking": true}'
 ```
@@ -100,7 +101,7 @@ curl -s -X POST http://localhost:8081/rag/search \
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RAG_URL` | `http://localhost:8081` | RAG service endpoint |
+| `RAG_URL` | profile-derived, default `http://127.0.0.1:8081` | RAG service endpoint |
 | `RAG_USER` | `user1` | User scope for retrieval |
 | `RAG_BUCKET_ALIAS` | `user1-textfiles` | Bucket alias used for retrieval |
 | `RAG_MODALITY` | `text_file` | Modality used for retrieval |

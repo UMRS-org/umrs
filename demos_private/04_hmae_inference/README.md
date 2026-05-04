@@ -48,7 +48,7 @@ umrs-client ping
 #    `model upload` plus an explicit server-visible register path instead.
 umrs-client model upload /path/to/hmae_checkpoint_dir \
   --name "hmae-pretrained" \
-  --type embedding --scope user \
+  --type vision --scope user \
   --description "HMAE ViT pretrained checkpoint" \
   --register-path /path/to/site-user-model-root/hmae-pretrained \
   --force

@@ -34,7 +34,7 @@ bash run_demo.sh
 | `UMRS_ZMQ_DATA_PORT` | `5556` | ZMQ data port |
 | `UMRS_MINIO_HOST` | `localhost` | MinIO host |
 | `UMRS_MINIO_PORT` | `9000` | MinIO port |
-| `RAG_URL` | `http://localhost:8081` | RAG service URL |
+| `RAG_URL` | profile-derived, default `http://127.0.0.1:8081` | RAG service URL |
 
 ## Running Manually
 
@@ -58,7 +58,7 @@ umrs-client list_buckets
 ```
 [health_check] Server is ready.
 [health_check]   ✓ MinIO S3     (localhost:9000)
-[health_check]   ✓ RAG service  (http://localhost:8081)
+[health_check]   ✓ RAG service  (http://127.0.0.1:8081)
 ```
 
 If checks fail, verify that:

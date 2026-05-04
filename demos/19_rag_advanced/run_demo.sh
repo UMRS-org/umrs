@@ -19,7 +19,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="rag_adv" source "${SCRIPT_DIR}/../lib/common.sh"
 
-RAG_URL="${RAG_URL:-http://localhost:8081}"
+RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 QUERY="${1:-What is the main topic of the documents?}"
 RAG_USER="${RAG_USER:-user1}"
@@ -40,7 +40,7 @@ log "Step 1: Pre-flight checks..."
 preflight
 
 # Check RAG service
-if curl -sf "${RAG_URL}/docs" >/dev/null 2>&1; then
+if curl -sf "${RAG_URL%/}/docs" >/dev/null 2>&1; then
     ok "RAG service reachable at ${RAG_URL}"
 else
     die "RAG service not reachable at ${RAG_URL} — is the tunnel up?"
@@ -89,7 +89,7 @@ PYEOF
     )
 
     local response
-    response=$(curl -sf -X POST "${RAG_URL}/rag/search" \
+    response=$(curl -sf -X POST "${RAG_URL%/}/rag/search" \
         -H "Content-Type: application/json" \
         -d "$payload" 2>&1) || {
         warn "  ${label} request failed"
