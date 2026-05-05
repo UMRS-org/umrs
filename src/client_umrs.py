@@ -14,8 +14,6 @@ from umrs.client.control_api import UMRSControlAPI
 from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
     MODEL_TYPE_CHOICES,
-    configure_admin_token_parser,
-    configure_admin_user_parser,
     configure_job_cancel_parser,
     configure_job_list_parser,
     configure_job_status_parser,
@@ -29,6 +27,7 @@ from umrs.client.control_commands import (
     configure_workflow_run_parser,
     parse_json_object_arg,
 )
+from umrs.cli.completion import emit_completion_if_requested, print_completion_script
 from umrs.client.metadata import check_and_build_metadata
 from umrs.core.MessageQueue import MessageQueue
 from umrs.core.TaskCmdStatus import TaskCmd
@@ -858,6 +857,15 @@ def api_json(status="ok", output_format='json', **payload):
             lines.append(f"{k}={v}")
     return "\n".join(lines)
 
+
+def _resolve_status_target(args):
+    target = getattr(args, "target", "all") or "all"
+    if getattr(args, "status_all", False):
+        if target != "all":
+            raise ValueError("Use either '--all' or a specific status key, not both.")
+        return "all"
+    return target
+
 def parse_metadata_kv(pairs_list):
     meta = {}
     if not pairs_list:
@@ -1004,8 +1012,42 @@ def send_files_to_server(username, file_path_list, control_mq, data_mq):
         print(f"Error sending file(s) {file_path_list} to server")
 
 
+class _ClientHelpFormatter(
+    argparse.ArgumentDefaultsHelpFormatter,
+    argparse.RawDescriptionHelpFormatter,
+):
+    pass
+
+
+_CLIENT_EPILOG = (
+    "Onboarding:\n"
+    "  1. Ask the operator to register you on the server:\n"
+    "       umrs-server admin user add <username> --fullname \"Your Name\" --role user\n"
+    "  2. Create or select your local client config:\n"
+    "       umrs-client config init --username <username>\n"
+    "  3. Check the resolved config and server connectivity:\n"
+    "       umrs-client config show\n"
+    "       umrs-client ping\n\n"
+    "Shell completion:\n"
+    "  eval \"$(umrs-client completion bash)\"\n"
+)
+
+
+def _disabled_admin_message():
+    return (
+        "umrs-client admin is disabled; admin operations are server-side only. "
+        "Use 'umrs-server admin --help' on the server. Examples: "
+        "'umrs-server admin user add <username> --fullname \"Your Name\" --role user' "
+        "and 'umrs-server admin user list'."
+    )
+
+
 def main():
-    parser = argparse.ArgumentParser(description="UMRS client", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description="UMRS client",
+        epilog=_CLIENT_EPILOG,
+        formatter_class=_ClientHelpFormatter,
+    )
     subparsers = parser.add_subparsers(dest="action", help="API action", required=True)
 
     # Global / legacy flags
@@ -1022,6 +1064,9 @@ def main():
     parser.add_argument('--admin-token', default=None,
                         help='Admin token for privileged commands (or set UMRS_ADMIN_TOKEN)')
     # Removed deprecated auto-add-columns behavior; metadata must be declared in server config
+
+    completion_p = subparsers.add_parser('completion', help='Print shell completion setup')
+    completion_p.add_argument('shell', choices=('bash', 'zsh'), nargs='?', default='bash')
 
     # API subcommands
     ping_p = subparsers.add_parser('ping', help='Check server readiness')
@@ -1203,13 +1248,13 @@ def main():
                        choices=['jobs', 'status', 'models', 'workflows', 'connection'],
                        help='Tab to display on startup (default: jobs)')
 
-    # --- Admin commands (token management + user enrollment) ---
-    admin_p = subparsers.add_parser('admin', help='Admin commands: token management and user enrollment')
-    admin_sub = admin_p.add_subparsers(dest='admin_action', required=True)
-    token_p = admin_sub.add_parser('token', help='Manage admin API tokens')
-    configure_admin_token_parser(token_p)
-    user_p = admin_sub.add_parser('user', help='Manage enrolled users on the server')
-    configure_admin_user_parser(user_p)
+    # --- Disabled admin command ---
+    admin_p = subparsers.add_parser(
+        'admin',
+        help='Disabled; use umrs-server admin on the server',
+        description=_disabled_admin_message(),
+    )
+    admin_p.add_argument('admin_args', nargs='*', help=argparse.SUPPRESS)
 
     profile_p = subparsers.add_parser('profile', help='Connection profile commands (init, list, show, use, import)')
     profile_sub = profile_p.add_subparsers(dest='profile_action', required=True)
@@ -1247,8 +1292,14 @@ def main():
     cu_p.add_argument('--user', default=None, help='User config file path or unique basename to select')
     cu_p.add_argument('--s3', default=None, help='S3 config file path or unique basename to select')
 
+    if emit_completion_if_requested(parser, 'umrs-client', '_UMRS_CLIENT_COMPLETE'):
+        return 0
 
     args = parser.parse_args()
+
+    if args.action == 'completion':
+        print_completion_script('umrs-client', '_UMRS_CLIENT_COMPLETE', args.shell)
+        return 0
 
     if args.action == 'profile':
         try:
@@ -1265,11 +1316,8 @@ def main():
             sys.exit(1)
 
     if args.action == 'admin':
-        try:
-            sys.exit(_handle_admin_command(args))
-        except Exception as e:
-            print(api_json(status='error', message=str(e), output_format=args.output))
-            sys.exit(1)
+        print(api_json(status='error', message=_disabled_admin_message(), output_format=args.output))
+        sys.exit(2)
 
     connection = resolve_connection(
         explicit_profile_name=args.profile,
@@ -1799,11 +1847,12 @@ def main():
                 sys.exit(1)
             api = UMRSControlAPI(control_mq, effective_username)
             try:
-                parsed = api.request_status(args.target)
+                status_target = _resolve_status_target(args)
+                parsed = api.request_status(status_target)
                 if args.output == 'json':
                     print(_json.dumps(parsed, ensure_ascii=False))
                 else:
-                    print(format_status_text(parsed, args.target))
+                    print(format_status_text(parsed, status_target))
             except Exception as e:
                 print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
             finally:

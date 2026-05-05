@@ -72,3 +72,14 @@ def test_umrs_client_help_points_to_r4_and_admin_cli(monkeypatch, capsys) -> Non
     assert exc.value.code == 0
     assert "Use r4 for Gateway-mediated research workflows" in captured.out
     assert "Use umrs-server admin" in captured.out
+
+
+def test_umrs_client_completion_command_prints_setup(monkeypatch, capsys) -> None:
+    monkeypatch.setattr(sys, "argv", ["umrs-client", "completion", "bash"])
+
+    exit_code = cli.main()
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "_UMRS_CLIENT_COMPLETE" in captured.out
+    assert "complete " in captured.out

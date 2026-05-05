@@ -16,6 +16,7 @@ from umrs.admin.user_store import (
     validate_username,
 )
 from umrs.cli.admin.main import build_parser, main as admin_main
+from umrs.cli.completion import completion_candidates
 
 
 # ---------------------------------------------------------------------------
@@ -198,6 +199,12 @@ class TestAdminParser:
         args = p.parse_args(["bootstrap"])
         assert args.admin_user == "admin"
         assert args.token_name == "bootstrap"
+
+    def test_completion_includes_nested_user_actions(self) -> None:
+        p = build_parser()
+        assert "user" in completion_candidates(p, [""], 0)
+        assert "add" in completion_candidates(p, ["user", ""], 1)
+        assert "list" in completion_candidates(p, ["user", ""], 1)
 
 
 # ---------------------------------------------------------------------------
