@@ -38,6 +38,12 @@ def configure_status_parser(
     include_username: bool = False,
 ) -> None:
     parser.add_argument(
+        "--all",
+        action="store_true",
+        dest="status_all",
+        help="Alias for 'status all'",
+    )
+    parser.add_argument(
         "target",
         choices=STATUS_CHOICES,
         metavar="key",

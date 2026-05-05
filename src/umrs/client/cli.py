@@ -7,13 +7,15 @@ import sys
 
 ADMIN_DENIED_MESSAGE = (
     "umrs-client admin is disabled. Use 'umrs-server admin' for offline "
-    "operator tasks."
+    "operator tasks. Examples: 'umrs-server admin user add <username> ...' "
+    "and 'umrs-server admin user list'."
 )
 HELP_CROSS_REFERENCE = (
     "CLI map:\n"
     "  Use r4 for Gateway-mediated research workflows.\n"
     "  Use umrs-client only for UMRS diagnostics/migration helpers.\n"
     "  Use umrs-server admin for offline operator administration.\n"
+    "  Enable completion with: eval \"$(umrs-client completion bash)\"\n"
 )
 
 _OPTION_WITH_VALUE = {

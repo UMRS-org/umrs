@@ -78,6 +78,10 @@ def _record_row(rec: UserRecord) -> dict[str, Any]:
 def _print_table(rows: list[dict[str, Any]]) -> None:
     if not rows:
         print("(no users)")
+        print(
+            "hint: register one with `umrs-server admin user add <username> "
+            "--fullname \"Your Name\" --role user`"
+        )
         return
     columns = ["username", "role", "slurm_account", "projects", "disabled", "email"]
     widths = {c: max(len(c), *(len(str(r.get(c, ""))) for r in rows)) for c in columns}
@@ -519,7 +523,17 @@ _GENERATE_JWT_DESCRIPTION = (
 
 
 def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
-    add_p = user_sub.add_parser("add", help="Create a user record")
+    add_p = user_sub.add_parser(
+        "add",
+        help="Register a new user",
+        description="Register a general UMRS user in the server-side user_files store.",
+        epilog=(
+            "Example:\n"
+            "  umrs-server admin user add alice --fullname \"Alice Smith\" "
+            "--email alice@example.org --role user --project proj-alpha"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     add_p.add_argument("username")
     add_p.add_argument("--fullname", default="")
     add_p.add_argument("--email", default="")
@@ -539,7 +553,18 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
     add_p.add_argument("--json", action="store_true")
     add_p.set_defaults(func=_cmd_user_add)
 
-    list_p = user_sub.add_parser("list", help="List user records")
+    list_p = user_sub.add_parser(
+        "list",
+        help="List registered users",
+        description="List registered UMRS users from the server-side user_files store.",
+        epilog=(
+            "Examples:\n"
+            "  umrs-server admin user list\n"
+            "  umrs-server admin user list --role user\n"
+            "  umrs-server admin user list --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     list_p.add_argument("--role", choices=VALID_ROLES)
     list_p.add_argument("--disabled-only", action="store_true")
     list_p.add_argument("--json", action="store_true")
@@ -688,6 +713,20 @@ def build_parser() -> argparse.ArgumentParser:
             "account assignment. Manipulates user_files/*.json and "
             "admin_tokens.json directly — no running daemon required."
         ),
+        epilog=(
+            "Common onboarding flow:\n"
+            "  1. Register a user:\n"
+            "       umrs-server admin user add <username> --fullname \"Your Name\" --role user\n"
+            "  2. List registered users:\n"
+            "       umrs-server admin user list\n"
+            "  3. Show one user record:\n"
+            "       umrs-server admin user show <username>\n"
+            "  4. Ask the user to initialize the client side:\n"
+            "       umrs-client config init --username <username>\n\n"
+            "Shell completion:\n"
+            "  eval \"$(umrs-server completion bash)\""
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
         "--user-files-dir",
@@ -711,7 +750,22 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub = parser.add_subparsers(dest="group", required=True)
 
-    user_p = sub.add_parser("user", help="Manage user records")
+    user_p = sub.add_parser(
+        "user",
+        help="Manage registered users",
+        description=(
+            "Create, list, inspect, disable, and update server-side UMRS user "
+            "records. Use this command on the server/operator side; "
+            "umrs-client does not perform admin actions."
+        ),
+        epilog=(
+            "Most common commands:\n"
+            "  umrs-server admin user add <username> --fullname \"Your Name\" --role user\n"
+            "  umrs-server admin user list\n"
+            "  umrs-server admin user show <username>"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     _add_user_parsers(user_p.add_subparsers(dest="action", required=True))
 
     token_p = sub.add_parser("token", help="Manage admin API tokens")

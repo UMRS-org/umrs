@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import argparse
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+from umrs.client.control_commands import configure_status_parser
 from client_umrs import format_status_text
+from client_umrs import _resolve_status_target
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.server.provisioning import reconcile_status_on_startup
 from umrs.shared.pretty_print import pretty_print_thread_status
@@ -67,6 +70,29 @@ def test_format_status_text_explains_missing_reload_status():
     assert "Reload is synchronous" in rendered
     assert "status all" in rendered
     assert "list_buckets" in rendered
+
+
+def test_resolve_status_target_supports_all_flag_alias():
+    parser = argparse.ArgumentParser()
+    configure_status_parser(parser)
+
+    args = parser.parse_args(["--all"])
+
+    assert _resolve_status_target(args) == "all"
+
+
+def test_resolve_status_target_rejects_all_flag_with_specific_key():
+    parser = argparse.ArgumentParser()
+    configure_status_parser(parser)
+
+    args = parser.parse_args(["--all", "check"])
+
+    try:
+        _resolve_status_target(args)
+    except ValueError as exc:
+        assert "either '--all' or a specific status key" in str(exc)
+    else:
+        raise AssertionError("Expected ValueError for conflicting status selectors")
 
 
 def test_reconcile_status_on_startup_records_snapshot_status():
