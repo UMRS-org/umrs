@@ -257,6 +257,7 @@ async def run_lifecycle_case(
             prefer_warm=True,
             min_ttl_for_reuse_sec=60,
             env_vars={"RIVAULT_PROFILES": profiles_value},
+            metadata={"readiness_probe": "models"},
         )
         result = await service.provision(request)
         if not result.success or result.endpoint is None or result.job_id is None:
