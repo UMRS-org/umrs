@@ -85,6 +85,16 @@ def main():
         _print_toplevel_help()
         return 0
 
+    # Reject unknown subcommands before loading heavy ML imports.
+    first = sys.argv[1]
+    if not first.startswith("-"):
+        print(
+            f"umrs-server: unknown command '{first}'\n"
+            f"Run 'umrs-server -h' for usage.",
+            file=sys.stderr,
+        )
+        return 2
+
     # Full server start – heavy imports happen only here.
     from server_umrs import main as legacy_main
 
