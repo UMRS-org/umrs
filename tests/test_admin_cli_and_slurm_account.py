@@ -264,6 +264,43 @@ class TestAdminCLI:
         assert _run(d, "user", "add", "alice") == 0
         assert _run(d, "user", "add", "alice") == 2
 
+    def test_token_list_shows_expiration_metadata(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import importlib
+
+        class FakeManager:
+            def list_tokens(self) -> list[dict[str, str]]:
+                return [
+                    {
+                        "name": "bootstrap",
+                        "description": "Bootstrap token",
+                        "created_at": "2026-05-08T00:00:00+00:00",
+                        "expires_at": "never",
+                    },
+                    {
+                        "name": "temporary",
+                        "description": "Temporary access",
+                        "created_at": "2026-05-08T00:00:00+00:00",
+                        "expires_at": "2026-06-07T00:00:00+00:00",
+                    },
+                ]
+
+        admin_main_module = importlib.import_module("umrs.cli.admin.main")
+        monkeypatch.setattr(admin_main_module, "_token_manager", lambda: FakeManager())
+
+        d = tmp_path / "ufiles"
+        assert _run(d, "token", "list") == 0
+        out = capsys.readouterr().out
+
+        assert "expires_at" in out
+        assert "bootstrap" in out
+        assert "never" in out
+        assert "2026-06-07T00:00:00+00:00" in out
+
 
 # ---------------------------------------------------------------------------
 # Phase 4: Slurm account plumbing
