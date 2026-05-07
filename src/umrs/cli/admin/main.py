@@ -411,14 +411,24 @@ def _cmd_token_list(args: argparse.Namespace, _store: UserStore) -> int:
         if not tokens:
             print("(no admin tokens)")
             return 0
-        print(f"{'name':<30}  {'created_at':<25}  description")
-        print("-" * 80)
-        for t in tokens:
-            print(
-                f"{t.get('name',''):<30}  "
-                f"{t.get('created_at',''):<25}  "
-                f"{t.get('description','')}"
-            )
+        rows = [
+            {
+                "name": t.get("name", ""),
+                "created_at": t.get("created_at", ""),
+                "expires_at": t.get("expires_at", "never"),
+                "description": t.get("description", ""),
+            }
+            for t in tokens
+        ]
+        columns = ["name", "created_at", "expires_at", "description"]
+        widths = {
+            column: max(len(column), *(len(str(row.get(column, ""))) for row in rows))
+            for column in columns
+        }
+        print("  ".join(column.ljust(widths[column]) for column in columns))
+        print("  ".join("-" * widths[column] for column in columns))
+        for row in rows:
+            print("  ".join(str(row.get(column, "")).ljust(widths[column]) for column in columns))
     return 0
 
 

@@ -550,6 +550,7 @@ class TestAdminTokenManager:
         # Should not expose hashes
         for t in tokens:
             assert "token_hash" not in t
+            assert t["expires_at"] == "never"
 
 
 # =============================================================================

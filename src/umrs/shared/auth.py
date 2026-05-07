@@ -634,9 +634,30 @@ class AdminTokenManager:
                 "name": name,
                 "description": entry.get("description", ""),
                 "created_at": entry.get("created_at", ""),
+                "expires_at": self._format_token_expiration(entry),
             }
             for name, entry in tokens.items()
         ]
+
+    def _format_token_expiration(self, entry: dict) -> str:
+        """Return a display-friendly expiration timestamp for token metadata."""
+        expires_at = entry.get("expires_at")
+        if isinstance(expires_at, str) and expires_at.strip():
+            return expires_at
+
+        exp = entry.get("exp")
+        if isinstance(exp, str):
+            try:
+                exp = int(exp)
+            except ValueError:
+                exp = None
+
+        if isinstance(exp, (int, float)):
+            from datetime import datetime, timezone
+
+            return datetime.fromtimestamp(exp, tz=timezone.utc).isoformat()
+
+        return "never"
 
     def _hash_token(self, token: str, salt: str | None = None) -> tuple:
         """Hash a token for storage using PBKDF2 with a per-token salt.
