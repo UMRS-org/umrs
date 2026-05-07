@@ -77,6 +77,38 @@ def test_provision_endpoint_resolves_model_path_from_catalog(monkeypatch):
     assert service.requests[0].env_vars["VLLM_SERVED_MODEL_NAME"] == "Qwen/Qwen3-8B"
 
 
+def test_provision_endpoint_uses_model_readiness_for_embedding_model(monkeypatch):
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/e5-base-v2",
+            "huggingface_id": "intfloat/e5-base-v2",
+            "model_type": "embedding",
+        },
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/umrs/endpoints/provision",
+            json={"project_id": "project-a", "model": "e5-base-v2"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    assert service.requests[0].metadata["readiness_probe"] == "models"
+
+
 def test_provision_endpoint_uses_gateway_project_header(monkeypatch):
     service = _StubOrchestrationService()
     monkeypatch.setattr(

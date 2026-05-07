@@ -1212,9 +1212,10 @@ async def provision_endpoint(
         )
 
     request_metadata: dict[str, Any] = {
-        # This route provisions interactive inference endpoints. Require a
-        # successful chat path before exposing the endpoint as ready.
-        "readiness_probe": "chat"
+        "readiness_probe": _resolve_readiness_probe_mode(
+            request.model,
+            model_entry=model_entry,
+        )
     }
     env_vars: dict[str, str] = {}
     request_metadata.setdefault("owner_type", "user")

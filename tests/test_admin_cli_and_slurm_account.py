@@ -206,6 +206,23 @@ class TestAdminParser:
         assert "add" in completion_candidates(p, ["user", ""], 1)
         assert "list" in completion_candidates(p, ["user", ""], 1)
 
+    def test_generate_jwt_uses_persisted_gateway_secret(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from argparse import Namespace
+
+        from umrs.cli.admin.main import _resolve_jwt_secret
+
+        gateway_dir = tmp_path / "xdg" / "umrs" / "gateway"
+        gateway_dir.mkdir(parents=True)
+        (gateway_dir / "jwt.secret").write_text("gateway-secret\n")
+        monkeypatch.delenv("JWT_SECRET", raising=False)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+
+        assert _resolve_jwt_secret(Namespace(secret=None)) == "gateway-secret"
+
 
 # ---------------------------------------------------------------------------
 # end-to-end CLI invocations against a temp user_files dir
