@@ -682,11 +682,36 @@ class OrchestrationService:
 
         # Stop the backend job
         try:
-            await self.backend.cleanup(job_id)
+            await self.backend.cleanup(job_id, force=force)
         except Exception as e:
             logger.error(f"Backend cleanup failed for {job_id}: {e}")
-            if not force:
-                return False
+            return False
+
+        try:
+            backend_info = await self.backend.get_job_status(job_id)
+        except Exception as e:
+            logger.error(f"Backend cleanup verification failed for {job_id}: {e}")
+            return False
+
+        if backend_info.status in (
+            JobStatus.PENDING,
+            JobStatus.STARTING,
+            JobStatus.READY,
+            JobStatus.RUNNING,
+        ):
+            logger.error(
+                "Backend cleanup for %s returned while job is still active: %s",
+                job_id,
+                backend_info.status.value,
+            )
+            self.registry.update_metadata(
+                job_id,
+                {
+                    "detail": "backend cleanup still pending",
+                    "cleanup_status": backend_info.status.value,
+                },
+            )
+            return False
 
         # Release port
         self.port_manager.release(endpoint.port, endpoint.host)

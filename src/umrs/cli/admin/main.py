@@ -266,8 +266,9 @@ def _cmd_token_generate(args: argparse.Namespace, _store: UserStore) -> int:
 
 
 def _resolve_jwt_secret(args: argparse.Namespace) -> str:
-    """Resolve the JWT signing secret from CLI flag, env, or default."""
+    """Resolve the JWT signing secret from CLI flag, env, Gateway secret, or default."""
     import os
+    from pathlib import Path
 
     secret = getattr(args, "secret", None)
     if secret:
@@ -275,9 +276,23 @@ def _resolve_jwt_secret(args: argparse.Namespace) -> str:
     env_secret = os.environ.get("JWT_SECRET")
     if env_secret:
         return env_secret
+
+    candidates: list[Path] = []
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        candidates.append(Path(xdg_config) / "umrs" / "gateway" / "jwt.secret")
+    candidates.append(Path.home() / ".config" / "umrs" / "gateway" / "jwt.secret")
+    for path in candidates:
+        try:
+            gateway_secret = path.read_text().strip()
+        except OSError:
+            continue
+        if gateway_secret:
+            return gateway_secret
+
     print(
         "WARNING: JWT_SECRET is not set — using insecure default. "
-        "Set JWT_SECRET or pass --secret for production use.",
+        "Set JWT_SECRET, pass --secret, or deploy the Gateway secret for production use.",
         file=sys.stderr,
     )
     return "dev-secret-change-in-production"
@@ -516,7 +531,8 @@ _GENERATE_JWT_DESCRIPTION = (
     "(the first project becomes the default project_id). "
     "Use it with 'r4 auth login --api-key <token>'. "
     "For shared user sessions prefer OIDC/Okta. "
-    "The signing secret is read from --secret, $JWT_SECRET, or the built-in dev default. "
+    "The signing secret is read from --secret, $JWT_SECRET, the persisted Gateway secret, "
+    "or the built-in dev default. "
     "NOTE: this token is NOT for umrs-client --admin-token — "
     "for that, use 'generate' instead."
 )
@@ -671,7 +687,7 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
     )
     jwt_p.add_argument(
         "--secret", "-s", default=None,
-        help="JWT signing secret. Default: $JWT_SECRET or dev default",
+        help="JWT signing secret. Default: $JWT_SECRET, Gateway secret, or dev default",
     )
     jwt_p.add_argument("--json", action="store_true")
     jwt_p.set_defaults(func=_cmd_token_generate_jwt)
