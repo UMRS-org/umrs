@@ -1,0 +1,31 @@
+{
+    "name": "image-invert-pipeline",
+    "version": "1.0",
+    "description": "Demo: invert images using a user-provided step (no UMRS code changes needed)",
+    "source": {
+        "type": "local_path",
+        "path": "/PLACEHOLDER/example_scripts"
+    },
+    "requirements": [
+        "Pillow"
+    ],
+    "resources": {
+        "gpu_count": 0,
+        "cpu_limit": "1",
+        "memory_limit": "1Gi",
+        "timeout_seconds": 300
+    },
+    "steps": [
+        {
+            "name": "invert",
+            "entrypoint": "invert_image:InvertImageStep",
+            "config": {
+                "output_prefix": "inverted/"
+            }
+        }
+    ],
+    "output": {
+        "return_type": "file",
+        "embedding_vector_size": 0
+    }
+}

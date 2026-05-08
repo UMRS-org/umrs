@@ -19,7 +19,6 @@ import socket
 import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +38,7 @@ class PortAllocationConfig:
     max_retries: int = 10  # Max attempts to find free port
 
     @classmethod
-    def from_env(cls) -> "PortAllocationConfig":
+    def from_env(cls) -> PortAllocationConfig:
         """Create config from environment variables."""
         return cls(
             min_port=int(os.getenv("RIVAULT_PORT_MIN", "11434")),
@@ -66,7 +65,7 @@ class PortAllocator(ABC):
     """Abstract base class for port allocators."""
 
     @abstractmethod
-    def allocate(self, job_id: str, host: str) -> Optional[int]:
+    def allocate(self, job_id: str, host: str) -> int | None:
         """
         Allocate a port for a job on a specific host.
 
@@ -107,12 +106,12 @@ class StaticRangeAllocator(PortAllocator):
     Suitable for single-node or when UMRS manages all instances.
     """
 
-    def __init__(self, config: Optional[PortAllocationConfig] = None):
+    def __init__(self, config: PortAllocationConfig | None = None):
         self.config = config or PortAllocationConfig.from_env()
-        self._allocations: Dict[tuple[str, int], PortAllocation] = {}
+        self._allocations: dict[tuple[str, int], PortAllocation] = {}
         self._lock = threading.RLock()
 
-    def allocate(self, job_id: str, host: str) -> Optional[int]:
+    def allocate(self, job_id: str, host: str) -> int | None:
         """Allocate a port from the static range."""
         with self._lock:
             # Get currently allocated ports for this host
@@ -188,7 +187,7 @@ class StaticRangeAllocator(PortAllocator):
         # (actual availability will be verified during readiness)
         return True
 
-    def list_allocations(self, host: Optional[str] = None) -> list[PortAllocation]:
+    def list_allocations(self, host: str | None = None) -> list[PortAllocation]:
         """List all allocations, optionally filtered by host."""
         with self._lock:
             allocations = list(self._allocations.values())
@@ -213,7 +212,7 @@ class RegistryLockAllocator(PortAllocator):
     providing distributed coordination when multiple UMRS instances exist.
     """
 
-    def __init__(self, config: Optional[PortAllocationConfig] = None):
+    def __init__(self, config: PortAllocationConfig | None = None):
         self.config = config or PortAllocationConfig.from_env()
         self._lock = threading.RLock()
         # Import here to avoid circular imports
@@ -221,7 +220,7 @@ class RegistryLockAllocator(PortAllocator):
 
         self._get_registry = get_registry
 
-    def allocate(self, job_id: str, host: str) -> Optional[int]:
+    def allocate(self, job_id: str, host: str) -> int | None:
         """Allocate a port using registry information."""
         with self._lock:
             registry = self._get_registry()
@@ -263,11 +262,11 @@ class K8sServiceAllocator(PortAllocator):
     allocate ports but tracks the intended port for documentation.
     """
 
-    def __init__(self, config: Optional[PortAllocationConfig] = None):
+    def __init__(self, config: PortAllocationConfig | None = None):
         self.config = config or PortAllocationConfig.from_env()
         self._default_port = self.config.min_port  # Usually 11434
 
-    def allocate(self, job_id: str, host: str) -> Optional[int]:
+    def allocate(self, job_id: str, host: str) -> int | None:
         """Return default port (K8s Service handles actual allocation)."""
         logger.info(
             f"K8s port allocation: using default port {self._default_port} "
@@ -296,7 +295,7 @@ class PortManager:
     Provides a unified interface for port allocation across different strategies.
     """
 
-    def __init__(self, config: Optional[PortAllocationConfig] = None):
+    def __init__(self, config: PortAllocationConfig | None = None):
         self.config = config or PortAllocationConfig.from_env()
         self._allocator = self._create_allocator()
 
@@ -316,7 +315,7 @@ class PortManager:
             )
             return StaticRangeAllocator(self.config)
 
-    def allocate(self, job_id: str, host: str) -> Optional[int]:
+    def allocate(self, job_id: str, host: str) -> int | None:
         """Allocate a port."""
         return self._allocator.allocate(job_id, host)
 
@@ -330,7 +329,7 @@ class PortManager:
 
 
 # Global singleton
-_port_manager: Optional[PortManager] = None
+_port_manager: PortManager | None = None
 _manager_lock = threading.Lock()
 
 

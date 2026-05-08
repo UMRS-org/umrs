@@ -12,9 +12,9 @@ import logging
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING
 
-from .models import PluginSpec, PluginResult, PluginStatus
+from .models import PluginResult, PluginSpec, PluginStatus
 
 if TYPE_CHECKING:
     from .audit import PluginAuditLog
@@ -49,7 +49,7 @@ class PluginRunner(abc.ABC):
 
     def __init__(
         self,
-        audit_log: Optional[PluginAuditLog] = None,
+        audit_log: PluginAuditLog | None = None,
         base_image: str = DEFAULT_PLUGIN_IMAGE,
     ):
         """
@@ -61,7 +61,7 @@ class PluginRunner(abc.ABC):
         """
         self.audit_log = audit_log
         self.base_image = base_image
-        self._active_plugins: Dict[str, PluginSpec] = {}
+        self._active_plugins: dict[str, PluginSpec] = {}
 
     def generate_plugin_id(self) -> str:
         """Generate unique plugin execution ID."""
@@ -224,7 +224,7 @@ class PluginRunner(abc.ABC):
         ...
 
     @abc.abstractmethod
-    async def get_status(self, plugin_id: str) -> Optional[PluginStatus]:
+    async def get_status(self, plugin_id: str) -> PluginStatus | None:
         """
         Get current status of a plugin execution.
 
@@ -236,7 +236,7 @@ class PluginRunner(abc.ABC):
         """
         ...
 
-    def _generate_container_env(self, spec: PluginSpec) -> Dict[str, str]:
+    def _generate_container_env(self, spec: PluginSpec) -> dict[str, str]:
         """Generate environment variables for container."""
         env = {
             "PLUGIN_ENTRYPOINT": spec.entrypoint,
@@ -256,8 +256,14 @@ class PluginRunner(abc.ABC):
 
         # Add user-provided env vars (filtered)
         for key, value in spec.env_vars.items():
-            # Prevent overriding system vars
-            if not key.startswith("PLUGIN_"):
+            # Prevent overriding system vars — but let UMRS_* vars
+            # (set by the step adapter) through unprefixed so the
+            # in-container step executor can read them directly.
+            if key.startswith("PLUGIN_"):
+                continue  # reserved namespace — skip
+            if key.startswith("UMRS_"):
+                env[key] = value  # step-adapter contract — pass as-is
+            else:
                 env[f"USER_{key}"] = value
 
         return env

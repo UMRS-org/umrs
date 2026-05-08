@@ -1,6 +1,11 @@
 """
 Model Version Management (MM-003).
 
+NOTE: This module is production-ready but not yet surfaced in demos.
+      See Demo 08 (model_registry) for model registration & staging usage.
+      Version tracking will be integrated when the model registry CLI
+      commands (umrs-client model register/list/download) are wired in.
+
 Provides version tracking for models, allowing:
 - Multiple versions per model
 - Version comparison and rollback
@@ -16,7 +21,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 
 class VersionStatus(Enum):
@@ -46,34 +51,34 @@ class ModelVersion:
 
     # Storage
     storage_ref: str
-    storage_size_bytes: Optional[int] = None
+    storage_size_bytes: int | None = None
 
     # Metadata
-    description: Optional[str] = None
-    changelog: Optional[str] = None
-    release_notes: Optional[str] = None
+    description: str | None = None
+    changelog: str | None = None
+    release_notes: str | None = None
 
     # Lineage
-    parent_version_id: Optional[str] = None
-    created_from: Optional[str] = None  # "training", "conversion", "import"
+    parent_version_id: str | None = None
+    created_from: str | None = None  # "training", "conversion", "import"
 
     # Status
     status: VersionStatus = VersionStatus.DRAFT
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.now)
-    released_at: Optional[datetime] = None
-    deprecated_at: Optional[datetime] = None
+    released_at: datetime | None = None
+    deprecated_at: datetime | None = None
 
     # Metrics (optional)
-    metrics: Dict[str, Any] = field(default_factory=dict)
+    metrics: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def generate_version_id(cls) -> str:
         """Generate a unique version ID."""
         return f"ver-{uuid.uuid4().hex[:12]}"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON storage."""
         return {
             "version_id": self.version_id,
@@ -94,7 +99,7 @@ class ModelVersion:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "ModelVersion":
+    def from_dict(cls, data: dict[str, Any]) -> ModelVersion:
         """Create from dictionary."""
         return cls(
             version_id=data["version_id"],
@@ -184,10 +189,10 @@ class VersionHistory:
     """
 
     model_id: str
-    versions: List[ModelVersion] = field(default_factory=list)
+    versions: list[ModelVersion] = field(default_factory=list)
 
     @property
-    def latest(self) -> Optional[ModelVersion]:
+    def latest(self) -> ModelVersion | None:
         """Get the latest released version."""
         released = [v for v in self.versions if v.status == VersionStatus.RELEASED]
         if not released:
@@ -201,18 +206,18 @@ class VersionHistory:
         return released[0]
 
     @property
-    def current(self) -> Optional[ModelVersion]:
+    def current(self) -> ModelVersion | None:
         """Alias for latest."""
         return self.latest
 
-    def get_version(self, version_str: str) -> Optional[ModelVersion]:
+    def get_version(self, version_str: str) -> ModelVersion | None:
         """Get a specific version."""
         for v in self.versions:
             if v.version == version_str:
                 return v
         return None
 
-    def get_lineage(self, version_id: str) -> List[ModelVersion]:
+    def get_lineage(self, version_id: str) -> list[ModelVersion]:
         """Get version lineage (parent chain)."""
         lineage = []
         current_id = version_id
@@ -228,7 +233,7 @@ class VersionHistory:
 
         return lineage
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "model_id": self.model_id,

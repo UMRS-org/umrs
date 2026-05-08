@@ -1,0 +1,40 @@
+Seismic Wave Propagation and Full Waveform Inversion
+
+Seismic wave simulation is a cornerstone of computational geophysics.
+The elastic wave equation governs the propagation of P-waves (compressional)
+and S-waves (shear) through heterogeneous media.  Numerical discretisation
+of this equation on massively parallel architectures enables full waveform
+inversion (FWI), which iteratively matches observed seismograms to
+synthetic data by adjusting subsurface velocity models.
+
+Common numerical methods include:
+- Finite-Difference Time-Domain (FDTD): second- or fourth-order stencils
+  on regular grids; simple to implement, highly scalable on GPUs.
+- Spectral Element Method (SEM): uses high-order polynomial bases on
+  hexahedral meshes; naturally handles complex topography and interfaces.
+- Discontinuous Galerkin (DG): combines local polynomial bases with
+  numerical fluxes; excellent for adaptive meshes and heterogeneous media.
+
+Absorbing boundary conditions (PML, C-PML) prevent artificial reflections
+at the edges of the computational domain.  The adjoint-state method
+computes the gradient of the misfit functional with respect to model
+parameters, requiring only two wave simulations per iteration (forward
+and adjoint).
+
+Modern FWI workflows on HPC clusters exploit domain decomposition with
+MPI and GPU acceleration via CUDA or HIP.  A single 3-D inversion at
+exploration scale may require O(10^4) CPU-hours.  Reproducibility of
+such runs is ensured through containerised environments (Apptainer)
+and deterministic random-number seeding.
+
+Key challenges remain:
+1. Cycle-skipping: initial models far from the global minimum trap the
+   optimiser in local minima.
+2. Cross-talk between P- and S-wave velocities in elastic FWI.
+3. Scaling 3-D elastic FWI to the crustal or global scale.
+4. Incorporating anisotropy and attenuation consistently.
+
+References:
+- Virieux & Operto, 2009, Geophysics 74(6), WCC1–WCC26
+- Komatitsch & Tromp, 2002, GJI 149, 390–412
+- Fichtner, 2010, Full Seismic Waveform Modelling and Inversion, Springer

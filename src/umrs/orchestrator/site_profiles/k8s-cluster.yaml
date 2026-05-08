@@ -1,0 +1,7 @@
+name: k8s-cluster
+description: Kubernetes cluster profile using native Kubernetes jobs.
+scheduler_kind: k8s
+runtime_kind: k8s-job
+slurm_modules: []
+slurm_log_dir: ./tmp/rivault/logs
+slurm_job_info_dir: ./tmp/rivault/jobs

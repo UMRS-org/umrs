@@ -16,7 +16,6 @@ info() { echo "[deploy] $*"; }
 # Build images used by k8s manifests (tags must match)
 info "Building images..."
 docker build -t docker-umrs-server -f "$WORKDIR/Dockerfile" "$REPOROOT"
-docker build -t docker-umrs-embed-worker -f "$WORKDIR/Dockerfile" "$REPOROOT"
 docker build -t docker-rivault-mock -f "$WORKDIR/Dockerfile.rivault" "$REPOROOT"
 
 docker build -t docker-umrs-api-test -f "$WORKDIR/Dockerfile.umrs-api-test" "$REPOROOT" || true
@@ -25,7 +24,6 @@ docker build -t docker-umrs-api-test -f "$WORKDIR/Dockerfile.umrs-api-test" "$RE
 if command -v kind >/dev/null 2>&1 && kind get clusters | grep -q "^${CLUSTER_NAME}$"; then
   info "Loading images into KinD cluster ${CLUSTER_NAME}..."
   kind load docker-image docker-umrs-server --name "$CLUSTER_NAME"
-  kind load docker-image docker-umrs-embed-worker --name "$CLUSTER_NAME"
   kind load docker-image docker-rivault-mock --name "$CLUSTER_NAME"
   kind load docker-image docker-umrs-api-test --name "$CLUSTER_NAME" || true
 else

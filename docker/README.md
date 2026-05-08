@@ -1,84 +1,93 @@
 # Docker Setup Guide
 
-This directory contains Docker-related files for deploying UMRS (Unified Multimodal Retrieval System) as a standalone stack.
+This directory contains the local standalone Docker deployment for UMRS.
+It is intended for local development, API/server smoke tests, and lightweight
+single-node experimentation. It does **not** replicate the full Slurm-backed
+Mini-RiVault flow used on HPC sites.
 
-> **Note:** All Docker-related commands and file references below assume you are at the repository root. Docker files live under the `docker/` directory.
+All commands below assume you are running them from the repository root.
+
+## What the Docker stack provides
+
+- `umrs-server` container running `src/server_umrs.py`
+- PostgreSQL + pgvector
+- MinIO for S3-compatible object storage
+
+The compose file does not provision Slurm, Mini-RiVault, or compute-node GPU
+launches.
 
 ## Prerequisites
-- [Docker](https://docs.docker.com/get-docker/) installed
-- [Docker Compose](https://docs.docker.com/compose/install/) installed
+
+- [Docker](https://docs.docker.com/get-docker/)
+- Docker Compose / `docker compose`
 
 ## Quick Start
 
-1. **Build and start all services:**
-   ```bash
-   docker compose -f docker/docker-compose.yml up -d --build
-   ```
-   This builds the images and starts the containers: UMRS server, PostgreSQL+pgvector, and MinIO.
+```bash
+docker compose -f docker/docker-compose.yml up -d --build
+docker logs -f umrs-server
+```
 
-2. **Watch the server logs:**
-   ```bash
-   docker logs -f umrs-server
-   ```
-
-3. **Stop all services:**
-   ```bash
-   docker compose -f docker/docker-compose.yml down
-   ```
-
-## Quick Demo
-
-After starting the services, test with the client:
+To stop the stack:
 
 ```bash
-# Ping the server
+docker compose -f docker/docker-compose.yml down
+```
+
+## Smoke Checks
+
+The image runs the server directly and includes the source tree under `/app`.
+The simplest validation commands are:
+
+```bash
+# ZMQ control-plane ping from inside the container
 docker exec -it umrs-server python src/client_umrs.py ping
 
-# List buckets
-docker exec -it umrs-server python src/client_umrs.py --conf /root/conf_umrs.json list_buckets user1
+# List buckets from the bundled config
+docker exec -it umrs-server \
+   python src/client_umrs.py --conf /root/conf_umrs.json list_buckets user1
 
-# Upload inline text
-docker exec -it umrs-server python src/client_umrs.py \
-   --conf /root/conf_umrs.json \
-   upload_text "I eat apple at breakfast" bucket-2 user1 --meta keywords:fruit
+# HTTP API docs from the host
+curl http://localhost:8001/docs
 ```
 
-## Services
+The Docker image does not currently install the editable package entrypoint, so
+the canonical in-container CLI invocation is still `python src/client_umrs.py`.
 
-| Service | Port | Description |
-|---------|------|-------------|
-| `umrs-server` | 5555 (ZMQ) | UMRS server with ZeroMQ control plane |
-| `postgres` | 5432 | PostgreSQL with pgvector extension |
-| `minio` | 9000 (API), 9001 (Console) | S3-compatible object storage |
-| `umrs-api-test` | - | Optional: scripted API tests |
+## Ports
 
-## Mounting Local Files
+| Host port | Service |
+|---|---|
+| `8001` | UMRS HTTP API (`/docs`) |
+| `5555` | ZMQ control plane |
+| `9000` | MinIO S3 API |
+| `9001` | MinIO console |
 
-To process a local file or directory, mount it into the container:
+## Files In This Directory
 
-```bash
-docker run --rm \
-  -v /path/to/local/data:/data \
-  -v $(pwd)/docker/s3cfg:/root/.s3cfg:ro \
-  --network=host \
-  -it umrs-server python src/client_umrs.py /data/apple.txt ej-bucket-2
-```
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | local standalone stack |
+| `Dockerfile` | UMRS server image |
+| `Dockerfile.umrs-api-test` | API test image |
+| `conf_umrs.json` | bundled server config used by the container |
+| `user_files/` | bundled user configs |
+| `init_pgvector.sql` | pgvector initialization |
+| `s3cfg`, `s3cfg_user1`, `s3cfg_user2` | MinIO/S3 credentials |
+| `env.default` | example environment values |
+| `data/` | sample data baked into the image |
 
-## Files
+## Notes And Limitations
 
-| File | Description |
-|------|-------------|
-| `docker-compose.yml` | Main Docker Compose configuration |
-| `Dockerfile` | Main application Dockerfile |
-| `init_pgvector.sql` | SQL script to initialize pgvector extension |
-| `conf_umrs.json` | Example UMRS server configuration |
-| `s3cfg` | S3 admin credentials for MinIO |
-| `s3cfg_user1`, `s3cfg_user2` | Per-user S3 credentials |
-| `env.default` | Default environment variables |
-| `user_files/` | Per-user JSON configuration files |
+- This stack is for local development; it is not the same runtime path as the
+   site-specific Slurm+Podman deployments under `deploy/`.
+- The Docker image starts the server with `python src/server_umrs.py -c /root/conf_umrs.json`.
+- For site deployments, use the matching guide under `../deploy/` (for example
+   [../deploy/rccs-cloud/README.md](../deploy/rccs-cloud/README.md)) or the
+   admin guide instead of copying Docker commands.
 
-## Notes
-- Environment variables are configured in `docker-compose.yml` and `env.default`
-- The server mounts `s3cfg` as `~/.s3cfg` inside the container for admin S3 access
-- User config files from `user_files/` are copied into the image at build time
-- For detailed architecture and implementation, see `doc/umrs_overview.md`
+## See Also
+
+- [../Readme.md](../Readme.md)
+- [../doc/admin_guide.md](../doc/admin_guide.md)
+- [../doc/umrs_overview.md](../doc/umrs_overview.md)

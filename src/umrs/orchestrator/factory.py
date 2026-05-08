@@ -11,15 +11,15 @@ The backend is selected via the RIVAULT_ORCHESTRATOR environment variable:
 from __future__ import annotations
 
 import os
-from typing import Dict, Optional, Type
 
 from .base import OrchestratorBackend, OrchestratorConfig
 
 # Registry of available backends
-_BACKEND_REGISTRY: Dict[str, Type[OrchestratorBackend]] = {}
+_BACKEND_REGISTRY: dict[str, type[OrchestratorBackend]] = {}
+_EXPERIMENTAL_HYBRID_BACKENDS = {"hybrid", "hybrid-slurm", "slurm-hybrid"}
 
 
-def register_backend(name: str, backend_class: Type[OrchestratorBackend]) -> None:
+def register_backend(name: str, backend_class: type[OrchestratorBackend]) -> None:
     """Register a backend implementation."""
     _BACKEND_REGISTRY[name.lower()] = backend_class
 
@@ -40,6 +40,10 @@ def _lazy_register_builtins() -> None:
         register_backend("docker-compose", DockerComposeBackend)
         register_backend("compose", DockerComposeBackend)
 
+    if "slurm-podman" not in _BACKEND_REGISTRY:
+        from .slurm_podman_backend import SlurmPodmanBackend
+        register_backend("slurm-podman", SlurmPodmanBackend)
+
 
 def _detect_backend() -> str:
     """Auto-detect the best available backend."""
@@ -49,34 +53,11 @@ def _detect_backend() -> str:
     if shutil.which("sbatch") and shutil.which("squeue"):
         return "slurm"
 
-    # Check for Kubernetes
-    if shutil.which("kubectl"):
-        # Verify cluster is accessible
-        import subprocess
-        try:
-            result = subprocess.run(
-                ["kubectl", "cluster-info"],
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return "kubernetes"
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+    if shutil.which("kubectl") and _command_succeeds("kubectl", "cluster-info"):
+        return "kubernetes"
 
-    # Check for Docker
-    if shutil.which("docker"):
-        import subprocess
-        try:
-            result = subprocess.run(
-                ["docker", "info"],
-                capture_output=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                return "docker-compose"
-        except (subprocess.TimeoutExpired, FileNotFoundError):
-            pass
+    if shutil.which("docker") and _command_succeeds("docker", "info"):
+        return "docker-compose"
 
     raise RuntimeError(
         "No orchestration backend available. "
@@ -84,9 +65,19 @@ def _detect_backend() -> str:
     )
 
 
+def _command_succeeds(*args: str) -> bool:
+    import subprocess
+
+    try:
+        result = subprocess.run(args, capture_output=True, timeout=5)
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return False
+    return result.returncode == 0
+
+
 def get_orchestrator(
-    backend: Optional[str] = None,
-    config: Optional[OrchestratorConfig] = None,
+    backend: str | None = None,
+    config: OrchestratorConfig | None = None,
 ) -> OrchestratorBackend:
     """
     Get an orchestrator backend instance.
@@ -120,6 +111,13 @@ def get_orchestrator(
     if backend == "auto":
         backend = _detect_backend()
 
+    if backend in _EXPERIMENTAL_HYBRID_BACKENDS:
+        raise ValueError(
+            "Hybrid Slurm orchestration is experimental, not for HPC production. "
+            "Use 'slurm-podman' or 'slurm', or instantiate HybridOrchestrator "
+            "with RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM=true for compatibility testing."
+        )
+
     if backend not in _BACKEND_REGISTRY:
         available = ", ".join(sorted(_BACKEND_REGISTRY.keys()))
         raise ValueError(
@@ -131,7 +129,7 @@ def get_orchestrator(
     return backend_class(config)
 
 
-async def get_orchestrator_health() -> Dict[str, any]:
+async def get_orchestrator_health() -> dict[str, any]:
     """
     Get health status of all registered backends.
 

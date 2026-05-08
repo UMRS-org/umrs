@@ -1,19 +1,23 @@
 # UMRS ZeroMQ API Contract
 
-This document defines the ZeroMQ-only control and data planes between client(s) and server.
+This document defines the ZeroMQ control and data planes between client(s) and server.
 
 ## Channels
-- Control channel: `REQ` (client) ↔ `REP` (server) on `tcp://<server-host>:5555`.
+- Control channel: `DEALER` (client) ↔ `ROUTER` (server) on `tcp://<server-host>:5555`.
 - Data channel: Per-client `PUSH` (client) → `PULL` (server) on dynamically assigned ports `> 5555`.
+
+DEALER/ROUTER framing: The client sends single-frame messages; the server receives `[sender_id, message]` and replies with `[sender_id, reply]`. On the client side, `recv_multipart()` returns either 1 or 2 frames (empty delimiter + payload); the client always takes the last frame.
 
 ## Environment
 - `UMRS_SERVER_HOST`: When set on the server process, it is used to advertise the routable host in data channel endpoints returned to clients (e.g., container name `umrs-server`).
+- `UMRS_CONTROL_PORT`: Server control port (default `5555`).
+- `UMRS_TUNNEL_MODE`: When `true`, server binds to `127.0.0.1` instead of `*`.
 
 ## Control Commands
-1) READY?
-- Request: `READY?`
+1) HAND_CHECK (Handshake)
+- Request: `HAND_CHECK`
 - Response: `READY!`
-- Purpose: Liveness/handshake; client retries once on timeout.
+- Purpose: Liveness/handshake. Client retries once with `READY?` on timeout; server responds `READY!` to both.
 
 2) CREATE_DATA_QUEUE
 - Request: `CREATE_DATA_QUEUE:<username>`

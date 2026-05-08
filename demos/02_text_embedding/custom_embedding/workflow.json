@@ -1,0 +1,26 @@
+{
+    "name": "word-count-embedding",
+    "version": "1.0",
+    "description": "Custom text embedding using word-count vectors (demo)",
+
+    "source": {
+        "type": "local_path",
+        "path": "/path/to/custom_embedding"
+    },
+
+    "steps": [
+        {
+            "name": "word_count_embedding",
+            "entrypoint": "word_count_step:WordCountEmbeddingStep",
+            "config": {
+                "vector_size": 128,
+                "output_prefix": "embeddings/"
+            }
+        }
+    ],
+
+    "output": {
+        "return_type": "vector",
+        "embedding_vector_size": 128
+    }
+}

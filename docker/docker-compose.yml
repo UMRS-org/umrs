@@ -10,7 +10,6 @@ services:
     depends_on:
       - postgres
       - minio
-      - umrs-embed-worker
     ports:
       # Map UMRS HTTP API to 8001 on the host to avoid conflicts with
       # other stacks (e.g. RiVault/vLLM) that may also use 8000.
@@ -22,38 +21,14 @@ services:
       - DB_SUPERUSER_PASSWORD=postgres
       - DB_USER_PASSWORD=ejeannot
       - UMRS_SERVER_HOST=umrs-server
-      # Ensure HF and SentenceTransformers caches go into the shared models
-      # directory so that the worker can reuse downloaded weights.
       - SENTENCE_TRANSFORMERS_HOME=/shared/models/sentence_transformers
       - HF_HOME=/shared/models/hf
     volumes:
       - ./s3cfg:/root/.s3cfg:ro
       - $GLOBUS_DIR:/GLOBUS
-      # Shared model cache to mimic HPC shared filesystem between login
-      # (UMRS server) and compute (embedding worker) nodes.
       - model_cache:/shared/models
     restart: unless-stopped
     command: ["python", "src/server_umrs.py", "-c", "/root/conf_umrs.json"]
-
-  umrs-embed-worker:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    container_name: umrs-embed-worker
-    environment:
-      - PYTHONUNBUFFERED=1
-      - EMBEDDING_WORKER_BIND=tcp://0.0.0.0:6000
-      - EMBEDDING_DEVICE=cuda
-      # Point HF and SentenceTransformers caches into the shared models path
-      - SENTENCE_TRANSFORMERS_HOME=/shared/models/sentence_transformers
-      - HF_HOME=/shared/models/hf
-    volumes:
-      - ./s3cfg:/root/.s3cfg:ro
-      # Same shared cache volume as the server so that models downloaded on
-      # the server side are visible to the worker, matching the HPC
-      # deployment model.
-      - model_cache:/shared/models
-    command: ["python", "src/embedding_worker.py"]
 
   minio:
     image: minio/minio:latest
@@ -71,7 +46,9 @@ services:
     restart: unless-stopped
 
   postgres:
-    image: ankane/pgvector:latest
+    # `ankane/pgvector:latest` breaks fresh init because the entrypoint calls
+    # `ls`, but the image does not ship the required shell/coreutils.
+    image: pgvector/pgvector:pg15
     container_name: postgres
     environment:
       - POSTGRES_USER=postgres

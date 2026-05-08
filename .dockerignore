@@ -1,0 +1,16 @@
+# Exclude large model files and tarballs from Docker build context
+# (models are bind-mounted at runtime via compose volumes)
+src/umrs/mini-rivault-llm/images/
+src/umrs/mini-rivault-llm/models/
+data/
+XP/
+docker/ssl/
+demos/slurm-dev/test_data/
+demos/slurm-dev/munge-key/
+demos/slurm-dev/user_files/
+redsql/
+tests/
+**/*.tar
+**/*.tar.gz
+__pycache__
+.git

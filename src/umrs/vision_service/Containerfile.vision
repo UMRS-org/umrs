@@ -1,0 +1,79 @@
+# Generic Vision Model Serving Container
+# -----------------------------------------------------------------------------
+# OCI-compatible image for serving any vision model via BentoML.
+# Primary runtime: Podman (with CDI for GPU passthrough on Slurm nodes)
+# Also works with Docker and Singularity.
+#
+# Build:
+#   podman build -t umrs-vision-service:latest -f Containerfile.vision .
+#
+# Run (Podman + GPU):
+#   podman run --rm --device nvidia.com/gpu=all \
+#     -v /models:/models:ro \
+#     -v /adapters/user:/adapters/user:ro \
+#     -p 3000:3000 \
+#     umrs-vision-service:latest
+#
+# Run on Slurm (via UMRS orchestrator):
+#   srun podman run --rm --device nvidia.com/gpu=all \
+#     -v $MODEL_PATH:/models:ro \
+#     -v $ADAPTER_PATH:/adapters/user:ro \
+#     -e VISION_ADAPTERS_DIR=/adapters/system:/adapters/user \
+#     -p $PORT:3000 \
+#     umrs-vision-service:latest
+# -----------------------------------------------------------------------------
+
+FROM python:3.11-slim AS base
+
+# System dependencies for OpenCV headless and image processing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libgl1 curl && \
+    rm -rf /var/lib/apt/lists/*
+
+# Install uv (fast Python package manager). Kept at runtime for custom
+# adapter dependency installation via requirements.txt auto-discovery.
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+ENV UV_SYSTEM_PYTHON=1 UV_NO_CACHE=1
+
+WORKDIR /app
+
+# Install PyTorch with CUDA support
+# Uses cu130 wheels which bundle CUDA runtime; host driver is mounted via CDI.
+RUN uv pip install \
+    torch==2.10.0 torchvision==0.25.0 --index-url https://download.pytorch.org/whl/cu130
+
+# Install vision service dependencies
+COPY src/umrs/vision_service/requirements-vision.txt .
+RUN uv pip install -r requirements-vision.txt
+
+# Install HuggingFace transformers for the generic adapter.
+RUN uv pip install "transformers>=4.50.0" accelerate
+
+# Install decord for video support
+RUN uv pip install decord==0.6.0 || uv pip install decord2==3.2.0 || true
+
+# Copy UMRS source (vision service + inference modules)
+COPY src/umrs/ /app/umrs/
+
+# Create mount points for adapters and models
+RUN mkdir -p /adapters/system /adapters/user /models /scratch
+
+# Copy built-in adapters to system directory
+COPY src/umrs/vision_service/default_adapters/ /adapters/system/
+
+# Environment defaults
+ENV VISION_ADAPTERS_DIR=/adapters/system:/adapters/user \
+    MAX_VISION_MODELS=3 \
+    HF_HOME=/models/.hf_cache \
+    TRANSFORMERS_OFFLINE=1 \
+    BENTOML_PORT=3000
+
+# Health check for orchestrator readiness detection
+HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${BENTOML_PORT}/health || exit 1
+
+EXPOSE ${BENTOML_PORT}
+
+# BentoML service entrypoint
+CMD ["bentoml", "serve", "umrs.vision_service.service:VisionModelService", \
+     "--port", "3000", "--host", "0.0.0.0"]

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
 
 from ..jobs import (
     JobService,
@@ -37,7 +36,10 @@ from ..jobs import (
     create_status_checker,
     ensure_schema,
 )
-from .service import OrchestrationService, ProvisionRequest, ProvisionResult
+from ..model_registry import ensure_schema as ensure_model_registry_schema
+from ..model_registry.store import ModelStore, PathValidator
+from .endpoint_mounts import build_mount_environment
+from .service import OrchestrationService, ProvisionResult
 
 logger = logging.getLogger(__name__)
 
@@ -53,11 +55,18 @@ class DurableProvisionRequest:
     ttl_sec: int = 3600
     gpu_count: int = 1
     max_model_len: int = 4096
+    tier: str = "user"
+    mounts: dict[str, object] | None = None
+    egress_domains: list[str] | None = None
+
+    # Compute node selection
+    partition_override: str | None = None
+    nodelist_hint: str | None = None
 
     # Job settings
     priority: int = 0
     max_attempts: int = 3
-    idempotency_key: Optional[str] = None
+    idempotency_key: str | None = None
 
 
 class DurableOrchestrationService:
@@ -77,7 +86,7 @@ class DurableOrchestrationService:
     def __init__(
         self,
         db_pool,
-        orchestration_service: Optional[OrchestrationService] = None,
+        orchestration_service: OrchestrationService | None = None,
         scheduler_interval: float = 1.0,
         monitor_interval: float = 5.0,
     ):
@@ -92,7 +101,8 @@ class DurableOrchestrationService:
         """
         self.db_pool = db_pool
         self._orchestration_service = orchestration_service
-        self._job_service: Optional[JobService] = None
+        self._job_service: JobService | None = None
+        self._model_store_conn = None
         self._scheduler_interval = scheduler_interval
         self._monitor_interval = monitor_interval
         self._started = False
@@ -127,9 +137,12 @@ class DurableOrchestrationService:
         logger.info("Starting DurableOrchestrationService")
 
         # Ensure job tracking schema exists
-        with self.db_pool.getconn() as conn:
+        conn = self.db_pool.getconn()
+        try:
             ensure_schema(conn)
             conn.commit()
+        finally:
+            self.db_pool.putconn(conn)
 
         # Initialize JobService
         self._job_service = JobService(
@@ -141,11 +154,34 @@ class DurableOrchestrationService:
         # Get underlying orchestration components
         orch = self.orchestration_service
 
+        model_store = None
+        path_validator = None
+        self._model_store_conn = self.db_pool.getconn()
+        try:
+            ensure_model_registry_schema(self._model_store_conn)
+            self._model_store_conn.commit()
+            path_validator = PathValidator()
+            model_store = ModelStore(
+                self._model_store_conn,
+                path_validator=path_validator,
+            )
+        except Exception:
+            logger.exception(
+                "Failed to initialize model registry store for durable jobs; "
+                "model_download jobs will be unavailable"
+            )
+            if self._model_store_conn is not None:
+                self.db_pool.putconn(self._model_store_conn)
+                self._model_store_conn = None
+
         # Create backend factory that wraps the orchestrator
         backend_factory = create_backend_factory(
             orchestrator=orch.backend,
             registry=orch.registry,
             port_manager=orch.port_manager,
+            get_job_with_attempts=self._job_service.get_job_with_attempts,
+            model_store=model_store,
+            path_validator=path_validator,
         )
         self._job_service.set_backend_factory(backend_factory)
 
@@ -153,6 +189,7 @@ class DurableOrchestrationService:
         status_checker = create_status_checker(
             readiness_poller=orch.readiness_poller,
             registry=orch.registry,
+            orchestrator=orch.backend,
         )
         self._job_service.set_status_checker(status_checker)
 
@@ -173,6 +210,10 @@ class DurableOrchestrationService:
 
         if self._job_service:
             await self._job_service.shutdown(timeout)
+
+        if self._model_store_conn is not None:
+            self.db_pool.putconn(self._model_store_conn)
+            self._model_store_conn = None
 
         if self._orchestration_service:
             await self._orchestration_service.close()
@@ -209,16 +250,35 @@ class DurableOrchestrationService:
             "ttl_sec": request.ttl_sec,
             "gpu_count": request.gpu_count,
             "max_model_len": request.max_model_len,
+            "tier": request.tier,
         }
+        mount_env, mount_metadata = build_mount_environment(
+            tier=request.tier,
+            mounts=request.mounts,
+            egress_domains=request.egress_domains,
+        )
+        if mount_env:
+            spec["env_vars"] = mount_env
+        if request.mounts:
+            spec["mounts"] = mount_metadata.get("mounts", request.mounts)
+        if request.egress_domains:
+            spec["egress_domains"] = list(request.egress_domains)
+        if request.partition_override:
+            spec["partition_override"] = request.partition_override
+        if request.nodelist_hint:
+            spec["nodelist_hint"] = request.nodelist_hint
 
         # Submit to job service
-        job_id = self._job_service.submit_endpoint_provision(
+        job_id = self._job_service.submit_job(
             project_id=request.project_id,
             user_id=request.user_id,
+            job_type=JobType.ENDPOINT_PROVISION,
             spec=spec,
             priority=request.priority,
             max_attempts=request.max_attempts,
+            restart_policy=RestartPolicy.ON_CRASH,
             idempotency_key=request.idempotency_key,
+            enqueue=True,
         )
 
         logger.info(
@@ -245,8 +305,8 @@ class DurableOrchestrationService:
 
     def list_jobs(
         self,
-        project_id: Optional[str] = None,
-        status: Optional[str] = None,
+        project_id: str | None = None,
+        status: str | None = None,
         limit: int = 100,
     ):
         """List jobs with optional filters."""
@@ -279,6 +339,7 @@ class DurableOrchestrationService:
             ProvisionResult with success/failure
         """
         import asyncio
+
         from ..jobs import JobStatus
 
         # Submit job
@@ -348,7 +409,7 @@ class DurableOrchestrationService:
 
 
 # Singleton instance
-_durable_service: Optional[DurableOrchestrationService] = None
+_durable_service: DurableOrchestrationService | None = None
 
 
 def get_durable_orchestration_service() -> DurableOrchestrationService:
@@ -364,7 +425,7 @@ def get_durable_orchestration_service() -> DurableOrchestrationService:
 
 def init_durable_orchestration_service(
     db_pool,
-    orchestration_service: Optional[OrchestrationService] = None,
+    orchestration_service: OrchestrationService | None = None,
 ) -> DurableOrchestrationService:
     """
     Initialize the global durable orchestration service.

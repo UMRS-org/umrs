@@ -1,0 +1,19 @@
+services:
+  vllm:
+    shm_size: ${VLLM_NCCL_MEM_LIMIT:?error}
+    devices:
+      # CDI (Container Device Interface) — requires:
+      #   nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+      # This is the recommended approach for native host execution with
+      # nvidia-container-toolkit.  No manual driver-lib bind mounts needed.
+      - nvidia.com/gpu=all
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+  bentoml-vision:
+    devices:
+      - nvidia.com/gpu=all
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility

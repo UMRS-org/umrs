@@ -14,10 +14,6 @@ Indexes:
 from __future__ import annotations
 
 import logging
-from typing import Optional
-
-import psycopg2
-from psycopg2 import sql
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +125,7 @@ COMMENT ON COLUMN job_locks.heartbeat_at IS 'Last heartbeat from lock owner';
 
 -- Index for finding expired locks
 CREATE INDEX IF NOT EXISTS idx_job_locks_expires
-    ON job_locks(expires_at)
-    WHERE expires_at < NOW();
+    ON job_locks(expires_at);
 
 -- Index for finding locks by owner (cleanup on instance death)
 CREATE INDEX IF NOT EXISTS idx_job_locks_owner
@@ -311,5 +306,5 @@ def get_schema_version(conn) -> int:
             """)
             row = cur.fetchone()
             return row[0] if row else 0
-    except:
+    except Exception:
         return 0

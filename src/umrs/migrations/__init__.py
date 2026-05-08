@@ -19,7 +19,6 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
-from typing import List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +26,7 @@ logger = logging.getLogger(__name__)
 MIGRATIONS_DIR = Path(__file__).parent
 
 
-def get_migration_files() -> List[Tuple[str, Path]]:
+def get_migration_files() -> list[tuple[str, Path]]:
     """
     Get all migration files sorted by version.
 
@@ -101,7 +100,7 @@ def apply_migration(cursor, version: str, sql_path: Path) -> bool:
 
 def apply_migrations(
     db_pool,
-    target_version: Optional[str] = None,
+    target_version: str | None = None,
 ) -> int:
     """
     Apply all pending migrations up to target_version.
@@ -164,7 +163,7 @@ def apply_migrations(
             db_pool.putconn(conn)
 
 
-def get_current_version(db_pool) -> Optional[str]:
+def get_current_version(db_pool) -> str | None:
     """
     Get the current schema version.
 
@@ -197,7 +196,7 @@ def get_current_version(db_pool) -> Optional[str]:
             db_pool.putconn(conn)
 
 
-def get_pending_migrations(db_pool) -> List[Tuple[str, Path]]:
+def get_pending_migrations(db_pool) -> list[tuple[str, Path]]:
     """
     Get list of pending migrations.
 
@@ -233,6 +232,7 @@ def get_pending_migrations(db_pool) -> List[Tuple[str, Path]]:
 # CLI entry point
 if __name__ == "__main__":
     import argparse
+
     import psycopg2
 
     logging.basicConfig(

@@ -11,6 +11,7 @@ See DEVELOPMENT_OBJECTIVES.md Section 1.9 for design details.
 """
 
 from .models import (
+    ModelCapabilities,
     ModelEntry,
     ModelScope,
     ModelStatus,
@@ -28,6 +29,7 @@ from .store import (
 
 __all__ = [
     # Models
+    "ModelCapabilities",
     "ModelEntry",
     "ModelScope",
     "ModelStatus",

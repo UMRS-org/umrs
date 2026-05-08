@@ -17,10 +17,6 @@ services:
       # Override RIVAULT_ENDPOINT in your shell as needed.
       - RIVAULT_ENDPOINT=${RIVAULT_ENDPOINT:-http://localhost:8000}
 
-  umrs-embed-worker:
-    environment:
-      - RIVAULT_ENDPOINT=${RIVAULT_ENDPOINT:-http://localhost:8000}
-
   umrs-rag:
     build:
       context: ..
@@ -37,4 +33,4 @@ services:
       # - UMRS_RAG_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
     ports:
       - "8081:8081"
-    command: ["python", "src/rag_service.py"]
+    command: ["python", "-m", "umrs.api.rag_service"]

@@ -8,14 +8,13 @@ See DEVELOPMENT_OBJECTIVES.md Section 1.9.1 for design details.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import psycopg2
 
 logger = logging.getLogger(__name__)
 
 # Schema version - increment when schema changes
-MODEL_REGISTRY_SCHEMA_VERSION = 3
+MODEL_REGISTRY_SCHEMA_VERSION = 4
 
 # SQL for creating the model_catalog_entries table (U-801)
 CREATE_MODEL_CATALOG_TABLE = """
@@ -339,6 +338,9 @@ def _create_tables(cur: psycopg2.extensions.cursor) -> None:
         execution_authority_default VARCHAR(32) DEFAULT 'compose'
             CHECK (execution_authority_default IN ('slurm', 'k8s', 'compose')),
 
+        -- Added in schema version 4
+        capabilities JSONB DEFAULT '{}',
+
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -427,6 +429,21 @@ def _migrate_schema(
         cur.execute(CREATE_MODEL_ARTIFACTS_TABLE)
 
         logger.info("Migration to version 3 complete")
+
+    if from_version < 4:
+        # Version 4: Add capabilities JSONB column for model feature metadata
+        logger.info("Running migration to version 4")
+
+        cur.execute("""
+            ALTER TABLE model_catalog_entries
+            ADD COLUMN IF NOT EXISTS capabilities JSONB DEFAULT '{}'
+        """)
+        cur.execute(
+            "COMMENT ON COLUMN model_catalog_entries.capabilities IS "
+            "'Model capability metadata (tool calling, vision, structured output, etc.)'"
+        )
+
+        logger.info("Migration to version 4 complete")
 
 
 def drop_schema(conn: psycopg2.extensions.connection) -> None:

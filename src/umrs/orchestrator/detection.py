@@ -160,10 +160,7 @@ class BackendDetector:
             return True
 
         # Kubernetes service host (set in pods)
-        if os.getenv("KUBERNETES_SERVICE_HOST"):
-            return True
-
-        return False
+        return bool(os.getenv("KUBERNETES_SERVICE_HOST"))
 
     def _is_kubernetes_available(self) -> bool:
         """Check if Kubernetes is available (in-cluster or kubeconfig)."""
@@ -184,10 +181,7 @@ class BackendDetector:
     def _is_compose_environment(self) -> bool:
         """Check if running in Docker Compose environment."""
         # Check Compose-specific env vars
-        if os.getenv("COMPOSE_PROJECT_NAME"):
-            return True
-
-        return False
+        return bool(os.getenv("COMPOSE_PROJECT_NAME"))
 
     def _is_compose_available(self) -> bool:
         """Check if Docker Compose is available."""

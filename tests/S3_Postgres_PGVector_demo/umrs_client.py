@@ -2,8 +2,8 @@
 import json
 import os
 import sys
-from umrs.sql import *
-from umrs.s3 import *
+from umrs.server.sql import *
+from umrs.shared.storage.s3 import *
 import time
 from glob import glob
 import argparse
@@ -83,5 +83,5 @@ if(modality["modality_name"] == "image"):
                 s3_key = s3_store_image(file, modality["s3"], user_md5)
                 print(f"'{s3_key}' saved on: {bucket_name}")
 
-            
+
 

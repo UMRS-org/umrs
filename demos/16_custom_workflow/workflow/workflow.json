@@ -1,0 +1,20 @@
+{
+  "name": "custom-text-counter",
+  "version": "1.0",
+  "description": "Count words and characters in uploaded text files",
+  "source": {
+    "type": "uploaded",
+    "path": "."
+  },
+  "execution_mode": "in_process",
+  "steps": [
+    {
+      "name": "count_words",
+      "entrypoint": "counter:WordCounter",
+      "config": {"min_word_length": 3}
+    }
+  ],
+  "output": {
+    "return_type": "file"
+  }
+}

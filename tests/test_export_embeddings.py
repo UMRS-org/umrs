@@ -20,7 +20,7 @@ from typing import Any, Dict, Optional
 # Ensure src/ is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from umrs.TaskCmdStatus import TaskCmd, TaskStatus
+from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +166,49 @@ class TestHandleExportEmbeddings:
         result = json.loads(handler("alice", "alice.xp1.test-bucket;jsonl", cfg))
         assert result["status"] == "ok"
         assert result["format"] == "jsonl"
+        assert result["profile"] == "minimal"
+        assert result["columns"] == ["s3_object", "embedding"]
+
+    def test_minimal_profile_exports_embedding_with_minimum_metadata(self):
+        handler = self._import_handler()
+        columns = ["id", "s3_object", "embedding", "model", "created_at"]
+        rows = [(1, "bucket/file1.png", "[0.1,0.2]", "vit", "2026-01-01")]
+        db = FakeDataBase(columns, rows)
+        entry = FakeServerBucketEntry(data_base=db)
+        cfg = FakeBucketsCfg({"alice.xp1.test-bucket": entry})
+
+        result = json.loads(handler("alice", "alice.xp1.test-bucket;csv;minimal", cfg))
+        assert result["status"] == "ok"
+        assert result["profile"] == "minimal"
+        assert result["columns"] == ["s3_object", "embedding"]
+        assert result["rows"] == [["bucket/file1.png", "[0.1,0.2]"]]
+
+    def test_embedding_only_profile_exports_only_embedding_column(self):
+        handler = self._import_handler()
+        columns = ["id", "s3_object", "embedding", "model", "created_at"]
+        rows = [(1, "bucket/file1.png", "[0.1,0.2]", "vit", "2026-01-01")]
+        db = FakeDataBase(columns, rows)
+        entry = FakeServerBucketEntry(data_base=db)
+        cfg = FakeBucketsCfg({"alice.xp1.test-bucket": entry})
+
+        result = json.loads(handler("alice", "alice.xp1.test-bucket;csv;embedding-only", cfg))
+        assert result["status"] == "ok"
+        assert result["profile"] == "embedding-only"
+        assert result["columns"] == ["embedding"]
+        assert result["rows"] == [["[0.1,0.2]"]]
+
+    def test_full_profile_keeps_all_columns(self):
+        handler = self._import_handler()
+        columns = ["id", "s3_object", "embedding", "model"]
+        rows = [(1, "bucket/file1.png", "[0.1,0.2]", "vit")]
+        db = FakeDataBase(columns, rows)
+        entry = FakeServerBucketEntry(data_base=db)
+        cfg = FakeBucketsCfg({"alice.xp1.test-bucket": entry})
+
+        result = json.loads(handler("alice", "alice.xp1.test-bucket;csv;full", cfg))
+        assert result["status"] == "ok"
+        assert result["profile"] == "full"
+        assert result["columns"] == columns
 
     def test_no_embedding_column(self):
         handler = self._import_handler()
@@ -217,6 +260,8 @@ class TestHandleExportEmbeddings:
         result = json.loads(handler("alice", "alice.xp1.test-bucket", cfg))
         assert result["status"] == "ok"
         assert result["format"] == "csv"
+        assert result["profile"] == "minimal"
+        assert result["columns"] == ["embedding"]
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +272,7 @@ class TestRequestExportEmbeddingsWireFormat:
     """Verify the client method builds the correct ZMQ message."""
 
     def test_wire_message_format(self):
-        """The request string should be EXPORT_EMBEDDINGS:<user>:<path>;<format>"""
+        """The request string should be EXPORT_EMBEDDINGS:<user>:<path>;<format>;<profile>"""
         mq = MagicMock()
         mq.role = "client"
         mq.socket = MagicMock()
@@ -243,17 +288,36 @@ class TestRequestExportEmbeddingsWireFormat:
         mq.recv_string = MagicMock(return_value=(None, '{"status":"ok","columns":[],"rows":[]}'))
 
         # Call the real method on a mock — we just need the wire format logic
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
         # Bind the unbound method to our mock
-        result = MessageQueue.request_export_embeddings(mq, "alice", "alice.xp1.mybucket", "jsonl")
+        MessageQueue.request_export_embeddings(mq, "alice", "alice.xp1.mybucket", "jsonl", "minimal")
 
         assert len(sent) == 1
-        assert sent[0] == "EXPORT_EMBEDDINGS:alice:alice.xp1.mybucket;jsonl"
+        assert sent[0] == "EXPORT_EMBEDDINGS:alice:alice.xp1.mybucket;jsonl;minimal"
+
+    def test_wire_message_uses_minimal_profile_by_default(self):
+        mq = MagicMock()
+        mq.role = "client"
+        mq.socket = MagicMock()
+        mq.socket.getsockopt.return_value = 8000
+
+        sent = []
+
+        def capture_send(msg):
+            sent.append(msg)
+
+        mq.send_string = capture_send
+        mq.recv_string = MagicMock(return_value=(None, '{"status":"ok","columns":[],"rows":[]}'))
+
+        from umrs.core.MessageQueue import MessageQueue
+        MessageQueue.request_export_embeddings(mq, "alice", "alice.xp1.mybucket", "csv")
+
+        assert sent[0] == "EXPORT_EMBEDDINGS:alice:alice.xp1.mybucket;csv;minimal"
 
     def test_client_only(self):
         """Should raise if called from server role."""
         mq = MagicMock()
         mq.role = "server"
-        from umrs.MessageQueue import MessageQueue
+        from umrs.core.MessageQueue import MessageQueue
         with pytest.raises(PermissionError):
             MessageQueue.request_export_embeddings(mq, "alice", "path", "csv")
