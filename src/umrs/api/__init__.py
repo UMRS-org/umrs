@@ -20,6 +20,7 @@ from .pipelines import (
     router as pipelines_router,  # api/pipelines.py router (not the old umrs.pipelines package)
 )
 from .rag import router as rag_router
+from .skills import router as skills_router
 from .workflows import router as workflows_router
 
 __all__ = [
@@ -33,5 +34,6 @@ __all__ = [
     "policy_router",
     "pipelines_router",
     "rag_router",
+    "skills_router",
     "workflows_router",
 ]
