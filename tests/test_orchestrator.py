@@ -166,6 +166,7 @@ class TestOrchestratorConfig:
         assert config.litellm_port == 11434
         assert config.vllm_port == 8000
         assert config.vllm_max_model_len == 4096
+        assert config.vllm_enable_prefix_caching is False
         assert config.startup_timeout_sec == 600
         assert config.idle_timeout_sec == 3600
         assert config.k8s_image == "mini-rivault:latest"
@@ -181,6 +182,7 @@ class TestOrchestratorConfig:
             "VLLM_MODEL_PATH": "/custom/model",
             "LITELLM_PORT": "9000",
             "VLLM_MAX_MODEL_LEN": "8192",
+            "VLLM_ENABLE_PREFIX_CACHING": "true",
             "SLURM_PARTITION": "a100",
         },
     )
@@ -190,6 +192,7 @@ class TestOrchestratorConfig:
         assert config.model_path == "/custom/model"
         assert config.litellm_port == 9000
         assert config.vllm_max_model_len == 8192
+        assert config.vllm_enable_prefix_caching is True
         assert config.slurm_partition == "a100"
 
     @patch.dict(
@@ -630,6 +633,25 @@ class TestKubernetesBackendMocked:
             mock_networking.return_value.create_namespaced_network_policy.assert_called_once()
             assert creation_order == ["network_policy", "job"]
 
+    def test_k8s_manifest_includes_prefix_caching_env(self, k8s_config):
+        try:
+            from umrs.orchestrator.kubernetes_backend import KubernetesBackend
+        except ImportError:
+            pytest.skip("KubernetesBackend not available")
+
+        k8s_config.vllm_enable_prefix_caching = True
+        manifest = KubernetesBackend(k8s_config)._build_job_manifest(
+            "mini-rivault-test",
+            "/models/test",
+        )
+
+        env = {
+            item["name"]: item.get("value")
+            for item in manifest["spec"]["template"]["spec"]["containers"][0]["env"]
+            if "value" in item
+        }
+        assert env["VLLM_ENABLE_PREFIX_CACHING"] == "true"
+
 
 # =============================================================================
 # Test Compose Backend (Mocked)
@@ -669,6 +691,7 @@ class TestComposeBackendMocked:
             assert job.job_id == compose_config.compose_project_name
             assert job.status == JobStatus.STARTING
             assert job.backend == "docker-compose"
+            assert mock_exec.call_args.kwargs["env"]["VLLM_ENABLE_PREFIX_CACHING"] == "false"
 
     @pytest.mark.asyncio
     async def test_compose_cleanup_mocked(self, compose_config):

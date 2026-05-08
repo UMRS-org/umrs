@@ -36,6 +36,13 @@ def _split_partitions(raw: str) -> list[str]:
     return [part.strip() for part in raw.split(",") if part.strip()]
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _expand_env_refs(value: Any) -> Any:
     if isinstance(value, str):
         return os.path.expanduser(os.path.expandvars(value))
@@ -119,6 +126,7 @@ class VllmConfig:
     max_model_len: int = 4096
     max_num_seqs: int = 4
     tensor_parallel_size: int = 1
+    enable_prefix_caching: bool = False
 
 
 @dataclass
@@ -275,6 +283,7 @@ class SiteConfig:
         env["VLLM_MAX_NUM_SEQS"] = str(self.vllm.max_num_seqs)
         env["VLLM_TENSOR_PARALLEL_SIZE"] = str(self.vllm.tensor_parallel_size)
         env["VLLM_GPU_MEMORY_UTILIZATION"] = str(self.vllm.gpu_mem_util)
+        env["VLLM_ENABLE_PREFIX_CACHING"] = "true" if self.vllm.enable_prefix_caching else "false"
 
         # Database
         env["DB_HOST"] = self.database.host
@@ -464,6 +473,7 @@ def default_site_config() -> SiteConfig:
     cfg.vllm.model = os.getenv("VLLM_MODEL", "intfloat/e5-base-v2")
     cfg.vllm.docker_tag = os.getenv("VLLM_DOCKER_TAG", "v0.20.0")
     cfg.vllm.gpu_mem_util = float(os.getenv("VLLM_GPU_MEM_UTIL", "0.10"))
+    cfg.vllm.enable_prefix_caching = _env_bool("VLLM_ENABLE_PREFIX_CACHING", False)
 
     # Database
     cfg.database.host = os.getenv("DB_HOST", "localhost")

@@ -14,6 +14,7 @@ def test_slurm_script_uses_configured_log_dir_and_modules():
         slurm_job_info_dir="/shared/rivault/jobs",
         slurm_modules=["cuda/12.4", "apptainer"],
         singularity_image="/images/mini-rivault.sif",
+        vllm_enable_prefix_caching=True,
     )
 
     script = render_sbatch_script(cfg, "/models/test")
@@ -24,6 +25,8 @@ def test_slurm_script_uses_configured_log_dir_and_modules():
     assert "module load cuda/12.4 2>/dev/null || true" in script
     assert "module load apptainer 2>/dev/null || true" in script
     assert "module load cuda/12.1" not in script
+    assert "VLLM_ENABLE_PREFIX_CACHING=true" in script
+    assert "--env VLLM_ENABLE_PREFIX_CACHING=${VLLM_ENABLE_PREFIX_CACHING}" in script
 
 
 def test_empty_slurm_modules_render_no_site_modules_comment():

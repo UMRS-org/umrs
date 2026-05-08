@@ -465,6 +465,7 @@ class HybridOrchestrator(OrchestratorBackend):
             "VLLM_MAX_NUM_SEQS": str(cfg.vllm_max_num_seqs),
             "VLLM_TENSOR_PARALLEL_SIZE": str(cfg.vllm_tensor_parallel_size),
             "VLLM_GPU_MEMORY_UTILIZATION": str(cfg.vllm_gpu_memory_utilization),
+            "VLLM_ENABLE_PREFIX_CACHING": "true" if cfg.vllm_enable_prefix_caching else "false",
             "LITELLM_PORT": str(cfg.litellm_port),
             "LITELLM_MASTER_KEY": cfg.litellm_master_key,
             "TRANSFORMERS_OFFLINE": "1",  # No egress from inference

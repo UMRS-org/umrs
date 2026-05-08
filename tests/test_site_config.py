@@ -326,12 +326,18 @@ class TestToEnv:
 
     def test_to_env_contains_vllm(self):
         cfg = SiteConfig(
-            vllm=VllmConfig(model="llama-3", docker_tag="nightly", gpu_mem_util=0.85),
+            vllm=VllmConfig(
+                model="llama-3",
+                docker_tag="nightly",
+                gpu_mem_util=0.85,
+                enable_prefix_caching=True,
+            ),
         )
         env = cfg.to_env()
         assert env["VLLM_MODEL"] == "llama-3"
         assert env["VLLM_DOCKER_TAG"] == "nightly"
         assert env["VLLM_GPU_MEM_UTIL"] == "0.85"
+        assert env["VLLM_ENABLE_PREFIX_CACHING"] == "true"
 
     def test_to_env_enables_postgres_registry_when_dsn_present(self):
         cfg = SiteConfig(
