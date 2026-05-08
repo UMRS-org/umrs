@@ -149,6 +149,8 @@ echo "RAG service  : ${RAG_URL}"
 echo "RAG bucket   : ${RAG_BUCKET_ALIAS}"
 echo "RAG modality : ${RAG_MODALITY}"
 echo ""
+print_mini_rivault_mount_summary
+echo ""
 
 # ---------- Step 1: Check services ----------
 log "Step 1: Checking UMRS server and RAG service..."

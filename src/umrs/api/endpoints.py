@@ -338,6 +338,43 @@ class LoraSpec(BaseModel):
     source: str = Field(..., min_length=1, description="Filesystem path or registered LoRA model name")
 
 
+class EndpointMountSpec(BaseModel):
+    """Read-only host mount requested for a provisioned endpoint."""
+
+    source: str = Field(..., min_length=1, description="Host/shared filesystem source path")
+    target: str = Field(..., min_length=1, description="Container target path")
+
+    @model_validator(mode="after")
+    def _validate_target_path(self) -> "EndpointMountSpec":
+        if not self.target.startswith("/"):
+            raise ValueError("mount target must be an absolute container path")
+        return self
+
+
+class EndpointMounts(BaseModel):
+    """Mount bundle for mini-RiVault MCP and RAG side services."""
+
+    mcp_servers: list[EndpointMountSpec] = Field(default_factory=list)
+    project_data: EndpointMountSpec | None = None
+    rag_index: EndpointMountSpec | None = None
+
+    @model_validator(mode="after")
+    def _validate_mount_targets(self) -> "EndpointMounts":
+        for mount in self.mcp_servers:
+            if not _target_under(mount.target, "/mcp-servers"):
+                raise ValueError("mcp_servers targets must be under /mcp-servers")
+        if self.project_data and not _target_under(self.project_data.target, "/project"):
+            raise ValueError("project_data target must be under /project")
+        if self.rag_index and not _target_under(self.rag_index.target, "/rag-index"):
+            raise ValueError("rag_index target must be under /rag-index")
+        return self
+
+
+def _target_under(target: str, root: str) -> bool:
+    normalized = target.rstrip("/") or "/"
+    return normalized == root or normalized.startswith(root + "/")
+
+
 class ProvisionRequest(BaseModel):
     """Request to provision a new endpoint (U-202)."""
 
@@ -363,6 +400,15 @@ class ProvisionRequest(BaseModel):
     loras: list[LoraSpec] | None = Field(
         None,
         description="LoRA adapters (multi-lora mode only)",
+    )
+    tier: str = Field("user", description="Deployment tier: system, project, or user")
+    mounts: EndpointMounts | None = Field(
+        None,
+        description="Read-only MCP/RAG mounts for user/project mini-RiVault instances",
+    )
+    egress_domains: list[str] = Field(
+        default_factory=list,
+        description="Domain allowlist for EgressGuard-enabled side services",
     )
     model_path: str | None = Field(
         None,
@@ -392,6 +438,8 @@ class ProvisionRequest(BaseModel):
             raise ValueError(
                 "serving_mode must be one of: single, multi-lora, co-located"
             )
+        if self.tier not in ("system", "project", "user"):
+            raise ValueError("tier must be one of: system, project, user")
         if self.serving_mode == "single" and len(self.models) != 1:
             raise ValueError("serving_mode=single requires exactly one model")
         if self.serving_mode == "co-located" and len(self.models) < 2:
@@ -1218,7 +1266,7 @@ async def provision_endpoint(
         )
     }
     env_vars: dict[str, str] = {}
-    request_metadata.setdefault("owner_type", "user")
+    request_metadata.setdefault("owner_type", request.tier)
     request_metadata.setdefault("tier", request_metadata["owner_type"])
     served_model_name = _resolve_served_model_name(
         request.model,
@@ -1246,6 +1294,9 @@ async def provision_endpoint(
         ttl_sec=request.ttl_sec,
         gpu_count=request.gpu_count,
         max_model_len=request.max_model_len,
+        tier=request.tier,
+        mounts=request.mounts.model_dump(exclude_none=True) if request.mounts else {},
+        egress_domains=list(request.egress_domains),
         prefer_warm=request.prefer_warm,
         wait_for_ready=request.wait,
         partition_override=request.partition,

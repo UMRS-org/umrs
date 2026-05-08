@@ -38,6 +38,7 @@ from ..jobs import (
 )
 from ..model_registry import ensure_schema as ensure_model_registry_schema
 from ..model_registry.store import ModelStore, PathValidator
+from .endpoint_mounts import build_mount_environment
 from .service import OrchestrationService, ProvisionResult
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,9 @@ class DurableProvisionRequest:
     ttl_sec: int = 3600
     gpu_count: int = 1
     max_model_len: int = 4096
+    tier: str = "user"
+    mounts: dict[str, object] | None = None
+    egress_domains: list[str] | None = None
 
     # Compute node selection
     partition_override: str | None = None
@@ -246,7 +250,19 @@ class DurableOrchestrationService:
             "ttl_sec": request.ttl_sec,
             "gpu_count": request.gpu_count,
             "max_model_len": request.max_model_len,
+            "tier": request.tier,
         }
+        mount_env, mount_metadata = build_mount_environment(
+            tier=request.tier,
+            mounts=request.mounts,
+            egress_domains=request.egress_domains,
+        )
+        if mount_env:
+            spec["env_vars"] = mount_env
+        if request.mounts:
+            spec["mounts"] = mount_metadata.get("mounts", request.mounts)
+        if request.egress_domains:
+            spec["egress_domains"] = list(request.egress_domains)
         if request.partition_override:
             spec["partition_override"] = request.partition_override
         if request.nodelist_hint:

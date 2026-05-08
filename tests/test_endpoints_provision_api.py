@@ -215,6 +215,52 @@ def test_provision_endpoint_forwards_wait_false(monkeypatch):
     assert service.requests[0].wait_for_ready is False
 
 
+def test_provision_endpoint_forwards_mounts_to_service(monkeypatch):
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/qwen3-8b",
+            "huggingface_id": "Qwen/Qwen3-8B",
+            "model_type": "llm",
+        },
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    body = {
+        "project_id": "project-a",
+        "model": "qwen3-8b",
+        "tier": "project",
+        "mounts": {
+            "mcp_servers": [
+                {"source": "/home/alice/tools", "target": "/mcp-servers/tools"}
+            ],
+            "project_data": {"source": "/project/data", "target": "/project"},
+            "rag_index": {"source": "/project/rag-index", "target": "/rag-index"},
+        },
+        "egress_domains": ["api.example.com"],
+    }
+    with TestClient(app) as client:
+        response = client.post("/umrs/endpoints/provision", json=body)
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    request = service.requests[0]
+    assert request.tier == "project"
+    assert request.mounts == body["mounts"]
+    assert request.egress_domains == ["api.example.com"]
+    assert request.metadata["tier"] == "project"
+
+
 def test_provision_endpoint_rejects_unresolved_model_without_model_path(monkeypatch):
     monkeypatch.setattr(
         endpoints_api,

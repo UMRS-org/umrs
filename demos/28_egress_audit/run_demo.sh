@@ -33,6 +33,13 @@ echo ""
 # Step 2: Audit log format
 log "Step 2: Audit log entry format"
 echo ""
+print_mini_rivault_mount_summary
+echo ""
+echo "  Endpoint provisioning passes egress_domains to UMRS; UMRS turns them"
+echo "  into EGRESS_DOMAIN_ALLOWLIST for the EgressGuard profile inside"
+echo "  mini-RiVault. Custom MCP tools inherit HTTP_PROXY/HTTPS_PROXY and"
+echo "  cannot bypass the audited proxy path."
+echo ""
 echo '  {
     "request_id": "...",
     "user_id": "alice",

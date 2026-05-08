@@ -159,10 +159,10 @@ Low-level REST APIs that power the platform internals.
 
 | # | Demo | What you'll learn |
 |---|------|-------------------|
-| 25 | [Endpoint Provisioning](25_endpoint_provisioning/) | REST API for endpoint lifecycle, warm pool reuse, multi-model |
-| 26 | [MCP Servers](26_mcp_servers/) | Register/unregister MCP servers, list tools, invoke tools |
+| 25 | [Endpoint Provisioning](25_endpoint_provisioning/) | REST API for endpoint lifecycle, warm pool reuse, MCP/RAG mounts, EgressGuard intent |
+| 26 | [MCP Servers](26_mcp_servers/) | Register/unregister MCP servers, list tools, validate mounted custom MCP manifests |
 | 27 | [Pipeline CRUD](27_pipeline_crud/) | Pipeline definitions, RAG profiles, component registry |
-| 28 | [Egress Audit](28_egress_audit/) | Query and log outbound network events from Mini-RiVault |
+| 28 | [Egress Audit](28_egress_audit/) | Query/log outbound network events and inspect endpoint egress allowlist intent |
 | 29 | [LLM Completions](29_llm_completions/) | OpenAI-compatible chat/text completions and embeddings |
 | 30 | [File Management](30_file_management/) | Upload, download (presigned URLs), bulk upload, delete |
 
@@ -217,10 +217,10 @@ Need to inspect thread-pool capacity or backpressure?
   → Demo 24 (thread pool metrics)
 
 Need to manage endpoints via REST API?
-  → Demo 25 (endpoint provisioning)
+  → Demo 25 (endpoint provisioning with MCP/RAG/egress mounts)
 
 Want to register/invoke MCP servers?
-  → Demo 26 (MCP server management)
+  → Demo 26 (MCP server management and mounted custom MCP validation)
 
 Working with pipeline definitions or RAG profiles?
   → Demo 27 (pipeline CRUD)
@@ -278,6 +278,11 @@ Need to manage files with presigned URLs?
 | `MODEL_STAGING_DIR` | 02, 07, 18 | Writable server-side staging directory for model downloads |
 | `DEMO_LOCAL_MODEL_UPLOAD` | 07, 18 | Enable the optional local model upload steps |
 | `RAG_URL` | 05 | RAG service URL (profile-derived, default: `http://127.0.0.1:8081`) |
+| `MINI_RIVAULT_MOUNT_DEMO_ROOT` | 05, 19, 25, 26, 28 | Root for generated demo MCP/project/RAG mount assets |
+| `DEMO_MCP_SOURCE` | 25, 26 | Override source path for `/mcp-servers/demo-tools` |
+| `DEMO_PROJECT_DATA_SOURCE` | 05, 25 | Override source path for `/project` |
+| `DEMO_RAG_INDEX_SOURCE` | 05, 19, 25 | Override source path for `/rag-index` |
+| `DEMO_EGRESS_DOMAINS` | 25, 28 | Comma-separated EgressGuard allowlist domains |
 | `DEMO_RECOMPUTE` | 06 | Set to `1` to run full recompute step |
 | `DEMO_DOWNLOAD` | 07 | Set to `1` to download model from HuggingFace |
 | `VIDEO_BUCKET` | 14 | Bucket alias for video uploads (default: `user1-video`) |

@@ -34,6 +34,8 @@ echo "User         : ${RAG_USER}"
 echo "Bucket alias : ${RAG_BUCKET_ALIAS}"
 echo "Modality     : ${RAG_MODALITY}"
 echo ""
+print_mini_rivault_mount_summary
+echo ""
 
 # ---------- Step 1: Pre-flight ----------
 log "Step 1: Pre-flight checks..."

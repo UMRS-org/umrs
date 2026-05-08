@@ -35,6 +35,18 @@ echo ""
 # Step 2: Register an MCP server
 log "Step 2: Register an MCP server (POST /umrs/mcp/servers)"
 echo ""
+print_mini_rivault_mount_summary
+echo ""
+echo "  Preferred endpoint path: mount MCP server code into mini-RiVault"
+echo "  and enable the custom-mcp profile through endpoint provisioning."
+echo "  The mounted directory must contain config.json and an entry point."
+echo ""
+if python3 -m r4_mcp.runners.custom_mcp --config-dir "${DEMO_MCP_SOURCE}" --validate-only >/dev/null 2>&1; then
+  ok "Mounted MCP manifest validated"
+else
+  warn "r4_mcp validator unavailable in this client environment; skipping local manifest validation"
+fi
+echo ""
 echo "  Request body:"
 echo '  {
     "name": "demo-calculator",
@@ -45,6 +57,10 @@ echo '  {
 echo ""
 echo "  Response:"
 echo '  {"server_id": "mcp-abc123", "name": "demo-calculator", "status": "registered"}'
+echo ""
+echo "  Note: registration remains useful for external/login-node MCP servers."
+echo "  GPU-adjacent compute-node MCP work should use the mounted custom-mcp"
+echo "  profile shown above, not a second launcher path."
 echo ""
 
 # Step 3: List tools

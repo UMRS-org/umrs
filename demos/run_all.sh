@@ -206,9 +206,9 @@ run_demo "24" "Thread Pool"          "24_thread_pool/run_demo.sh"
 run_demo "14" "Video Analysis"       "14_video_analysis/run_demo.sh"
 
 # ---------- Platform API demos ----------
-run_demo "25" "Endpoint Provisioning" "25_endpoint_provisioning/run_demo.sh" \
+run_demo "25" "Endpoint Mount Provisioning" "25_endpoint_provisioning/run_demo.sh" \
     "check_http_api"
-run_demo "26" "MCP Servers"           "26_mcp_servers/run_demo.sh" \
+run_demo "26" "MCP Servers And Mounts" "26_mcp_servers/run_demo.sh" \
     "check_http_api"
 run_demo "27" "Pipeline CRUD"         "27_pipeline_crud/run_demo.sh" \
     "check_http_api"

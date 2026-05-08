@@ -15,6 +15,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from ..orchestrator.endpoint_mounts import build_mount_environment
 from ..server.sql import maintain_pgvector_index
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
@@ -180,6 +181,11 @@ class EndpointProvisionBackend(OrchestratorBackend):
         max_model_len = spec.get("max_model_len", 4096)
         ttl_sec = spec.get("ttl_sec", 3600)
         requested_env = spec.get("env_vars") or {}
+        mount_env, mount_metadata = build_mount_environment(
+            tier=str(spec.get("tier") or "user"),
+            mounts=spec.get("mounts") if isinstance(spec.get("mounts"), dict) else None,
+            egress_domains=spec.get("egress_domains") if isinstance(spec.get("egress_domains"), list) else None,
+        )
 
         if not model_path and model_name:
             model_entry = _resolve_registered_model(model_name)
@@ -220,6 +226,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                     "MODEL_NAME": model_name,
                 }
             )
+            submit_env.update(mount_env)
 
             # Submit to underlying orchestrator
             job_info = await self.orchestrator.submit_job(
@@ -247,6 +254,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 "attempt_id": attempt.attempt_id,
                 "attempt_no": attempt.attempt_no,
             }
+            endpoint_metadata.update(mount_metadata)
             # Store the served model name so the gateway can discover by either name
             env_served_name = submit_env.get("VLLM_SERVED_MODEL_NAME")
             if env_served_name and env_served_name != model_name:

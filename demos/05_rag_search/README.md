@@ -2,6 +2,9 @@
 
 Demonstrates UMRS RAG (Retrieval-Augmented Generation) search over embedded text data.
 
+The demo now also prints the mini-RiVault RAG mount shape used by endpoint
+provisioning: project data at `/project` and a prebuilt index at `/rag-index`.
+
 ## Prerequisites
 
 1. UMRS server running and reachable
