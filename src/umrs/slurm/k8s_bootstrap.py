@@ -15,12 +15,11 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -51,21 +50,21 @@ class K8sOnSlurmConfig:
     cpus_per_task: int = 8
     memory_gb: int = 32
     gpus: int = 0
-    gpu_type: Optional[str] = None
+    gpu_type: str | None = None
 
     # k3s settings
     k3s_version: str = "v1.29.0+k3s1"
     k3s_port: int = 6443
-    disable_services: List[str] = field(
+    disable_services: list[str] = field(
         default_factory=lambda: ["traefik", "servicelb", "metrics-server"]
     )
 
     # Workload
-    manifest_path: Optional[str] = None  # YAML manifest to apply
-    helm_chart: Optional[str] = None     # Helm chart to install
-    helm_values: Optional[str] = None    # Values file for Helm
+    manifest_path: str | None = None  # YAML manifest to apply
+    helm_chart: str | None = None     # Helm chart to install
+    helm_values: str | None = None    # Values file for Helm
 
-    def to_env(self) -> Dict[str, str]:
+    def to_env(self) -> dict[str, str]:
         """Convert to environment variables."""
         env = {
             "K3S_VERSION": self.k3s_version,
@@ -90,20 +89,20 @@ class K8sOnSlurmJob:
     """
 
     job_id: str
-    slurm_job_id: Optional[str] = None
+    slurm_job_id: str | None = None
     config: K8sOnSlurmConfig = field(default_factory=K8sOnSlurmConfig)
 
     # Status
     status: K8sOnSlurmStatus = K8sOnSlurmStatus.PENDING
-    node_name: Optional[str] = None
-    kubeconfig_path: Optional[str] = None
+    node_name: str | None = None
+    kubeconfig_path: str | None = None
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.now)
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "job_id": self.job_id,
@@ -127,10 +126,10 @@ class K8sBootstrapWrapper:
     # Path to Slurm scripts
     SLURM_SCRIPTS_DIR = Path(__file__).parent.parent.parent.parent / "rivault" / "slurm"
 
-    def __init__(self, slurm_scripts_dir: Optional[Path] = None):
+    def __init__(self, slurm_scripts_dir: Path | None = None):
         """Initialize wrapper."""
         self.scripts_dir = slurm_scripts_dir or self.SLURM_SCRIPTS_DIR
-        self._jobs: Dict[str, K8sOnSlurmJob] = {}
+        self._jobs: dict[str, K8sOnSlurmJob] = {}
 
     def submit(self, config: K8sOnSlurmConfig) -> K8sOnSlurmJob:
         """
@@ -167,7 +166,7 @@ class K8sBootstrapWrapper:
         except subprocess.CalledProcessError as e:
             job.status = K8sOnSlurmStatus.FAILED
             logger.error(f"Failed to submit job: {e.stderr}")
-            raise RuntimeError(f"Failed to submit Slurm job: {e.stderr}")
+            raise RuntimeError(f"Failed to submit Slurm job: {e.stderr}") from e
 
         self._jobs[job_id] = job
         return job
@@ -263,7 +262,7 @@ class K8sBootstrapWrapper:
 
         return job
 
-    def get_kubeconfig(self, job_id: str) -> Optional[str]:
+    def get_kubeconfig(self, job_id: str) -> str | None:
         """
         Get kubeconfig content for a running job.
 
@@ -290,7 +289,7 @@ class K8sBootstrapWrapper:
         """Generate sbatch script content."""
         lines = [
             "#!/bin/bash",
-            f"#SBATCH --job-name=k8s-on-slurm",
+            "#SBATCH --job-name=k8s-on-slurm",
             f"#SBATCH --time={config.time_limit}",
             f"#SBATCH --nodes={config.nodes}",
             f"#SBATCH --cpus-per-task={config.cpus_per_task}",

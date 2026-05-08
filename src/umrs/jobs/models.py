@@ -12,7 +12,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, Optional
+from typing import Any
 
 
 class JobType(Enum):
@@ -21,6 +21,7 @@ class JobType(Enum):
     INDEX_BUILD = "index_build"           # Build RAG index from dataset
     EMBEDDING_BATCH = "embedding_batch"   # Batch embedding computation
     PIPELINE_RUN = "pipeline_run"         # Execute ingestion pipeline
+    WORKFLOW_RUN = "workflow_run"         # Execute registered user workflow
     ENDPOINT_PROVISION = "endpoint_provision"  # Provision Mini-RiVault
     MODEL_DOWNLOAD = "model_download"     # Download model weights to approved path
     CLEANUP = "cleanup"                   # Delete resources
@@ -58,7 +59,7 @@ class RestartPolicy(Enum):
 
 
 # Default backoff settings per job type
-DEFAULT_BACKOFFS: Dict[JobType, Dict[str, Any]] = {
+DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.ENDPOINT_PROVISION: {
         "delays": [5, 10, 20],      # Fast retry
         "max_attempts": 3,
@@ -73,6 +74,10 @@ DEFAULT_BACKOFFS: Dict[JobType, Dict[str, Any]] = {
     },
     JobType.PIPELINE_RUN: {
         "delays": [15, 30, 60],     # Medium
+        "max_attempts": 4,
+    },
+    JobType.WORKFLOW_RUN: {
+        "delays": [15, 30, 60],
         "max_attempts": 4,
     },
     JobType.MODEL_DOWNLOAD: {
@@ -101,7 +106,7 @@ def compute_idempotency_key(
     project_id: str,
     user_id: str,
     job_type: JobType,
-    spec: Dict[str, Any],
+    spec: dict[str, Any],
 ) -> str:
     """
     Compute stable idempotency key from job parameters.
@@ -128,7 +133,7 @@ class Job:
     project_id: str
     user_id: str
     job_type: JobType
-    spec: Dict[str, Any]  # JSONB - job-specific parameters
+    spec: dict[str, Any]  # JSONB - job-specific parameters
     idempotency_key: str
 
     status: JobStatus = JobStatus.PLANNED
@@ -137,14 +142,14 @@ class Job:
     desired_max_attempts: int = 3
     restart_policy: RestartPolicy = RestartPolicy.ON_CRASH
 
-    next_run_at: Optional[datetime] = None
-    active_attempt_id: Optional[str] = None
-    commit_attempt_id: Optional[str] = None
+    next_run_at: datetime | None = None
+    active_attempt_id: str | None = None
+    commit_attempt_id: str | None = None
 
     created_at: datetime = field(default_factory=datetime.utcnow)
     updated_at: datetime = field(default_factory=datetime.utcnow)
-    last_state_change_at: Optional[datetime] = None
-    last_heartbeat_at: Optional[datetime] = None
+    last_state_change_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
 
     def can_retry(self, current_attempt_no: int) -> bool:
         """Check if job can be retried given current attempt number."""
@@ -162,7 +167,7 @@ class Job:
         idx = min(attempt_no - 1, len(delays) - 1)
         return delays[idx] if idx >= 0 else delays[0]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "job_id": self.job_id,
@@ -185,7 +190,7 @@ class Job:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "Job":
+    def from_dict(cls, data: dict[str, Any]) -> Job:
         """Create from dictionary."""
         return cls(
             job_id=data["job_id"],
@@ -221,25 +226,25 @@ class JobAttempt:
     attempt_no: int  # 1-based
 
     backend: str  # "slurm", "kubernetes", "compose"
-    backend_ref: Optional[str] = None  # Slurm job ID, K8s Job name, etc.
+    backend_ref: str | None = None  # Slurm job ID, K8s Job name, etc.
 
     status: AttemptStatus = AttemptStatus.CREATED
 
-    started_at: Optional[datetime] = None
-    ended_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
 
-    exit_reason: Optional[str] = None  # Error message or success detail
-    log_uri: Optional[str] = None  # s3://…/jobs/<job_id>/attempt_<n>/logs
+    exit_reason: str | None = None  # Error message or success detail
+    log_uri: str | None = None  # s3://…/jobs/<job_id>/attempt_<n>/logs
 
     # Operational fields
-    metrics: Dict[str, Any] = field(default_factory=dict)  # JSONB
-    umrs_instance_id: Optional[str] = None  # Which UMRS started this
-    scheduler_claimed_at: Optional[datetime] = None
-    status_detail: Optional[str] = None  # e.g., "polling readiness"
+    metrics: dict[str, Any] = field(default_factory=dict)  # JSONB
+    umrs_instance_id: str | None = None  # Which UMRS started this
+    scheduler_claimed_at: datetime | None = None
+    status_detail: str | None = None  # e.g., "polling readiness"
 
     # Ignored attempt tracking
-    ignored_at: Optional[datetime] = None
-    ignore_reason: Optional[str] = None
+    ignored_at: datetime | None = None
+    ignore_reason: str | None = None
 
     created_at: datetime = field(default_factory=datetime.utcnow)
 
@@ -248,7 +253,7 @@ class JobAttempt:
         """S3 path prefix for this attempt's outputs."""
         return f"jobs/{self.job_id}/attempt_{self.attempt_no}"
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "attempt_id": self.attempt_id,
@@ -271,7 +276,7 @@ class JobAttempt:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "JobAttempt":
+    def from_dict(cls, data: dict[str, Any]) -> JobAttempt:
         """Create from dictionary."""
         return cls(
             attempt_id=data["attempt_id"],
@@ -294,7 +299,7 @@ class JobAttempt:
         )
 
 
-def _parse_datetime(value: Optional[str]) -> Optional[datetime]:
+def _parse_datetime(value: str | None) -> datetime | None:
     """Parse ISO format datetime string."""
     if not value:
         return None

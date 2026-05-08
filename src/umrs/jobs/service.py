@@ -22,26 +22,39 @@ Usage:
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import Any
 
 from .models import (
-    AttemptStatus,
     Job,
     JobAttempt,
     JobStatus,
     JobType,
     RestartPolicy,
 )
-from .monitor import AttemptMonitor, CompositeStatusChecker, EndpointProvisionChecker
-from .reconciler import ReconcileResult, Reconciler, reconcile_on_startup
-from .scheduler import Scheduler, SimpleBackendAdapter
-from .store import DuplicateJobError, JobNotFoundError, JobStore
+from .monitor import AttemptMonitor, CompositeStatusChecker
+from .reconciler import ReconcileResult, reconcile_on_startup
+from .scheduler import Scheduler
+from .store import JobStore
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class JobSubmission:
+    """Parameters for creating a durable job."""
+
+    project_id: str
+    user_id: str
+    job_type: JobType
+    spec: dict[str, Any]
+    priority: int = 0
+    max_attempts: int = 3
+    restart_policy: RestartPolicy = RestartPolicy.ON_CRASH
+    idempotency_key: str | None = None
+    enqueue: bool = True
 
 
 class JobService:
@@ -77,13 +90,13 @@ class JobService:
         self.instance_id = str(uuid.uuid4())
 
         # Components (initialized during startup)
-        self._job_store: Optional[JobStore] = None
-        self._scheduler: Optional[Scheduler] = None
-        self._monitor: Optional[AttemptMonitor] = None
+        self._job_store: JobStore | None = None
+        self._scheduler: Scheduler | None = None
+        self._monitor: AttemptMonitor | None = None
 
         # Backend factory (set by caller)
         self._backend_factory = None
-        self._status_checker: Optional[CompositeStatusChecker] = None
+        self._status_checker: CompositeStatusChecker | None = None
 
         self._started = False
 
@@ -131,6 +144,8 @@ class JobService:
         result = reconcile_on_startup(self._job_store)
         logger.info(f"Boot reconciliation: {result}")
 
+        await self._recover_model_download_registry()
+
         # Start scheduler if backend factory is set
         if self._backend_factory:
             self._scheduler = Scheduler(
@@ -157,6 +172,20 @@ class JobService:
         logger.info("JobService started")
 
         return result
+
+    async def _recover_model_download_registry(self) -> None:
+        """Recover in-memory model download task contexts from durable jobs."""
+        if self._job_store is None:
+            return
+
+        try:
+            from .model_download import recover_download_registry_from_job_store
+
+            recovered = await recover_download_registry_from_job_store(self._job_store)
+            if recovered:
+                logger.info("Recovered %d model download task context(s)", recovered)
+        except Exception as exc:
+            logger.warning("Model download task registry recovery skipped: %s", exc)
 
     async def shutdown(self, timeout: float = 10.0) -> None:
         """
@@ -186,29 +215,16 @@ class JobService:
 
     def submit_job(
         self,
-        project_id: str,
-        user_id: str,
-        job_type: JobType,
-        spec: Dict[str, Any],
-        priority: int = 0,
-        max_attempts: int = 3,
-        restart_policy: RestartPolicy = RestartPolicy.ON_CRASH,
-        idempotency_key: Optional[str] = None,
-        enqueue: bool = True,
+        request: JobSubmission | str | None = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> str:
         """
         Submit a new job.
 
         Args:
-            project_id: Project/tenant identifier
-            user_id: User who submitted the job
-            job_type: Type of job
-            spec: Job-specific parameters
-            priority: Higher = more urgent
-            max_attempts: Maximum retry attempts
-            restart_policy: When to retry
-            idempotency_key: Optional; auto-generated if not provided
-            enqueue: Whether to enqueue immediately
+            request: Structured job submission. Existing keyword calls are
+                accepted and converted into this request object.
 
         Returns:
             job_id of created job
@@ -216,21 +232,48 @@ class JobService:
         Raises:
             DuplicateJobError: If idempotency key already exists
         """
+        submission = self._coerce_submission(request, args, kwargs)
         job_id = self.job_store.create_job(
-            project_id=project_id,
-            user_id=user_id,
-            job_type=job_type,
-            spec=spec,
-            idempotency_key=idempotency_key,
-            priority=priority,
-            max_attempts=max_attempts,
-            restart_policy=restart_policy,
+            project_id=submission.project_id,
+            user_id=submission.user_id,
+            job_type=submission.job_type,
+            spec=submission.spec,
+            idempotency_key=submission.idempotency_key,
+            priority=submission.priority,
+            max_attempts=submission.max_attempts,
+            restart_policy=submission.restart_policy,
         )
 
-        if enqueue:
+        if submission.enqueue:
             self.job_store.enqueue_job(job_id)
 
         return job_id
+
+    def _coerce_submission(
+        self,
+        request: JobSubmission | str | None,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> JobSubmission:
+        """Normalize legacy keyword arguments into a JobSubmission."""
+        if isinstance(request, JobSubmission):
+            if kwargs:
+                raise TypeError("submit_job accepts either request or keyword fields")
+            if args:
+                raise TypeError("submit_job request cannot be combined with positional fields")
+            return request
+
+        positional_values = () if request is None else (request,)
+        positional_values += args
+        field_names = tuple(JobSubmission.__dataclass_fields__)
+        if len(positional_values) > len(field_names):
+            raise TypeError("submit_job received too many positional fields")
+
+        for field_name, value in zip(field_names, positional_values, strict=False):
+            if field_name in kwargs:
+                raise TypeError(f"submit_job got multiple values for {field_name}")
+            kwargs[field_name] = value
+        return JobSubmission(**kwargs)
 
     def submit_endpoint_provision(
         self,
@@ -239,7 +282,7 @@ class JobService:
         model_path: str,
         model_name: str = "rivault-gpt-oss-static",
         ttl_sec: int = 3600,
-        env_vars: Optional[Dict[str, str]] = None,
+        env_vars: dict[str, str] | None = None,
         priority: int = 10,  # Higher priority for endpoint jobs
     ) -> str:
         """
@@ -332,7 +375,7 @@ class JobService:
         """Get job by ID."""
         return self.job_store.get_job(job_id)
 
-    def get_job_with_attempts(self, job_id: str) -> tuple[Job, List[JobAttempt]]:
+    def get_job_with_attempts(self, job_id: str) -> tuple[Job, list[JobAttempt]]:
         """Get job with all its attempts."""
         job = self.job_store.get_job(job_id)
         attempts = self.job_store.get_attempts_for_job(job_id)
@@ -340,12 +383,12 @@ class JobService:
 
     def list_jobs(
         self,
-        project_id: Optional[str] = None,
-        status: Optional[JobStatus] = None,
-        job_type: Optional[JobType] = None,
+        project_id: str | None = None,
+        status: JobStatus | None = None,
+        job_type: JobType | None = None,
         limit: int = 100,
         offset: int = 0,
-    ) -> List[Job]:
+    ) -> list[Job]:
         """List jobs with filters."""
         return self.job_store.list_jobs(
             project_id=project_id,
@@ -372,7 +415,7 @@ class JobService:
     # =========================================================================
 
     @property
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get service statistics."""
         stats = {
             "instance_id": self.instance_id,

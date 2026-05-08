@@ -12,14 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any
 
-from .endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
 from .base import OrchestratorBackend
-from .factory import get_orchestrator
 from .detection import detect_backend
+from .endpoint_registry import EndpointRegistry, EndpointStatus, get_registry
+from .factory import get_orchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -44,9 +45,10 @@ class JanitorConfig:
     enable_ttl_cleanup: bool = True
     enable_orphan_cleanup: bool = True
     enable_stuck_cleanup: bool = True
+    enable_liveness_cleanup: bool = True
 
     @classmethod
-    def from_env(cls) -> "JanitorConfig":
+    def from_env(cls) -> JanitorConfig:
         """Create config from environment variables."""
         import os
 
@@ -58,6 +60,7 @@ class JanitorConfig:
             enable_ttl_cleanup=os.getenv("JANITOR_ENABLE_TTL", "true").lower() == "true",
             enable_orphan_cleanup=os.getenv("JANITOR_ENABLE_ORPHAN", "true").lower() == "true",
             enable_stuck_cleanup=os.getenv("JANITOR_ENABLE_STUCK", "true").lower() == "true",
+            enable_liveness_cleanup=os.getenv("JANITOR_ENABLE_LIVENESS", "true").lower() == "true",
         )
 
 
@@ -68,7 +71,8 @@ class CleanupResult:
     ttl_expired: int = 0
     stuck_cleaned: int = 0
     orphans_cleaned: int = 0
-    errors: List[str] = None
+    ghosts_pruned: int = 0
+    errors: list[str] = None
 
     def __post_init__(self):
         if self.errors is None:
@@ -77,14 +81,15 @@ class CleanupResult:
     @property
     def total_cleaned(self) -> int:
         """Total endpoints cleaned."""
-        return self.ttl_expired + self.stuck_cleaned + self.orphans_cleaned
+        return self.ttl_expired + self.stuck_cleaned + self.orphans_cleaned + self.ghosts_pruned
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "ttl_expired": self.ttl_expired,
             "stuck_cleaned": self.stuck_cleaned,
             "orphans_cleaned": self.orphans_cleaned,
+            "ghosts_pruned": self.ghosts_pruned,
             "total_cleaned": self.total_cleaned,
             "errors": self.errors,
         }
@@ -102,17 +107,17 @@ class Janitor:
 
     def __init__(
         self,
-        config: Optional[JanitorConfig] = None,
-        registry: Optional[EndpointRegistry] = None,
-        backend: Optional[OrchestratorBackend] = None,
+        config: JanitorConfig | None = None,
+        registry: EndpointRegistry | None = None,
+        backend: OrchestratorBackend | None = None,
     ):
         self.config = config or JanitorConfig.from_env()
         self._registry = registry
         self._backend = backend
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._running = False
-        self._cleanup_callbacks: List[Callable[[str], None]] = []
-        self._known_jobs: Set[str] = set()  # For orphan detection
+        self._cleanup_callbacks: list[Callable[[str], None]] = []
+        self._known_jobs: set[str] = set()  # For orphan detection
 
     @property
     def registry(self) -> EndpointRegistry:
@@ -173,6 +178,10 @@ class Janitor:
         """Run all cleanup tasks."""
         result = CleanupResult()
 
+        if self.config.enable_liveness_cleanup:
+            liveness_result = await self._cleanup_ghost_ready()
+            result.ghosts_pruned = liveness_result
+
         if self.config.enable_ttl_cleanup:
             ttl_result = await self._cleanup_ttl_expired()
             result.ttl_expired = ttl_result
@@ -186,6 +195,65 @@ class Janitor:
             result.orphans_cleaned = orphan_result
 
         return result
+
+    async def _cleanup_ghost_ready(self) -> int:
+        """Remove READY/DEGRADED endpoints whose backend jobs are no longer alive.
+
+        F-012: Ghost endpoint pruning.  Stale "ready" entries in the registry
+        make ``r4 endpoint list`` untrustworthy.  This task runs every janitor
+        cycle and verifies each READY/DEGRADED endpoint against the backend.
+        Endpoints whose backing job has terminated are removed from the
+        registry so users never see them.
+
+        Uses the same liveness semantics as the request-time filter in
+        ``_filter_live_ready_endpoints``: when the backend cannot be reached
+        or returns an inconclusive answer, the endpoint is preserved (fail-safe).
+        """
+        from .base import JobStatus
+
+        pruned = 0
+        endpoints = self.registry.list_all(
+            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+        )
+        if not endpoints:
+            return 0
+
+        for endpoint in endpoints:
+            try:
+                info = await self.backend.get_job_status(endpoint.job_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Liveness check for %s skipped (backend error): %s",
+                    endpoint.job_id,
+                    exc,
+                )
+                continue  # Inconclusive — preserve the endpoint
+
+            status_value = getattr(info, "status", None)
+            if status_value in (
+                JobStatus.PENDING,
+                JobStatus.STARTING,
+                JobStatus.READY,
+                JobStatus.RUNNING,
+            ):
+                continue  # Job is alive
+
+            # Backend reports job as terminal — remove ghost endpoint.
+            logger.warning(
+                "Pruning ghost endpoint %s/%s (job_id=%s, backend_status=%s): "
+                "backend job is no longer alive",
+                endpoint.project_id,
+                endpoint.model,
+                endpoint.job_id,
+                status_value,
+            )
+            self.registry.remove(endpoint.job_id)
+            pruned += 1
+
+            if pruned >= self.config.batch_size:
+                break
+
+        return pruned
 
     async def _cleanup_ttl_expired(self) -> int:
         """
@@ -321,7 +389,7 @@ class Janitor:
 
 
 # Global singleton
-_janitor: Optional[Janitor] = None
+_janitor: Janitor | None = None
 
 
 def get_janitor() -> Janitor:

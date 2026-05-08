@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+import os
+from collections.abc import Callable
+from dataclasses import dataclass, field, is_dataclass, replace
+from typing import Any
 
-from .base import OrchestratorBackend
+from .base import JobStatus, OrchestratorBackend
 from .detection import BackendType, detect_backend
+from .endpoint_mounts import build_mount_environment
 from .endpoint_registry import (
     EndpointRegistry,
     EndpointStatus,
@@ -32,8 +35,56 @@ from .readiness import (
     ReadinessPoller,
     get_readiness_poller,
 )
+from .site_config import load_site_config
 
 logger = logging.getLogger(__name__)
+
+
+def _friendly_probe_detail(error: str | None, state: str) -> str:
+    """Translate raw readiness-probe errors into user-friendly messages.
+
+    Users seeing 'Connection error: ...' tend to think provisioning has
+    failed, when in reality the container is still starting up. This
+    function maps known transient errors to reassuring progress text.
+    """
+    if not error:
+        return state
+
+    low = error.lower()
+
+    # Container hasn't opened its port yet
+    if "connection" in low and ("refused" in low or "failed" in low or "reset" in low):
+        return "waiting for service to start"
+
+    # DNS not ready or host unreachable
+    if "name or service not known" in low or "nodename nor servname" in low:
+        return "waiting for host to become reachable"
+
+    # HTTP 503 — LiteLLM up but vLLM backend not ready
+    if "http 503" in low or "service unavailable" in low:
+        return "model is loading"
+
+    # HTTP 502/504 — reverse proxy up, backend not ready
+    if "http 502" in low or "http 504" in low or "bad gateway" in low:
+        return "waiting for backend to respond"
+
+    # Timeout on the probe request itself
+    if "timeout" in low:
+        return "service not responding yet"
+
+    # vLLM model list empty or expected model missing
+    if "no models" in low or "expected model" in low:
+        return "model still loading into memory"
+
+    # Chat probe failed — model loaded but warmup incomplete
+    if "chat probe" in low:
+        return "model warming up"
+
+    # Fallback: keep original but strip noisy details
+    short = " ".join(error.split())
+    if len(short) > 60:
+        short = short[:57] + "..."
+    return short
 
 
 @dataclass
@@ -46,9 +97,16 @@ class ProvisionRequest:
     ttl_sec: int = 3600  # 1 hour default
     gpu_count: int = 1
     max_model_len: int = 4096
+    tier: str = "user"
+    mounts: dict[str, Any] = field(default_factory=dict)
+    egress_domains: list[str] = field(default_factory=list)
     prefer_warm: bool = True  # Try to reuse existing endpoint
+    wait_for_ready: bool = True  # Return only after readiness unless disabled
     min_ttl_for_reuse_sec: int = 60  # Min TTL remaining for reuse
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    env_vars: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    partition_override: str | None = None  # Override site partition for this request
+    nodelist_hint: str | None = None  # Slurm --nodelist hint (e.g. "ai-h200-brc-00")
 
 
 @dataclass
@@ -56,14 +114,14 @@ class ProvisionResult:
     """Result of a provision request."""
 
     success: bool
-    endpoint: Optional[RegisteredEndpoint] = None
-    job_id: Optional[str] = None
-    error: Optional[str] = None
+    endpoint: RegisteredEndpoint | None = None
+    job_id: str | None = None
+    error: str | None = None
     reused: bool = False  # True if existing endpoint was reused
     provisioning_time_sec: float = 0.0
 
     @property
-    def litellm_url(self) -> Optional[str]:
+    def litellm_url(self) -> str | None:
         """Get LiteLLM URL if endpoint is available."""
         return self.endpoint.litellm_url if self.endpoint else None
 
@@ -87,16 +145,16 @@ class OrchestrationService:
 
     def __init__(
         self,
-        registry: Optional[EndpointRegistry] = None,
-        port_manager: Optional[PortManager] = None,
-        readiness_poller: Optional[ReadinessPoller] = None,
-        backend: Optional[OrchestratorBackend] = None,
+        registry: EndpointRegistry | None = None,
+        port_manager: PortManager | None = None,
+        readiness_poller: ReadinessPoller | None = None,
+        backend: OrchestratorBackend | None = None,
     ):
         self._registry = registry
         self._port_manager = port_manager
         self._readiness_poller = readiness_poller
         self._backend = backend
-        self._backend_type: Optional[BackendType] = None
+        self._backend_type: BackendType | None = None
 
     @property
     def registry(self) -> EndpointRegistry:
@@ -119,14 +177,50 @@ class OrchestrationService:
             self._readiness_poller = get_readiness_poller()
         return self._readiness_poller
 
+    @staticmethod
+    def _classify_backend_name(backend_name: str) -> BackendType:
+        """Collapse backend names into the coarse BackendType enum."""
+        normalized = backend_name.lower()
+        if normalized in ("slurm", "slurm-podman"):
+            return BackendType.SLURM
+        if normalized in ("kubernetes", "k8s"):
+            return BackendType.KUBERNETES
+        if normalized in ("docker-compose", "compose"):
+            return BackendType.COMPOSE
+        return BackendType.UNKNOWN
+
+    @staticmethod
+    def _configured_backend_name() -> str | None:
+        """Return an explicitly configured backend, if one exists."""
+        explicit = (os.getenv("RIVAULT_ORCHESTRATOR") or "").strip()
+        if explicit:
+            return explicit
+
+        try:
+            site = load_site_config()
+        except FileNotFoundError:
+            return None
+
+        configured = (site.scheduler.kind or "").strip()
+        return configured or None
+
     @property
     def backend(self) -> OrchestratorBackend:
         """Get orchestrator backend (lazy init with auto-detection)."""
         if self._backend is None:
-            detection = detect_backend()
-            self._backend_type = detection.backend
-            self._backend = get_orchestrator(detection.backend.value)
-            logger.info(f"Using orchestrator backend: {detection}")
+            configured_backend = self._configured_backend_name()
+            if configured_backend:
+                self._backend_type = self._classify_backend_name(configured_backend)
+                self._backend = get_orchestrator(configured_backend)
+                logger.info(
+                    "Using orchestrator backend from configuration: %s",
+                    configured_backend,
+                )
+            else:
+                detection = detect_backend()
+                self._backend_type = detection.backend
+                self._backend = get_orchestrator(detection.backend.value)
+                logger.info(f"Using orchestrator backend: {detection}")
         return self._backend
 
     @property
@@ -136,10 +230,118 @@ class OrchestrationService:
             _ = self.backend  # Trigger detection
         return self._backend_type or BackendType.UNKNOWN
 
+    async def _resolve_endpoint_location(
+        self,
+        job_id: str,
+        host: str,
+        port: int,
+        deadline: float,
+    ) -> tuple[str, int]:
+        """Wait for the backend to publish a concrete endpoint host."""
+        if host and host != "pending":
+            return host, port
+
+        loop = asyncio.get_running_loop()
+        poll_interval = max(
+            1,
+            int(getattr(self.backend.config, "readiness_poll_interval_sec", 5)),
+        )
+
+        while True:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Timed out waiting for backend endpoint location for {job_id}"
+                )
+
+            job = await self.backend.get_job_status(job_id)
+            if job.status == JobStatus.FAILED:
+                raise RuntimeError(
+                    f"Backend job {job_id} failed before publishing an endpoint: "
+                    f"{job.error_message or 'unknown failure'}"
+                )
+            if job.status == JobStatus.STOPPED:
+                raise RuntimeError(
+                    f"Backend job {job_id} stopped before publishing an endpoint"
+                )
+
+            if job.endpoint and job.endpoint.node and job.endpoint.node != "pending":
+                return job.endpoint.node, job.endpoint.litellm_port or port
+
+            await asyncio.sleep(min(float(poll_interval), remaining))
+
+    async def _verify_backend_job_alive(self, job_id: str) -> bool:
+        """Return True if the backend reports the job in a non-terminal state.
+
+        Used to guard against stale warm-endpoint reuse: an entry can be
+        marked READY in the registry while the underlying Slurm/K8s job
+        has already terminated (walltime, manual cancel, crash).  Returns
+        False on any verification error so the caller falls through to a
+        fresh provisioning path (fail-safe default).
+        """
+        try:
+            info = await self.backend.get_job_status(job_id)
+        except Exception as exc:  # noqa: BLE001 - defensive
+            logger.warning(
+                "Backend get_job_status(%s) failed during warm-endpoint check: %s",
+                job_id, exc,
+            )
+            return False
+        return info.status in (
+            JobStatus.PENDING,
+            JobStatus.STARTING,
+            JobStatus.READY,
+            JobStatus.RUNNING,
+        )
+
+    async def _wait_for_ready_with_budget(
+        self,
+        job_id: str,
+        host: str,
+        port: int,
+        deadline: float,
+        probe_model: str | None = None,
+        probe_kind: str = "models",
+        on_progress: Callable[[Any], None] | None = None,
+    ):
+        """Run readiness polling within the remaining provision budget."""
+        loop = asyncio.get_running_loop()
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError(
+                f"Timed out waiting for endpoint readiness budget for {job_id}"
+            )
+
+        poller = self.readiness_poller
+        temp_poller: ReadinessPoller | None = None
+        target_timeout = max(1, int(remaining))
+
+        if target_timeout != poller.config.timeout_sec:
+            if is_dataclass(poller.config):
+                temp_poller = ReadinessPoller(
+                    replace(poller.config, timeout_sec=target_timeout)
+                )
+                poller = temp_poller
+            else:
+                poller.config.timeout_sec = target_timeout
+
+        try:
+            return await poller.wait_for_ready(
+                job_id=job_id,
+                host=host,
+                port=port,
+                probe_model=probe_model,
+                probe_kind=probe_kind,
+                on_progress=on_progress,
+            )
+        finally:
+            if temp_poller is not None:
+                await temp_poller.close()
+
     async def provision(
         self,
         request: ProvisionRequest,
-        on_progress: Optional[Callable[[str, Any], None]] = None,
+        on_progress: Callable[[str, Any], None] | None = None,
     ) -> ProvisionResult:
         """
         Provision a Mini-RiVault endpoint.
@@ -177,17 +379,32 @@ class OrchestrationService:
                 min_ttl_sec=request.min_ttl_for_reuse_sec,
             )
             if existing and existing.is_usable:
-                progress("reusing", {"job_id": existing.job_id})
-                logger.info(
-                    f"Reusing existing endpoint for {request.project_id}/{request.model}: "
-                    f"{existing.job_id}"
+                # Verify the backend job is actually still alive before
+                # reusing the cached endpoint.  ``is_usable`` only reflects
+                # the registry's cached status; if the Slurm/K8s job has
+                # terminated since the last update we would otherwise
+                # return a ghost endpoint.
+                if await self._verify_backend_job_alive(existing.job_id):
+                    progress("reusing", {"job_id": existing.job_id})
+                    logger.info(
+                        f"Reusing existing endpoint for {request.project_id}/{request.model}: "
+                        f"{existing.job_id}"
+                    )
+                    return ProvisionResult(
+                        success=True,
+                        endpoint=existing,
+                        job_id=existing.job_id,
+                        reused=True,
+                        provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+                    )
+                logger.warning(
+                    "Stale warm endpoint for %s/%s (job_id=%s) — "
+                    "marking failed and provisioning fresh",
+                    request.project_id, request.model, existing.job_id,
                 )
-                return ProvisionResult(
-                    success=True,
-                    endpoint=existing,
-                    job_id=existing.job_id,
-                    reused=True,
-                    provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+                self.registry.mark_failed(
+                    existing.job_id,
+                    "stale registry entry: backend job no longer alive",
                 )
 
         # 2. Determine target host (backend-dependent)
@@ -207,19 +424,48 @@ class OrchestrationService:
             )
         progress("port_allocated", {"port": port})
 
+        job_id: str | None = None
+        actual_host = target_host
+        actual_port = port
+        backend_startup_timeout = int(
+            getattr(self.backend.config, "startup_timeout_sec", 0) or 0
+        )
+        provision_timeout_sec = max(
+            self.readiness_poller.config.timeout_sec,
+            backend_startup_timeout,
+        )
+        deadline = start_time + provision_timeout_sec
+
         try:
             # 4. Submit job to backend
             progress("submitting_job", {"backend": self.backend_type.value})
 
-            job_info = await self.backend.submit_job(
-                model_path=request.model_path,
-                env={
+            submit_env = {
+                key: str(value)
+                for key, value in request.env_vars.items()
+                if isinstance(value, (str, int, float))
+            }
+            submit_env.update(
+                {
                     "LITELLM_PORT": str(port),
                     "VLLM_MAX_MODEL_LEN": str(request.max_model_len),
                     "PROJECT_ID": request.project_id,
                     "MODEL_NAME": request.model,
-                },
+                }
+            )
+            mount_env, mount_metadata = build_mount_environment(
+                tier=request.tier,
+                mounts=request.mounts,
+                egress_domains=request.egress_domains,
+            )
+            submit_env.update(mount_env)
+
+            job_info = await self.backend.submit_job(
+                model_path=request.model_path,
+                env=submit_env,
                 gpu_count=request.gpu_count,
+                partition_override=request.partition_override,
+                nodelist_hint=request.nodelist_hint,
             )
 
             if not job_info or not job_info.job_id:
@@ -232,8 +478,20 @@ class OrchestrationService:
             job_id = job_info.job_id
             progress("job_submitted", {"job_id": job_id})
 
-            # Update host from job info if available
+            endpoint_metadata = dict(request.metadata)
+            endpoint_metadata.update(mount_metadata)
+            endpoint_metadata.setdefault("allocated_host", target_host)
+            endpoint_metadata.setdefault("allocated_port", port)
             actual_host = job_info.endpoint.node if job_info.endpoint else target_host
+            actual_port = (
+                job_info.endpoint.litellm_port
+                if job_info.endpoint and job_info.endpoint.litellm_port
+                else port
+            )
+            if actual_host and actual_host != "pending":
+                endpoint_metadata["detail"] = f"container starting on {actual_host}:{actual_port}"
+            else:
+                endpoint_metadata["detail"] = "waiting for resource allocation"
 
             # 5. Register endpoint in registry (status=provisioning)
             endpoint = self.registry.register(
@@ -241,34 +499,136 @@ class OrchestrationService:
                 model=request.model,
                 job_id=job_id,
                 host=actual_host,
-                port=port,
+                port=actual_port,
                 backend=self.backend_type.value,
                 ttl_sec=request.ttl_sec,
-                metadata=request.metadata,
+                metadata=endpoint_metadata,
             )
             progress("registered", {"endpoint_id": job_id})
 
-            # Update registry status to starting
-            self.registry.update_status(job_id, EndpointStatus.STARTING)
+            if request.wait_for_ready:
+                return await self._finalize_provision(
+                    request=request,
+                    job_id=job_id,
+                    target_host=target_host,
+                    actual_host=actual_host,
+                    actual_port=actual_port,
+                    deadline=deadline,
+                    progress=progress,
+                    start_time=start_time,
+                )
 
-            # 6. Wait for readiness (authoritative)
-            progress("waiting_for_ready", {"timeout": self.readiness_poller.config.timeout_sec})
-
-            readiness_result = await self.readiness_poller.wait_for_ready(
-                job_id=job_id,
-                host=actual_host,
-                port=port,
-                on_progress=lambda r: progress("readiness_check", r.to_dict()),
+            asyncio.create_task(
+                self._finalize_provision(
+                    request=request,
+                    job_id=job_id,
+                    target_host=target_host,
+                    actual_host=actual_host,
+                    actual_port=actual_port,
+                    deadline=deadline,
+                    progress=None,
+                    start_time=start_time,
+                )
             )
 
-            # 7. Update endpoint status based on readiness
+            return ProvisionResult(
+                success=True,
+                endpoint=endpoint,
+                job_id=job_id,
+                reused=False,
+                provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+            )
+
+        except Exception as e:
+            logger.exception(f"Provision failed: {e}")
+            if job_id is not None:
+                try:
+                    await self._cleanup_failed_job(
+                        job_id,
+                        actual_host,
+                        actual_port,
+                        allocated_host=target_host,
+                    )
+                except Exception as cleanup_error:
+                    logger.warning(
+                        "Cleanup failed after provision error for %s: %s",
+                        job_id,
+                        cleanup_error,
+                    )
+            else:
+                self.port_manager.release(port, target_host)
+            return ProvisionResult(
+                success=False,
+                error=str(e),
+            )
+
+    async def _finalize_provision(
+        self,
+        *,
+        request: ProvisionRequest,
+        job_id: str,
+        target_host: str,
+        actual_host: str,
+        actual_port: int,
+        deadline: float,
+        progress: Callable[[str, Any], None] | None,
+        start_time: float,
+    ) -> ProvisionResult:
+        """Resolve backend assignment and readiness for a submitted job."""
+        try:
+            if actual_host == "pending":
+                if progress:
+                    progress("waiting_for_assignment", {"job_id": job_id})
+                actual_host, actual_port = await self._resolve_endpoint_location(
+                    job_id,
+                    actual_host,
+                    actual_port,
+                    deadline,
+                )
+                self.registry.update_location(
+                    job_id,
+                    host=actual_host,
+                    port=actual_port,
+                    metadata={"detail": f"container starting on {actual_host}:{actual_port}"},
+                )
+                if progress:
+                    progress("assignment_resolved", {"host": actual_host, "port": actual_port})
+
+            self.registry.update_status(job_id, EndpointStatus.STARTING)
+            self.registry.update_metadata(job_id, {
+                "detail": "waiting for model to load",
+            })
+
+            remaining_timeout = max(1, int(deadline - asyncio.get_running_loop().time()))
+            if progress:
+                progress("waiting_for_ready", {"timeout": remaining_timeout})
+            readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
+
+            def _on_readiness_progress(r) -> None:
+                if progress:
+                    progress("readiness_check", r.to_dict())
+                detail = _friendly_probe_detail(r.error, r.state.value)
+                self.registry.update_metadata(job_id, {
+                    "detail": f"probe #{r.attempts}: {detail}" if detail else f"probe #{r.attempts}",
+                    "readiness_attempts": r.attempts,
+                    "readiness_elapsed_sec": round(r.elapsed_sec, 1),
+                })
+
+            readiness_result = await self._wait_for_ready_with_budget(
+                job_id=job_id,
+                host=actual_host,
+                port=actual_port,
+                deadline=deadline,
+                probe_model=request.model,
+                probe_kind=readiness_probe,
+                on_progress=_on_readiness_progress,
+            )
+
             if readiness_result.is_ready:
                 self.registry.mark_ready(job_id)
-                progress("ready", {"models": readiness_result.models})
-
-                # Refresh endpoint from registry
+                if progress:
+                    progress("ready", {"models": readiness_result.models})
                 endpoint = self.registry.get_by_job_id(job_id)
-
                 return ProvisionResult(
                     success=True,
                     endpoint=endpoint,
@@ -276,28 +636,37 @@ class OrchestrationService:
                     reused=False,
                     provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
                 )
-            else:
-                # Readiness failed
-                error = readiness_result.error or f"Readiness check failed: {readiness_result.state.value}"
-                self.registry.mark_failed(job_id, error)
+
+            error = readiness_result.error or f"Readiness check failed: {readiness_result.state.value}"
+            self.registry.mark_failed(job_id, error)
+            if progress:
                 progress("failed", {"error": error})
-
-                # Cleanup
-                await self._cleanup_failed_job(job_id, actual_host, port)
-
-                return ProvisionResult(
-                    success=False,
-                    job_id=job_id,
-                    error=error,
-                    provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
-                )
-
-        except Exception as e:
-            logger.exception(f"Provision failed: {e}")
-            self.port_manager.release(port, target_host)
+            await self._cleanup_failed_job(
+                job_id,
+                actual_host,
+                actual_port,
+                allocated_host=target_host,
+            )
             return ProvisionResult(
                 success=False,
+                job_id=job_id,
+                error=error,
+                provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+            )
+        except Exception as e:
+            logger.exception(f"Provision finalize failed: {e}")
+            self.registry.mark_failed(job_id, str(e))
+            await self._cleanup_failed_job(
+                job_id,
+                actual_host,
+                actual_port,
+                allocated_host=target_host,
+            )
+            return ProvisionResult(
+                success=False,
+                job_id=job_id,
                 error=str(e),
+                provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
             )
 
     async def deprovision(
@@ -324,14 +693,42 @@ class OrchestrationService:
 
         # Stop the backend job
         try:
-            await self.backend.cleanup(job_id)
+            await self.backend.cleanup(job_id, force=force)
         except Exception as e:
             logger.error(f"Backend cleanup failed for {job_id}: {e}")
-            if not force:
-                return False
+            return False
+
+        try:
+            backend_info = await self.backend.get_job_status(job_id)
+        except Exception as e:
+            logger.error(f"Backend cleanup verification failed for {job_id}: {e}")
+            return False
+
+        if backend_info.status in (
+            JobStatus.PENDING,
+            JobStatus.STARTING,
+            JobStatus.READY,
+            JobStatus.RUNNING,
+        ):
+            logger.error(
+                "Backend cleanup for %s returned while job is still active: %s",
+                job_id,
+                backend_info.status.value,
+            )
+            self.registry.update_metadata(
+                job_id,
+                {
+                    "detail": "backend cleanup still pending",
+                    "cleanup_status": backend_info.status.value,
+                },
+            )
+            return False
 
         # Release port
         self.port_manager.release(endpoint.port, endpoint.host)
+        allocated_host = endpoint.metadata.get("allocated_host")
+        if allocated_host and allocated_host != endpoint.host:
+            self.port_manager.release(endpoint.port, allocated_host)
 
         # Remove from registry
         self.registry.remove(job_id)
@@ -353,7 +750,7 @@ class OrchestrationService:
         self,
         project_id: str,
         model: str,
-    ) -> Optional[RegisteredEndpoint]:
+    ) -> RegisteredEndpoint | None:
         """
         Get an existing ready endpoint.
 
@@ -364,8 +761,8 @@ class OrchestrationService:
 
     def list_endpoints(
         self,
-        project_id: Optional[str] = None,
-    ) -> List[RegisteredEndpoint]:
+        project_id: str | None = None,
+    ) -> list[RegisteredEndpoint]:
         """List all endpoints, optionally filtered by project."""
         return self.registry.list_all(project_id=project_id)
 
@@ -400,6 +797,7 @@ class OrchestrationService:
         job_id: str,
         host: str,
         port: int,
+        allocated_host: str | None = None,
     ):
         """Clean up resources after a failed provision."""
         try:
@@ -408,6 +806,8 @@ class OrchestrationService:
             logger.warning(f"Backend cleanup failed: {e}")
 
         self.port_manager.release(port, host)
+        if allocated_host and allocated_host != host:
+            self.port_manager.release(port, allocated_host)
         self.registry.remove(job_id)
 
     async def close(self):
@@ -417,7 +817,7 @@ class OrchestrationService:
 
 
 # Global singleton
-_service: Optional[OrchestrationService] = None
+_service: OrchestrationService | None = None
 
 
 def get_orchestration_service() -> OrchestrationService:

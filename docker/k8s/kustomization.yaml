@@ -10,5 +10,4 @@ resources:
   - minio.yaml
   - rivault.yaml
   - server.yaml
-  - embedding-worker.yaml
   - tests.yaml

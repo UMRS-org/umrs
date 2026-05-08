@@ -10,11 +10,12 @@ For endpoint_provision jobs, success = readiness poll success + registry entry.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Optional, Protocol
+from typing import Any, Protocol
 
-from .models import AttemptStatus, Job, JobAttempt, JobStatus, JobType
+from .models import AttemptStatus, Job, JobAttempt, JobType
 from .store import JobStore
 
 logger = logging.getLogger(__name__)
@@ -27,7 +28,7 @@ class BackendStatusChecker(Protocol):
         self,
         attempt: JobAttempt,
         job: Job,
-    ) -> "AttemptCheckResult":
+    ) -> AttemptCheckResult:
         """
         Check status of an attempt.
 
@@ -42,9 +43,9 @@ class AttemptCheckResult:
     def __init__(
         self,
         status: str,  # "running", "succeeded", "failed", "unknown"
-        exit_reason: Optional[str] = None,
-        metrics: Optional[Dict[str, Any]] = None,
-        status_detail: Optional[str] = None,
+        exit_reason: str | None = None,
+        metrics: dict[str, Any] | None = None,
+        status_detail: str | None = None,
         should_commit: bool = True,  # Whether to set commit_attempt_id
     ):
         self.status = status
@@ -54,15 +55,15 @@ class AttemptCheckResult:
         self.should_commit = should_commit
 
     @classmethod
-    def running(cls, detail: str = "running") -> "AttemptCheckResult":
+    def running(cls, detail: str = "running") -> AttemptCheckResult:
         return cls(status="running", status_detail=detail)
 
     @classmethod
     def succeeded(
         cls,
-        metrics: Optional[Dict] = None,
+        metrics: dict | None = None,
         commit: bool = True,
-    ) -> "AttemptCheckResult":
+    ) -> AttemptCheckResult:
         return cls(
             status="succeeded",
             exit_reason="success",
@@ -71,11 +72,11 @@ class AttemptCheckResult:
         )
 
     @classmethod
-    def failed(cls, reason: str) -> "AttemptCheckResult":
+    def failed(cls, reason: str) -> AttemptCheckResult:
         return cls(status="failed", exit_reason=reason)
 
     @classmethod
-    def unknown(cls) -> "AttemptCheckResult":
+    def unknown(cls) -> AttemptCheckResult:
         return cls(status="unknown", status_detail="status unknown")
 
 
@@ -106,7 +107,7 @@ class AttemptMonitor:
         self.poll_interval = poll_interval
 
         self._running = False
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stats = {
             "cycles": 0,
             "attempts_checked": 0,
@@ -138,10 +139,8 @@ class AttemptMonitor:
             except asyncio.TimeoutError:
                 logger.warning("AttemptMonitor stop timeout, cancelling")
                 self._task.cancel()
-                try:
+                with contextlib.suppress(asyncio.CancelledError):
                     await self._task
-                except asyncio.CancelledError:
-                    pass
 
         logger.info("AttemptMonitor stopped")
 
@@ -245,7 +244,7 @@ class AttemptMonitor:
             )
 
     @property
-    def stats(self) -> Dict[str, Any]:
+    def stats(self) -> dict[str, Any]:
         """Get monitor statistics."""
         return self._stats.copy()
 
@@ -284,7 +283,7 @@ class EndpointProvisionChecker:
         3. Return appropriate result
         """
         if job.job_type != JobType.ENDPOINT_PROVISION:
-            raise ValueError(f"EndpointProvisionChecker only handles endpoint jobs")
+            raise ValueError("EndpointProvisionChecker only handles endpoint jobs")
 
         project_id = job.project_id
         model = job.spec.get("model", "rivault-gpt-oss-static")
@@ -356,7 +355,7 @@ class CompositeStatusChecker:
     """
 
     def __init__(self):
-        self._checkers: Dict[JobType, BackendStatusChecker] = {}
+        self._checkers: dict[JobType, BackendStatusChecker] = {}
 
     def register(self, job_type: JobType, checker: BackendStatusChecker) -> None:
         """Register a checker for a job type."""

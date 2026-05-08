@@ -202,7 +202,7 @@ Goal: expose UMRS’s pgvector embeddings for RAG:
 ### 4.3 Concrete LangChain-based Implementation (Chosen Option A)
 
 - Implementation lives in the UMRS repo as a small FastAPI app:
-  - Service entrypoint: `src/rag_service.py`.
+  - Service entrypoint: `src/umrs/api/rag_service.py`.
   - Uses **LangChain** (`langchain`, `langchain-community`) and **SentenceTransformers** for query embeddings.
 - Startup behaviour:
   - Resolves the UMRS server config JSON similar to `server_umrs.py`:
@@ -222,7 +222,7 @@ Goal: expose UMRS’s pgvector embeddings for RAG:
     - `page_content` = `_content` for text modalities (or empty string for non-text).
     - `metadata` including `id`, `s3_object`, `distance`, `checksum`, `model`, `chunk_start/end`, `chunk_md5`, `user`, `bucket_alias`, `xp_name`.
 - `/rag/search` endpoint (FastAPI):
-  - Path: `POST /rag/search` (served by `src/rag_service.py`).
+  - Path: `POST /rag/search` (served by `src/umrs/api/rag_service.py`).
   - Request body:
     ```json
     {

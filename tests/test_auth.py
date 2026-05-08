@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 
-from umrs.auth import (
+from umrs.shared.auth import (
     ADMIN_ONLY_COMMANDS,
     USER_ALLOWED_COMMANDS,
     AdminTokenManager,
@@ -66,6 +66,19 @@ class TestAdminRoleEnforcement:
 
         for cmd in ADMIN_ONLY_COMMANDS:
             assert auth.can_execute_command(cmd) is False
+
+    def test_user_admin_probe_can_skip_denial_logging(self, caplog):
+        """Capability probes can suppress denial warnings without changing auth."""
+        auth = AuthContext(
+            user_id="user-uuid",
+            username="user1",
+            role=UserRole.USER,
+        )
+
+        with caplog.at_level("WARNING"):
+            assert auth.can_execute_command("RELOAD", log_denial=False) is False
+
+        assert "attempted admin command" not in caplog.text
 
     def test_user_can_execute_allowed_commands(self):
         """Regular users can execute user-allowed commands."""
@@ -484,6 +497,26 @@ class TestAdminTokenManager:
         result = manager.validate_token("invalid-token")
         assert result is None
 
+    def test_weak_admin_token_literals_are_rejected(self, tmp_path):
+        """Known weak admin token literals never grant admin access."""
+        config = ConfigDirectory()
+        config._config_dir = tmp_path
+
+        manager = AdminTokenManager(config)
+        token_hash, token_salt = manager._hash_token("admin")
+        manager._save_tokens(
+            {
+                "weak-token": {
+                    "token_hash": token_hash,
+                    "token_salt": token_salt,
+                    "description": "weak fixture",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                }
+            }
+        )
+
+        assert manager.validate_token("admin") is None
+
     def test_revoke_token(self, tmp_path):
         """Revoked tokens become invalid."""
         config = ConfigDirectory()
@@ -517,6 +550,7 @@ class TestAdminTokenManager:
         # Should not expose hashes
         for t in tokens:
             assert "token_hash" not in t
+            assert t["expires_at"] == "never"
 
 
 # =============================================================================
@@ -533,7 +567,7 @@ class TestFactoryFunctions:
         config._data_dir = tmp_path
         config._config_dir = tmp_path
 
-        with patch("umrs.auth.get_config_directory", return_value=config):
+        with patch("umrs.shared.auth.get_config_directory", return_value=config):
             auth = create_auth_context_from_request("testuser")
 
         assert auth.username == "testuser"
@@ -549,8 +583,8 @@ class TestFactoryFunctions:
         manager = AdminTokenManager(config)
         token = manager.generate_token("admin-token", "Admin access")
 
-        with patch("umrs.auth.get_config_directory", return_value=config):
-            with patch("umrs.auth.AdminTokenManager", return_value=manager):
+        with patch("umrs.shared.auth.get_config_directory", return_value=config):
+            with patch("umrs.shared.auth.AdminTokenManager", return_value=manager):
                 auth = create_auth_context_from_request("admin", token=token)
 
         assert auth.role == UserRole.ADMIN

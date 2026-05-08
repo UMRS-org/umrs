@@ -7,13 +7,12 @@ This scheduler intercepts Kubernetes API calls and translates them to Slurm jobs
 
 from __future__ import annotations
 
-import asyncio
-import json
+import builtins
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +32,8 @@ class K8sResourceSpec:
 
     api_version: str
     kind: str
-    metadata: Dict[str, Any]
-    spec: Dict[str, Any]
+    metadata: dict[str, Any]
+    spec: dict[str, Any]
 
 
 @dataclass
@@ -49,12 +48,13 @@ class SlurmJobSpec:
     cpus_per_task: int = 1
     mem: str = "4G"
     gpus: int = 0
-    gpu_type: Optional[str] = None
+    gpu_type: str | None = None
+    account: str | None = None  # #SBATCH --account=<acct>
     container_image: str = ""
     container_runtime: str = "singularity"
-    command: List[str] = field(default_factory=list)
-    environment: Dict[str, str] = field(default_factory=dict)
-    mounts: List[str] = field(default_factory=list)
+    command: list[str] = field(default_factory=list)
+    environment: dict[str, str] = field(default_factory=dict)
+    mounts: list[str] = field(default_factory=list)
     working_dir: str = "/workspace"
     output_file: str = "slurm-%j.out"
     error_file: str = "slurm-%j.err"
@@ -67,8 +67,8 @@ class TranslatedJob:
     original_kind: str
     slurm_script: str
     slurm_spec: SlurmJobSpec
-    metadata: Dict[str, Any]
-    warnings: List[str] = field(default_factory=list)
+    metadata: dict[str, Any]
+    warnings: list[str] = field(default_factory=list)
 
 
 class K8sToSlurmTranslator:
@@ -88,6 +88,7 @@ class K8sToSlurmTranslator:
         container_runtime: str = "singularity",
         model_mount_path: str = "/models",
         gpu_resource_name: str = "nvidia.com/gpu",
+        default_account: str | None = None,
     ):
         """Initialize translator with defaults."""
         self.default_partition = default_partition
@@ -95,6 +96,9 @@ class K8sToSlurmTranslator:
         self.container_runtime = container_runtime
         self.model_mount_path = model_mount_path
         self.gpu_resource_name = gpu_resource_name
+        # Fallback Slurm account used when the K8s manifest does not carry
+        # one via the ``rivault.platform/slurm-account`` annotation.
+        self.default_account = default_account
 
     def translate(self, resource: K8sResourceSpec) -> TranslatedJob:
         """
@@ -248,8 +252,8 @@ class K8sToSlurmTranslator:
     def _build_slurm_spec(
         self,
         job_name: str,
-        container: Dict[str, Any],
-        pod_spec: Dict[str, Any],
+        container: dict[str, Any],
+        pod_spec: dict[str, Any],
     ) -> SlurmJobSpec:
         """Build Slurm spec from container and pod specs."""
         # Extract resources
@@ -307,6 +311,7 @@ class K8sToSlurmTranslator:
             cpus_per_task=cpus,
             mem=mem,
             gpus=gpus,
+            account=self.default_account,
             container_image=container.get("image", ""),
             container_runtime=self.container_runtime,
             command=full_command,
@@ -335,6 +340,9 @@ class K8sToSlurmTranslator:
             if spec.gpu_type:
                 gpu_spec = f"{spec.gpu_type}:{spec.gpus}"
             lines.append(f"#SBATCH --gres=gpu:{gpu_spec}")
+
+        if spec.account:
+            lines.append(f"#SBATCH --account={spec.account}")
 
         lines.append("")
         lines.append("# Environment setup")
@@ -426,7 +434,7 @@ class K8sOnSlurmScheduler:
 
     def __init__(
         self,
-        translator: Optional[K8sToSlurmTranslator] = None,
+        translator: K8sToSlurmTranslator | None = None,
         slurm_submit_cmd: str = "sbatch",
         slurm_status_cmd: str = "squeue",
         slurm_cancel_cmd: str = "scancel",
@@ -440,12 +448,12 @@ class K8sOnSlurmScheduler:
         self.script_dir = script_dir
 
         # Job tracking
-        self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._jobs: dict[str, dict[str, Any]] = {}
 
     async def create(
         self,
         resource: K8sResourceSpec,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Create resource (submit to Slurm).
 
@@ -521,7 +529,7 @@ class K8sOnSlurmScheduler:
             },
         }
 
-    async def get(self, name: str) -> Optional[Dict[str, Any]]:
+    async def get(self, name: str) -> dict[str, Any] | None:
         """Get resource status."""
         if name not in self._jobs:
             return None
@@ -575,8 +583,8 @@ class K8sOnSlurmScheduler:
 
     async def list(
         self,
-        kind: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        kind: str | None = None,
+    ) -> builtins.list[dict[str, Any]]:
         """List resources."""
         items = []
         for name, info in self._jobs.items():

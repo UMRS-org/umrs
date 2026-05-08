@@ -14,9 +14,8 @@ import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, BinaryIO, Dict, List, Optional, Union
+from typing import Any
 from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
@@ -29,8 +28,8 @@ class WriteResult:
     destination: str
     success: bool
     bytes_written: int = 0
-    error: Optional[str] = None
-    metadata: Dict[str, Any] = None
+    error: str | None = None
+    metadata: dict[str, Any] = None
 
     def __post_init__(self):
         if self.metadata is None:
@@ -44,9 +43,9 @@ class OutputWriter(ABC):
     async def write(
         self,
         plugin_id: str,
-        data: Union[bytes, str, Dict[str, Any]],
+        data: bytes | str | dict[str, Any],
         path: str,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
     ) -> WriteResult:
         """Write data to destination."""
         ...
@@ -67,10 +66,10 @@ class S3OutputWriter(OutputWriter):
 
     def __init__(
         self,
-        endpoint: Optional[str] = None,
-        access_key: Optional[str] = None,
-        secret_key: Optional[str] = None,
-        bucket: Optional[str] = None,
+        endpoint: str | None = None,
+        access_key: str | None = None,
+        secret_key: str | None = None,
+        bucket: str | None = None,
     ):
         """Initialize S3 writer."""
         self.endpoint = endpoint or os.environ.get("S3_ENDPOINT", "http://minio:9000")
@@ -94,15 +93,15 @@ class S3OutputWriter(OutputWriter):
                     config=Config(signature_version="s3v4"),
                 )
             except ImportError:
-                raise RuntimeError("boto3 required for S3 output writer")
+                raise RuntimeError("boto3 required for S3 output writer") from None
         return self._client
 
     async def write(
         self,
         plugin_id: str,
-        data: Union[bytes, str, Dict[str, Any]],
+        data: bytes | str | dict[str, Any],
         path: str,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
     ) -> WriteResult:
         """Write data to S3."""
         client = self._get_client()
@@ -175,7 +174,7 @@ class PgVectorOutputWriter(OutputWriter):
 
     def __init__(
         self,
-        connection_string: Optional[str] = None,
+        connection_string: str | None = None,
     ):
         """Initialize pgvector writer."""
         self.connection_string = connection_string or os.environ.get(
@@ -191,15 +190,15 @@ class PgVectorOutputWriter(OutputWriter):
 
                 self._pool = await asyncpg.create_pool(self.connection_string)
             except ImportError:
-                raise RuntimeError("asyncpg required for pgvector output writer")
+                raise RuntimeError("asyncpg required for pgvector output writer") from None
         return self._pool
 
     async def write(
         self,
         plugin_id: str,
-        data: Union[bytes, str, Dict[str, Any]],
+        data: bytes | str | dict[str, Any],
         path: str,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
     ) -> WriteResult:
         """Write embeddings to pgvector."""
         pool = await self._get_pool()
@@ -219,7 +218,7 @@ class PgVectorOutputWriter(OutputWriter):
         try:
             async with pool.acquire() as conn:
                 # Ensure table exists
-                await conn.execute(f"""
+                await conn.execute("""
                     CREATE TABLE IF NOT EXISTS plugin_embeddings (
                         id SERIAL PRIMARY KEY,
                         plugin_id TEXT NOT NULL,
@@ -284,7 +283,7 @@ class UMRSOutputWriter(OutputWriter):
 
     def __init__(
         self,
-        storage_path: Optional[str] = None,
+        storage_path: str | None = None,
     ):
         """Initialize UMRS storage writer."""
         self.storage_path = Path(
@@ -295,9 +294,9 @@ class UMRSOutputWriter(OutputWriter):
     async def write(
         self,
         plugin_id: str,
-        data: Union[bytes, str, Dict[str, Any]],
+        data: bytes | str | dict[str, Any],
         path: str,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
     ) -> WriteResult:
         """Write data to UMRS storage."""
         dest = self.storage_path / "plugins" / plugin_id / path
@@ -365,7 +364,7 @@ class PluginResultWriter:
 
     def __init__(self):
         """Initialize result writer with all backends."""
-        self._writers: Dict[str, OutputWriter] = {
+        self._writers: dict[str, OutputWriter] = {
             "s3": S3OutputWriter(),
             "pgvector": PgVectorOutputWriter(),
             "umrs": UMRSOutputWriter(),
@@ -390,9 +389,9 @@ class PluginResultWriter:
     async def write(
         self,
         plugin_id: str,
-        data: Union[bytes, str, Dict[str, Any]],
+        data: bytes | str | dict[str, Any],
         destination: str,
-        content_type: Optional[str] = None,
+        content_type: str | None = None,
     ) -> WriteResult:
         """
         Write data to destination.
@@ -433,8 +432,8 @@ class PluginResultWriter:
         self,
         plugin_id: str,
         output_dir: Path,
-        destinations: List[str],
-    ) -> List[WriteResult]:
+        destinations: list[str],
+    ) -> list[WriteResult]:
         """
         Write all files from output directory to destinations.
 

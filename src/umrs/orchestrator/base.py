@@ -12,8 +12,34 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any
 
+DEFAULT_MINI_RIVAULT_IMAGE = "mini-rivault:latest"
+
+
+def _inject_orchestrator_env_defaults() -> None:
+    try:
+        from .site_config import get_site_config
+        get_site_config().inject_env(overwrite=False)
+    except Exception:
+        pass  # graceful fallback when no site.yaml
+    try:
+        from .site_profiles import inject_site_profile_env
+        inject_site_profile_env(overwrite=False)
+    except Exception:
+        pass  # graceful fallback when no named profile is selected
+
+
+def _env_list(name: str, default: str) -> list[str]:
+    return os.getenv(name, default).replace(",", " ").split()
+
+
+
+def _env_nonempty(name: str, default: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip()
 
 class JobStatus(Enum):
     """Status of a Mini-RiVault job."""
@@ -58,14 +84,14 @@ class JobInfo:
 
     job_id: str  # Backend-specific ID (Slurm job ID, K8s Job name, etc.)
     status: JobStatus
-    endpoint: Optional[EndpointInfo] = None
+    endpoint: EndpointInfo | None = None
     model_path: str = ""
-    created_at: Optional[datetime] = None
-    ready_at: Optional[datetime] = None
-    stopped_at: Optional[datetime] = None
-    error_message: Optional[str] = None
+    created_at: datetime | None = None
+    ready_at: datetime | None = None
+    stopped_at: datetime | None = None
+    error_message: str | None = None
     backend: str = "unknown"  # "slurm", "kubernetes", "docker-compose"
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_active(self) -> bool:
         """Check if job is in an active state."""
@@ -101,12 +127,14 @@ class OrchestratorConfig:
     slurm_gpus: int = 1
     slurm_cpus: int = 8
     slurm_mem: str = "64G"
+    slurm_log_dir: str = "/var/log/rivault"
     slurm_job_info_dir: str = "/var/run/rivault"
+    slurm_modules: list[str] = field(default_factory=lambda: ["cuda/12.1", "singularity"])
     singularity_image: str = "/opt/singularity/mini-rivault.sif"
 
     # Kubernetes-specific
     k8s_namespace: str = "rivault-system"
-    k8s_image: str = "ghcr.io/rccs/mini-rivault:latest"
+    k8s_image: str = DEFAULT_MINI_RIVAULT_IMAGE
     k8s_gpu_resource: str = "nvidia.com/gpu"
     k8s_storage_class: str = ""
     k8s_model_pvc: str = "rivault-models"
@@ -116,9 +144,22 @@ class OrchestratorConfig:
     compose_file: str = "compose.yaml"
     compose_nvidia_file: str = "compose.nvidia.yaml"
 
+    # EgressGuard proxy settings for mini-RiVault runtimes
+    egress_proxy_url: str = "http://egress-guard:8888"
+    egress_no_proxy: str = (
+        "localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard"
+    )
+
     @classmethod
-    def from_env(cls) -> "OrchestratorConfig":
-        """Load configuration from environment variables."""
+    def from_env(cls) -> OrchestratorConfig:
+        """Load configuration from environment variables.
+
+        If a ``site.yaml`` is available, its values are injected into
+        ``os.environ`` first (without overwriting existing vars), so
+        all the ``os.getenv`` calls below pick them up transparently.
+        """
+        _inject_orchestrator_env_defaults()
+
         return cls(
             # Common
             model_path=os.getenv("VLLM_MODEL_PATH", ""),
@@ -139,11 +180,13 @@ class OrchestratorConfig:
             slurm_gpus=int(os.getenv("SLURM_GPUS", "1")),
             slurm_cpus=int(os.getenv("SLURM_CPUS", "8")),
             slurm_mem=os.getenv("SLURM_MEM", "64G"),
+            slurm_log_dir=os.getenv("SLURM_LOG_DIR", "/var/log/rivault"),
             slurm_job_info_dir=os.getenv("SLURM_JOB_INFO_DIR", "/var/run/rivault"),
+            slurm_modules=_env_list("SLURM_MODULES", "cuda/12.1 singularity"),
             singularity_image=os.getenv("SINGULARITY_IMAGE", "/opt/singularity/mini-rivault.sif"),
             # Kubernetes
             k8s_namespace=os.getenv("K8S_NAMESPACE", "rivault-system"),
-            k8s_image=os.getenv("K8S_MINI_RIVAULT_IMAGE", "ghcr.io/rccs/mini-rivault:latest"),
+            k8s_image=os.getenv("K8S_MINI_RIVAULT_IMAGE", DEFAULT_MINI_RIVAULT_IMAGE),
             k8s_gpu_resource=os.getenv("K8S_GPU_RESOURCE", "nvidia.com/gpu"),
             k8s_storage_class=os.getenv("K8S_STORAGE_CLASS", ""),
             k8s_model_pvc=os.getenv("K8S_MODEL_PVC", "rivault-models"),
@@ -151,6 +194,15 @@ class OrchestratorConfig:
             compose_project_name=os.getenv("COMPOSE_PROJECT_NAME", "mini-rivault"),
             compose_file=os.getenv("COMPOSE_FILE", "compose.yaml"),
             compose_nvidia_file=os.getenv("COMPOSE_NVIDIA_FILE", "compose.nvidia.yaml"),
+            # EgressGuard
+            egress_proxy_url=_env_nonempty(
+                "RIVAULT_HTTP_PROXY",
+                _env_nonempty("EGRESS_GUARD_PROXY_URL", "http://egress-guard:8888"),
+            ),
+            egress_no_proxy=_env_nonempty(
+                "RIVAULT_NO_PROXY",
+                "localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard",
+            ),
         )
 
 
@@ -162,7 +214,7 @@ class OrchestratorBackend(ABC):
     inference endpoint lifecycle.
     """
 
-    def __init__(self, config: Optional[OrchestratorConfig] = None):
+    def __init__(self, config: OrchestratorConfig | None = None):
         self.config = config or OrchestratorConfig.from_env()
 
     @property
@@ -174,7 +226,7 @@ class OrchestratorBackend(ABC):
     @abstractmethod
     async def submit_job(
         self,
-        model_path: Optional[str] = None,
+        model_path: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
         """
@@ -206,7 +258,7 @@ class OrchestratorBackend(ABC):
     async def wait_for_ready(
         self,
         job_id: str,
-        timeout_sec: Optional[int] = None,
+        timeout_sec: int | None = None,
     ) -> EndpointInfo:
         """
         Wait until job is ready to serve requests.
@@ -238,8 +290,8 @@ class OrchestratorBackend(ABC):
     @abstractmethod
     async def list_jobs(
         self,
-        status_filter: Optional[List[JobStatus]] = None,
-    ) -> List[JobInfo]:
+        status_filter: list[JobStatus] | None = None,
+    ) -> list[JobInfo]:
         """
         List all Mini-RiVault jobs.
 
@@ -275,17 +327,16 @@ class OrchestratorBackend(ABC):
             headers["Authorization"] = f"Bearer {self.config.litellm_master_key}"
 
         try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                    endpoint.models_url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
-                    return resp.status == 200
+            async with aiohttp.ClientSession() as session, session.get(
+                endpoint.models_url,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as resp:
+                return resp.status == 200
         except Exception:
             return False
 
-    async def health_check(self) -> Dict[str, Any]:
+    async def health_check(self) -> dict[str, Any]:
         """
         Check health of the orchestrator backend itself.
 

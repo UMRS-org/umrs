@@ -12,8 +12,7 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from typing import Any
 
 
 class PluginSourceType(Enum):
@@ -67,13 +66,13 @@ class PluginSpec:
     entrypoint: str  # module:function format
 
     # Optional commit/version reference for Git repos
-    source_ref: Optional[str] = None
+    source_ref: str | None = None
 
     # Additional pip requirements
-    requirements: List[str] = field(default_factory=list)
+    requirements: list[str] = field(default_factory=list)
 
     # Environment variables for the plugin
-    env_vars: Dict[str, str] = field(default_factory=dict)
+    env_vars: dict[str, str] = field(default_factory=dict)
 
     # Resource requirements
     cpu_limit: str = "1"
@@ -84,14 +83,14 @@ class PluginSpec:
     timeout_seconds: int = 3600
 
     # Allowed output destinations
-    output_destinations: List[str] = field(default_factory=list)
+    output_destinations: list[str] = field(default_factory=list)
 
     # Project and user context
-    project_id: Optional[str] = None
-    user_id: Optional[str] = None
+    project_id: str | None = None
+    user_id: str | None = None
 
     # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Validate spec after initialization."""
@@ -141,7 +140,7 @@ class PluginSpec:
         )
         return hashlib.sha256(content.encode()).hexdigest()[:16]
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for serialization."""
         return {
             "source_type": self.source_type.value,
@@ -161,7 +160,7 @@ class PluginSpec:
         }
 
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "PluginSpec":
+    def from_dict(cls, data: dict[str, Any]) -> PluginSpec:
         """Create from dictionary."""
         return cls(
             source_type=PluginSourceType(data["source_type"]),
@@ -187,23 +186,23 @@ class PluginResult:
 
     plugin_id: str
     status: PluginStatus
-    exit_code: Optional[int] = None
-    stdout: Optional[str] = None
-    stderr: Optional[str] = None
-    output_files: List[str] = field(default_factory=list)
-    metrics: Dict[str, Any] = field(default_factory=dict)
-    started_at: Optional[datetime] = None
-    ended_at: Optional[datetime] = None
-    error_message: Optional[str] = None
+    exit_code: int | None = None
+    stdout: str | None = None
+    stderr: str | None = None
+    output_files: list[str] = field(default_factory=list)
+    metrics: dict[str, Any] = field(default_factory=dict)
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    error_message: str | None = None
 
     @property
-    def duration_seconds(self) -> Optional[float]:
+    def duration_seconds(self) -> float | None:
         """Calculate execution duration."""
         if self.started_at and self.ended_at:
             return (self.ended_at - self.started_at).total_seconds()
         return None
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "plugin_id": self.plugin_id,
@@ -227,11 +226,11 @@ class PluginAuditEntry:
     plugin_id: str
     event_type: str  # submitted, started, output_written, succeeded, failed
     timestamp: datetime
-    user_id: Optional[str] = None
-    project_id: Optional[str] = None
-    details: Dict[str, Any] = field(default_factory=dict)
+    user_id: str | None = None
+    project_id: str | None = None
+    details: dict[str, Any] = field(default_factory=dict)
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "plugin_id": self.plugin_id,

@@ -34,7 +34,6 @@ spec:
     - metadata:
         name: postgres-data
       spec:
-        storageClassName: standard
         accessModes: ["ReadWriteOnce"]
         resources:
           requests:
@@ -45,18 +44,28 @@ spec:
         app.kubernetes.io/name: umrs
         app.kubernetes.io/component: database
     spec:
+      securityContext:
+        fsGroup: 999
       containers:
         - name: postgres
-          image: ankane/pgvector:latest
+          image: pgvector/pgvector:pg15
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:
               drop:
                 - ALL
+              add:
+                - CHOWN
+                - SETUID
+                - SETGID
+                - FOWNER
+                - DAC_OVERRIDE
             seccompProfile:
               type: RuntimeDefault
           env:
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
             - name: POSTGRES_USER
               valueFrom:
                 secretKeyRef:

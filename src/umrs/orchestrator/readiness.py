@@ -13,9 +13,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any
 
 import httpx
 
@@ -43,15 +44,15 @@ class ReadinessResult:
     port: int
     attempts: int = 0
     elapsed_sec: float = 0.0
-    models: List[str] = field(default_factory=list)
-    error: Optional[str] = None
+    models: list[str] = field(default_factory=list)
+    error: str | None = None
 
     @property
     def is_ready(self) -> bool:
         """Check if endpoint is ready."""
         return self.state == ReadinessState.READY
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
         return {
             "state": self.state.value,
@@ -82,12 +83,21 @@ class ReadinessConfig:
 
     # Validation settings
     require_models: bool = True  # Require at least one model in response
-    expected_model: Optional[str] = None  # Specific model name to check
+    expected_model: str | None = None  # Specific model name to check
+    auth_token: str | None = None  # Bearer token for protected LiteLLM endpoints
+    probe_read_timeout_sec: float = 30.0  # Read timeout for inference probe
 
     @classmethod
-    def from_env(cls) -> "ReadinessConfig":
+    def from_env(cls) -> ReadinessConfig:
         """Create config from environment variables."""
         import os
+
+        try:
+            from .site_config import get_site_config
+
+            get_site_config().inject_env(overwrite=False)
+        except Exception:
+            pass
 
         return cls(
             timeout_sec=int(os.getenv("RIVAULT_READINESS_TIMEOUT_SEC", "300")),
@@ -105,6 +115,10 @@ class ReadinessConfig:
                 os.getenv("RIVAULT_READINESS_BACKOFF_MULTIPLIER", "2.0")
             ),
             expected_model=os.getenv("RIVAULT_EXPECTED_MODEL"),
+            auth_token=os.getenv("LITELLM_MASTER_KEY") or None,
+            probe_read_timeout_sec=float(
+                os.getenv("RIVAULT_READINESS_PROBE_READ_TIMEOUT_SEC", "30.0")
+            ),
         )
 
 
@@ -122,13 +136,19 @@ class ReadinessPoller:
             print(f"Ready! Models: {result.models}")
     """
 
-    def __init__(self, config: Optional[ReadinessConfig] = None):
+    def __init__(self, config: ReadinessConfig | None = None):
         self.config = config or ReadinessConfig.from_env()
-        self._client: Optional[httpx.AsyncClient] = None
-        self._active_polls: Dict[str, asyncio.Task] = {}
+        self._client: httpx.AsyncClient | None = None
+        self._active_polls: dict[str, asyncio.Task] = {}
 
     async def _get_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
+        """Get or create HTTP client.
+
+        ``trust_env=False`` is critical: proxy environment variables
+        (http_proxy, https_proxy, no_proxy) can prevent direct connections
+        to Slurm compute nodes.  The readiness poller always connects
+        directly to the target host:port.
+        """
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(
                 timeout=httpx.Timeout(
@@ -137,6 +157,7 @@ class ReadinessPoller:
                     write=5.0,
                     pool=5.0,
                 ),
+                trust_env=False,
             )
         return self._client
 
@@ -160,7 +181,21 @@ class ReadinessPoller:
 
         return max(0.1, delay)  # Minimum 100ms
 
-    async def _check_once(self, host: str, port: int) -> tuple[bool, List[str], str]:
+    def _truncate_error_detail(self, detail: str) -> str:
+        """Keep probe errors readable in logs and API surfaces."""
+        cleaned = " ".join(detail.split())
+        if len(cleaned) <= 240:
+            return cleaned
+        return f"{cleaned[:237]}..."
+
+    async def _check_once(
+        self,
+        host: str,
+        port: int,
+        *,
+        probe_model: str | None = None,
+        probe_kind: str = "models",
+    ) -> tuple[bool, list[str], str]:
         """
         Single readiness check.
 
@@ -169,9 +204,12 @@ class ReadinessPoller:
         """
         url = f"http://{host}:{port}/v1/models"
         client = await self._get_client()
+        headers = None
+        if self.config.auth_token:
+            headers = {"Authorization": f"Bearer {self.config.auth_token}"}
 
         try:
-            response = await client.get(url)
+            response = await client.get(url, headers=headers)
 
             if response.status_code != 200:
                 return False, [], f"HTTP {response.status_code}"
@@ -190,12 +228,49 @@ class ReadinessPoller:
             if self.config.require_models and not models:
                 return False, models, "No models in response"
 
-            if self.config.expected_model:
-                if self.config.expected_model not in models:
+            if self.config.expected_model and self.config.expected_model not in models:
+                return (
+                    False,
+                    models,
+                    f"Expected model '{self.config.expected_model}' not found",
+                )
+
+            if probe_kind == "chat":
+                target_model = probe_model or self.config.expected_model or (models[0] if models else None)
+                if not target_model:
+                    return False, models, "Chat probe requires a model name"
+
+                try:
+                    probe_response = await client.post(
+                        f"http://{host}:{port}/v1/chat/completions",
+                        headers=headers,
+                        json={
+                            "model": target_model,
+                            "messages": [{"role": "user", "content": "ready"}],
+                            "max_tokens": 1,
+                            "temperature": 0.0,
+                        },
+                        timeout=httpx.Timeout(
+                            connect=self.config.connect_timeout_sec,
+                            read=self.config.probe_read_timeout_sec,
+                            write=5.0,
+                            pool=5.0,
+                        ),
+                    )
+                except httpx.ConnectError as e:
+                    return False, models, f"Chat probe connection error: {e}"
+                except httpx.TimeoutException:
+                    return False, models, "Chat probe timeout"
+                except Exception as e:
+                    return False, models, f"Chat probe error: {e}"
+
+                if probe_response.status_code != 200:
                     return (
                         False,
                         models,
-                        f"Expected model '{self.config.expected_model}' not found",
+                        "Chat probe HTTP "
+                        f"{probe_response.status_code}: "
+                        f"{self._truncate_error_detail(probe_response.text)}",
                     )
 
             return True, models, ""
@@ -212,7 +287,9 @@ class ReadinessPoller:
         job_id: str,
         host: str,
         port: int,
-        on_progress: Optional[Callable[[ReadinessResult], None]] = None,
+        probe_model: str | None = None,
+        probe_kind: str = "models",
+        on_progress: Callable[[ReadinessResult], None] | None = None,
     ) -> ReadinessResult:
         """
         Wait for endpoint to become ready.
@@ -238,8 +315,10 @@ class ReadinessPoller:
 
         logger.info(
             f"Starting readiness polling for {job_id} at {host}:{port} "
-            f"(timeout={self.config.timeout_sec}s)"
+            f"(timeout={self.config.timeout_sec}s, auth={'yes' if self.config.auth_token else 'no'})"
         )
+
+        last_error: str | None = None
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -256,7 +335,12 @@ class ReadinessPoller:
             attempt += 1
             result.attempts = attempt
 
-            is_ready, models, error = await self._check_once(host, port)
+            is_ready, models, error = await self._check_once(
+                host,
+                port,
+                probe_model=probe_model,
+                probe_kind=probe_kind,
+            )
 
             if is_ready:
                 result.state = ReadinessState.READY
@@ -269,10 +353,18 @@ class ReadinessPoller:
                 return result
 
             # Log progress
-            if attempt == 1 or attempt % 5 == 0:
-                logger.debug(
-                    f"Readiness check {attempt} for {job_id}: {error or 'not ready'}"
+            if attempt == 1 or attempt % 5 == 0 or error != last_error:
+                result.elapsed_sec = time.monotonic() - start_time
+                logger.info(
+                    "Readiness pending for %s at %s:%s after attempt %s (%.1fs): %s",
+                    job_id,
+                    host,
+                    port,
+                    attempt,
+                    result.elapsed_sec,
+                    error or "not ready",
                 )
+                last_error = error
 
             # Progress callback
             if on_progress:
@@ -288,7 +380,14 @@ class ReadinessPoller:
             if delay > 0:
                 await asyncio.sleep(delay)
 
-    async def check_ready(self, host: str, port: int) -> bool:
+    async def check_ready(
+        self,
+        host: str,
+        port: int,
+        *,
+        probe_model: str | None = None,
+        probe_kind: str = "models",
+    ) -> bool:
         """
         Quick readiness check (single attempt).
 
@@ -299,8 +398,29 @@ class ReadinessPoller:
         Returns:
             True if ready, False otherwise.
         """
-        is_ready, _, _ = await self._check_once(host, port)
+        is_ready, _, _ = await self._check_once(
+            host,
+            port,
+            probe_model=probe_model,
+            probe_kind=probe_kind,
+        )
         return is_ready
+
+    async def check_ready_detail(
+        self,
+        host: str,
+        port: int,
+        *,
+        probe_model: str | None = None,
+        probe_kind: str = "models",
+    ) -> tuple[bool, list[str], str]:
+        """Return a single readiness check with models and error detail."""
+        return await self._check_once(
+            host,
+            port,
+            probe_model=probe_model,
+            probe_kind=probe_kind,
+        )
 
     def cancel_poll(self, job_id: str) -> bool:
         """
@@ -319,7 +439,7 @@ class ReadinessPoller:
 
 
 # Global singleton
-_poller: Optional[ReadinessPoller] = None
+_poller: ReadinessPoller | None = None
 
 
 def get_readiness_poller() -> ReadinessPoller:

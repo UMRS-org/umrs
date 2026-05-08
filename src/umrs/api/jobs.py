@@ -10,14 +10,14 @@ Provides:
 """
 
 import logging
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+import os
+from dataclasses import dataclass
+from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from ..jobs.models import (
-    AttemptStatus,
     Job,
     JobAttempt,
     JobStatus,
@@ -41,7 +41,7 @@ router = APIRouter(prefix="/umrs/jobs", tags=["jobs"])
 # =============================================================================
 
 # Global job store instance (set during app startup)
-_job_store: Optional[JobStore] = None
+_job_store: JobStore | None = None
 
 
 def set_job_store(store: JobStore) -> None:
@@ -60,6 +60,102 @@ def get_job_store() -> JobStore:
     return _job_store
 
 
+def get_optional_job_store() -> JobStore | None:
+    """Return the configured job store, if this process owns one."""
+    return _job_store
+
+
+def _strict_auth_mode() -> bool:
+    return os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+
+
+def _header_str(value: Any) -> str | None:
+    return value if isinstance(value, str) and value.strip() else None
+
+
+@dataclass
+class CallerIdentity:
+    """Identity of the API caller, extracted from request parameters.
+
+    In production this will come from JWT claims via Gateway.
+    For now, accept as query params (matching the models API MVP pattern).
+    """
+    user_id: str
+    project_id: str
+    is_admin: bool = False
+
+    def can_access_job(self, job: "Job") -> bool:
+        """Check if caller can access a job (owner or admin)."""
+        if self.is_admin:
+            return True
+        return (
+            job.project_id == self.project_id
+            and job.user_id == self.user_id
+        )
+
+
+def get_caller_identity(
+    caller_user_id: str | None = Query(None, description="Caller's user ID"),
+    caller_project_id: str | None = Query(None, description="Caller's project ID"),
+    is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+) -> CallerIdentity:
+    """Build caller identity from request params.
+
+    Production: extract from Gateway-verified headers only.
+    ``is_admin`` is derived from the ``X-Verified-Is-Admin`` header
+    when present; the query-param ``is_admin`` is only used in
+    non-strict MVP/testing mode when no verified headers are sent.
+    """
+    verified_user_id = _header_str(x_user_id)
+    verified_project_id = _header_str(x_verified_project_id)
+    if verified_user_id and verified_project_id:
+        admin = _header_str(x_verified_is_admin) in ("true", "1")
+        return CallerIdentity(
+            user_id=verified_user_id,
+            project_id=verified_project_id,
+            is_admin=admin,
+        )
+
+    if _strict_auth_mode():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Gateway-verified caller identity",
+        )
+
+    if not caller_user_id or not caller_project_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="caller_user_id and caller_project_id are required",
+        )
+
+    return CallerIdentity(
+        user_id=caller_user_id.strip(),
+        project_id=caller_project_id.strip(),
+        is_admin=is_admin,
+    )
+
+
+def _resolve_job_create_identity(
+    request: "JobCreateRequest",
+    x_user_id: str | None,
+    x_verified_project_id: str | None,
+) -> tuple[str, str]:
+    verified_user_id = _header_str(x_user_id)
+    verified_project_id = _header_str(x_verified_project_id)
+    if verified_user_id and verified_project_id:
+        return verified_project_id, verified_user_id
+
+    if _strict_auth_mode():
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Gateway-verified caller identity",
+        )
+    return request.project_id, request.user_id
+
+
 # =============================================================================
 # Request/Response Models
 # =============================================================================
@@ -69,15 +165,15 @@ class JobSpec(BaseModel):
     """Job specification - parameters for the job."""
 
     # Common fields
-    model: Optional[str] = Field(None, description="Model name for inference jobs")
-    model_path: Optional[str] = Field(None, description="Path to model files")
+    model: str | None = Field(None, description="Model name for inference jobs")
+    model_path: str | None = Field(None, description="Path to model files")
 
     # Data job fields
-    dataset: Optional[str] = Field(None, description="Dataset name/path for data jobs")
-    output_path: Optional[str] = Field(None, description="Output path for results")
+    dataset: str | None = Field(None, description="Dataset name/path for data jobs")
+    output_path: str | None = Field(None, description="Output path for results")
 
     # Additional params (extensible)
-    extra: Optional[Dict[str, Any]] = Field(
+    extra: dict[str, Any] | None = Field(
         default_factory=dict, description="Additional job-specific parameters"
     )
 
@@ -96,7 +192,7 @@ class JobCreateRequest(BaseModel):
     )
     spec: JobSpec = Field(..., description="Job specification")
 
-    idempotency_key: Optional[str] = Field(
+    idempotency_key: str | None = Field(
         None, description="Idempotency key (auto-generated if not provided)"
     )
     priority: int = Field(0, ge=-100, le=100, description="Priority (-100 to 100)")
@@ -134,14 +230,14 @@ class AttemptResponse(BaseModel):
     job_id: str
     attempt_no: int
     backend: str
-    backend_ref: Optional[str]
+    backend_ref: str | None
     status: str
-    started_at: Optional[str]
-    ended_at: Optional[str]
-    exit_reason: Optional[str]
-    log_uri: Optional[str]
-    status_detail: Optional[str]
-    metrics: Dict[str, Any]
+    started_at: str | None
+    ended_at: str | None
+    exit_reason: str | None
+    log_uri: str | None
+    status_detail: str | None
+    metrics: dict[str, Any]
     created_at: str
 
 
@@ -152,20 +248,20 @@ class JobResponse(BaseModel):
     project_id: str
     user_id: str
     job_type: str
-    spec: Dict[str, Any]
+    spec: dict[str, Any]
     status: str
     priority: int
     desired_max_attempts: int
     restart_policy: str
-    next_run_at: Optional[str]
-    active_attempt_id: Optional[str]
-    commit_attempt_id: Optional[str]
+    next_run_at: str | None
+    active_attempt_id: str | None
+    commit_attempt_id: str | None
     created_at: str
     updated_at: str
-    last_state_change_at: Optional[str]
+    last_state_change_at: str | None
 
     # Included in detail view
-    attempts: Optional[List[AttemptResponse]] = None
+    attempts: list[AttemptResponse] | None = None
 
     class Config:
         json_schema_extra = {
@@ -192,7 +288,7 @@ class JobResponse(BaseModel):
 class JobListResponse(BaseModel):
     """Response for job listing."""
 
-    jobs: List[JobResponse]
+    jobs: list[JobResponse]
     total: int
     limit: int
     offset: int
@@ -261,6 +357,22 @@ def _attempt_to_response(attempt: JobAttempt) -> AttemptResponse:
     )
 
 
+def _enforce_job_access(
+    caller: CallerIdentity, job: Job, action: str = "access",
+) -> None:
+    """Raise 403 if caller does not own the job and is not admin."""
+    if not caller.can_access_job(job):
+        logger.warning(
+            "User %s/%s denied %s on job %s (owner: %s/%s)",
+            caller.project_id, caller.user_id, action,
+            job.job_id, job.project_id, job.user_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Not authorised to {action} job {job.job_id}",
+        )
+
+
 # =============================================================================
 # API Endpoints
 # =============================================================================
@@ -275,6 +387,8 @@ def _attempt_to_response(attempt: JobAttempt) -> AttemptResponse:
 )
 async def create_job(
     request: JobCreateRequest,
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
     store: JobStore = Depends(get_job_store),
 ) -> JobCreateResponse:
     """
@@ -291,7 +405,7 @@ async def create_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid job_type: {request.job_type}. "
                        f"Valid types: {[t.value for t in JobType]}",
-            )
+            ) from None
 
         # Parse restart policy
         try:
@@ -301,15 +415,20 @@ async def create_job(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid restart_policy: {request.restart_policy}. "
                        f"Valid policies: {[p.value for p in RestartPolicy]}",
-            )
+            ) from None
 
         # Build spec dict
         spec = request.spec.model_dump(exclude_none=True)
+        project_id, user_id = _resolve_job_create_identity(
+            request,
+            x_user_id,
+            x_verified_project_id,
+        )
 
         # Create job
         job_id = store.create_job(
-            project_id=request.project_id,
-            user_id=request.user_id,
+            project_id=project_id,
+            user_id=user_id,
             job_type=job_type,
             spec=spec,
             idempotency_key=request.idempotency_key,
@@ -341,7 +460,7 @@ async def create_job(
                 "message": "Job with this idempotency key already exists",
                 "existing_job_id": e.existing_job_id,
             },
-        )
+        ) from e
 
 
 @router.get(
@@ -351,18 +470,24 @@ async def create_job(
     description="List jobs with optional filters by project, status, and type.",
 )
 async def list_jobs(
-    project_id: Optional[str] = Query(None, description="Filter by project ID"),
-    status_filter: Optional[str] = Query(
+    project_id: str | None = Query(None, description="Filter by project ID"),
+    status_filter: str | None = Query(
         None, alias="status", description="Filter by status"
     ),
-    job_type: Optional[str] = Query(None, description="Filter by job type"),
+    job_type: str | None = Query(None, description="Filter by job type"),
     limit: int = Query(100, ge=1, le=1000, description="Max results to return"),
     offset: int = Query(0, ge=0, description="Offset for pagination"),
+    caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobListResponse:
     """
     List jobs (U-732).
+
+    Non-admin callers are restricted to their own project's jobs.
     """
+    # Non-admin callers can only see their own project's jobs
+    if not caller.is_admin:
+        project_id = caller.project_id
     # Parse filters
     parsed_status = None
     if status_filter:
@@ -372,7 +497,7 @@ async def list_jobs(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid status: {status_filter}",
-            )
+            ) from None
 
     parsed_type = None
     if job_type:
@@ -382,7 +507,7 @@ async def list_jobs(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid job_type: {job_type}",
-            )
+            ) from None
 
     # Query jobs
     jobs = store.list_jobs(
@@ -392,6 +517,10 @@ async def list_jobs(
         limit=limit,
         offset=offset,
     )
+
+    # Non-admin callers only see their own jobs within the project
+    if not caller.is_admin:
+        jobs = [j for j in jobs if j.user_id == caller.user_id]
 
     return JobListResponse(
         jobs=[_job_to_response(j) for j in jobs],
@@ -410,13 +539,18 @@ async def list_jobs(
 async def get_job(
     job_id: str,
     include_attempts: bool = Query(True, description="Include attempt history"),
+    caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobResponse:
     """
     Get job details (U-733).
+
+    Returns 403 if the caller does not own the job and is not admin.
     """
     try:
         job = store.get_job(job_id)
+        _enforce_job_access(caller, job, action="read")
+
         response = _job_to_response(job)
 
         if include_attempts:
@@ -429,7 +563,7 @@ async def get_job(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job not found: {job_id}",
-        )
+        ) from None
 
 
 @router.post(
@@ -441,15 +575,24 @@ async def get_job(
 async def cancel_job(
     job_id: str,
     reason: str = Query("user_cancelled", description="Cancellation reason"),
+    caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobActionResponse:
     """
     Cancel a job (U-734).
 
+    Returns 403 if the caller does not own the job and is not admin.
     Note: This stops scheduling but does NOT kill running backend jobs.
     """
     try:
+        job = store.get_job(job_id)
+        _enforce_job_access(caller, job, action="cancel")
+
         store.cancel_job(job_id, reason)
+        if job.job_type == JobType.WORKFLOW_RUN:
+            from ..jobs.workflow_run import cancel_workflow_execution_for_job
+
+            cancel_workflow_execution_for_job(job)
         return JobActionResponse(
             job_id=job_id,
             action="cancel",
@@ -461,12 +604,12 @@ async def cancel_job(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job not found: {job_id}",
-        )
+        ) from None
     except InvalidTransitionError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
 
 
 @router.post(
@@ -477,13 +620,21 @@ async def cancel_job(
 )
 async def retry_job(
     job_id: str,
+    caller: CallerIdentity = Depends(get_caller_identity),
     store: JobStore = Depends(get_job_store),
 ) -> JobActionResponse:
     """
     Retry a job (U-735).
 
-    Admin operation - force requeues a failed/cancelled job.
+    Admin-only operation - force requeues a failed/cancelled job.
+    Returns 403 for non-admin callers.
     """
+    if not caller.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Retry is an admin-only operation",
+        )
+
     try:
         store.retry_job(job_id)
         return JobActionResponse(
@@ -497,12 +648,12 @@ async def retry_job(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job not found: {job_id}",
-        )
+        ) from None
     except InvalidTransitionError as e:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=str(e),
-        )
+        ) from e
 
 
 # =============================================================================
@@ -516,9 +667,9 @@ async def retry_job(
     description="Get aggregate statistics about jobs.",
 )
 async def get_job_stats(
-    project_id: Optional[str] = Query(None, description="Filter by project ID"),
+    project_id: str | None = Query(None, description="Filter by project ID"),
     store: JobStore = Depends(get_job_store),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     Get job statistics.
     """
@@ -530,8 +681,8 @@ async def get_job_stats(
     }
 
     # Count by status
-    for status in JobStatus:
-        jobs = store.list_jobs(project_id=project_id, status=status, limit=0)
-        stats["status_counts"][status.value] = len(jobs)
+    for job_status in JobStatus:
+        jobs = store.list_jobs(project_id=project_id, status=job_status, limit=0)
+        stats["status_counts"][job_status.value] = len(jobs)
 
     return stats

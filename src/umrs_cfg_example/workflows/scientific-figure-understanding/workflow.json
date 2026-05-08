@@ -1,0 +1,53 @@
+{
+  "name": "scientific-figure-understanding",
+  "version": "0.1",
+  "description": "Multimodal perception (VLM dense + OCR) feeding an LLM reasoner that returns a structured analysis of a scientific figure.",
+  "steps": [
+    {
+      "name": "vision_dense",
+      "entrypoint": "umrs.pipeline_sdk.templates.vision_step:VisionStep",
+      "config": {
+        "mode": "dense",
+        "model": "rivault-vlm-static",
+        "image_param": "image"
+      },
+      "requires": ["vision"],
+      "model_type": "vision"
+    },
+    {
+      "name": "vision_ocr",
+      "entrypoint": "umrs.pipeline_sdk.templates.ocr_step:OCRStep",
+      "config": {
+        "model": "rivault-vlm-static",
+        "image_param": "image"
+      },
+      "requires": ["vision"],
+      "model_type": "vision"
+    },
+    {
+      "name": "reason",
+      "entrypoint": "umrs.pipeline_sdk.templates.llm_step:LLMStep",
+      "depends_on": ["vision_dense", "vision_ocr"],
+      "config": {
+        "model": "rivault-llm-static",
+        "system_prompt": "You are a scientific figure analyst. Return a JSON object with the requested keys.",
+        "prompt_template": "Analyse the figure based on the perception below.\n\nDense description:\n{{ steps.vision_dense.dense_description }}\n\nText in figure:\n{{ steps.vision_ocr.ocr_text }}\n\nReturn JSON with keys: title, axes, finding, caveats.",
+        "output_schema": {
+          "type": "object",
+          "required": ["title", "finding"],
+          "properties": {
+            "title": {"type": "string"},
+            "axes": {"type": "array", "items": {"type": "string"}},
+            "finding": {"type": "string"},
+            "caveats": {"type": "array", "items": {"type": "string"}}
+          }
+        },
+        "temperature": 0.0,
+        "max_tokens": 1024
+      },
+      "requires": ["tool_calling", "structured_output"],
+      "model_type": "llm"
+    }
+  ],
+  "requirements": []
+}

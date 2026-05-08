@@ -1,0 +1,7 @@
+name: lab-podman
+description: Lab Slurm profile using rootless Podman on shared workstations.
+scheduler_kind: slurm-podman
+runtime_kind: podman-compose
+slurm_modules: []
+slurm_log_dir: /var/tmp/rivault-${USER}/logs
+slurm_job_info_dir: /var/tmp/rivault-${USER}/jobs

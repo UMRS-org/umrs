@@ -2,9 +2,9 @@
 import json
 import os
 import sys
-from umrs.sql import *
-from umrs.s3 import *
-from umrs.embeddings import *
+from umrs.server.sql import *
+from umrs.shared.storage.s3 import *
+from umrs.inference.embeddings import *
 import time
 from collections import defaultdict
 import signal
@@ -17,7 +17,7 @@ def store_db_model(db_model_store, bucket_name, db_pool, table_name, model, moda
     """Stores db_pool and model for a given (user, bucket_name)."""
     # if user not in db_model_store:
     #     storage[user] = {}  # Initialize user entry
-    
+
     db_model_store[bucket_name] = {"db_pool": db_pool, "table_name": table_name,  "model": model, "modality_name": modality_name, "s3_connection": s3_connection}
 
 
@@ -29,7 +29,7 @@ def query_db_model(db_model_store, bucket_name):
     else:
         return entry["db_pool"], entry["table_name"], entry["model"], entry["modality_name"], entry["s3_connection"]
 
-    
+
 def configure_user(user_cfg, user_md5):
     print(f"######################\nConfiguring {fullname}\n######################")
 
@@ -65,7 +65,7 @@ if len(sys.argv) != 2:
     sys.exit(f"Usage: {sys.argv[0]} <JSON config file>")
 
 configure_file = sys.argv[1]
-    
+
 # Check if the file exists
 if not os.path.exists(configure_file):
     sys.exit(f"Configuration file \"{configure_file}\" not found.")
@@ -102,10 +102,10 @@ try:
         db_pool, table_name, model, modality_name, s3_connection = query_db_model(db_model_store, bucket_name)
         if model:
             print(f"\t--> Storing to data base in {table_name}")
-            compute_and_store_embedding(bucket_name, s3_key, db_pool, table_name, model, modality_name, s3_connection) 
+            compute_and_store_embedding(bucket_name, s3_key, db_pool, table_name, model, modality_name, s3_connection)
         else:
             print(f"No model associated with this bucket")
-        
+
 except KeyboardInterrupt:
     print("\nInterrupted by user. Exiting gracefully...")
     sys.exit(0)  # ✅ Ensures a clean exit

@@ -1,0 +1,7 @@
+name: rccs-cloud
+description: RCCS cloud profile for Slurm/Podman mini-RiVault jobs.
+scheduler_kind: slurm-podman
+runtime_kind: podman-compose
+slurm_modules: []
+slurm_log_dir: /lvs0/dne1/rccs-dmp/${USER}/rivault/logs
+slurm_job_info_dir: /lvs0/dne1/rccs-dmp/${USER}/rivault/jobs

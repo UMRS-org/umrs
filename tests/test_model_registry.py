@@ -10,8 +10,7 @@ Tests:
 
 import pytest
 from datetime import datetime
-from typing import Set
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from umrs.model_registry.models import (
     ModelEntry,
@@ -257,6 +256,16 @@ class TestPathValidator:
             project_id="proj-123",
         )
 
+    def test_scope_path_validation_project_rejects_wrong_project(self):
+        """Test project scope path validation rejects a different project root."""
+        validator = PathValidator()
+        with pytest.raises(PathNotAllowedError):
+            validator.validate_scope_path(
+                "/shared/projects/proj-999/models/fine-tune",
+                ModelScope.PROJECT,
+                project_id="proj-123",
+            )
+
     def test_scope_path_validation_user(self):
         """Test user scope path validation."""
         validator = PathValidator()
@@ -266,6 +275,26 @@ class TestPathValidator:
             ModelScope.USER,
             owner_id="user-456",
         )
+
+    def test_scope_path_validation_user_rejects_other_users_experimental_root(self):
+        """Test user scope path validation rejects another user's custom root."""
+        validator = PathValidator(
+            allowed_patterns=[
+                "/shared/users/{owner_id}/models/*",
+                "/scratch/experiments/{owner_id}/*",
+            ]
+        )
+        validator.validate_scope_path(
+            "/scratch/experiments/user-456/model-a",
+            ModelScope.USER,
+            owner_id="user-456",
+        )
+        with pytest.raises(PathNotAllowedError):
+            validator.validate_scope_path(
+                "/scratch/experiments/other-user/model-a",
+                ModelScope.USER,
+                owner_id="user-456",
+            )
 
 
 # =============================================================================

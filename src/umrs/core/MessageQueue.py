@@ -1,0 +1,1122 @@
+import contextlib
+import json
+import logging
+import os
+import socket
+import tempfile
+import time
+
+from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.shared.auth import AuthContext, UserRole, create_auth_context_from_request
+from umrs.shared.connection_profiles import DataPortRange, parse_data_port_range
+
+try:
+    import zmq
+except ImportError as e:
+    raise ImportError("Cannot find zeroMQ module") from e
+
+logger = logging.getLogger(__name__)
+
+BASE_PORT = 5555
+
+
+def _validate_data_port_range(port_range: DataPortRange) -> DataPortRange:
+    if port_range.contains(BASE_PORT):
+        raise ValueError(
+            f"Data port range {port_range.label} must not include BASE_PORT ({BASE_PORT})"
+        )
+    return port_range
+
+
+def _resolve_default_data_port_range() -> DataPortRange:
+    port_range = (
+        parse_data_port_range(os.environ.get("UMRS_DATA_PORT_RANGE"))
+        or parse_data_port_range(os.environ.get("UMRS_DATA_PORT"))
+        or parse_data_port_range(os.environ.get("UMRS_DATA_BASE_PORT"))
+        or DataPortRange.single(BASE_PORT + 1)
+    )
+    return _validate_data_port_range(port_range)
+
+
+DATA_PORT_RANGE = _resolve_default_data_port_range()
+DATA_BASE_PORT = DATA_PORT_RANGE.base_port
+DEFAULT_NB_MSG = 10240
+class MessageQueue:
+    _AUTH_FIELD_INDEX = {
+        TaskCmd.CREATE_DATA_QUEUE: 2,
+        TaskCmd.ENROLL_USER: 3,
+        TaskCmd.RECOMPUTE: 3,
+        TaskCmd.UPDATE: 3,
+        TaskCmd.CHECK: 3,
+        TaskCmd.RELOAD: 3,
+    }
+
+    @staticmethod
+    def _env_flag(name, default=False):
+        raw = os.environ.get(name)
+        if raw is None:
+            return default
+        return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+    @classmethod
+    def _redact_control_message(cls, message):
+        """Return a log-safe summary for a control-plane message."""
+        if message is None:
+            return "<empty>"
+
+        parts = str(message).split(":")
+        if not parts or not parts[0]:
+            return "cmd=<empty> fields=0"
+
+        cmd = parts[0]
+        client_id = parts[1] if len(parts) > 1 else "<missing>"
+        auth_index = cls._AUTH_FIELD_INDEX.get(cmd)
+        has_auth = bool(auth_index is not None and len(parts) > auth_index and parts[auth_index])
+        return (
+            f"cmd={cmd} client_id={client_id} "
+            f"fields={max(len(parts) - 1, 0)} has_auth={str(has_auth).lower()}"
+        )
+
+    @staticmethod
+    def _resolve_port(queue_type, requested_port):
+        if requested_port != BASE_PORT:
+            return requested_port
+
+        if queue_type == "control":
+            control_port = os.environ.get("UMRS_CONTROL_PORT")
+            return int(control_port) if control_port is not None else BASE_PORT
+
+        if queue_type == "data":
+            data_port = os.environ.get("UMRS_DATA_PORT")
+            if data_port is not None:
+                return int(data_port)
+
+            data_base_port = os.environ.get("UMRS_DATA_BASE_PORT")
+            if data_base_port is not None:
+                return int(data_base_port)
+
+            data_port_range = os.environ.get("UMRS_DATA_PORT_RANGE")
+            if data_port_range is not None:
+                return parse_data_port_range(data_port_range).base_port
+
+            return _resolve_default_data_port_range().base_port
+
+        return requested_port
+
+    @staticmethod
+    def _data_bind_host(tunnel_mode):
+        return "127.0.0.1" if tunnel_mode else "0.0.0.0"
+
+    def _configured_data_port_range(self):
+        return _resolve_default_data_port_range()
+
+    def _is_data_port_available(self, port):
+        bind_host = self._data_bind_host(self.tunnel_mode)
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind((bind_host, int(port)))
+        except OSError:
+            return False
+        return True
+
+    def _allocate_data_port(self, client_id, port_range):
+        reserved_ports = {
+            int(entry["port"])
+            for other_client_id, entry in self.client_dictionary.items()
+            if other_client_id != client_id and "port" in entry
+        }
+
+        for port in range(port_range.start, port_range.end + 1):
+            if port == BASE_PORT or port in reserved_ports:
+                continue
+            if self._is_data_port_available(port):
+                return port
+        return None
+
+    def _ensure_client_data_queue(self, client_id):
+        port_range = self._configured_data_port_range()
+        entry = self.client_dictionary.setdefault(client_id, {})
+        existing_port = entry.get("port")
+        existing_queue = entry.get("data_queue")
+
+        if existing_port is not None and port_range.contains(existing_port) and existing_queue is not None:
+            return int(existing_port), port_range
+
+        if existing_port is not None and port_range.contains(existing_port) and self._is_data_port_available(existing_port):
+            selected_port = int(existing_port)
+        else:
+            selected_port = self._allocate_data_port(client_id, port_range)
+            if selected_port is None:
+                return None, port_range
+
+        if existing_queue is not None and existing_port != selected_port:
+            try:
+                existing_queue.close()
+            except Exception as exc:
+                logger.warning("Failed to close stale data queue for %s: %s", client_id, exc)
+
+        if existing_queue is None or existing_port != selected_port:
+            entry["data_queue"] = MessageQueue(
+                role='server',
+                queue_type='data',
+                server_ip=self.server_ip,
+                port=selected_port,
+                tunnel_mode=self.tunnel_mode,
+            )
+
+        entry["port"] = selected_port
+        return selected_port, port_range
+
+    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
+                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None,
+                 status_store=None, tunnel_mode=None, prefer_env_server_host=True):
+        """
+        Initializes the MessageQueue.
+
+        Args:
+            queue_type (str): 'control' or 'data'.
+            role (str): 'server' or 'client'.
+            server_ip (str): IP address of server.
+            port (int): Port number. Defaults can be overridden at runtime via
+                        UMRS_CONTROL_PORT, UMRS_DATA_PORT, UMRS_DATA_BASE_PORT,
+                        or UMRS_DATA_PORT_RANGE.
+            tunnel_mode (bool | None): When true, bind/connect to localhost so the
+                        transport can run through SSH tunnels. When None, read
+                        UMRS_TUNNEL_MODE from the environment.
+            target_nb_messages (int): Max number of messages in queue (for POSIX/SYSV).
+            target_message_size (int): Max size per message (for POSIX/SYSV).
+            status_store: a dictionnary to store event related to task in server.
+                          Shared with UMRSTasks (ZeroMQ reads theis event while UMRSTasks writes it)
+        """
+        self.role = role.lower()
+        self.type = queue_type.lower()
+        self.tunnel_mode = self._env_flag("UMRS_TUNNEL_MODE", False) if tunnel_mode is None else bool(tunnel_mode)
+        # Determine server_ip: prefer explicit env var so other containers/hosts can connect
+        env_server_host = os.environ.get("UMRS_SERVER_HOST") if prefer_env_server_host else None
+        remote_server_ip = env_server_host if env_server_host else server_ip
+        self.server_ip = "127.0.0.1" if self.tunnel_mode else remote_server_ip
+        self.context = zmq.Context()
+        self.client_dictionary={}
+        self.timeout = timeout_ms
+        self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
+        self.tmp_dir = tmp_dir
+        self.task_manager = task_manager
+        self.status_store = status_store
+        self.debug = False  # disable noisy send/recv logs by default
+        self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
+        self._last_control_auth: dict[str, str] = {}
+
+        # Initialize the selected queue type
+        if self.type == "control":
+            # Use provided port (allows non-standard ports for Docker/HPC)
+            self.port = self._resolve_port(self.type, port)
+            self._initialize_control_queue()
+        elif self.type == "data":
+            self.port = self._resolve_port(self.type, port)
+            if self.port == BASE_PORT:
+                raise ValueError(f"Cannot use port {BASE_PORT} for data channel")
+            self._initialize_data_queue()
+        else:
+            raise ValueError(f"Unsupported queue type: {self.type}")
+
+    # ------------------------ Initializers ------------------------
+
+
+    def _initialize_data_queue(self):
+        if self.role == 'server':
+            # Server uses PULL socket to receive pushed data
+            self.socket = self.context.socket(zmq.PULL)
+            bind_host = "127.0.0.1" if self.tunnel_mode else "*"
+            self.socket.bind(f"tcp://{bind_host}:{self.port}")  # Data channel bind
+            self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
+            self.set_timeouts(self.timeout, self.timeout)
+        else:  # client
+            # Client uses PUSH socket to send data
+            self.socket = self.context.socket(zmq.PUSH)
+            self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+            self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
+            self.set_timeouts(self.timeout, self.timeout)
+
+
+    def _initialize_control_queue(self):
+        if self.role == 'server':
+            self.socket = self.context.socket(zmq.ROUTER)
+            bind_host = "127.0.0.1" if self.tunnel_mode else "*"
+            self.socket.bind(f"tcp://{bind_host}:{self.port}")
+            self.set_timeouts(-1, self.timeout)
+        else:  # client
+            self.socket = self.context.socket(zmq.DEALER)
+            self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+            self.set_timeouts(self.timeout, self.timeout)
+
+    # ------------------------ Core Methods ------------------------
+
+    @staticmethod
+    def _encode_control_auth_frame(admin_token=None):
+        """Encode optional auth data for a control multipart request."""
+        if not admin_token:
+            return None
+        return json.dumps({"admin_token": admin_token}).encode("utf-8")
+
+    @staticmethod
+    def _decode_control_auth_frame(frame):
+        """Decode optional auth data from a control multipart request."""
+        if not frame:
+            return {}
+        try:
+            payload = json.loads(frame.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            logger.warning("Ignoring malformed control auth frame")
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _control_auth_token(self):
+        """Return admin token from the multipart auth frame only."""
+        return self._last_control_auth.get("admin_token")
+
+    def send_control_request(self, fields, admin_token=None):
+        """Send a control request with auth in a separate multipart frame."""
+        if self.role != "client" or self.type != "control":
+            raise PermissionError("Only control clients can send control requests")
+
+        request = ":".join(str(field) for field in fields)
+        frames = [request.encode("utf-8")]
+        auth_frame = self._encode_control_auth_frame(admin_token)
+        if auth_frame is not None:
+            frames.append(auth_frame)
+
+        if self.debug:
+            logger.debug(
+                "Sending message role=%s type=%s client_id=None %s",
+                self.role,
+                self.type,
+                self._redact_control_message(request),
+            )
+
+        try:
+            self.socket.send_multipart(frames)
+        except zmq.Again:
+            raise RuntimeError("Timeout while sending message") from None
+        except zmq.ZMQError as e:
+            raise RuntimeError(f"ZMQ error while sending: {e}") from e
+
+    def send_string(self, string, client_id=None):
+        if self.debug:
+            if self.type == "control":
+                message = self._redact_control_message(string)
+            else:
+                message = f"payload_bytes={len(str(string).encode('utf-8'))}"
+            logger.debug(
+                "Sending message role=%s type=%s client_id=%s %s",
+                self.role,
+                self.type,
+                client_id,
+                message,
+            )
+
+        try:
+            # ---------- CONTROL PLANE ----------
+            if self.type == "control":
+                if self.role == "server":
+                    # ROUTER socket - always send [client_id][empty][payload]
+                    # This format works for both REQ and DEALER clients
+                    if client_id is None:
+                        raise RuntimeError(
+                            "Server ROUTER socket requires client_id to send a message"
+                        )
+                    self.socket.send_multipart([
+                        client_id,
+                        b"",  # Empty delimiter for REQ compatibility
+                        string.encode("utf-8")
+                    ])
+                else:
+                    # DEALER socket
+                    self.socket.send_string(string)
+
+            # ---------- DATA PLANE ----------
+            elif self.type == "data":
+                if self.role == "server":
+                    raise RuntimeError("Server cannot send message on data plane")
+
+                # PUSH socket (server or client, no difference)
+                self.socket.send_string(string)
+
+            else:
+                raise RuntimeError(f"Unknown queue type: {self.type}")
+
+        except zmq.Again:
+            raise RuntimeError("Timeout while sending message") from None
+
+        except zmq.ZMQError as e:
+            raise RuntimeError(f"ZMQ error while sending: {e}") from e
+
+        except Exception as e:
+            raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}") from e
+
+    def recv_string(self):
+        """
+        Receive a string from the socket.
+
+        Returns:
+            (client_id, message)
+            - client_id is bytes for ROUTER sockets
+            - client_id is None otherwise
+        """
+        try:
+            if self.type == "control" and self.role == "server":
+                # ROUTER receives: [client_id][empty_delimiter][payload] from REQ
+                # or [client_id][payload] from DEALER
+                self._last_control_auth = {}
+                frames = self.socket.recv_multipart()
+                if len(frames) == 3:
+                    client_id, second, third = frames
+                    if second == b"":
+                        # REQ socket: [client_id][empty][payload]
+                        msg = third
+                    else:
+                        # DEALER multipart auth: [client_id][payload][auth]
+                        msg = second
+                        self._last_control_auth = self._decode_control_auth_frame(third)
+                elif len(frames) == 2:
+                    # DEALER socket: [client_id][payload]
+                    client_id, msg = frames
+                else:
+                    raise ValueError(f"Unexpected frame count: {len(frames)}")
+                return client_id, msg.decode()
+
+            elif self.type == "control" and self.role == "client":
+                # DEALER receives: [empty][payload] or [payload]
+                # when ROUTER sends with empty delimiter
+                frames = self.socket.recv_multipart()
+                if len(frames) == 2:
+                    # [empty][payload] format
+                    _empty, msg = frames
+                elif len(frames) == 1:
+                    # [payload] format
+                    msg = frames[0]
+                else:
+                    raise ValueError(f"Unexpected frame count: {len(frames)}")
+                return None, msg.decode()
+
+            else:
+                # PULL socket: single frame
+                msg = self.socket.recv_string()
+                return None, msg
+
+        except zmq.Again:
+            return None, None
+
+    def set_timeouts(self, recv_timeout_ms, send_timeout_ms):
+        self.socket.RCVTIMEO = recv_timeout_ms
+        self.socket.SNDTIMEO = send_timeout_ms
+
+
+
+    def send_file(self, send_file_path, chunk_size=4096):
+        if self.role != 'client' or self.type != 'data':
+            raise PermissionError("Sending file can only be done by the client using the data queue")
+        if not os.path.isfile(send_file_path):
+            raise FileNotFoundError(f"File '{send_file_path}' not found")
+
+        with open(send_file_path, "rb") as f:
+            # Send file in chunks
+            try:
+                while True:
+                    chunk = f.read(chunk_size)
+                    if not chunk:
+                        break
+                    self.socket.send(chunk)
+                # Send end signal (can be empty frame)
+                self.socket.send(b'__END_OF_FILE__')
+            except zmq.ZMQError as e:
+                raise RuntimeError(f"Failed to send file: {e}") from e
+
+
+    def recv_file(self, out_dir="/tmp"):
+        if self.role != 'server' or self.type != 'data':
+            raise PermissionError("Receiving file can only be done by the server using the data queue")
+
+        if not os.path.exists(out_dir):
+            os.makedirs(out_dir, exist_ok=True)  # Ensure directory exists
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w+b', dir=out_dir, delete=False) as tmp_file:
+                tmp_path = os.path.abspath(tmp_file.name)
+                while True:
+                    chunk = self.socket.recv()
+                    if chunk == b'__END_OF_FILE__':
+                        break
+                    tmp_file.write(chunk)
+                tmp_file.flush()
+            return tmp_path
+        except Exception:
+            if tmp_path and os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            raise
+
+
+
+    # ------------------------ Close ------------------------
+
+    def close(self):
+        # Close data sockets for clients (if any)
+        for entry in self.client_dictionary.values():
+            data_queue = entry.get("data_queue")
+            if data_queue:
+                try:
+                    data_queue.socket.close()
+                except Exception as e:
+                    logger.warning("Failed to close data socket: %s", e)
+
+        # Close main socket
+        try:
+            self.socket.close()
+        except Exception as e:
+            logger.warning("Failed to close main socket: %s", e)
+
+
+    # ------------------------ Server methods ------------------------
+    def server_control_queue_loop(self):
+        if self.role != "server":
+            raise PermissionError("Only server can call 'server_control_queue_loop'.")
+
+        while True:
+            zmq_sender_id, msg = self.recv_string() # Blocking call
+            logger.info("Received control request: %s", self._redact_control_message(msg))
+            # messgae structure should be "{command}:{username}:{other information (e.g file/object count)}"
+            splited_msg = msg.split(":")
+
+            cmd = splited_msg[0]
+            if cmd == TaskCmd.HAND_CHECK:  # handshake
+                try:
+                    self.send_string("READY!", zmq_sender_id)
+                except RuntimeError as e:
+                    logger.error("Error in client handshake: %s", e)
+
+            elif cmd == TaskCmd.CREATE_DATA_QUEUE:  # prepare PUB-SUB request
+                if len(splited_msg) < 2:
+                    logger.error(
+                        "CREATE_DATA_QUEUE missing client_id: %s",
+                        self._redact_control_message(msg),
+                    )
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    continue
+                client_id = splited_msg[1]
+
+                token = self._control_auth_token()
+                try:
+                    auth_ctx = create_auth_context_from_request(client_id, token=token)
+                except Exception as e:
+                    logger.warning("Failed to create auth context for %s: %s", client_id, e)
+                    auth_ctx = AuthContext(
+                        user_id=client_id, username=client_id, role=UserRole.USER,
+                    )
+                self._auth_sessions[client_id] = auth_ctx
+                logger.info(
+                    "Auth session created: user=%s role=%s",
+                    client_id, auth_ctx.role.value,
+                )
+
+                port, port_range = self._ensure_client_data_queue(client_id)
+                if port is None:
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string(f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id)
+                    continue
+
+                reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
+                try:
+                    self.send_string(reply, zmq_sender_id)
+                except RuntimeError as e:
+                    logger.error("Error in sending back port to client: %s", e)
+
+            elif cmd == TaskCmd.PROCESS_OBJECTS:  # prepare PUB-SUB request
+                if len(splited_msg) < 3:
+                    logger.error(
+                        "PROCESS_OBJECTS missing fields: %s",
+                        self._redact_control_message(msg),
+                    )
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    continue
+                client_id = splited_msg[1]
+                try:
+                    nb_objects = int(splited_msg[2])
+                except ValueError:
+                    logger.error("PROCESS_OBJECTS invalid count: %s", splited_msg[2])
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    continue
+                return self._process_object_cmd(client_id, nb_objects, zmq_sender_id)
+
+            elif cmd == TaskCmd.FILE:  # prepare PUB-SUB request
+                if len(splited_msg) < 3:
+                    logger.error(
+                        "FILE missing fields: %s",
+                        self._redact_control_message(msg),
+                    )
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    continue
+                client_id = splited_msg[1]
+                try:
+                    nb_files = int(splited_msg[2])
+                except ValueError:
+                    logger.error("FILE invalid count: %s", splited_msg[2])
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    continue
+                # include client_id in the payload for server-side identity enforcement
+                return self._process_file_cmd(client_id, nb_files, zmq_sender_id)
+            elif cmd == TaskCmd.ENROLL_USER:
+                # Admin-only: same wire format as FILE but dispatched as ENROLL_USER
+                if len(splited_msg) < 3:
+                    logger.error(
+                        "ENROLL_USER missing fields: %s",
+                        self._redact_control_message(msg),
+                    )
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    continue
+                client_id = splited_msg[1]
+                try:
+                    nb_files = int(splited_msg[2])
+                except ValueError:
+                    logger.error("ENROLL_USER invalid count: %s", splited_msg[2])
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    continue
+                # Refresh auth session with admin token (same pattern as
+                # maintenance commands) so server_umrs._authorize() sees
+                # the ADMIN role instead of the default USER session.
+                token = self._control_auth_token()
+                if client_id and token:
+                    try:
+                        auth_ctx = create_auth_context_from_request(client_id, token=token)
+                        self._auth_sessions[client_id] = auth_ctx
+                        logger.info(
+                            "Auth session refreshed for ENROLL_USER: user=%s role=%s",
+                            client_id,
+                            auth_ctx.role.value,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to refresh auth context for ENROLL_USER %s: %s",
+                            client_id,
+                            e,
+                        )
+                return self._process_file_cmd(client_id, nb_files, zmq_sender_id,
+                                              result_cmd=TaskCmd.ENROLL_USER)
+            elif cmd == TaskCmd.UPLOAD_WORKFLOW:
+                if len(splited_msg) < 3:
+                    logger.error(
+                        "UPLOAD_WORKFLOW missing fields: %s",
+                        self._redact_control_message(msg),
+                    )
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    continue
+                client_id = splited_msg[1]
+                workflow_name = splited_msg[2]
+                # Receive exactly 1 zip file via the data channel (same as FILE)
+                return self._process_file_cmd(client_id, 1, zmq_sender_id,
+                                              result_cmd=TaskCmd.UPLOAD_WORKFLOW,
+                                              extra_payload=workflow_name)
+            elif cmd ==  TaskCmd.STATUS:
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
+                payload = self._get_status_payload(client_id, status_key)
+                try:
+                    self.send_string(payload, zmq_sender_id)
+                except RuntimeError as e:
+                    logger.error("Error sending status payload: %s", e)
+                continue
+            elif cmd == TaskCmd.WAIT_OUTPUT :
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                args = splited_msg[2] if len(splited_msg) > 2 else None
+                if client_id is None or args is None:
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError as e:
+                        logger.error("Error sending status payload: %s", e)
+                    continue
+                splited_args = args.split(";")
+                bucket_name = splited_args[0]
+                timeout = int(splited_args[1]) if len(splited_args) > 1 else None
+                return TaskCmd.WAIT_OUTPUT, (client_id, bucket_name, timeout, zmq_sender_id)
+
+            elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                export_args = splited_msg[2] if len(splited_msg) > 2 else None
+                if client_id is None or export_args is None:
+                    try:
+                        self.send_string("CMD_ERROR", zmq_sender_id)
+                    except RuntimeError as e:
+                        logger.error("Error sending export error: %s", e)
+                    continue
+                return TaskCmd.EXPORT_EMBEDDINGS, (client_id, export_args, zmq_sender_id)
+
+            elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
+                # Acknowledge and let the server main loop perform the operation
+                try:
+                    self.send_string("ACKNOWLEDGE", zmq_sender_id)
+                except RuntimeError as e:
+                    logger.error("Error acknowledging %s request: %s", cmd, e)
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                token = splited_msg[3] if len(splited_msg) > 3 else None
+                if client_id and token:
+                    try:
+                        auth_ctx = create_auth_context_from_request(client_id, token=token)
+                        self._auth_sessions[client_id] = auth_ctx
+                        logger.info(
+                            "Auth session refreshed for maintenance: user=%s role=%s cmd=%s",
+                            client_id,
+                            auth_ctx.role.value,
+                            cmd,
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to refresh auth context for maintenance request %s: %s",
+                            client_id,
+                            e,
+                        )
+                return cmd, client_id
+
+            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
+                         TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW):
+                # Model/workflow registry commands: immediate request/reply with JSON payload
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                # The rest of the message (after "CMD:client_id:") is the JSON payload
+                payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
+                return cmd, (client_id, payload_str, zmq_sender_id)
+
+            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST):
+                # Job tracking commands: immediate request/reply with JSON payload
+                client_id = splited_msg[1] if len(splited_msg) > 1 else None
+                payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
+                return cmd, (client_id, payload_str, zmq_sender_id)
+
+    def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
+        """Block until new messages arrive, then read all available messages.
+
+        Args:
+            nb_objects: Number of S3 event messages to collect.
+            debug: Enable debug printing.
+            timeout_s: Maximum wall-clock seconds to wait before returning
+                       with whatever messages have been collected so far.
+                       Default 60s.  Set to 0 or None for no limit.
+
+        Returns:
+            List of received message strings (may be shorter than nb_objects
+            if the timeout fires).
+        """
+        if self.role != 'server':
+            raise PermissionError("Only server can call 'wait_for_s3_events'.")
+
+        messages = []
+        logger.info(
+            "Listening for %s new messages (timeout=%s)",
+            nb_objects,
+            timeout_s,
+        )
+        nb_received = 0
+        start = time.time()
+        while nb_received < nb_objects:
+            if timeout_s and (time.time() - start) > timeout_s:
+                logger.warning(
+                    "wait_for_s3_events timed out after %s seconds (%s/%s received)",
+                    timeout_s,
+                    nb_received,
+                    nb_objects,
+                )
+                break
+            _, message = self.recv_string()
+            if message:
+                logger.debug("Received S3 event payload_bytes=%s", len(message.encode("utf-8")))
+                messages.append(message)
+                nb_received += 1
+
+        return messages
+
+    def _process_file_cmd(self, client_id, nb_files, zmq_sender_id, result_cmd=None, extra_payload=None):
+        if result_cmd is None:
+            result_cmd = TaskCmd.FILE
+        # Verify client has a data socket ready
+        if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
+            data_queue = self.client_dictionary[client_id]["data_queue"]
+            port = self.client_dictionary[client_id]["port"]
+            logger.info("Listening for data on port %s", port)
+
+            path_list = []
+            if not self.tmp_dir or not os.path.exists(self.tmp_dir) :
+                logger.warning(
+                    "No temporary receiving directory configured or accessible; using %s",
+                    os.devnull,
+                )
+                recv_dir = os.devnull
+            else :
+                recv_dir = self.tmp_dir
+
+            # For each expected file:
+            for _ in range(nb_files):
+                # Receive file data into it
+                file_path = data_queue.recv_file(out_dir=recv_dir)
+                # Keep track of temp files
+                path_list.append(file_path)
+
+            # Send acknowledgment to client after receiving all files
+            try:
+                self.send_string("ACKNOWLEDGE", zmq_sender_id)
+            except RuntimeError as e:
+                logger.error("Error acknowledging file client: %s", e)
+            # Return client_id along with received file paths so server can enforce identity
+            if extra_payload is not None:
+                return result_cmd, (client_id, path_list, extra_payload)
+            return result_cmd, (client_id, path_list)
+        else: # cannot find the client in the client_dictionnary
+            try:
+                self.send_string("NO_DATA_QUEUE", zmq_sender_id)
+            except RuntimeError as e:
+                logger.error("Error sending NO_DATA_QUEUE to client: %s", e)
+
+    def _process_object_cmd(self, client_id, nb_objects, zmq_sender_id):
+        if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
+            data_queue = self.client_dictionary[client_id]["data_queue"]
+            # ACK immediately so the client doesn't timeout while we collect S3 events
+            try:
+                self.send_string("ACKNOWLEDGE", zmq_sender_id)
+            except RuntimeError as e:
+                logger.error("Error acknowledging object client: %s", e)
+            objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
+            if len(objects) < nb_objects:
+                logger.warning(
+                    "Received %s/%s S3 events for client=%s (timeout)",
+                    len(objects),
+                    nb_objects,
+                    client_id,
+                )
+            return TaskCmd.PROCESS_OBJECTS, (client_id, objects)
+        else:
+            logger.warning("No data queue for client=%s", client_id)
+            try:
+                self.send_string("NO_DATA_QUEUE", zmq_sender_id)
+            except RuntimeError as e:
+                logger.error("Error sending NO_DATA_QUEUE to client: %s", e)
+        return None
+
+    # ------------------------ client methods ------------------------
+
+    def reset_control_queue(self):
+        if self.role != 'client' or self.type != 'control':
+            raise PermissionError("reset_control_plane can only be called by client control queue")
+
+        # Close existing socket if it exists
+        if hasattr(self, 'socket'):
+            try:
+                self.socket.close()
+            except Exception:
+                # Best-effort cleanup: ignore errors while closing old socket
+                pass
+
+        # Create a new DEALER socket and connect
+        self.socket = self.context.socket(zmq.DEALER)
+        self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+        self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+
+    def is_server_ready(self, timeout_ms=5000):
+        if self.role != "client":
+            raise PermissionError("Only client can call 'get_data_queue'")
+
+        if self.type != "control":
+            raise PermissionError("Only control message queue can check server")
+
+        logger.debug("Checking for server availability...")
+        if timeout_ms < 1500:
+            timeout_ms = 1500
+
+        self.set_timeouts(timeout_ms, timeout_ms)
+        try:
+            try:
+                self.send_string(TaskCmd.HAND_CHECK)
+                _, answer = self.recv_string()
+                if answer == "READY!":
+                    return True
+            except zmq.Again:
+                # Retry once on timeout
+                try:
+                    # but first need to reset the socket to avoid error.
+                    self.reset_control_queue()
+                    self.set_timeouts(timeout_ms, timeout_ms)
+                    self.send_string("READY?")
+                    _, answer = self.recv_string()
+                    if answer == "READY!":
+                        return True
+                except zmq.Again:
+                    return False
+            return False
+        finally:
+            self.set_timeouts(self.timeout, self.timeout) # always reset timeout before exiting
+
+    def get_data_queue(self, client_id, tunnel_mode=None, admin_token=None):
+        """Request a client data queue.
+
+        Args:
+            client_id (str): Logical client identity used by the server.
+            tunnel_mode (bool | None): Override the control queue tunnel_mode for
+                the returned data queue. In tunnel mode, localhost is used so the
+                data channel can traverse an SSH tunnel.
+            admin_token (str | None): Optional admin token. When provided the
+                server grants ``UserRole.ADMIN`` for this session.
+        """
+        if self.role != "client":
+            raise PermissionError("Only client can call 'get_data_queue'")
+
+        self.send_control_request(
+            [TaskCmd.CREATE_DATA_QUEUE, client_id],
+            admin_token=admin_token,
+        )
+
+        effective_tunnel_mode = self.tunnel_mode if tunnel_mode is None else bool(tunnel_mode)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in get_data_queue") from None
+        except (AttributeError, TypeError, ValueError):
+            reply = self.socket.recv_string()
+
+        if reply.startswith("tcp://"):
+            # Remove protocol prefix
+            endpoint = reply[len("tcp://"):]
+            # Split IP and port
+            server_ip, port_str = endpoint.split(":")
+            port = int(port_str)
+
+            # Create MessageQueue with parsed IP and port
+            data_mq = MessageQueue(
+                role='client',
+                queue_type='data',
+                server_ip=server_ip,
+                port=port,
+                tunnel_mode=effective_tunnel_mode,
+            )
+            return data_mq
+        if reply.startswith("NO_DATA_PORT_AVAILABLE"):
+            _, _, port_range = reply.partition(":")
+            suffix = f" in configured range {port_range}" if port_range else ""
+            raise RuntimeError(f"No data ports available{suffix}")
+        else:
+            raise RuntimeError(f"Unexpected reply from server: {reply}")
+
+    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None):
+        if self.role != "client":
+            raise PermissionError("Only client can call 'notify_server'")
+
+        self.send_control_request(
+            [notification_type, client_id, nb_objects],
+            admin_token=admin_token,
+        )
+
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in notify_server") from None
+
+        if reply is None:
+            raise RuntimeError(
+                f"Timeout waiting for server response to {notification_type} for user {client_id}. "
+                "The server may be blocked waiting for data-queue messages that did not arrive. "
+                "Check that the SSH tunnel forwards the configured data port range "
+                "(see UMRS_DATA_PORT_RANGE / UMRS_DATA_BASE_PORT)."
+            )
+        elif reply == "ACKNOWLEDGE":
+            if verbose:
+                logger.info("Server acknowledged reception of the objects")
+            return True
+        elif reply == "NO_DATA_QUEUE":
+            raise RuntimeError(f"Error: the server cannot find the data queue for user {client_id}.")
+        else:
+            raise RuntimeError(f"Unexpected error on server side for user {client_id}: {reply}.")
+
+    def request_status(self, client_id, status_key="all"):
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_status'")
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        safe_status_key = (status_key or "all").replace(":", "_")
+        request_str = f"{TaskCmd.STATUS}:{safe_client_id}:{safe_status_key}"
+        self.send_string(request_str)
+
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in request_status") from None
+
+        return reply
+
+    def request_export_embeddings(self, client_id, path_to_bucket, export_format="csv", export_profile="minimal"):
+        """Send EXPORT_EMBEDDINGS request and receive the serialised result."""
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_export_embeddings'")
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        safe_args = f"{path_to_bucket};{export_format};{export_profile}".replace(":", "_")
+        request_str = f"{TaskCmd.EXPORT_EMBEDDINGS}:{safe_client_id}:{safe_args}"
+
+        # Allow a generous receive timeout for large tables
+        old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)
+        self.socket.setsockopt(zmq.RCVTIMEO, 120_000)
+
+        self.send_string(request_str)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in request_export_embeddings") from None
+        finally:
+            self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
+
+        return reply
+
+    def wait_for_new_data(self, client_id, full_bucket_name, timeout=60):
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_status'")
+
+
+        timeout_ms = 10000*(timeout*2)
+
+        self.set_timeouts(timeout_ms,self.timeout)
+
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        safe_args = f"{full_bucket_name};{timeout}".replace(":", "_")
+        request_str = f"{TaskCmd.WAIT_OUTPUT}:{safe_client_id}:{safe_args}"
+        self.send_string(request_str)
+
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in request_status") from None
+
+        finally:
+            self.set_timeouts(self.timeout,self.timeout)
+
+        return reply
+
+
+    def get_status_store(self):
+        return self.status_store
+
+    def set_debug(self, enabled: bool):
+        self.debug = bool(enabled)
+
+    def get_auth_context(self, client_id: str) -> AuthContext:
+        """Return the AuthContext for *client_id*.
+
+        If the client has not yet authenticated via CREATE_DATA_QUEUE the
+        default role is ``UserRole.USER`` (backward compatible).
+        """
+        ctx = self._auth_sessions.get(client_id)
+        if ctx is not None:
+            return ctx
+        # Create a default USER context for clients that connected before
+        # auth enforcement was deployed (backward compatibility).
+        return AuthContext(
+            user_id=client_id or "",
+            username=client_id or "",
+            role=UserRole.USER,
+        )
+
+    def _get_status_payload(self, client_id, status_key):
+        store = self.status_store or {}
+        key = (status_key or "all").lower()
+
+        if not client_id:
+            payload = {"status": "error", "message": "Missing client identifier"}
+            return json.dumps(payload, ensure_ascii=False)
+
+        uncompleted_key_list = None
+        if self.task_manager is not None:
+            uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(client_id, status_key)
+
+        # Collect pool metrics when available
+        pool_metrics = None
+        if self.task_manager is not None:
+            with contextlib.suppress(Exception):
+                pool_metrics = self.task_manager.active_threads.pool.metrics().to_dict()
+
+        client_store = store.get(client_id, {})
+        if key in ("all", "*"):
+            if not client_store:
+                payload = {"status": "error", "message": "No status entries", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
+            else:
+                payload = {"status": "ok", "client": client_id, "summaries": client_store, "uncompleted_key_list": uncompleted_key_list}
+            if pool_metrics is not None:
+                payload["pool"] = pool_metrics
+            return json.dumps(payload, ensure_ascii=False)
+
+        entry = client_store.get(key)
+        if not entry:
+            payload = {"status": "error", "message": f"No status for '{key}'", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
+        else:
+            payload = {"status": "ok", "client": client_id, "summary": entry, "uncompleted_key_list": uncompleted_key_list}
+        if pool_metrics is not None:
+            payload["pool"] = pool_metrics
+        return json.dumps(payload, ensure_ascii=False)
+
+    def notify_s3(self, s3_object):
+        """Notify the server about a new S3 event."""
+        if self.role != 'client':
+            raise PermissionError("notify_s3 can only be used by the client.")
+
+        # print(f"sending data to port: {self.port}")
+        self.send_string(s3_object)
+
+    def request_model_command(self, client_id, model_cmd, payload_json=""):
+        """Send a model registry command and receive a JSON response.
+
+        Args:
+            client_id: Username or client identifier
+            model_cmd: TaskCmd constant (e.g. MODEL_REGISTER, MODEL_LIST, JOB_SUBMIT, JOB_CANCEL)
+            payload_json: JSON-encoded payload string
+        Returns:
+            JSON string response from server
+        """
+        if self.role != "client":
+            raise PermissionError("Only client can call 'request_model_command'")
+
+        safe_client_id = (client_id or "").replace(":", "_")
+        request_str = f"{model_cmd}:{safe_client_id}:{payload_json}"
+
+        # Allow generous timeout for model downloads
+        old_rcv = self.socket.getsockopt(zmq.RCVTIMEO)
+        self.socket.setsockopt(zmq.RCVTIMEO, 300_000)
+
+        self.send_string(request_str)
+        try:
+            _, reply = self.recv_string()
+        except zmq.Again:
+            raise RuntimeError("Timeout waiting for server response in request_model_command") from None
+        finally:
+            self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
+
+        return reply
+
+    def request_job_list(self, client_id, filters=None):
+        """Send a JOB_LIST command and receive a JSON response.
+
+        Args:
+            client_id: Username or client identifier
+            filters: Optional dict with keys: status, job_type, project_id, limit
+        Returns:
+            Parsed dict with 'status' and 'jobs' keys
+        """
+        payload = json.dumps(filters or {})
+        raw = self.request_model_command(client_id, TaskCmd.JOB_LIST, payload)
+        return json.loads(raw)
+
+
+
+

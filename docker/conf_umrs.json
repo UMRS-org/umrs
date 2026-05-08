@@ -1,11 +1,9 @@
 {
     "admin_s3_configuration_file": "~/.s3cfg",
+    "user_files_dir": "/root/user_files",
     "users": [
     "/root/user_files/user1.json",
     "/root/user_files/user2.json"
-    ],
-    "embedding_backend": "remote",
-    "embedding_worker_address": "tcp://umrs-embed-worker:6000",
-    "embedding_worker_timeout_sec": 600
+    ]
 }
 

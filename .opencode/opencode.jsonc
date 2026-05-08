@@ -1,0 +1,43 @@
+// Managed by r4 opencode wrapper. The `provider.platform` and
+// `mcp.platform-*` keys are owned by r4 and may be overwritten on
+// each `r4 opencode` launch. Other keys are preserved.
+{
+  "provider": {
+    "platform": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "R4 Platform (Gateway -> LiteLLM -> vLLM)",
+      "options": {
+        "baseURL": "http://localhost:8080/gw/llm/v1",
+        "apiKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJwcm9qZWN0X2lkIjoidGVzdC1wcm9qZWN0IiwiZW1haWwiOiJ0ZXN0QHJjY3MucmlrZW4uanAiLCJyb2xlcyI6WyJ1c2VyIl19.6h1rG92wjgZ5lBglSj__F5cmIh9XgiyP8E7OGTVkS80"
+      },
+      "models": {
+        "rivault-gpt-oss-static": {
+          "name": "rivault-gpt-oss-static",
+          "tools": true
+        }
+      }
+    }
+  },
+  "mcp": {
+    "platform-mcp": {
+      "type": "remote",
+      "url": "http://localhost:8080/gw/mcp",
+      "headers": {
+        "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJwcm9qZWN0X2lkIjoidGVzdC1wcm9qZWN0IiwiZW1haWwiOiJ0ZXN0QHJjY3MucmlrZW4uanAiLCJyb2xlcyI6WyJ1c2VyIl19.6h1rG92wjgZ5lBglSj__F5cmIh9XgiyP8E7OGTVkS80"
+      },
+      "enabled": true
+    },
+    "platform-rag": {
+      "type": "local",
+      "command": [
+        "r4-mcp",
+        "rag-proxy",
+        "--gateway-url",
+        "http://localhost:8080",
+        "--api-key",
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ0ZXN0LXVzZXIiLCJwcm9qZWN0X2lkIjoidGVzdC1wcm9qZWN0IiwiZW1haWwiOiJ0ZXN0QHJjY3MucmlrZW4uanAiLCJyb2xlcyI6WyJ1c2VyIl19.6h1rG92wjgZ5lBglSj__F5cmIh9XgiyP8E7OGTVkS80"
+      ],
+      "enabled": true
+    }
+  }
+}
