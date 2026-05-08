@@ -371,7 +371,7 @@ services:
   mcp-custom:
     profiles: [ custom-mcp ]
     image: ${MCP_CUSTOM_IMAGE:-localhost/r4-mcp:${MCP_CUSTOM_DOCKER_TAG:-latest}}
-    command: python -m r4_mcp.runners.custom_mcp --config-dir /mcp-servers
+    command: python -m r4_mcp.runners.custom_mcp --config-dir /mcp-servers --transport sse --port ${MCP_CUSTOM_PORT:-8080}
     networks:
       genai-private-net:
         ipv4_address: ${PRIV_IP1TO3:-10.0.0}.${MCP_CUSTOM_IP4:-31}

@@ -22,6 +22,7 @@ from typing import Any
 
 from .base import JobStatus, OrchestratorBackend
 from .detection import BackendType, detect_backend
+from .endpoint_mounts import build_mount_environment
 from .endpoint_registry import (
     EndpointRegistry,
     EndpointStatus,
@@ -96,6 +97,9 @@ class ProvisionRequest:
     ttl_sec: int = 3600  # 1 hour default
     gpu_count: int = 1
     max_model_len: int = 4096
+    tier: str = "user"
+    mounts: dict[str, Any] = field(default_factory=dict)
+    egress_domains: list[str] = field(default_factory=list)
     prefer_warm: bool = True  # Try to reuse existing endpoint
     wait_for_ready: bool = True  # Return only after readiness unless disabled
     min_ttl_for_reuse_sec: int = 60  # Min TTL remaining for reuse
@@ -449,6 +453,12 @@ class OrchestrationService:
                     "MODEL_NAME": request.model,
                 }
             )
+            mount_env, mount_metadata = build_mount_environment(
+                tier=request.tier,
+                mounts=request.mounts,
+                egress_domains=request.egress_domains,
+            )
+            submit_env.update(mount_env)
 
             job_info = await self.backend.submit_job(
                 model_path=request.model_path,
@@ -469,6 +479,7 @@ class OrchestrationService:
             progress("job_submitted", {"job_id": job_id})
 
             endpoint_metadata = dict(request.metadata)
+            endpoint_metadata.update(mount_metadata)
             endpoint_metadata.setdefault("allocated_host", target_host)
             endpoint_metadata.setdefault("allocated_port", port)
             actual_host = job_info.endpoint.node if job_info.endpoint else target_host

@@ -633,6 +633,77 @@ class TestAdapters:
         assert env["LITELLM_PORT"] == "11434"
         assert env["MODEL_NAME"] == "test-model"
 
+    def test_endpoint_provision_backend_translates_mounts(self):
+        """Durable endpoint jobs should translate mount intent to launch env."""
+        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs.adapters import EndpointProvisionBackend
+
+        mock_orchestrator = AsyncMock()
+        mock_orchestrator.backend_name = "slurm-podman"
+        mock_orchestrator.submit_job = AsyncMock(return_value=MagicMock(
+            job_id="slurm-123",
+            endpoint=MagicMock(node="pending"),
+        ))
+
+        backend = EndpointProvisionBackend(
+            orchestrator=mock_orchestrator,
+            registry=MagicMock(),
+            port_manager=MagicMock(allocate=MagicMock(return_value=11500)),
+        )
+
+        spec = {
+            "model": "test-model",
+            "model_path": "/models/test",
+            "tier": "project",
+            "mounts": {
+                "mcp_servers": [
+                    {"source": "/home/alice/tools", "target": "/mcp-servers/tools"}
+                ],
+                "project_data": {"source": "/project/data", "target": "/project"},
+                "rag_index": {"source": "/project/rag-index", "target": "/rag-index"},
+            },
+            "egress_domains": ["api.example.com"],
+        }
+        idempotency_key = compute_idempotency_key(
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            spec=spec,
+        )
+        job = Job(
+            job_id="job-123",
+            project_id="proj-1",
+            user_id="user-1",
+            job_type=JobType.ENDPOINT_PROVISION,
+            status=JobStatus.RUNNING,
+            spec=spec,
+            idempotency_key=idempotency_key,
+            priority=0,
+            desired_max_attempts=3,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        attempt = JobAttempt(
+            attempt_id="att-123",
+            job_id="job-123",
+            attempt_no=1,
+            backend="slurm-podman",
+            status=AttemptStatus.CREATED,
+            umrs_instance_id="umrs-1",
+            created_at=datetime.utcnow(),
+        )
+
+        with patch.object(backend, "_determine_target_host", return_value="pending"):
+            asyncio.run(backend.submit_job(job, attempt))
+
+        env = mock_orchestrator.submit_job.await_args.kwargs["env"]
+        assert env["RIVAULT_TIER"] == "project"
+        assert env["RIVAULT_EXTRA_PROFILES"] == "custom-mcp egress rag"
+        assert env["PROJECT_DATA_PATH"] == "/project/data"
+        assert env["RAG_INDEX_PATH"] == "/project/rag-index"
+        assert env["EGRESS_DOMAIN_ALLOWLIST"] == "api.example.com"
+        assert "RIVAULT_MCP_MOUNTS_JSON" in env
+
     def test_endpoint_provision_backend_resolves_registered_model_path(self):
         """EndpointProvisionBackend should resolve catalog-backed models when only the name is provided."""
         from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
@@ -1047,6 +1118,65 @@ class TestOrchestrationServiceConfig:
         assert env["RIVAULT_PROFILES"] == "harness vllm"
         assert env["CUSTOM_FLAG"] == "9"
         assert env["LITELLM_PORT"] == "11434"
+
+    def test_provision_translates_mounts_to_backend_env(self):
+        """ProvisionRequest mounts should become mini-RiVault launch env."""
+        from umrs.orchestrator.service import OrchestrationService, ProvisionRequest
+
+        mock_registry = MagicMock()
+        mock_registry.get.return_value = None
+        mock_registry.register.return_value = MagicMock(job_id="slurm-777", is_usable=True)
+        mock_registry.get_by_job_id.return_value = MagicMock(job_id="slurm-777", is_usable=True)
+
+        mock_port_manager = MagicMock()
+        mock_port_manager.allocate.return_value = 11434
+
+        mock_readiness = MagicMock()
+        mock_readiness.config.timeout_sec = 300
+        mock_readiness.wait_for_ready = AsyncMock(return_value=MagicMock(is_ready=True, models=["qwen3-8b"]))
+
+        mock_backend = MagicMock()
+        mock_backend.submit_job = AsyncMock(return_value=MagicMock(
+            job_id="slurm-777",
+            endpoint=MagicMock(node="node-1"),
+        ))
+
+        service = OrchestrationService(
+            registry=mock_registry,
+            port_manager=mock_port_manager,
+            readiness_poller=mock_readiness,
+            backend=mock_backend,
+        )
+
+        result = asyncio.run(
+            service.provision(
+                ProvisionRequest(
+                    project_id="proj-1",
+                    model="qwen3-8b",
+                    model_path="/models/qwen3-8b",
+                    tier="project",
+                    mounts={
+                        "mcp_servers": [
+                            {"source": "/home/alice/tools", "target": "/mcp-servers/tools"}
+                        ],
+                        "project_data": {"source": "/project/data", "target": "/project"},
+                        "rag_index": {"source": "/project/rag-index", "target": "/rag-index"},
+                    },
+                    egress_domains=["api.example.com"],
+                )
+            )
+        )
+
+        assert result.success is True
+        env = mock_backend.submit_job.await_args.kwargs["env"]
+        assert env["RIVAULT_TIER"] == "project"
+        assert env["RIVAULT_EXTRA_PROFILES"] == "custom-mcp egress rag"
+        assert env["PROJECT_DATA_PATH"] == "/project/data"
+        assert env["RAG_INDEX_PATH"] == "/project/rag-index"
+        assert env["EGRESS_DOMAIN_ALLOWLIST"] == "api.example.com"
+        metadata = mock_registry.register.call_args.kwargs["metadata"]
+        assert metadata["tier"] == "project"
+        assert metadata["egress_domains"] == ["api.example.com"]
 
     def test_provision_waits_for_backend_endpoint_before_readiness(self):
         """Slurm-style submissions should resolve the assigned host before readiness polling."""

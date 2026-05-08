@@ -74,6 +74,48 @@ EOF
 
 uuid=$(cat /proc/sys/kernel/random/uuid)
 
+prepare_mcp_mount_overlay() {
+    [[ -n "${RIVAULT_MCP_MOUNTS_JSON:-}" ]] || return 0
+
+    local overlay="./runtime-mounts/${uuid}/mcp-servers"
+    mkdir -p "$overlay"
+
+    MCP_MOUNT_OVERLAY="$overlay" python3 - <<'PY'
+import json
+import os
+import shutil
+from pathlib import Path
+
+root = Path(os.environ["MCP_MOUNT_OVERLAY"]).resolve()
+mounts = json.loads(os.environ.get("RIVAULT_MCP_MOUNTS_JSON", "[]"))
+for mount in mounts:
+    source = Path(str(mount.get("source", ""))).expanduser().resolve()
+    target = str(mount.get("target", "/mcp-servers")).strip() or "/mcp-servers"
+    if not source.exists():
+        raise SystemExit(f"MCP mount source does not exist: {source}")
+    normalized_target = target.rstrip("/") or "/"
+    if normalized_target != "/mcp-servers" and not normalized_target.startswith("/mcp-servers/"):
+        raise SystemExit(f"MCP mount target escapes /mcp-servers: {target}")
+    relative = normalized_target.removeprefix("/mcp-servers").strip("/") or source.name
+    destination = (root / relative).resolve()
+    if root not in (destination, *destination.parents):
+        raise SystemExit(f"MCP mount target escapes /mcp-servers: {target}")
+    if destination.exists() or destination.is_symlink():
+        if destination.is_dir() and not destination.is_symlink():
+            shutil.rmtree(destination)
+        else:
+            destination.unlink()
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_dir():
+        shutil.copytree(source, destination, symlinks=True)
+    else:
+        shutil.copy2(source, destination)
+PY
+    export MCP_SERVERS_PATH="$overlay"
+}
+
+prepare_mcp_mount_overlay
+
 # ─── Derive vLLM model-path variables from orchestrator env ──────────────────
 # VLLM_MODEL_PATH (host filesystem path) is set by the orchestrator when it
 # provisions an endpoint for a registered model.  When absent, fall back to the
@@ -126,6 +168,14 @@ RIVAULT_USERNS_MODE=${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}
 RIVAULT_HTTP_PROXY=${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}
 RIVAULT_HTTPS_PROXY=${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
 RIVAULT_NO_PROXY=${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}
+RIVAULT_TIER=${RIVAULT_TIER:-user}
+RIVAULT_EXTRA_PROFILES=${RIVAULT_EXTRA_PROFILES:-}
+RIVAULT_INSTANCE_ID=${RIVAULT_INSTANCE_ID:-${uuid}}
+RIVAULT_OWNER_ID=${RIVAULT_OWNER_ID:-${PROJECT_ID:-unknown}}
+MCP_SERVERS_PATH=${MCP_SERVERS_PATH:-/tmp/mcp-servers}
+PROJECT_DATA_PATH=${PROJECT_DATA_PATH:-/tmp/project-data}
+RAG_INDEX_PATH=${RAG_INDEX_PATH:-/tmp/rag-index}
+EGRESS_DOMAIN_ALLOWLIST=${EGRESS_DOMAIN_ALLOWLIST:-}
 HTTP_PROXY=${HTTP_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
 HTTPS_PROXY=${HTTPS_PROXY:-${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}}
 NO_PROXY=${NO_PROXY:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
@@ -528,6 +578,13 @@ _substitute_required "litellm/config.yaml" "./litellm_fs/config.yaml.${uuid}" "V
 # "vision-bentoml":
 #   export RIVAULT_PROFILES="harness vllm vision-bentoml"
 RIVAULT_PROFILES=${RIVAULT_PROFILES:-"harness vllm"}
+if [[ -n "${RIVAULT_EXTRA_PROFILES:-}" ]]; then
+    for _extra_profile in $RIVAULT_EXTRA_PROFILES; do
+        if [[ " ${RIVAULT_PROFILES} " != *" ${_extra_profile} "* ]]; then
+            RIVAULT_PROFILES="${RIVAULT_PROFILES} ${_extra_profile}"
+        fi
+    done
+fi
 _profile_flags=""
 for _p in $RIVAULT_PROFILES; do
 	_profile_flags="${_profile_flags} --profile ${_p}"

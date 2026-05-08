@@ -53,9 +53,23 @@ def test_slurm_wrapper_exports_egress_proxy_defaults():
         "http_proxy",
         "https_proxy",
         "no_proxy",
+        "RIVAULT_EXTRA_PROFILES",
+        "MCP_SERVERS_PATH",
+        "PROJECT_DATA_PATH",
+        "RAG_INDEX_PATH",
+        "EGRESS_DOMAIN_ALLOWLIST",
     ):
         assert f"{key}=" in text
     assert "http://egress-guard:8888" in text
+    assert "prepare_mcp_mount_overlay" in text
+
+
+def test_custom_mcp_runs_network_transport_when_profile_enabled():
+    compose = yaml.safe_load(SERVE_MODEL.read_text())
+    command = compose["services"]["mcp-custom"]["command"]
+
+    assert "--transport sse" in command
+    assert "--port ${MCP_CUSTOM_PORT:-8080}" in command
 
 
 def test_forward_proxy_allows_only_rendered_bucket_host():

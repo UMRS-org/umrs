@@ -2,8 +2,10 @@
 
 ## Purpose
 
-Demonstrates UMRS MCP (Model Context Protocol) server management —
-registration, tool discovery, tool invocation, and health checks.
+Demonstrates UMRS MCP (Model Context Protocol) server management and the
+preferred mounted MCP path for mini-RiVault endpoints: user/project MCP code
+is mounted under `/mcp-servers`, validated by `r4_mcp.runners.custom_mcp`, and
+run by the `custom-mcp` profile inside the endpoint boundary.
 
 ## API Endpoints Covered
 
@@ -16,6 +18,10 @@ registration, tool discovery, tool invocation, and health checks.
 | GET    | `/umrs/mcp/tools`             | List all tools             |
 | POST   | `/umrs/mcp/invoke`            | Invoke a tool              |
 | GET    | `/umrs/mcp/health`            | Health check               |
+
+External MCP registration remains supported for login-node or existing service
+integrations. GPU-adjacent compute-node MCP work should use endpoint mounts,
+not a separate compute-node MCP launcher.
 
 ## Run
 

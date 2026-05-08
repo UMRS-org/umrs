@@ -239,6 +239,110 @@ print("{}")
 '
 }
 
+prepare_mini_rivault_mount_demo() {
+        local mount_root="${MINI_RIVAULT_MOUNT_DEMO_ROOT:-${SCRIPT_DIR}/results/mounts}"
+        DEMO_MCP_SOURCE="${DEMO_MCP_SOURCE:-${mount_root}/mcp/demo-tools}"
+        DEMO_PROJECT_DATA_SOURCE="${DEMO_PROJECT_DATA_SOURCE:-${mount_root}/project-data}"
+        DEMO_RAG_INDEX_SOURCE="${DEMO_RAG_INDEX_SOURCE:-${mount_root}/rag-index}"
+        DEMO_EGRESS_DOMAINS="${DEMO_EGRESS_DOMAINS:-api.example.com}"
+
+        mkdir -p "${DEMO_MCP_SOURCE}" "${DEMO_PROJECT_DATA_SOURCE}" "${DEMO_RAG_INDEX_SOURCE}"
+
+        cat > "${DEMO_MCP_SOURCE}/config.json" <<'JSON'
+{
+    "name": "umrs-demo-mounted-tools",
+    "version": "0.1.0",
+    "capabilities": {
+        "tools": ["summarize_mount"],
+        "tool_capabilities": {
+            "summarize_mount": ["READ_LOCAL_FILE"]
+        },
+        "egress": {
+            "domains": ["api.example.com"],
+            "protocols": ["https"]
+        }
+    },
+    "tool_descriptions": {
+        "summarize_mount": "Summarize demo project data mounted inside mini-RiVault."
+    },
+    "tool_schemas": {
+        "summarize_mount": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "Optional topic to emphasize in the summary."
+                }
+            }
+        }
+    },
+    "entry_point": "python3 run_tool.py",
+    "sandbox": {
+        "network": "egress_guard",
+        "filesystem": "read_only",
+        "max_memory_mb": 256,
+        "max_runtime_sec": 10
+    }
+}
+JSON
+
+        cat > "${DEMO_MCP_SOURCE}/run_tool.py" <<'PY'
+from __future__ import annotations
+
+import json
+import sys
+
+payload = json.load(sys.stdin)
+arguments = payload.get("arguments", {}) if isinstance(payload, dict) else {}
+topic = arguments.get("topic") or "UMRS mini-RiVault mounts"
+print(json.dumps({
+        "topic": topic,
+        "summary": "UMRS passed custom MCP, project data, RAG index, and egress intent into mini-RiVault.",
+}))
+PY
+
+        cat > "${DEMO_PROJECT_DATA_SOURCE}/demo-corpus.txt" <<'TEXT'
+UMRS demo project corpus.
+
+This directory is mounted read-only at /project inside mini-RiVault. RAG and
+custom MCP services consume it inside the endpoint boundary rather than through
+a standalone compute-node MCP launcher.
+TEXT
+
+        cat > "${DEMO_RAG_INDEX_SOURCE}/manifest.json" <<'JSON'
+{
+    "name": "umrs-demo-rag-index",
+    "description": "Placeholder pre-built RAG index mounted at /rag-index for mini-RiVault endpoint demos.",
+    "documents": ["demo-corpus.txt"]
+}
+JSON
+}
+
+mini_rivault_mount_payload() {
+        prepare_mini_rivault_mount_demo
+        python3 - <<PY
+import json
+
+payload = {
+        "mcp_servers": [
+                {"source": "${DEMO_MCP_SOURCE}", "target": "/mcp-servers/demo-tools"}
+        ],
+        "project_data": {"source": "${DEMO_PROJECT_DATA_SOURCE}", "target": "/project"},
+        "rag_index": {"source": "${DEMO_RAG_INDEX_SOURCE}", "target": "/rag-index"},
+}
+print(json.dumps(payload, indent=2))
+PY
+}
+
+print_mini_rivault_mount_summary() {
+        prepare_mini_rivault_mount_demo
+        log "Mini-RiVault mount request:"
+        echo "  MCP server : ${DEMO_MCP_SOURCE} -> /mcp-servers/demo-tools"
+        echo "  Project data: ${DEMO_PROJECT_DATA_SOURCE} -> /project"
+        echo "  RAG index   : ${DEMO_RAG_INDEX_SOURCE} -> /rag-index"
+        echo "  Egress      : ${DEMO_EGRESS_DOMAINS}"
+}
+
 # --- Onboard active user (idempotent) ---
 # Triggers server-side provisioning (bucket + DB creation) for the active
 # user config.  Safe to call repeatedly — the server treats reload as a
