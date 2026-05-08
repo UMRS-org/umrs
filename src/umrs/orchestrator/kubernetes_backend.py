@@ -246,6 +246,7 @@ class KubernetesBackend(OrchestratorBackend):
             {"name": "VLLM_MAX_NUM_SEQS", "value": str(cfg.vllm_max_num_seqs)},
             {"name": "VLLM_TENSOR_PARALLEL_SIZE", "value": str(cfg.vllm_tensor_parallel_size)},
             {"name": "VLLM_GPU_MEMORY_UTILIZATION", "value": str(cfg.vllm_gpu_memory_utilization)},
+            {"name": "VLLM_ENABLE_PREFIX_CACHING", "value": "true" if cfg.vllm_enable_prefix_caching else "false"},
             {"name": "TRANSFORMERS_OFFLINE", "value": "1"},
             {"name": "HF_HUB_OFFLINE", "value": "1"},
             {"name": "VLLM_NO_USAGE_STATS", "value": "1"},

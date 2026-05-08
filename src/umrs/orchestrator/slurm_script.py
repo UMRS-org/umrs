@@ -77,6 +77,7 @@ VLLM_MAX_MODEL_LEN={cfg.vllm_max_model_len}
 VLLM_MAX_NUM_SEQS={cfg.vllm_max_num_seqs}
 VLLM_TENSOR_PARALLEL_SIZE={cfg.vllm_tensor_parallel_size}
 VLLM_GPU_MEMORY_UTILIZATION={cfg.vllm_gpu_memory_utilization}
+VLLM_ENABLE_PREFIX_CACHING={"true" if cfg.vllm_enable_prefix_caching else "false"}
 SINGULARITY_IMAGE=\"{cfg.singularity_image}\"
 JOB_INFO_DIR=\"{cfg.slurm_job_info_dir}\"
 
@@ -154,6 +155,7 @@ singularity run \\
     --env VLLM_MAX_NUM_SEQS=${{VLLM_MAX_NUM_SEQS}} \\
     --env VLLM_TENSOR_PARALLEL_SIZE=${{VLLM_TENSOR_PARALLEL_SIZE}} \\
     --env VLLM_GPU_MEMORY_UTILIZATION=${{VLLM_GPU_MEMORY_UTILIZATION}} \\
+    --env VLLM_ENABLE_PREFIX_CACHING=${{VLLM_ENABLE_PREFIX_CACHING}} \\
     \"$SINGULARITY_IMAGE\" &
 
 SINGULARITY_PID=$!"""

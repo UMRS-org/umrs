@@ -95,6 +95,7 @@ class DockerComposeBackend(OrchestratorBackend):
         env["VLLM_PORT"] = str(self.config.vllm_port)
         env["VLLM_MAX_MODEL_LEN"] = str(self.config.vllm_max_model_len)
         env["VLLM_MAX_NUM_SEQS"] = str(self.config.vllm_max_num_seqs)
+        env["VLLM_ENABLE_PREFIX_CACHING"] = "true" if self.config.vllm_enable_prefix_caching else "false"
 
         use_gpu = kwargs.get("gpu", True)
         detach = kwargs.get("detach", True)

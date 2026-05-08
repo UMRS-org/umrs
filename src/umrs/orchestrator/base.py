@@ -34,6 +34,13 @@ def _env_list(name: str, default: str) -> list[str]:
     return os.getenv(name, default).replace(",", " ").split()
 
 
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 
 def _env_nonempty(name: str, default: str) -> str:
     value = os.getenv(name)
@@ -115,6 +122,7 @@ class OrchestratorConfig:
     vllm_max_num_seqs: int = 4
     vllm_tensor_parallel_size: int = 1
     vllm_gpu_memory_utilization: float = 0.9
+    vllm_enable_prefix_caching: bool = False
 
     # Timeouts
     startup_timeout_sec: int = 600  # 10 minutes
@@ -170,6 +178,7 @@ class OrchestratorConfig:
             vllm_max_num_seqs=int(os.getenv("VLLM_MAX_NUM_SEQS", "4")),
             vllm_tensor_parallel_size=int(os.getenv("VLLM_TENSOR_PARALLEL_SIZE", "1")),
             vllm_gpu_memory_utilization=float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.9")),
+            vllm_enable_prefix_caching=_env_bool("VLLM_ENABLE_PREFIX_CACHING", False),
             # Timeouts
             startup_timeout_sec=int(os.getenv("RIVAULT_STARTUP_TIMEOUT_SEC", "600")),
             idle_timeout_sec=int(os.getenv("RIVAULT_IDLE_TIMEOUT_SEC", "3600")),
