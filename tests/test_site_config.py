@@ -253,10 +253,10 @@ class TestLoadSiteConfig:
     def test_rccs_cloud_site_config_uses_deployed_runtime_paths(self):
         cfg = load_site_config(RCCS_CLOUD_SITE_CONFIG)
 
-        assert cfg.runtime.repo_dir == "/lvs0/rccs-dmp/mnagaso/ai4s-platform/umrs"
+        assert cfg.runtime.repo_dir == "/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs"
         assert (
             cfg.runtime.rivault_dir
-            == "/lvs0/rccs-dmp/mnagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm"
+            == "/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs/src/umrs/mini-rivault-llm"
         )
 
     def test_search_path_umrs_site_config_env(self, tmp_path):

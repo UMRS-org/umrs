@@ -20,8 +20,8 @@ bash run_demo.sh
 
 # Remote admin CLI over SSH (optional):
 UMRS_ADMIN_SSH_HOST=rccs-cloud \
-UMRS_ADMIN_REMOTE_CWD=/lvs0/rccs-dmp/mnagaso/ai4s-platform/umrs \
-UMRS_ADMIN_REMOTE_ACTIVATE=/lvs0/rccs-dmp/mnagaso/ai4s-platform/.venv/bin/activate \
+UMRS_ADMIN_REMOTE_CWD=/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs \
+UMRS_ADMIN_REMOTE_ACTIVATE=/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/.venv/bin/activate \
 bash run_demo.sh
 ```
 

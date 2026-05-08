@@ -154,7 +154,7 @@ def test_create_model_keeps_system_scope_owner_null():
         model_id="mdl-system-123",
         name="qwen3-32b",
         scope=ModelScope.SYSTEM,
-        storage_ref="/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/Qwen3-32B",
+        storage_ref="/lvs0/dne1/rccs-dmp/masaru.nagaso/umrs_models/Qwen3-32B",
         model_type=ModelType.LLM,
         huggingface_id="Qwen/Qwen3-32B",
         description="System-scoped Qwen3 32B",
@@ -173,7 +173,7 @@ def test_create_model_keeps_system_scope_owner_null():
             json={
                 "name": "qwen3-32b",
                 "scope": "system",
-                "storage_ref": "/lvs0/dne1/rccs-dmp/mnagaso/umrs_models/Qwen3-32B",
+                "storage_ref": "/lvs0/dne1/rccs-dmp/masaru.nagaso/umrs_models/Qwen3-32B",
                 "model_type": "llm",
                 "huggingface_id": "Qwen/Qwen3-32B",
                 "description": "System-scoped Qwen3 32B",
