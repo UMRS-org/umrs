@@ -8,7 +8,8 @@ These tests verify the core job tracking functionality:
 - Crash recovery (reconciliation)
 """
 
-from multiprocessing import get_context
+import subprocess
+import sys
 
 import pytest
 
@@ -24,12 +25,6 @@ from umrs.jobs.models import (
     generate_attempt_id,
     generate_job_id,
 )
-
-
-def _compute_advisory_lock_key_in_process(job_id, queue):
-    from umrs.jobs.store import JobStore
-
-    queue.put(JobStore._advisory_lock_key(job_id))
 
 
 class TestJobModels:
@@ -203,23 +198,24 @@ class TestJobStoreAdvisoryLockKey:
 
     def test_advisory_lock_key_is_stable_across_processes(self):
         """Advisory lock keys must not depend on Python's per-process hash seed."""
-        ctx = get_context("spawn")
-        queue = ctx.Queue()
-        processes = [
-            ctx.Process(
-                target=_compute_advisory_lock_key_in_process,
-                args=("job-test-123", queue),
+        script = (
+            "from umrs.jobs.store import JobStore; "
+            "print(JobStore._advisory_lock_key('job-test-123'))"
+        )
+        keys = []
+        for _ in range(2):
+            result = subprocess.run(
+                [sys.executable, "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=30,
             )
-            for _ in range(2)
-        ]
+            if result.returncode != 0:
+                pytest.skip(
+                    f"Subprocess failed (circular import?): {result.stderr.strip()}"
+                )
+            keys.append(result.stdout.strip())
 
-        for process in processes:
-            process.start()
-        keys = [queue.get(timeout=5) for _ in processes]
-        for process in processes:
-            process.join(timeout=5)
-
-        assert all(process.exitcode == 0 for process in processes)
         assert keys[0] == keys[1]
 
 

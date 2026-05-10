@@ -11,8 +11,8 @@ cover both shipped backends:
 
 from __future__ import annotations
 
+import os
 import pickle
-import sys
 import textwrap
 
 import pytest
@@ -204,7 +204,8 @@ def step_module(tmp_path, monkeypatch):
     monkeypatch.syspath_prepend(str(tmp_path))
     # Forward the prepended path into the subprocess so ``-m
     # umrs.server.step_worker`` can import the test module.
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + ":" + (sys.path[0] or ""))
+    existing = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + ":" + existing)
     yield "_slice8_steps.steps"
 
 
@@ -269,7 +270,8 @@ def test_subprocess_executor_timeout(step_module, monkeypatch, tmp_path):
         + "\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))
-    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + ":" + (sys.path[0] or ""))
+    existing = os.environ.get("PYTHONPATH", "")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path) + ":" + existing)
 
     executor = SubprocessExecutor(timeout_seconds=0.5)
     with pytest.raises(StepExecutionError) as excinfo:

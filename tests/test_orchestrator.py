@@ -6,6 +6,7 @@ Tests orchestrator lifecycle, job management, and backend abstraction.
 
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+import importlib.util
 
 import pytest
 
@@ -585,6 +586,10 @@ class TestSlurmBackendMocked:
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not importlib.util.find_spec("kubernetes"),
+    reason="kubernetes package not installed",
+)
 class TestKubernetesBackendMocked:
     """Tests for Kubernetes backend with mocked client."""
 
@@ -769,6 +774,10 @@ class TestComposeBackendMocked:
 # =============================================================================
 
 
+@pytest.mark.skipif(
+    not importlib.util.find_spec("kubernetes"),
+    reason="kubernetes package not installed",
+)
 class TestKubernetesBackendExtended:
     """Extended tests for Kubernetes backend with mocked K8s API."""
 
