@@ -1,15 +1,23 @@
 from __future__ import annotations
 
 import argparse
+import re
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import client_umrs
 from umrs.client.control_commands import configure_status_parser
+from client_umrs import _fmt_cell
 from client_umrs import format_status_text
 from client_umrs import _resolve_status_target
+from client_umrs import action_list_buckets
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.server.provisioning import reconcile_status_on_startup
 from umrs.shared.pretty_print import pretty_print_thread_status
+
+
+def _strip_ansi(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)
 
 
 def test_pretty_print_thread_status_shows_snapshot_and_last_update():
@@ -70,6 +78,46 @@ def test_format_status_text_explains_missing_reload_status():
     assert "Reload is synchronous" in rendered
     assert "status all" in rendered
     assert "list_buckets" in rendered
+
+
+def test_fmt_cell_pads_before_applying_style(monkeypatch):
+    monkeypatch.setattr(client_umrs, "_use_color", lambda: True)
+
+    rendered = _fmt_cell("Alias", 20, style=client_umrs._bold)
+
+    assert _strip_ansi(rendered) == f"{'Alias':20s}"
+
+
+def test_action_list_buckets_keeps_header_columns_aligned_with_color(monkeypatch):
+    monkeypatch.setattr(client_umrs, "_use_color", lambda: True)
+    bucket_cfg = {
+        "test1-text": SimpleNamespace(
+            username="test1",
+            modality_name="text",
+            task="embedding",
+            path_to_bucket="test1.default.test1-text",
+        )
+    }
+
+    rendered = action_list_buckets(bucket_cfg, "test1", "text")
+    lines = [_strip_ansi(line) for line in rendered.splitlines()]
+
+    assert lines[1] == "  " + "  ".join(
+        [
+            f"{'Alias':20s}",
+            f"{'Modality':15s}",
+            f"{'Task':15s}",
+            "Path",
+        ]
+    )
+    assert lines[3] == "  " + "  ".join(
+        [
+            f"{'test1-text':20s}",
+            f"{'text':15s}",
+            f"{'embedding':15s}",
+            "test1.default.test1-text",
+        ]
+    )
 
 
 def test_resolve_status_target_supports_all_flag_alias():
