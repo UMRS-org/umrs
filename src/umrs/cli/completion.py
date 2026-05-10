@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 from collections.abc import Sequence
 from pathlib import Path
@@ -191,3 +192,109 @@ def completion_script(command_name: str, env_var: str, shell: str) -> str:
 
 def print_completion_script(command_name: str, env_var: str, shell: str) -> None:
     print(completion_script(command_name, env_var, shell), end="")
+
+
+# ---------------------------------------------------------------------------
+# Shell RC file install / uninstall
+# ---------------------------------------------------------------------------
+
+_SHELL_RC: dict[str, str] = {
+    "bash": os.path.expanduser("~/.bashrc"),
+    "zsh": os.path.expanduser("~/.zshrc"),
+}
+
+_MARKER_RE = r'^\s*eval\s+"\$\({command}\s+completion\s+(bash|zsh)\)"'
+
+
+def _detect_shell() -> str:
+    """Return 'zsh' or 'bash' based on the current $SHELL."""
+    shell_path = os.environ.get("SHELL", "")
+    if "zsh" in shell_path:
+        return "zsh"
+    return "bash"
+
+
+def _completion_line(command_name: str, shell: str) -> str:
+    return f'eval "$({command_name} completion {shell})"'
+
+
+def _already_installed(command_name: str, rc_path: str) -> bool:
+    """Check whether the RC file already sources completion for *command_name*."""
+    pattern = re.compile(
+        _MARKER_RE.format(command=re.escape(command_name)),
+    )
+    try:
+        with open(rc_path) as fh:
+            return any(pattern.match(line) for line in fh)
+    except FileNotFoundError:
+        return False
+
+
+def install_completion(command_name: str, shell: str | None = None) -> str:
+    """Append the ``eval "$(cmd completion <shell>)"`` line to the shell RC.
+
+    Returns a human-readable status message.
+    """
+    shell = shell or _detect_shell()
+    rc_path = _SHELL_RC.get(shell)
+    if rc_path is None:
+        return f"Unsupported shell: {shell}"
+
+    if _already_installed(command_name, rc_path):
+        return f"{command_name} completion already installed in {rc_path}"
+
+    line = _completion_line(command_name, shell)
+    with open(rc_path, "a") as fh:
+        fh.write(f"\n# {command_name} tab completion\n{line}\n")
+
+    return f"Installed {command_name} completion in {rc_path}"
+
+
+def uninstall_completion(command_name: str, shell: str | None = None) -> str:
+    """Remove the completion line from the shell RC.
+
+    Returns a human-readable status message.
+    """
+    shell = shell or _detect_shell()
+    rc_path = _SHELL_RC.get(shell)
+    if rc_path is None:
+        return f"Unsupported shell: {shell}"
+
+    try:
+        with open(rc_path) as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        return f"{rc_path} not found"
+
+    pattern = re.compile(
+        _MARKER_RE.format(command=re.escape(command_name)),
+    )
+    comment_pattern = re.compile(
+        rf"^#\s*{re.escape(command_name)}\s+tab completion\s*$",
+    )
+
+    new_lines: list[str] = []
+    removed = False
+    skip_next_blank = False
+    for line in lines:
+        if comment_pattern.match(line):
+            removed = True
+            skip_next_blank = True
+            continue
+        if pattern.match(line):
+            removed = True
+            skip_next_blank = True
+            continue
+        if skip_next_blank and line.strip() == "":
+            skip_next_blank = False
+            continue
+        skip_next_blank = False
+        new_lines.append(line)
+
+    if not removed:
+        return f"No {command_name} completion found in {rc_path}"
+
+    with open(rc_path, "w") as fh:
+        fh.writelines(new_lines)
+
+    return f"Removed {command_name} completion from {rc_path}"

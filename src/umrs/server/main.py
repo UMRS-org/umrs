@@ -12,12 +12,29 @@ import sys
 def _handle_completion_command(argv: list[str]) -> int:
     import argparse
 
-    from umrs.cli.completion import print_completion_script
+    from umrs.cli.completion import install_completion, print_completion_script, uninstall_completion
 
     parser = argparse.ArgumentParser(prog="umrs-server completion")
-    parser.add_argument("shell", choices=("bash", "zsh"), nargs="?", default="bash")
+    sub = parser.add_subparsers(dest="completion_action")
+    sub.add_parser("bash", help="Print bash completion script")
+    sub.add_parser("zsh", help="Print zsh completion script")
+    inst_p = sub.add_parser("install", help="Install completion into your shell RC file")
+    inst_p.add_argument("--shell", choices=("bash", "zsh"), default=None)
+    uninst_p = sub.add_parser("uninstall", help="Remove completion from your shell RC file")
+    uninst_p.add_argument("--shell", choices=("bash", "zsh"), default=None)
+
     args = parser.parse_args(argv)
-    print_completion_script("umrs-server", "_UMRS_SERVER_COMPLETE", args.shell)
+    action = getattr(args, "completion_action", None)
+    if action == "install":
+        print(install_completion("umrs-server", shell=args.shell))
+        return 0
+    if action == "uninstall":
+        print(uninstall_completion("umrs-server", shell=args.shell))
+        return 0
+    if action in ("bash", "zsh"):
+        print_completion_script("umrs-server", "_UMRS_SERVER_COMPLETE", action)
+        return 0
+    print_completion_script("umrs-server", "_UMRS_SERVER_COMPLETE", "bash")
     return 0
 
 
