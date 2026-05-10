@@ -170,6 +170,14 @@ class TestDashboardRendering:
         dash._on_key("k")
         assert dash._status_cursor == 0
 
+    def test_page_size_matches_24_line_terminal_jobs_view(self):
+        from umrs.tui.dashboard import Dashboard
+
+        console = Console(force_terminal=True, width=120, height=24, record=True)
+        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console)
+
+        assert dash._visible_page_size() == 6
+
     def test_colon_key_no_longer_opens_command_prompt(self):
         from umrs.tui.dashboard import Dashboard
 

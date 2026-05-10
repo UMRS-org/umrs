@@ -1,7 +1,7 @@
 """
 Minimal non-blocking keyboard input for the TUI dashboard.
 
-Works on Unix/macOS by switching stdin to raw mode in a background thread.
+Works on Unix/macOS by switching stdin to cbreak mode in a background thread.
 Falls back gracefully on Windows (no keyboard support, just auto-refresh).
 """
 
@@ -32,6 +32,7 @@ class KeyReader:
     def _run(self) -> None:
         try:
             import termios
+            import tty
         except ImportError:
             # Windows — no raw mode; dashboard still works via auto-refresh
             return
@@ -39,15 +40,16 @@ class KeyReader:
         fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(fd)
         try:
-            # Use cbreak-like mode that preserves output processing (OPOST)
-            # so Rich's terminal rendering is not corrupted.  Disable ISIG
-            # so Ctrl+C is readable as '\x03' instead of raising SIGINT.
+            # Switch input processing immediately so single-key navigation
+            # works even while the live dashboard is continuously rendering.
+            tty.setcbreak(fd, termios.TCSANOW)
             new = termios.tcgetattr(fd)
-            new[3] &= ~(termios.ECHO | termios.ICANON | termios.ISIG)
-            new[6][termios.VMIN] = 1
-            new[6][termios.VTIME] = 0
-            termios.tcsetattr(fd, termios.TCSADRAIN, new)
+            new[3] &= ~termios.ISIG
+            termios.tcsetattr(fd, termios.TCSANOW, new)
             while not self._stop.is_set():
+                ready, _, _ = select.select([sys.stdin], [], [], 0.05)
+                if not ready:
+                    continue
                 ch = sys.stdin.read(1)
                 if not ch:
                     break
@@ -66,4 +68,4 @@ class KeyReader:
                     key = ch
                 self._on_key(key)
         finally:
-            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+            termios.tcsetattr(fd, termios.TCSANOW, old_settings)

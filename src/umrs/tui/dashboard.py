@@ -276,6 +276,7 @@ class Dashboard:
         # Jobs
         self._jobs: list[dict[str, Any]] = []
         self._jobs_cursor = 0
+        self._jobs_scroll_offset = 0
         self._detail_job_id: str | None = None
         self._compact = True
 
@@ -283,16 +284,19 @@ class Dashboard:
         self._status_data: dict[str, Any] = {}
         self._status_items: list[dict[str, Any]] = []
         self._status_cursor = 0
+        self._status_scroll_offset = 0
 
         # Models
         self._models: list[dict[str, Any]] = []
         self._models_cursor = 0
+        self._models_scroll_offset = 0
         self._model_detail_name: str | None = None
         self._model_scope_filter: str | None = None
 
         # Workflows
         self._workflows: list[dict[str, Any]] = []
         self._wf_cursor = 0
+        self._wf_scroll_offset = 0
         self._wf_detail_name: str | None = None
         self._workflow_scope_filter: str | None = None
         self._workflow_user_filter: str | None = None
@@ -321,6 +325,7 @@ class Dashboard:
         # Activity log (client-side event capture)
         self._log_entries: list[dict[str, str]] = []
         self._log_cursor = 0
+        self._log_scroll_offset = 0
         self._log_auto_scroll = True
 
         # Quick Actions overlay
@@ -388,8 +393,10 @@ class Dashboard:
             self._last_error = str(e)
         if self._jobs:
             self._jobs_cursor = max(0, min(self._jobs_cursor, len(self._jobs) - 1))
+            self._jobs_scroll_offset = min(self._jobs_scroll_offset, max(len(self._jobs) - 1, 0))
         else:
             self._jobs_cursor = 0
+            self._jobs_scroll_offset = 0
 
     def _fetch_status(self) -> None:
         try:
@@ -399,8 +406,10 @@ class Dashboard:
                 self._status_items = self._build_status_items(parsed)
                 if self._status_items:
                     self._status_cursor = max(0, min(self._status_cursor, len(self._status_items) - 1))
+                    self._status_scroll_offset = min(self._status_scroll_offset, max(len(self._status_items) - 1, 0))
                 else:
                     self._status_cursor = 0
+                    self._status_scroll_offset = 0
                 self._last_error = None
             else:
                 self._last_error = parsed.get("message", "status unavailable")
@@ -416,8 +425,10 @@ class Dashboard:
             self._last_error = str(e)
         if self._models:
             self._models_cursor = max(0, min(self._models_cursor, len(self._models) - 1))
+            self._models_scroll_offset = min(self._models_scroll_offset, max(len(self._models) - 1, 0))
         else:
             self._models_cursor = 0
+            self._models_scroll_offset = 0
 
     def _fetch_workflows(self) -> None:
         try:
@@ -432,8 +443,10 @@ class Dashboard:
             self._last_error = str(e)
         if self._workflows:
             self._wf_cursor = max(0, min(self._wf_cursor, len(self._workflows) - 1))
+            self._wf_scroll_offset = min(self._wf_scroll_offset, max(len(self._workflows) - 1, 0))
         else:
             self._wf_cursor = 0
+            self._wf_scroll_offset = 0
 
     def _fetch_connection(self) -> None:
         t0 = time.monotonic()
@@ -942,33 +955,93 @@ class Dashboard:
         }
 
     # ==================================================================
+    # Viewport scrolling helpers
+    # ==================================================================
+    def _visible_page_size(self, *, with_detail: bool = False) -> int:
+        """Return the number of table rows that fit in the terminal.
+
+        The layout has fixed-size elements that consume terminal rows:
+          LOGO_HEIGHT (9) + tab_bar (1) + stats_bar (1) + footer (1)
+          + summary line (1) + list/table chrome (6)
+        Total fixed overhead = LOGO_HEIGHT + 9.
+
+        Rich tables render extra chrome inside the outer panel beyond the
+        visible body rows, so the viewport budget needs to leave room for
+        those lines as well or scrolling starts a couple of rows too late.
+
+        When a detail panel is open the content area is split ratio 2:1,
+        so the table panel gets only ⅔ of the remaining space.
+        """
+        try:
+            term_h = self._console.size.height
+        except Exception:
+            term_h = 24
+        overhead = LOGO_HEIGHT + 9  # 18 for default LOGO_HEIGHT=9
+        available = term_h - overhead
+        if with_detail:
+            available = (available * 2) // 3
+        return max(available, 3)
+
+    def _current_page_size(self) -> int:
+        """Page size for the currently active tab, accounting for detail panels."""
+        detail = False
+        if self._tab == TAB_JOBS and self._detail_job_id:
+            detail = True
+        elif self._tab == TAB_MODELS and self._model_detail_name:
+            detail = True
+        elif self._tab == TAB_WORKFLOWS and self._wf_detail_name:
+            detail = True
+        return self._visible_page_size(with_detail=detail)
+
+    @staticmethod
+    def _adjust_scroll_offset(cursor: int, offset: int, page_size: int) -> int:
+        """Return a new scroll offset that keeps *cursor* within the visible window."""
+        if cursor < offset:
+            return cursor
+        if cursor >= offset + page_size:
+            return cursor - page_size + 1
+        return offset
+
+    # ==================================================================
     # Keyboard handler
     # ==================================================================
     def _move_down(self) -> None:
+        page = self._current_page_size()
         if self._tab == TAB_JOBS:
             self._jobs_cursor = min(self._jobs_cursor + 1, max(len(self._jobs) - 1, 0))
+            self._jobs_scroll_offset = self._adjust_scroll_offset(self._jobs_cursor, self._jobs_scroll_offset, page)
         elif self._tab == TAB_STATUS:
             self._status_cursor = min(self._status_cursor + 1, max(len(self._status_items) - 1, 0))
+            self._status_scroll_offset = self._adjust_scroll_offset(self._status_cursor, self._status_scroll_offset, page)
         elif self._tab == TAB_MODELS:
             self._models_cursor = min(self._models_cursor + 1, max(len(self._models) - 1, 0))
+            self._models_scroll_offset = self._adjust_scroll_offset(self._models_cursor, self._models_scroll_offset, page)
         elif self._tab == TAB_WORKFLOWS:
             self._wf_cursor = min(self._wf_cursor + 1, max(len(self._workflows) - 1, 0))
+            self._wf_scroll_offset = self._adjust_scroll_offset(self._wf_cursor, self._wf_scroll_offset, page)
         elif self._tab == TAB_LOGS:
             self._log_auto_scroll = False
             self._log_cursor = min(self._log_cursor + 1, max(len(self._log_entries) - 1, 0))
+            self._log_scroll_offset = self._adjust_scroll_offset(self._log_cursor, self._log_scroll_offset, page)
 
     def _move_up(self) -> None:
+        page = self._current_page_size()
         if self._tab == TAB_JOBS:
             self._jobs_cursor = max(self._jobs_cursor - 1, 0)
+            self._jobs_scroll_offset = self._adjust_scroll_offset(self._jobs_cursor, self._jobs_scroll_offset, page)
         elif self._tab == TAB_STATUS:
             self._status_cursor = max(self._status_cursor - 1, 0)
+            self._status_scroll_offset = self._adjust_scroll_offset(self._status_cursor, self._status_scroll_offset, page)
         elif self._tab == TAB_MODELS:
             self._models_cursor = max(self._models_cursor - 1, 0)
+            self._models_scroll_offset = self._adjust_scroll_offset(self._models_cursor, self._models_scroll_offset, page)
         elif self._tab == TAB_WORKFLOWS:
             self._wf_cursor = max(self._wf_cursor - 1, 0)
+            self._wf_scroll_offset = self._adjust_scroll_offset(self._wf_cursor, self._wf_scroll_offset, page)
         elif self._tab == TAB_LOGS:
             self._log_auto_scroll = False
             self._log_cursor = max(self._log_cursor - 1, 0)
+            self._log_scroll_offset = self._adjust_scroll_offset(self._log_cursor, self._log_scroll_offset, page)
 
     def _toggle_detail(self) -> None:
         if self._tab == TAB_JOBS and self._jobs:
@@ -1133,9 +1206,12 @@ class Dashboard:
     def _log_scroll_end(self) -> None:
         self._log_cursor = max(len(self._log_entries) - 1, 0)
         self._log_auto_scroll = True
+        page = self._visible_page_size()
+        self._log_scroll_offset = max(len(self._log_entries) - page, 0)
 
     def _log_scroll_top(self) -> None:
         self._log_cursor = 0
+        self._log_scroll_offset = 0
         self._log_auto_scroll = False
 
     def _get_actions(self) -> list[dict[str, str]]:
@@ -1395,7 +1471,13 @@ class Dashboard:
         table.add_column("Created", min_width=8)
         table.add_column("Updated", min_width=8)
 
-        for idx, job in enumerate(self._jobs):
+        page = self._visible_page_size(with_detail=bool(self._detail_job_id))
+        self._jobs_scroll_offset = self._adjust_scroll_offset(self._jobs_cursor, self._jobs_scroll_offset, page)
+        start = self._jobs_scroll_offset
+        end = min(start + page, len(self._jobs))
+
+        for idx in range(start, end):
+            job = self._jobs[idx]
             is_selected = idx == self._jobs_cursor
             row_style = "reverse" if is_selected else ""
             n_attempts = len(job.get("attempts", []))
@@ -1466,8 +1548,10 @@ class Dashboard:
     def _build_jobs_tab(self) -> Layout:
         layout = Layout()
         filter_label = self._status_filter or "all"
+        total = len(self._jobs)
+        pos_hint = f"  [dim]{self._jobs_cursor + 1}/{total}[/dim]" if total else ""
         summary = Text.from_markup(
-            f"  filter=[cyan]{filter_label}[/cyan]  total=[yellow]{len(self._jobs)}[/yellow]"
+            f"  filter=[cyan]{filter_label}[/cyan]  total=[yellow]{total}[/yellow]{pos_hint}"
         )
 
         jobs_table = self._build_jobs_table()
@@ -1545,7 +1629,14 @@ class Dashboard:
         list_table.add_column("State", width=9)
         list_table.add_column("Preview", ratio=1)
 
-        for idx, item in enumerate(self._status_items):
+        # Status tab always shows a detail panel beside the list (split_row 2:3)
+        page = self._visible_page_size()
+        self._status_scroll_offset = self._adjust_scroll_offset(self._status_cursor, self._status_scroll_offset, page)
+        start = self._status_scroll_offset
+        end = min(start + page, len(self._status_items))
+
+        for idx in range(start, end):
+            item = self._status_items[idx]
             row_style = "reverse" if idx == self._status_cursor else ""
             state = "pending" if item["pending"] else "ready"
             state_style = "yellow" if item["pending"] else "green"
@@ -1640,7 +1731,13 @@ class Dashboard:
         table.add_column("Registered By", min_width=10)
         table.add_column("Registered At", min_width=10)
 
-        for idx, m in enumerate(self._models):
+        page = self._visible_page_size(with_detail=bool(self._model_detail_name))
+        self._models_scroll_offset = self._adjust_scroll_offset(self._models_cursor, self._models_scroll_offset, page)
+        start = self._models_scroll_offset
+        end = min(start + page, len(self._models))
+
+        for idx in range(start, end):
+            m = self._models[idx]
             is_selected = idx == self._models_cursor
             row_style = "reverse" if is_selected else ""
             table.add_row(
@@ -1654,7 +1751,10 @@ class Dashboard:
                 style=row_style,
             )
 
-        summary = Text.from_markup(f"  total=[yellow]{len(self._models)}[/yellow]")
+        total = len(self._models)
+        summary = Text.from_markup(f"  total=[yellow]{total}[/yellow]")
+        if total:
+            summary.append_text(Text.from_markup(f"  [dim]{self._models_cursor + 1}/{total}[/dim]"))
         if self._model_scope_filter:
             summary.append(f"  scope={self._model_scope_filter}")
         detail = self._build_model_detail_panel()
@@ -1725,7 +1825,13 @@ class Dashboard:
         table.add_column("Steps", width=6, justify="right")
         table.add_column("Registered At", min_width=10)
 
-        for idx, wf in enumerate(self._workflows):
+        page = self._visible_page_size(with_detail=bool(self._wf_detail_name))
+        self._wf_scroll_offset = self._adjust_scroll_offset(self._wf_cursor, self._wf_scroll_offset, page)
+        start = self._wf_scroll_offset
+        end = min(start + page, len(self._workflows))
+
+        for idx in range(start, end):
+            wf = self._workflows[idx]
             is_selected = idx == self._wf_cursor
             row_style = "reverse" if is_selected else ""
             steps = wf.get("steps", [])
@@ -1740,7 +1846,10 @@ class Dashboard:
                 style=row_style,
             )
 
-        summary = Text.from_markup(f"  total=[yellow]{len(self._workflows)}[/yellow]")
+        total = len(self._workflows)
+        summary = Text.from_markup(f"  total=[yellow]{total}[/yellow]")
+        if total:
+            summary.append_text(Text.from_markup(f"  [dim]{self._wf_cursor + 1}/{total}[/dim]"))
         if self._workflow_scope_filter:
             summary.append(f"  scope={self._workflow_scope_filter}")
         if self._workflow_user_filter:
@@ -1920,7 +2029,18 @@ class Dashboard:
         else:
             self._log_cursor = 0
 
-        for idx, entry in enumerate(entries):
+        page = self._visible_page_size()
+        if self._log_auto_scroll and entries:
+            # Keep the view pinned to the bottom when auto-scrolling
+            self._log_cursor = len(entries) - 1
+            self._log_scroll_offset = max(len(entries) - page, 0)
+        else:
+            self._log_scroll_offset = self._adjust_scroll_offset(self._log_cursor, self._log_scroll_offset, page)
+        start = self._log_scroll_offset
+        end = min(start + page, len(entries))
+
+        for idx in range(start, end):
+            entry = entries[idx]
             is_selected = idx == self._log_cursor
             level = entry.get("level", "INFO")
             level_style = LOG_LEVEL_STYLES.get(level, "")
