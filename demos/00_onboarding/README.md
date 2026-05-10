@@ -131,7 +131,7 @@ an unchanged config is a no-op.
 1. **IAM user creation** — the server creates a MinIO user for the username
    declared in the user config. A random strong password is generated and
    written to a per-user S3 config file on the server
-   (`~/.s3cfg_<username>`). If the file already exists, the existing
+   (`~/.config/umrs/s3cfg_<username>`). If the file already exists, the existing
    credentials are reused.
 2. **Bucket creation** — one S3 bucket per modality is created, named
    `<username>/<xp_name>/<bucket_alias>`. Modalities that declare
