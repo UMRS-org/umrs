@@ -97,6 +97,18 @@ def _blue(t):     return _c("34", t)
 def _magenta(t):  return _c("35", t)
 
 
+def _fmt_cell(text, width=None, *, align="<", style=None):
+    text = "" if text is None else str(text)
+    if width is not None:
+        if align == ">":
+            text = f"{text:>{width}s}"
+        elif align == "^":
+            text = f"{text:^{width}s}"
+        else:
+            text = f"{text:<{width}s}"
+    return style(text) if style else text
+
+
 def _section(title):
     """Return a colored section header line."""
     return _bold(_cyan(f"[{title}]"))
@@ -105,7 +117,7 @@ def _section(title):
 def _kv(key, value, indent=2):
     """Format a key=value line with colored key."""
     pad = " " * indent
-    return f"{pad}{_bold(key):>30s}  {value}"
+    return f"{pad}{_fmt_cell(key, 30, align='>', style=_bold)}  {value}"
 
 
 def _status_dot(ok):
@@ -610,10 +622,28 @@ def _handle_admin_command(args):
         else:
             print(_section("Admin Tokens"))
             if tokens:
-                print(f"  {_bold('Name'):20s} {_bold('Description'):30s} {_bold('Created'):25s}")
+                print(
+                    "  "
+                    + " ".join(
+                        [
+                            _fmt_cell("Name", 20, style=_bold),
+                            _fmt_cell("Description", 30, style=_bold),
+                            _fmt_cell("Created", 25, style=_bold),
+                        ]
+                    )
+                )
                 print(f"  {_dim('-' * 75)}")
                 for t in tokens:
-                    print(f"  {t['name']:20s} {t.get('description', ''):30s} {_dim(t.get('created_at', '')):25s}")
+                    print(
+                        "  "
+                        + " ".join(
+                            [
+                                _fmt_cell(t['name'], 20),
+                                _fmt_cell(t.get('description', ''), 30),
+                                _fmt_cell(t.get('created_at', ''), 25, style=_dim),
+                            ]
+                        )
+                    )
             else:
                 print(f"  {_dim('No admin tokens configured.')}")
         return 0
@@ -766,11 +796,11 @@ def _handle_profile_command(args):
                 for profile in profiles:
                     if profile.name == current:
                         marker = _green("\u25b8")
-                        name_str = _bold(profile.name)
+                        name_str = _fmt_cell(profile.name, 20, style=_bold)
                     else:
                         marker = " "
-                        name_str = profile.name
-                    print(f"  {marker} {name_str:20s} {_dim(profile.mode):10s} {_dim(profile.path)}")
+                        name_str = _fmt_cell(profile.name, 20)
+                    print(f"  {marker} {name_str} {_fmt_cell(profile.mode, 10, style=_dim)} {_dim(profile.path)}")
             else:
                 print(f"  {_dim('No connection profiles found.')}")
             for entry in errors:
@@ -980,10 +1010,30 @@ def action_list_buckets(bucket_cfg, username, output_format):
     if not buckets:
         lines.append(f"  {_dim('No buckets found.')}")
     else:
-        lines.append(f"  {_bold('Alias'):20s}  {_bold('Modality'):15s}  {_bold('Task'):15s}  {_bold('Path')}")
+        lines.append(
+            "  "
+            + "  ".join(
+                [
+                    _fmt_cell("Alias", 20, style=_bold),
+                    _fmt_cell("Modality", 15, style=_bold),
+                    _fmt_cell("Task", 15, style=_bold),
+                    _bold("Path"),
+                ]
+            )
+        )
         lines.append(f"  {_dim('-' * 80)}")
         for b in buckets:
-            lines.append(f"  {b['bucket_alias']:20s}  {b['modality']:15s}  {b.get('task',''):15s}  {_dim(b['path_to_bucket'])}")
+            lines.append(
+                "  "
+                + "  ".join(
+                    [
+                        _fmt_cell(b['bucket_alias'], 20),
+                        _fmt_cell(b['modality'], 15),
+                        _fmt_cell(b.get('task', ''), 15),
+                        _dim(b['path_to_bucket']),
+                    ]
+                )
+            )
     return "\n".join(lines)
 
 def perform_upload_text(s3, full_bucket_name, text, data_mq, metadata_args):
@@ -1579,11 +1629,31 @@ def main():
                                 print(f"  {_dim('No models registered.')}")
                             else:
                                 print(_section("Models"))
-                                print(f"  {_bold('Name'):30s}  {_bold('Type'):10s}  {_bold('Scope'):8s}  {_bold('Storage')}")
+                                print(
+                                    "  "
+                                    + "  ".join(
+                                        [
+                                            _fmt_cell("Name", 30, style=_bold),
+                                            _fmt_cell("Type", 10, style=_bold),
+                                            _fmt_cell("Scope", 8, style=_bold),
+                                            _bold("Storage"),
+                                        ]
+                                    )
+                                )
                                 print(f"  {_dim('-' * 80)}")
                                 for m in models:
                                     scope_str = m.get('scope', '')
-                                    print(f"  {m['name']:30s}  {m.get('model_type',''):10s}  {scope_str:8s}  {_dim(m.get('storage_ref',''))}")
+                                    print(
+                                        "  "
+                                        + "  ".join(
+                                            [
+                                                _fmt_cell(m['name'], 30),
+                                                _fmt_cell(m.get('model_type', ''), 10),
+                                                _fmt_cell(scope_str, 8),
+                                                _dim(m.get('storage_ref', '')),
+                                            ]
+                                        )
+                                    )
                         else:
                             print(f"{_green('✓')} {parsed.get('message', 'OK')}")
                     else:
@@ -1643,7 +1713,17 @@ def main():
                                 print(f"  {_dim('No jobs found.')}")
                             else:
                                 print(_section("Jobs"))
-                                print(f"  {_bold('Job ID'):18s}  {_bold('Status'):10s}  {_bold('Type'):18s}  {_bold('Project')}")
+                                print(
+                                    "  "
+                                    + "  ".join(
+                                        [
+                                            _fmt_cell("Job ID", 18, style=_bold),
+                                            _fmt_cell("Status", 10, style=_bold),
+                                            _fmt_cell("Type", 18, style=_bold),
+                                            _bold("Project"),
+                                        ]
+                                    )
+                                )
                                 print(f"  {_dim('-' * 70)}")
                                 for job in jobs:
                                     st = job.get('status', '')
@@ -1657,7 +1737,7 @@ def main():
                                         st_str = _yellow(st)
                                     print(
                                         f"  {job.get('job_id',''):18s}  "
-                                        f"{st_str:10s}  "
+                                        f"{st_str}  "
                                         f"{job.get('job_type',''):18s}  "
                                         f"{_dim(job.get('project_id',''))}"
                                     )
@@ -1759,7 +1839,19 @@ def main():
                                 print(f"  {_dim('No workflows registered.')}")
                             else:
                                 print(_section("Workflows"))
-                                print(f"  {_bold('Name'):30s}  {_bold('Version'):8s}  {_bold('Scope'):6s}  {_bold('User'):12s}  {_bold('Steps'):8s}  {_bold('Description')}")
+                                print(
+                                    "  "
+                                    + "  ".join(
+                                        [
+                                            _fmt_cell("Name", 30, style=_bold),
+                                            _fmt_cell("Version", 8, style=_bold),
+                                            _fmt_cell("Scope", 6, style=_bold),
+                                            _fmt_cell("User", 12, style=_bold),
+                                            _fmt_cell("Steps", 8, style=_bold),
+                                            _bold("Description"),
+                                        ]
+                                    )
+                                )
                                 print(f"  {_dim('-' * 100)}")
                                 for w in workflows:
                                     n_steps = len(w.get('steps', []))
