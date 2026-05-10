@@ -267,7 +267,7 @@ def _build_user_config_template(username: str, fullname: str) -> dict:
     return {
         "username": username,
         "fullname": fullname,
-        "s3_configuration_file": f"~/.s3cfg_{username}",
+        "s3_configuration_file": f"~/.config/umrs/s3cfg_{username}",
         "experiences": [
             {
                 "xp_name": "default",
@@ -349,7 +349,7 @@ def _handle_config_init(args):
             cfg = _json_mod.load(f)
         cfg["username"] = username
         cfg["fullname"] = fullname
-        cfg["s3_configuration_file"] = f"~/.s3cfg_{username}"
+        cfg["s3_configuration_file"] = f"~/.config/umrs/s3cfg_{username}"
     else:
         # Check for a site-level template via UMRS_CONFIG_TEMPLATE env var.
         site_template = os.environ.get("UMRS_CONFIG_TEMPLATE")
@@ -361,7 +361,7 @@ def _handle_config_init(args):
                     cfg = _json_mod.load(f)
                 cfg["username"] = username
                 cfg["fullname"] = fullname
-                cfg["s3_configuration_file"] = f"~/.s3cfg_{username}"
+                cfg["s3_configuration_file"] = f"~/.config/umrs/s3cfg_{username}"
             else:
                 cfg = _build_user_config_template(username, fullname)
         else:

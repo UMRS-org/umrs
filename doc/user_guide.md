@@ -33,14 +33,14 @@ Your admin provides two files:
    modalities, and bucket aliases.
 2. **S3 credentials** (`.s3cfg`) — access key for the object store.
 
-Place them where your config references them (typically `~/.s3cfg_<username>`).
+Place them where your config references them (typically `~/.config/umrs/s3cfg_<username>`).
 
 Example user config:
 ```json
 {
   "username": "alice",
   "fullname": "Alice Researcher",
-  "s3_configuration_file": "~/.s3cfg_alice",
+  "s3_configuration_file": "~/.config/umrs/s3cfg_alice",
   "experiences": [
     {
       "xp_name": "TextAnalysis",

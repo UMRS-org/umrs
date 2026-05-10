@@ -327,7 +327,9 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         alias = {alias}
         """
 
-        with open(os.path.expanduser(user_s3_configuration_file), "w") as file:
+        expanded_path = os.path.expanduser(user_s3_configuration_file)
+        os.makedirs(os.path.dirname(expanded_path), exist_ok=True)
+        with open(expanded_path, "w") as file:
             file.write(textwrap.dedent(user_cfg))
 
         print(f"==> Configuration file written to: {user_s3_configuration_file}")
