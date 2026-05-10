@@ -91,7 +91,7 @@ UMRS_ART = r"""
  ██║   ██║██║╚██╔╝██║██╔══██╗╚════██║
  ╚██████╔╝██║ ╚═╝ ██║██║  ██║███████║
   ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═╝╚══════╝
- Bring your R4 workflow to Stage 1-2
+ Bring your agentic workflow to Stage 1-2
 """
 
 PIPE_ART = r"""

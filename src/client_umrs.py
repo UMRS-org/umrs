@@ -27,7 +27,12 @@ from umrs.client.control_commands import (
     configure_workflow_run_parser,
     parse_json_object_arg,
 )
-from umrs.cli.completion import emit_completion_if_requested, print_completion_script
+from umrs.cli.completion import (
+    emit_completion_if_requested,
+    install_completion,
+    print_completion_script,
+    uninstall_completion,
+)
 from umrs.client.metadata import check_and_build_metadata
 from umrs.core.MessageQueue import MessageQueue
 from umrs.core.TaskCmdStatus import TaskCmd
@@ -374,6 +379,12 @@ def _handle_config_init(args):
         print(f"  {_dim('Do not run the .json path directly in the shell.')}")
         print("  Then run:")
         print(f"  {_cyan('umrs-client reload')}")
+
+    # Auto-install shell tab completion
+    comp_msg = install_completion('umrs-client')
+    if args.output != 'json':
+        print(f"  {comp_msg}")
+
     return 0
 
 
@@ -1065,8 +1076,14 @@ def main():
                         help='Admin token for privileged commands (or set UMRS_ADMIN_TOKEN)')
     # Removed deprecated auto-add-columns behavior; metadata must be declared in server config
 
-    completion_p = subparsers.add_parser('completion', help='Print shell completion setup')
-    completion_p.add_argument('shell', choices=('bash', 'zsh'), nargs='?', default='bash')
+    completion_p = subparsers.add_parser('completion', help='Shell completion setup')
+    comp_sub = completion_p.add_subparsers(dest='completion_action')
+    comp_sub.add_parser('bash', help='Print bash completion script')
+    comp_sub.add_parser('zsh', help='Print zsh completion script')
+    inst_p = comp_sub.add_parser('install', help='Install completion into your shell RC file')
+    inst_p.add_argument('--shell', choices=('bash', 'zsh'), default=None)
+    uninst_p = comp_sub.add_parser('uninstall', help='Remove completion from your shell RC file')
+    uninst_p.add_argument('--shell', choices=('bash', 'zsh'), default=None)
 
     # API subcommands
     ping_p = subparsers.add_parser('ping', help='Check server readiness')
@@ -1298,7 +1315,17 @@ def main():
     args = parser.parse_args()
 
     if args.action == 'completion':
-        print_completion_script('umrs-client', '_UMRS_CLIENT_COMPLETE', args.shell)
+        action = getattr(args, 'completion_action', None)
+        if action == 'install':
+            print(install_completion('umrs-client', shell=args.shell))
+            return 0
+        if action == 'uninstall':
+            print(uninstall_completion('umrs-client', shell=args.shell))
+            return 0
+        if action in ('bash', 'zsh'):
+            print_completion_script('umrs-client', '_UMRS_CLIENT_COMPLETE', action)
+            return 0
+        print_completion_script('umrs-client', '_UMRS_CLIENT_COMPLETE', 'bash')
         return 0
 
     if args.action == 'profile':
