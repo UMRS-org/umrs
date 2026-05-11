@@ -56,6 +56,7 @@ def _create_app():
     from umrs.api import (
         egress_audit_router,
         endpoints_router,
+        files_router,
         jobs_router,
         llm_router,
         mcp_router,
@@ -64,6 +65,7 @@ def _create_app():
         policy_router,
         rag_router,
         skills_router,
+        vision_router,
         workflows_router,
     )
 
@@ -80,6 +82,7 @@ def _create_app():
 
     app.include_router(egress_audit_router)
     app.include_router(endpoints_router)
+    app.include_router(files_router)
     app.include_router(jobs_router)
     app.include_router(llm_router)
     app.include_router(mcp_router)
@@ -88,6 +91,7 @@ def _create_app():
     app.include_router(policy_router)
     app.include_router(rag_router)
     app.include_router(skills_router)
+    app.include_router(vision_router)
     app.include_router(workflows_router)
 
     db_pool = None

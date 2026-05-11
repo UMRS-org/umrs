@@ -300,8 +300,7 @@ class OrchestrationService:
         host: str,
         port: int,
         deadline: float,
-        probe_model: str | None = None,
-        probe_kind: str = "models",
+        readiness_probe: dict[str, str | None] | None = None,
         on_progress: Callable[[Any], None] | None = None,
     ):
         """Run readiness polling within the remaining provision budget."""
@@ -325,13 +324,15 @@ class OrchestrationService:
             else:
                 poller.config.timeout_sec = target_timeout
 
+        probe = readiness_probe or {}
         try:
             return await poller.wait_for_ready(
                 job_id=job_id,
                 host=host,
                 port=port,
-                probe_model=probe_model,
-                probe_kind=probe_kind,
+                probe_model=probe.get("model"),
+                probe_kind=probe.get("kind") or "models",
+                probe_path=probe.get("path"),
                 on_progress=on_progress,
             )
         finally:
@@ -453,6 +454,11 @@ class OrchestrationService:
                     "MODEL_NAME": request.model,
                 }
             )
+            service_kind = str(request.metadata.get("service_kind") or "openai")
+            serving_backend = str(request.metadata.get("serving_backend") or "vllm")
+            if service_kind == "bentoml_vision" or serving_backend == "bentoml":
+                submit_env["BENTOML_VISION_DOCKER_PORT"] = str(port)
+                submit_env["RIVAULT_SERVICE_PORT"] = str(port)
             mount_env, mount_metadata = build_mount_environment(
                 tier=request.tier,
                 mounts=request.mounts,
@@ -489,6 +495,7 @@ class OrchestrationService:
                 else port
             )
             if actual_host and actual_host != "pending":
+                endpoint_metadata.setdefault("service_url", f"http://{actual_host}:{actual_port}")
                 endpoint_metadata["detail"] = f"container starting on {actual_host}:{actual_port}"
             else:
                 endpoint_metadata["detail"] = "waiting for resource allocation"
@@ -589,7 +596,10 @@ class OrchestrationService:
                     job_id,
                     host=actual_host,
                     port=actual_port,
-                    metadata={"detail": f"container starting on {actual_host}:{actual_port}"},
+                    metadata={
+                        "detail": f"container starting on {actual_host}:{actual_port}",
+                        "service_url": f"http://{actual_host}:{actual_port}",
+                    },
                 )
                 if progress:
                     progress("assignment_resolved", {"host": actual_host, "port": actual_port})
@@ -603,6 +613,7 @@ class OrchestrationService:
             if progress:
                 progress("waiting_for_ready", {"timeout": remaining_timeout})
             readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
+            readiness_path = request.metadata.get("readiness_path")
 
             def _on_readiness_progress(r) -> None:
                 if progress:
@@ -619,8 +630,11 @@ class OrchestrationService:
                 host=actual_host,
                 port=actual_port,
                 deadline=deadline,
-                probe_model=request.model,
-                probe_kind=readiness_probe,
+                readiness_probe={
+                    "model": request.model,
+                    "kind": readiness_probe,
+                    "path": str(readiness_path) if readiness_path else None,
+                },
                 on_progress=_on_readiness_progress,
             )
 

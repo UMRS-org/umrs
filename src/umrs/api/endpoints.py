@@ -218,13 +218,15 @@ async def _refresh_endpoint_readiness(
         endpoint.metadata.get("readiness_probe")
         or _resolve_readiness_probe_mode(endpoint.model)
     )
+    readiness_path = endpoint.metadata.get("readiness_path")
 
     try:
         is_ready, models, error = await get_readiness_poller().check_ready_detail(
             endpoint.host,
             endpoint.port,
-            probe_model=endpoint.model,
+            probe_model=endpoint.metadata.get("served_model_name") or endpoint.model,
             probe_kind=readiness_probe,
+            probe_path=str(readiness_path) if readiness_path else None,
         )
     except Exception as exc:  # noqa: BLE001 - status lookup must stay best-effort
         logger.warning("Endpoint readiness refresh failed for %s: %s", endpoint.job_id, exc)
@@ -276,6 +278,18 @@ class EndpointResponse(BaseModel):
     owner_id: str | None = None
     tier: str | None = None
     served_model_name: str | None = None
+    model_type: str | None = None
+    serving_backend: str | None = None
+    service_kind: str | None = None
+    service_url: str | None = None
+    invoke_base_path: str | None = None
+    readiness_probe: str | None = None
+    readiness_path: str | None = None
+    launch_profiles: list[str] | None = None
+    container_image: str | None = None
+    vision_adapter: str | None = None
+    vision_task: str | None = None
+    output_format: str | None = None
     detail: str | None = None
     job_status: str | None = None
 
@@ -397,6 +411,30 @@ class ProvisionRequest(BaseModel):
         "single",
         description="One of: single, multi-lora, co-located",
     )
+    serving_backend: str | None = Field(
+        None,
+        description="Serving backend override: vllm or bentoml",
+    )
+    service_kind: str | None = Field(
+        None,
+        description="Service API kind override: openai or bentoml_vision",
+    )
+    launch_profiles: list[str] | None = Field(
+        None,
+        description="Mini-RiVault profiles to activate for this endpoint",
+    )
+    co_locate_vllm: bool = Field(
+        False,
+        description="For BentoML vision, also launch the vLLM profile",
+    )
+    container_image: str | None = Field(None, description="Container image override")
+    service_port: int | None = Field(None, ge=1, le=65535, description="External service port override")
+    readiness_probe: str | None = Field(None, description="Readiness probe override: models, chat, or http")
+    readiness_path: str | None = Field(None, description="HTTP readiness path for non-OpenAI services")
+    invoke_base_path: str | None = Field(None, description="Base path for invoking the service")
+    vision_adapter: str | None = Field(None, description="Vision adapter name")
+    vision_task: str | None = Field(None, description="Default vision task")
+    output_format: str | None = Field(None, description="Default vision result format")
     loras: list[LoraSpec] | None = Field(
         None,
         description="LoRA adapters (multi-lora mode only)",
@@ -438,6 +476,12 @@ class ProvisionRequest(BaseModel):
             raise ValueError(
                 "serving_mode must be one of: single, multi-lora, co-located"
             )
+        if self.serving_backend and self.serving_backend not in ("vllm", "bentoml"):
+            raise ValueError("serving_backend must be one of: vllm, bentoml")
+        if self.service_kind and self.service_kind not in ("openai", "bentoml_vision"):
+            raise ValueError("service_kind must be one of: openai, bentoml_vision")
+        if self.readiness_probe and self.readiness_probe not in ("models", "chat", "http", "bentoml"):
+            raise ValueError("readiness_probe must be one of: models, chat, http, bentoml")
         if self.tier not in ("system", "project", "user"):
             raise ValueError("tier must be one of: system, project, user")
         if self.serving_mode == "single" and len(self.models) != 1:
@@ -674,16 +718,158 @@ def _resolve_requested_model_path(
     return None
 
 
-def _resolve_readiness_probe_mode(
+def _serving_profile(model_entry: dict[str, Any] | None) -> dict[str, Any]:
+    profile = (model_entry or {}).get("serving_profile") or {}
+    return profile if isinstance(profile, dict) else {}
+
+
+def _resolve_model_type(
     model_name: str,
     model_entry: dict[str, Any] | None = None,
 ) -> str:
-    """Resolve the readiness probe mode for a provisioned endpoint."""
     entry = model_entry or _resolve_registered_model_entry(model_name)
-    model_type = str(entry.get("model_type", "")).lower() if entry else ""
+    return str((entry or {}).get("model_type") or "llm").lower()
+
+
+def _resolve_serving_backend(
+    model_name: str,
+    model_entry: dict[str, Any] | None = None,
+    explicit: str | None = None,
+) -> str:
+    if explicit:
+        return explicit
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    profile_backend = _serving_profile(entry).get("serving_backend")
+    if profile_backend:
+        return str(profile_backend).lower()
+    if _resolve_model_type(model_name, entry) == "vision":
+        return "bentoml"
+    return "vllm"
+
+
+def _resolve_service_kind(
+    model_name: str,
+    model_entry: dict[str, Any] | None = None,
+    *,
+    serving_backend: str | None = None,
+    explicit: str | None = None,
+) -> str:
+    if explicit:
+        return explicit
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    profile_kind = _serving_profile(entry).get("service_kind")
+    if profile_kind:
+        return str(profile_kind)
+    backend = serving_backend or _resolve_serving_backend(model_name, entry)
+    if backend == "bentoml" or _resolve_model_type(model_name, entry) == "vision":
+        return "bentoml_vision"
+    return "openai"
+
+
+def _profile_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [part for part in value.replace(",", " ").split() if part]
+    if isinstance(value, (list, tuple)):
+        return [str(part) for part in value if str(part)]
+    return []
+
+
+def _resolve_launch_profiles(
+    model_name: str,
+    model_entry: dict[str, Any] | None = None,
+    *,
+    serving_backend: str | None = None,
+    explicit: list[str] | None = None,
+    co_locate_vllm: bool = False,
+) -> list[str]:
+    if explicit:
+        return _profile_list(explicit)
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    profile_profiles = _profile_list(_serving_profile(entry).get("launch_profiles"))
+    if profile_profiles:
+        return profile_profiles
+    backend = serving_backend or _resolve_serving_backend(model_name, entry)
+    if backend == "bentoml" or _resolve_model_type(model_name, entry) == "vision":
+        profiles = ["harness", "vision-bentoml"]
+        if co_locate_vllm:
+            profiles.insert(1, "vllm")
+        return profiles
+    return []
+
+
+def _normalize_readiness_probe(value: Any) -> str | None:
+    if not value:
+        return None
+    normalized = str(value)
+    return "http" if normalized == "bentoml" else normalized
+
+
+def _is_bentoml_vision_service(
+    model_name: str,
+    model_entry: dict[str, Any] | None,
+    *,
+    serving_backend: str | None = None,
+    service_kind: str | None = None,
+) -> bool:
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    backend = serving_backend or _resolve_serving_backend(model_name, entry)
+    kind = service_kind or _resolve_service_kind(model_name, entry, serving_backend=backend)
+    return backend == "bentoml" or kind == "bentoml_vision" or _resolve_model_type(model_name, entry) == "vision"
+
+
+def _resolve_readiness_probe_mode(
+    model_name: str,
+    model_entry: dict[str, Any] | None = None,
+    *,
+    serving_backend: str | None = None,
+    explicit: str | None = None,
+) -> str:
+    """Resolve the readiness probe mode for a provisioned endpoint."""
+    explicit_probe = _normalize_readiness_probe(explicit)
+    if explicit_probe:
+        return explicit_probe
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    profile_probe = _normalize_readiness_probe(_serving_profile(entry).get("readiness_probe"))
+    if profile_probe:
+        return profile_probe
+    model_type = _resolve_model_type(model_name, entry)
+    if _is_bentoml_vision_service(model_name, entry, serving_backend=serving_backend):
+        return "http"
     if model_type == "embedding":
         return "models"
     return "chat"
+
+
+def _resolve_readiness_path(
+    model_name: str,
+    model_entry: dict[str, Any] | None = None,
+    *,
+    serving_backend: str | None = None,
+    service_kind: str | None = None,
+    readiness_probe: str | None = None,
+    explicit: str | None = None,
+) -> str | None:
+    if explicit:
+        return explicit
+    entry = model_entry or _resolve_registered_model_entry(model_name)
+    profile_path = _serving_profile(entry).get("readiness_path")
+    if profile_path:
+        return str(profile_path)
+    probe = readiness_probe or _resolve_readiness_probe_mode(
+        model_name,
+        entry,
+        serving_backend=serving_backend,
+    )
+    if probe == "http" and _is_bentoml_vision_service(
+        model_name,
+        entry,
+        serving_backend=serving_backend,
+        service_kind=service_kind,
+    ):
+        return "/readyz"
+    return None
 
 
 def _enrich_endpoint_response(ep_dict: dict[str, Any]) -> dict[str, Any]:
@@ -1259,13 +1445,79 @@ async def provision_endpoint(
             ),
         )
 
-    request_metadata: dict[str, Any] = {
-        "readiness_probe": _resolve_readiness_probe_mode(
-            request.model,
-            model_entry=model_entry,
-        )
-    }
     env_vars: dict[str, str] = {}
+    model_type = _resolve_model_type(request.model, model_entry)
+    serving_backend = _resolve_serving_backend(
+        request.model,
+        model_entry=model_entry,
+        explicit=request.serving_backend,
+    )
+    service_kind = _resolve_service_kind(
+        request.model,
+        model_entry=model_entry,
+        serving_backend=serving_backend,
+        explicit=request.service_kind,
+    )
+    launch_profiles = _resolve_launch_profiles(
+        request.model,
+        model_entry=model_entry,
+        serving_backend=serving_backend,
+        explicit=request.launch_profiles,
+        co_locate_vllm=request.co_locate_vllm,
+    )
+    readiness_probe = _resolve_readiness_probe_mode(
+        request.model,
+        model_entry=model_entry,
+        serving_backend=serving_backend,
+        explicit=request.readiness_probe,
+    )
+    readiness_path = _resolve_readiness_path(
+        request.model,
+        model_entry=model_entry,
+        serving_backend=serving_backend,
+        service_kind=service_kind,
+        readiness_probe=readiness_probe,
+        explicit=request.readiness_path,
+    )
+    serving_profile = _serving_profile(model_entry)
+    container_image = request.container_image or serving_profile.get("container_image")
+    service_port = request.service_port or serving_profile.get("service_port")
+    invoke_base_path = request.invoke_base_path or serving_profile.get("invoke_base_path")
+    vision_adapter = request.vision_adapter or serving_profile.get("vision_adapter")
+    vision_task = request.vision_task or serving_profile.get("vision_task")
+    output_format = request.output_format or serving_profile.get("output_format")
+
+    request_metadata: dict[str, Any] = {
+        "model_type": model_type,
+        "serving_backend": serving_backend,
+        "service_kind": service_kind,
+        "readiness_probe": readiness_probe,
+    }
+    if launch_profiles:
+        request_metadata["launch_profiles"] = launch_profiles
+        env_vars["RIVAULT_PROFILES"] = " ".join(launch_profiles)
+    if readiness_path:
+        request_metadata["readiness_path"] = readiness_path
+    if service_port:
+        request_metadata["service_port"] = int(service_port)
+    if invoke_base_path:
+        request_metadata["invoke_base_path"] = str(invoke_base_path)
+    if container_image:
+        request_metadata["container_image"] = str(container_image)
+    if vision_adapter:
+        request_metadata["vision_adapter"] = str(vision_adapter)
+    if vision_task:
+        request_metadata["vision_task"] = str(vision_task)
+    if output_format:
+        request_metadata["output_format"] = str(output_format)
+
+    if serving_backend == "bentoml" or service_kind == "bentoml_vision":
+        env_vars.setdefault("VISION_REQUIRE_PRESIGNED_URLS", "true")
+        env_vars.setdefault("TRANSFORMERS_OFFLINE", "1")
+        env_vars.setdefault("HF_HUB_OFFLINE", "1")
+        if container_image:
+            env_vars.setdefault("BENTOML_VISION_IMAGE", str(container_image))
+
     request_metadata.setdefault("owner_type", request.tier)
     request_metadata.setdefault("tier", request_metadata["owner_type"])
     served_model_name = _resolve_served_model_name(

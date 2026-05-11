@@ -22,13 +22,14 @@ class _ReadyPoller:
     def __init__(self):
         self.calls = []
 
-    async def check_ready_detail(self, host, port, *, probe_model=None, probe_kind="models"):
+    async def check_ready_detail(self, host, port, *, probe_model=None, probe_kind="models", probe_path=None):
         self.calls.append(
             {
                 "host": host,
                 "port": port,
                 "probe_model": probe_model,
                 "probe_kind": probe_kind,
+                "probe_path": probe_path,
             }
         )
         return True, [probe_model], ""
@@ -107,6 +108,82 @@ def test_provision_endpoint_uses_model_readiness_for_embedding_model(monkeypatch
 
     assert response.status_code == 202
     assert service.requests[0].metadata["readiness_probe"] == "models"
+
+
+def test_provision_endpoint_uses_bentoml_defaults_for_vision_model(monkeypatch):
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/sam3",
+            "huggingface_id": "facebook/sam3",
+            "model_type": "vision",
+        },
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/umrs/endpoints/provision",
+            json={"project_id": "project-a", "model": "sam3"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    request = service.requests[0]
+    assert request.metadata["model_type"] == "vision"
+    assert request.metadata["serving_backend"] == "bentoml"
+    assert request.metadata["service_kind"] == "bentoml_vision"
+    assert request.metadata["readiness_probe"] == "http"
+    assert request.metadata["readiness_path"] == "/readyz"
+    assert request.metadata["launch_profiles"] == ["harness", "vision-bentoml"]
+    assert request.env_vars["RIVAULT_PROFILES"] == "harness vision-bentoml"
+    assert request.env_vars["VISION_REQUIRE_PRESIGNED_URLS"] == "true"
+    assert request.env_vars["TRANSFORMERS_OFFLINE"] == "1"
+
+
+def test_provision_endpoint_can_co_locate_vllm_for_vision_model(monkeypatch):
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/sam3",
+            "model_type": "vision",
+        },
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/umrs/endpoints/provision",
+            json={"project_id": "project-a", "model": "sam3", "co_locate_vllm": True},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    assert service.requests[0].metadata["launch_profiles"] == [
+        "harness",
+        "vllm",
+        "vision-bentoml",
+    ]
 
 
 def test_provision_endpoint_uses_gateway_project_header(monkeypatch):
@@ -350,5 +427,6 @@ def test_get_endpoint_refreshes_starting_endpoint_when_ready(monkeypatch):
             "port": 8001,
             "probe_model": "qwen3-8b",
             "probe_kind": "chat",
+            "probe_path": None,
         }
     ]

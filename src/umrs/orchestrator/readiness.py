@@ -195,6 +195,7 @@ class ReadinessPoller:
         *,
         probe_model: str | None = None,
         probe_kind: str = "models",
+        probe_path: str | None = None,
     ) -> tuple[bool, list[str], str]:
         """
         Single readiness check.
@@ -202,7 +203,14 @@ class ReadinessPoller:
         Returns:
             Tuple of (is_ready, models_list, error_message)
         """
-        url = f"http://{host}:{port}/v1/models"
+        normalized_probe = "http" if probe_kind == "bentoml" else probe_kind
+        if normalized_probe == "http":
+            path = probe_path or "/readyz"
+            if not path.startswith("/"):
+                path = f"/{path}"
+            url = f"http://{host}:{port}{path}"
+        else:
+            url = f"http://{host}:{port}/v1/models"
         client = await self._get_client()
         headers = None
         if self.config.auth_token:
@@ -213,6 +221,9 @@ class ReadinessPoller:
 
             if response.status_code != 200:
                 return False, [], f"HTTP {response.status_code}"
+
+            if normalized_probe == "http":
+                return True, [], ""
 
             data = response.json()
             models = []
@@ -235,7 +246,7 @@ class ReadinessPoller:
                     f"Expected model '{self.config.expected_model}' not found",
                 )
 
-            if probe_kind == "chat":
+            if normalized_probe == "chat":
                 target_model = probe_model or self.config.expected_model or (models[0] if models else None)
                 if not target_model:
                     return False, models, "Chat probe requires a model name"
@@ -289,6 +300,7 @@ class ReadinessPoller:
         port: int,
         probe_model: str | None = None,
         probe_kind: str = "models",
+        probe_path: str | None = None,
         on_progress: Callable[[ReadinessResult], None] | None = None,
     ) -> ReadinessResult:
         """
@@ -340,6 +352,7 @@ class ReadinessPoller:
                 port,
                 probe_model=probe_model,
                 probe_kind=probe_kind,
+                probe_path=probe_path,
             )
 
             if is_ready:
@@ -387,6 +400,7 @@ class ReadinessPoller:
         *,
         probe_model: str | None = None,
         probe_kind: str = "models",
+        probe_path: str | None = None,
     ) -> bool:
         """
         Quick readiness check (single attempt).
@@ -403,6 +417,7 @@ class ReadinessPoller:
             port,
             probe_model=probe_model,
             probe_kind=probe_kind,
+            probe_path=probe_path,
         )
         return is_ready
 
@@ -413,6 +428,7 @@ class ReadinessPoller:
         *,
         probe_model: str | None = None,
         probe_kind: str = "models",
+        probe_path: str | None = None,
     ) -> tuple[bool, list[str], str]:
         """Return a single readiness check with models and error detail."""
         return await self._check_once(
@@ -420,6 +436,7 @@ class ReadinessPoller:
             port,
             probe_model=probe_model,
             probe_kind=probe_kind,
+            probe_path=probe_path,
         )
 
     def cancel_poll(self, job_id: str) -> bool:

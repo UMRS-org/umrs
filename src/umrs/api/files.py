@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import logging
 import os
+import re
+import uuid
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
@@ -19,7 +21,7 @@ from typing import Any
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
 
 from umrs.shared.storage.s3_presign import generate_presigned_get, generate_presigned_put
@@ -146,6 +148,17 @@ class FileMetadata(BaseModel):
     metadata: dict[str, str] = Field(default_factory=dict)
 
 
+class UploadResponse(BaseModel):
+    """Response for Gateway-mediated file uploads."""
+
+    key: str
+    bucket: str
+    uri: str
+    size: int
+    content_type: str | None = None
+    filename: str | None = None
+
+
 class PresignBatchRequest(BaseModel):
     """Batch presigned URL request."""
 
@@ -231,9 +244,70 @@ def validate_key(key: str, project_id: str) -> str:
     return f"{project_id}/{key}"
 
 
+def _safe_filename(filename: str) -> str:
+    name = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name).strip("._")
+    return name or "upload.bin"
+
+
+def _upload_key(filename: str, purpose: str | None) -> str:
+    safe_purpose = re.sub(r"[^A-Za-z0-9._/-]+", "_", (purpose or "uploads")).strip("/")
+    if not safe_purpose:
+        safe_purpose = "uploads"
+    return f"{safe_purpose}/{uuid.uuid4().hex}_{_safe_filename(filename)}"
+
+
 # =============================================================================
 # Endpoints
 # =============================================================================
+
+
+@router.post(
+    "/upload",
+    response_model=UploadResponse,
+    summary="Upload a file through UMRS",
+    description="Upload a file into project-scoped object storage without returning presigned URLs.",
+)
+async def upload_file(
+    file: UploadFile = File(...),
+    key: str | None = Form(None),
+    purpose: str | None = Form("uploads"),
+    project_id: str = Depends(get_project_id),
+    config: S3Config = Depends(get_s3_config),
+) -> UploadResponse:
+    """Store an uploaded file under the caller's project namespace."""
+    if not file.filename:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required")
+
+    object_key = validate_key(key or _upload_key(file.filename, purpose), project_id)
+    bucket = config.bucket
+    content_type = file.content_type or "application/octet-stream"
+    content = await file.read()
+
+    try:
+        s3_client = config.get_client()
+        s3_client.put_object(
+            Bucket=bucket,
+            Key=object_key,
+            Body=content,
+            ContentType=content_type,
+            Metadata={"project_id": project_id, "filename": _safe_filename(file.filename)},
+        )
+    except ClientError as e:
+        logger.error("S3 error uploading file: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to upload file",
+        ) from e
+
+    return UploadResponse(
+        key=object_key,
+        bucket=bucket,
+        uri=f"s3://{bucket}/{object_key}",
+        size=len(content),
+        content_type=content_type,
+        filename=file.filename,
+    )
 
 
 @router.post(
