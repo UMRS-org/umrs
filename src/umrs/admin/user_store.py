@@ -176,6 +176,9 @@ class UserStore:
                 continue
             if entry.name.startswith("_") or entry.name.startswith("."):
                 continue
+            # Skip auto-generated client config templates (*.client.json).
+            if entry.name.endswith(".client.json"):
+                continue
             try:
                 records.append(UserRecord.from_json(self._read(entry)))
             except (json.JSONDecodeError, OSError) as exc:
