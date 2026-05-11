@@ -177,13 +177,27 @@ enrolled.
    Add `--email`, `--slurm-account`, and repeated `--project` flags as
    needed.
    This will:
-   - Write the user record to `<user_files_dir>/<username>.json` on the
-     server.
+   - Write the **admin record** to `<user_files_dir>/alice.json` (role,
+     projects, quota — for server-side authorization).
+   - Write a **client config template** to
+     `<user_files_dir>/alice.client.json` (experiences, modalities, buckets
+     — for workload provisioning). Send this file to the user.
    - Trigger a best-effort daemon reload when `umrs-server` is already
      running.
 
-3. The user creates or updates their local config with
-   `umrs-client config init`.
+   The client template path can be overridden with `--client-template <path>`
+   or skipped entirely with `--no-client-template`.
+
+3. **Admin sends `alice.client.json` to the user.** The user imports it:
+   ```bash
+   umrs-client config init \
+       --template alice.client.json \
+       --username alice
+   ```
+   Alternatively, the user can generate their own config from scratch:
+   ```bash
+   umrs-client config init --username alice --fullname "Alice Smith"
+   ```
 
 4. The user can now connect and run commands normally. On local/dev or
    non-role-enforced deployments, `umrs-client reload` can upload the full
@@ -214,14 +228,17 @@ server's user registry.
 ```
 Admin                                Server
 ─────                                ──────
-umrs-server admin user add alice ──► create user_files/alice.json
+umrs-server admin user add alice ──► create user_files/alice.json       (admin record)
+                                     create user_files/alice.client.json (client template)
                                      └─ best-effort daemon reload (SIGHUP)
+
+Admin sends alice.client.json ──────► User
 
 User                                 Server
 ────                                 ──────
-config init
-  └─ creates ~/.config/umrs/
-       users/<username>.json
+umrs-client config init
+  --template alice.client.json
+  └─ creates ~/.config/umrs/users/alice.json
 
 reload ───── sends user JSON ──────► validate/update enrolled user config
 
