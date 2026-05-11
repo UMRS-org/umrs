@@ -7,6 +7,7 @@ import os
 import sys
 import time
 import traceback
+from dataclasses import dataclass
 from glob import glob
 from pathlib import Path
 
@@ -1103,6 +1104,899 @@ def _disabled_admin_message():
     )
 
 
+# ---------------------------------------------------------------------------
+# Client context — shared state passed to every action handler
+# ---------------------------------------------------------------------------
+@dataclass
+class _ClientContext:
+    """Shared state passed to every action handler."""
+
+    args: argparse.Namespace
+    control_mq: MessageQueue
+    connection: object  # ResolvedConnection
+    admin_token: str | None
+    config_state: object
+    configure_file: str | None
+    user: dict | None
+    buckets_cfg: object | None  # BucketsCfg or None
+
+
+# ---------------------------------------------------------------------------
+# Per-action handlers — each returns an int exit code
+# ---------------------------------------------------------------------------
+
+def _action_ping(ctx):
+    args = ctx.args
+    api = UMRSControlAPI(
+        ctx.control_mq,
+        _resolve_control_client_id(ctx.user),
+        admin_token=ctx.admin_token,
+    )
+    try:
+        ping_result = api.ping(timeout_ms=ctx.connection.health_check_timeout_ms)
+        endpoint_info = {
+            "profile": ctx.connection.profile_name or "(none)",
+            "server_host": ctx.connection.server_host,
+            "control_port": ctx.connection.control_port,
+        }
+        if args.output == 'json':
+            print(api_json(output_format='json', **ping_result, **endpoint_info))
+        else:
+            ready = ping_result.get("server_ready", False)
+            dot = _status_dot(ready)
+            status_word = _green("ready") if ready else _red("not ready")
+            profile_label = _bold(ctx.connection.profile_name) if ctx.connection.profile_name else _dim("(none)")
+            print(f"  {dot} Server {status_word}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {ctx.connection.server_host}:{ctx.connection.control_port}")
+        return 0
+    finally:
+        ctx.control_mq.close()
+
+
+def _action_model(ctx):
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    api = UMRSControlAPI(ctx.control_mq, client_id, admin_token=ctx.admin_token)
+    model_action = args.model_action
+    exit_code = 0
+    try:
+        if model_action == 'register':
+            parsed = api.register_model(
+                name=args.name,
+                path=args.path,
+                model_type=args.model_type,
+                scope=args.scope,
+                project_id=args.project_id,
+                description=args.description,
+                huggingface_id=args.huggingface_id,
+            )
+        elif model_action == 'list':
+            parsed = api.list_models(scope=args.scope)
+        elif model_action == 'download':
+            target_name = args.name or args.repo_id.split('/')[-1]
+            if args.server_side:
+                parsed = api.download_model_server_side(
+                    repo_id=args.repo_id,
+                    name=target_name,
+                    scope=args.scope,
+                    project_id=args.project_id,
+                    staging_dir=args.staging_dir,
+                )
+            else:
+                staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
+                if not staging_root:
+                    from umrs.shared.config import get_default_umrs_cfg_dir
+                    staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
+                target_path = os.path.join(staging_root, target_name)
+
+                if os.path.exists(target_path) and os.listdir(target_path):
+                    print(f'Model already exists at {target_path}, skipping download.')
+                else:
+                    try:
+                        from huggingface_hub import snapshot_download
+                    except ImportError:
+                        print(api_json(status='error', message='huggingface_hub not installed. Run: pip install huggingface_hub', output_format=args.output))
+                        return 1
+                    print(f'Downloading {args.repo_id} to {target_path} ...')
+                    os.makedirs(target_path, exist_ok=True)
+                    snapshot_download(
+                        repo_id=args.repo_id,
+                        local_dir=target_path,
+                        token=os.environ.get('HF_TOKEN'),
+                    )
+                    print(f'Download complete: {target_path}')
+
+                parsed = api.register_model(
+                    name=target_name,
+                    path=target_path,
+                    model_type='embedding',
+                    scope=args.scope,
+                    project_id=args.project_id,
+                    huggingface_id=args.repo_id,
+                    description=f'Downloaded from {args.repo_id}',
+                )
+        elif model_action == 'upload':
+            import shutil
+            src_path = os.path.abspath(args.path)
+            if not os.path.isdir(src_path):
+                print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
+                return 1
+            staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
+            if not staging_root:
+                from umrs.shared.config import get_default_umrs_cfg_dir
+                staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
+            target_path = os.path.join(staging_root, args.name)
+            if os.path.exists(target_path):
+                if args.force:
+                    shutil.rmtree(target_path)
+                else:
+                    print(f'Model already exists at {target_path}. Use --force to overwrite.')
+                    return 1
+            os.makedirs(staging_root, exist_ok=True)
+            print(f'Copying {src_path} → {target_path} ...')
+            shutil.copytree(src_path, target_path)
+            print('Copy complete. Registering model ...')
+            register_path = args.register_path or os.path.abspath(target_path)
+            parsed = api.register_model(
+                name=args.name,
+                path=register_path,
+                model_type=args.model_type,
+                scope=args.scope,
+                project_id=args.project_id,
+                description=args.description,
+            )
+        else:
+            print(api_json(status='error', message=f'Unknown model action: {model_action}', output_format=args.output))
+            return 1
+
+        if args.output == 'json':
+            print(_json.dumps(parsed, ensure_ascii=False))
+            if parsed.get('status') != 'ok':
+                exit_code = 1
+        else:
+            if parsed.get('status') == 'ok':
+                if model_action == 'list':
+                    models = parsed.get('models', [])
+                    if not models:
+                        print(f"  {_dim('No models registered.')}")
+                    else:
+                        print(_section("Models"))
+                        print(
+                            "  "
+                            + "  ".join(
+                                [
+                                    _fmt_cell("Name", 30, style=_bold),
+                                    _fmt_cell("Type", 10, style=_bold),
+                                    _fmt_cell("Scope", 8, style=_bold),
+                                    _bold("Storage"),
+                                ]
+                            )
+                        )
+                        print(f"  {_dim('-' * 80)}")
+                        for m in models:
+                            scope_str = m.get('scope', '')
+                            print(
+                                "  "
+                                + "  ".join(
+                                    [
+                                        _fmt_cell(m['name'], 30),
+                                        _fmt_cell(m.get('model_type', ''), 10),
+                                        _fmt_cell(scope_str, 8),
+                                        _dim(m.get('storage_ref', '')),
+                                    ]
+                                )
+                            )
+                else:
+                    print(f"{_green('✓')} {parsed.get('message', 'OK')}")
+            else:
+                print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
+                exit_code = 1
+    except Exception as e:
+        exit_code = 1
+        print(api_json(status='error', action='model', message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return exit_code
+
+
+def _action_job(ctx):
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    api = UMRSControlAPI(ctx.control_mq, client_id)
+    job_action = args.job_action
+    exit_code = 0
+    try:
+        if job_action == 'submit':
+            spec = parse_json_object_arg(args.spec, field_name='spec') if args.spec else {}
+            parsed = api.submit_job(
+                job_type=args.job_type,
+                spec=spec,
+                project=args.project,
+                max_attempts=args.max_attempts,
+                keep_alive=args.keep_alive,
+                partition=getattr(args, 'partition', None),
+                node=getattr(args, 'node', None),
+            )
+        elif job_action == 'cancel':
+            parsed = api.cancel_job(args.job_id)
+        elif job_action == 'status':
+            parsed = api.get_job(args.job_id)
+        elif job_action == 'list':
+            parsed = api.list_jobs(
+                project=getattr(args, 'project', None),
+                status=getattr(args, 'status', None),
+                job_type=getattr(args, 'job_type', None),
+                limit=getattr(args, 'limit', 200),
+                offset=getattr(args, 'offset', 0),
+            )
+        else:
+            print(api_json(status='error', message=f'Unknown job action: {job_action}', output_format=args.output))
+            return 1
+
+        if args.output == 'json':
+            print(_json.dumps(parsed, ensure_ascii=False))
+            if parsed.get('status') != 'ok':
+                exit_code = 1
+        else:
+            if parsed.get('status') == 'ok':
+                if job_action == 'list':
+                    jobs = parsed.get('jobs', [])
+                    if not jobs:
+                        print(f"  {_dim('No jobs found.')}")
+                    else:
+                        print(_section("Jobs"))
+                        print(
+                            "  "
+                            + "  ".join(
+                                [
+                                    _fmt_cell("Job ID", 18, style=_bold),
+                                    _fmt_cell("Status", 10, style=_bold),
+                                    _fmt_cell("Type", 18, style=_bold),
+                                    _bold("Project"),
+                                ]
+                            )
+                        )
+                        print(f"  {_dim('-' * 70)}")
+                        for job in jobs:
+                            st = job.get('status', '')
+                            if st in ('completed', 'done'):
+                                st_str = _green(st)
+                            elif st in ('failed', 'cancelled'):
+                                st_str = _red(st)
+                            elif st in ('running',):
+                                st_str = _cyan(st)
+                            else:
+                                st_str = _yellow(st)
+                            print(
+                                f"  {job.get('job_id',''):18s}  "
+                                f"{st_str}  "
+                                f"{job.get('job_type',''):18s}  "
+                                f"{_dim(job.get('project_id',''))}"
+                            )
+                elif job_action == 'status':
+                    job = parsed.get('job', {})
+                    st = job.get('status', '')
+                    if st in ('completed', 'done'):
+                        st_str = _green(st)
+                    elif st in ('failed', 'cancelled'):
+                        st_str = _red(st)
+                    elif st in ('running',):
+                        st_str = _cyan(st)
+                    else:
+                        st_str = _yellow(st)
+                    print(_section("Job Details"))
+                    print(_kv("job_id", _bold(job.get('job_id', ''))))
+                    print(_kv("status", st_str))
+                    print(_kv("job_type", job.get('job_type', '')))
+                    print(_kv("project_id", job.get('project_id', '')))
+                else:
+                    print(f"{_green('✓')} {parsed.get('message', 'OK')}")
+            else:
+                print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
+                exit_code = 1
+    except Exception as e:
+        exit_code = 1
+        print(api_json(status='error', action='job', message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return exit_code
+
+
+def _action_monitor(ctx):
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    try:
+        from umrs.tui.dashboard import Dashboard
+    except ImportError:
+        ctx.control_mq.close()
+        print("The 'rich' library is required for the monitor dashboard.\n"
+              "Install it with: pip install 'rich>=13.0'")
+        return 1
+    try:
+        conn_info = ctx.connection.to_dict() if ctx.connection else {}
+    except Exception:
+        conn_info = {}
+    capabilities = _build_monitor_capabilities(
+        client_id,
+        admin_token=ctx.admin_token,
+        user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
+    )
+    try:
+        dash = Dashboard(
+            control_mq=ctx.control_mq,
+            client_id=client_id,
+            interval=args.interval,
+            status_filter=args.status,
+            project_filter=args.project,
+            initial_tab=args.tab,
+            config_path=ctx.configure_file if ctx.configure_file and ctx.config_state.user.valid else None,
+            user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
+            connection_info=conn_info,
+            capabilities=capabilities,
+        )
+        if args.once:
+            dash.render_once()
+        else:
+            dash.run()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
+def _action_workflow(ctx):
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    api = UMRSControlAPI(ctx.control_mq, client_id)
+    wf_action = args.workflow_action
+    exit_code = 0
+    try:
+        if wf_action == 'list':
+            parsed = api.list_workflows(scope=args.scope, user=args.user, name=args.name)
+        elif wf_action == 'run':
+            params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
+            parsed = api.run_workflow(workflow_name=args.workflow_name, params=params, bucket=args.bucket)
+        else:
+            print(api_json(status='error', message=f'Unknown workflow action: {wf_action}', output_format=args.output))
+            return 1
+
+        if args.output == 'json':
+            print(_json.dumps(parsed, ensure_ascii=False))
+            if parsed.get('status') != 'ok':
+                exit_code = 1
+        else:
+            if parsed.get('status') == 'ok':
+                if wf_action == 'run':
+                    print(f"{_green('✓')} {parsed.get('message', 'OK')}")
+                else:
+                    workflows = parsed.get('workflows', [])
+                    if not workflows:
+                        print(f"  {_dim('No workflows registered.')}")
+                    else:
+                        print(_section("Workflows"))
+                        print(
+                            "  "
+                            + "  ".join(
+                                [
+                                    _fmt_cell("Name", 30, style=_bold),
+                                    _fmt_cell("Version", 8, style=_bold),
+                                    _fmt_cell("Scope", 6, style=_bold),
+                                    _fmt_cell("User", 12, style=_bold),
+                                    _fmt_cell("Steps", 8, style=_bold),
+                                    _bold("Description"),
+                                ]
+                            )
+                        )
+                        print(f"  {_dim('-' * 100)}")
+                        for w in workflows:
+                            n_steps = len(w.get('steps', []))
+                            print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps:5d}     {_dim(w.get('description',''))}")
+            else:
+                print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
+                exit_code = 1
+    except Exception as e:
+        exit_code = 1
+        print(api_json(status='error', action='workflow', message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return exit_code
+
+
+def _action_upload_workflow(ctx):
+    import tempfile
+    import zipfile
+    args = ctx.args
+    exit_code = 0
+    client_id = _resolve_control_client_id(ctx.user)
+    src_path = os.path.abspath(args.path)
+    if not os.path.isdir(src_path):
+        print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+    wf_json = os.path.join(src_path, 'workflow.json')
+    if not os.path.isfile(wf_json):
+        print(api_json(status='error', message=f'No workflow.json found in {src_path}', output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+    workflow_name = args.name or os.path.basename(src_path)
+    tmp_zip_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_zip:
+            tmp_zip_path = tmp_zip.name
+        with zipfile.ZipFile(tmp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for root, _dirs, files in os.walk(src_path):
+                for f in files:
+                    abs_path = os.path.join(root, f)
+                    arc_name = os.path.relpath(abs_path, src_path)
+                    zf.write(abs_path, arc_name)
+        data_mq = ctx.control_mq.get_data_queue(client_id, admin_token=ctx.admin_token)
+        try:
+            ctx.control_mq.set_timeouts(120_000, 120_000)
+            ctx.control_mq.send_string(f"{TaskCmd.UPLOAD_WORKFLOW}:{client_id}:{workflow_name}")
+            data_mq.send_file(tmp_zip_path)
+            _, reply = ctx.control_mq.recv_string()
+            if reply != "ACKNOWLEDGE":
+                raise RuntimeError(f"Unexpected reply from server during workflow upload: {reply}")
+            if args.output == 'json':
+                print(api_json(action='upload-workflow', workflow_name=workflow_name, accepted=True, output_format='json'))
+            else:
+                print(f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully")
+        finally:
+            ctx.control_mq.set_timeouts(ctx.control_mq.timeout, ctx.control_mq.timeout)
+            with contextlib.suppress(Exception):
+                data_mq.close()
+    except Exception as e:
+        exit_code = 1
+        print(api_json(status='error', action='upload-workflow', message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        if tmp_zip_path:
+            with contextlib.suppress(Exception):
+                os.remove(tmp_zip_path)
+        ctx.control_mq.close()
+    return exit_code
+
+
+def _action_run_workflow(ctx):
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    api = UMRSControlAPI(ctx.control_mq, client_id)
+    exit_code = 0
+    try:
+        params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
+        parsed = api.run_workflow(workflow_name=args.workflow_name, params=params, bucket=args.bucket)
+        if args.output == 'json':
+            print(_json.dumps(parsed, ensure_ascii=False))
+            if parsed.get('status') != 'ok':
+                exit_code = 1
+        else:
+            if parsed.get('status') == 'ok':
+                print(f"{_green('✓')} {parsed.get('message', 'OK')}")
+            else:
+                print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
+                exit_code = 1
+    except Exception as e:
+        exit_code = 1
+        print(api_json(status='error', action='run-workflow', message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return exit_code
+
+
+def _action_list_buckets(ctx):
+    args = ctx.args
+    effective_username = args.username or (ctx.user.get('username') if isinstance(ctx.user, dict) else None)
+    if not effective_username:
+        print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+    print(action_list_buckets(ctx.buckets_cfg, effective_username, args.output))
+    ctx.control_mq.close()
+    return 0
+
+
+def _action_status(ctx):
+    args = ctx.args
+    effective_username = args.username
+    if not effective_username and isinstance(ctx.user, dict):
+        effective_username = ctx.user.get('username')
+    if not effective_username:
+        print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+    api = UMRSControlAPI(ctx.control_mq, effective_username)
+    try:
+        status_target = _resolve_status_target(args)
+        parsed = api.request_status(status_target)
+        if args.output == 'json':
+            print(_json.dumps(parsed, ensure_ascii=False))
+        else:
+            print(format_status_text(parsed, status_target))
+    except Exception as e:
+        print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
+def _action_maintenance(ctx):
+    args = ctx.args
+    client_id = (ctx.user.get('username') if isinstance(ctx.user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', '_')
+    api = UMRSControlAPI(
+        ctx.control_mq,
+        client_id,
+        ctx.configure_file if ctx.configure_file and ctx.config_state.user.valid else None,
+        admin_token=ctx.admin_token,
+    )
+    try:
+        parsed = api.maintenance(args.action)
+        if parsed.get('status') == 'ok':
+            if args.output == 'json':
+                print(api_json(action=args.action, accepted=True, output_format='json'))
+            else:
+                print(f"{_green('✓')} {_bold(args.action)} accepted")
+        else:
+            if args.output == 'json':
+                print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
+            else:
+                print(f"{_red('✗')} {_bold(args.action)} rejected: {parsed.get('message', '')}")
+    except Exception as e:
+        if args.output == 'json':
+            print(api_json(status='error', action=args.action, message=str(e), output_format='json'))
+        else:
+            print(f"{_red('✗')} {_bold(args.action)} error: {e}")
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
+def _action_export_embeddings(ctx):
+    args = ctx.args
+    try:
+        bucket_alias_arg = getattr(args, 'bucket_alias')
+        bucket_alias, _ = decompose_bucket_alias_arg(bucket_alias_arg)
+        entry = ctx.buckets_cfg.get(bucket_alias)
+        if entry is None:
+            print(api_json(status='error', message=f'Bucket alias not found: {bucket_alias}', output_format=args.output))
+            ctx.control_mq.close()
+            return 1
+        path_to_bucket = entry.path_to_bucket
+        effective_username = getattr(args, 'username', None) or (
+            ctx.user.get('username') if isinstance(ctx.user, dict) else None
+        )
+        if not effective_username:
+            print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+            ctx.control_mq.close()
+            return 1
+        raw_response = ctx.control_mq.request_export_embeddings(
+            effective_username, path_to_bucket, args.export_format, args.export_profile,
+        )
+        response = _json.loads(raw_response)
+        if response.get('status') != 'ok':
+            print(api_json(status='error', action='export_embeddings',
+                           message=response.get('message', 'Server returned an error'),
+                           output_format=args.output))
+            ctx.control_mq.close()
+            return 1
+        columns = response['columns']
+        rows = response['rows']
+        local_path = args.local_path
+        os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
+        if args.export_format == 'csv':
+            import csv
+            with open(local_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(columns)
+                for row in rows:
+                    writer.writerow([
+                        str(v) if v is not None else '' for v in row
+                    ])
+        else:  # jsonl
+            with open(local_path, 'w', encoding='utf-8') as f:
+                for row in rows:
+                    record = {}
+                    for col, val in zip(columns, row, strict=False):
+                        record[col] = val
+                    f.write(_json.dumps(record, ensure_ascii=False) + '\n')
+        print(api_json(
+            action='export_embeddings',
+            database=response.get('database', ''),
+            table=response.get('table', ''),
+            rows_exported=response.get('rows_exported', len(rows)),
+            columns=columns,
+            local_path=local_path,
+            format=args.export_format,
+            profile=response.get('profile', args.export_profile),
+            output_format=args.output
+        ))
+    except Exception as e:
+        print(api_json(status='error', action='export_embeddings', message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return 0
+
+
+def _action_s3_transfer(ctx):
+    """Handle upload_file, upload_dir, and download_results actions."""
+    args = ctx.args
+    bucket_alias_arg = getattr(args, 'bucket_alias')
+    bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
+
+    selected_fields = ["username", "xp_name", "modality_name", "s3_configuration_file", "metadata"]
+    if args.action == "download_results":
+        selected_fields.append("output_path_to_bucket")
+    else:
+        selected_fields.append("path_to_bucket")
+    _bucket_result = ctx.buckets_cfg.get(bucket_alias, filter=selected_fields)
+    if _bucket_result is None:
+        raise ValueError(
+            f"Bucket alias '{bucket_alias}' not found in configuration. "
+            f"Check your config file or use one of the configured aliases."
+        )
+    username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = _bucket_result
+
+    username_arg = getattr(args, 'username', None)
+    username = username_arg or username
+
+    try:
+        data_mq = ctx.control_mq.get_data_queue(username, admin_token=ctx.admin_token)
+    except Exception as e:
+        print(api_json(status="error", message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+        ctx.control_mq.close()
+        return 1
+
+    expanded_cfg = os.path.expanduser(s3_configuration_file)
+    default_docker_s3cfg = get_default_docker_s3cfg()
+    if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
+        expanded_cfg = default_docker_s3cfg
+
+    s3, bucket_location = connect_to_s3(expanded_cfg)
+
+    if args.action == "download_results":
+        full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
+        if full_bucket_name != path_to_bucket:
+            ctx.control_mq.close()
+            data_mq.close()
+            print(
+                f"Error:\tNo output bucket for {bucket_alias} for  modality {modality} and for user {username}\n"
+                f"\tCheck that this modality has 'need_output_bucket' set to 'true'"
+            )
+            return 1
+        if not success:
+            if args.verbose:
+                print(f"Note: Output bucket '{full_bucket_name}' does not exist yet on S3 — will wait for server.")
+    else:
+        full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, indent=False)
+        if not success or full_bucket_name != path_to_bucket:
+            ctx.control_mq.close()
+            data_mq.close()
+            print(f"Error:\tNo bucket {bucket_alias} for modality {modality} and for user {username}")
+            return 1
+
+    if args.verbose:
+        print(f"Bucket '{bucket_alias}' for modality '{modality}' and for user '{username}': OK!")
+
+    try:
+        metadata_args = check_and_build_metadata(metadata, args.k)
+    except Exception as e:
+        print(api_json(status="error", message=f"Metadata error: {e}", output_format=args.output))
+        ctx.control_mq.close()
+        data_mq.close()
+        return 1
+
+    if args.verbose:
+        action_label = "Retreiving" if args.action == "download_results" else "Storing"
+        print(f"{action_label} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
+
+    def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=True):
+        if not os.path.isfile(file_path):
+            print(f"Error: file {file_path} is not a valid.")
+            return None, 0
+
+        category = modality_category(modality)
+        print(f"Processing file '{file_path}' for modality '{modality}' (category: {category})")
+
+        if category == "image":
+            s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check=(modality not in ("volume", "movie", "volume_movie")))
+            if s3_key and notify_server:
+                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
+            return s3_key, 1
+        elif category == "text_file":
+            s3_key = s3_store_text_file(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args)
+            if s3_key and notify_server:
+                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
+            return s3_key, 1
+        elif category == "text":
+            try:
+                with open(file_path) as file:
+                    nb_objects = 0
+                    s3_key_list = []
+                    for line in file.readlines():
+                        line = line.strip()
+                        if line != "":
+                            s3_key = s3_store_txt(s3, full_bucket_name, subdir, line, data_mq, metadata_args)
+                            s3_key_list.append(s3_key)
+                            nb_objects += 1
+                    if notify_server and nb_objects > 0:
+                        ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
+                    return s3_key_list, nb_objects
+            except UnicodeDecodeError as e:
+                print(f"Unicode decoding error: {e}")
+                print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file.")
+        else:
+            print(f"Error: Unknown modality category '{category}' (modality: '{modality}'). Nothing has been sent to the server")
+
+        return None, 0
+
+    def process_dir(path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username):
+        if not os.path.isdir(path):
+            print(f"Error: {path} is not a valid directory.")
+            return [], []
+
+        s3_key_list = []
+        file_list = []
+        nb_objects = 0
+        for file_path in glob(os.path.join(path, "*")):
+            if os.path.isfile(file_path):
+                s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=False)
+                if s3_key:
+                    if isinstance(s3_key, list):
+                        s3_key_list.extend(s3_key)
+                        assert(len(s3_key) == nb_sent)
+                        file_list.extend([file_path] * nb_sent)
+                    else:
+                        s3_key_list.append(s3_key)
+                        file_list.append(file_path)
+                    nb_objects += nb_sent
+
+        if nb_objects > 0:
+            ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
+        return s3_key_list, file_list
+
+    def download_results_fn(full_bucket_name, modality, subdir):
+        effective_username = args.username
+        verbose = args.verbose
+        if not effective_username and isinstance(ctx.user, dict):
+            effective_username = ctx.user.get('username')
+        if not effective_username:
+            response = {
+                "status": "error",
+                "message": f"Cannot find effective username for {args.username}",
+                "bucket": full_bucket_name,
+                "subdir": subdir,
+                "modality": modality,
+                "output_format": args.output,
+            }
+            return False, response
+
+        if not os.path.exists(args.local_path):
+            response = {
+                "status": "error",
+                "message": f"Local path {args.local_path} does not exists",
+                "bucket": full_bucket_name,
+                "subdir": subdir,
+                "modality": modality,
+                "output_format": args.output,
+            }
+            return False, response
+
+        done = False
+        print_only_new = False
+        objects_received = set()
+        timeout = 1
+        _wait_start = time.time()
+        while not done:
+            raw_response = ctx.control_mq.request_status(effective_username, TaskCmd.PROCESS_OBJECTS)
+            if raw_response is None:
+                break
+            parsed = _json.loads(raw_response)
+
+            message = parsed.get("message")
+            if message == "No status entries":
+                done = True
+            else:
+                data = parsed["summary"]["data"]
+                done = not any(
+                    entry["status"] != "Done"
+                    and any(
+                        full_bucket_name.startswith(w["bucket"])
+                        for w in entry["work"]
+                    )
+                    for entry in data
+                )
+            if not done:
+                if verbose:
+                    elapsed = int(time.time() - _wait_start)
+                    print(f"Waiting for update... (elapsed: {elapsed // 60}m {elapsed % 60}s)")
+                res = ctx.control_mq.wait_for_new_data(effective_username, full_bucket_name, timeout=timeout)
+                if res == "TIMEOUT":
+                    timeout = min(timeout * 2, 64)
+                elif res == "UPDATE":
+                    timeout = 1
+                else:
+                    if verbose:
+                        print(f"Error: receiving '{res}' from server while waiting to be notified for new data")
+        objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
+        downloaded_files, _ = download_objects(s3, objects_list, checksums, args.local_path,
+                            files_allready_received=objects_received,
+                            force_overwrite=args.force_overwrite, print_only_new=print_only_new)
+
+        objects_received.update(downloaded_files)
+
+        response = {
+                "status": "ok",
+                "message": f"Files downloaded with overwrite={args.force_overwrite}",
+                "bucket": full_bucket_name,
+                "local_path": args.local_path,
+                "subdir": subdir,
+                "modality": modality,
+                "output_format": args.output,
+                "objects_received": f"{sorted(objects_received)}",
+            }
+        return True, response
+
+    try:
+        if args.action == "upload_file":
+            s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, args.file_path, modality, data_mq, metadata_args, username, notify_server=True)
+            if s3_key:
+                print(api_json(s3_key=s3_key, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+            else:
+                print(api_json(status='error', message=f"Cannot process file: {args.file_path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+
+        elif args.action == "upload_dir":
+            s3_key_list, file_list = process_dir(args.path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username)
+            if len(s3_key_list) > 0:
+                print(api_json(s3_key_list=s3_key_list, file_list=file_list, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+            else:
+                print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+        elif args.action == "download_results":
+            ok, response = download_results_fn(full_bucket_name, modality, subdir)
+            print(api_json(**response))
+    except Exception as e:
+        print(api_json(status='error', message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+
+    ctx.control_mq.close()
+    data_mq.close()
+    return 0
+
+
+# Action dispatch table — maps CLI action name to handler function
+_ACTION_HANDLERS = {
+    'ping': _action_ping,
+    'model': _action_model,
+    'job': _action_job,
+    'monitor': _action_monitor,
+    'workflow': _action_workflow,
+    'upload-workflow': _action_upload_workflow,
+    'run-workflow': _action_run_workflow,
+    'list_buckets': _action_list_buckets,
+    'status': _action_status,
+    'recompute': _action_maintenance,
+    'update': _action_maintenance,
+    'check': _action_maintenance,
+    'reload': _action_maintenance,
+    'export_embeddings': _action_export_embeddings,
+    'upload_file': _action_s3_transfer,
+    'upload_dir': _action_s3_transfer,
+    'download_results': _action_s3_transfer,
+}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="UMRS client",
@@ -1487,867 +2381,23 @@ def main():
         except (Exception, SystemExit):
             pass
 
-
-
-    try:
-        # API mode: pre-initialize a data queue for the provided username in action args (if any)
-        # Some actions require username (upload_*), ping does not.
-        if args.action == 'ping':
-            api = UMRSControlAPI(
-                control_mq,
-                _resolve_control_client_id(user),
-                admin_token=admin_token,
-            )
-            ping_result = api.ping(timeout_ms=connection.health_check_timeout_ms)
-            endpoint_info = {
-                "profile": connection.profile_name or "(none)",
-                "server_host": connection.server_host,
-                "control_port": connection.control_port,
-            }
-            if args.output == 'json':
-                print(api_json(output_format='json', **ping_result, **endpoint_info))
-            else:
-                ready = ping_result.get("server_ready", False)
-                dot = _status_dot(ready)
-                status_word = _green("ready") if ready else _red("not ready")
-                profile_label = _bold(connection.profile_name) if connection.profile_name else _dim("(none)")
-                print(f"  {dot} Server {status_word}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}")
-            control_mq.close()
-            sys.exit(0)
-        if args.action == 'model':
-            # Model registry commands can use the configured username when available.
-            client_id = _resolve_control_client_id(user)
-            api = UMRSControlAPI(control_mq, client_id, admin_token=admin_token)
-            model_action = args.model_action
-            exit_code = 0
-            try:
-                if model_action == 'register':
-                    parsed = api.register_model(
-                        name=args.name,
-                        path=args.path,
-                        model_type=args.model_type,
-                        scope=args.scope,
-                        project_id=args.project_id,
-                        description=args.description,
-                        huggingface_id=args.huggingface_id,
-                    )
-                elif model_action == 'list':
-                    parsed = api.list_models(scope=args.scope)
-                elif model_action == 'download':
-                    target_name = args.name or args.repo_id.split('/')[-1]
-                    if args.server_side:
-                        parsed = api.download_model_server_side(
-                            repo_id=args.repo_id,
-                            name=target_name,
-                            scope=args.scope,
-                            project_id=args.project_id,
-                            staging_dir=args.staging_dir,
-                        )
-                    else:
-                        # Client-side download: runs on the login node, then registers with server
-                        staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
-                        if not staging_root:
-                            from umrs.shared.config import get_default_umrs_cfg_dir
-                            staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
-                        target_path = os.path.join(staging_root, target_name)
-
-                        # Step 1: Download locally
-                        if os.path.exists(target_path) and os.listdir(target_path):
-                            print(f'Model already exists at {target_path}, skipping download.')
-                        else:
-                            try:
-                                from huggingface_hub import snapshot_download
-                            except ImportError:
-                                print(api_json(status='error', message='huggingface_hub not installed. Run: pip install huggingface_hub', output_format=args.output))
-                                control_mq.close()
-                                sys.exit(1)
-                            print(f'Downloading {args.repo_id} to {target_path} ...')
-                            os.makedirs(target_path, exist_ok=True)
-                            snapshot_download(
-                                repo_id=args.repo_id,
-                                local_dir=target_path,
-                                token=os.environ.get('HF_TOKEN'),
-                            )
-                            print(f'Download complete: {target_path}')
-
-                        # Step 2: Register with server via ZMQ
-                        parsed = api.register_model(
-                            name=target_name,
-                            path=target_path,
-                            model_type='embedding',
-                            scope=args.scope,
-                            project_id=args.project_id,
-                            huggingface_id=args.repo_id,
-                            description=f'Downloaded from {args.repo_id}',
-                        )
-                elif model_action == 'upload':
-                    import shutil
-                    src_path = os.path.abspath(args.path)
-                    if not os.path.isdir(src_path):
-                        print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
-                        control_mq.close()
-                        sys.exit(1)
-                    staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
-                    if not staging_root:
-                        from umrs.shared.config import get_default_umrs_cfg_dir
-                        staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
-                    target_path = os.path.join(staging_root, args.name)
-                    if os.path.exists(target_path):
-                        if args.force:
-                            shutil.rmtree(target_path)
-                        else:
-                            print(f'Model already exists at {target_path}. Use --force to overwrite.')
-                            control_mq.close()
-                            sys.exit(1)
-                    os.makedirs(staging_root, exist_ok=True)
-                    print(f'Copying {src_path} → {target_path} ...')
-                    shutil.copytree(src_path, target_path)
-                    print('Copy complete. Registering model ...')
-                    register_path = args.register_path or os.path.abspath(target_path)
-                    parsed = api.register_model(
-                        name=args.name,
-                        path=register_path,
-                        model_type=args.model_type,
-                        scope=args.scope,
-                        project_id=args.project_id,
-                        description=args.description,
-                    )
-                else:
-                    print(api_json(status='error', message=f'Unknown model action: {model_action}', output_format=args.output))
-                    control_mq.close()
-                    sys.exit(1)
-
-                if args.output == 'json':
-                    print(_json.dumps(parsed, ensure_ascii=False))
-                    if parsed.get('status') != 'ok':
-                        exit_code = 1
-                else:
-                    if parsed.get('status') == 'ok':
-                        if model_action == 'list':
-                            models = parsed.get('models', [])
-                            if not models:
-                                print(f"  {_dim('No models registered.')}")
-                            else:
-                                print(_section("Models"))
-                                print(
-                                    "  "
-                                    + "  ".join(
-                                        [
-                                            _fmt_cell("Name", 30, style=_bold),
-                                            _fmt_cell("Type", 10, style=_bold),
-                                            _fmt_cell("Scope", 8, style=_bold),
-                                            _bold("Storage"),
-                                        ]
-                                    )
-                                )
-                                print(f"  {_dim('-' * 80)}")
-                                for m in models:
-                                    scope_str = m.get('scope', '')
-                                    print(
-                                        "  "
-                                        + "  ".join(
-                                            [
-                                                _fmt_cell(m['name'], 30),
-                                                _fmt_cell(m.get('model_type', ''), 10),
-                                                _fmt_cell(scope_str, 8),
-                                                _dim(m.get('storage_ref', '')),
-                                            ]
-                                        )
-                                    )
-                        else:
-                            print(f"{_green('✓')} {parsed.get('message', 'OK')}")
-                    else:
-                        print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
-                        exit_code = 1
-            except Exception as e:
-                exit_code = 1
-                print(api_json(status='error', action='model', message=str(e), output_format=args.output))
-                if args.verbose:
-                    traceback.print_exc()
-            finally:
-                control_mq.close()
-            sys.exit(exit_code)
-        if args.action == 'job':
-            client_id = _resolve_control_client_id(user)
-            api = UMRSControlAPI(control_mq, client_id)
-            job_action = args.job_action
-            exit_code = 0
-            try:
-                if job_action == 'submit':
-                    spec = parse_json_object_arg(args.spec, field_name='spec') if args.spec else {}
-                    parsed = api.submit_job(
-                        job_type=args.job_type,
-                        spec=spec,
-                        project=args.project,
-                        max_attempts=args.max_attempts,
-                        keep_alive=args.keep_alive,
-                        partition=getattr(args, 'partition', None),
-                        node=getattr(args, 'node', None),
-                    )
-                elif job_action == 'cancel':
-                    parsed = api.cancel_job(args.job_id)
-                elif job_action == 'status':
-                    parsed = api.get_job(args.job_id)
-                elif job_action == 'list':
-                    parsed = api.list_jobs(
-                        project=getattr(args, 'project', None),
-                        status=getattr(args, 'status', None),
-                        job_type=getattr(args, 'job_type', None),
-                        limit=getattr(args, 'limit', 200),
-                        offset=getattr(args, 'offset', 0),
-                    )
-                else:
-                    print(api_json(status='error', message=f'Unknown job action: {job_action}', output_format=args.output))
-                    control_mq.close()
-                    sys.exit(1)
-
-                if args.output == 'json':
-                    print(_json.dumps(parsed, ensure_ascii=False))
-                    if parsed.get('status') != 'ok':
-                        exit_code = 1
-                else:
-                    if parsed.get('status') == 'ok':
-                        if job_action == 'list':
-                            jobs = parsed.get('jobs', [])
-                            if not jobs:
-                                print(f"  {_dim('No jobs found.')}")
-                            else:
-                                print(_section("Jobs"))
-                                print(
-                                    "  "
-                                    + "  ".join(
-                                        [
-                                            _fmt_cell("Job ID", 18, style=_bold),
-                                            _fmt_cell("Status", 10, style=_bold),
-                                            _fmt_cell("Type", 18, style=_bold),
-                                            _bold("Project"),
-                                        ]
-                                    )
-                                )
-                                print(f"  {_dim('-' * 70)}")
-                                for job in jobs:
-                                    st = job.get('status', '')
-                                    if st in ('completed', 'done'):
-                                        st_str = _green(st)
-                                    elif st in ('failed', 'cancelled'):
-                                        st_str = _red(st)
-                                    elif st in ('running',):
-                                        st_str = _cyan(st)
-                                    else:
-                                        st_str = _yellow(st)
-                                    print(
-                                        f"  {job.get('job_id',''):18s}  "
-                                        f"{st_str}  "
-                                        f"{job.get('job_type',''):18s}  "
-                                        f"{_dim(job.get('project_id',''))}"
-                                    )
-                        elif job_action == 'status':
-                            job = parsed.get('job', {})
-                            st = job.get('status', '')
-                            if st in ('completed', 'done'):
-                                st_str = _green(st)
-                            elif st in ('failed', 'cancelled'):
-                                st_str = _red(st)
-                            elif st in ('running',):
-                                st_str = _cyan(st)
-                            else:
-                                st_str = _yellow(st)
-                            print(_section("Job Details"))
-                            print(_kv("job_id", _bold(job.get('job_id', ''))))
-                            print(_kv("status", st_str))
-                            print(_kv("job_type", job.get('job_type', '')))
-                            print(_kv("project_id", job.get('project_id', '')))
-                        else:
-                            print(f"{_green('✓')} {parsed.get('message', 'OK')}")
-                    else:
-                        print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
-                        exit_code = 1
-            except Exception as e:
-                exit_code = 1
-                print(api_json(status='error', action='job', message=str(e), output_format=args.output))
-                if args.verbose:
-                    traceback.print_exc()
-            finally:
-                control_mq.close()
-            sys.exit(exit_code)
-        if args.action == 'monitor':
-            # Multi-tab TUI system monitor — config file optional (enables reload)
-            client_id = _resolve_control_client_id(user)
-            try:
-                from umrs.tui.dashboard import Dashboard
-            except ImportError:
-                sys.exit("The 'rich' library is required for the monitor dashboard.\n"
-                         "Install it with: pip install 'rich>=13.0'")
-            try:
-                conn_info = connection.to_dict() if connection else {}
-            except Exception:
-                conn_info = {}
-            capabilities = _build_monitor_capabilities(
-                client_id,
-                admin_token=admin_token,
-                user_cfg=user if isinstance(user, dict) else None,
-            )
-            try:
-                dash = Dashboard(
-                    control_mq=control_mq,
-                    client_id=client_id,
-                    interval=args.interval,
-                    status_filter=args.status,
-                    project_filter=args.project,
-                    initial_tab=args.tab,
-                    config_path=configure_file if configure_file and config_state.user.valid else None,
-                    user_cfg=user if isinstance(user, dict) else None,
-                    connection_info=conn_info,
-                    capabilities=capabilities,
-                )
-                if args.once:
-                    dash.render_once()
-                else:
-                    dash.run()
-            except KeyboardInterrupt:
-                pass
-            finally:
-                control_mq.close()
-            sys.exit(0)
-        if args.action == 'workflow':
-            client_id = _resolve_control_client_id(user)
-            api = UMRSControlAPI(control_mq, client_id)
-            wf_action = args.workflow_action
-            exit_code = 0
-            try:
-                if wf_action == 'list':
-                    parsed = api.list_workflows(scope=args.scope, user=args.user, name=args.name)
-                elif wf_action == 'run':
-                    params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
-                    parsed = api.run_workflow(workflow_name=args.workflow_name, params=params, bucket=args.bucket)
-                else:
-                    print(api_json(status='error', message=f'Unknown workflow action: {wf_action}', output_format=args.output))
-                    control_mq.close()
-                    sys.exit(1)
-
-                if args.output == 'json':
-                    print(_json.dumps(parsed, ensure_ascii=False))
-                    if parsed.get('status') != 'ok':
-                        exit_code = 1
-                else:
-                    if parsed.get('status') == 'ok':
-                        if wf_action == 'run':
-                            print(f"{_green('✓')} {parsed.get('message', 'OK')}")
-                        else:
-                            workflows = parsed.get('workflows', [])
-                            if not workflows:
-                                print(f"  {_dim('No workflows registered.')}")
-                            else:
-                                print(_section("Workflows"))
-                                print(
-                                    "  "
-                                    + "  ".join(
-                                        [
-                                            _fmt_cell("Name", 30, style=_bold),
-                                            _fmt_cell("Version", 8, style=_bold),
-                                            _fmt_cell("Scope", 6, style=_bold),
-                                            _fmt_cell("User", 12, style=_bold),
-                                            _fmt_cell("Steps", 8, style=_bold),
-                                            _bold("Description"),
-                                        ]
-                                    )
-                                )
-                                print(f"  {_dim('-' * 100)}")
-                                for w in workflows:
-                                    n_steps = len(w.get('steps', []))
-                                    print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps:5d}     {_dim(w.get('description',''))}")
-                    else:
-                        print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
-                        exit_code = 1
-            except Exception as e:
-                exit_code = 1
-                print(api_json(status='error', action='workflow', message=str(e), output_format=args.output))
-                if args.verbose:
-                    traceback.print_exc()
-            finally:
-                control_mq.close()
-            sys.exit(exit_code)
-        if args.action == 'upload-workflow':
-            import tempfile
-            import zipfile
-            exit_code = 0
-            client_id = _resolve_control_client_id(user)
-            src_path = os.path.abspath(args.path)
-            if not os.path.isdir(src_path):
-                print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
-                control_mq.close()
-                sys.exit(1)
-            wf_json = os.path.join(src_path, 'workflow.json')
-            if not os.path.isfile(wf_json):
-                print(api_json(status='error', message=f'No workflow.json found in {src_path}', output_format=args.output))
-                control_mq.close()
-                sys.exit(1)
-            workflow_name = args.name or os.path.basename(src_path)
-            # Create a zip archive of the directory
-            try:
-                with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_zip:
-                    tmp_zip_path = tmp_zip.name
-                with zipfile.ZipFile(tmp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for root, _dirs, files in os.walk(src_path):
-                        for f in files:
-                            abs_path = os.path.join(root, f)
-                            arc_name = os.path.relpath(abs_path, src_path)
-                            zf.write(abs_path, arc_name)
-                # Establish data channel, notify the server to begin receiving,
-                # then stream the zip over the data socket.
-                data_mq = control_mq.get_data_queue(client_id, admin_token=admin_token)
-                try:
-                    control_mq.set_timeouts(120_000, 120_000)
-                    control_mq.send_string(f"{TaskCmd.UPLOAD_WORKFLOW}:{client_id}:{workflow_name}")
-                    data_mq.send_file(tmp_zip_path)
-                    _, reply = control_mq.recv_string()
-                    if reply != "ACKNOWLEDGE":
-                        raise RuntimeError(f"Unexpected reply from server during workflow upload: {reply}")
-                    if args.output == 'json':
-                        print(api_json(action='upload-workflow', workflow_name=workflow_name, accepted=True, output_format='json'))
-                    else:
-                        print(f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully")
-                finally:
-                    control_mq.set_timeouts(control_mq.timeout, control_mq.timeout)
-                    with contextlib.suppress(Exception):
-                        data_mq.close()
-            except Exception as e:
-                exit_code = 1
-                print(api_json(status='error', action='upload-workflow', message=str(e), output_format=args.output))
-                if args.verbose:
-                    traceback.print_exc()
-            finally:
-                with contextlib.suppress(Exception):
-                    os.remove(tmp_zip_path)
-                control_mq.close()
-            sys.exit(exit_code)
-        if args.action == 'run-workflow':
-            client_id = _resolve_control_client_id(user)
-            api = UMRSControlAPI(control_mq, client_id)
-            workflow_name = args.workflow_name
-            exit_code = 0
-            try:
-                params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
-                parsed = api.run_workflow(workflow_name=workflow_name, params=params, bucket=args.bucket)
-                if args.output == 'json':
-                    print(_json.dumps(parsed, ensure_ascii=False))
-                    if parsed.get('status') != 'ok':
-                        exit_code = 1
-                else:
-                    if parsed.get('status') == 'ok':
-                        print(f"{_green('✓')} {parsed.get('message', 'OK')}")
-                    else:
-                        print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
-                        exit_code = 1
-            except Exception as e:
-                exit_code = 1
-                print(api_json(status='error', action='run-workflow', message=str(e), output_format=args.output))
-                if args.verbose:
-                    traceback.print_exc()
-            finally:
-                control_mq.close()
-            sys.exit(exit_code)
-        if args.action == 'list_buckets':
-            effective_username = args.username or (user.get('username') if isinstance(user, dict) else None)
-            if not effective_username:
-                print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
-                control_mq.close()
-                sys.exit(1)
-            print(action_list_buckets(buckets_cfg, effective_username, args.output))
-            control_mq.close()
-            sys.exit(0)
-        if args.action == 'status':
-            effective_username = args.username
-            if not effective_username and isinstance(user, dict):
-                effective_username = user.get('username')
-            if not effective_username:
-                print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
-                control_mq.close()
-                sys.exit(1)
-            api = UMRSControlAPI(control_mq, effective_username)
-            try:
-                status_target = _resolve_status_target(args)
-                parsed = api.request_status(status_target)
-                if args.output == 'json':
-                    print(_json.dumps(parsed, ensure_ascii=False))
-                else:
-                    print(format_status_text(parsed, status_target))
-            except Exception as e:
-                print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
-            finally:
-                control_mq.close()
-            sys.exit(0)
-        # Embedding maintenance actions don't require bucket resolution or S3 access
-        if args.action in ('recompute', 'update', 'check', 'reload'):
-            # Use configured username as client id for control plane
-            # Determine a stable client id for control-plane requests
-            client_id = (user.get('username') if isinstance(user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', '_')
-            api = UMRSControlAPI(
-                control_mq,
-                client_id,
-                configure_file if configure_file and config_state.user.valid else None,
-                admin_token=admin_token,
-            )
-            try:
-                parsed = api.maintenance(args.action)
-                if parsed.get('status') == 'ok':
-                    if args.output == 'json':
-                        print(api_json(action=args.action, accepted=True, output_format='json'))
-                    else:
-                        print(f"{_green('✓')} {_bold(args.action)} accepted")
-                else:
-                    if args.output == 'json':
-                        print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
-                    else:
-                        print(f"{_red('✗')} {_bold(args.action)} rejected: {parsed.get('message', '')}")
-            except Exception as e:
-                if args.output == 'json':
-                    print(api_json(status='error', action=args.action, message=str(e), output_format='json'))
-                else:
-                    print(f"{_red('✗')} {_bold(args.action)} error: {e}")
-            finally:
-                control_mq.close()
-            sys.exit(0)
-        # Export embeddings via server (Client → Server → Database)
-        if args.action == 'export_embeddings':
-            try:
-                bucket_alias_arg = getattr(args, 'bucket_alias')
-                bucket_alias, _ = decompose_bucket_alias_arg(bucket_alias_arg)
-                entry = buckets_cfg.get(bucket_alias)
-                if entry is None:
-                    print(api_json(status='error', message=f'Bucket alias not found: {bucket_alias}', output_format=args.output))
-                    control_mq.close()
-                    sys.exit(1)
-                # The server keys buckets by path_to_bucket
-                path_to_bucket = entry.path_to_bucket
-                effective_username = getattr(args, 'username', None) or (
-                    user.get('username') if isinstance(user, dict) else None
-                )
-                if not effective_username:
-                    print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
-                    control_mq.close()
-                    sys.exit(1)
-                # Ask the server to fetch embeddings from the DB
-                raw_response = control_mq.request_export_embeddings(
-                    effective_username, path_to_bucket, args.export_format, args.export_profile,
-                )
-                response = _json.loads(raw_response)
-                if response.get('status') != 'ok':
-                    print(api_json(status='error', action='export_embeddings',
-                                   message=response.get('message', 'Server returned an error'),
-                                   output_format=args.output))
-                    control_mq.close()
-                    sys.exit(1)
-                columns = response['columns']
-                rows = response['rows']
-                local_path = args.local_path
-                os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
-                if args.export_format == 'csv':
-                    import csv
-                    with open(local_path, 'w', newline='', encoding='utf-8') as f:
-                        writer = csv.writer(f)
-                        writer.writerow(columns)
-                        for row in rows:
-                            writer.writerow([
-                                str(v) if v is not None else '' for v in row
-                            ])
-                else:  # jsonl
-                    with open(local_path, 'w', encoding='utf-8') as f:
-                        for row in rows:
-                            record = {}
-                            for col, val in zip(columns, row, strict=False):
-                                record[col] = val
-                            f.write(_json.dumps(record, ensure_ascii=False) + '\n')
-                print(api_json(
-                    action='export_embeddings',
-                    database=response.get('database', ''),
-                    table=response.get('table', ''),
-                    rows_exported=response.get('rows_exported', len(rows)),
-                    columns=columns,
-                    local_path=local_path,
-                    format=args.export_format,
-                    profile=response.get('profile', args.export_profile),
-                    output_format=args.output
-                ))
-            except Exception as e:
-                print(api_json(status='error', action='export_embeddings', message=str(e), output_format=args.output))
-                if args.verbose:
-                    traceback.print_exc()
-            finally:
-                control_mq.close()
-            sys.exit(0)
-        # For upload_* actions we need configuration + bucket alias
-        bucket_alias_arg = getattr(args, 'bucket_alias')
-        bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
-
-        selected_fields = ["username", "xp_name", "modality_name", "s3_configuration_file", "metadata"]
-        if args.action == "download_results":
-            selected_fields.append("output_path_to_bucket")
-        else :
-            selected_fields.append("path_to_bucket")
-        _bucket_result = buckets_cfg.get(bucket_alias, filter=selected_fields)
-        if _bucket_result is None:
-            raise ValueError(
-                f"Bucket alias '{bucket_alias}' not found in configuration. "
-                f"Check your config file or use one of the configured aliases."
-            )
-        username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = _bucket_result
-
-        # If username is provided as arg change it otherwise stay default
-        username_arg = getattr(args, 'username', None)
-        username = username_arg or username
-
-        data_mq = control_mq.get_data_queue(username, admin_token=admin_token)
-    except Exception as e:
-        print(api_json(status="error", message=str(e), output_format=args.output))
-        if args.verbose:
-            traceback.print_exc()
+    # Build shared context and dispatch to the appropriate action handler
+    ctx = _ClientContext(
+        args=args,
+        control_mq=control_mq,
+        connection=connection,
+        admin_token=admin_token,
+        config_state=config_state,
+        configure_file=configure_file,
+        user=user,
+        buckets_cfg=buckets_cfg,
+    )
+    handler = _ACTION_HANDLERS.get(args.action)
+    if handler is None:
+        print(api_json(status='error', message=f'Unknown action: {args.action}', output_format=args.output))
         control_mq.close()
         sys.exit(1)
-
-    # Allow fallback to default docker s3cfg if user-specific config is missing inside container
-    expanded_cfg = os.path.expanduser(s3_configuration_file)
-    default_docker_s3cfg = get_default_docker_s3cfg()
-    if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
-        expanded_cfg = default_docker_s3cfg
-
-    s3, bucket_location = connect_to_s3(expanded_cfg)
-
-    if args.action == "download_results":
-        full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
-        if full_bucket_name != path_to_bucket:
-            sys.exit(
-                f"Error:\tNo output bucket for {bucket_alias} for  modality {modality} and for user {username}\n"
-                f"\tCheck that this modality has 'need_output_bucket' set to 'true'"
-            )
-        if not success:
-            # Output bucket may not exist yet if the workflow/processing hasn't started.
-            # Proceed anyway — download_results will poll and wait for server completion.
-            if args.verbose:
-                print(f"Note: Output bucket '{full_bucket_name}' does not exist yet on S3 — will wait for server.")
-    else :
-        full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, indent=False)
-        if not success or full_bucket_name != path_to_bucket:
-            sys.exit(f"Error:\tNo bucket {bucket_alias} for modality {modality} and for user {username}")
-
-    if args.verbose :
-        print(f"Bucket '{bucket_alias}' for modality '{modality}' and for user '{username}': OK!")
-
-    try:
-        metadata_args = check_and_build_metadata(metadata, args.k)
-    except Exception as e:
-        print(api_json(status="error", message=f"Metadata error: {e}", output_format=args.output))
-        control_mq.close()
-        data_mq.close()
-        sys.exit(1)
-
-    # In API mode, metadata is provided via repeated -k flags like legacy mode
-
-    if args.verbose :
-       action = "Retreiving" if args.action == "download_results" else "Storing"
-       print(f"{action} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
-
-
-
-    def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=True):
-        if not os.path.isfile(file_path):
-            print(f"Error: file {file_path} is not a valid.")
-            return None, 0
-
-        category = modality_category(modality)
-        print(f"Processing file '{file_path}' for modality '{modality}' (category: {category})")
-
-        if category == "image":
-            s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check=(modality not in ("volume", "movie", "volume_movie")))
-            if s3_key and notify_server:
-                control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
-            return s3_key, 1
-        elif category == "text_file":
-            s3_key = s3_store_text_file(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args)
-            if s3_key and notify_server:
-                control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
-            return s3_key, 1
-        elif category == "text":  # consider each line of the file as a string to be processed
-            try:
-                with open(file_path) as file:
-                    nb_objects = 0
-                    s3_key_list = []
-                    for line in file.readlines():
-                        line = line.strip()
-                        if line != "" : # skip empty lines as it brings nothing and as it slows down the process
-                            s3_key = s3_store_txt(s3, full_bucket_name, subdir, line, data_mq, metadata_args)
-                            s3_key_list.append(s3_key)
-                            nb_objects += 1
-                    if notify_server and nb_objects > 0:
-                        control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
-                    return s3_key_list, nb_objects
-            except UnicodeDecodeError as e:
-                print(f"Unicode decoding error: {e}")
-                print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file.")
-        else:
-            print(f"Error: Unknown modality category '{category}' (modality: '{modality}'). Nothing has been sent to the server")
-
-        return None, 0
-
-    def process_dir(path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username, control_mq):
-        if not os.path.isdir(path):
-            print(f"Error: {path} is not a valid directory.")
-            return [], []
-
-        s3_key_list = []
-        file_list = []
-        nb_objects= 0
-        for file_path in glob(os.path.join(path, "*")):
-            if os.path.isfile(file_path):
-                s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=False)
-                if s3_key:
-                    if isinstance(s3_key, list): # files of text are processed line by line (each leading to a file stored on the s3 server)
-                        s3_key_list.extend(s3_key)  # add each element individually if s3_key is a list
-                        assert(len(s3_key)==nb_sent)
-                        file_list.extend([file_path] * nb_sent) #ensure that file_list is of same size as s3_key_list
-                    else:
-                        s3_key_list.append(s3_key)
-                        file_list.append(file_path)
-                    nb_objects += nb_sent
-
-        if nb_objects>0:
-            control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
-        return s3_key_list, file_list
-
-    def download_results(args, full_bucket_name, modality, subdir):
-        effective_username = args.username
-        verbose = args.verbose
-        if not effective_username and isinstance(user, dict):
-            effective_username = user.get('username')
-        if not effective_username:
-            response = {
-                "status": "error",
-                "message": f"Cannot find effective username for {args.username}",
-                "bucket": full_bucket_name,
-                "subdir": subdir,
-                "modality": modality,
-                "output_format": args.output,
-            }
-            return False, response
-
-
-        # check if the target path exists
-        if not os.path.exists(args.local_path):
-            response = {
-                "status": "error",
-                "message": f"Local path {args.local_path} does not exists",
-                "bucket": full_bucket_name,
-                "subdir": subdir,
-                "modality": modality,
-                "output_format": args.output,
-            }
-            return False, response
-
-        done = False
-        print_only_new = False
-        objects_received = set()
-        timeout = 1
-        _wait_start = time.time()
-        while not done: # loop until we are sure the server has done with this bucket
-            # Check whether the server is still computing for this bucket before
-            # downloading results. Some workflows create temporary artifacts that
-            # are deleted before completion; downloading too early can capture
-            # those transient files locally.
-            raw_response = control_mq.request_status(effective_username, TaskCmd.PROCESS_OBJECTS)
-            if raw_response is None:
-                break
-            # raw response is a string of a serialized json. transform it into json dict
-            parsed = _json.loads(raw_response)
-
-            # if there is no entry, we are done
-            message = parsed.get("message")
-            if  message == "No status entries":
-                done=True
-            else : #if there are entries, check the one that correspond to this bucket
-                # first extract data
-                # from pprint import pprint
-
-                data = parsed["summary"]["data"]
-                # pprint(data, width=100)
-                # Check whether all tasks related to this bucket are finished.
-                # If there exists at least one task whose status is not "Done"
-                # and whose work bucket matches the requested bucket prefix
-                # and are of processing S3 objectstype ,
-                # then the computation is still running.
-                done = not any(
-                    entry["status"] != "Done"
-                    and any(
-                        full_bucket_name.startswith(w["bucket"]) # and w["work_type"] == "process_objects"
-                        for w in entry["work"]
-                    )
-                    for entry in data
-                )
-            if not done :
-                if verbose:
-                    elapsed = int(time.time() - _wait_start)
-                    print(f"Waiting for update... (elapsed: {elapsed // 60}m {elapsed % 60}s)")
-                res = control_mq.wait_for_new_data(effective_username, full_bucket_name, timeout=timeout)
-                if res == "TIMEOUT":
-                    timeout = min(timeout*2, 64)
-                elif res == "UPDATE":
-                    timeout= 1
-                else :
-                    if verbose:
-                        print(f"Error: receiving '{res}' from server while waiting to be notified for new data")
-        # print("Done. Final check...")
-        # Do it one more time in case the server finished after the last check
-        # get the list of objects on s3 server
-        objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
-        #down load these object talink into account if we force overwrite or not
-        downloaded_files, _ = download_objects(s3, objects_list, checksums, args.local_path,
-                            files_allready_received=objects_received,
-                            force_overwrite=args.force_overwrite, print_only_new=print_only_new)
-
-        objects_received.update(downloaded_files)
-
-        response = {
-                "status": "ok",
-                "message": f"Files downloaded with overwrite={args.force_overwrite}",
-                "bucket": full_bucket_name,
-                "local_path": args.local_path,
-                "subdir": subdir,
-                "modality": modality,
-                "output_format": args.output,
-                "objects_received": f"{sorted(objects_received)}",
-            }
-        return True, response
-
-    # Determine action specifics
-    action = args.action
-    try:
-        if action == "upload_file":
-            s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, args.file_path, modality, data_mq, metadata_args, username, notify_server=True)
-            if s3_key:
-                print(api_json(s3_key=s3_key, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
-            else:
-                print(api_json(status='error', message=f"Cannot process file: {args.file_path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
-
-        elif action == "upload_dir":
-            s3_key_list, file_list =  process_dir(args.path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username, control_mq)
-            if len(s3_key_list)>0:
-                print(api_json(s3_key_list=s3_key_list, file_list=file_list, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
-            else:
-                print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
-        elif action == "download_results":
-            ok, response = download_results(args, full_bucket_name, modality, subdir)
-            print(api_json(**response))
-
-
-    except Exception as e:
-        print(api_json(status='error', message=str(e), output_format=args.output))
-        if args.verbose:
-            traceback.print_exc()
-
-
-    # close queues before exiting
-    control_mq.close()
-    data_mq.close()
-
+    sys.exit(handler(ctx))
 
 if __name__ == "__main__":
     main()
