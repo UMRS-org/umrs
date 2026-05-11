@@ -103,11 +103,70 @@ def _confirm(prompt: str, assume_yes: bool) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# helpers — client config template
+# ---------------------------------------------------------------------------
+
+
+def _build_client_config_template(username: str, fullname: str = "") -> dict:
+    """Return a minimal client config dict (experiences/modalities/buckets)."""
+    return {
+        "username": username,
+        "fullname": fullname,
+        "s3_configuration_file": f"~/.config/umrs/s3cfg_{username}",
+        "experiences": [
+            {
+                "xp_name": "default",
+                "sql_username": username,
+                "modalities": [
+                    {
+                        "modality_name": "text",
+                        "s3": {
+                            "bucket_alias": f"{username}-text",
+                            "data": {
+                                "type": "inline",
+                                "mime_type": "text/plain",
+                            },
+                        },
+                        "model": {
+                            "model_name": "intfloat/e5-base-v2",
+                            "vector_size": "768",
+                            "model_type": "TransformerEncoder",
+                            "return_type": None,
+                        },
+                        "sql": {
+                            "store_embeddings": "yes",
+                            "table_name": "text",
+                            "meta_data": [
+                                {"name": "keywords", "type": "TEXT"},
+                            ],
+                        },
+                    }
+                ],
+            }
+        ],
+    }
+
+
+def _write_client_template(username: str, fullname: str, out_path) -> None:
+    """Write a client config template JSON to *out_path*."""
+    from pathlib import Path
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    template = _build_client_config_template(username, fullname)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(template, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+# ---------------------------------------------------------------------------
 # user subcommand handlers
 # ---------------------------------------------------------------------------
 
 
 def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
+    from pathlib import Path
+
     try:
         rec = store.create(
             args.username,
@@ -120,10 +179,35 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
     except UserStoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    # Auto-generate a client config template alongside the admin record.
+    tpl_path: Path | None = None
+    if not args.no_client_template:
+        if args.client_template:
+            tpl_path = Path(args.client_template).expanduser()
+        else:
+            tpl_path = store.dir / f"{rec.username}.client.json"
+        if tpl_path.exists() and not getattr(args, "force", False):
+            print(
+                f"warning: client template {tpl_path} already exists (skipped; "
+                f"use 'user generate-template --force' to regenerate)",
+                file=sys.stderr,
+            )
+            tpl_path = None
+        else:
+            _write_client_template(rec.username, rec.fullname, tpl_path)
+
     if args.json:
-        _print_json(rec.to_json())
+        out = rec.to_json()
+        if tpl_path:
+            out["client_template"] = str(tpl_path)
+        _print_json(out)
     else:
         print(f"created user {rec.username} at {store.dir / (rec.username + '.json')}")
+        if tpl_path:
+            print(f"client template written to {tpl_path}")
+            print(f"  Send this file to the user and instruct them to run:")
+            print(f"    umrs-client config init --template {tpl_path} --username {rec.username}")
     return 0
 
 
@@ -231,6 +315,95 @@ def _cmd_user_remove_project(args: argparse.Namespace, store: UserStore) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"projects for {args.username}: {rec.projects}")
+    return 0
+
+
+def _cmd_user_generate_template(args: argparse.Namespace, _store: UserStore) -> int:
+    """Generate a template user.json for a new client."""
+    from pathlib import Path
+
+    username = args.username
+    fullname = args.fullname or ""
+
+    if args.json:
+        _print_json(_build_client_config_template(username, fullname))
+        return 0
+
+    output = args.output_file
+    if output is None:
+        output = f"user_{username}.json"
+
+    out_path = Path(output).expanduser()
+    if out_path.exists() and not args.force:
+        print(f"error: {out_path} already exists (use --force to overwrite)", file=sys.stderr)
+        return 2
+
+    _write_client_template(username, fullname, out_path)
+
+    print(f"Template written to {out_path}")
+    print(f"  Send this file to the user and instruct them to run:")
+    print(f"    umrs-client config init --template {out_path.name} --username {username}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# config subcommand handlers
+# ---------------------------------------------------------------------------
+
+
+def _cmd_config_show(args: argparse.Namespace, _store: UserStore) -> int:
+    """Show which config files the server would read."""
+    import os
+
+    from umrs.shared.config import (
+        UMRS_CFG_ENV_VAR_NAME,
+        UMRS_USER_FILES_ENV_VAR_NAME,
+        get_default_json_server_file,
+        get_resolved_umrs_cfg_dir,
+        resolve_server_user_files_dir,
+    )
+
+    cfg_dir = get_resolved_umrs_cfg_dir()
+    cfg_dir_source = (
+        f"${UMRS_CFG_ENV_VAR_NAME}" if os.environ.get(UMRS_CFG_ENV_VAR_NAME)
+        else "default"
+    )
+    server_json = os.path.join(cfg_dir, get_default_json_server_file())
+    server_json_exists = os.path.isfile(server_json)
+
+    user_files_dir = resolve_server_user_files_dir()
+    user_files_source = (
+        f"${UMRS_USER_FILES_ENV_VAR_NAME}" if os.environ.get(UMRS_USER_FILES_ENV_VAR_NAME)
+        else "default"
+    )
+    user_files_exists = os.path.isdir(user_files_dir)
+
+    if args.json:
+        _print_json({
+            "config_dir": cfg_dir,
+            "config_dir_source": cfg_dir_source,
+            "server_config": server_json,
+            "server_config_exists": server_json_exists,
+            "user_files_dir": user_files_dir,
+            "user_files_dir_source": user_files_source,
+            "user_files_dir_exists": user_files_exists,
+        })
+    else:
+        ok = "\u2713"
+        no = "\u2717"
+        print(f"Config directory:  {cfg_dir}")
+        print(f"  source:          {cfg_dir_source}")
+        print(f"  exists:          {ok if os.path.isdir(cfg_dir) else no}")
+        print()
+        print(f"Server config:     {server_json}")
+        print(f"  exists:          {ok if server_json_exists else no}")
+        print()
+        print(f"User files dir:    {user_files_dir}")
+        print(f"  source:          {user_files_source}")
+        print(f"  exists:          {ok if user_files_exists else no}")
+        if user_files_exists:
+            count = len([f for f in os.listdir(user_files_dir) if f.endswith(".json")])
+            print(f"  user records:    {count}")
     return 0
 
 
@@ -577,6 +750,19 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         help="Project ID to add (may be repeated)",
     )
     add_p.add_argument("--json", action="store_true")
+    add_p.add_argument(
+        "--client-template",
+        dest="client_template",
+        default=None,
+        metavar="PATH",
+        help="Path to write the client config template (default: <user_files>/<username>.client.json)",
+    )
+    add_p.add_argument(
+        "--no-client-template",
+        dest="no_client_template",
+        action="store_true",
+        help="Do not auto-generate a client config template file",
+    )
     add_p.set_defaults(func=_cmd_user_add)
 
     list_p = user_sub.add_parser(
@@ -643,6 +829,26 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
     rm_proj_p.add_argument("username")
     rm_proj_p.add_argument("project_id")
     rm_proj_p.set_defaults(func=_cmd_user_remove_project)
+
+    tpl_p = user_sub.add_parser(
+        "generate-template",
+        help="Generate a template user.json to give to a new client",
+        description=(
+            "Generate a ready-to-use user config JSON template. "
+            "The file can be sent to the new user who then imports it with:\n"
+            "  umrs-client config init --template <file> --username <username>"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    tpl_p.add_argument("username", help="Username for the template")
+    tpl_p.add_argument("--fullname", default="", help="Full name of the user")
+    tpl_p.add_argument(
+        "-o", "--output-file", default=None,
+        help="Output file path (default: user_<username>.json in current directory)",
+    )
+    tpl_p.add_argument("--force", action="store_true", help="Overwrite existing file")
+    tpl_p.add_argument("--json", action="store_true", help="Print template as JSON to stdout instead of writing a file")
+    tpl_p.set_defaults(func=_cmd_user_generate_template)
 
 
 def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
@@ -799,6 +1005,20 @@ def build_parser() -> argparse.ArgumentParser:
 
     slurm_p = sub.add_parser("slurm", help="Slurm helpers (read-only)")
     _add_slurm_parsers(slurm_p.add_subparsers(dest="action", required=True))
+
+    config_p = sub.add_parser(
+        "config",
+        help="Show which config files the server reads",
+        description=(
+            "Display the resolved server configuration directory, server JSON file, "
+            "and user_files directory. Useful for verifying the environment before "
+            "starting the daemon."
+        ),
+    )
+    config_sub = config_p.add_subparsers(dest="action", required=True)
+    cfg_show_p = config_sub.add_parser("show", help="Show active server config paths")
+    cfg_show_p.add_argument("--json", action="store_true")
+    cfg_show_p.set_defaults(func=_cmd_config_show)
 
     boot_p = sub.add_parser(
         "bootstrap",

@@ -55,7 +55,8 @@ The admin token authorizes subsequent user management operations.
 
 ## Phase 2: Enroll Identity
 
-The admin registers a new user on the server:
+The admin registers a new user on the server. This creates **two files**
+automatically:
 
 ```bash
 umrs-server admin user add alice \
@@ -66,8 +67,22 @@ umrs-server admin user add alice \
     --project team-alpha
 ```
 
-This writes `<user_files_dir>/alice.json` on the server and sends `SIGHUP` to
-the running daemon for hot-reload.
+What this produces:
+
+| File | Purpose |
+|------|---------|
+| `<user_files_dir>/alice.json` | **Admin record** — role, projects, quota (server auth) |
+| `<user_files_dir>/alice.client.json` | **Client config template** — experiences, modalities, buckets (send to user) |
+
+The admin record is stored on the server for authorization. The client config
+template is a ready-to-use starting point that the admin can send directly to
+the new user — no manual JSON editing required.
+
+By default the client template is written next to the admin record. Override
+the path with `--client-template <path>` or skip it entirely with
+`--no-client-template`.
+
+The daemon also receives `SIGHUP` for a best-effort hot-reload.
 
 ### Listing / Inspecting Users
 
@@ -76,15 +91,49 @@ umrs-server admin user list
 umrs-server admin user show alice
 ```
 
+### Regenerating a Client Template
+
+If the client config template needs to be regenerated independently:
+
+```bash
+umrs-server admin user generate-template alice \
+    --fullname "Alice Smith" \
+    -o alice.client.json
+```
+
+Or print it to stdout without writing a file:
+
+```bash
+umrs-server admin user generate-template alice --json
+```
+
 ## Phase 3: Define Provisioning (User Config)
 
-A user config describes what resources should be provisioned. It contains:
+A user config (the **client config**) describes what resources should be
+provisioned. It contains:
 - `username` / `fullname` — identity
 - `s3_configuration_file` — path to S3 credentials (generated during provisioning)
 - `experiences[]` — logical experiment scopes
   - `modalities[]` — per-modality storage and model configuration
 
-### Generate Via CLI (Recommended)
+**This is different from the admin record** (`user_files/alice.json`).
+The admin record is for server-side authorization. The client config is for
+workload provisioning (buckets, databases, embedding pipelines).
+
+### Recommended: Let `user add` Generate It
+
+When the admin runs `umrs-server admin user add`, a client config template
+(`alice.client.json`) is generated automatically. The admin sends this file
+to the user, who imports it:
+
+```bash
+# User runs on their machine:
+umrs-client config init \
+    --template alice.client.json \
+    --username alice
+```
+
+### Alternative: Generate Directly on the Client
 
 ```bash
 # Interactive
