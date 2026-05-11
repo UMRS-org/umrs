@@ -83,7 +83,16 @@ def get_model_store() -> ModelStore:
 
 
 class ServingProfileRequest(BaseModel):
-    """Serving configuration for vLLM/LiteLLM."""
+    """Serving configuration for vLLM/LiteLLM or BentoML vision."""
+
+    serving_backend: str | None = Field(None, description="Serving backend: vllm or bentoml")
+    service_kind: str | None = Field(None, description="Service API kind: openai or bentoml_vision")
+    launch_profiles: list[str] = Field(default_factory=list, description="Mini-RiVault profiles to activate")
+    container_image: str | None = Field(None, description="Container image override for this service")
+    service_port: int | None = Field(None, ge=1, le=65535, description="External service port")
+    readiness_probe: str | None = Field(None, description="Readiness probe kind: models, chat, or http")
+    readiness_path: str | None = Field(None, description="HTTP readiness path for non-OpenAI services")
+    invoke_base_path: str | None = Field(None, description="Base path for invoking the service")
 
     tensor_parallel_size: int = Field(1, ge=1, le=8, description="Number of GPUs for tensor parallelism")
     max_model_len: int | None = Field(None, description="Maximum context length")
@@ -93,6 +102,10 @@ class ServingProfileRequest(BaseModel):
     served_model_name: str | None = Field(None, description="Override model name in API")
     min_gpu_memory_gb: float | None = Field(None, description="Minimum GPU memory required")
     recommended_gpu_count: int = Field(1, ge=1, description="Recommended number of GPUs")
+    vision_adapter: str | None = Field(None, description="Vision adapter name, e.g. sam3 or hmae")
+    vision_task: str | None = Field(None, description="Default vision task")
+    output_format: str | None = Field(None, description="Default output envelope/artifact format")
+    co_located: bool | None = Field(None, description="Whether this profile expects vLLM co-location")
 
 
 class CapabilitiesRequest(BaseModel):
@@ -111,7 +124,7 @@ class ModelCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=256, description="Model name (unique per scope)")
     scope: str = Field(..., description="Scope: system, project, user")
     storage_ref: str = Field(..., description="Filesystem path to model weights")
-    model_type: str = Field("llm", description="Type: llm or embedding")
+    model_type: str = Field("llm", description="Type: llm, embedding, or vision")
 
     owner_id: str | None = Field(None, description="Owner user ID (required for user scope)")
     project_id: str | None = Field(None, description="Project ID (required for project scope)")
@@ -146,7 +159,7 @@ class ModelStageRequest(BaseModel):
     huggingface_id: str = Field(..., description="HuggingFace model ID to download")
     name: str = Field(..., min_length=1, max_length=256, description="Name for the model")
     scope: str = Field("user", description="Target scope: project or user")
-    model_type: str = Field("llm", description="Type: llm or embedding")
+    model_type: str = Field("llm", description="Type: llm, embedding, or vision")
 
     project_id: str | None = Field(None, description="Project ID (for project scope)")
     description: str | None = Field(None, description="Model description")
@@ -437,6 +450,14 @@ def serving_profile_from_request(
     if req is None:
         return None
     return ServingProfile(
+        serving_backend=req.serving_backend,
+        service_kind=req.service_kind,
+        launch_profiles=list(req.launch_profiles),
+        container_image=req.container_image,
+        service_port=req.service_port,
+        readiness_probe=req.readiness_probe,
+        readiness_path=req.readiness_path,
+        invoke_base_path=req.invoke_base_path,
         tensor_parallel_size=req.tensor_parallel_size,
         max_model_len=req.max_model_len,
         gpu_memory_utilization=req.gpu_memory_utilization,
@@ -445,6 +466,10 @@ def serving_profile_from_request(
         served_model_name=req.served_model_name,
         min_gpu_memory_gb=req.min_gpu_memory_gb,
         recommended_gpu_count=req.recommended_gpu_count,
+        vision_adapter=req.vision_adapter,
+        vision_task=req.vision_task,
+        output_format=req.output_format,
+        co_located=req.co_located,
     )
 
 
@@ -1116,7 +1141,7 @@ class SystemModelCreateRequest(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=256, description="Model name")
     storage_ref: str = Field(..., description="Filesystem path to model weights")
-    model_type: str = Field("llm", description="Type: llm or embedding")
+    model_type: str = Field("llm", description="Type: llm, embedding, or vision")
     huggingface_id: str | None = Field(None, description="Source HuggingFace model ID")
     description: str | None = Field(None, max_length=1000, description="Model description")
     serving_profile: ServingProfileRequest | None = Field(None, description="Serving configuration")

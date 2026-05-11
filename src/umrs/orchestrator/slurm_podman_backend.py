@@ -99,6 +99,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
         self._output_dir.mkdir(parents=True, exist_ok=True)
         self._control_dir = self._output_dir / "control"
         self._control_dir.mkdir(parents=True, exist_ok=True)
+        self._job_service_ports: dict[str, int] = {}
 
     @property
     def site(self) -> SiteConfig:
@@ -317,6 +318,12 @@ class SlurmPodmanBackend(OrchestratorBackend):
             )
 
         job_id = stdout.decode().strip().split(";")[0]
+        service_port = env_overrides.get("RIVAULT_SERVICE_PORT") or env_overrides.get(
+            "LITELLM_PORT"
+        )
+        if service_port:
+            with contextlib.suppress(ValueError):
+                self._job_service_ports[job_id] = int(service_port)
         logger.info("Submitted Slurm job %s", job_id)
 
         return JobInfo(
@@ -349,9 +356,10 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
         endpoint = None
         if node and status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY):
+            service_port = self._job_service_ports.get(job_id, self.site.network.litellm_port)
             endpoint = EndpointInfo(
                 node=node,
-                litellm_port=self.site.network.litellm_port,
+                litellm_port=service_port,
             )
 
         return JobInfo(

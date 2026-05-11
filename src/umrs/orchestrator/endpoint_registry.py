@@ -134,6 +134,25 @@ class RegisteredEndpoint:
         served = self.metadata.get("served_model_name")
         if served:
             d["served_model_name"] = served
+        for key in (
+            "model_type",
+            "serving_backend",
+            "service_kind",
+            "service_url",
+            "invoke_base_path",
+            "readiness_probe",
+            "readiness_path",
+            "launch_profiles",
+            "container_image",
+            "vision_adapter",
+            "vision_task",
+            "output_format",
+        ):
+            value = self.metadata.get(key)
+            if value not in (None, "", []):
+                d[key] = value
+        if "service_url" not in d:
+            d["service_url"] = self.litellm_url
         detail = self.metadata.get("detail")
         if detail:
             d["detail"] = detail

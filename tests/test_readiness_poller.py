@@ -76,3 +76,30 @@ async def test_check_ready_detail_with_chat_probe_succeeds_after_models(monkeypa
     assert is_ready
     assert models == ["qwen3-8b"]
     assert error == ""
+
+
+@pytest.mark.asyncio
+async def test_check_ready_detail_with_http_probe_uses_custom_path(monkeypatch):
+    seen_paths = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        if request.url.path == "/readyz":
+            return httpx.Response(200, json={"status": "ok"})
+        raise AssertionError(f"Unexpected request: {request.method} {request.url}")
+
+    poller, client = _make_poller(monkeypatch, handler)
+    try:
+        is_ready, models, error = await poller.check_ready_detail(
+            "ready.test",
+            3001,
+            probe_kind="http",
+            probe_path="readyz",
+        )
+    finally:
+        await client.aclose()
+
+    assert is_ready
+    assert models == []
+    assert error == ""
+    assert seen_paths == ["/readyz"]

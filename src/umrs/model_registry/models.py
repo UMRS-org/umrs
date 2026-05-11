@@ -291,10 +291,22 @@ class ModelCapabilities:
 @dataclass
 class ServingProfile:
     """
-    vLLM/LiteLLM serving configuration for a model.
+    Serving configuration for a model.
 
-    These parameters are passed to vLLM when provisioning an endpoint.
+    vLLM/LiteLLM fields remain the default for LLM and embedding models.
+    Backend/service metadata lets UMRS select alternate serving surfaces such
+    as BentoML vision without introducing a separate endpoint registry.
     """
+
+    # Backend/service selection
+    serving_backend: str | None = None  # vllm, bentoml
+    service_kind: str | None = None  # openai, bentoml_vision
+    launch_profiles: list[str] = field(default_factory=list)
+    container_image: str | None = None
+    service_port: int | None = None
+    readiness_probe: str | None = None  # models, chat, http
+    readiness_path: str | None = None
+    invoke_base_path: str | None = None
 
     # vLLM parameters
     tensor_parallel_size: int = 1
@@ -311,9 +323,23 @@ class ServingProfile:
     min_gpu_memory_gb: float | None = None
     recommended_gpu_count: int = 1
 
+    # Vision adapter hints
+    vision_adapter: str | None = None
+    vision_task: str | None = None
+    output_format: str | None = None
+    co_located: bool | None = None
+
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON storage."""
         return {
+            "serving_backend": self.serving_backend,
+            "service_kind": self.service_kind,
+            "launch_profiles": list(self.launch_profiles),
+            "container_image": self.container_image,
+            "service_port": self.service_port,
+            "readiness_probe": self.readiness_probe,
+            "readiness_path": self.readiness_path,
+            "invoke_base_path": self.invoke_base_path,
             "tensor_parallel_size": self.tensor_parallel_size,
             "max_model_len": self.max_model_len,
             "gpu_memory_utilization": self.gpu_memory_utilization,
@@ -323,12 +349,26 @@ class ServingProfile:
             "api_base": self.api_base,
             "min_gpu_memory_gb": self.min_gpu_memory_gb,
             "recommended_gpu_count": self.recommended_gpu_count,
+            "vision_adapter": self.vision_adapter,
+            "vision_task": self.vision_task,
+            "output_format": self.output_format,
+            "co_located": self.co_located,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ServingProfile:
         """Create from dictionary."""
+        raw_profiles = data.get("launch_profiles") or data.get("runtime_profiles") or []
+        launch_profiles = list(raw_profiles) if isinstance(raw_profiles, list) else str(raw_profiles).split()
         return cls(
+            serving_backend=data.get("serving_backend"),
+            service_kind=data.get("service_kind"),
+            launch_profiles=launch_profiles,
+            container_image=data.get("container_image"),
+            service_port=data.get("service_port"),
+            readiness_probe=data.get("readiness_probe"),
+            readiness_path=data.get("readiness_path"),
+            invoke_base_path=data.get("invoke_base_path"),
             tensor_parallel_size=data.get("tensor_parallel_size", 1),
             max_model_len=data.get("max_model_len"),
             gpu_memory_utilization=data.get("gpu_memory_utilization", 0.9),
@@ -338,6 +378,10 @@ class ServingProfile:
             api_base=data.get("api_base"),
             min_gpu_memory_gb=data.get("min_gpu_memory_gb"),
             recommended_gpu_count=data.get("recommended_gpu_count", 1),
+            vision_adapter=data.get("vision_adapter"),
+            vision_task=data.get("vision_task"),
+            output_format=data.get("output_format"),
+            co_located=data.get("co_located"),
         )
 
 

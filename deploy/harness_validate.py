@@ -25,6 +25,9 @@ from umrs.orchestrator.site_config import SiteConfig, load_site_config
 from umrs.orchestrator.slurm_podman_backend import SlurmPodmanBackend
 
 
+BENTOML_DEFAULT_PORT = 3001
+
+
 @dataclass(frozen=True)
 class ValidationCase:
     name: str
@@ -176,6 +179,33 @@ async def wait_for_vision_health(endpoint: EndpointInfo, timeout_sec: int) -> No
     )
 
 
+async def wait_for_bentoml_readiness(
+    host: str,
+    port: int,
+    timeout_sec: int,
+    path: str = "/readyz",
+) -> None:
+    """Wait for BentoML readiness on its direct proxy port."""
+    url = f"http://{host}:{port}{path}"
+    timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
+    deadline = time.monotonic() + timeout_sec
+    last_error = ""
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        while time.monotonic() < deadline:
+            try:
+                response = await client.get(url)
+                if response.status_code == 200:
+                    return
+                last_error = f"HTTP {response.status_code}"
+            except httpx.HTTPError as exc:
+                last_error = str(exc)
+            await asyncio.sleep(3)
+
+    raise TimeoutError(
+        f"Timed out waiting for BentoML readiness at {url}: {last_error or 'no successful response'}"
+    )
+
+
 async def wait_for_cleanup(
     backend: SlurmPodmanBackend,
     job_id: str,
@@ -222,6 +252,25 @@ async def cleanup_registered_endpoint(
     service.registry.remove(job_id)
 
 
+def _vision_provision_metadata(profiles_value: str) -> tuple[dict, dict]:
+    """Return (metadata, env_vars) for a vision-only provision request."""
+    metadata = {
+        "model_type": "vision",
+        "serving_backend": "bentoml",
+        "service_kind": "bentoml_vision",
+        "readiness_probe": "http",
+        "readiness_path": "/readyz",
+        "launch_profiles": profiles_value.split(),
+    }
+    env_vars = {
+        "RIVAULT_PROFILES": profiles_value,
+        "VISION_REQUIRE_PRESIGNED_URLS": "true",
+        "TRANSFORMERS_OFFLINE": "1",
+        "HF_HUB_OFFLINE": "1",
+    }
+    return metadata, env_vars
+
+
 async def run_lifecycle_case(
     site: SiteConfig,
     case: ValidationCase,
@@ -229,16 +278,17 @@ async def run_lifecycle_case(
     endpoint_timeout_sec: int,
     cleanup_timeout_sec: int,
 ) -> None:
-    if not case.expect_models:
+    vision_only = case.expect_vision and not case.expect_models
+    if not case.expect_models and not case.expect_vision:
         raise ValueError(
-            f"Lifecycle validation requires a case with LiteLLM readiness; got {case.name}"
+            f"Lifecycle validation requires at least one readiness target; got {case.name}"
         )
 
     profiles_value = profile_string(case)
     readiness_poller = ReadinessPoller(
         ReadinessConfig(
             timeout_sec=endpoint_timeout_sec,
-            expected_model=site.vllm.model,
+            expected_model=site.vllm.model if not vision_only else None,
             auth_token=site.network.litellm_master_key or None,
         )
     )
@@ -249,16 +299,29 @@ async def run_lifecycle_case(
     project_id = f"harness-lifecycle-{case.name}-{int(time.time())}"
 
     async def provision_once(expect_reuse: bool) -> tuple[str, EndpointInfo, Path]:
-        request = ServiceProvisionRequest(
-            project_id=project_id,
-            model=site.vllm.model,
-            model_path="",
-            ttl_sec=max(600, cleanup_timeout_sec * 3),
-            prefer_warm=True,
-            min_ttl_for_reuse_sec=60,
-            env_vars={"RIVAULT_PROFILES": profiles_value},
-            metadata={"readiness_probe": "models"},
-        )
+        if vision_only:
+            meta, env = _vision_provision_metadata(profiles_value)
+            request = ServiceProvisionRequest(
+                project_id=project_id,
+                model="vision-harness",
+                model_path="",
+                ttl_sec=max(600, cleanup_timeout_sec * 3),
+                prefer_warm=True,
+                min_ttl_for_reuse_sec=60,
+                env_vars=env,
+                metadata=meta,
+            )
+        else:
+            request = ServiceProvisionRequest(
+                project_id=project_id,
+                model=site.vllm.model,
+                model_path="",
+                ttl_sec=max(600, cleanup_timeout_sec * 3),
+                prefer_warm=True,
+                min_ttl_for_reuse_sec=60,
+                env_vars={"RIVAULT_PROFILES": profiles_value},
+                metadata={"readiness_probe": "models"},
+            )
         result = await service.provision(request)
         if not result.success or result.endpoint is None or result.job_id is None:
             raise RuntimeError(
@@ -293,8 +356,16 @@ async def run_lifecycle_case(
                 vision_log_candidates(),
                 timeout_sec=assignment_timeout_sec,
             )
-            await wait_for_vision_health(first_endpoint, timeout_sec=endpoint_timeout_sec)
-            log(f"Lifecycle initial vision image path evidence: {marker}")
+            if not vision_only:
+                await wait_for_vision_health(first_endpoint, timeout_sec=endpoint_timeout_sec)
+            bentoml_port = first_endpoint.litellm_port if vision_only else BENTOML_DEFAULT_PORT
+            await wait_for_bentoml_readiness(
+                first_endpoint.node, bentoml_port, timeout_sec=endpoint_timeout_sec,
+            )
+            log(
+                f"Lifecycle initial vision readiness confirmed: {marker} "
+                f"(bentoml {first_endpoint.node}:{bentoml_port}/readyz)"
+            )
 
         second_job_id, second_endpoint, _second_log_path = await provision_once(expect_reuse=True)
         if second_job_id != first_job_id:
@@ -331,8 +402,16 @@ async def run_lifecycle_case(
                 vision_log_candidates(),
                 timeout_sec=assignment_timeout_sec,
             )
-            await wait_for_vision_health(third_endpoint, timeout_sec=endpoint_timeout_sec)
-            log(f"Lifecycle restart vision image path evidence: {marker}")
+            if not vision_only:
+                await wait_for_vision_health(third_endpoint, timeout_sec=endpoint_timeout_sec)
+            bentoml_port = third_endpoint.litellm_port if vision_only else BENTOML_DEFAULT_PORT
+            await wait_for_bentoml_readiness(
+                third_endpoint.node, bentoml_port, timeout_sec=endpoint_timeout_sec,
+            )
+            log(
+                f"Lifecycle restart vision readiness confirmed: {marker} "
+                f"(bentoml {third_endpoint.node}:{bentoml_port}/readyz)"
+            )
 
     finally:
         for job_id in (third_job_id, second_job_id, first_job_id):
@@ -380,6 +459,13 @@ async def run_case(
             await wait_for_vision_health(endpoint, timeout_sec=endpoint_timeout_sec)
             log(f"Case {case.name} vision image path evidence: {marker}")
             log(f"Case {case.name} vision health ready at /vision/healthz")
+
+            # Also validate BentoML direct readiness (/readyz on port 3001)
+            bentoml_port = int(os.environ.get("BENTOML_VISION_DOCKER_PORT", BENTOML_DEFAULT_PORT))
+            await wait_for_bentoml_readiness(
+                endpoint.node, bentoml_port, timeout_sec=endpoint_timeout_sec,
+            )
+            log(f"Case {case.name} BentoML readiness confirmed at {endpoint.node}:{bentoml_port}/readyz")
 
     finally:
         if not skip_cleanup:
