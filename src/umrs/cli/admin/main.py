@@ -165,8 +165,6 @@ def _write_client_template(username: str, fullname: str, out_path) -> None:
 
 
 def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
-    from pathlib import Path
-
     try:
         rec = store.create(
             args.username,
@@ -177,38 +175,61 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
             projects=args.project or [],
         )
     except UserStoreError as exc:
+        # If the user already exists, still try to generate a client template
+        # for migration (pre-existing users created before this feature).
+        if "already exists" in str(exc):
+            try:
+                rec = store.get(args.username)
+            except UserStoreError:
+                rec = None
+            if rec is not None:
+                print(f"error: {exc}", file=sys.stderr)
+                _maybe_emit_template(args, store, rec)
+            else:
+                print(f"error: {exc}", file=sys.stderr)
+            return 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
     # Auto-generate a client config template alongside the admin record.
-    tpl_path: Path | None = None
-    if not args.no_client_template:
-        if args.client_template:
-            tpl_path = Path(args.client_template).expanduser()
-        else:
-            tpl_path = store.dir / f"{rec.username}.client.json"
-        if tpl_path.exists() and not getattr(args, "force", False):
-            print(
-                f"warning: client template {tpl_path} already exists (skipped; "
-                f"use 'user generate-template --force' to regenerate)",
-                file=sys.stderr,
-            )
-            tpl_path = None
-        else:
-            _write_client_template(rec.username, rec.fullname, tpl_path)
+    _maybe_emit_template(args, store, rec)
 
     if args.json:
         out = rec.to_json()
-        if tpl_path:
+        tpl_path = _client_template_path(args, store, rec)
+        if tpl_path and tpl_path.exists():
             out["client_template"] = str(tpl_path)
         _print_json(out)
     else:
         print(f"created user {rec.username} at {store.dir / (rec.username + '.json')}")
-        if tpl_path:
-            print(f"client template written to {tpl_path}")
-            print(f"  Send this file to the user and instruct them to run:")
-            print(f"    umrs-client config init --template {tpl_path} --username {rec.username}")
     return 0
+
+
+def _client_template_path(args, store, rec):
+    from pathlib import Path
+    if getattr(args, "no_client_template", False):
+        return None
+    if getattr(args, "client_template", None):
+        return Path(args.client_template).expanduser()
+    return store.dir / f"{rec.username}.client.json"
+
+
+def _maybe_emit_template(args, store, rec) -> None:
+    tpl_path = _client_template_path(args, store, rec)
+    if tpl_path is None:
+        return
+    if tpl_path.exists():
+        print(
+            f"warning: client template {tpl_path} already exists (skipped; "
+            f"use 'user generate-template --force' to regenerate)",
+            file=sys.stderr,
+        )
+        return
+    _write_client_template(rec.username, rec.fullname, tpl_path)
+    if not getattr(args, "json", False):
+        print(f"client template written to {tpl_path}")
+        print(f"  Send this file to the user and instruct them to run:")
+        print(f"    umrs-client config init --template {tpl_path} --username {rec.username}")
 
 
 def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
