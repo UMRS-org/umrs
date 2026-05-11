@@ -324,10 +324,13 @@ def server_event_loop(
                 update_status_func(TaskStatus.COMPLETED if enrolled_any else TaskStatus.ERROR)
 
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
-                client_id = payload
-                if _authorize(cmd, client_id) is None:
+                client_id, zmq_sender_id = payload
+                if _authorize(cmd, client_id, zmq_sender_id) is None:
                     update_status_func(TaskStatus.ERROR)
                     continue
+                # Authorization succeeded — acknowledge back to the client
+                with contextlib.suppress(RuntimeError):
+                    control_mq.send_string("ACKNOWLEDGE", zmq_sender_id)
                 try:
                     thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
                                                                 device, embedding_backend, configure_file, user_config_map, cmd.lower(),

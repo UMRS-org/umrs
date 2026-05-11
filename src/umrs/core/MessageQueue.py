@@ -661,11 +661,9 @@ class MessageQueue:
                 return TaskCmd.EXPORT_EMBEDDINGS, (client_id, export_args, zmq_sender_id)
 
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
-                # Acknowledge and let the server main loop perform the operation
-                try:
-                    self.send_string("ACKNOWLEDGE", zmq_sender_id)
-                except RuntimeError as e:
-                    logger.error("Error acknowledging %s request: %s", cmd, e)
+                # Do NOT acknowledge here — let the server main loop
+                # authorize the request first and reply with ACKNOWLEDGE
+                # or UNAUTHORIZED so the client sees the real outcome.
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 token = splited_msg[3] if len(splited_msg) > 3 else None
                 if client_id and token:
@@ -684,7 +682,7 @@ class MessageQueue:
                             client_id,
                             e,
                         )
-                return cmd, client_id
+                return cmd, (client_id, zmq_sender_id)
 
             elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
                          TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW):
@@ -936,6 +934,9 @@ class MessageQueue:
             if verbose:
                 logger.info("Server acknowledged reception of the objects")
             return True
+        elif reply.startswith("UNAUTHORIZED:"):
+            # Server denied the command after authorization check.
+            return False
         elif reply == "NO_DATA_QUEUE":
             raise RuntimeError(f"Error: the server cannot find the data queue for user {client_id}.")
         else:

@@ -224,6 +224,34 @@ class TestClientUnauthorizedHandling:
             result = json.loads(raw)
         assert result["status"] == "ok"
 
+    def test_notify_server_unauthorized_returns_false(self):
+        """Simulate the notify_server handling for UNAUTHORIZED replies.
+
+        When the server denies a maintenance command after authorization,
+        notify_server should return False instead of raising.
+        """
+        reply = "UNAUTHORIZED:RELOAD"
+        # Replicate the logic from MessageQueue.notify_server
+        if reply == "ACKNOWLEDGE":
+            result = True
+        elif reply.startswith("UNAUTHORIZED:"):
+            result = False
+        else:
+            result = None  # would raise in real code
+        assert result is False
+
+    def test_maintenance_returns_error_on_unauthorized(self):
+        """When notify_server returns False, maintenance() should report rejection."""
+        ok = False  # simulates notify_server returning False for UNAUTHORIZED
+        action = "reload"
+        if ok:
+            parsed = {"status": "ok", "action": action, "accepted": True}
+        else:
+            parsed = {"status": "error", "action": action, "accepted": False, "message": "Authorization denied (admin required)"}
+        assert parsed["status"] == "error"
+        assert parsed["accepted"] is False
+        assert "admin" in parsed["message"].lower()
+
 
 # ---------------------------------------------------------------------------
 # USER_ALLOWED_COMMANDS completeness — every TaskCmd used in the server

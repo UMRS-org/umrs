@@ -212,7 +212,7 @@ class UMRSControlAPI:
         )
         if ok:
             return {"status": "ok", "action": action, "accepted": True}
-        return {"status": "error", "action": action, "accepted": False, "message": "Command rejected by server"}
+        return {"status": "error", "action": action, "accepted": False, "message": "Authorization denied (admin required)"}
 
     def enroll_user(self, config_path: str) -> dict[str, Any]:
         """Enroll a new user on the server (admin-only).
