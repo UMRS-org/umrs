@@ -41,8 +41,7 @@ async def test_wait_for_ready_budget_expands_timeout(monkeypatch):
         host="ready.test",
         port=8001,
         deadline=loop.time() + 600,
-        probe_model="qwen3-8b",
-        probe_kind="chat",
+        readiness_probe={"model": "qwen3-8b", "kind": "chat"},
     )
 
     assert result.is_ready

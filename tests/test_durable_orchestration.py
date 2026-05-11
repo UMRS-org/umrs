@@ -1247,7 +1247,10 @@ class TestOrchestrationServiceConfig:
             "slurm-654",
             host="gpu-node-1",
             port=11434,
-            metadata={"detail": "container starting on gpu-node-1:11434"},
+            metadata={
+                "detail": "container starting on gpu-node-1:11434",
+                "service_url": "http://gpu-node-1:11434",
+            },
         )
         readiness_kwargs = mock_readiness.wait_for_ready.await_args.kwargs
         assert readiness_kwargs["host"] == "gpu-node-1"
