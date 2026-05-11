@@ -180,6 +180,40 @@ def server_event_loop(
                 control_mq.send_string(f"UNAUTHORIZED:{cmd}", zmq_sender_id)
         return None
 
+    # ------------------------------------------------------------------
+    # Helper for the common request/reply pattern shared by several
+    # commands: unpack (client_id, payload_str, zmq_sender_id), authorize,
+    # call a handler, send JSON response back, mark completed.
+    # ------------------------------------------------------------------
+    def _handle_request_reply(cmd, payload, update_status_func, handler, **handler_kwargs):
+        """Dispatch a request/reply ZMQ command.
+
+        *handler* is called as ``handler(cmd, client_id, payload_str, **handler_kwargs)``
+        and must return a JSON string to send back to the client.
+        """
+        client_id, payload_str, zmq_sender_id = payload
+        if _authorize(cmd, client_id, zmq_sender_id) is None:
+            update_status_func(TaskStatus.ERROR)
+            return
+        response_json = handler(cmd, client_id, payload_str, **handler_kwargs)
+        try:
+            control_mq.send_string(response_json, zmq_sender_id)
+        except RuntimeError as e:
+            print(f"Error sending {cmd} response: {e}")
+        update_status_func(TaskStatus.COMPLETED)
+
+    # Map request/reply commands to their handler + extra kwargs.
+    _REQUEST_REPLY_HANDLERS = {
+        TaskCmd.MODEL_REGISTER: (handle_model_command, {"backend": model_command_backend}),
+        TaskCmd.MODEL_LIST:     (handle_model_command, {"backend": model_command_backend}),
+        TaskCmd.MODEL_DOWNLOAD: (handle_model_command, {"backend": model_command_backend}),
+        TaskCmd.JOB_SUBMIT:     (handle_job_command,   {"backend": job_command_backend}),
+        TaskCmd.JOB_CANCEL:     (handle_job_command,   {"backend": job_command_backend}),
+        TaskCmd.JOB_LIST:       (handle_job_command,   {"backend": job_command_backend}),
+        TaskCmd.LIST_WORKFLOWS: (handle_workflow_command, {}),
+        TaskCmd.RUN_WORKFLOW:   (handle_workflow_command, {"job_backend": job_command_backend}),
+    }
+
     try:
         while True:
             print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######", flush=True)
@@ -342,18 +376,6 @@ def server_event_loop(
                         print(f"UPLOAD_WORKFLOW failed: {err}")
                         update_status_func(TaskStatus.ERROR)
 
-            elif cmd == TaskCmd.LIST_WORKFLOWS:
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                response_json = handle_workflow_command(cmd, client_id, payload_str)
-                try:
-                    control_mq.send_string(response_json, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending workflow command response: {e}")
-                update_status_func(TaskStatus.COMPLETED)
-
             elif cmd == TaskCmd.WAIT_OUTPUT : # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
                 client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
                 if _authorize(cmd, client_id, zmq_sender_id) is None:
@@ -389,71 +411,9 @@ def server_event_loop(
                     with contextlib.suppress(RuntimeError):
                         control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
 
-            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST):
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                response_json = handle_model_command(
-                    cmd,
-                    client_id,
-                    payload_str,
-                    backend=model_command_backend,
-                )
-                try:
-                    control_mq.send_string(response_json, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending model command response: {e}")
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd == TaskCmd.MODEL_DOWNLOAD:
-                # Server-side download: reply immediately, run download in background thread
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                ack = handle_model_command(
-                    cmd,
-                    client_id,
-                    payload_str,
-                    backend=model_command_backend,
-                )
-                try:
-                    control_mq.send_string(ack, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending model download ack: {e}")
-                # The handler spawns a background thread for the actual download;
-                # the ack already told the client it's accepted.
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST):
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                response_json = handle_job_command(cmd, client_id, payload_str, backend=job_command_backend)
-                try:
-                    control_mq.send_string(response_json, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending job command response: {e}")
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd == TaskCmd.RUN_WORKFLOW:
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                response_json = handle_workflow_command(
-                    cmd,
-                    client_id,
-                    payload_str,
-                    job_backend=job_command_backend,
-                )
-                try:
-                    control_mq.send_string(response_json, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending run-workflow response: {e}")
-                update_status_func(TaskStatus.COMPLETED)
+            elif cmd in _REQUEST_REPLY_HANDLERS:
+                _handle_request_reply(cmd, payload, update_status_func,
+                                      *_REQUEST_REPLY_HANDLERS[cmd])
 
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
