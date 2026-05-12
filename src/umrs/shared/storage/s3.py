@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 import configparser
 import mimetypes
-import os
+import os, sys
 import secrets
 import string
 import warnings
@@ -150,8 +150,9 @@ def connect_to_s3(config_file):
         s3.list_buckets()
         print("--> Succesfully connected to S3 service.")
     except Exception as e:
-        raise RuntimeError(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.") from e
-
+        # raise RuntimeError(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.") from e
+        print(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.\nCannot continue.")
+        sys.exit(-1)
 
     return s3, bucket_location
 
