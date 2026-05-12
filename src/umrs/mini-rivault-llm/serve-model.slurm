@@ -732,6 +732,7 @@ run_litellm_db_sql_migrations() {
     if ! podman-compose --project-name "rivault" --in-pod false \
              --env-file "./env.${uuid}" \
              --file "./serve-model.yaml" \
+             ${GPUoverride[@]} \
              ${_profile_flags} \
              up --remove-orphans --detach ll-postgres; then
         echo "[rivault] ERROR: failed to start ll-postgres for LiteLLM DB migrations"
