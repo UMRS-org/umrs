@@ -14,7 +14,7 @@ import psycopg2
 logger = logging.getLogger(__name__)
 
 # Schema version - increment when schema changes
-MODEL_REGISTRY_SCHEMA_VERSION = 4
+MODEL_REGISTRY_SCHEMA_VERSION = 5
 
 # SQL for creating the model_catalog_entries table (U-801)
 CREATE_MODEL_CATALOG_TABLE = """
@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS model_catalog_entries (
     owner_id VARCHAR(128),
     project_id VARCHAR(128),
     storage_ref TEXT NOT NULL,
-    model_type VARCHAR(32) NOT NULL CHECK (model_type IN ('llm', 'embedding')),
+    model_type VARCHAR(32) NOT NULL CHECK (model_type IN ('llm', 'embedding', 'vision')),
     huggingface_id VARCHAR(256),
     description TEXT,
     serving_profile JSONB DEFAULT '{}',
@@ -47,7 +47,7 @@ COMMENT ON COLUMN model_catalog_entries.scope IS 'Visibility scope: system (all 
 COMMENT ON COLUMN model_catalog_entries.owner_id IS 'Owner user ID (required for user scope, NULL for system/project)';
 COMMENT ON COLUMN model_catalog_entries.project_id IS 'Project ID (required for project scope, NULL for system/user)';
 COMMENT ON COLUMN model_catalog_entries.storage_ref IS 'Filesystem path to model weights';
-COMMENT ON COLUMN model_catalog_entries.model_type IS 'Model type: llm (vLLM) or embedding (SentenceTransformers)';
+COMMENT ON COLUMN model_catalog_entries.model_type IS 'Model type: llm (vLLM), embedding (SentenceTransformers), or vision (BentoML vision)';
 COMMENT ON COLUMN model_catalog_entries.huggingface_id IS 'Source HuggingFace model ID (e.g., Qwen/Qwen2.5-7B-Instruct)';
 COMMENT ON COLUMN model_catalog_entries.serving_profile IS 'vLLM/LiteLLM configuration (JSON)';
 COMMENT ON COLUMN model_catalog_entries.status IS 'Availability: staging (downloading), available (ready), deprecated (marked for removal)';
@@ -327,7 +327,7 @@ def _create_tables(cur: psycopg2.extensions.cursor) -> None:
         owner_id VARCHAR(128),
         project_id VARCHAR(128),
         storage_ref TEXT NOT NULL,
-        model_type VARCHAR(32) NOT NULL CHECK (model_type IN ('llm', 'embedding')),
+        model_type VARCHAR(32) NOT NULL CHECK (model_type IN ('llm', 'embedding', 'vision')),
         huggingface_id VARCHAR(256),
         description TEXT,
         serving_profile JSONB DEFAULT '{}',
@@ -444,6 +444,26 @@ def _migrate_schema(
         )
 
         logger.info("Migration to version 4 complete")
+
+    if from_version < 5:
+        # Version 5: Allow durable catalog entries for vision endpoints.
+        logger.info("Running migration to version 5")
+
+        cur.execute("""
+            ALTER TABLE model_catalog_entries
+            DROP CONSTRAINT IF EXISTS model_catalog_entries_model_type_check
+        """)
+        cur.execute("""
+            ALTER TABLE model_catalog_entries
+            ADD CONSTRAINT model_catalog_entries_model_type_check
+            CHECK (model_type IN ('llm', 'embedding', 'vision'))
+        """)
+        cur.execute(
+            "COMMENT ON COLUMN model_catalog_entries.model_type IS "
+            "'Model type: llm (vLLM), embedding (SentenceTransformers), or vision (BentoML vision)'"
+        )
+
+        logger.info("Migration to version 5 complete")
 
 
 def drop_schema(conn: psycopg2.extensions.connection) -> None:
