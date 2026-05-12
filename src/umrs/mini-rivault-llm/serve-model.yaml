@@ -66,9 +66,9 @@ services:
         source: ./litellm_fs/config.yaml.${UUID:?}
         target: /config.yaml
         read_only: true
-    depends_on:
-      ll-postgres:
-        condition: service_started
+    #depends_on:
+      #ll-postgres:          # Only needed with 'litellm-db' profile
+      #  condition: service_started
       #- vllm   # only available when 'vllm' profile is active
       #- mcpo   # commented out — mcpo/mcp-* disabled for now
     environment:
@@ -83,7 +83,7 @@ services:
       #LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?}
       #LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?}
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-8}
-      DATABASE_URL: postgresql://${LITELLM_POSTGRES_USER:-postgres}:${LITELLM_POSTGRES_PASSWORD:-litellm}@ll-postgres:5432/${LITELLM_POSTGRES_DB:-litellm} #XXX: see details https://docs.litellm.ai/docs/proxy/deploy#deploy-with-database to get Virtual Keys working
+      DATABASE_URL: ${LITELLM_DATABASE_URL:-} # Optional: enable only when LiteLLM DB schema/bootstrap is provisioned.
       #MCPO_API_KEY: ${MCPO_API_KEY:?}  # disabled — mcpo not in use
       VLLM_API_KEY: ${VLLM_API_KEY:?}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
@@ -113,7 +113,7 @@ services:
 ##          memory: "128M"
 
   ll-postgres:
-    profiles: [ harness ]
+    profiles: [ litellm-db ]  # Opt-in: add 'litellm-db' profile + set LITELLM_DATABASE_URL to enable.
     image: docker.io/postgres:${POSTGRES_VERSION:-17}
     networks:
       genai-private-net:
