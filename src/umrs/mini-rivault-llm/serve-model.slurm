@@ -162,6 +162,33 @@ _vllm_served_model_name="${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B
 NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}"
 export NGINX_LITELLM_DOCKER_PORT
 
+# Profiles must be resolved before writing env.${uuid}; several generated
+# values, especially LiteLLM database settings, depend on active profiles.
+RIVAULT_PROFILES=${RIVAULT_PROFILES:-"harness vllm"}
+if [[ -n "${RIVAULT_EXTRA_PROFILES:-}" ]]; then
+    for _extra_profile in $RIVAULT_EXTRA_PROFILES; do
+        if [[ " ${RIVAULT_PROFILES} " != *" ${_extra_profile} "* ]]; then
+            RIVAULT_PROFILES="${RIVAULT_PROFILES} ${_extra_profile}"
+        fi
+    done
+fi
+
+_litellm_db_profile_active=0
+if [[ " ${RIVAULT_PROFILES} " == *" litellm-db "* ]]; then
+    _litellm_db_profile_active=1
+fi
+_litellm_postgres_user="${LITELLM_POSTGRES_USER:-postgres}"
+_litellm_postgres_password="${LITELLM_POSTGRES_PASSWORD:-litellm}"
+_litellm_postgres_db="${LITELLM_POSTGRES_DB:-litellm}"
+_litellm_database_url_default=""
+if [[ "${_litellm_db_profile_active}" -eq 1 ]]; then
+    _litellm_database_url_default="postgresql://${_litellm_postgres_user}:${_litellm_postgres_password}@ll-postgres:5432/${_litellm_postgres_db}"
+fi
+_litellm_disable_schema_update_default="true"
+if [[ "${_litellm_db_profile_active}" -eq 1 || -n "${LITELLM_DATABASE_URL:-}" ]]; then
+    _litellm_disable_schema_update_default="false"
+fi
+
 cat <<EOF > "./env.${uuid}"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Mini-RiVault environment file — generated per-job (UUID=${uuid})
@@ -238,10 +265,11 @@ MCPO_API_KEY=${MCPO_API_KEY:-$(openssl rand -hex 32)}
 # LiteLLM Postgres DSN — ll-postgres container provides the DB when
 # the 'litellm-db' profile is active. Uses container hostname (ll-postgres)
 # resolved via the genai-private-net overlay network.
-LITELLM_POSTGRES_USER=${LITELLM_POSTGRES_USER:-postgres}
-LITELLM_POSTGRES_PASSWORD=${LITELLM_POSTGRES_PASSWORD:-litellm}
-LITELLM_POSTGRES_DB=${LITELLM_POSTGRES_DB:-litellm}
-LITELLM_DATABASE_URL=${LITELLM_DATABASE_URL:-postgresql://${LITELLM_POSTGRES_USER}:${LITELLM_POSTGRES_PASSWORD}@ll-postgres:5432/${LITELLM_POSTGRES_DB}}
+LITELLM_POSTGRES_USER=${_litellm_postgres_user}
+LITELLM_POSTGRES_PASSWORD=${_litellm_postgres_password}
+LITELLM_POSTGRES_DB=${_litellm_postgres_db}
+LITELLM_DATABASE_URL=${LITELLM_DATABASE_URL:-${_litellm_database_url_default}}
+LITELLM_DISABLE_SCHEMA_UPDATE=${LITELLM_DISABLE_SCHEMA_UPDATE:-${_litellm_disable_schema_update_default}}
 
 # ─── 6. EgressGuard & Proxy ──────────────────────────────────────────────────
 # All outbound traffic from containers is forced through egress-guard proxy.
@@ -266,6 +294,8 @@ RIVAULT_TIER=${RIVAULT_TIER:-user}
 RIVAULT_INSTANCE_ID=${RIVAULT_INSTANCE_ID:-${uuid}}
 # Owning project or user (for audit and resource scoping)
 RIVAULT_OWNER_ID=${RIVAULT_OWNER_ID:-${PROJECT_ID:-unknown}}
+# Active compose profiles for this mini-RiVault job
+RIVAULT_PROFILES=${RIVAULT_PROFILES}
 # Additional compose profiles to activate (space-separated)
 RIVAULT_EXTRA_PROFILES=${RIVAULT_EXTRA_PROFILES:-}
 
@@ -620,19 +650,8 @@ fi
 _substitute_required "litellm/config.yaml" "./litellm_fs/config.yaml.${uuid}" "VLLM_SERVED_MODEL_NAME_PLACEHOLDER"
 _substitute_required "litellm/config.yaml" "./litellm_fs/config.yaml.${uuid}" "VLLM_MODEL_PLACEHOLDER"
 
-# Profiles to activate (override via RIVAULT_PROFILES env var)
-# If site defaults were loaded above, runtime.profiles wins. Otherwise the
-# generic source fallback remains "harness vllm". For vision models add
-# "vision-bentoml":
-#   export RIVAULT_PROFILES="harness vllm vision-bentoml"
-RIVAULT_PROFILES=${RIVAULT_PROFILES:-"harness vllm"}
-if [[ -n "${RIVAULT_EXTRA_PROFILES:-}" ]]; then
-    for _extra_profile in $RIVAULT_EXTRA_PROFILES; do
-        if [[ " ${RIVAULT_PROFILES} " != *" ${_extra_profile} "* ]]; then
-            RIVAULT_PROFILES="${RIVAULT_PROFILES} ${_extra_profile}"
-        fi
-    done
-fi
+# Profiles to activate were resolved before env.${uuid} generation so profile
+# dependent values stay consistent with the compose stack.
 _profile_flags=""
 for _p in $RIVAULT_PROFILES; do
 	_profile_flags="${_profile_flags} --profile ${_p}"

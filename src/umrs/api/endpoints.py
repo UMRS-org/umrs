@@ -776,6 +776,30 @@ def _profile_list(value: Any) -> list[str]:
     return []
 
 
+def _active_site_profiles() -> list[str]:
+    profiles: list[str] = []
+    try:
+        from ..orchestrator.site_config import get_site_config
+
+        profiles.extend(get_site_config().runtime.profiles)
+    except Exception:
+        pass
+    profiles.extend(_profile_list(os.environ.get("RIVAULT_PROFILES")))
+    return list(dict.fromkeys(profiles))
+
+
+def _with_site_support_profiles(profiles: list[str]) -> list[str]:
+    resolved = list(profiles)
+    if (
+        resolved
+        and "harness" in resolved
+        and "litellm-db" not in resolved
+        and "litellm-db" in _active_site_profiles()
+    ):
+        resolved.append("litellm-db")
+    return resolved
+
+
 def _resolve_launch_profiles(
     model_name: str,
     model_entry: dict[str, Any] | None = None,
@@ -789,13 +813,13 @@ def _resolve_launch_profiles(
     entry = model_entry or _resolve_registered_model_entry(model_name)
     profile_profiles = _profile_list(_serving_profile(entry).get("launch_profiles"))
     if profile_profiles:
-        return profile_profiles
+        return _with_site_support_profiles(profile_profiles)
     backend = serving_backend or _resolve_serving_backend(model_name, entry)
     if backend == "bentoml" or _resolve_model_type(model_name, entry) == "vision":
         profiles = ["harness", "vision-bentoml"]
         if co_locate_vllm:
             profiles.insert(1, "vllm")
-        return profiles
+        return _with_site_support_profiles(profiles)
     return []
 
 
