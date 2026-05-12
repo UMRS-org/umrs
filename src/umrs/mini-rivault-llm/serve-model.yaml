@@ -91,6 +91,9 @@ services:
       # R-FastStart: Disable LiteLLM telemetry — it tries to reach litellm.ai on
       # startup; with egress blocked the connection times out, adding 10-30 s.
       LITELLM_TELEMETRY: "False"
+      # Suppress noisy Prisma/DB errors when DATABASE_URL is empty (non-fatal
+      # but produces ~20 lines of stacktraces on every startup).
+      DISABLE_SPEND_LOGS: "True"
       #MCPO_API_KEY: ${MCPO_API_KEY:?}  # disabled — mcpo not in use
       VLLM_API_KEY: ${VLLM_API_KEY:?}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
@@ -205,8 +208,9 @@ services:
       #VLLM_LOGGING_LEVEL: DEBUG
       #LLM_TRACE_FUNCTION: 1
       #NCCL_DEBUG: INFO
-      ##TODO needed/move to gpu version ????
-      VLLM_MM_INPUT_CACHE_GIB: 2
+      # Note: VLLM_MM_INPUT_CACHE_GIB removed — unknown to vLLM <0.20 and
+      # causes "Unknown vLLM environment variable" warnings. Re-add when
+      # the base image is upgraded to >=0.20.
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       TZ: ${GENAI_TZ:-Asia/Tokyo}
     # R-2 (Phase 2k): vLLM liveness probe; uses /health on the default

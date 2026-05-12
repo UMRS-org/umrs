@@ -135,6 +135,7 @@ class OrchestratorConfig:
     slurm_gpus: int = 1
     slurm_cpus: int = 8
     slurm_mem: str = "64G"
+    slurm_nodes: int = 1  # Number of nodes (>1 for multi-node PP)
     slurm_log_dir: str = "/var/log/rivault"
     slurm_job_info_dir: str = "/var/run/rivault"
     slurm_modules: list[str] = field(default_factory=lambda: ["cuda/12.1", "singularity"])
@@ -189,6 +190,7 @@ class OrchestratorConfig:
             slurm_gpus=int(os.getenv("SLURM_GPUS", "1")),
             slurm_cpus=int(os.getenv("SLURM_CPUS", "8")),
             slurm_mem=os.getenv("SLURM_MEM", "64G"),
+            slurm_nodes=int(os.getenv("SLURM_NODES", "1")),
             slurm_log_dir=os.getenv("SLURM_LOG_DIR", "/var/log/rivault"),
             slurm_job_info_dir=os.getenv("SLURM_JOB_INFO_DIR", "/var/run/rivault"),
             slurm_modules=_env_list("SLURM_MODULES", "cuda/12.1 singularity"),

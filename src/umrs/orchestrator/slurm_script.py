@@ -50,9 +50,11 @@ def _script_header(
     mem: str,
 ) -> str:
     nodelist = f"\n#SBATCH --nodelist={nodelist_hint}" if nodelist_hint else ""
+    nodes = cfg.slurm_nodes if cfg.slurm_nodes > 1 else 1
+    nodes_line = f"\n#SBATCH --nodes={nodes}" if nodes > 1 else ""
     return f"""#!/bin/bash
 #SBATCH --job-name=mini-rivault
-#SBATCH --partition={partition}{nodelist}
+#SBATCH --partition={partition}{nodelist}{nodes_line}
 #SBATCH --time={time_limit}
 #SBATCH --gres=gpu:{gpus}
 #SBATCH --cpus-per-task={cpus}

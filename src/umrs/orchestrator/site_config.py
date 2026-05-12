@@ -69,6 +69,7 @@ class SchedulerConfig:
     gpus: int = 1
     cpus: int = 8
     memory: str = "64G"
+    nodes: int = 1                              # Number of Slurm nodes (>1 for multi-node PP)
     extra_sbatch: list[str] = field(default_factory=list)  # e.g. ["--constraint=a100"]
 
 
@@ -230,6 +231,7 @@ class SiteConfig:
         env["SLURM_GPUS"] = str(self.scheduler.gpus)
         env["SLURM_CPUS"] = str(self.scheduler.cpus)
         env["SLURM_MEM"] = self.scheduler.memory
+        env["SLURM_NODES"] = str(self.scheduler.nodes)
 
         # Runtime
         if self.runtime.rivault_dir:
