@@ -186,6 +186,51 @@ def test_provision_endpoint_can_co_locate_vllm_for_vision_model(monkeypatch):
     ]
 
 
+def test_provision_endpoint_preserves_site_litellm_db_profile(monkeypatch):
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/qwopus3.5-9b",
+            "model_type": "llm",
+            "serving_profile": {"launch_profiles": ["harness", "vllm"]},
+        },
+    )
+    monkeypatch.setattr(
+        endpoints_api,
+        "_active_site_profiles",
+        lambda: ["harness", "vllm", "vision-bentoml", "litellm-db"],
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/umrs/endpoints/provision",
+            json={"project_id": "project-a", "model": "qwopus3.5-9b"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    assert service.requests[0].metadata["launch_profiles"] == [
+        "harness",
+        "vllm",
+        "litellm-db",
+    ]
+    assert (
+        service.requests[0].env_vars["RIVAULT_PROFILES"]
+        == "harness vllm litellm-db"
+    )
+
+
 def test_provision_endpoint_uses_gateway_project_header(monkeypatch):
     service = _StubOrchestrationService()
     monkeypatch.setattr(
