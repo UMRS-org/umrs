@@ -233,6 +233,13 @@ LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-$(openssl rand -hex 32)}
 VLLM_API_KEY=${VLLM_API_KEY:-$(openssl rand -hex 32)}
 # MCP orchestrator API key (reserved for MCPO when re-enabled)
 MCPO_API_KEY=${MCPO_API_KEY:-$(openssl rand -hex 32)}
+# LiteLLM Postgres DSN — ll-postgres container provides the DB when
+# the 'litellm-db' profile is active. Uses container hostname (ll-postgres)
+# resolved via the genai-private-net overlay network.
+LITELLM_POSTGRES_USER=${LITELLM_POSTGRES_USER:-postgres}
+LITELLM_POSTGRES_PASSWORD=${LITELLM_POSTGRES_PASSWORD:-litellm}
+LITELLM_POSTGRES_DB=${LITELLM_POSTGRES_DB:-litellm}
+LITELLM_DATABASE_URL=${LITELLM_DATABASE_URL:-postgresql://${LITELLM_POSTGRES_USER}:${LITELLM_POSTGRES_PASSWORD}@ll-postgres:5432/${LITELLM_POSTGRES_DB}}
 
 # ─── 6. EgressGuard & Proxy ──────────────────────────────────────────────────
 # All outbound traffic from containers is forced through egress-guard proxy.
