@@ -126,6 +126,36 @@ if [[ -z "$_vllm_host_model_path" ]]; then
     _model_id="${VLLM_MODEL:-Qwen/Qwen3-0.6B}"
     _vllm_host_model_path="${_hf_cache}/hub/models--$(echo "$_model_id" | tr '/' '--')/snapshots"
 fi
+
+# ─── Resolve through HuggingFace cache snapshots layout ──────────────────────
+# HF cache stores model weights under snapshots/<commit-hash>/.  If the
+# resolved path ends in a "snapshots" directory, or doesn't contain
+# config.json directly, descend into the first subdirectory that does.
+# This fixes "Invalid repository ID or local directory" errors from vLLM.
+_resolve_model_dir() {
+    local dir="$1"
+    # Already contains config.json → use as-is
+    if [[ -f "${dir}/config.json" || -f "${dir}/params.json" ]]; then
+        echo "$dir"
+        return
+    fi
+    # Look for config.json one level down (snapshots/<hash>/ or named subdir)
+    local candidate
+    for candidate in "${dir}"/*/; do
+        [[ -d "$candidate" ]] || continue
+        if [[ -f "${candidate}config.json" || -f "${candidate}params.json" ]]; then
+            # Remove trailing slash
+            echo "${candidate%/}"
+            return
+        fi
+    done
+    # Fallback: return original (let vLLM produce a clear error)
+    echo "$dir"
+}
+
+if [[ -d "$_vllm_host_model_path" ]]; then
+    _vllm_host_model_path="$(_resolve_model_dir "$_vllm_host_model_path")"
+fi
 _vllm_container_model_path="${VLLM_CONTAINER_MODEL_PATH:-/models/$(basename "$_vllm_host_model_path")}"
 _vllm_model_ref="${VLLM_MODEL_REF:-${_vllm_container_model_path}}"
 _vllm_served_model_name="${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}"
@@ -152,8 +182,11 @@ VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
 # ─── 2. vLLM: Parallelism & Performance ──────────────────────────────────────
 # Tensor parallelism degree (split layers across GPUs horizontally)
 VLLM_TP=${VLLM_TP:-1}
-# Pipeline parallelism degree (split layers across GPUs vertically)
+# Pipeline parallelism degree (split layers across GPUs vertically; >1 for
+# multi-node large-model inference via Slurm --nodes)
 VLLM_PP=${VLLM_PP:-1}
+# Number of Slurm nodes requested (>1 enables multi-node PP)
+SLURM_NODES=${SLURM_NODES:-1}
 # Container image tag for the vLLM service
 VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
 # Fraction of GPU memory vLLM is allowed to use for KV-cache
@@ -163,6 +196,9 @@ VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER:-hermes}
 # NCCL/RCCL shared-memory limits for multi-GPU collective comms
 VLLM_NCCL_MEM_LIMIT=8G
 VLLM_RCCL_MEM_LIMIT=8G
+# LiteLLM worker processes (system tier with concurrent users: set 4-8;
+# user/project tier single-user: keep at 1 for fast startup)
+LITELLM_CPU_LIMIT=${LITELLM_CPU_LIMIT:-1}
 
 # ─── 3. Vision Models (BentoML service) ──────────────────────────────────────
 # SAM3 (Segment Anything Model 2) — HuggingFace repo ID and local path

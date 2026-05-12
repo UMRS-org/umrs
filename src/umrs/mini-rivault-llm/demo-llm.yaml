@@ -159,7 +159,7 @@ services:
       VLLM_NO_USAGE_STATS: 1
       VLLM_API_KEY: ${VLLM_API_KEY}
       VLLM_CPU_KVCACHE_SPACE: ${VLLM_CPU_KVCACHE_SPACE:-8}
-      VLLM_MM_INPUT_CACHE_GIB: 2
+      # Note: VLLM_MM_INPUT_CACHE_GIB removed — unknown to vLLM <0.20.
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       TZ: ${GENAI_TZ:-Asia/Tokyo}
     cap_drop: [ ALL ]
