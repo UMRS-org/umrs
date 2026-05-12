@@ -150,11 +150,12 @@ export UMRS_S3_TUNNEL_PORT="${UMRS_S3_TUNNEL_PORT:-9000}"
 # These ${VAR:-default} values are fallback-only. The colocated site.yaml is
 # loaded first when available, so wrapper defaults are only a safety net when
 # site config or explicit env overrides are unavailable.
-# Use "harness vllm vision-bentoml" to start all services:
-#   - harness: nginx, litellm, ll-postgres, coredns, minio proxy
+# Use "harness vllm vision-bentoml litellm-db" to start all services:
+#   - harness: nginx, litellm, coredns, minio proxy
 #   - vllm: model server for text embeddings (e5-base-v2, clip, etc.)
 #   - vision-bentoml: BentoML vision service (SAM3, HMAE)
-export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vllm vision-bentoml}"
+#   - litellm-db: PostgreSQL backend for LiteLLM (spend logs, schema)
+export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vllm vision-bentoml litellm-db}"
 
 # ─── Fixed NGINX port for LiteLLM/BentoML proxy ──────────────────────────────
 # The inner serve-model.slurm randomises NGINX_LITELLM_DOCKER_PORT when unset.

@@ -36,6 +36,7 @@ runtime:
     - harness
     - vllm
     - vision-bentoml
+    - litellm-db
   gpu_passthrough: auto                  # try CDI first, fall back to device mapping
   cdi_spec: /var/run/cdi/nvidia.yaml
   cgroup_manager: cgroupfs
