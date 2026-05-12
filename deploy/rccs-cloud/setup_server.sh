@@ -74,6 +74,17 @@ log "Using $($PYTHON --version 2>&1)"
 if [[ -d "$VENV_DIR" ]]; then
     log "Virtual environment already exists at ${VENV_DIR}"
     log "  To rebuild: rm -rf ${VENV_DIR} && ./setup_server.sh"
+    ACTIVATE_FILE="${VENV_DIR}/bin/activate"
+    if [[ -f "$ACTIVATE_FILE" ]] && ! grep -Fq "VIRTUAL_ENV=\"${VENV_DIR}\"" "$ACTIVATE_FILE"; then
+        OLD_VENV_DIR="$(sed -n 's/^VIRTUAL_ENV=["'"'"']\{0,1\}\([^"'"'"']*\)["'"'"']\{0,1\}$/\1/p' "$ACTIVATE_FILE" | head -1)"
+        if [[ -n "$OLD_VENV_DIR" && "$OLD_VENV_DIR" != "$VENV_DIR" ]]; then
+            log "Repairing relocated virtualenv paths: ${OLD_VENV_DIR} -> ${VENV_DIR}"
+            find "${VENV_DIR}/bin" -type f -exec sed -i "s|${OLD_VENV_DIR}|${VENV_DIR}|g" {} +
+            if [[ -f "${VENV_DIR}/pyvenv.cfg" ]]; then
+                sed -i "s|${OLD_VENV_DIR}|${VENV_DIR}|g" "${VENV_DIR}/pyvenv.cfg"
+            fi
+        fi
+    fi
 else
     log "Creating virtual environment at ${VENV_DIR} ..."
     "$PYTHON" -m venv "$VENV_DIR"

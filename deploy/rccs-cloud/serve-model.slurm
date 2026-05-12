@@ -157,11 +157,11 @@ export UMRS_S3_TUNNEL_PORT="${UMRS_S3_TUNNEL_PORT:-9000}"
 #   - litellm-db: PostgreSQL backend for LiteLLM (spend logs, schema)
 export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vllm vision-bentoml litellm-db}"
 
-# ─── Fixed NGINX port for LiteLLM/BentoML proxy ──────────────────────────────
-# The inner serve-model.slurm randomises NGINX_LITELLM_DOCKER_PORT when unset.
-# We pin it so the UMRS server can create an SSH tunnel to a known port
-# (RIVAULT_REMOTE_PORT in .env must match this value).
-export NGINX_LITELLM_DOCKER_PORT="${NGINX_LITELLM_DOCKER_PORT:-8001}"
+# ─── NGINX port for LiteLLM/BentoML proxy ────────────────────────────────────
+# Endpoint provisioning passes LITELLM_PORT per job. Mirror it into the compose
+# publish variable so shell exports cannot override the generated env file.
+# Manual wrapper runs still default to 8001 for operator probes.
+export NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-8001}}"
 
 # ─── LiteLLM API key (shared between Slurm job and UMRS server) ─────────────
 # Must match LITELLM_MASTER_KEY in .env so the server can authenticate.

@@ -149,6 +149,20 @@ _resolve_model_dir() {
             return
         fi
     done
+    # RCCS-cloud keeps stable registry names as /umrs_models/<name>, while
+    # downloaded weights are staged under /umrs_models/sentence_transformers/<name>.
+    # Follow that colocated cache root when the registry path is a placeholder.
+    local staged_dir
+    staged_dir="$(dirname "$dir")/sentence_transformers/$(basename "$dir")"
+    if [[ -d "$staged_dir" ]]; then
+        for candidate in "$staged_dir" "$staged_dir"/*/; do
+            [[ -d "$candidate" ]] || continue
+            if [[ -f "${candidate%/}/config.json" || -f "${candidate%/}/params.json" ]]; then
+                echo "${candidate%/}"
+                return
+            fi
+        done
+    fi
     # Fallback: return original (let vLLM produce a clear error)
     echo "$dir"
 }
@@ -159,6 +173,8 @@ fi
 _vllm_container_model_path="${VLLM_CONTAINER_MODEL_PATH:-/models/$(basename "$_vllm_host_model_path")}"
 _vllm_model_ref="${VLLM_MODEL_REF:-${_vllm_container_model_path}}"
 _vllm_served_model_name="${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}"
+NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}"
+export NGINX_LITELLM_DOCKER_PORT
 
 cat <<EOF > "./env.${uuid}"
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -214,7 +230,7 @@ HMAE_CHECKPOINT=${HMAE_CHECKPOINT:-./models/hmae/latest_checkpoint.pth}
 # Published LiteLLM port on the host (clients connect here).
 # R-1 (Phase 2k): prefer orchestrator-allocated LITELLM_PORT to avoid
 # collision between concurrent jobs; fall back to random if unset.
-NGINX_LITELLM_DOCKER_PORT=${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}
+NGINX_LITELLM_DOCKER_PORT=${NGINX_LITELLM_DOCKER_PORT}
 # First three octets of the private container subnet (genai-private-net)
 PRIV_IP1TO3=${PRIV_IP1TO3:-192.168.4}
 # DNS resolver for containers (podman uses host resolv.conf, not 127.0.0.11)
