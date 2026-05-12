@@ -149,20 +149,6 @@ _resolve_model_dir() {
             return
         fi
     done
-    # RCCS-cloud keeps stable registry names as /umrs_models/<name>, while
-    # downloaded weights are staged under /umrs_models/sentence_transformers/<name>.
-    # Follow that colocated cache root when the registry path is a placeholder.
-    local staged_dir
-    staged_dir="$(dirname "$dir")/sentence_transformers/$(basename "$dir")"
-    if [[ -d "$staged_dir" ]]; then
-        for candidate in "$staged_dir" "$staged_dir"/*/; do
-            [[ -d "$candidate" ]] || continue
-            if [[ -f "${candidate%/}/config.json" || -f "${candidate%/}/params.json" ]]; then
-                echo "${candidate%/}"
-                return
-            fi
-        done
-    fi
     # Fallback: return original (let vLLM produce a clear error)
     echo "$dir"
 }
