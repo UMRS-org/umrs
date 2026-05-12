@@ -82,9 +82,15 @@ services:
       LITELLM_LOG: "INFO"
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
-      NUM_WORKERS: ${LITELLM_CPU_LIMIT:-4}
+      # R-FastStart: 1 worker starts ~3× faster than 4 workers (one Python
+      # process vs forking four). asyncio handles concurrency within the single
+      # worker. Set LITELLM_CPU_LIMIT to raise for high-throughput demos.
+      NUM_WORKERS: ${LITELLM_CPU_LIMIT:-1}
       DATABASE_URL: ${LITELLM_DATABASE_URL:-}
       DISABLE_SCHEMA_UPDATE: "true"  # Suppress Prisma background noise when DATABASE_URL is empty
+      # R-FastStart: Disable telemetry so LiteLLM doesn't try to reach litellm.ai
+      # on startup (connection times out when egress is blocked).
+      LITELLM_TELEMETRY: "False"
       MCPO_API_KEY: ${MCPO_API_KEY}
       VLLM_API_KEY: ${VLLM_API_KEY}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
