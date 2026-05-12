@@ -84,6 +84,7 @@ services:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-4}
       DATABASE_URL: ${LITELLM_DATABASE_URL:-}
+      DISABLE_SCHEMA_UPDATE: "true"  # Suppress Prisma background noise when DATABASE_URL is empty
       MCPO_API_KEY: ${MCPO_API_KEY}
       VLLM_API_KEY: ${VLLM_API_KEY}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
