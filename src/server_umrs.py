@@ -415,8 +415,10 @@ def server_event_loop(
                         control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
 
             elif cmd in _REQUEST_REPLY_HANDLERS:
-                _handle_request_reply(cmd, payload, update_status_func,
-                                      *_REQUEST_REPLY_HANDLERS[cmd])
+                handler, handler_kwargs = _REQUEST_REPLY_HANDLERS[cmd]
+                _handle_request_reply(cmd, payload, update_status_func, handler, **handler_kwargs)
+                # _handle_request_reply(cmd, payload, update_status_func,
+                #                       *_REQUEST_REPLY_HANDLERS[cmd])
 
             else:
                 print(f"====> Error: unknown command '{cmd}' returned by server loop")
