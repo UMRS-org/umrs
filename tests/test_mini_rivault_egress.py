@@ -70,6 +70,7 @@ def test_slurm_wrapper_initializes_litellm_db_with_sql_migrations():
     assert "LITELLM_DB_SQL_MIGRATIONS=" in text
     assert "run_litellm_db_sql_migrations" in text
     assert "up --remove-orphans --detach ll-postgres" in text
+    assert "${GPUoverride[@]}" in text
     assert "/app/litellm-proxy-extras/litellm_proxy_extras/migrations" in text
     assert "psql -v ON_ERROR_STOP=1" in text
     assert "LITELLM_DISABLE_SCHEMA_UPDATE=" in text
