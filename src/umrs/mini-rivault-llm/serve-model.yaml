@@ -82,9 +82,15 @@ services:
       #LANGFUSE_HOST: http://langfuse-web:3000
       #LANGFUSE_SECRET_KEY: ${LANGFUSE_INIT_PROJECT_SECRET_KEY:?}
       #LANGFUSE_PUBLIC_KEY: ${LANGFUSE_INIT_PROJECT_PUBLIC_KEY:?}
-      NUM_WORKERS: ${LITELLM_CPU_LIMIT:-8}
+      # R-FastStart: 1 worker = 1 Python process; enough for async mini-rivault.
+      # 8 workers fork 8 full Python imports (~60-90 s); 1 worker cuts that to ~20-30 s.
+      # Set LITELLM_CPU_LIMIT to a higher value only if you need parallelism.
+      NUM_WORKERS: ${LITELLM_CPU_LIMIT:-1}
       DATABASE_URL: ${LITELLM_DATABASE_URL:-} # Optional: enable only when LiteLLM DB schema/bootstrap is provisioned.
       DISABLE_SCHEMA_UPDATE: "true"  # Suppress Prisma background noise when DATABASE_URL is empty
+      # R-FastStart: Disable LiteLLM telemetry — it tries to reach litellm.ai on
+      # startup; with egress blocked the connection times out, adding 10-30 s.
+      LITELLM_TELEMETRY: "False"
       #MCPO_API_KEY: ${MCPO_API_KEY:?}  # disabled — mcpo not in use
       VLLM_API_KEY: ${VLLM_API_KEY:?}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
@@ -94,10 +100,10 @@ services:
     healthcheck:
       test: [ "CMD-SHELL",
               "wget --no-verbose --tries=1 http://localhost:4000/health/liveliness || exit 1" ]
-      interval: 30s
+      interval: 10s
       timeout: 10s
       retries: 5
-      start_period: 60s
+      start_period: 20s
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
     userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"
@@ -204,15 +210,16 @@ services:
       PYTORCH_CUDA_ALLOC_CONF: "expandable_segments:True"
       TZ: ${GENAI_TZ:-Asia/Tokyo}
     # R-2 (Phase 2k): vLLM liveness probe; uses /health on the default
-    # port 8000. start_period is generous because large models (70B+) can
-    # take 3-5 min to load weights.
+    # port 8000. start_period covers both model loading and enforce-eager
+    # compilation; 60 s is sufficient for bonsai/small models (≤8 B params)
+    # — raise via RIVAULT_VLLM_STARTUP_TIMEOUT_SEC for 70B+ deployments.
     healthcheck:
       test: [ "CMD-SHELL",
               "python3 -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)\" || exit 1" ]
-      interval: 30s
+      interval: 10s
       timeout: 10s
       retries: 5
-      start_period: 300s
+      start_period: 60s
     cap_drop: [ ALL ]
     cap_add: [ sys_nice ]
     userns_mode: "${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}"

@@ -288,7 +288,9 @@ fi
 # podman-compose to fail with "External network does not exists".
 if command -v systemctl >/dev/null 2>&1 && command -v systemd >/dev/null 2>&1; then
     systemd --user &
-    sleep 5
+    # R-FastStart: 2 s is enough for the user session socket to appear;
+    # the original 5 s was overly conservative.
+    sleep 2
     systemctl --user daemon-reload 2>/dev/null || true
     systemctl --user enable --now podman.socket 2>/dev/null || true
     # Only export DOCKER_HOST when the socket was actually created
@@ -501,14 +503,16 @@ start_managed_ssh_tunnel "127.0.0.1:${UMRS_S3_TUNNEL_PORT}:127.0.0.1:${UMRS_S3_T
 # ─── Verify SSH tunnel liveness ─────────────────────────────────────────────
 # Wait briefly then probe the forwarded port to catch silent tunnel failures
 # early rather than discovering them on the first inference request.
+# R-FastStart: 2 probes × 1 s instead of 3 × 2 s — saves up to 4 s while still
+# providing a meaningful liveness signal before the stack launches.
 _tunnel_ok=0
-for _attempt in 1 2 3; do
-    sleep 2
+for _attempt in 1 2; do
+    sleep 1
     if bash -c "echo > /dev/tcp/127.0.0.1/${_S3_LOCAL_PORT}" 2>/dev/null; then
         _tunnel_ok=1
         break
     fi
-    echo "[rivault] SSH tunnel probe attempt ${_attempt}/3 failed, retrying..."
+    echo "[rivault] SSH tunnel probe attempt ${_attempt}/2 failed, retrying..."
 done
 if [ "$_tunnel_ok" -eq 1 ]; then
     echo "[rivault] SSH tunnel verified: port ${_S3_LOCAL_PORT} is reachable"

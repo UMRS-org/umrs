@@ -76,8 +76,10 @@ class ReadinessConfig:
     read_timeout_sec: float = 10.0  # Read timeout per request
 
     # Backoff settings (exponential with jitter)
+    # R-FastStart: cap at 5 s (was 10 s) so the poller catches a ready
+    # endpoint within one additional poll cycle instead of two.
     initial_delay_sec: float = 1.0  # Initial delay between polls
-    max_delay_sec: float = 10.0  # Maximum delay between polls
+    max_delay_sec: float = 5.0  # Maximum delay between polls
     backoff_multiplier: float = 2.0  # Backoff multiplier
     jitter_factor: float = 0.1  # Random jitter (±10%)
 
