@@ -131,94 +131,112 @@ _vllm_model_ref="${VLLM_MODEL_REF:-${_vllm_container_model_path}}"
 _vllm_served_model_name="${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}"
 
 cat <<EOF > "./env.${uuid}"
-###MANDATORY
+# ═══════════════════════════════════════════════════════════════════════════════
+# Mini-RiVault environment file — generated per-job (UUID=${uuid})
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ─── 1. vLLM: LLM Model Identity & Paths ─────────────────────────────────────
+# Which HuggingFace model ID to serve (used by vLLM --model flag)
 VLLM_MODEL=${VLLM_MODEL:-Qwen/Qwen3-0.6B}
+# Local HuggingFace hub cache directory (legacy layout fallback)
 VLLM_PATH_TO_HUGGINGFACE=${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}
+# Resolved host path to the model weights directory
+VLLM_HOST_MODEL_PATH=${_vllm_host_model_path}
+# Mount target path inside the vLLM container
+VLLM_CONTAINER_MODEL_PATH=${_vllm_container_model_path}
+# Model reference passed to vLLM --model (container path or HF ID)
+VLLM_MODEL_REF=${_vllm_model_ref}
+# Name exposed via /v1/models endpoint (what clients see)
+VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
+
+# ─── 2. vLLM: Parallelism & Performance ──────────────────────────────────────
+# Tensor parallelism degree (split layers across GPUs horizontally)
+VLLM_TP=${VLLM_TP:-1}
+# Pipeline parallelism degree (split layers across GPUs vertically)
+VLLM_PP=${VLLM_PP:-1}
+# Container image tag for the vLLM service
+VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
+# Fraction of GPU memory vLLM is allowed to use for KV-cache
+VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
+# Tool-call parsing strategy (hermes = Hermes-style function call format)
+VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER:-hermes}
+# NCCL/RCCL shared-memory limits for multi-GPU collective comms
+VLLM_NCCL_MEM_LIMIT=8G
+VLLM_RCCL_MEM_LIMIT=8G
+
+# ─── 3. Vision Models (BentoML service) ──────────────────────────────────────
+# SAM3 (Segment Anything Model 2) — HuggingFace repo ID and local path
 SAM3_MODEL=${SAM3_MODEL:-facebook/sam2-hiera-small}
 VISION_MODEL_PATH=${VISION_MODEL_PATH:-./models/sam3}
 SAM3_MODEL_PATH=${SAM3_MODEL_PATH:-./models/sam3}
+# HMAE (Hierarchical Masked Autoencoder) — weights, config, checkpoint
 HMAE_MODEL_PATH=${HMAE_MODEL_PATH:-./models/hmae}
 HMAE_CONFIG_PATH=${HMAE_CONFIG_PATH:-./models/hmae/infer_hmae_vit_b.yaml}
 HMAE_CHECKPOINT=${HMAE_CHECKPOINT:-./models/hmae/latest_checkpoint.pth}
-VLLM_HOST_MODEL_PATH=${_vllm_host_model_path}
-VLLM_CONTAINER_MODEL_PATH=${_vllm_container_model_path}
-VLLM_MODEL_REF=${_vllm_model_ref}
-VLLM_SERVED_MODEL_NAME=${_vllm_served_model_name}
-VLLM_TP=${VLLM_TP:-1}						# tensor parallelism
-VLLM_PP=${VLLM_PP:-1}						# pipeline parallelism
-# R-1 (Phase 2k): honor the orchestrator-allocated port (LITELLM_PORT) over
-# any pre-existing NGINX_LITELLM_DOCKER_PORT, and only fall back to a random
-# pick when neither is set. PortManager in UMRS coordinates LITELLM_PORT, so
-# preferring it eliminates the silent collision risk between concurrent jobs.
+
+# ─── 4. Networking & Ports ────────────────────────────────────────────────────
+# Published LiteLLM port on the host (clients connect here).
+# R-1 (Phase 2k): prefer orchestrator-allocated LITELLM_PORT to avoid
+# collision between concurrent jobs; fall back to random if unset.
 NGINX_LITELLM_DOCKER_PORT=${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}
-# R-3 (Phase 2k): 256-bit entropy for keys instead of 64. Note that
-# LITELLM_SALT_KEY is generated per-job here because LiteLLM's Postgres state
-# is currently tmpfs-only; if/when persistence is added, the salt MUST come
-# from a stable secret store or all encrypted columns become unreadable.
-LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-$(openssl rand -hex 32)}
-LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-$(openssl rand -hex 32)}
-VLLM_API_KEY=${VLLM_API_KEY:-$(openssl rand -hex 32)}
-MCPO_API_KEY=${MCPO_API_KEY:-$(openssl rand -hex 32)}
-UMRS_S3_BUCKET_HOST=${UMRS_S3_BUCKET_HOST:-${SLURM_SUBMIT_HOST}}		# httpforever.com
-UMRS_S3_BUCKET_PORT=${UMRS_S3_BUCKET_PORT:-9000}
+# First three octets of the private container subnet (genai-private-net)
 PRIV_IP1TO3=${PRIV_IP1TO3:-192.168.4}
-CONTAINER_RUNTIME_DNS=${CONTAINER_RUNTIME_DNS:-/etc/resolv.conf}			# Note: docker uses 127.0.0.11 while podman forces me to use /etc/resolv.conf
-UUID=00000000-0000-0000-0000-000000000000
-RIVAULT_USERNS_MODE=${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}
+# DNS resolver for containers (podman uses host resolv.conf, not 127.0.0.11)
+CONTAINER_RUNTIME_DNS=${CONTAINER_RUNTIME_DNS:-/etc/resolv.conf}
+# S3/MinIO endpoint forwarded from login node via SSH tunnel
+UMRS_S3_BUCKET_HOST=${UMRS_S3_BUCKET_HOST:-${SLURM_SUBMIT_HOST}}
+UMRS_S3_BUCKET_PORT=${UMRS_S3_BUCKET_PORT:-9000}
+
+# ─── 5. Authentication & Secrets ─────────────────────────────────────────────
+# R-3 (Phase 2k): 256-bit entropy. LITELLM_SALT_KEY is per-job because
+# LiteLLM Postgres is tmpfs-only; move to stable secret store if persisted.
+LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-$(openssl rand -hex 32)}
+# LiteLLM proxy master key (Bearer token for /v1/* requests)
+LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY:-$(openssl rand -hex 32)}
+# Internal vLLM API key (LiteLLM → vLLM backend auth)
+VLLM_API_KEY=${VLLM_API_KEY:-$(openssl rand -hex 32)}
+# MCP orchestrator API key (reserved for MCPO when re-enabled)
+MCPO_API_KEY=${MCPO_API_KEY:-$(openssl rand -hex 32)}
+
+# ─── 6. EgressGuard & Proxy ──────────────────────────────────────────────────
+# All outbound traffic from containers is forced through egress-guard proxy.
+# RIVAULT_* variants are canonical; HTTP_PROXY/http_proxy are conventional
+# aliases consumed by curl, pip, etc. inside containers.
 RIVAULT_HTTP_PROXY=${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}
 RIVAULT_HTTPS_PROXY=${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
 RIVAULT_NO_PROXY=${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}
-RIVAULT_TIER=${RIVAULT_TIER:-user}
-RIVAULT_EXTRA_PROFILES=${RIVAULT_EXTRA_PROFILES:-}
-RIVAULT_INSTANCE_ID=${RIVAULT_INSTANCE_ID:-${uuid}}
-RIVAULT_OWNER_ID=${RIVAULT_OWNER_ID:-${PROJECT_ID:-unknown}}
-MCP_SERVERS_PATH=${MCP_SERVERS_PATH:-/tmp/mcp-servers}
-PROJECT_DATA_PATH=${PROJECT_DATA_PATH:-/tmp/project-data}
-RAG_INDEX_PATH=${RAG_INDEX_PATH:-/tmp/rag-index}
-EGRESS_DOMAIN_ALLOWLIST=${EGRESS_DOMAIN_ALLOWLIST:-}
 HTTP_PROXY=${HTTP_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
 HTTPS_PROXY=${HTTPS_PROXY:-${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}}
 NO_PROXY=${NO_PROXY:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
 http_proxy=${http_proxy:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
 https_proxy=${https_proxy:-${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}}
 no_proxy=${no_proxy:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
-###OPTIONAL
-VLLM_DOCKER_TAG=${VLLM_DOCKER_TAG:-v0.20.0}
-VLLM_GPU_MEM_UTIL=${VLLM_GPU_MEM_UTIL:-0.95}
-VLLM_TOOL_CALL_PARSER=${VLLM_TOOL_CALL_PARSER:-hermes}
-#VLLM_MODEL_TIKTOKEN=
-#VLLM_CPU_KVCACHE_SPACE=
-#VLLM_REPLICAS=
-#VLLM_CPU_LIMIT=
-#VLLM_MEM_LIMIT=
-#MCPO_DOCKER_TAG=
-#MCPO_CPU_LIMIT=
-#MCPO_MEM_LIMIT=
-#NGINX_DOCKER_TAG=
-#NGINX_OUT_IP4=
-#NGINX_REPLICAS=
-#NGINX_CPU_LIMIT=
-#NGINX_MEM_LIMIT=
-#COREDNS_DOCKER_TAG=
-#COREDNS_IP4=
-#COREDNS_REPLICAS=
-#COREDNS_CPU_LIMIT=
-#COREDNS_MEM_LIMIT=
-#LITELLM_DOCKER_TAG=
-#LITELLM_POSTGRES_USER=
-#LITELLM_POSTGRES_PASSWORD=
-#LITELLM_POSTGRES_DB=
-#LITELLM_MAX_REQUESTS_BEFORE_RESTART=
-#LITELLM_REPLICAS=
-#LITELLM_CPU_LIMIT=
-#LITELLM_MEM_LIMIT=
-#POSTGRES_VERSION=
-#POSTGRES_REPLICAS=
-#POSTGRES_CPU_LIMIT=
-#POSTGRES_MEM_LIMIT=
-#GENAI_TZ=
-VLLM_NCCL_MEM_LIMIT=8G
-VLLM_RCCL_MEM_LIMIT=8G
+# Comma-separated domains allowed through egress-guard (empty = fully offline)
+EGRESS_DOMAIN_ALLOWLIST=${EGRESS_DOMAIN_ALLOWLIST:-}
+
+# ─── 7. Multi-Tenancy & Instance Identity ────────────────────────────────────
+# Deployment tier: system | project | user (controls isolation policy)
+RIVAULT_TIER=${RIVAULT_TIER:-user}
+# Unique instance ID for this mini-RiVault job
+RIVAULT_INSTANCE_ID=${RIVAULT_INSTANCE_ID:-${uuid}}
+# Owning project or user (for audit and resource scoping)
+RIVAULT_OWNER_ID=${RIVAULT_OWNER_ID:-${PROJECT_ID:-unknown}}
+# Additional compose profiles to activate (space-separated)
+RIVAULT_EXTRA_PROFILES=${RIVAULT_EXTRA_PROFILES:-}
+
+# ─── 8. Container Runtime ────────────────────────────────────────────────────
+# Placeholder replaced by sed after network creation (actual subnet octet)
+UUID=00000000-0000-0000-0000-000000000000
+# User namespace mode for rootless podman (map container root to host user)
+RIVAULT_USERNS_MODE=${RIVAULT_USERNS_MODE:-keep-id:uid=0,gid=0}
+
+# ─── 9. User-Mounted Resources (MCP / RAG / Project Data) ────────────────────
+# Host path to user-provided MCP server code (bind-mounted read-only)
+MCP_SERVERS_PATH=${MCP_SERVERS_PATH:-/tmp/mcp-servers}
+# Host path to project datasets (bind-mounted read-only)
+PROJECT_DATA_PATH=${PROJECT_DATA_PATH:-/tmp/project-data}
+# Host path to pre-built RAG index (bind-mounted read-only)
+RAG_INDEX_PATH=${RAG_INDEX_PATH:-/tmp/rag-index}
 EOF
 
 GPUoverride=()
@@ -255,25 +273,6 @@ if ! $_pc_ok; then
         { python3 -m venv --system-site-packages /tmp/pc-venv && /tmp/pc-venv/bin/pip install --quiet 'podman-compose>=1.2.0' && export PATH="/tmp/pc-venv/bin:$PATH"; }
     echo "[rivault] podman-compose: $(podman-compose -v 2>/dev/null)"
 fi
-
-## download model example (LLM for vLLM)
-#mkdir -p ./models/vllm/huggingface/modules
-#pip3 install huggingface_hub
-#python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"Qwen/Qwen3-0.6B\", ignore_patterns=[\"metal/*\", \"original/*\"], cache_dir=\"./models/vllm/huggingface/hub\")"
-#ls -la ./models/vllm/huggingface/modules/../hub/
-
-# pre-download SAM3 image embedding model
-########_sam3_model=$(/bin/grep '^SAM3_MODEL=' "./env.${uuid}" | /bin/cut -d'=' -f2)
-########_vision_path=$(/bin/grep '^VISION_MODEL_PATH=' "./env.${uuid}" | /bin/cut -d'=' -f2)
-########if [[ -n "$_sam3_model" && ! -d "${_vision_path}" ]]; then
-########	echo "[rivault] Downloading SAM3 model '${_sam3_model}' to '${_vision_path}'..."
-########	mkdir -p "${_vision_path}"
-########	pip3 install -q huggingface_hub
-########	python3 -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id=\"${_sam3_model}\", local_dir=\"${_vision_path}\")"
-########	echo "[rivault] SAM3 model download complete."
-########else
-########	echo "[rivault] SAM3 model already present at '${_vision_path}', skipping download."
-########fi
 
 # fix some cgroup/podman stuff on some nodes — full systemd bootstrap
 # from upstream reference. Needed on nodes where user session is not pre-started.
@@ -659,8 +658,6 @@ if ! podman-compose --project-name "exit" --in-pod false \
 	exit 1
 fi
 
-ip a
-
 # ─── Vision service readiness gate ──────────────────────────────────────────
 # If vision-bentoml profile is active, wait for BentoML to actually be ready
 # (port 3000 bound AND /readyz returning 200) before declaring the stack up.
@@ -746,18 +743,3 @@ if [ "$ELAPSED" -ge "$RIVAULT_JOB_TIMEOUT" ]; then
 	echo "[rivault] Timeout ${RIVAULT_JOB_TIMEOUT}s reached. Exiting."
 	exit 124
 fi
-
-# test
-#curl -H "Authorization: Bearer $(/bin/grep '^LITELLM_MASTER_KEY=' "./env.${uuid}" |/bin/cut -d'=' -f2)" \
-#        "http://localhost:$(/bin/grep '^NGINX_LITELLM_DOCKER_PORT=' "./env.${uuid}" |/bin/cut -d'=' -f2)/v1/models"
-#podman exec -it $(podman ps -a|/bin/grep vllm|cut -d' ' -f1) curl -v httpforever.com:9000	#XXX: need 'http://$host:80' in out-nginx.conf
-
-# stop
-#podman-compose --env-file "./env.${uuid}" \
-#               --file "./userdata-access.yaml" down
-#podman-compose --env-file "./env.${uuid}" \
-#               --file "./serve-model.yaml" ${GPUoverride[@]} down
-#
-#podman network rm -f genai-private-net
-#
-#rm -f "./env.${uuid}" "./nginx_fs/out-nginx.conf.${uuid}" "./coredns_fs/coredns.conf.${uuid}" "./litellm_fs/config.yaml.${uuid}"

@@ -73,7 +73,7 @@ services:
         target: /config.yaml
         read_only: true
     depends_on:
-      - ll-postgres
+      #- ll-postgres  # Only needed with LITELLM_DATABASE_URL set
       - vllm
       - mcpo
     environment:
@@ -83,7 +83,7 @@ services:
       LITELLM_SALT_KEY: ${LITELLM_SALT_KEY}
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
       NUM_WORKERS: ${LITELLM_CPU_LIMIT:-4}
-      DATABASE_URL: postgresql://${LITELLM_POSTGRES_USER:-postgres}:${LITELLM_POSTGRES_PASSWORD:-litellm}@ll-postgres:5432/${LITELLM_POSTGRES_DB:-litellm}
+      DATABASE_URL: ${LITELLM_DATABASE_URL:-}
       MCPO_API_KEY: ${MCPO_API_KEY}
       VLLM_API_KEY: ${VLLM_API_KEY}
       TZ: ${GENAI_TZ:-Asia/Tokyo}
@@ -96,6 +96,7 @@ services:
   # LiteLLM internal postgres (ephemeral)
   # ---------------------------------------------------------------------------
   ll-postgres:
+    profiles: [ litellm-db ]  # Opt-in: enable only when LITELLM_DATABASE_URL is set
     image: docker.io/postgres:${POSTGRES_VERSION:-17}
     networks:
       demo-llm-net:
