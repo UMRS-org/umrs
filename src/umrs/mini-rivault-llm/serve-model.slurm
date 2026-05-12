@@ -184,8 +184,13 @@ _litellm_database_url_default=""
 if [[ "${_litellm_db_profile_active}" -eq 1 ]]; then
     _litellm_database_url_default="postgresql://${_litellm_postgres_user}:${_litellm_postgres_password}@ll-postgres:5432/${_litellm_postgres_db}"
 fi
+_litellm_db_sql_migrations_default="false"
+if [[ "${_litellm_db_profile_active}" -eq 1 ]]; then
+    _litellm_db_sql_migrations_default="true"
+fi
+_litellm_db_sql_migrations="${LITELLM_DB_SQL_MIGRATIONS:-${_litellm_db_sql_migrations_default}}"
 _litellm_disable_schema_update_default="true"
-if [[ "${_litellm_db_profile_active}" -eq 1 || -n "${LITELLM_DATABASE_URL:-}" ]]; then
+if [[ "${_litellm_db_sql_migrations}" != "true" && ( "${_litellm_db_profile_active}" -eq 1 || -n "${LITELLM_DATABASE_URL:-}" ) ]]; then
     _litellm_disable_schema_update_default="false"
 fi
 
@@ -270,6 +275,7 @@ LITELLM_POSTGRES_PASSWORD=${_litellm_postgres_password}
 LITELLM_POSTGRES_DB=${_litellm_postgres_db}
 LITELLM_DATABASE_URL=${LITELLM_DATABASE_URL:-${_litellm_database_url_default}}
 LITELLM_DISABLE_SCHEMA_UPDATE=${LITELLM_DISABLE_SCHEMA_UPDATE:-${_litellm_disable_schema_update_default}}
+LITELLM_DB_SQL_MIGRATIONS=${_litellm_db_sql_migrations}
 
 # ─── 6. EgressGuard & Proxy ──────────────────────────────────────────────────
 # All outbound traffic from containers is forced through egress-guard proxy.
@@ -699,12 +705,110 @@ cleanup_stack() {
           "./nginx_fs/out-nginx.conf.${uuid}" \
           "./coredns_fs/coredns.conf.${uuid}" \
           "./litellm_fs/config.yaml.${uuid}" >/dev/null 2>&1 || true
+    rm -rf "./runtime-litellm-migrations.${uuid}" >/dev/null 2>&1 || true
     return "$rc"
 }
 
 trap 'cleanup_stack "signal:TERM" 143; exit 143' TERM
 trap 'cleanup_stack "signal:INT" 130; exit 130' INT
 trap 'cleanup_stack "exit" "$?"' EXIT
+
+run_litellm_db_sql_migrations() {
+    if [[ "${_litellm_db_profile_active}" -ne 1 || "${_litellm_db_sql_migrations}" != "true" ]]; then
+        return 0
+    fi
+
+    local migrations_dir="./runtime-litellm-migrations.${uuid}"
+    local litellm_image="ghcr.io/berriai/litellm-non_root:${LITELLM_DOCKER_TAG:-main-stable}"
+    local postgres_image="docker.io/postgres:${POSTGRES_VERSION:-17}"
+    local postgres_container_id=""
+    local db_ready=0
+    local applied_count=""
+
+    echo "[rivault] Preparing LiteLLM DB schema using bundled SQL migrations..."
+    rm -rf "${migrations_dir}" 2>/dev/null || true
+    mkdir -p "${migrations_dir}"
+
+    if ! podman-compose --project-name "rivault" --in-pod false \
+             --env-file "./env.${uuid}" \
+             --file "./serve-model.yaml" \
+             ${_profile_flags} \
+             up --remove-orphans --detach ll-postgres; then
+        echo "[rivault] ERROR: failed to start ll-postgres for LiteLLM DB migrations"
+        return 1
+    fi
+
+    for _attempt in $(seq 1 60); do
+        postgres_container_id="$(podman ps --filter 'name=rivault_ll-postgres_1' --format '{{.ID}}' | head -1)"
+        if [[ -n "${postgres_container_id}" ]] && \
+           podman run --rm --network "container:${postgres_container_id}" \
+               -e "PGPASSWORD=${_litellm_postgres_password}" \
+               "${postgres_image}" \
+               psql -h 127.0.0.1 -U "${_litellm_postgres_user}" -d "${_litellm_postgres_db}" \
+                    -Atc 'select 1' >/dev/null 2>&1; then
+            db_ready=1
+            break
+        fi
+        sleep 2
+    done
+    if [[ "${db_ready}" -ne 1 ]]; then
+        echo "[rivault] ERROR: ll-postgres did not become ready for LiteLLM DB migrations"
+        return 1
+    fi
+
+    if ! podman run --rm --user 0:0 \
+             -v "$(pwd)/${migrations_dir}:/out:rw" \
+             --entrypoint sh \
+             "${litellm_image}" \
+             -lc 'set -e
+for src in \
+    /app/litellm-proxy-extras/litellm_proxy_extras/migrations \
+    /usr/lib/python*/site-packages/litellm_proxy_extras/migrations; do
+    if [ -d "$src" ]; then
+        cp -R "$src" /out/migrations
+        exit 0
+    fi
+done
+echo "LiteLLM migrations directory not found in image" >&2
+exit 42'; then
+        echo "[rivault] ERROR: failed to extract LiteLLM SQL migrations from ${litellm_image}"
+        return 1
+    fi
+
+    applied_count="$({
+        podman run --rm --network "container:${postgres_container_id}" \
+            -v "$(pwd)/${migrations_dir}/migrations:/migrations:ro" \
+            -e "PGPASSWORD=${_litellm_postgres_password}" \
+            -e "LITELLM_POSTGRES_USER=${_litellm_postgres_user}" \
+            -e "LITELLM_POSTGRES_DB=${_litellm_postgres_db}" \
+            "${postgres_image}" \
+            sh -lc 'set -e
+count=0
+for file in /migrations/*/migration.sql; do
+    [ -f "$file" ] || continue
+    count=$((count + 1))
+    psql -v ON_ERROR_STOP=1 \
+         -h 127.0.0.1 \
+         -U "$LITELLM_POSTGRES_USER" \
+         -d "$LITELLM_POSTGRES_DB" \
+         -f "$file" >/dev/null
+done
+printf "%s" "$count"'
+    } 2>/dev/null)" || {
+        echo "[rivault] ERROR: failed to apply LiteLLM SQL migrations"
+        return 1
+    }
+
+    if [[ -z "${applied_count}" || "${applied_count}" -eq 0 ]]; then
+        echo "[rivault] ERROR: no LiteLLM SQL migrations were applied"
+        return 1
+    fi
+    echo "[rivault] LiteLLM DB schema initialized (${applied_count} SQL migrations)."
+}
+
+if ! run_litellm_db_sql_migrations; then
+    exit 1
+fi
 
 if ! podman-compose --project-name "rivault" --in-pod false \
          --env-file "./env.${uuid}" \

@@ -64,6 +64,17 @@ def test_slurm_wrapper_exports_egress_proxy_defaults():
     assert "prepare_mcp_mount_overlay" in text
 
 
+def test_slurm_wrapper_initializes_litellm_db_with_sql_migrations():
+    text = SERVE_MODEL_SLURM.read_text()
+
+    assert "LITELLM_DB_SQL_MIGRATIONS=" in text
+    assert "run_litellm_db_sql_migrations" in text
+    assert "up --remove-orphans --detach ll-postgres" in text
+    assert "/app/litellm-proxy-extras/litellm_proxy_extras/migrations" in text
+    assert "psql -v ON_ERROR_STOP=1" in text
+    assert "LITELLM_DISABLE_SCHEMA_UPDATE=" in text
+
+
 def test_custom_mcp_runs_network_transport_when_profile_enabled():
     compose = yaml.safe_load(SERVE_MODEL.read_text())
     command = compose["services"]["mcp-custom"]["command"]
