@@ -327,15 +327,15 @@ class UMRSMetrics:
 
     def scheduler_cycle_duration(self, seconds: float) -> None:
         """Record the duration of one scheduler poll cycle."""
-        self._scheduler_duration.labels().observe(seconds)
+        self._scheduler_duration.observe(seconds)
 
     def scheduler_jobs_claimed(self, count: int) -> None:
         """Record how many jobs were claimed in a cycle."""
-        self._scheduler_claimed.labels().observe(count)
+        self._scheduler_claimed.observe(count)
 
     def scheduler_delay(self, seconds: float) -> None:
         """Record delay between job ready time and scheduling time."""
-        self._scheduler_delay.labels().observe(seconds)
+        self._scheduler_delay.observe(seconds)
 
     # -- Phase 6C: Operational maturity --------------------------------
 
