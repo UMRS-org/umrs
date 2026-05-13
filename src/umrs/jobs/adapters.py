@@ -16,7 +16,6 @@ from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from ..orchestrator.endpoint_mounts import build_mount_environment
-from ..server.sql import maintain_pgvector_index
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
 from .scheduler import OrchestratorBackend
@@ -581,6 +580,8 @@ class IndexBuildBackend(OrchestratorBackend):
 
         rebuild = bool(spec.get("rebuild", False))
         index_name = spec.get("index_name") or None
+        from umrs.server.sql import maintain_pgvector_index  # noqa: boundary — lazy composition
+
         metrics = maintain_pgvector_index(
             database,
             table,
@@ -630,6 +631,8 @@ class IndexBuildStatusChecker(BackendStatusChecker):
             return AttemptCheckResult.failed("Missing database/table metadata")
 
         try:
+            from umrs.server.sql import maintain_pgvector_index  # noqa: boundary — lazy composition
+
             metrics = maintain_pgvector_index(
                 database,
                 table,

@@ -37,6 +37,7 @@ from .models import (
     generate_job_id,
 )
 from .schema import ensure_schema
+from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +197,7 @@ class JobStore:
                 ))
                 conn.commit()
                 logger.info(f"Created job {job_id} (type={job_type.value})")
+                METRICS.job_submitted(job_type.value)
                 return job_id
 
             except psycopg2.errors.UniqueViolation:
@@ -535,6 +537,7 @@ class JobStore:
 
             conn.commit()
             logger.info(f"Attempt {attempt_id} succeeded (commit={commit})")
+            METRICS.job_completed("durable")
 
     def mark_attempt_failed(
         self,
@@ -611,6 +614,7 @@ class JobStore:
                 logger.info(
                     f"Attempt {attempt_id} failed, job {job_id} requeued for {next_run}"
                 )
+                METRICS.retry_attempt("durable")
             else:
                 # No more retries
                 cur.execute("""
@@ -624,6 +628,7 @@ class JobStore:
                 logger.warning(
                     f"Attempt {attempt_id} failed, job {job_id} exhausted retries"
                 )
+                METRICS.job_failed("durable")
 
             conn.commit()
             return requeued
@@ -670,6 +675,7 @@ class JobStore:
 
             conn.commit()
             logger.info(f"Marked attempt {attempt_id} as LOST ({ignore_reason})")
+            METRICS.job_lost("durable")
 
     def update_attempt_status_detail(
         self, attempt_id: str, status_detail: str
@@ -748,6 +754,7 @@ class JobStore:
 
             conn.commit()
             logger.info(f"Cancelled job {job_id}: {reason}")
+            METRICS.job_cancelled("durable")
 
     def retry_job(self, job_id: str) -> None:
         """
@@ -782,6 +789,7 @@ class JobStore:
 
             conn.commit()
             logger.info(f"Force-requeued job {job_id}")
+            METRICS.retry_attempt("admin_force")
 
     def update_heartbeat(self, job_id: str) -> None:
         """Update job heartbeat timestamp (for HA detection)."""

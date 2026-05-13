@@ -16,7 +16,7 @@ ai4s-platform                    ← UMRS core + integration layer
         │
         │  consumed as git submodule by
         ▼
-mnagaso/ai4s-platform (main)     ← Full platform (Gateway, aisci SDK, tests)
+mnagaso/ai4s-platform (main)     ← Full platform (Gateway, r4 SDK, tests)
 ```
 
 - `feature/user-defined-workflows` is the **upstream** branch. UMRS

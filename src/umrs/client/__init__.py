@@ -2,7 +2,7 @@
 UMRS Python Client.
 
 Provides a clean Python interface for UMRS REST API.
-Standalone-capable: works without Gateway or aisci SDK.
+Standalone-capable: works without Gateway or r4 SDK.
 
 Note: Context/memory clients excluded from selective merge.
 

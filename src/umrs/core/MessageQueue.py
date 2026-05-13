@@ -9,6 +9,7 @@ import time
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.auth import AuthContext, UserRole, create_auth_context_from_request
 from umrs.shared.connection_profiles import DataPortRange, parse_data_port_range
+from umrs.metrics import METRICS
 
 try:
     import zmq
@@ -228,6 +229,12 @@ class MessageQueue:
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
+            if not self.tunnel_mode:
+                logger.warning(
+                    "ZMQ data socket binding to 0.0.0.0:%d "
+                    "(UMRS_TUNNEL_MODE is not set; port is network-accessible)",
+                    self.port,
+                )
             self.socket.bind(f"tcp://{bind_host}:{self.port}")  # Data channel bind
             self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
@@ -244,6 +251,12 @@ class MessageQueue:
         if self.role == 'server':
             self.socket = self.context.socket(zmq.ROUTER)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
+            if not self.tunnel_mode:
+                logger.warning(
+                    "ZMQ control socket binding to 0.0.0.0:%d "
+                    "(UMRS_TUNNEL_MODE is not set; port is network-accessible)",
+                    self.port,
+                )
             self.socket.bind(f"tcp://{bind_host}:{self.port}")
             self.set_timeouts(-1, self.timeout)
         else:  # client
@@ -299,8 +312,11 @@ class MessageQueue:
         try:
             self.socket.send_multipart(frames)
         except zmq.Again:
+            METRICS.transport_error("zmq", "control_send_timeout")
+            METRICS.transport_timeout("zmq", "control_send")
             raise RuntimeError("Timeout while sending message") from None
         except zmq.ZMQError as e:
+            METRICS.transport_error("zmq", "control_send")
             raise RuntimeError(f"ZMQ error while sending: {e}") from e
 
     def send_string(self, string, client_id=None):
@@ -348,12 +364,16 @@ class MessageQueue:
                 raise RuntimeError(f"Unknown queue type: {self.type}")
 
         except zmq.Again:
+            METRICS.transport_error("zmq", "send_timeout")
+            METRICS.transport_timeout("zmq", "send")
             raise RuntimeError("Timeout while sending message") from None
 
         except zmq.ZMQError as e:
+            METRICS.transport_error("zmq", "send")
             raise RuntimeError(f"ZMQ error while sending: {e}") from e
 
         except Exception as e:
+            METRICS.transport_error("zmq", "send_unexpected")
             raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}") from e
 
     def recv_string(self):
@@ -423,15 +443,19 @@ class MessageQueue:
 
         with open(send_file_path, "rb") as f:
             # Send file in chunks
+            total_bytes = 0
             try:
                 while True:
                     chunk = f.read(chunk_size)
                     if not chunk:
                         break
                     self.socket.send(chunk)
+                    total_bytes += len(chunk)
                 # Send end signal (can be empty frame)
                 self.socket.send(b'__END_OF_FILE__')
+                METRICS.transport_bytes("zmq", "send", total_bytes)
             except zmq.ZMQError as e:
+                METRICS.transport_error("zmq", "file_send")
                 raise RuntimeError(f"Failed to send file: {e}") from e
 
 
@@ -444,6 +468,7 @@ class MessageQueue:
 
         tmp_path = None
         try:
+            total_bytes = 0
             with tempfile.NamedTemporaryFile(mode='w+b', dir=out_dir, delete=False) as tmp_file:
                 tmp_path = os.path.abspath(tmp_file.name)
                 while True:
@@ -451,7 +476,9 @@ class MessageQueue:
                     if chunk == b'__END_OF_FILE__':
                         break
                     tmp_file.write(chunk)
+                    total_bytes += len(chunk)
                 tmp_file.flush()
+            METRICS.transport_bytes("zmq", "recv", total_bytes)
             return tmp_path
         except Exception:
             if tmp_path and os.path.exists(tmp_path):
@@ -824,6 +851,7 @@ class MessageQueue:
         self.socket = self.context.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
         self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
+        METRICS.transport_reconnect("zmq")
 
     def is_server_ready(self, timeout_ms=5000):
         if self.role != "client":

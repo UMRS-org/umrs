@@ -18,6 +18,7 @@ from datetime import datetime
 
 from .models import AttemptStatus, Job, JobStatus, JobType
 from .store import JobStore
+from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -85,9 +86,12 @@ class Reconciler:
 
         if not stale_attempts:
             logger.info("No stale attempts found - clean startup")
+            METRICS.reconciler_run("ok")
+            METRICS.reconciler_backlog(0)
             return result
 
         logger.warning(f"Found {len(stale_attempts)} stale attempts to reconcile")
+        METRICS.reconciler_backlog(len(stale_attempts))
 
         # Process each stale attempt
         for attempt_id, job_id, attempt_no, old_instance_id in stale_attempts:
@@ -100,6 +104,8 @@ class Reconciler:
                 result.errors.append((attempt_id, str(e)))
 
         logger.info(f"Boot reconciliation complete: {result}")
+        outcome = "error" if result.errors else "ok"
+        METRICS.reconciler_run(outcome)
         return result
 
     def _find_stale_attempts(self) -> list[tuple[str, str, int, str | None]]:
@@ -158,6 +164,8 @@ class Reconciler:
         ignore_reason = f"umrs_restart_no_cleanup (prev={old_instance_id})"
         self.job_store.mark_attempt_lost(attempt_id, ignore_reason)
         result.lost_attempts.append(attempt_id)
+        METRICS.job_lost("reconciler")
+        METRICS.reconciler_items("lost")
 
         # Get job to check retry policy
         job = self.job_store.get_job(job_id)
@@ -178,11 +186,15 @@ class Reconciler:
             # Requeue the job
             self._requeue_job(job_id, next_run)
             result.requeued_jobs.append(job_id)
+            METRICS.retry_attempt("reconciler")
+            METRICS.reconciler_items("requeued")
             logger.info(f"Requeued job {job_id} (attempt {attempt_no} was lost)")
         else:
             # No more retries - mark job as failed
             self._fail_job(job_id, f"exhausted retries after crash (last attempt: {attempt_no})")
             result.failed_jobs.append(job_id)
+            METRICS.job_failed("reconciler")
+            METRICS.reconciler_items("failed_exhausted")
             logger.warning(f"Job {job_id} failed - no more retries after crash")
 
     def _record_model_download_recovery(

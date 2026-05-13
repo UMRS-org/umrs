@@ -12,7 +12,6 @@ import os
 from sentence_transformers import SentenceTransformer
 from sklearn.cluster import KMeans
 
-from umrs.server.sql import store_embeddings_in_db
 from umrs.shared.storage.s3 import load_data_from_s3
 from umrs.shared.utils import zero_out_embeddings_for_empty_objects
 
@@ -112,7 +111,7 @@ def compute_embeddings_core(
 
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device,
                                 modality_name, s3_connection, output_bucket, task=None,
-                                skip_existing=True):
+                                skip_existing=True, store_fn=None):
     embeddings, checksums, metadata, saved_s3_keys = compute_embeddings_core(
         model, modality_name, s3_connection, path_to_bucket, s3_keys,
         output_bucket=output_bucket, task=task, skip_existing=skip_existing,
@@ -121,7 +120,11 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
     assert(len(embeddings) == len(checksums))
     assert(len(embeddings) == len(metadata))
 
-    store_embeddings_in_db(data_base, embeddings, table_name, path_to_bucket, s3_keys, saved_s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
+    if store_fn is None:
+        from umrs.server.sql import store_embeddings_in_db  # noqa: boundary
+        store_fn = store_embeddings_in_db
+
+    store_fn(data_base, embeddings, table_name, path_to_bucket, s3_keys, saved_s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
 
 
 

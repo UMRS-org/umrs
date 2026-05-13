@@ -49,7 +49,7 @@ These files have both UMRS-core and ai4s-platform changes — resolve carefully:
 
 ## Rules
 
-1. **Never duplicate UMRS functionality** in Gateway or aisci — keep those as proxy/policy layers.
+1. **Never duplicate UMRS functionality** in Gateway or r4 — keep those as proxy/policy layers.
 2. **Integration files are additive** — they should import from UMRS core, not modify it.
 3. **When in doubt, prefer `feature/user-defined-workflows`** for UMRS-core logic.
 4. **Test after sync**: run both UMRS tests and ai4s-platform E2E tests.

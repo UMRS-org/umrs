@@ -77,6 +77,11 @@ def get_model_store() -> ModelStore:
     return _model_store
 
 
+def get_optional_model_store() -> ModelStore | None:
+    """Return the configured model store, if available."""
+    return _model_store
+
+
 # =============================================================================
 # Request/Response Models
 # =============================================================================
@@ -810,7 +815,7 @@ async def stage_model(
 
         return ModelStageResponse(
             job_id=job_id,
-            message=f"Model staging initiated. Track progress with: aisci job describe {job_id}",
+            message=f"Model staging initiated. Track progress with: r4 job describe {job_id}",
             model_name=model.name,
             target_scope=scope.value,
         )
@@ -1364,7 +1369,7 @@ async def download_model_to_user_space(
 
         return ModelDownloadResponse(
             job_id=job_id,
-            message=f"Model copy initiated. Track progress with: aisci job describe {job_id}",
+            message=f"Model copy initiated. Track progress with: r4 job describe {job_id}",
             source_model=f"system/{model_name}",
             target_name=target_name,
             target_scope=target_scope.value,

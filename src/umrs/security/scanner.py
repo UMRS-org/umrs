@@ -16,56 +16,11 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field
-from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
+
+from r4_contracts.security import ScanFinding, ScanResult, SeverityLevel
 
 logger = logging.getLogger(__name__)
-
-
-class SeverityLevel(Enum):
-    INFO = "info"
-    WARNING = "warning"
-    ERROR = "error"
-    CRITICAL = "critical"
-
-
-@dataclass
-class ScanFinding:
-    """A single finding from the scanner."""
-
-    severity: SeverityLevel
-    category: str
-    message: str
-    location: str = ""  # e.g. "step[2].command"
-    suggestion: str = ""
-
-
-@dataclass
-class ScanResult:
-    """Result of scanning a recipe or skill."""
-
-    target_name: str
-    findings: List[ScanFinding] = field(default_factory=list)
-    scanned: bool = True
-
-    @property
-    def has_errors(self) -> bool:
-        return any(
-            f.severity in (SeverityLevel.ERROR, SeverityLevel.CRITICAL)
-            for f in self.findings
-        )
-
-    @property
-    def error_count(self) -> int:
-        return sum(
-            1 for f in self.findings
-            if f.severity in (SeverityLevel.ERROR, SeverityLevel.CRITICAL)
-        )
-
-    @property
-    def warning_count(self) -> int:
-        return sum(1 for f in self.findings if f.severity == SeverityLevel.WARNING)
 
 
 # Dangerous patterns
