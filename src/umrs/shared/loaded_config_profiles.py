@@ -7,7 +7,6 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from umrs.server.json_config import load_server_cfg_file
 from umrs.shared.config import (
     get_current_s3_config_file,
     get_current_server_config_file,
@@ -17,7 +16,7 @@ from umrs.shared.config import (
     get_resolved_umrs_cfg_dir,
     get_users_default_cfg_subdir,
 )
-from umrs.shared.json_config import load_client_cfg_file
+from umrs.shared.json_config import load_client_cfg_file, load_server_cfg_file
 
 
 @dataclass

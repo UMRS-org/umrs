@@ -12,12 +12,14 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Protocol
 
 from .models import Job, JobAttempt, JobType
 from .store import JobStore, JobStoreError
+from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +117,9 @@ class Scheduler:
 
         while self._running:
             try:
+                t0 = time.monotonic()
                 await self._poll_cycle()
+                METRICS.scheduler_cycle_duration(time.monotonic() - t0)
             except Exception as e:
                 logger.error(f"Scheduler cycle error: {e}", exc_info=True)
 
@@ -143,6 +147,7 @@ class Scheduler:
         if not job_ids:
             return
 
+        METRICS.scheduler_jobs_claimed(len(job_ids))
         logger.debug(f"Claimed {len(job_ids)} jobs for scheduling")
 
         # Process each job (sequential to respect advisory locks)
@@ -159,8 +164,23 @@ class Scheduler:
             # Get job details
             job = self.job_store.get_job(job_id)
 
+            # Record scheduling delay (time from ready to actual schedule)
+            if hasattr(job, "next_run_at") and job.next_run_at:
+                delay = (datetime.utcnow() - job.next_run_at).total_seconds()
+                if delay >= 0:
+                    METRICS.scheduler_delay(delay)
+
             # Get appropriate backend
-            backend = self.backend_factory(job.job_type)
+            try:
+                backend = self.backend_factory(job.job_type)
+            except Exception as e:
+                logger.error(
+                    f"backend_factory failed for job {job_id} "
+                    f"(type={job.job_type.value}): {e}"
+                )
+                self._stats["jobs_failed"] += 1
+                METRICS.scheduler_cycle("backend_factory_error")
+                return
 
             # Create attempt (this acquires advisory lock)
             attempt_id = self.job_store.create_attempt(
@@ -189,6 +209,7 @@ class Scheduler:
                 self.job_store.mark_attempt_submitted(attempt_id, backend_ref)
 
                 self._stats["jobs_scheduled"] += 1
+                METRICS.job_submitted(backend.backend_name)
                 logger.info(
                     f"Job {job_id} submitted (attempt={attempt_id}, "
                     f"backend_ref={backend_ref})"
@@ -203,13 +224,20 @@ class Scheduler:
                     retry_delay=30,  # Retry in 30 seconds
                 )
                 self._stats["jobs_failed"] += 1
+                self._consecutive_failures = getattr(self, "_consecutive_failures", 0) + 1
+                if self._consecutive_failures >= 3:
+                    METRICS.retry_burst(backend.backend_name)
+                    self._consecutive_failures = 0
+                METRICS.scheduler_cycle("submission_error")
 
         except JobStoreError as e:
             logger.error(f"JobStore error scheduling {job_id}: {e}")
             self._stats["jobs_failed"] += 1
+            METRICS.scheduler_cycle("store_error")
         except Exception as e:
             logger.error(f"Unexpected error scheduling {job_id}: {e}", exc_info=True)
             self._stats["jobs_failed"] += 1
+            METRICS.scheduler_cycle("unexpected_error")
 
     @property
     def stats(self) -> dict[str, Any]:

@@ -8,6 +8,7 @@ import logging
 import threading
 from concurrent.futures import TimeoutError as FutureTimeoutError
 
+from umrs.metrics import METRICS
 from umrs.orchestrator.durable import DurableOrchestrationService
 from umrs.server.job_tracking_handler import (
     DurableJobCommandBackend,
@@ -15,6 +16,8 @@ from umrs.server.job_tracking_handler import (
 )
 
 logger = logging.getLogger(__name__)
+
+_BRIDGE_NAME = "gen1_gen2_runtime"
 
 
 class DurableJobRuntimeError(RuntimeError):
@@ -34,6 +37,7 @@ class DurableJobRuntime:
         self._startup_error: BaseException | None = None
         self._lock = threading.Lock()
         self._started = False
+        self._shutdown_called = False
 
     @property
     def command_backend(self) -> DurableJobCommandBackend:
@@ -68,10 +72,15 @@ class DurableJobRuntime:
             raise DurableJobRuntimeError("Failed to start durable job runtime") from self._startup_error
 
         self._started = True
+        METRICS.bridge_event(_BRIDGE_NAME, "start")
         return self.command_backend
 
     def shutdown(self, timeout: float = 10.0) -> None:
         with self._lock:
+            if self._shutdown_called:
+                logger.debug("DurableJobRuntime.shutdown() already called; skipping")
+                return
+            self._shutdown_called = True
             thread = self._thread
             loop = self._loop
             startup_error = self._startup_error
@@ -86,8 +95,10 @@ class DurableJobRuntime:
                 )
                 future.result(timeout + 5.0)
         except FutureTimeoutError as exc:
+            METRICS.bridge_event(_BRIDGE_NAME, "shutdown_timeout")
             raise DurableJobRuntimeError("Timed out shutting down durable job runtime") from exc
         finally:
+            METRICS.bridge_event(_BRIDGE_NAME, "stop")
             if loop is not None:
                 with contextlib.suppress(RuntimeError):
                     loop.call_soon_threadsafe(loop.stop)
@@ -151,4 +162,5 @@ def start_durable_job_runtime_from_env(timeout: float = 30.0) -> DurableJobRunti
         return runtime
     except Exception:
         logger.exception("Failed to start durable job runtime")
+        METRICS.bridge_event(_BRIDGE_NAME, "start_failure")
         return None

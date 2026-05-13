@@ -145,7 +145,62 @@ def _create_app():
 
     @app.get("/health")
     async def health():
+        """Liveness probe — returns ok if the process is alive."""
         return {"status": "ok"}
+
+    @app.get("/readiness")
+    async def readiness():
+        """Readiness probe — checks subsystem availability.
+
+        Returns 200 with component statuses when the system can accept work.
+        Returns 503 if critical subsystems are unavailable.
+        """
+        components: dict[str, str] = {}
+        healthy = True
+
+        # Check DB pool
+        if hasattr(app.state, "umrs_db_pool") and app.state.umrs_db_pool is not None:
+            try:
+                conn = app.state.umrs_db_pool.getconn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                finally:
+                    app.state.umrs_db_pool.putconn(conn)
+                components["database"] = "ok"
+            except Exception:
+                components["database"] = "unavailable"
+                healthy = False
+        else:
+            components["database"] = "not_configured"
+
+        # Check job store
+        from umrs.api.jobs import get_optional_job_store
+
+        if get_optional_job_store() is not None:
+            components["job_store"] = "ok"
+        else:
+            components["job_store"] = "unavailable"
+            healthy = False
+
+        # Check model store
+        from umrs.api.models import get_optional_model_store
+
+        if get_optional_model_store() is not None:
+            components["model_store"] = "ok"
+        else:
+            components["model_store"] = "not_configured"
+
+        result = {
+            "status": "ready" if healthy else "degraded",
+            "components": components,
+        }
+        if not healthy:
+            from fastapi.responses import JSONResponse
+
+            return JSONResponse(content=result, status_code=503)
+        return result
 
     return app
 

@@ -16,7 +16,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="UMRS Command Line Interface (minimal build)",
         epilog="""
 Note: Context and memory commands are not available in this build.
-Use the aisci CLI or REST API for full functionality.
+Use the r4 CLI or REST API for full functionality.
 
 UMRS provides:
 - Data transfer to S3/MinIO

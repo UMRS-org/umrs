@@ -71,6 +71,64 @@ _status_store_global = None
 logger = logging.getLogger(__name__)
 
 
+def _boot_environment_assertions() -> None:
+    """Emit warnings for missing/invalid environment variables at boot.
+
+    These are non-fatal because not all deployments use every feature,
+    but they surface misconfigurations early instead of failing at runtime.
+    """
+    warnings: list[str] = []
+
+    # LITELLM_MASTER_KEY: required for any endpoint-provision job that
+    # talks to LiteLLM.
+    litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
+    if not litellm_key:
+        warnings.append(
+            "LITELLM_MASTER_KEY is empty or unset; endpoint provision "
+            "jobs will fail at LiteLLM readiness check."
+        )
+
+    # UMRS_SITE_CONFIG: required for durable job runtime.
+    site_cfg = os.environ.get("UMRS_SITE_CONFIG", "")
+    if site_cfg and not os.path.isfile(site_cfg):
+        warnings.append(
+            f"UMRS_SITE_CONFIG points to non-existent file: {site_cfg}"
+        )
+
+    # VLLM_MODEL_PATH: if set, the model directory must exist.
+    model_path = os.environ.get("VLLM_MODEL_PATH", "")
+    if model_path and not os.path.isdir(model_path):
+        warnings.append(
+            f"VLLM_MODEL_PATH points to non-existent directory: {model_path}"
+        )
+
+    # UMRS_DB_DSN: required for durable job system.
+    db_dsn = os.environ.get("UMRS_DB_DSN", "") or os.environ.get(
+        "UMRS_REGISTRY_POSTGRES_DSN", ""
+    )
+    if not db_dsn:
+        warnings.append(
+            "No database DSN configured (UMRS_DB_DSN or "
+            "UMRS_REGISTRY_POSTGRES_DSN); durable job system will be unavailable."
+        )
+
+    # Tunnel mode safety: ZMQ and HTTP sidecar must bind localhost.
+    tunnel_mode = os.environ.get("UMRS_TUNNEL_MODE", "false").lower() in (
+        "true", "1", "yes",
+    )
+    if tunnel_mode:
+        http_host = os.environ.get("UMRS_HTTP_HOST", "")
+        if http_host and http_host.strip() not in ("127.0.0.1", "localhost", "::1", ""):
+            warnings.append(
+                f"UMRS_TUNNEL_MODE=true but UMRS_HTTP_HOST={http_host}; "
+                "sidecar will be forced to 127.0.0.1 (security invariant)."
+            )
+
+    for w in warnings:
+        logger.warning("[BOOT] %s", w)
+        print(f"WARNING: {w}")
+
+
 def configure_server_logging():
     """Route Python logger output into the server log stream."""
     level_name = os.getenv("UMRS_LOG_LEVEL", "INFO").upper()
@@ -544,6 +602,7 @@ def main():
         return admin_main(sys.argv[2:])
 
     configure_server_logging()
+    _boot_environment_assertions()
 
     # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()

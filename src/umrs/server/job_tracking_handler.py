@@ -31,8 +31,11 @@ from psycopg2 import sql as pg_sql
 
 from umrs.jobs.models import JobStatus, JobType, RestartPolicy
 from umrs.jobs.store import DuplicateJobError, InvalidTransitionError, JobNotFoundError, JobStore
+from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
+
+_BRIDGE_NAME = "zmq_job_command"
 
 # Valid job statuses (matching jobs/models.py JobStatus enum)
 VALID_STATUSES = {"planned", "queued", "running", "completed", "failed", "cancelled"}
@@ -422,7 +425,11 @@ def handle_job_command(cmd: str, client_id: str, payload_str: str, backend: Dura
     try:
         if backend is None:
             logger.error("Received %s but durable job backend is unavailable", cmd)
+            METRICS.bridge_event(_BRIDGE_NAME, "unavailable")
             return _backend_unavailable_response()
+
+        METRICS.bridge_command(_BRIDGE_NAME, cmd)
+        METRICS.bridge_activity(_BRIDGE_NAME)
 
         if cmd == JOB_SUBMIT:
             return backend.submit(client_id, payload_str)
@@ -434,4 +441,5 @@ def handle_job_command(cmd: str, client_id: str, payload_str: str, backend: Dura
             return json.dumps({"status": "error", "message": f"Unknown job command: {cmd}"})
     except Exception as e:
         logger.exception("Error handling job command %s", cmd)
+        METRICS.bridge_event(_BRIDGE_NAME, "error")
         return json.dumps({"status": "error", "message": str(e)})

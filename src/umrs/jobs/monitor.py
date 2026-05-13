@@ -17,6 +17,7 @@ from typing import Any, Protocol
 
 from .models import AttemptStatus, Job, JobAttempt, JobType
 from .store import JobStore
+from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,10 @@ class AttemptMonitor:
     Periodically checks status of SUBMITTED/RUNNING attempts
     and updates their state based on backend feedback.
     """
+
+    # Maximum time to wait for a single status check before treating it as
+    # a timeout.  Prevents one hanging backend from blocking all monitoring.
+    STATUS_CHECK_TIMEOUT: float = 60.0
 
     def __init__(
         self,
@@ -191,8 +196,19 @@ class AttemptMonitor:
             # Get parent job
             job = self.job_store.get_job(attempt.job_id)
 
-            # Check status via backend
-            result = await self.status_checker.check_status(attempt, job)
+            # Check status via backend with timeout guard
+            try:
+                result = await asyncio.wait_for(
+                    self.status_checker.check_status(attempt, job),
+                    timeout=self.STATUS_CHECK_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Status check timed out for attempt {attempt.attempt_id} "
+                    f"after {self.STATUS_CHECK_TIMEOUT}s"
+                )
+                METRICS.monitor_check("timeout")
+                return  # Skip this attempt; retry next cycle
 
             # Update based on result
             if result.status == "succeeded":
@@ -202,6 +218,7 @@ class AttemptMonitor:
                     metrics=result.metrics,
                 )
                 self._stats["attempts_succeeded"] += 1
+                METRICS.monitor_check("succeeded")
                 logger.info(f"Attempt {attempt.attempt_id} succeeded")
 
             elif result.status == "failed":
@@ -210,6 +227,7 @@ class AttemptMonitor:
                     exit_reason=result.exit_reason or "unknown failure",
                 )
                 self._stats["attempts_failed"] += 1
+                METRICS.monitor_check("failed")
                 logger.warning(
                     f"Attempt {attempt.attempt_id} failed: {result.exit_reason} "
                     f"(requeued={requeued})"

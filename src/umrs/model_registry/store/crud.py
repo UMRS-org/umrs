@@ -29,6 +29,7 @@ from ..models import (
 from .acl import AccessContext, ACLEnforcer
 from .errors import DuplicateModelError, ModelNotFoundError, PermissionDeniedError
 from .path_validator import PathValidator
+from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +154,7 @@ class ModelStore:
             name,
             scope.value,
         )
+        METRICS.model_event("registered")
         return model
 
     # -------------------------------------------------------------------------
@@ -394,6 +396,7 @@ class ModelStore:
             self.conn.commit()
 
         logger.info("Updated model %s status to %s", model_id, status.value)
+        METRICS.model_event("status_updated")
 
     def update_capabilities(
         self,
@@ -442,6 +445,7 @@ class ModelStore:
             self.conn.commit()
 
         logger.info("Deleted model %s (%s)", model_id, model.name)
+        METRICS.model_event("deleted")
 
     # -------------------------------------------------------------------------
     # Publish (U-815)
@@ -506,6 +510,7 @@ class ModelStore:
             "Published model %s (%s) to project %s as %s",
             model_id, model.name, target_project_id, publish_name,
         )
+        METRICS.model_event("published")
 
         return self.get_model(model_id)
 

@@ -299,7 +299,7 @@ services:
 
   # Vision MCP server wrapping SAM3 for image segmentation
   # bug.memo B4 (Phase 2h, 2026-04-25): retargeted from the published
-  # ghcr.io/riken-rccs/aisci-mcp image to the locally-built
+  # ghcr.io/riken-rccs/r4-mcp image to the locally-built
   # r4-mcp image (mcp-servers/Dockerfile). Override via MCP_VISION_IMAGE
   # if you need a different build.
   mcp-vision:
