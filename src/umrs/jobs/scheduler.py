@@ -210,6 +210,8 @@ class Scheduler:
 
                 self._stats["jobs_scheduled"] += 1
                 METRICS.job_submitted(backend.backend_name)
+                self._consecutive_failures = 0
+                METRICS.degradation_level("scheduler", 0)
                 logger.info(
                     f"Job {job_id} submitted (attempt={attempt_id}, "
                     f"backend_ref={backend_ref})"
@@ -227,6 +229,7 @@ class Scheduler:
                 self._consecutive_failures = getattr(self, "_consecutive_failures", 0) + 1
                 if self._consecutive_failures >= 3:
                     METRICS.retry_burst(backend.backend_name)
+                    METRICS.degradation_level("scheduler", 1)
                     self._consecutive_failures = 0
                 METRICS.scheduler_cycle("submission_error")
 
