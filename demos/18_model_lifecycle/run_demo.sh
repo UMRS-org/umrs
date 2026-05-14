@@ -197,7 +197,7 @@ fi
 # ---------- Step 6: Use model for inference (via text embedding) ----------
 log ""
 log "Step 6: Using system model for inference..."
-BUCKET_ALIAS="${TEXT_BUCKET:-user1-textfiles}"
+BUCKET_ALIAS="${TEXT_BUCKET:-demo-textfiles}"
 
 # Upload a small test file
 echo "Testing the model lifecycle with a sample sentence." > "${RESULTS_DIR}/lifecycle_test.txt"

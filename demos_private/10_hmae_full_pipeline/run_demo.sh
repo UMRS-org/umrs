@@ -8,9 +8,9 @@
 # (PNG + pkl for each task, plus .pt for feature_extraction).
 #
 # Bucket aliases (configured in user1.json):
-#   user1-hmae           → reconstruction
-#   user1-hmae-mae       → mae_reconstruction
-#   user1-hmae-features  → feature_extraction
+#   demo-hmae           → reconstruction
+#   demo-hmae-mae       → mae_reconstruction
+#   demo-hmae-features  → feature_extraction
 #
 # Prerequisites:
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
@@ -25,6 +25,9 @@ set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="hmae_full" source "${SCRIPT_DIR}/../lib/common.sh"
+
+# Ensure HMAE Inference experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
 
 MAX_IMAGES="${MAX_IMAGES:-3}"
 FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
@@ -41,19 +44,19 @@ IMAGE_DIR="${IMAGE_DIR:-${HMAE_ASSET_ROOT}/images}"
 
 # All 3 HMAE tasks and their bucket aliases
 HMAE_TASKS=("reconstruction" "mae_reconstruction" "feature_extraction")
-HMAE_BUCKETS=("user1-hmae" "user1-hmae-mae" "user1-hmae-features")
+HMAE_BUCKETS=("demo-hmae" "demo-hmae-mae" "demo-hmae-features")
 
-# S3 output bucket names (derived from user1.json naming convention)
+# S3 output bucket names (derived from demo_user naming convention)
 # Format: <username>.<xp_name>.<bucket_alias>-output  (lowercase, spaces→hyphens)
 HMAE_OUTPUT_BUCKETS=(
-    "user1.hmae-inference.user1-hmae-output"
-    "user1.hmae-inference.user1-hmae-mae-output"
-    "user1.hmae-inference.user1-hmae-features-output"
+    "demo-user.hmae-inference.demo-hmae-output"
+    "demo-user.hmae-inference.demo-hmae-mae-output"
+    "demo-user.hmae-inference.demo-hmae-features-output"
 )
 HMAE_INPUT_BUCKETS=(
-    "user1.hmae-inference.user1-hmae"
-    "user1.hmae-inference.user1-hmae-mae"
-    "user1.hmae-inference.user1-hmae-features"
+    "demo-user.hmae-inference.demo-hmae"
+    "demo-user.hmae-inference.demo-hmae-mae"
+    "demo-user.hmae-inference.demo-hmae-features"
 )
 
 # Helper: clear all objects from an S3 bucket (via local boto3 + s3cfg)

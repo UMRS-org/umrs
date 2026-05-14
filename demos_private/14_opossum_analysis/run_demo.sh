@@ -28,7 +28,7 @@
 # Optional env vars:
 #   UMRS_USER_CONF   — path to user config
 #   GEN_TEST_VIDEOS  — "1" to generate synthetic test videos instead
-#   VIDEO_BUCKET     — bucket alias for video uploads (default: user1-video)
+#   VIDEO_BUCKET     — bucket alias for video uploads (default: demo-opossum)
 #   MAX_VIDEOS       — limit the number of videos to process (default: all)
 # =============================================================================
 set -Eeuo pipefail
@@ -36,10 +36,11 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="opossum" source "${SCRIPT_DIR}/../lib/common.sh"
 
+# Ensure Opossum Analysis experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
 # Use the configured movie bucket from the active user config.
-# The uploaded private workflow is still site-specific; this bucket at least
-# accepts video uploads on the current rccs-cloud validation setup.
-BUCKET_ALIAS="${VIDEO_BUCKET:-user1-video}"
+BUCKET_ALIAS="${VIDEO_BUCKET:-demo-opossum}"
 
 # Default to the real observation data from 2026-03-24
 REAL_DATA_DIR="${SCRIPT_DIR}/../../tmp/opossum/data/20260324"

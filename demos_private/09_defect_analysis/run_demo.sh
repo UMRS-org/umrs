@@ -5,7 +5,7 @@
 # Uploads images to UMRS → server dispatches SAM3 segmentation via
 # BentoML on Slurm → downloads results.
 #
-# This demo reuses the SAM3 experience (user1-sam3 bucket) to demonstrate
+# This demo uses its own Defect Analysis experience (demo-defect bucket) for
 # defect-oriented segmentation. For the full multi-step UDM pipeline
 # (SAM3 + region extraction + HMAE + clustering), see the Python step
 # files in steps/ and workflow.json.
@@ -22,8 +22,11 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="defect" source "${SCRIPT_DIR}/../lib/common.sh"
 
-# Reuse SAM3 bucket alias for segmentation
-BUCKET_ALIAS="${DEFECT_BUCKET:-user1-sam3}"
+# Ensure Defect Analysis experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
+# Reuse defect bucket alias for segmentation
+BUCKET_ALIAS="${DEFECT_BUCKET:-demo-defect}"
 MAX_IMAGES="${MAX_IMAGES:-2}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 RELOAD_SETTLE_SECONDS="${RELOAD_SETTLE_SECONDS:-30}"

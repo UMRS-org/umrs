@@ -364,3 +364,85 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
 
 
     return alias
+
+
+def minio_delete_user(username, target):
+    """Remove a MinIO IAM user and all attached policies.
+
+    Args:
+        username: MinIO username (access key) to remove.
+        target: mc alias (e.g. 'myminio').
+    """
+    # Detach all policies first.
+    minio_detach_all_policies(username, target)
+
+    try:
+        subprocess.run(
+            ["mc", "admin", "user", "remove", target, username, "--insecure"],
+            check=True,
+            timeout=MC_TIMEOUT,
+        )
+        print(f"==> MinIO user '{username}' removed from '{target}'.")
+    except subprocess.CalledProcessError as e:
+        # User may not exist — treat as idempotent.
+        stderr = getattr(e, "stderr", "") or ""
+        if "does not exist" in stderr.lower() or "not found" in stderr.lower():
+            print(f"==> MinIO user '{username}' does not exist on '{target}', skipping.")
+        else:
+            print(f"Error removing MinIO user '{username}': {e}")
+
+
+def minio_detach_all_policies(username, target):
+    """Detach all IAM policies from a MinIO user.
+
+    Args:
+        username: MinIO username (access key).
+        target: mc alias (e.g. 'myminio').
+    """
+    try:
+        result = subprocess.run(
+            ["mc", "admin", "policy", "entities", target, "--user", username, "--insecure"],
+            capture_output=True, text=True, check=True,
+            timeout=MC_TIMEOUT,
+        )
+        # Parse attached policy names from output.
+        for line in result.stdout.splitlines():
+            line = line.strip()
+            if not line or line.startswith("Policy") or line.startswith("-"):
+                continue
+            policy_name = line.split()[0] if line.split() else None
+            if policy_name:
+                try:
+                    subprocess.run(
+                        ["mc", "admin", "policy", "detach", target, policy_name,
+                         "--user", username, "--insecure"],
+                        check=True, timeout=MC_TIMEOUT,
+                    )
+                    print(f"  Detached policy '{policy_name}' from user '{username}'.")
+                except subprocess.CalledProcessError:
+                    print(f"  Warning: failed to detach policy '{policy_name}' from '{username}'.")
+    except subprocess.CalledProcessError:
+        # User may not exist or have no policies — safe to ignore.
+        pass
+
+
+def minio_remove_bucket(bucket, target):
+    """Remove an S3 bucket and all its contents via mc.
+
+    Args:
+        bucket: Bucket name (e.g. 'user1.text-embedding.user1-texts').
+        target: mc alias (e.g. 'myminio').
+    """
+    try:
+        subprocess.run(
+            ["mc", "rb", "--force", f"{target}/{bucket}", "--insecure"],
+            check=True,
+            timeout=MC_TIMEOUT * 10,  # Large buckets may take longer
+        )
+        print(f"==> Bucket '{bucket}' removed from '{target}'.")
+    except subprocess.CalledProcessError as e:
+        stderr = getattr(e, "stderr", "") or ""
+        if "does not exist" in stderr.lower() or "not found" in stderr.lower():
+            print(f"==> Bucket '{bucket}' does not exist on '{target}', skipping.")
+        else:
+            print(f"Error removing bucket '{bucket}': {e}")

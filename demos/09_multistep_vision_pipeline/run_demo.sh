@@ -24,7 +24,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="vision_pipeline" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${PIPELINE_BUCKET:-user1-pipeline}"
+# Ensure Vision Pipeline experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
+BUCKET_ALIAS="${PIPELINE_BUCKET:-demo-pipeline}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 IMAGE_DIR="${1:-${SCRIPT_DIR}/../sample_data/images}"
 RESULTS_DIR="${SCRIPT_DIR}/results"

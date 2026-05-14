@@ -12,7 +12,7 @@
 #   - UMRS server running with HMAE Inference experience
 #   - BentoML vision service available on compute node
 #
-# Bucket alias: user1-hmae  (from user config, need_output_bucket: true)
+# Bucket alias: demo-hmae  (from experience.json fragment, need_output_bucket: true)
 #
 # Usage:
 #   bash run_demo.sh [image_dir]
@@ -28,7 +28,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="hmae_demo" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${HMAE_BUCKET:-user1-hmae}"
+# Ensure HMAE Inference experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
+BUCKET_ALIAS="${HMAE_BUCKET:-demo-hmae}"
 FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 RESULTS_DIR="${SCRIPT_DIR}/results"

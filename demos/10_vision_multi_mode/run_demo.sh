@@ -23,7 +23,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="vision_multi" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${MULTI_BUCKET:-user1-multi}"
+# Ensure Vision Multi Mode experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
+BUCKET_ALIAS="${MULTI_BUCKET:-demo-vision-multi}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 IMAGE_DIR="${1:-${SCRIPT_DIR}/../sample_data/images}"
 RESULTS_DIR="${SCRIPT_DIR}/results"

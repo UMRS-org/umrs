@@ -1,0 +1,48 @@
+{
+  "xp_name": "Text Embedding",
+  "sql_username": "demo_text",
+  "modalities": [
+    {
+      "modality_name": "text",
+      "s3": {
+        "bucket_alias": "demo-texts",
+        "data": { "type": "inline", "mime_type": "text/plain" }
+      },
+      "model": {
+        "model_name": "intfloat/e5-base-v2",
+        "vector_size": "768",
+        "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+        "return_type": null,
+        "spacy_model": "en_core_web_sm"
+      },
+      "sql": {
+        "store_embeddings": "yes",
+        "table_name": "text",
+        "meta_data": [
+          { "name": "keywords", "type": "TEXT" }
+        ]
+      }
+    },
+    {
+      "modality_name": "text file",
+      "s3": {
+        "bucket_alias": "demo-textfiles",
+        "data": { "type": "file", "mime_type": "text/plain" }
+      },
+      "model": {
+        "model_name": "intfloat/e5-base-v2",
+        "vector_size": "768",
+        "model_type": "rivault://openai://http://localhost:{LOCAL_PORT}/v1",
+        "return_type": null,
+        "spacy_model": "en_core_web_sm"
+      },
+      "sql": {
+        "store_embeddings": "yes",
+        "table_name": "text_file",
+        "meta_data": [
+          { "name": "keywords", "type": "TEXT" }
+        ]
+      }
+    }
+  ]
+}

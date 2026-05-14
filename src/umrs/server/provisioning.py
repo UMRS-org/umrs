@@ -316,10 +316,93 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
                 traceback.print_exc()
 
 
+def deprovision_user(user_cfg, admin_s3_configuration_file):
+    """Full teardown of a user's provisioned resources.
+
+    Removes:
+    - All S3 buckets (input + output) and their contents
+    - PostgreSQL databases per experience
+    - PostgreSQL roles per experience
+    - MinIO IAM user and attached policies
+    - User S3 config file (~/.s3cfg_<username>)
+    """
+    import configparser
+
+    from umrs.server.sql import create_db_name, drop_db, drop_db_user
+    from umrs.shared.storage.minio import (
+        minio_delete_user,
+        minio_remove_bucket,
+    )
+
+    username = user_cfg["username"]
+    print(f"######################\nDeprovisioning {username}\n######################")
+
+    # Collect all bucket names and SQL usernames.
+    bucket_names = []
+    sql_usernames = set()
+    for xp in user_cfg.get("experiences", []):
+        xp_name = xp["xp_name"]
+        sql_username = xp["sql_username"]
+        sql_usernames.add(sql_username)
+        db_name = create_db_name(sql_username, xp_name)
+
+        for modality in xp.get("modalities", []):
+            bucket_alias = modality["s3"]["bucket_alias"]
+            path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
+            bucket_names.append(path_to_bucket)
+            if modality["s3"].get("need_output_bucket", False):
+                output_path = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
+                bucket_names.append(output_path)
+
+        # Drop PostgreSQL database.
+        try:
+            drop_db(db_name)
+        except Exception as e:
+            print(f"  Warning: failed to drop database '{db_name}': {e}")
+
+    # Drop PostgreSQL roles.
+    for sql_user in sql_usernames:
+        try:
+            drop_db_user(sql_user)
+        except Exception as e:
+            print(f"  Warning: failed to drop DB user '{sql_user}': {e}")
+
+    # Remove S3 buckets via MinIO CLI.
+    admin_cfg_path = os.path.expanduser(admin_s3_configuration_file)
+    if os.path.isfile(admin_cfg_path):
+        import configparser as _cp
+        cfg = _cp.ConfigParser(inline_comment_prefixes=('#', ';'))
+        cfg.read(admin_cfg_path)
+        alias = cfg.get("default", "alias", fallback="myminio")
+
+        for bucket in bucket_names:
+            try:
+                minio_remove_bucket(bucket, alias)
+            except Exception as e:
+                print(f"  Warning: failed to remove bucket '{bucket}': {e}")
+
+        # Remove MinIO IAM user.
+        try:
+            minio_delete_user(username, alias)
+        except Exception as e:
+            print(f"  Warning: failed to remove MinIO user '{username}': {e}")
+    else:
+        print(f"  Warning: admin S3 config not found at '{admin_cfg_path}', skipping S3/MinIO cleanup.")
+
+    # Remove user S3 config file.
+    user_s3_cfg = os.path.expanduser(user_cfg.get("s3_configuration_file", f"~/.s3cfg_{username}"))
+    if os.path.isfile(user_s3_cfg):
+        os.remove(user_s3_cfg)
+        print(f"==> Removed S3 config file: {user_s3_cfg}")
+
+    print(f"==> Deprovisioning of '{username}' complete.")
+
+
 __all__ = [
     "ServerCfg",
     "configure_user",
     "create_s3_sql_users",
+    "deprovision_user",
     "is_client_configured",
     "reconcile_status_on_startup",
 ]
