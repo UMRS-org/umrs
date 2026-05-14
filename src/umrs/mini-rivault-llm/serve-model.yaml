@@ -1,9 +1,15 @@
 x-rivault-egress-env: &rivault-egress-env
-  HTTP_PROXY: "${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}"
-  HTTPS_PROXY: "${RIVAULT_HTTPS_PROXY:-http://egress-guard:8888}"
+  # Proxy is only set when the 'egress' profile is active (egress-guard running).
+  # Defaults to empty so that containers without egress-guard do not try to
+  # route traffic through a non-existent proxy. When HTTPS_PROXY points at a
+  # non-running service aiohttp creates a default SSL context which is then
+  # applied to internal HTTP connections (LiteLLM → vLLM), causing spurious
+  # ssl:<SSLContext> ConnectionRefused errors.
+  HTTP_PROXY: "${RIVAULT_HTTP_PROXY:-}"
+  HTTPS_PROXY: "${RIVAULT_HTTPS_PROXY:-}"
   NO_PROXY: "${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}"
-  http_proxy: "${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}"
-  https_proxy: "${RIVAULT_HTTPS_PROXY:-http://egress-guard:8888}"
+  http_proxy: "${RIVAULT_HTTP_PROXY:-}"
+  https_proxy: "${RIVAULT_HTTPS_PROXY:-}"
   no_proxy: "${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}"
 
 services:
