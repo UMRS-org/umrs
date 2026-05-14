@@ -16,10 +16,12 @@ from .llm import router as llm_router
 from .mcp import router as mcp_router
 from .models import policy_router
 from .models import router as models_router
+from .ops import router as ops_router
 from .vision import router as vision_router
 from .pipelines import (
     router as pipelines_router,  # api/pipelines.py router (not the old umrs.pipelines package)
 )
+from .provenance import router as provenance_router
 from .rag import router as rag_router
 from .skills import router as skills_router
 from .workflows import router as workflows_router
@@ -32,8 +34,10 @@ __all__ = [
     "llm_router",
     "mcp_router",
     "models_router",
+    "ops_router",
     "policy_router",
     "pipelines_router",
+    "provenance_router",
     "rag_router",
     "skills_router",
     "vision_router",
