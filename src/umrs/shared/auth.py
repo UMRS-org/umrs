@@ -7,10 +7,12 @@ Implements:
 - U-503: UUID-based user identification
 - U-504: Config identity validation
 - U-505: XDG config directory standard
+- U-510: Transport-agnostic JWT authentication
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
@@ -20,6 +22,7 @@ import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,7 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset({
     "UPLOAD_WORKFLOW",
     "LIST_WORKFLOWS",
     "RUN_WORKFLOW",
+    "GET_BOOTSTRAP_CONTEXT",
 })
 
 
@@ -80,6 +84,7 @@ class AuthContext:
     role: UserRole = UserRole.USER
     project_id: str | None = None
     email: str | None = None
+    session_id: str | None = None
     allowed_buckets: set[str] = field(default_factory=set)
 
     @property
@@ -746,4 +751,156 @@ def create_service_auth_context(service_name: str) -> AuthContext:
         user_id=f"service:{service_name}",
         username=service_name,
         role=UserRole.SERVICE,
+    )
+
+
+# =============================================================================
+# U-510: Transport-Agnostic JWT Authentication
+# =============================================================================
+
+
+class JWTError(Exception):
+    """Raised when JWT validation fails."""
+
+
+def resolve_jwt_secret() -> str:
+    """Resolve the JWT signing secret from environment or filesystem.
+
+    Resolution order:
+    1. ``$JWT_SECRET`` environment variable
+    2. ``$XDG_CONFIG_HOME/umrs/gateway/jwt.secret`` file
+    3. ``~/.config/umrs/gateway/jwt.secret`` file
+    4. Insecure default (logs warning)
+    """
+    env_secret = os.environ.get("JWT_SECRET")
+    if env_secret:
+        return env_secret
+
+    candidates: list[Path] = []
+    xdg_config = os.environ.get("XDG_CONFIG_HOME")
+    if xdg_config:
+        candidates.append(Path(xdg_config) / "umrs" / "gateway" / "jwt.secret")
+    candidates.append(Path.home() / ".config" / "umrs" / "gateway" / "jwt.secret")
+    for path in candidates:
+        try:
+            gateway_secret = path.read_text().strip()
+        except OSError:
+            continue
+        if gateway_secret:
+            return gateway_secret
+
+    logger.warning(
+        "JWT_SECRET is not set — using insecure default. "
+        "Set JWT_SECRET or deploy the Gateway secret for production use."
+    )
+    return "dev-secret-change-in-production"
+
+
+def validate_jwt(token: str, secret: str) -> dict[str, Any]:
+    """Validate a JWT and return its claims.
+
+    Uses ``python-jose`` for signature verification (HS256).
+
+    Args:
+        token: The raw JWT string.
+        secret: HMAC-SHA256 signing secret.
+
+    Returns:
+        Decoded claims dictionary.
+
+    Raises:
+        JWTError: On invalid signature, expiry, or malformed token.
+    """
+    try:
+        from jose import jwt as jose_jwt
+        from jose import JWTError as JoseJWTError
+    except ImportError:
+        raise JWTError(
+            "python-jose is required for JWT validation. "
+            "Install with: pip install python-jose[cryptography]"
+        )
+
+    try:
+        claims = jose_jwt.decode(
+            token,
+            secret,
+            algorithms=["HS256"],
+            options={"require_exp": True, "require_sub": True},
+        )
+    except JoseJWTError as exc:
+        raise JWTError(f"JWT validation failed: {exc}") from exc
+
+    return claims
+
+
+def decode_jwt_claims_unsafe(token: str) -> dict[str, Any] | None:
+    """Decode JWT claims *without* signature verification.
+
+    This is for **UX display only** (showing username, expiry, etc.).
+    Never use the result to make authorization decisions.
+
+    Returns:
+        Claims dict, or ``None`` if the token is not a valid JWT.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) != 3:
+            return None
+        # JWT payload is the second segment, base64url-encoded.
+        payload = parts[1]
+        # Pad to multiple of 4.
+        payload += "=" * (-len(payload) % 4)
+        decoded = base64.urlsafe_b64decode(payload)
+        return json.loads(decoded)
+    except Exception:
+        return None
+
+
+def authenticate_request(
+    token: str,
+    *,
+    jwt_secret: str | None = None,
+) -> AuthContext:
+    """Transport-agnostic request authentication.
+
+    Validates the JWT and returns an :class:`AuthContext`.
+    This is the **single security boundary** — all transports (HTTP,
+    ZMQ, WebSocket, gRPC) should adapt into this function.
+
+    Args:
+        token: The JWT string.
+        jwt_secret: HMAC-SHA256 secret.  Resolved automatically when
+            ``None``.
+
+    Returns:
+        Fully populated :class:`AuthContext`.
+
+    Raises:
+        JWTError: On any validation failure.
+    """
+    if jwt_secret is None:
+        jwt_secret = resolve_jwt_secret()
+
+    claims = validate_jwt(token, jwt_secret)
+
+    username = claims["sub"]
+    identity_store = get_identity_store()
+    user_id = identity_store.get_or_create_user_id(username)
+
+    # Map JWT role claim to UserRole.
+    role_str = claims.get("role") or (
+        claims["roles"][0] if claims.get("roles") else "user"
+    )
+    try:
+        role = UserRole(role_str)
+    except ValueError:
+        role = UserRole.USER
+
+    return AuthContext(
+        user_id=user_id,
+        username=username,
+        role=role,
+        project_id=claims.get("project_id"),
+        email=claims.get("email"),
+        session_id=claims.get("session_id"),
     )

@@ -268,11 +268,16 @@ class MessageQueue:
     # ------------------------ Core Methods ------------------------
 
     @staticmethod
-    def _encode_control_auth_frame(admin_token=None):
+    def _encode_control_auth_frame(admin_token=None, jwt=None):
         """Encode optional auth data for a control multipart request."""
-        if not admin_token:
+        payload = {}
+        if admin_token:
+            payload["admin_token"] = admin_token
+        if jwt:
+            payload["jwt"] = jwt
+        if not payload:
             return None
-        return json.dumps({"admin_token": admin_token}).encode("utf-8")
+        return json.dumps(payload).encode("utf-8")
 
     @staticmethod
     def _decode_control_auth_frame(frame):
@@ -290,14 +295,18 @@ class MessageQueue:
         """Return admin token from the multipart auth frame only."""
         return self._last_control_auth.get("admin_token")
 
-    def send_control_request(self, fields, admin_token=None):
+    def _control_auth_jwt(self):
+        """Return JWT from the multipart auth frame, if present."""
+        return self._last_control_auth.get("jwt")
+
+    def send_control_request(self, fields, admin_token=None, jwt=None):
         """Send a control request with auth in a separate multipart frame."""
         if self.role != "client" or self.type != "control":
             raise PermissionError("Only control clients can send control requests")
 
         request = ":".join(str(field) for field in fields)
         frames = [request.encode("utf-8")]
-        auth_frame = self._encode_control_auth_frame(admin_token)
+        auth_frame = self._encode_control_auth_frame(admin_token, jwt=jwt)
         if auth_frame is not None:
             frames.append(auth_frame)
 
@@ -536,8 +545,13 @@ class MessageQueue:
                 client_id = splited_msg[1]
 
                 token = self._control_auth_token()
+                jwt_token = self._control_auth_jwt()
                 try:
-                    auth_ctx = create_auth_context_from_request(client_id, token=token)
+                    if jwt_token:
+                        from umrs.shared.auth import authenticate_request
+                        auth_ctx = authenticate_request(jwt_token)
+                    else:
+                        auth_ctx = create_auth_context_from_request(client_id, token=token)
                 except Exception as e:
                     logger.warning("Failed to create auth context for %s: %s", client_id, e)
                     auth_ctx = AuthContext(
@@ -725,6 +739,22 @@ class MessageQueue:
                 payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
                 return cmd, (client_id, payload_str, zmq_sender_id)
 
+            elif cmd == TaskCmd.GET_BOOTSTRAP_CONTEXT:
+                # Bootstrap context: requires JWT auth, returns versioned context.
+                jwt_token = self._control_auth_jwt()
+                if not jwt_token:
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string("AUTH_REQUIRED:JWT required for bootstrap", zmq_sender_id)
+                    continue
+                try:
+                    from umrs.shared.auth import authenticate_request
+                    auth_ctx = authenticate_request(jwt_token)
+                except Exception as exc:
+                    with contextlib.suppress(RuntimeError):
+                        self.send_string(f"AUTH_ERROR:{exc}", zmq_sender_id)
+                    continue
+                return cmd, (auth_ctx, zmq_sender_id)
+
     def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
         """Block until new messages arrive, then read all available messages.
 
@@ -887,7 +917,7 @@ class MessageQueue:
         finally:
             self.set_timeouts(self.timeout, self.timeout) # always reset timeout before exiting
 
-    def get_data_queue(self, client_id, tunnel_mode=None, admin_token=None):
+    def get_data_queue(self, client_id, tunnel_mode=None, admin_token=None, jwt=None):
         """Request a client data queue.
 
         Args:
@@ -897,6 +927,8 @@ class MessageQueue:
                 data channel can traverse an SSH tunnel.
             admin_token (str | None): Optional admin token. When provided the
                 server grants ``UserRole.ADMIN`` for this session.
+            jwt (str | None): Optional JWT. When provided the server
+                authenticates via :func:`authenticate_request`.
         """
         if self.role != "client":
             raise PermissionError("Only client can call 'get_data_queue'")
@@ -904,6 +936,7 @@ class MessageQueue:
         self.send_control_request(
             [TaskCmd.CREATE_DATA_QUEUE, client_id],
             admin_token=admin_token,
+            jwt=jwt,
         )
 
         effective_tunnel_mode = self.tunnel_mode if tunnel_mode is None else bool(tunnel_mode)

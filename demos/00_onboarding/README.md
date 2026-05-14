@@ -31,18 +31,14 @@ bash run_demo.sh
 
 ## Manual Equivalent To `run_demo.sh`
 
+### Preferred: `umrs-client login` (single command)
+
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT/umrs/demos/00_onboarding"
 
-# 0a. Create a connection profile (interactive — prompts for profile name).
-#     Skip this step if you already have a profile set up.
-umrs-client profile init
-
-# 0b. Create a user config (interactive — prompts for username and full name).
-#     Writes to ~/.config/umrs/users/<username>.json and sets it as current.
-#     Skip this step if you already have a config file.
-umrs-client config init
+# 0. Authenticate and create a connection profile in one step.
+umrs-client login --host <server-host> --api-key <token-from-admin>
 
 # 1. Show the active connection profile and user.
 umrs-client profile show || true
@@ -62,7 +58,19 @@ umrs-client status all
 umrs-client list_buckets
 ```
 
-### `profile init` Options
+### Legacy: Separate `profile init` + `config init`
+
+The old two-step flow still works:
+
+```bash
+# 0a. Create a connection profile (interactive — prompts for profile name).
+umrs-client profile init
+
+# 0b. Create a user config (interactive — prompts for username and full name).
+umrs-client config init
+```
+
+### `profile init` Options (legacy)
 
 ```bash
 # Direct mode (local development).
@@ -89,7 +97,7 @@ umrs-client profile import /path/to/profile.json
 umrs-client profile use my-profile
 ```
 
-### `config init` Options
+### `config init` Options (legacy)
 
 ```bash
 # Non-interactive — pass username and full name directly.

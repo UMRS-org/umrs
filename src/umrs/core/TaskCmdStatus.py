@@ -26,6 +26,8 @@ class TaskCmd:
     RUN_WORKFLOW = "RUN_WORKFLOW"        # trigger execution of a registered workflow
     # Admin enrollment
     ENROLL_USER = "ENROLL_USER"          # admin-only: register a new user
+    # Bootstrap context
+    GET_BOOTSTRAP_CONTEXT = "GET_BOOTSTRAP_CONTEXT"  # return versioned user context
 
     @classmethod
     def all_cmd(cls):
