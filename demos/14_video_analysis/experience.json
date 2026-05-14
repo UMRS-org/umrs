@@ -1,0 +1,25 @@
+{
+  "xp_name": "Video Analysis",
+  "sql_username": "demo_video",
+  "modalities": [
+    {
+      "modality_name": "movie",
+      "s3": {
+        "bucket_alias": "demo-video",
+        "need_output_bucket": true,
+        "data": { "type": "file", "mime_type": "video/mp4" }
+      },
+      "model": {
+        "model_name": "opencv-motion-analysis",
+        "vector_size": "0",
+        "model_type": "pipeline://motion_detect:MotionDetectStep",
+        "return_type": "file"
+      },
+      "sql": {
+        "store_embeddings": "no",
+        "table_name": "video_events",
+        "meta_data": []
+      }
+    }
+  ]
+}

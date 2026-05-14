@@ -401,9 +401,154 @@ def _handle_config_init(args):
     return 0
 
 
+def _handle_config_add_experience(args):
+    """Merge experience fragment(s) into the current user config JSON."""
+    import json as _json_mod
+
+    fragment_path = Path(args.fragment).expanduser()
+    if not fragment_path.is_file():
+        raise FileNotFoundError(f"Fragment not found: {fragment_path}")
+
+    # Resolve target user config.
+    conf_path = getattr(args, 'conf', None)
+    if conf_path:
+        target = Path(conf_path).expanduser()
+    else:
+        target = _resolve_current_user_config_path()
+    if target is None or not target.is_file():
+        raise FileNotFoundError(
+            f"No user config found. Run 'umrs-client config init' first, or pass -c <path>."
+        )
+
+    with open(fragment_path, encoding="utf-8") as f:
+        fragment = _json_mod.load(f)
+
+    with open(target, encoding="utf-8") as f:
+        user_cfg = _json_mod.load(f)
+
+    experiences = user_cfg.setdefault("experiences", [])
+    existing_names = {xp["xp_name"] for xp in experiences}
+
+    # Fragment can be a single experience dict or a list of experiences.
+    if isinstance(fragment, dict):
+        fragment_list = [fragment]
+    elif isinstance(fragment, list):
+        fragment_list = fragment
+    else:
+        raise ValueError("Fragment must be a JSON object (single experience) or array of experiences.")
+
+    added = []
+    skipped = []
+    for xp in fragment_list:
+        name = xp.get("xp_name")
+        if not name:
+            raise ValueError("Each experience fragment must have an 'xp_name' field.")
+        if name in existing_names:
+            if args.update:
+                # Replace existing experience with the new one.
+                experiences[:] = [x for x in experiences if x["xp_name"] != name]
+                experiences.append(xp)
+                added.append(name)
+            else:
+                skipped.append(name)
+        else:
+            experiences.append(xp)
+            added.append(name)
+            existing_names.add(name)
+
+    # Write back.
+    with open(target, "w", encoding="utf-8") as f:
+        _json_mod.dump(user_cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    if args.output == 'json':
+        print(api_json(
+            message="Experience fragment merged",
+            added=added,
+            skipped=skipped,
+            target=str(target),
+            output_format=args.output,
+        ))
+    else:
+        if added:
+            print(f"{_green('✓')} Added experience(s): {', '.join(added)}")
+        if skipped:
+            print(f"{_dim('Skipped (already exists):')} {', '.join(skipped)}")
+            print(f"  {_dim('Use --update to replace existing experiences.')}")
+        print(f"  Config: {target}")
+
+    return 0
+
+
+def _handle_config_remove_experience(args):
+    """Remove experience(s) by xp_name from the current user config JSON."""
+    import json as _json_mod
+
+    # Resolve target user config.
+    conf_path = getattr(args, 'conf', None)
+    if conf_path:
+        target = Path(conf_path).expanduser()
+    else:
+        target = _resolve_current_user_config_path()
+    if target is None or not target.is_file():
+        raise FileNotFoundError(
+            f"No user config found. Run 'umrs-client config init' first, or pass -c <path>."
+        )
+
+    with open(target, encoding="utf-8") as f:
+        user_cfg = _json_mod.load(f)
+
+    experiences = user_cfg.get("experiences", [])
+    names_to_remove = set(args.xp_names)
+    original_count = len(experiences)
+
+    removed = [xp["xp_name"] for xp in experiences if xp.get("xp_name") in names_to_remove]
+    user_cfg["experiences"] = [xp for xp in experiences if xp.get("xp_name") not in names_to_remove]
+
+    not_found = names_to_remove - set(removed)
+
+    with open(target, "w", encoding="utf-8") as f:
+        _json_mod.dump(user_cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    if args.output == 'json':
+        print(api_json(
+            message="Experiences removed",
+            removed=removed,
+            not_found=sorted(not_found),
+            remaining=len(user_cfg["experiences"]),
+            target=str(target),
+            output_format=args.output,
+        ))
+    else:
+        if removed:
+            print(f"{_green('✓')} Removed experience(s): {', '.join(removed)}")
+        if not_found:
+            print(f"{_dim('Not found (skipped):')} {', '.join(sorted(not_found))}")
+        print(f"  Remaining experiences: {len(user_cfg['experiences'])}")
+        print(f"  Config: {target}")
+
+    return 0
+
+
+def _resolve_current_user_config_path():
+    """Return the Path to the currently selected user config, or None."""
+    from umrs.shared.loaded_config_profiles import resolve_loaded_config
+    resolved = resolve_loaded_config()
+    if resolved.user and resolved.user.valid and resolved.user.path:
+        return Path(resolved.user.path)
+    return None
+
+
 def _handle_config_command(args):
     if args.config_action == 'init':
         return _handle_config_init(args)
+
+    if args.config_action == 'add-experience':
+        return _handle_config_add_experience(args)
+
+    if args.config_action == 'remove-experience':
+        return _handle_config_remove_experience(args)
 
     if args.config_action == 'list':
         discovered = discover_loaded_config_profiles()
@@ -2359,6 +2504,11 @@ def main():
     ci_p.add_argument('--output-path', default=None, help='Where to write the JSON (default: ~/.config/umrs/users/<username>.json)')
     ci_p.add_argument('--template', default=None, help='Path to an existing user JSON to use as template')
     ci_p.add_argument('--force', action='store_true', default=False, help='Overwrite if the output file already exists')
+    cae_p = config_sub.add_parser('add-experience', help='Merge experience fragment(s) from a JSON file into the current user config')
+    cae_p.add_argument('fragment', help='Path to a JSON file containing one experience object or an array of experiences')
+    cae_p.add_argument('--update', action='store_true', default=False, help='Replace existing experience(s) with matching xp_name instead of skipping')
+    cre_p = config_sub.add_parser('remove-experience', help='Remove experience(s) by xp_name from the current user config')
+    cre_p.add_argument('xp_names', nargs='+', help='One or more xp_name values to remove')
     config_sub.add_parser('list', help='List discovered conf_umrs.json, user*.json, and s3cfg candidates')
     config_sub.add_parser('show', help='Show the resolved config stack for server, user, and s3 files')
     cu_p = config_sub.add_parser('use', help='Persist the current server/user/s3 config selections')

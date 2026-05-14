@@ -10,7 +10,7 @@
 #   - UMRS server running with SAM3 Segmentation experience
 #   - BentoML vision service available on compute node
 #
-# Bucket alias: user1-sam3  (from config, need_output_bucket: true)
+# Bucket alias: demo-sam3  (from experience.json fragment, need_output_bucket: true)
 #
 # Optional operator-only maintenance:
 #   DEMO_ADMIN_ACTIONS=1 FORCE_RECOMPUTE=1 bash run_demo.sh
@@ -20,7 +20,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="sam3_demo" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${SAM3_BUCKET:-user1-sam3}"
+# Ensure SAM3 Segmentation experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
+BUCKET_ALIAS="${SAM3_BUCKET:-demo-sam3}"
 FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 RESULTS_DIR="${SCRIPT_DIR}/results"

@@ -15,9 +15,12 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="custom_wf" source "${SCRIPT_DIR}/../lib/common.sh"
 
+# Ensure Custom Workflow experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
 WORKFLOW_DIR="${SCRIPT_DIR}/workflow"
 RESULTS_DIR="${SCRIPT_DIR}/results"
-BUCKET_ALIAS="${TEXT_BUCKET:-user1-custom-text}"
+BUCKET_ALIAS="${TEXT_BUCKET:-demo-custom-text}"
 RESULT_DOWNLOAD_TIMEOUT="${RESULT_DOWNLOAD_TIMEOUT:-20}"
 
 banner "Demo 16: Custom Server-Side Workflow"

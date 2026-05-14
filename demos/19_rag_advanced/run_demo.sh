@@ -23,7 +23,7 @@ RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 QUERY="${1:-What is the main topic of the documents?}"
 RAG_USER="${RAG_USER:-user1}"
-RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-user1-textfiles}"
+RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-demo-textfiles}"
 RAG_MODALITY="${RAG_MODALITY:-text_file}"
 RAG_XP_NAME="${RAG_XP_NAME:-}"
 

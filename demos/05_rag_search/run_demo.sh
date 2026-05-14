@@ -24,7 +24,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="rag_search" source "${SCRIPT_DIR}/../lib/common.sh"
 
 RAG_URL="${RAG_URL:-http://127.0.0.1:8081}"
-RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-${TEXT_BUCKET:-user1-textfiles}}"
+RAG_BUCKET_ALIAS="${RAG_BUCKET_ALIAS:-${TEXT_BUCKET:-demo-textfiles}}"
 RAG_MODALITY="${RAG_MODALITY:-text_file}"
 
 # ---------- Pretty-printer for RAG results ----------

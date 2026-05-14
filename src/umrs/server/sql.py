@@ -362,6 +362,61 @@ def create_db_user(username):
     conn.close()
 
 
+def drop_db(db_name):
+    """Drop a PostgreSQL database, terminating active connections first."""
+    DB_HOST = os.environ.get("DB_HOST", "localhost")
+    DB_PORT = os.environ.get("DB_PORT", "5432")
+    DB_SUPERUSER = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
+
+    conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+    conn.autocommit = True
+    cur = conn.cursor()
+    try:
+        # Check existence first.
+        cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (db_name,))
+        if not cur.fetchone():
+            print(f"==> Database '{db_name}' does not exist, skipping.")
+            return
+        # Terminate active connections.
+        cur.execute(
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+            "WHERE datname = %s AND pid <> pg_backend_pid();",
+            (db_name,),
+        )
+        cur.execute(sql.SQL("DROP DATABASE IF EXISTS {};").format(sql.Identifier(db_name)))
+        print(f"==> Database '{db_name}' dropped.")
+    finally:
+        cur.close()
+        conn.close()
+
+
+def drop_db_user(username):
+    """Drop a PostgreSQL role, reassigning owned objects first."""
+    DB_HOST = os.environ.get("DB_HOST", "localhost")
+    DB_PORT = os.environ.get("DB_PORT", "5432")
+    DB_SUPERUSER = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    DB_SUPERUSER_PASSWORD = os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres"))
+
+    conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
+    conn.autocommit = True
+    cur = conn.cursor()
+    try:
+        if not db_user_exists(conn, username):
+            print(f"==> User '{username}' does not exist in DB, skipping.")
+            return
+        # Reassign owned objects to the superuser, then drop owned.
+        cur.execute(sql.SQL("REASSIGN OWNED BY {} TO {};").format(
+            sql.Identifier(username), sql.Identifier(DB_SUPERUSER),
+        ))
+        cur.execute(sql.SQL("DROP OWNED BY {};").format(sql.Identifier(username)))
+        cur.execute(sql.SQL("DROP ROLE IF EXISTS {};").format(sql.Identifier(username)))
+        print(f"==> User '{username}' dropped from DB.")
+    finally:
+        cur.close()
+        conn.close()
+
+
 def create_db(sql_username, xp_name):
     db_name = create_db_name(sql_username, xp_name)
     print(f"\t\t-->  Configuring database '{db_name}'...")

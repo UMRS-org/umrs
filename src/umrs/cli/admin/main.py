@@ -304,6 +304,52 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
     except UserStoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    if args.deprovision:
+        if not args.purge:
+            print("error: --deprovision requires --purge", file=sys.stderr)
+            return 1
+        if not _confirm(
+            f"Deprovision and hard-delete user {rec.username!r}? "
+            f"This removes all S3 buckets, Postgres databases, and the user JSON file.",
+            args.yes,
+        ):
+            print("aborted", file=sys.stderr)
+            return 1
+
+        # Load the user config to get experiences/modalities for teardown.
+        user_json_path = store._path_for(args.username)
+        try:
+            with open(user_json_path, encoding="utf-8") as f:
+                user_cfg = json.load(f)
+        except Exception as exc:
+            print(f"error: cannot load user config for deprovisioning: {exc}", file=sys.stderr)
+            return 2
+
+        # Resolve admin S3 config from the server config file.
+        from umrs.shared.config import (
+            get_default_json_server_file,
+            get_resolved_umrs_cfg_dir,
+        )
+        import os
+        server_json = os.path.join(get_resolved_umrs_cfg_dir(), get_default_json_server_file())
+        admin_s3_cfg = None
+        if os.path.isfile(server_json):
+            with open(server_json, encoding="utf-8") as f:
+                srv = json.load(f)
+            admin_s3_cfg = srv.get("admin_s3_configuration_file")
+
+        if not admin_s3_cfg:
+            print("warning: admin_s3_configuration_file not found in server config; "
+                  "S3/MinIO cleanup will be skipped.", file=sys.stderr)
+
+        from umrs.server.provisioning import deprovision_user
+        deprovision_user(user_cfg, admin_s3_cfg or "")
+
+        path = store.delete(args.username)
+        print(f"deprovisioned and deleted {path}")
+        return 0
+
     if args.purge:
         if not _confirm(
             f"Hard-delete user {rec.username!r} (JSON file will be removed)?",
@@ -318,6 +364,7 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
     store.set_disabled(args.username, True)
     print(f"soft-deleted (disabled) user {rec.username}")
     print("Use `--purge` to remove the JSON file and revoke filesystem presence.")
+    print("Use `--purge --deprovision` to also remove S3 buckets, Postgres databases, and MinIO IAM user.")
     return 0
 
 
@@ -848,6 +895,8 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
     del_p = user_sub.add_parser("delete", help="Soft-delete (disable) a user; --purge to remove file")
     del_p.add_argument("username")
     del_p.add_argument("--purge", action="store_true", help="Remove the JSON file")
+    del_p.add_argument("--deprovision", action="store_true",
+                       help="Also remove S3 buckets, Postgres DBs, and MinIO IAM user (requires --purge)")
     del_p.add_argument("-y", "--yes", action="store_true", help="Assume yes on prompts")
     del_p.set_defaults(func=_cmd_user_delete)
 

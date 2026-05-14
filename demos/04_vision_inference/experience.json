@@ -1,0 +1,26 @@
+{
+  "xp_name": "Vision Inference",
+  "sql_username": "demo_vision",
+  "modalities": [
+    {
+      "modality_name": "image",
+      "s3": {
+        "bucket_alias": "demo-images",
+        "need_output_bucket": true,
+        "data": { "type": "file", "mime_type": "image/png" }
+      },
+      "model": {
+        "model_name": "facebook/sam2-hiera-small",
+        "vector_size": "256",
+        "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
+        "vision_model_type": "sam3",
+        "return_type": "file"
+      },
+      "sql": {
+        "store_embeddings": "no",
+        "table_name": "vision_infer",
+        "meta_data": []
+      }
+    }
+  ]
+}

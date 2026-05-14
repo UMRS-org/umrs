@@ -53,7 +53,7 @@ mkdir -p "$RESULTS_DIR"
 log ""
 log "Step 2: User1 uploads a test file..."
 echo "This is user1's private data — $(date)" > "${RESULTS_DIR}/user1_data.txt"
-BUCKET1="${USER1_BUCKET:-user1-textfiles}"
+BUCKET1="${USER1_BUCKET:-demo-textfiles}"
 as_user1 upload_file "${RESULTS_DIR}/user1_data.txt" "$BUCKET1" 2>&1 \
     | while IFS= read -r line; do log "  [user1] $line"; done
 ok "User1 uploaded data to ${BUCKET1}"

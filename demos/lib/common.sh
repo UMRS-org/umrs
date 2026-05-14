@@ -70,6 +70,8 @@ if [[ -n "${UMRS_CONF:-}" ]]; then
     CONF="${UMRS_CONF}"
 elif [[ -n "${UMRS_USER_CONF:-}" ]]; then
     CONF="${UMRS_USER_CONF}"
+elif [[ -f "${HOME}/.config/umrs/users/demo_user.json" ]]; then
+    CONF="${HOME}/.config/umrs/users/demo_user.json"
 elif [[ -f "${HOME}/.config/umrs/users/user1.json" ]]; then
     CONF="${HOME}/.config/umrs/users/user1.json"
 else
@@ -341,6 +343,27 @@ print_mini_rivault_mount_summary() {
         echo "  Project data: ${DEMO_PROJECT_DATA_SOURCE} -> /project"
         echo "  RAG index   : ${DEMO_RAG_INDEX_SOURCE} -> /rag-index"
         echo "  Egress      : ${DEMO_EGRESS_DOMAINS}"
+}
+
+# --- Ensure an experience fragment is merged into the active user config ---
+# Usage:
+#   ensure_experience "$SCRIPT_DIR/experience.json"
+#   ensure_experience "$SCRIPT_DIR/experience.json" --update
+#
+# Calls `umrs-client config add-experience <fragment>` so the modalities
+# described in the fragment are present in the active user config.
+# The `--update` flag replaces an existing experience with the same xp_name.
+ensure_experience() {
+    local fragment="$1"
+    shift
+    local extra_args=("$@")
+
+    [[ -f "$fragment" ]] || die "Experience fragment not found: $fragment"
+
+    log "Ensuring experience from: $fragment"
+    "${CLIENT_ARGS[@]}" config add-experience "$fragment" "${extra_args[@]}" \
+        || die "Failed to add experience fragment: $fragment"
+    ok "Experience merged into user config."
 }
 
 # --- Onboard active user (idempotent) ---

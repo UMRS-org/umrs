@@ -16,7 +16,7 @@
 #   - UMRS server reachable (SSH tunnels if remote: 5555, 5556, 9000)
 #   - opencv-python-headless and numpy installed (for test video generation)
 #   - A bucket alias with 'movie' modality and 'need_output_bucket: true'
-#     configured in your user config (user1-video by default).
+#     configured in your user config (demo-video by default).
 #
 # Usage:
 #   bash run_demo.sh                           # generate + analyse test videos
@@ -28,7 +28,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="video_analysis" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${VIDEO_BUCKET:-user1-video}"
+# Ensure Video Analysis experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
+BUCKET_ALIAS="${VIDEO_BUCKET:-demo-video}"
 MAX_VIDEOS="${MAX_VIDEOS:-6}"
 VIDEO_DIR="${1:-}"
 RESULTS_DIR="${SCRIPT_DIR}/results"

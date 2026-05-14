@@ -28,7 +28,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="vision_infer" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${VISION_BUCKET:-user1-sam3}"
+# Ensure Vision Inference experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
+BUCKET_ALIAS="${VISION_BUCKET:-demo-images}"
 FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 IMAGE_DIR="${1:-${SCRIPT_DIR}/../sample_data/images}"

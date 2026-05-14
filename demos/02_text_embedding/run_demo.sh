@@ -9,14 +9,17 @@
 #   - UMRS server running with Text Embedding experience
 #   - umrs-client installed and in PATH
 #
-# Bucket alias used: user1-textfiles  (from server config)
+# Bucket alias used: demo-textfiles  (from experience.json fragment)
 # =============================================================================
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="text_embed" source "${SCRIPT_DIR}/../lib/common.sh"
 
-BUCKET_ALIAS="${TEXT_BUCKET:-user1-textfiles}"
+# Ensure Text Embedding experience is in user config (idempotent).
+ensure_experience "${SCRIPT_DIR}/experience.json"
+
+BUCKET_ALIAS="${TEXT_BUCKET:-demo-textfiles}"
 SAMPLE_DIR="${SCRIPT_DIR}/../sample_data/texts"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 EMBEDDING_WAIT_POLLS="${EMBEDDING_WAIT_POLLS:-60}"
