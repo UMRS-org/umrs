@@ -6,6 +6,7 @@ model_list:
       api_key: os.environ/VLLM_API_KEY  # Must match VLLM_API_KEY in serve-model.yaml
       api_base: http://vllm:8000/v1
       keep_alive: 60m
+      ssl_verify: false  # Prevent LiteLLM aiohttp transport from using SSL on this HTTP endpoint
 
 #mcp_servers:
 #  time:

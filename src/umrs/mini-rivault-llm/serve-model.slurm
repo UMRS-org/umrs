@@ -194,6 +194,19 @@ if [[ "${_litellm_db_sql_migrations}" != "true" && ( "${_litellm_db_profile_acti
     _litellm_disable_schema_update_default="false"
 fi
 
+# Proxy resolution: point to egress-guard only when the 'egress' profile is
+# active (i.e. egress-guard container will actually be running). When
+# HTTPS_PROXY is set to a non-running service, aiohttp creates a default SSL
+# context at session creation time and applies it to ALL connections including
+# internal HTTP ones (LiteLLM → vLLM), causing spurious ssl:<SSLContext>
+# ConnectionRefused errors on port 8000.
+if [[ " ${RIVAULT_PROFILES} " == *" egress "* ]]; then
+    _rivault_http_proxy="${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}"
+else
+    _rivault_http_proxy="${RIVAULT_HTTP_PROXY:-}"   # empty → no proxy
+fi
+_rivault_https_proxy="${RIVAULT_HTTPS_PROXY:-${_rivault_http_proxy}}"
+
 cat <<EOF > "./env.${uuid}"
 # ═══════════════════════════════════════════════════════════════════════════════
 # Mini-RiVault environment file — generated per-job (UUID=${uuid})
@@ -278,17 +291,17 @@ LITELLM_DISABLE_SCHEMA_UPDATE=${LITELLM_DISABLE_SCHEMA_UPDATE:-${_litellm_disabl
 LITELLM_DB_SQL_MIGRATIONS=${_litellm_db_sql_migrations}
 
 # ─── 6. EgressGuard & Proxy ──────────────────────────────────────────────────
-# All outbound traffic from containers is forced through egress-guard proxy.
+# Proxy is set only when the 'egress' profile is active; empty otherwise.
 # RIVAULT_* variants are canonical; HTTP_PROXY/http_proxy are conventional
 # aliases consumed by curl, pip, etc. inside containers.
-RIVAULT_HTTP_PROXY=${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}
-RIVAULT_HTTPS_PROXY=${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
+RIVAULT_HTTP_PROXY=${_rivault_http_proxy}
+RIVAULT_HTTPS_PROXY=${_rivault_https_proxy}
 RIVAULT_NO_PROXY=${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}
-HTTP_PROXY=${HTTP_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
-HTTPS_PROXY=${HTTPS_PROXY:-${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}}
+HTTP_PROXY=${HTTP_PROXY:-${_rivault_http_proxy}}
+HTTPS_PROXY=${HTTPS_PROXY:-${_rivault_https_proxy}}
 NO_PROXY=${NO_PROXY:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
-http_proxy=${http_proxy:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}
-https_proxy=${https_proxy:-${RIVAULT_HTTPS_PROXY:-${RIVAULT_HTTP_PROXY:-http://egress-guard:8888}}}
+http_proxy=${http_proxy:-${_rivault_http_proxy}}
+https_proxy=${https_proxy:-${_rivault_https_proxy}}
 no_proxy=${no_proxy:-${RIVAULT_NO_PROXY:-localhost,127.0.0.1,::1,litellm,vllm,ll-postgres,coredns,nginx,egress-guard}}
 # Comma-separated domains allowed through egress-guard (empty = fully offline)
 EGRESS_DOMAIN_ALLOWLIST=${EGRESS_DOMAIN_ALLOWLIST:-}
