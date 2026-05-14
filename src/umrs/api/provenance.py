@@ -1,0 +1,188 @@
+"""Provenance REST API (COR-005).
+
+Provides:
+- GET /umrs/provenance/{job_id}  — Full provenance record for a job
+- GET /umrs/provenance            — List provenance for recent completed jobs
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from pydantic import BaseModel, Field
+
+from ..jobs.models import JobStatus, JobType
+from ..jobs.provenance import build_provenance
+from ..jobs.store import JobNotFoundError, JobStore
+from .jobs import CallerIdentity, get_caller_identity, get_job_store
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/umrs/provenance", tags=["provenance"])
+
+
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
+
+class AttemptSummaryResponse(BaseModel):
+    attempt_id: str
+    attempt_no: int
+    backend: str
+    backend_ref: str | None = None
+    status: str
+    started_at: str | None = None
+    ended_at: str | None = None
+    exit_reason: str | None = None
+    duration_seconds: float | None = None
+
+
+class ModelRefResponse(BaseModel):
+    name: str
+    path: str | None = None
+    version: str | None = None
+    source: str | None = None
+
+
+class ArtifactRefResponse(BaseModel):
+    uri: str
+    media_type: str = ""
+    size_bytes: int | None = None
+    sha256: str | None = None
+
+
+class ProvenanceResponse(BaseModel):
+    job_id: str
+    job_type: str
+    project_id: str
+    user_id: str
+    status: str
+    spec: dict[str, Any] = Field(default_factory=dict)
+    created_at: str | None = None
+    completed_at: str | None = None
+    total_duration_seconds: float | None = None
+    execution_authority: str | None = None
+    runtime_wrapper: str | None = None
+    umrs_instance_id: str | None = None
+    model: ModelRefResponse | None = None
+    attempts: list[AttemptSummaryResponse] = Field(default_factory=list)
+    total_attempts: int = 0
+    commit_attempt_id: str | None = None
+    artifacts: list[ArtifactRefResponse] = Field(default_factory=list)
+    restart_policy: str | None = None
+    max_attempts: int = 0
+    idempotency_key: str | None = None
+    workflow_name: str | None = None
+    execution_id: str | None = None
+    parent_job_id: str | None = None
+
+
+class ProvenanceListResponse(BaseModel):
+    records: list[ProvenanceResponse]
+    total: int
+    limit: int
+    offset: int
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/{job_id}",
+    response_model=ProvenanceResponse,
+    summary="Get provenance for a job",
+)
+def get_provenance(
+    job_id: str,
+    store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """Return the full provenance record for a durable job."""
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        )
+
+    if not caller.can_access_job(job):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view this job's provenance",
+        )
+
+    attempts = store.get_attempts_for_job(job_id)
+    record = build_provenance(job, attempts)
+    return record.to_dict()
+
+
+@router.get(
+    "",
+    response_model=ProvenanceListResponse,
+    summary="List provenance records",
+)
+def list_provenance(
+    project_id: str | None = Query(None),
+    job_type: str | None = Query(None),
+    status_filter: str | None = Query(None, alias="status"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+) -> dict[str, Any]:
+    """List provenance records for jobs matching the given filters."""
+    jt = None
+    if job_type:
+        try:
+            jt = JobType(job_type)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid job_type: {job_type}",
+            )
+
+    js = None
+    if status_filter:
+        try:
+            js = JobStatus(status_filter)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid status: {status_filter}",
+            )
+
+    effective_project = project_id or caller.project_id
+
+    # Non-admin callers MUST NOT query another project's jobs.
+    if project_id and project_id != caller.project_id and not caller.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cross-project provenance listing requires admin privileges",
+        )
+
+    jobs = store.list_jobs(
+        project_id=effective_project,
+        status=js,
+        job_type=jt,
+        limit=limit,
+        offset=offset,
+    )
+
+    records = []
+    for job in jobs:
+        if not caller.can_access_job(job):
+            continue
+        attempts = store.get_attempts_for_job(job.job_id)
+        record = build_provenance(job, attempts)
+        records.append(record.to_dict())
+
+    return {
+        "records": records,
+        "total": len(records),
+        "limit": limit,
+        "offset": offset,
+    }
