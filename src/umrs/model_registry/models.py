@@ -310,6 +310,7 @@ class ServingProfile:
 
     # vLLM parameters
     tensor_parallel_size: int = 1
+    pipeline_parallel_size: int = 1
     max_model_len: int | None = None
     gpu_memory_utilization: float = 0.9
     dtype: str = "auto"
@@ -322,6 +323,7 @@ class ServingProfile:
     # Resource hints
     min_gpu_memory_gb: float | None = None
     recommended_gpu_count: int = 1
+    recommended_node_count: int = 1  # >1 for multi-node PP
 
     # Vision adapter hints
     vision_adapter: str | None = None
@@ -341,6 +343,7 @@ class ServingProfile:
             "readiness_path": self.readiness_path,
             "invoke_base_path": self.invoke_base_path,
             "tensor_parallel_size": self.tensor_parallel_size,
+            "pipeline_parallel_size": self.pipeline_parallel_size,
             "max_model_len": self.max_model_len,
             "gpu_memory_utilization": self.gpu_memory_utilization,
             "dtype": self.dtype,
@@ -349,6 +352,7 @@ class ServingProfile:
             "api_base": self.api_base,
             "min_gpu_memory_gb": self.min_gpu_memory_gb,
             "recommended_gpu_count": self.recommended_gpu_count,
+            "recommended_node_count": self.recommended_node_count,
             "vision_adapter": self.vision_adapter,
             "vision_task": self.vision_task,
             "output_format": self.output_format,
@@ -370,6 +374,7 @@ class ServingProfile:
             readiness_path=data.get("readiness_path"),
             invoke_base_path=data.get("invoke_base_path"),
             tensor_parallel_size=data.get("tensor_parallel_size", 1),
+            pipeline_parallel_size=data.get("pipeline_parallel_size", 1),
             max_model_len=data.get("max_model_len"),
             gpu_memory_utilization=data.get("gpu_memory_utilization", 0.9),
             dtype=data.get("dtype", "auto"),
@@ -378,6 +383,7 @@ class ServingProfile:
             api_base=data.get("api_base"),
             min_gpu_memory_gb=data.get("min_gpu_memory_gb"),
             recommended_gpu_count=data.get("recommended_gpu_count", 1),
+            recommended_node_count=data.get("recommended_node_count", 1),
             vision_adapter=data.get("vision_adapter"),
             vision_task=data.get("vision_task"),
             output_format=data.get("output_format"),

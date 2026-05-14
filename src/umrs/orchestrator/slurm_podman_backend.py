@@ -221,9 +221,12 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
         site = self.site
 
-        # Per-request partition override: validate against site candidates
+        # Per-request overrides: pop before forwarding remaining kwargs
         partition_override = kwargs.pop("partition_override", None)
         nodelist_hint = kwargs.pop("nodelist_hint", None)
+        gpu_count = kwargs.pop("gpu_count", None)  # per-request GPU override
+        node_count = kwargs.pop("node_count", None)  # multi-node PP
+        min_gpu_memory_gb = kwargs.pop("min_gpu_memory_gb", None)  # resource hint from model catalog
 
         if partition_override:
             allowed = self._partition_candidates(site.scheduler.partition)
@@ -237,7 +240,9 @@ class SlurmPodmanBackend(OrchestratorBackend):
                 "Using per-request partition override: %s", selected_partition,
             )
         else:
-            selected_partition = await self._select_submission_partition()
+            selected_partition = await self._select_submission_partition(
+                min_gpu_memory_gb=min_gpu_memory_gb,
+            )
 
         # Build sbatch arguments from site config
         sbatch_args = [
@@ -252,10 +257,20 @@ class SlurmPodmanBackend(OrchestratorBackend):
         if nodelist_hint:
             sbatch_args.append(f"--nodelist={nodelist_hint}")
             logger.info("Using per-request nodelist hint: %s", nodelist_hint)
+        if node_count and node_count > 1:
+            sbatch_args.append(f"--nodes={node_count}")
+            logger.info("Multi-node job: --nodes=%d", node_count)
         if site.scheduler.time_limit:
             sbatch_args.append(f"--time={site.scheduler.time_limit}")
-        if site.scheduler.gpus:
-            sbatch_args.append(f"--gres=gpu:{site.scheduler.gpus}")
+        # Per-request gpu_count overrides site.scheduler.gpus;
+        # partition profile gpus may further override both.
+        effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
+        pp = site.get_partition_profile(selected_partition) if selected_partition else None
+        if pp is not None and gpu_count is None:
+            # Partition profile is authoritative when no explicit request override
+            effective_gpus = pp.gpus
+        if effective_gpus:
+            sbatch_args.append(f"--gres=gpu:{effective_gpus}")
         if site.scheduler.cpus:
             sbatch_args.append(f"--cpus-per-task={site.scheduler.cpus}")
         if site.scheduler.memory:
@@ -533,10 +548,39 @@ class SlurmPodmanBackend(OrchestratorBackend):
     # Private helpers
     # ------------------------------------------------------------------
 
-    async def _select_submission_partition(self) -> str:
+    async def _select_submission_partition(
+        self,
+        min_gpu_memory_gb: float | None = None,
+    ) -> str:
         candidates = self._partition_candidates(self.site.scheduler.partition)
         if not candidates:
             return ""
+
+        # Filter candidates by GPU memory requirement when a model catalog
+        # provides min_gpu_memory_gb and partition profiles declare gpu_memory_gb.
+        if min_gpu_memory_gb and min_gpu_memory_gb > 0:
+            filtered = []
+            for p in candidates:
+                pp = self.site.get_partition_profile(p)
+                if pp is None or pp.gpu_memory_gb <= 0:
+                    # Unknown memory — keep as fallback candidate
+                    filtered.append(p)
+                elif pp.gpu_memory_gb >= min_gpu_memory_gb:
+                    filtered.append(p)
+                else:
+                    logger.debug(
+                        "Excluding partition %s (%.1f GiB GPU < %.1f GiB required)",
+                        p, pp.gpu_memory_gb, min_gpu_memory_gb,
+                    )
+            if filtered:
+                candidates = filtered
+            else:
+                logger.warning(
+                    "No partition meets min_gpu_memory_gb=%.1f; "
+                    "falling back to all site candidates",
+                    min_gpu_memory_gb,
+                )
+
         if len(candidates) == 1:
             return candidates[0]
 

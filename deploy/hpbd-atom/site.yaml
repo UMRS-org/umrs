@@ -44,9 +44,11 @@ runtime:
 storage:
   model_cache_dir: /home/mnagaso/workspace/umrs_models/hf
   sam3_model_path: /home/mnagaso/workspace/umrs_models/sam3
-  hmae_model_path: /home/mnagaso/workspace/umrs_models/hmae
-  hmae_config_path: /home/mnagaso/workspace/umrs_models/hmae/infer_hmae_vit_b.yaml
-  hmae_checkpoint: /home/mnagaso/workspace/umrs_models/hmae/latest_checkpoint.pth
+  # HMAE is a user-specific private model.
+  # Configure per-user via env overrides (HMAE_MODEL_PATH, HMAE_CONFIG_PATH, HMAE_CHECKPOINT).
+  hmae_model_path: ""
+  hmae_config_path: ""
+  hmae_checkpoint: ""
   vision_tarball: /home/mnagaso/workspace/umrs_models/umrs-vision.tar
   user_model_path: /tmp
   s3_tunnel_host: ""

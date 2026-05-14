@@ -46,9 +46,11 @@ runtime:
 storage:
   model_cache_dir: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hf
   sam3_model_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/sam3
-  hmae_model_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae
-  hmae_config_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/infer_hmae_vit_b.yaml
-  hmae_checkpoint: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/latest_checkpoint.pth
+  # HMAE is a user-specific private model.
+  # Configure per-user via env overrides (HMAE_MODEL_PATH, HMAE_CONFIG_PATH, HMAE_CHECKPOINT).
+  hmae_model_path: ""
+  hmae_config_path: ""
+  hmae_checkpoint: ""
   vision_tarball: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/umrs-vision.tar  # base path; wrapper appends -arm64.tar or -amd64.tar
   user_model_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models
   s3_tunnel_host: ""                     # auto-set to $SLURM_SUBMIT_HOST
@@ -92,6 +94,7 @@ partition_profiles:
   ng-dgx-m0:
     arch: aarch64
     gpu_vendor: nvidia
+    gpu_memory_gb: 128          # GB10 Blackwell 128 GiB
     oci_runtime: runc
     userns_mode: host
     network_backend: netavark
@@ -101,6 +104,7 @@ partition_profiles:
   ng-dgx-m1:
     arch: aarch64
     gpu_vendor: nvidia
+    gpu_memory_gb: 128
     oci_runtime: runc
     userns_mode: host
     network_backend: netavark
@@ -110,6 +114,7 @@ partition_profiles:
   ng-dgx-m2:
     arch: aarch64
     gpu_vendor: nvidia
+    gpu_memory_gb: 128
     oci_runtime: runc
     userns_mode: host
     network_backend: netavark
@@ -119,6 +124,7 @@ partition_profiles:
   ng-dgx-m3:
     arch: aarch64
     gpu_vendor: nvidia
+    gpu_memory_gb: 128
     oci_runtime: runc
     userns_mode: host
     network_backend: netavark
@@ -130,6 +136,7 @@ partition_profiles:
   a100:
     arch: x86_64
     gpu_vendor: nvidia
+    gpu_memory_gb: 80            # A100 80 GiB
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -139,6 +146,7 @@ partition_profiles:
   ai-h100l:
     arch: x86_64
     gpu_vendor: nvidia
+    gpu_memory_gb: 80            # H100 80 GiB
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -148,6 +156,7 @@ partition_profiles:
   ai-h100l-pu:
     arch: x86_64
     gpu_vendor: nvidia
+    gpu_memory_gb: 80            # H100 80 GiB
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -157,6 +166,7 @@ partition_profiles:
   ai-h200-brc:
     arch: x86_64
     gpu_vendor: nvidia
+    gpu_memory_gb: 141           # H200 141 GiB HBM3e
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -166,6 +176,7 @@ partition_profiles:
   ai-l40s:
     arch: x86_64
     gpu_vendor: nvidia
+    gpu_memory_gb: 48            # L40S 48 GiB
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -175,6 +186,7 @@ partition_profiles:
   qc-a100:
     arch: x86_64
     gpu_vendor: nvidia
+    gpu_memory_gb: 80            # A100 80 GiB
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -184,6 +196,7 @@ partition_profiles:
   qc-gh200:
     arch: x86_64
     gpu_vendor: nvidia
+    gpu_memory_gb: 96            # GH200 96 GiB HBM3
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -195,6 +208,7 @@ partition_profiles:
   qc-mi250:
     arch: x86_64
     gpu_vendor: amd
+    gpu_memory_gb: 128           # MI250X 128 GiB HBM2e
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -204,6 +218,7 @@ partition_profiles:
   mi100:
     arch: x86_64
     gpu_vendor: amd
+    gpu_memory_gb: 32            # MI100 32 GiB HBM2
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
@@ -213,6 +228,7 @@ partition_profiles:
   fs-mi300a:
     arch: x86_64
     gpu_vendor: amd
+    gpu_memory_gb: 128           # MI300A 128 GiB unified HBM3
     oci_runtime: crun
     userns_mode: "keep-id:uid=0,gid=0"
     network_backend: netavark
