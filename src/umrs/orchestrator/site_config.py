@@ -141,6 +141,7 @@ class PartitionProfile:
 
     arch: str = "x86_64"                        # x86_64 | aarch64
     gpu_vendor: str = "nvidia"                  # nvidia | amd | none
+    gpu_memory_gb: float = 0                    # per-GPU VRAM in GiB (0 = unknown)
     oci_runtime: str = "crun"                   # crun | runc
     userns_mode: str = "keep-id:uid=0,gid=0"   # keep-id:uid=0,gid=0 | host
     network_backend: str = "netavark"           # netavark | cni

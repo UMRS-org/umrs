@@ -96,6 +96,7 @@ class ProvisionRequest:
     model_path: str = "/models/rivault-gpt-oss"
     ttl_sec: int = 3600  # 1 hour default
     gpu_count: int = 1
+    node_count: int = 1  # Slurm --nodes (>1 for multi-node PP)
     max_model_len: int = 4096
     tier: str = "user"
     mounts: dict[str, Any] = field(default_factory=dict)
@@ -107,6 +108,7 @@ class ProvisionRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
     partition_override: str | None = None  # Override site partition for this request
     nodelist_hint: str | None = None  # Slurm --nodelist hint (e.g. "ai-h200-brc-00")
+    min_gpu_memory_gb: float | None = None  # Resource hint from model catalog for partition selection
 
 
 @dataclass
@@ -470,8 +472,10 @@ class OrchestrationService:
                 model_path=request.model_path,
                 env=submit_env,
                 gpu_count=request.gpu_count,
+                node_count=request.node_count,
                 partition_override=request.partition_override,
                 nodelist_hint=request.nodelist_hint,
+                min_gpu_memory_gb=request.min_gpu_memory_gb,
             )
 
             if not job_info or not job_info.job_id:

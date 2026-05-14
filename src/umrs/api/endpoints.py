@@ -453,8 +453,9 @@ class ProvisionRequest(BaseModel):
         description="Optional path to model files. If omitted, resolve from the registered model catalog.",
     )
     ttl_sec: int = Field(3600, ge=60, description="TTL in seconds")
-    gpu_count: int = Field(1, ge=1, description="Number of GPUs")
-    max_model_len: int = Field(4096, ge=512, description="Max context length")
+    gpu_count: int = Field(1, ge=1, description="Number of GPUs per node")
+    node_count: int = Field(1, ge=1, description="Number of Slurm nodes (>1 for multi-node pipeline parallelism)")
+    max_model_len: int = Field(4096, ge=512, description="Max context length"))
     prefer_warm: bool = Field(True, description="Prefer reusing existing endpoint")
     wait: bool = Field(True, description="Wait for readiness before responding")
     partition: str | None = Field(None, description="Override Slurm partition (must be in site candidates)")
@@ -1511,6 +1512,60 @@ async def provision_endpoint(
     vision_task = request.vision_task or serving_profile.get("vision_task")
     output_format = request.output_format or serving_profile.get("output_format")
 
+    # Wire ServingProfile vLLM parameters as env-var defaults.
+    # API request fields take precedence; ServingProfile fills in catalog values.
+    profile_tp = serving_profile.get("tensor_parallel_size")
+    if profile_tp and int(profile_tp) > 1:
+        env_vars.setdefault("VLLM_TP", str(profile_tp))
+    profile_gpu_util = serving_profile.get("gpu_memory_utilization")
+    if profile_gpu_util:
+        env_vars.setdefault("VLLM_GPU_MEM_UTIL", str(profile_gpu_util))
+    profile_dtype = serving_profile.get("dtype")
+    if profile_dtype and profile_dtype != "auto":
+        env_vars.setdefault("VLLM_DTYPE", str(profile_dtype))
+    profile_quantization = serving_profile.get("quantization")
+    if profile_quantization:
+        env_vars.setdefault("VLLM_QUANTIZATION", str(profile_quantization))
+    profile_max_model_len = serving_profile.get("max_model_len")
+    if profile_max_model_len:
+        env_vars.setdefault("VLLM_MAX_MODEL_LEN", str(profile_max_model_len))
+
+    # Apply recommended_gpu_count from ServingProfile when the API request
+    # uses the default value (1).  This lets the model catalog specify GPU
+    # requirements without every caller needing to set gpu_count explicitly.
+    profile_gpu_count = serving_profile.get("recommended_gpu_count")
+    effective_gpu_count = request.gpu_count
+    if request.gpu_count == 1 and profile_gpu_count and int(profile_gpu_count) > 1:
+        effective_gpu_count = int(profile_gpu_count)
+        logger.info(
+            "Using recommended_gpu_count=%d from model catalog for '%s'",
+            effective_gpu_count, request.model,
+        )
+
+    # Apply recommended max_model_len from ServingProfile when the API request
+    # uses the default value (4096).
+    effective_max_model_len = request.max_model_len
+    if request.max_model_len == 4096 and profile_max_model_len:
+        effective_max_model_len = int(profile_max_model_len)
+
+    # Pipeline parallelism (multi-node): forward from ServingProfile → VLLM_PP env.
+    profile_pp = serving_profile.get("pipeline_parallel_size")
+    if profile_pp and int(profile_pp) > 1:
+        env_vars.setdefault("VLLM_PP", str(profile_pp))
+
+    # Apply recommended_node_count from ServingProfile when the API request
+    # uses the default value (1).
+    profile_node_count = serving_profile.get("recommended_node_count")
+    effective_node_count = request.node_count
+    if request.node_count == 1 and profile_node_count and int(profile_node_count) > 1:
+        effective_node_count = int(profile_node_count)
+        logger.info(
+            "Using recommended_node_count=%d from model catalog for '%s'",
+            effective_node_count, request.model,
+        )
+    if effective_node_count > 1:
+        env_vars.setdefault("SLURM_NODES", str(effective_node_count))
+
     request_metadata: dict[str, Any] = {
         "model_type": model_type,
         "serving_backend": serving_backend,
@@ -1568,8 +1623,9 @@ async def provision_endpoint(
         model=request.model,
         model_path=resolved_model_path,
         ttl_sec=request.ttl_sec,
-        gpu_count=request.gpu_count,
-        max_model_len=request.max_model_len,
+        gpu_count=effective_gpu_count,
+        node_count=effective_node_count,
+        max_model_len=effective_max_model_len,
         tier=request.tier,
         mounts=request.mounts.model_dump(exclude_none=True) if request.mounts else {},
         egress_domains=list(request.egress_domains),
@@ -1577,6 +1633,7 @@ async def provision_endpoint(
         wait_for_ready=request.wait,
         partition_override=request.partition,
         nodelist_hint=request.nodelist,
+        min_gpu_memory_gb=serving_profile.get("min_gpu_memory_gb"),
         env_vars=env_vars,
         metadata=request_metadata,
     )

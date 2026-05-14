@@ -24,6 +24,12 @@ from umrs.admin.user_store import (
 # ---------------------------------------------------------------------------
 
 
+def _get_hostname() -> str:
+    """Return a short hostname for scp instructions."""
+    import socket
+    return socket.gethostname()
+
+
 # Actions that mutate user records and should trigger an auto-reload.
 _MUTATING_ACTIONS: frozenset = frozenset(
     {
@@ -228,8 +234,17 @@ def _maybe_emit_template(args, store, rec) -> None:
     _write_client_template(rec.username, rec.fullname, tpl_path)
     if not getattr(args, "json", False):
         print(f"client template written to {tpl_path}")
-        print(f"  Send this file to the user and instruct them to run:")
-        print(f"    umrs-client config init --template {tpl_path} --username {rec.username}")
+        print()
+        print("  Onboarding steps for the new user:")
+        print(f"  1. Copy the template to their local machine:")
+        print(f"       scp {_get_hostname()}:{tpl_path} ~/Downloads/{rec.username}.client.json")
+        print(f"  2. On their local machine, initialize the R4 client:")
+        print(f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {rec.username}")
+        print(f"  3. The user config will be stored locally at:")
+        print(f"       ~/.config/r4/profiles.json")
+        print()
+        print(f"  Alternative (direct init without template if gateway is reachable):")
+        print(f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {rec.username}")
 
 
 def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
@@ -362,8 +377,12 @@ def _cmd_user_generate_template(args: argparse.Namespace, _store: UserStore) -> 
     _write_client_template(username, fullname, out_path)
 
     print(f"Template written to {out_path}")
-    print(f"  Send this file to the user and instruct them to run:")
-    print(f"    umrs-client config init --template {out_path.name} --username {username}")
+    print()
+    print(f"  Onboarding steps for the user:")
+    print(f"  1. Send '{out_path.name}' to the user (or copy via scp)")
+    print(f"  2. On their local machine:")
+    print(f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {username}")
+    print(f"  3. Config is stored locally at ~/.config/r4/profiles.json")
     return 0
 
 
