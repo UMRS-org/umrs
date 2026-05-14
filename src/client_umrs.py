@@ -764,6 +764,106 @@ def _handle_profile_init(args):
     return 0
 
 
+def _handle_login(args):
+    """Unified login: save JWT, create profile + user config, verify connection."""
+    import getpass
+
+    host = args.host
+    port = args.port
+    mode = args.mode
+    api_key = args.api_key
+    username = args.username
+
+    # --- 1. Get the token ---
+    if not api_key:
+        api_key = getpass.getpass("Enter JWT or onboarding token: ")
+    if not api_key:
+        print(_red("✗ No token provided."), file=sys.stderr)
+        return 1
+
+    # --- 2. Extract username from JWT if not provided ---
+    from umrs.shared.auth import decode_jwt_claims_unsafe
+
+    claims = decode_jwt_claims_unsafe(api_key)
+    if claims:
+        jwt_user = claims.get("sub")
+        if jwt_user and not username:
+            username = jwt_user
+        print(f"  JWT identity (display only, not authoritative):")
+        if jwt_user:
+            print(f"    Username: {jwt_user}")
+        if "email" in claims:
+            print(f"    Email: {claims['email']}")
+        if "project_id" in claims:
+            print(f"    Project: {claims['project_id']}")
+        if "exp" in claims:
+            import time as _time
+
+            remaining = claims["exp"] - _time.time()
+            if remaining > 0:
+                hours = int(remaining // 3600)
+                mins = int((remaining % 3600) // 60)
+                print(f"    Expires in: {hours}h {mins}m")
+            else:
+                print(f"    Token EXPIRED")
+
+    if not username:
+        username = input("UMRS username: ").strip()
+    if not username:
+        print(_red("✗ Username is required."), file=sys.stderr)
+        return 1
+
+    # --- 3. Create connection profile ---
+    profile_name = args.profile_name or f"{host}-{mode}"
+    profile_path = get_profile_path()
+    profile_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load or create profiles JSON.
+    if profile_path.exists():
+        try:
+            all_profiles = _json.loads(profile_path.read_text())
+        except Exception:
+            all_profiles = {}
+    else:
+        all_profiles = {}
+
+    all_profiles[profile_name] = {
+        "server_host": host,
+        "control_port": port,
+        "tunnel_mode": mode == "ssh_tunnel",
+        "jwt": api_key,
+    }
+    all_profiles["_current"] = profile_name
+    profile_path.write_text(_json.dumps(all_profiles, indent=2))
+    profile_path.chmod(0o600)
+    print(f"✓ Connection profile '{profile_name}' saved")
+
+    # --- 4. Verify connection ---
+    print(f"  Verifying connection to {host}:{port} ...")
+    try:
+        mq = MessageQueue(
+            role="client",
+            queue_type="control",
+            server_ip=host,
+            port=port,
+            tunnel_mode=(mode == "ssh_tunnel"),
+            prefer_env_server_host=False,
+        )
+        mq.set_timeouts(5000, 5000)
+        if mq.ping():
+            print(f"  ✓ Server is reachable")
+        else:
+            print(f"  ✗ Server did not respond to ping (may still be starting)")
+    except Exception as e:
+        print(f"  ✗ Connection check failed: {e}")
+        print(f"  Profile saved — you can retry with `umrs-client ping`")
+
+    print(f"\n✓ Login complete for user '{username}' on {host}:{port}")
+    print(f"  Profile: {profile_name}")
+    print(f"  Run `umrs-client ping` to verify full connectivity.")
+    return 0
+
+
 def _handle_profile_command(args):
     if args.profile_action == 'init':
         return _handle_profile_init(args)
@@ -2217,6 +2317,19 @@ def main():
     )
     admin_p.add_argument('admin_args', nargs='*', help=argparse.SUPPRESS)
 
+    # --- login: unified auth + profile + config setup ---
+    login_p = subparsers.add_parser(
+        'login',
+        help='Authenticate and configure connection in one step',
+    )
+    login_p.add_argument('--host', default='127.0.0.1', help='UMRS server host')
+    login_p.add_argument('--port', type=int, default=5555, help='UMRS ZMQ control port')
+    login_p.add_argument('--api-key', '-k', help='JWT or onboarding token')
+    login_p.add_argument('--mode', default='direct', choices=['direct', 'ssh_tunnel'],
+                         help='Connection mode')
+    login_p.add_argument('--username', default=None, help='UMRS username (auto-extracted from JWT)')
+    login_p.add_argument('--profile-name', default=None, help='Connection profile name (default: auto)')
+
     profile_p = subparsers.add_parser('profile', help='Connection profile commands (init, list, show, use, import)')
     profile_sub = profile_p.add_subparsers(dest='profile_action', required=True)
     pn_p = profile_sub.add_parser('init', help='Create a new connection profile and set it as current')
@@ -2275,6 +2388,13 @@ def main():
     if args.action == 'profile':
         try:
             sys.exit(_handle_profile_command(args))
+        except Exception as e:
+            print(api_json(status='error', message=str(e), output_format=args.output))
+            sys.exit(1)
+
+    if args.action == 'login':
+        try:
+            sys.exit(_handle_login(args))
         except Exception as e:
             print(api_json(status='error', message=str(e), output_format=args.output))
             sys.exit(1)

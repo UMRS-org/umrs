@@ -234,17 +234,44 @@ def _maybe_emit_template(args, store, rec) -> None:
     _write_client_template(rec.username, rec.fullname, tpl_path)
     if not getattr(args, "json", False):
         print(f"client template written to {tpl_path}")
+
+        # Issue an onboarding JWT if requested.
+        token_hint = ""
+        if getattr(args, "issue_token", False):
+            try:
+                secret = _resolve_jwt_secret(args)
+                payload = _build_jwt_payload(
+                    user=rec.username,
+                    email=rec.email or "",
+                    project=rec.projects[0] if rec.projects else "",
+                    roles=[rec.role],
+                    days=getattr(args, "token_days", 30),
+                    projects=rec.projects or None,
+                )
+                from jose import jwt as jose_jwt
+
+                token = jose_jwt.encode(payload, secret, algorithm="HS256")
+                token_hint = token
+                print()
+                print(f"  Onboarding token (valid {getattr(args, 'token_days', 30)}d):")
+                print(f"    {token}")
+            except Exception as exc:
+                print(f"  warning: could not issue onboarding JWT: {exc}", file=sys.stderr)
+
         print()
         print("  Onboarding steps for the new user:")
-        print(f"  1. Copy the template to their local machine:")
-        print(f"       scp {_get_hostname()}:{tpl_path} ~/Downloads/{rec.username}.client.json")
-        print(f"  2. On their local machine, initialize the R4 client:")
-        print(f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {rec.username}")
-        print(f"  3. The user config will be stored locally at:")
-        print(f"       ~/.config/r4/profiles.json")
-        print()
-        print(f"  Alternative (direct init without template if gateway is reachable):")
-        print(f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {rec.username}")
+        if token_hint:
+            print(f"  r4 (HTTP path):")
+            print(f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}")
+            print(f"  umrs-client (ZMQ path):")
+            print(f"       umrs-client login --host <HOST> --api-key {token_hint}")
+        else:
+            print(f"  1. Generate a token for the user:")
+            print(f"       umrs-server admin token generate-jwt --user {rec.username}")
+            print(f"  2. Give the token to the user, who runs:")
+            print(f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key <TOKEN>")
+            print(f"     or:")
+            print(f"       umrs-client login --host <HOST> --api-key <TOKEN>")
 
 
 def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
@@ -480,35 +507,14 @@ def _cmd_token_generate(args: argparse.Namespace, _store: UserStore) -> int:
 
 def _resolve_jwt_secret(args: argparse.Namespace) -> str:
     """Resolve the JWT signing secret from CLI flag, env, Gateway secret, or default."""
-    import os
-    from pathlib import Path
-
+    # Check --secret CLI flag first (admin-only override).
     secret = getattr(args, "secret", None)
     if secret:
         return secret
-    env_secret = os.environ.get("JWT_SECRET")
-    if env_secret:
-        return env_secret
+    # Delegate to shared resolution logic.
+    from umrs.shared.auth import resolve_jwt_secret
 
-    candidates: list[Path] = []
-    xdg_config = os.environ.get("XDG_CONFIG_HOME")
-    if xdg_config:
-        candidates.append(Path(xdg_config) / "umrs" / "gateway" / "jwt.secret")
-    candidates.append(Path.home() / ".config" / "umrs" / "gateway" / "jwt.secret")
-    for path in candidates:
-        try:
-            gateway_secret = path.read_text().strip()
-        except OSError:
-            continue
-        if gateway_secret:
-            return gateway_secret
-
-    print(
-        "WARNING: JWT_SECRET is not set — using insecure default. "
-        "Set JWT_SECRET, pass --secret, or deploy the Gateway secret for production use.",
-        file=sys.stderr,
-    )
-    return "dev-secret-change-in-production"
+    return resolve_jwt_secret()
 
 
 def _build_jwt_payload(
@@ -802,6 +808,19 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         dest="no_client_template",
         action="store_true",
         help="Do not auto-generate a client config template file",
+    )
+    add_p.add_argument(
+        "--issue-token",
+        dest="issue_token",
+        action="store_true",
+        help="Issue an onboarding JWT and print dual-path login one-liner",
+    )
+    add_p.add_argument(
+        "--token-days",
+        dest="token_days",
+        type=int,
+        default=30,
+        help="Onboarding token validity in days (default: 30)",
     )
     add_p.set_defaults(func=_cmd_user_add)
 

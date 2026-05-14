@@ -122,12 +122,20 @@ workload provisioning (buckets, databases, embedding pipelines).
 
 ### Recommended: Let `user add` Generate It
 
-When the admin runs `umrs-server admin user add`, a client config template
-(`alice.client.json`) is generated automatically. The admin sends this file
-to the user, who imports it:
+When the admin runs `umrs-server admin user add --issue-token`, an onboarding
+token is printed directly. The user authenticates and configures the client
+in a single command:
 
 ```bash
 # User runs on their machine:
+umrs-client login --host <server-host> --api-key <token-from-admin>
+```
+
+For deployments that still use template-based provisioning, the admin can
+generate a client config template and the user imports it:
+
+```bash
+# Legacy template flow (still works):
 umrs-client config init \
     --template alice.client.json \
     --username alice
@@ -266,8 +274,20 @@ r4 model list --limit 5
 
 ## Connection Profiles
 
-Before `umrs-client` commands work, a connection profile must exist. Profiles
-define how the client reaches the server.
+Before `umrs-client` commands work, a connection profile must exist.
+
+The preferred way is to use `umrs-client login`, which creates a profile and
+authenticates in a single step:
+
+```bash
+# Typical: authenticate and set up profile
+umrs-client login --host <server-host> --api-key <token>
+
+# With explicit profile name
+umrs-client login --host <server-host> --api-key <token> --name rccs
+```
+
+Alternatively, profiles can be created manually (legacy flow):
 
 ```bash
 # Direct mode (local development)
