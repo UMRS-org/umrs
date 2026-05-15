@@ -556,6 +556,24 @@ export RIVAULT_SLURM_SCRIPT="${RIVAULT_SLURM_SCRIPT:-${DEFAULT_RIVAULT_SLURM_SCR
 # Python environment
 export PYTHONUNBUFFERED=1
 
+# ─── Ensure admin s3cfg is present (restore from deploy dir if lost) ─────────
+# $HOME/.config/umrs/s3cfg is created by setup_server.sh and is required by
+# the server to provision per-user MinIO credentials.  It lives in the HOME
+# filesystem which can be wiped/remounted independently of the Lustre deploy
+# directory.  Auto-restore to avoid a cryptic FileNotFoundError mid-boot.
+if [[ ! -f "${HOME}/.config/umrs/s3cfg" ]]; then
+    if [[ -f "${SCRIPT_DIR}/s3cfg" ]]; then
+        echo "NOTE: Admin s3cfg missing — restoring from ${SCRIPT_DIR}/s3cfg"
+        mkdir -p "${HOME}/.config/umrs"
+        cp "${SCRIPT_DIR}/s3cfg" "${HOME}/.config/umrs/s3cfg"
+    else
+        echo "ERROR: Admin s3cfg not found at ${HOME}/.config/umrs/s3cfg"
+        echo "  or at ${SCRIPT_DIR}/s3cfg."
+        echo "  Run: ./setup_server.sh  to recreate it."
+        exit 1
+    fi
+fi
+
 # ─── Remove stale per-user s3cfg files ───────────────────────────────────────
 # The server regenerates these from the admin .s3cfg on startup.
 # Stale files may point to wrong host (e.g. minio:9000 from a previous
