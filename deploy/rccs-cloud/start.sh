@@ -574,6 +574,23 @@ if [[ ! -f "${HOME}/.config/umrs/s3cfg" ]]; then
     fi
 fi
 
+# ─── Patch template placeholders in s3cfg with real credentials ──────────────
+# The repo-tracked s3cfg is a template with SET_MINIO_ROOT_USER / _PASSWORD.
+# setup_server.sh copies it verbatim, so patch the live copy with the actual
+# env vars loaded from .env above.
+_s3cfg="${HOME}/.config/umrs/s3cfg"
+if grep -q 'SET_MINIO_ROOT_USER\|SET_MINIO_ROOT_PASSWORD' "$_s3cfg" 2>/dev/null; then
+    _minio_user="${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}"
+    _minio_pass="${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}"
+    sed -i.bak \
+        -e "s|SET_MINIO_ROOT_USER|${_minio_user}|g" \
+        -e "s|SET_MINIO_ROOT_PASSWORD|${_minio_pass}|g" \
+        "$_s3cfg"
+    rm -f "${_s3cfg}.bak"
+    echo "NOTE: Patched s3cfg template placeholders with credentials from .env"
+fi
+unset _s3cfg _minio_user _minio_pass
+
 # ─── Remove stale per-user s3cfg files ───────────────────────────────────────
 # The server regenerates these from the admin .s3cfg on startup.
 # Stale files may point to wrong host (e.g. minio:9000 from a previous
