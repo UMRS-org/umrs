@@ -550,37 +550,75 @@ class AdminTokenManager:
     """
     Manage admin API tokens.
 
-    Tokens are stored securely in the config directory.
+    Tokens are stored securely in the config directory with:
+    - PBKDF2 salted hashes
+    - Expiry timestamps (optional, enforced at validation)
+    - Last-used tracking for audit visibility
+    - Rotation lineage (predecessor token name)
     """
+
+    # Default token lifetime: 90 days
+    DEFAULT_TTL_DAYS = 90
 
     def __init__(self, config_dir: ConfigDirectory | None = None):
         self._config = config_dir or get_config_directory()
         self._tokens_file = self._config.get_config_file("admin_tokens.json")
 
-    def generate_token(self, name: str, description: str = "") -> str:
+    def generate_token(
+        self,
+        name: str,
+        description: str = "",
+        ttl_days: int | None = None,
+        replaces: str | None = None,
+    ) -> str:
         """
         Generate a new admin token.
 
         Args:
             name: Token name (for identification)
             description: Optional description
+            ttl_days: Days until expiry (None = use DEFAULT_TTL_DAYS, 0 = no expiry)
+            replaces: Name of previous token being rotated out
 
         Returns:
             The generated token string
         """
+        from datetime import datetime, timedelta, timezone
+
         token = f"umrs-admin-{secrets.token_urlsafe(32)}"
 
         tokens = self._load_tokens()
         token_hash, token_salt = self._hash_token(token)
-        tokens[name] = {
+
+        now = datetime.now(timezone.utc)
+        effective_ttl = ttl_days if ttl_days is not None else self.DEFAULT_TTL_DAYS
+        expires_at = (
+            (now + timedelta(days=effective_ttl)).isoformat()
+            if effective_ttl > 0
+            else None
+        )
+
+        entry: dict[str, Any] = {
             "token_hash": token_hash,
             "token_salt": token_salt,
             "description": description,
-            "created_at": self._now_iso(),
+            "created_at": now.isoformat(),
+            "expires_at": expires_at,
+            "last_used_at": None,
+            "use_count": 0,
         }
+
+        if replaces:
+            entry["replaces"] = replaces
+            # Mark predecessor as rotated
+            if replaces in tokens:
+                tokens[replaces]["rotated_to"] = name
+                tokens[replaces]["rotated_at"] = now.isoformat()
+
+        tokens[name] = entry
         self._save_tokens(tokens)
 
-        logger.info(f"Generated admin token: {name}")
+        logger.info(f"Generated admin token: {name} (expires: {expires_at or 'never'})")
         return token
 
     def validate_token(self, token: str) -> str | None:
@@ -593,6 +631,8 @@ class AdminTokenManager:
         Returns:
             Token name if valid, None otherwise
         """
+        from datetime import datetime, timezone
+
         if is_weak_admin_token(token):
             logger.warning("Rejected weak admin token literal")
             return None
@@ -600,11 +640,30 @@ class AdminTokenManager:
         tokens = self._load_tokens()
 
         for name, entry in tokens.items():
+            # Check expiry first
+            expires_at = entry.get("expires_at")
+            if expires_at:
+                try:
+                    exp_dt = datetime.fromisoformat(expires_at)
+                    if datetime.now(timezone.utc) > exp_dt:
+                        logger.warning(f"Token {name!r} has expired (at {expires_at})")
+                        continue
+                except (ValueError, TypeError):
+                    pass
+
+            # Check if rotated (predecessor tokens are invalid)
+            if entry.get("rotated_to"):
+                continue
+
             stored_salt = entry.get("token_salt")
             if stored_salt:
                 # New salted format
                 computed_hash, _ = self._hash_token(token, salt=stored_salt)
                 if computed_hash == entry.get("token_hash"):
+                    # Update last-used metadata
+                    entry["last_used_at"] = datetime.now(timezone.utc).isoformat()
+                    entry["use_count"] = entry.get("use_count", 0) + 1
+                    self._save_tokens(tokens)
                     return name
             else:
                 # Legacy unsalted SHA-256 — validate and upgrade in-place
@@ -615,11 +674,30 @@ class AdminTokenManager:
                     new_hash, new_salt = self._hash_token(token)
                     entry["token_hash"] = new_hash
                     entry["token_salt"] = new_salt
+                    entry["last_used_at"] = datetime.now(timezone.utc).isoformat()
+                    entry["use_count"] = entry.get("use_count", 0) + 1
                     self._save_tokens(tokens)
                     logger.info("Upgraded legacy token %r to salted hash", name)
                     return name
 
         return None
+
+    def rotate_token(self, old_name: str, new_name: str, description: str = "") -> str | None:
+        """
+        Rotate a token: create a new one and invalidate the old.
+
+        Args:
+            old_name: Name of the token to rotate out
+            new_name: Name for the new replacement token
+            description: Optional description for new token
+
+        Returns:
+            The new token string, or None if old_name not found
+        """
+        tokens = self._load_tokens()
+        if old_name not in tokens:
+            return None
+        return self.generate_token(new_name, description=description, replaces=old_name)
 
     def revoke_token(self, name: str) -> bool:
         """Revoke a token by name."""
@@ -640,6 +718,10 @@ class AdminTokenManager:
                 "description": entry.get("description", ""),
                 "created_at": entry.get("created_at", ""),
                 "expires_at": self._format_token_expiration(entry),
+                "last_used_at": entry.get("last_used_at"),
+                "use_count": entry.get("use_count", 0),
+                "rotated_to": entry.get("rotated_to"),
+                "replaces": entry.get("replaces"),
             }
             for name, entry in tokens.items()
         ]

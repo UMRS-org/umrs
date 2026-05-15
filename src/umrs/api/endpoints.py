@@ -455,7 +455,7 @@ class ProvisionRequest(BaseModel):
     ttl_sec: int = Field(3600, ge=60, description="TTL in seconds")
     gpu_count: int = Field(1, ge=1, description="Number of GPUs per node")
     node_count: int = Field(1, ge=1, description="Number of Slurm nodes (>1 for multi-node pipeline parallelism)")
-    max_model_len: int = Field(4096, ge=512, description="Max context length"))
+    max_model_len: int = Field(4096, ge=512, description="Max context length")
     prefer_warm: bool = Field(True, description="Prefer reusing existing endpoint")
     wait: bool = Field(True, description="Wait for readiness before responding")
     partition: str | None = Field(None, description="Override Slurm partition (must be in site candidates)")
