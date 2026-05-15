@@ -1,7 +1,7 @@
 {
   "username": "user2",
   "fullname": "Test User 2",
-  "s3_configuration_file": "~/.s3cfg_user2",
+  "s3_configuration_file": "~/.config/umrs/s3cfg_user2",
   "experiences": [
     {
       "xp_name": "Text Embedding",

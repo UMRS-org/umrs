@@ -32,6 +32,11 @@ def get_resolved_umrs_cfg_dir():
     return DEFAULT_UMRS_CFG_DIR
 
 
+def default_s3cfg_path(username: str) -> str:
+    """Return the default s3cfg path for *username*, respecting UMRS_CONFIG / XDG."""
+    return os.path.join(get_resolved_umrs_cfg_dir(), f"s3cfg_{username}")
+
+
 def resolve_config_path(path, config_file=None):
     expanded = os.path.expanduser(path)
     if os.path.isabs(expanded):

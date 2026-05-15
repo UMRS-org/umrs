@@ -563,6 +563,7 @@ class AdminTokenManager:
     def __init__(self, config_dir: ConfigDirectory | None = None):
         self._config = config_dir or get_config_directory()
         self._tokens_file = self._config.get_config_file("admin_tokens.json")
+        self._audit_logger = logging.getLogger("umrs.audit.admin_token")
 
     def generate_token(
         self,
@@ -619,6 +620,15 @@ class AdminTokenManager:
         self._save_tokens(tokens)
 
         logger.info(f"Generated admin token: {name} (expires: {expires_at or 'never'})")
+        self._emit_audit_event(
+            "token_generate",
+            token_name=name,
+            detail={
+                "expires_at": expires_at,
+                "replaces": replaces,
+                "description": description,
+            },
+        )
         return token
 
     def validate_token(self, token: str) -> str | None:
@@ -697,7 +707,13 @@ class AdminTokenManager:
         tokens = self._load_tokens()
         if old_name not in tokens:
             return None
-        return self.generate_token(new_name, description=description, replaces=old_name)
+        new_token = self.generate_token(new_name, description=description, replaces=old_name)
+        self._emit_audit_event(
+            "token_rotate",
+            token_name=old_name,
+            detail={"new_name": new_name},
+        )
+        return new_token
 
     def revoke_token(self, name: str) -> bool:
         """Revoke a token by name."""
@@ -706,6 +722,11 @@ class AdminTokenManager:
             del tokens[name]
             self._save_tokens(tokens)
             logger.info(f"Revoked admin token: {name}")
+            self._emit_audit_event(
+                "token_revoke",
+                token_name=name,
+                detail={"action": "revoke"},
+            )
             return True
         return False
 
@@ -777,6 +798,37 @@ class AdminTokenManager:
         """Get current time in ISO format."""
         from datetime import datetime, timezone
         return datetime.now(timezone.utc).isoformat()
+
+    def _emit_audit_event(
+        self,
+        event_type: str,
+        token_name: str,
+        detail: dict | None = None,
+    ) -> None:
+        """Emit a structured audit event for admin token lifecycle operations.
+
+        These events are logged structurally so they can be ingested into
+        ``platform_audit_log`` by any audit collector.  The format matches
+        the event taxonomy in ``docs/AUDIT_AND_INCIDENT_RECONSTRUCTION.md``.
+        """
+        from datetime import datetime, timezone
+
+        event = {
+            "event_time": datetime.now(timezone.utc).isoformat(),
+            "event_class": "security",
+            "event_type": event_type,
+            "severity": "critical",
+            "actor_type": "operator",
+            "resource_type": "admin_token",
+            "resource_id": token_name,
+            "action": event_type,
+            "outcome": "success",
+            "detail": detail or {},
+        }
+        self._audit_logger.info(
+            "admin_token_lifecycle",
+            extra={"audit_event": event},
+        )
 
 
 # =============================================================================

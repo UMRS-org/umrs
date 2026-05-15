@@ -40,6 +40,7 @@ from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.auth import create_auth_context_from_request
 from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
 from umrs.shared.config import (
+    default_s3cfg_path,
     get_default_docker_s3cfg,
 )
 from umrs.shared.connection_profiles import (
@@ -268,7 +269,7 @@ def _build_user_config_template(username: str, fullname: str) -> dict:
     return {
         "username": username,
         "fullname": fullname,
-        "s3_configuration_file": f"~/.config/umrs/s3cfg_{username}",
+        "s3_configuration_file": default_s3cfg_path(username),
         "experiences": [
             {
                 "xp_name": "default",
@@ -350,7 +351,7 @@ def _handle_config_init(args):
             cfg = _json_mod.load(f)
         cfg["username"] = username
         cfg["fullname"] = fullname
-        cfg["s3_configuration_file"] = f"~/.config/umrs/s3cfg_{username}"
+        cfg["s3_configuration_file"] = default_s3cfg_path(username)
     else:
         # Check for a site-level template via UMRS_CONFIG_TEMPLATE env var.
         site_template = os.environ.get("UMRS_CONFIG_TEMPLATE")
@@ -362,7 +363,7 @@ def _handle_config_init(args):
                     cfg = _json_mod.load(f)
                 cfg["username"] = username
                 cfg["fullname"] = fullname
-                cfg["s3_configuration_file"] = f"~/.config/umrs/s3cfg_{username}"
+                cfg["s3_configuration_file"] = default_s3cfg_path(username)
             else:
                 cfg = _build_user_config_template(username, fullname)
         else:

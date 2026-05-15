@@ -609,7 +609,7 @@ UMRS handles multi-user S3 access automatically.  Each user defined in
 {
   "username": "user2",
   "fullname": "Other User",
-  "s3_configuration_file": "~/.s3cfg_user2",
+  "s3_configuration_file": "~/.config/umrs/s3cfg_user2",
   "experiences": [...]
 }
 ```
@@ -618,7 +618,7 @@ UMRS handles multi-user S3 access automatically.  Each user defined in
 
 ```json
 {
-  "admin_s3_configuration_file": "~/.s3cfg",
+  "admin_s3_configuration_file": "~/.config/umrs/s3cfg",
   "user_files_dir": "./user_files",
   "users": [
     "./user_files/user1.json",
@@ -633,13 +633,13 @@ UMRS handles multi-user S3 access automatically.  Each user defined in
 umrs-client reload
 ```
 
-The server will create the MinIO IAM user, generate `~/.s3cfg_user2` in the
+The server will create the MinIO IAM user, generate `~/.config/umrs/s3cfg_user2` in the
 home directory, and create all required buckets.
 
 5. Retrieve the generated S3 config for user 2:
 
 ```bash
-cat ~/.s3cfg_user2
+cat ~/.config/umrs/s3cfg_user2
 ```
 
 Copy that file to the second user's machine at `~/.config/umrs/s3cfg` (or

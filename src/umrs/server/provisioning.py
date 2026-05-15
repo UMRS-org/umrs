@@ -390,7 +390,8 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
         print(f"  Warning: admin S3 config not found at '{admin_cfg_path}', skipping S3/MinIO cleanup.")
 
     # Remove user S3 config file.
-    user_s3_cfg = os.path.expanduser(user_cfg.get("s3_configuration_file", f"~/.s3cfg_{username}"))
+    from umrs.shared.config import default_s3cfg_path
+    user_s3_cfg = os.path.expanduser(user_cfg.get("s3_configuration_file", default_s3cfg_path(username)))
     if os.path.isfile(user_s3_cfg):
         os.remove(user_s3_cfg)
         print(f"==> Removed S3 config file: {user_s3_cfg}")

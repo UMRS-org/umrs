@@ -6,7 +6,7 @@ A skill is a bundle of:
 - config.json — metadata (name, version, capabilities, dependencies)
 
 Skills are registered in UMRS so they can be discovered and loaded
-by any client (r4, OpenCode, n8n, etc.). UMRS stores skill metadata
+by any client (r4, the VS Code extension, n8n, etc.). UMRS stores skill metadata
 and validates skill bundles at registration time.
 
 No dependency on r4.
