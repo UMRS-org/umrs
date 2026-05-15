@@ -266,7 +266,8 @@ export PYTHONUNBUFFERED=1
 # The server regenerates these from the admin .s3cfg on startup.
 # Stale files may point to wrong host (e.g. minio:9000 from a previous
 # Docker-based deployment).
-rm -f "${HOME}/.s3cfg_user"* 2>/dev/null || true
+rm -f "${HOME}/.config/umrs/s3cfg_"* 2>/dev/null || true
+rm -f "${HOME}/.s3cfg_user"* 2>/dev/null || true  # legacy path
 
 # ─── Start the native UMRS server ───────────────────────────────────────────
 mkdir -p "$LOG_DIR"

@@ -9,6 +9,7 @@ Tests for:
 - U-505: XDG config directory standard
 """
 
+import logging
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -550,7 +551,66 @@ class TestAdminTokenManager:
         # Should not expose hashes
         for t in tokens:
             assert "token_hash" not in t
-            assert t["expires_at"] == "never"
+            # Default TTL is 90 days, so expires_at should be a timestamp
+            assert t["expires_at"] != ""
+
+    def test_generate_emits_audit_event(self, tmp_path, caplog):
+        """generate_token emits a structured audit event."""
+        config = ConfigDirectory()
+        config._config_dir = tmp_path
+        manager = AdminTokenManager(config)
+
+        with caplog.at_level(logging.INFO, logger="umrs.audit.admin_token"):
+            manager.generate_token("audit-test", "audit test token")
+
+        audit_records = [
+            r for r in caplog.records
+            if hasattr(r, "audit_event")
+        ]
+        assert len(audit_records) == 1
+        event = audit_records[0].audit_event
+        assert event["event_type"] == "token_generate"
+        assert event["resource_id"] == "audit-test"
+        assert event["event_class"] == "security"
+        assert event["severity"] == "critical"
+
+    def test_revoke_emits_audit_event(self, tmp_path, caplog):
+        """revoke_token emits a structured audit event."""
+        config = ConfigDirectory()
+        config._config_dir = tmp_path
+        manager = AdminTokenManager(config)
+        manager.generate_token("revoke-audit", "to revoke")
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="umrs.audit.admin_token"):
+            manager.revoke_token("revoke-audit")
+
+        audit_records = [
+            r for r in caplog.records
+            if hasattr(r, "audit_event")
+            and r.audit_event.get("event_type") == "token_revoke"
+        ]
+        assert len(audit_records) == 1
+        assert audit_records[0].audit_event["resource_id"] == "revoke-audit"
+
+    def test_rotate_emits_audit_events(self, tmp_path, caplog):
+        """rotate_token emits audit events for both generate and rotate."""
+        config = ConfigDirectory()
+        config._config_dir = tmp_path
+        manager = AdminTokenManager(config)
+        manager.generate_token("old-token", "original")
+
+        caplog.clear()
+        with caplog.at_level(logging.INFO, logger="umrs.audit.admin_token"):
+            manager.rotate_token("old-token", "new-token", "rotated")
+
+        event_types = [
+            r.audit_event["event_type"]
+            for r in caplog.records
+            if hasattr(r, "audit_event")
+        ]
+        assert "token_generate" in event_types
+        assert "token_rotate" in event_types
 
 
 # =============================================================================

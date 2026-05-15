@@ -29,7 +29,115 @@ cd "$(git rev-parse --show-toplevel)/umrs/demos/00_onboarding"
 bash run_demo.sh
 ```
 
-## Manual Equivalent To `run_demo.sh`
+---
+
+## Step 1 (Admin): Server-Side Setup
+
+The server admin must complete these steps **once** before any user can
+onboard. See the [deployment guide](../../deploy/rccs-cloud/README.md) for
+full details.
+
+### 1a. Start Infrastructure Services
+
+PostgreSQL (with pgvector) and MinIO run as containers managed by the
+deployment's `docker-compose.yml` (or `podman compose` on HPC):
+
+```bash
+# On the server host:
+cd deploy/rccs-cloud
+./start.sh          # starts postgres + minio containers, then umrs-server
+```
+
+Key environment variables (set in `.env`):
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `POSTGRES_USER` | `umrs` | Postgres superuser name |
+| `POSTGRES_PASSWORD` | `umrs_rccs` | Postgres superuser password |
+| `MINIO_ROOT_USER` | `minioadmin` | MinIO admin access key |
+| `MINIO_ROOT_PASSWORD` | `minioadmin` | MinIO admin secret key |
+
+### 1b. Admin S3 Configuration
+
+The server needs an admin-level S3 config file (default `~/.config/umrs/s3cfg`) to
+perform IAM operations. This file is referenced by
+`admin_s3_configuration_file` in the server config:
+
+```ini
+# ~/.config/umrs/s3cfg
+[default]
+host_base = 127.0.0.1:9000
+host_bucket = 127.0.0.1:9000
+bucket_location = us-east-1
+use_https = False
+access_key = minioadmin
+secret_key = minioadmin
+```
+
+### 1c. Server Config (`conf_umrs.json`)
+
+The server config declares the admin S3 config path, the directory for user
+files, and the initial list of users:
+
+```json
+{
+  "admin_s3_configuration_file": "~/.config/umrs/s3cfg",
+  "user_files_dir": "./user_files",
+  "users": [
+    "./user_files/user1.json"
+  ]
+}
+```
+
+- `user_files_dir` — where new user configs are persisted when received via
+  `reload`. Paths are resolved relative to the config file location.
+- `users` — initial user list. Seed it with JSON files under `user_files_dir`,
+  and use `umrs-server admin user add ...` for ongoing enrollment instead of
+  hand-editing this array.
+
+### 1d. Bootstrap the Admin CLI (first time only)
+
+```bash
+umrs-server admin bootstrap --admin-user admin --json
+```
+
+Save the printed bootstrap token if you need admin/API access later; the raw
+token is shown only once.
+
+### 1e. Enroll the User
+
+```bash
+umrs-server admin user add alice \
+    --fullname "Alice Smith" \
+    --role user
+```
+
+Add `--email`, `--slurm-account`, and repeated `--project` flags as needed.
+This will:
+- Write the **admin record** to `<user_files_dir>/alice.json` (role,
+  projects, quota — for server-side authorization).
+- Write a **client config template** to
+  `<user_files_dir>/alice.client.json` (experiences, modalities, buckets
+  — for workload provisioning). Send this file to the user.
+- Trigger a best-effort daemon reload when `umrs-server` is already running.
+
+The client template path can be overridden with `--client-template <path>`
+or skipped entirely with `--no-client-template`.
+
+### 1f. Manage Enrolled Users
+
+```bash
+umrs-server admin user list
+umrs-server admin user show alice
+umrs-server admin user disable alice
+umrs-server admin user delete alice --purge -y
+```
+
+---
+
+## Step 2 (User): Client-Side Setup
+
+After the admin completes Step 1, the user configures their local client.
 
 ### Preferred: `umrs-client login` (single command)
 
@@ -66,8 +174,12 @@ The old two-step flow still works:
 # 0a. Create a connection profile (interactive — prompts for profile name).
 umrs-client profile init
 
-# 0b. Create a user config (interactive — prompts for username and full name).
-umrs-client config init
+# 0b. Import the client config template the admin sent.
+umrs-client config init \
+    --template alice.client.json \
+    --username alice
+# Or generate your own config from scratch:
+umrs-client config init --username alice --fullname "Alice Smith"
 ```
 
 ### `profile init` Options (legacy)
@@ -128,6 +240,17 @@ want to modify it; do not paste the raw path alone into your shell prompt.
 
 After that, no `-c` flag is needed on any `umrs-client` command.
 
+### Config Update (Operator-Assisted)
+
+After enrollment, update user config using the mechanism supported by your
+deployment. On local/dev or non-role-enforced deployments:
+`umrs-client reload -c updated_user.json`.
+On operator-managed sites, ask the operator/site to apply the updated config.
+The server will accept the update only if the username already exists in the
+server's user registry.
+
+---
+
 ## What `reload` Provisions
 
 When a client calls `reload`, the server performs the following provisioning
@@ -160,77 +283,6 @@ an unchanged config is a no-op.
    matching the model's vector size and the metadata fields declared in
    the user config's `sql.meta_data` array.
 
-### User Account Registration
-
-User enrollment is controlled by the server administrator. A regular client
-**cannot** self-register; it can only update its own config after it has been
-enrolled.
-
-#### Admin Enrollment Flow
-
-1. If this is the first time using the server-side admin CLI, bootstrap it
-   once on the server host:
-   ```bash
-   umrs-server admin bootstrap --admin-user admin --json
-   ```
-   Save the printed bootstrap token if you need admin/API access later; the
-   raw token is shown only once.
-
-2. The admin enrolls the user directly on the server:
-   ```bash
-   umrs-server admin user add alice \
-       --fullname "Alice Smith" \
-       --role user
-   ```
-   Add `--email`, `--slurm-account`, and repeated `--project` flags as
-   needed.
-   This will:
-   - Write the **admin record** to `<user_files_dir>/alice.json` (role,
-     projects, quota — for server-side authorization).
-   - Write a **client config template** to
-     `<user_files_dir>/alice.client.json` (experiences, modalities, buckets
-     — for workload provisioning). Send this file to the user.
-   - Trigger a best-effort daemon reload when `umrs-server` is already
-     running.
-
-   The client template path can be overridden with `--client-template <path>`
-   or skipped entirely with `--no-client-template`.
-
-3. **Admin sends `alice.client.json` to the user.** The user imports it:
-   ```bash
-   umrs-client config init \
-       --template alice.client.json \
-       --username alice
-   ```
-   Alternatively, the user can generate their own config from scratch:
-   ```bash
-   umrs-client config init --username alice --fullname "Alice Smith"
-   ```
-
-4. The user can now connect and run commands normally. On local/dev or
-   non-role-enforced deployments, `umrs-client reload` can upload the full
-   config for the already-enrolled user and trigger provisioning of MinIO IAM,
-   Postgres roles, and buckets. On operator-managed sites, treat that sync step
-   as an operator/site action.
-
-#### Listing / Removing Users
-
-```bash
-umrs-server admin user list
-umrs-server admin user show alice
-umrs-server admin user disable alice
-umrs-server admin user delete alice --purge -y
-```
-
-#### Config Update (Operator-Assisted)
-
-After enrollment, update user config using the mechanism supported by your
-deployment. On local/dev or non-role-enforced deployments that can be:
-`umrs-client reload -c updated_user.json`.
-On operator-managed sites, ask the operator/site to apply the updated config.
-The server will accept the update only if the username already exists in the
-server's user registry.
-
 ### Data Flow
 
 ```
@@ -262,82 +314,6 @@ reload ───── sends user JSON ──────► validate/update enr
 ```
 
 ---
-
-## Server-Side Prerequisites (Admin)
-
-The provisioning above requires infrastructure that the server admin sets up
-**once** before any users can onboard. See the
-[deployment guide](../../deploy/rccs-cloud/README.md) for full details.
-
-### 1. Start Infrastructure Services
-
-PostgreSQL (with pgvector) and MinIO run as containers managed by the
-deployment's `docker-compose.yml` (or `podman compose` on HPC):
-
-```bash
-# On the server host:
-cd deploy/rccs-cloud
-./start.sh          # starts postgres + minio containers, then umrs-server
-```
-
-Key environment variables (set in `.env`):
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `POSTGRES_USER` | `umrs` | Postgres superuser name |
-| `POSTGRES_PASSWORD` | `umrs_rccs` | Postgres superuser password |
-| `MINIO_ROOT_USER` | `minioadmin` | MinIO admin access key |
-| `MINIO_ROOT_PASSWORD` | `minioadmin` | MinIO admin secret key |
-
-### 2. Admin S3 Configuration
-
-The server needs an admin-level S3 config file (default `~/.s3cfg`) to
-perform IAM operations. This file is referenced by
-`admin_s3_configuration_file` in the server config:
-
-```ini
-# ~/.s3cfg
-[default]
-host_base = 127.0.0.1:9000
-host_bucket = 127.0.0.1:9000
-bucket_location = us-east-1
-use_https = False
-access_key = minioadmin
-secret_key = minioadmin
-```
-
-### 3. Server Config (`conf_umrs.json`)
-
-The server config declares the admin S3 config path, the directory for user
-files, and the initial list of users:
-
-```json
-{
-  "admin_s3_configuration_file": "~/.s3cfg",
-  "user_files_dir": "./user_files",
-  "users": [
-    "./user_files/user1.json"
-  ]
-}
-```
-
-- `user_files_dir` — where new user configs are persisted when received via
-  `reload`. Paths are resolved relative to the config file location.
-- `users` — initial user list. Seed it with JSON files under `user_files_dir`,
-   and use `umrs-server admin user add ...` for ongoing enrollment instead of
-   hand-editing this array.
-
-### 4. Adding Users
-
-New users must be enrolled by an admin via `umrs-server admin user add`.
-See the **Admin Enrollment Flow** section earlier in this document for
-the full procedure.
-
-Manual placement of a user JSON in `user_files/` and adding its path to
-`conf_umrs.json` is supported but not recommended for production use.
-
-Re-running the same sequence is safe. If the config has not changed, the
-server treats the reload as a no-op.
 
 ## Expected Result
 

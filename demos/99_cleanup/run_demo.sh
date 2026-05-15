@@ -61,7 +61,7 @@ else
 fi
 
 # Remove user S3 config file.
-DEMO_S3_CFG="${HOME}/.s3cfg_${DEMO_USERNAME}"
+DEMO_S3_CFG="${HOME}/.config/umrs/s3cfg_${DEMO_USERNAME}"
 if [[ -f "${DEMO_S3_CFG}" ]]; then
     rm -f "${DEMO_S3_CFG}"
     ok "Removed S3 config: ${DEMO_S3_CFG}"

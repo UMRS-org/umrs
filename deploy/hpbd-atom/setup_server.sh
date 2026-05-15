@@ -141,11 +141,12 @@ else
 fi
 
 # ─── Copy admin s3cfg (server needs it to create per-user credentials) ───────
-if [[ ! -f "${HOME}/.s3cfg" ]]; then
-    log "Copying admin s3cfg to ~/.s3cfg"
-    cp "${SCRIPT_DIR}/s3cfg" "${HOME}/.s3cfg"
-elif ! diff -q "${SCRIPT_DIR}/s3cfg" "${HOME}/.s3cfg" >/dev/null 2>&1; then
-    log "NOTE: ~/.s3cfg differs from ${SCRIPT_DIR}/s3cfg — keeping existing."
+mkdir -p "${HOME}/.config/umrs"
+if [[ ! -f "${HOME}/.config/umrs/s3cfg" ]]; then
+    log "Copying admin s3cfg to ~/.config/umrs/s3cfg"
+    cp "${SCRIPT_DIR}/s3cfg" "${HOME}/.config/umrs/s3cfg"
+elif ! diff -q "${SCRIPT_DIR}/s3cfg" "${HOME}/.config/umrs/s3cfg" >/dev/null 2>&1; then
+    log "NOTE: ~/.config/umrs/s3cfg differs from ${SCRIPT_DIR}/s3cfg — keeping existing."
 fi
 
 # ─── .env setup ──────────────────────────────────────────────────────────────

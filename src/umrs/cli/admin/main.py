@@ -18,6 +18,7 @@ from umrs.admin.user_store import (
     UserStore,
     UserStoreError,
 )
+from umrs.shared.config import default_s3cfg_path
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -118,7 +119,7 @@ def _build_client_config_template(username: str, fullname: str = "") -> dict:
     return {
         "username": username,
         "fullname": fullname,
-        "s3_configuration_file": f"~/.config/umrs/s3cfg_{username}",
+        "s3_configuration_file": default_s3cfg_path(username),
         "experiences": [
             {
                 "xp_name": "default",
