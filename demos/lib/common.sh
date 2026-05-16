@@ -361,7 +361,7 @@ ensure_experience() {
     [[ -f "$fragment" ]] || die "Experience fragment not found: $fragment"
 
     log "Ensuring experience from: $fragment"
-    "${CLIENT_ARGS[@]}" config add-experience "$fragment" "${extra_args[@]}" \
+    "${CLIENT_ARGS[@]}" config add-experience "$fragment" ${extra_args[@]+"${extra_args[@]}"} \
         || die "Failed to add experience fragment: $fragment"
     ok "Experience merged into user config."
 }

@@ -115,6 +115,10 @@ ok "Workflow uploaded"
 log "Skipping admin reload — this demo shows the general-user upload and run path."
 if [[ "${DEMO_ADMIN_ACTIONS:-0}" = "1" ]]; then
     maybe_admin_reload 2>/dev/null || warn "reload returned non-zero (may be OK)"
+    # The server's event loop may be briefly blocked while processing the reload
+    # (creating buckets, database tables, etc.).  Give it a moment before
+    # attempting the next ZMQ command.
+    sleep 3
 fi
 
 # ---------- Step 4: Upload sample data ----------

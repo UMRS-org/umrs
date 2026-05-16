@@ -126,6 +126,14 @@ if $DO_SERVER; then
         run_or_dry "rm -rf '${CONFIG_DIR}'"
     fi
 
+    # 7b. Remove per-user S3 config files (created during provisioning)
+    for s3cfg in "${HOME}/.s3cfg" "${HOME}/.s3cfg_"*; do
+        if [[ -f "$s3cfg" ]]; then
+            log "Removing $s3cfg"
+            run_or_dry "rm -f '$s3cfg'"
+        fi
+    done
+
     # 8. Clean demo result directories
     log "Cleaning demo output directories..."
     for results_dir in "${REPO_ROOT}/demos"/*/results; do

@@ -10,7 +10,7 @@
       "end": 5563
     },
     "tunnel_mode": true,
-    "health_check_timeout_ms": 5000
+    "health_check_timeout_ms": 15000
   },
   "services": {
     "minio_url": "http://127.0.0.1:9000",
