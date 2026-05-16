@@ -961,28 +961,49 @@ def _handle_login(args):
 
     # --- 3. Create connection profile ---
     profile_name = args.profile_name or f"{host}-{mode}"
-    profile_path = get_profile_path()
+    profile_path = get_profile_path(profile_name)
     profile_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Load or create profiles JSON.
-    if profile_path.exists():
-        try:
-            all_profiles = _json.loads(profile_path.read_text())
-        except Exception:
-            all_profiles = {}
-    else:
-        all_profiles = {}
-
-    all_profiles[profile_name] = {
-        "server_host": host,
-        "control_port": port,
-        "tunnel_mode": mode == "ssh_tunnel",
-        "jwt": api_key,
+    minio_url = f"http://{host}:9000"
+    rag_url = f"http://{host}:8081"
+    profile_data = {
+        "name": profile_name,
+        "mode": mode,
+        "zmq": {
+            "host": host,
+            "control_port": port,
+            "data_port_range": {"start": port + 1, "end": port + 8},
+            "tunnel_mode": mode == "ssh_tunnel",
+            "health_check_timeout_ms": 5000,
+        },
+        "services": {
+            "minio_url": minio_url,
+            "rag_url": rag_url,
+        },
     }
-    all_profiles["_current"] = profile_name
-    profile_path.write_text(_json.dumps(all_profiles, indent=2))
+    if mode == "ssh_tunnel":
+        profile_data["ssh"] = {
+            "host": host,
+            "command_hint": f"ssh -L {port}:localhost:{port} {host}",
+            "local_forwards": [
+                {"local_port": port, "remote_host": "localhost", "remote_port": port},
+            ],
+        }
+
+    import json as _json_mod
+    with open(profile_path, "w", encoding="utf-8") as f:
+        _json_mod.dump(profile_data, f, indent=2, ensure_ascii=False)
+        f.write("\n")
     profile_path.chmod(0o600)
-    print(f"✓ Connection profile '{profile_name}' saved")
+    set_current_profile_name(profile_name)
+
+    # Store the JWT in a separate token file (profile schema does not allow extra fields).
+    token_path = profile_path.with_suffix(".token")
+    token_path.write_text(api_key + "\n", encoding="utf-8")
+    token_path.chmod(0o600)
+
+    print(f"✓ Connection profile '{profile_name}' saved → {profile_path}")
+    print(f"  JWT stored → {token_path}")
 
     # --- 4. Verify connection ---
     print(f"  Verifying connection to {host}:{port} ...")

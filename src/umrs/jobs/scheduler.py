@@ -14,7 +14,7 @@ import contextlib
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from .models import Job, JobAttempt, JobType
@@ -166,7 +166,11 @@ class Scheduler:
 
             # Record scheduling delay (time from ready to actual schedule)
             if hasattr(job, "next_run_at") and job.next_run_at:
-                delay = (datetime.utcnow() - job.next_run_at).total_seconds()
+                now = datetime.now(timezone.utc)
+                next_run = job.next_run_at
+                if next_run.tzinfo is None:
+                    next_run = next_run.replace(tzinfo=timezone.utc)
+                delay = (now - next_run).total_seconds()
                 if delay >= 0:
                     METRICS.scheduler_delay(delay)
 

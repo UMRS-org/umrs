@@ -17,6 +17,7 @@ back to the legacy per-batch client (useful when debugging hung tasks).
 import asyncio
 import logging
 import os
+import threading
 
 import bentoml
 from botocore.exceptions import ClientError
@@ -36,7 +37,10 @@ logger = logging.getLogger(__name__)
 # which it was opened. We therefore key the cache by ``(loop_id, service_url,
 # token)`` so a stale entry from a previous loop is never reused.
 _CLIENT_CACHE: dict[tuple[int, str, str | None], "bentoml.AsyncHTTPClient"] = {}
-_CLIENT_CACHE_LOCK = asyncio.Lock()
+# Use a threading.Lock (not asyncio.Lock) because each asyncio.run() creates a
+# fresh event loop — a module-level asyncio.Lock would bind to the first loop
+# and raise "bound to a different event loop" on subsequent asyncio.run() calls.
+_CLIENT_CACHE_LOCK = threading.Lock()
 
 
 def _client_reuse_enabled() -> bool:
@@ -58,7 +62,7 @@ async def _get_or_open_client(service_url: str, token: str | None):
     cached = _CLIENT_CACHE.get(key)
     if cached is not None:
         return cached
-    async with _CLIENT_CACHE_LOCK:
+    with _CLIENT_CACHE_LOCK:
         cached = _CLIENT_CACHE.get(key)
         if cached is not None:
             return cached
@@ -75,7 +79,7 @@ async def _get_or_open_client(service_url: str, token: str | None):
 async def close_bentoml_clients() -> None:
     """Close every cached BentoML client bound to the current loop."""
     loop_id = id(asyncio.get_running_loop())
-    async with _CLIENT_CACHE_LOCK:
+    with _CLIENT_CACHE_LOCK:
         for key in list(_CLIENT_CACHE.keys()):
             if key[0] != loop_id:
                 continue

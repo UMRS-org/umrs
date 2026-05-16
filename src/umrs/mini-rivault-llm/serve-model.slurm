@@ -124,7 +124,7 @@ _vllm_host_model_path="${VLLM_HOST_MODEL_PATH:-${VLLM_MODEL_PATH:-}}"
 if [[ -z "$_vllm_host_model_path" ]]; then
     _hf_cache="${VLLM_PATH_TO_HUGGINGFACE:-./models/vllm/huggingface}"
     _model_id="${VLLM_MODEL:-Qwen/Qwen3-0.6B}"
-    _vllm_host_model_path="${_hf_cache}/hub/models--$(echo "$_model_id" | tr '/' '--')/snapshots"
+    _vllm_host_model_path="${_hf_cache}/hub/models--$(echo "$_model_id" | sed 's|/|--|g')/snapshots"
 fi
 
 # ─── Resolve through HuggingFace cache snapshots layout ──────────────────────
@@ -156,8 +156,36 @@ _resolve_model_dir() {
 if [[ -d "$_vllm_host_model_path" ]]; then
     _vllm_host_model_path="$(_resolve_model_dir "$_vllm_host_model_path")"
 fi
-_vllm_container_model_path="${VLLM_CONTAINER_MODEL_PATH:-/models/$(basename "$_vllm_host_model_path")}"
-_vllm_model_ref="${VLLM_MODEL_REF:-${_vllm_container_model_path}}"
+
+# ─── Handle HF cache symlinks ────────────────────────────────────────────────
+# HF cache snapshot directories contain symlinks like config.json → ../../blobs/xxx.
+# If we bind-mount only the snapshot dir, symlinks break inside the container.
+# Detect this case and mount the full HF model directory instead, adjusting
+# the container model path to the correct subdirectory.
+_vllm_host_mount_path="${_vllm_host_model_path}"
+_vllm_container_model_subdir=""
+if [[ -L "${_vllm_host_model_path}/config.json" || -L "${_vllm_host_model_path}/params.json" ]]; then
+    # Symlinks detected — need to mount the parent model dir (includes blobs/)
+    # Path structure: .../hub/models--org--name/snapshots/<hash>
+    _model_root="${_vllm_host_model_path}"
+    # Walk up until we find the blobs/ sibling directory
+    while [[ "$_model_root" != "/" && ! -d "${_model_root}/blobs" ]]; do
+        _model_root="$(dirname "$_model_root")"
+    done
+    if [[ -d "${_model_root}/blobs" ]]; then
+        # Compute relative path from model root to snapshot
+        _rel_path="${_vllm_host_model_path#${_model_root}/}"
+        _vllm_host_mount_path="${_model_root}"
+        _vllm_container_model_subdir="/${_rel_path}"
+    fi
+fi
+_vllm_mount_name="$(basename "$_vllm_host_mount_path")"
+# VLLM_HOST_MODEL_PATH is the bind-mount source (may be model root or snapshot)
+_vllm_host_model_path="${_vllm_host_mount_path}"
+# VLLM_CONTAINER_MODEL_PATH is the bind-mount target in the container
+_vllm_container_model_path="${VLLM_CONTAINER_MODEL_PATH:-/models/${_vllm_mount_name}}"
+# VLLM_MODEL_REF is what vLLM --model receives (may include subdirectory)
+_vllm_model_ref="${VLLM_MODEL_REF:-${_vllm_container_model_path}${_vllm_container_model_subdir}}"
 _vllm_served_model_name="${VLLM_SERVED_MODEL_NAME:-${VLLM_MODEL:-Qwen/Qwen3-0.6B}}"
 NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-$(shuf -i 1025-65535 -n 1)}}"
 export NGINX_LITELLM_DOCKER_PORT

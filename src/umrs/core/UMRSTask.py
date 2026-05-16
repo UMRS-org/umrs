@@ -192,7 +192,10 @@ class UMRSTask:
             str_payload = json.dumps(output_path_to_bucket)
 
         elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
-            client_id = full_payload
+            if isinstance(full_payload, tuple):
+                client_id = full_payload[0]
+            else:
+                client_id = full_payload
             str_payload = json.dumps("")
 
         elif cmd == TaskCmd.FILE:
