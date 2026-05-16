@@ -225,6 +225,12 @@ class EndpointProvisionBackend(OrchestratorBackend):
                     "MODEL_NAME": model_name,
                 }
             )
+            # When no registered model was found (model_path is None), forward
+            # the requested model name as VLLM_MODEL so the slurm wrapper can
+            # resolve it from the HF cache instead of falling back to the site
+            # config default.
+            if not model_path and model_name:
+                submit_env.setdefault("VLLM_MODEL", model_name)
             submit_env.update(mount_env)
 
             # Submit to underlying orchestrator

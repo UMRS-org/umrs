@@ -706,7 +706,12 @@ class MessageQueue:
                 # authorize the request first and reply with ACKNOWLEDGE
                 # or UNAUTHORIZED so the client sees the real outcome.
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
-                token = splited_msg[3] if len(splited_msg) > 3 else None
+                # Read admin token from the multipart auth frame (same
+                # mechanism used by CREATE_DATA_QUEUE), falling back to
+                # the legacy inline field for backward compatibility.
+                token = self._control_auth_token() or (
+                    splited_msg[3] if len(splited_msg) > 3 else None
+                )
                 if client_id and token:
                     try:
                         auth_ctx = create_auth_context_from_request(client_id, token=token)
