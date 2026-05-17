@@ -24,6 +24,7 @@ from .pipelines import (
 from .provenance import router as provenance_router
 from .rag import router as rag_router
 from .skills import router as skills_router
+from .traces import router as traces_router
 from .workflows import router as workflows_router
 
 __all__ = [
@@ -40,6 +41,7 @@ __all__ = [
     "provenance_router",
     "rag_router",
     "skills_router",
+    "traces_router",
     "vision_router",
     "workflows_router",
 ]

@@ -63,8 +63,10 @@ def _create_app():
         models_router,
         pipelines_router,
         policy_router,
+        provenance_router,
         rag_router,
         skills_router,
+        traces_router,
         vision_router,
         workflows_router,
     )
@@ -92,6 +94,8 @@ def _create_app():
     app.include_router(rag_router)
     app.include_router(skills_router)
     app.include_router(vision_router)
+    app.include_router(provenance_router)
+    app.include_router(traces_router)
     app.include_router(workflows_router)
 
     db_pool = None
