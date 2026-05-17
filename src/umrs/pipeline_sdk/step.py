@@ -160,6 +160,18 @@ class StepResult:
     metadata: list[dict[str, Any]] = field(default_factory=list)
     extra: dict[str, Any] = field(default_factory=dict)
 
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize to a plain dict suitable for JSON storage in traces.
+
+        The ``embeddings`` field is excluded (too large / not JSON-safe).
+        """
+        return {
+            "output_keys": self.output_keys,
+            "checksums": self.checksums,
+            "metadata": self.metadata,
+            "extra": self.extra,
+        }
+
 
 # ── Step abstract base class ────────────────────────────────────────────────
 

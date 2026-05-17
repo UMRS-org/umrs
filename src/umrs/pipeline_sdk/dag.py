@@ -19,11 +19,15 @@ Usage::
 from __future__ import annotations
 
 import logging
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
+
+if TYPE_CHECKING:
+    from umrs.jobs.execution_trace_store import ExecutionTraceStore
 
 logger = logging.getLogger(__name__)
 
@@ -198,6 +202,9 @@ def execute_dag(
     output_bucket: str,
     run_id: str,
     shared_metadata: dict[str, Any],
+    trace_store: ExecutionTraceStore | None = None,
+    job_id: str = "",
+    execution_id: str = "",
 ) -> dict[str, StepResult]:
     """Execute steps according to DAG ordering.
 
@@ -277,6 +284,23 @@ def execute_dag(
 
             # Execute with retry support
             last_exc: Exception | None = None
+            trace_id = ""
+            if trace_store:
+                trace_id = str(uuid.uuid4())
+                # Look up parent trace IDs for DAG lineage
+                parent_trace_id = None
+                if parents:
+                    first_parent = next(iter(parents))
+                    parent_trace_id = shared_metadata.get(f"_trace_id_{first_parent}")
+                trace_store.create_trace(
+                    trace_id=trace_id,
+                    job_id=job_id or run_id,
+                    execution_id=execution_id or run_id,
+                    step_name=spec.name,
+                    step_type="pipeline_step",
+                    parent_trace_id=parent_trace_id,
+                )
+                trace_store.start_trace(trace_id)
             for attempt in range(spec.max_retries + 1):
                 try:
                     result = step.run(ctx)
@@ -294,7 +318,16 @@ def execute_dag(
                         )
                         time.sleep(spec.retry_delay)
                     else:
+                        if trace_store and trace_id:
+                            trace_store.fail_trace(trace_id, str(last_exc))
                         raise last_exc from None
+
+            if trace_store and trace_id:
+                trace_store.complete_trace(
+                    trace_id,
+                    outputs_ref=result.to_dict(),
+                )
+                shared_metadata[f"_trace_id_{spec.name}"] = trace_id
 
             results[spec.name] = result
             if result.output_keys:
