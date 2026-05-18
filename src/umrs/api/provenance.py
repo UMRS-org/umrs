@@ -1,8 +1,10 @@
-"""Provenance REST API (COR-005).
+"""Provenance REST API (COR-005, MEM-B4, MEM-B7).
 
 Provides:
-- GET /umrs/provenance/{job_id}  — Full provenance record for a job
-- GET /umrs/provenance            — List provenance for recent completed jobs
+- GET /umrs/provenance/{job_id}           — Full provenance record for a job
+- GET /umrs/provenance/{job_id}/lineage   — Lineage graph (DAG) for a job
+- GET /umrs/provenance/diff               — Diff two provenance records
+- GET /umrs/provenance                    — List provenance for recent completed jobs
 """
 
 from __future__ import annotations
@@ -15,8 +17,11 @@ from pydantic import BaseModel, Field
 
 from ..jobs.models import JobStatus, JobType
 from ..jobs.provenance import build_provenance
+from ..jobs.lineage_graph import build_lineage_graph
+from ..jobs.provenance_diff import compute_provenance_diff
 from ..jobs.store import JobNotFoundError, JobStore
 from .jobs import CallerIdentity, get_caller_identity, get_job_store
+from .traces import get_trace_store
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +123,89 @@ def get_provenance(
     attempts = store.get_attempts_for_job(job_id)
     record = build_provenance(job, attempts)
     return record.to_dict()
+
+
+@router.get(
+    "/{job_id}/lineage",
+    summary="Get lineage graph for a job",
+)
+def get_provenance_lineage(
+    job_id: str,
+    store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+    trace_store=Depends(get_trace_store),
+) -> dict[str, Any]:
+    """Return a structured lineage graph (DAG) for all execution traces of a job.
+
+    The graph includes:
+    - Nodes: each execution step with status, timing, model refs, artifacts
+    - Edges: parent-child relationships between steps
+    - Metrics: depth, critical path, status aggregates
+    """
+    try:
+        job = store.get_job(job_id)
+    except JobNotFoundError:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job not found: {job_id}",
+        )
+
+    if not caller.can_access_job(job):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to view this job's lineage",
+        )
+
+    traces = trace_store.get_traces_for_job(job_id)
+    graph = build_lineage_graph(job_id, traces)
+    return graph.to_dict()
+
+
+@router.get(
+    "/diff",
+    summary="Diff two provenance records (MEM-B7)",
+)
+def diff_provenance(
+    job_a: str = Query(..., description="Job ID A (baseline)"),
+    job_b: str = Query(..., description="Job ID B (comparison)"),
+    store: JobStore = Depends(get_job_store),
+    caller: CallerIdentity = Depends(get_caller_identity),
+    trace_store=Depends(get_trace_store),
+) -> dict[str, Any]:
+    """Compare two job provenance records and their execution traces.
+
+    Returns structured diff showing job-level, step-level, and artifact changes.
+    """
+    # Validate access to both jobs
+    for jid in (job_a, job_b):
+        try:
+            job = store.get_job(jid)
+        except JobNotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Job not found: {jid}",
+            )
+        if not caller.can_access_job(job):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Not authorized to view job: {jid}",
+            )
+
+    # Build provenance records
+    job_obj_a = store.get_job(job_a)
+    attempts_a = store.get_attempts_for_job(job_a)
+    prov_a = build_provenance(job_obj_a, attempts_a).to_dict()
+
+    job_obj_b = store.get_job(job_b)
+    attempts_b = store.get_attempts_for_job(job_b)
+    prov_b = build_provenance(job_obj_b, attempts_b).to_dict()
+
+    # Fetch traces for step-level diff
+    traces_a = [t.to_dict() for t in trace_store.get_traces_for_job(job_a)]
+    traces_b = [t.to_dict() for t in trace_store.get_traces_for_job(job_b)]
+
+    diff = compute_provenance_diff(prov_a, prov_b, traces_a, traces_b)
+    return diff.to_dict()
 
 
 @router.get(

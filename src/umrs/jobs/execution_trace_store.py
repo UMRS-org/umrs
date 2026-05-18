@@ -69,6 +69,8 @@ class TraceRecord:
     routing_decision: dict[str, Any] | None = None
     error: str | None = None
     error_detail: dict[str, Any] | None = None
+    inputs_snapshot: dict[str, Any] | None = None
+    outputs_snapshot: dict[str, Any] | None = None
     started_at: datetime | None = None
     finished_at: datetime | None = None
     created_at: datetime = field(default_factory=_now)
@@ -96,6 +98,8 @@ class TraceRecord:
             "routing_decision": self.routing_decision,
             "error": self.error,
             "error_detail": self.error_detail,
+            "inputs_snapshot": self.inputs_snapshot,
+            "outputs_snapshot": self.outputs_snapshot,
             "started_at": _iso(self.started_at),
             "finished_at": _iso(self.finished_at),
             "created_at": _iso(self.created_at),
@@ -158,6 +162,17 @@ class ExecutionTraceStore:
             from datetime import timedelta
             ttl_expires = now + timedelta(seconds=ttl_seconds)
 
+        # Store inline snapshot for replay if inputs are small enough
+        inputs_snapshot = None
+        if inputs is not None:
+            try:
+                raw = json.dumps(inputs, sort_keys=True, default=str)
+                # Only inline if < 64 KB; larger payloads should use inputs_ref (S3)
+                if len(raw) < 65536:
+                    inputs_snapshot = inputs
+            except (TypeError, ValueError):
+                pass
+
         record = TraceRecord(
             trace_id=trace_id,
             job_id=job_id,
@@ -167,6 +182,7 @@ class ExecutionTraceStore:
             execution_id=execution_id,
             parent_trace_id=parent_trace_id,
             inputs_hash=_compute_hash(inputs),
+            inputs_snapshot=inputs_snapshot,
             model_ref=model_ref,
             created_at=now,
             ttl_expires_at=ttl_expires,
@@ -202,6 +218,14 @@ class ExecutionTraceStore:
             "finished_at": _now(),
             "outputs_hash": _compute_hash(outputs),
         }
+        # Store inline output snapshot for replay if small enough
+        if outputs is not None:
+            try:
+                raw = json.dumps(outputs, sort_keys=True, default=str)
+                if len(raw) < 65536:
+                    updates["outputs_snapshot"] = outputs
+            except (TypeError, ValueError):
+                pass
         if outputs_ref is not None:
             updates["outputs_ref"] = outputs_ref
         if artifact_refs is not None:
@@ -317,6 +341,52 @@ class ExecutionTraceStore:
         for tid in expired:
             del self._traces[tid]
         return len(expired)
+
+    # ------------------------------------------------------------------
+    # Replay support (MEM-B5)
+    # ------------------------------------------------------------------
+
+    def get_input_snapshot(self, trace_id: str) -> dict[str, Any] | None:
+        """Get the stored input snapshot for a trace (if available)."""
+        record = self.get_trace(trace_id)
+        if record is None:
+            return None
+        return record.inputs_snapshot
+
+    def get_output_snapshot(self, trace_id: str) -> dict[str, Any] | None:
+        """Get the stored output snapshot for a trace (if available)."""
+        record = self.get_trace(trace_id)
+        if record is None:
+            return None
+        return record.outputs_snapshot
+
+    def find_traces_by_step(
+        self, step_name: str, status: str | None = None
+    ) -> list[TraceRecord]:
+        """Find traces for a given step name, optionally filtered by status."""
+        if self.db_enabled:
+            try:
+                return self._db_find_traces_by_step(step_name, status)
+            except Exception as exc:
+                logger.warning("DB find_traces_by_step failed: %s", exc)
+
+        results = [t for t in self._traces.values() if t.step_name == step_name]
+        if status:
+            results = [t for t in results if t.status == status]
+        return sorted(results, key=lambda t: t.created_at)
+
+    def find_traces_by_inputs_hash(self, inputs_hash: str) -> list[TraceRecord]:
+        """Find all traces with identical input hashes (for dedup/comparison)."""
+        if self.db_enabled:
+            try:
+                return self._db_find_by_inputs_hash(inputs_hash)
+            except Exception as exc:
+                logger.warning("DB find_traces_by_inputs_hash failed: %s", exc)
+
+        return [
+            t for t in self._traces.values()
+            if t.inputs_hash == inputs_hash
+        ]
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -474,12 +544,57 @@ class ExecutionTraceStore:
         finally:
             conn.close()
 
+    def _db_find_traces_by_step(
+        self, step_name: str, status: str | None
+    ) -> list[TraceRecord]:
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                if status:
+                    cur.execute(
+                        "SELECT * FROM execution_traces "
+                        "WHERE step_name = %s AND status = %s "
+                        "ORDER BY created_at",
+                        (step_name, status),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT * FROM execution_traces "
+                        "WHERE step_name = %s ORDER BY created_at",
+                        (step_name,),
+                    )
+                cols = [desc[0] for desc in cur.description]
+                return [
+                    self._row_to_record(dict(zip(cols, row)))
+                    for row in cur.fetchall()
+                ]
+        finally:
+            conn.close()
+
+    def _db_find_by_inputs_hash(self, inputs_hash: str) -> list[TraceRecord]:
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT * FROM execution_traces "
+                    "WHERE inputs_hash = %s ORDER BY created_at",
+                    (inputs_hash,),
+                )
+                cols = [desc[0] for desc in cur.description]
+                return [
+                    self._row_to_record(dict(zip(cols, row)))
+                    for row in cur.fetchall()
+                ]
+        finally:
+            conn.close()
+
     @staticmethod
     def _row_to_record(row: dict[str, Any]) -> TraceRecord:
         """Convert a database row dict to a TraceRecord."""
         # Parse JSON fields that come back as strings
         for json_field in ("model_ref", "artifact_refs", "tool_calls",
-                           "retrieval_refs", "routing_decision", "error_detail"):
+                           "retrieval_refs", "routing_decision", "error_detail",
+                           "inputs_snapshot", "outputs_snapshot"):
             val = row.get(json_field)
             if isinstance(val, str):
                 try:
@@ -508,6 +623,8 @@ class ExecutionTraceStore:
             routing_decision=row.get("routing_decision"),
             error=row.get("error"),
             error_detail=row.get("error_detail"),
+            inputs_snapshot=row.get("inputs_snapshot"),
+            outputs_snapshot=row.get("outputs_snapshot"),
             started_at=row.get("started_at"),
             finished_at=row.get("finished_at"),
             created_at=row.get("created_at") or _now(),
