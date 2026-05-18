@@ -111,7 +111,9 @@ def compute_embeddings_core(
 
 def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device,
                                 modality_name, s3_connection, output_bucket, task=None,
-                                skip_existing=True, store_fn=None):
+                                skip_existing=True, store_fn=None,
+                                indexing_job_id=None, model_version=None,
+                                model_path=None):
     embeddings, checksums, metadata, saved_s3_keys = compute_embeddings_core(
         model, modality_name, s3_connection, path_to_bucket, s3_keys,
         output_bucket=output_bucket, task=task, skip_existing=skip_existing,
@@ -119,6 +121,20 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
 
     assert(len(embeddings) == len(checksums))
     assert(len(embeddings) == len(metadata))
+
+    # Inject RAG lineage metadata (MEM-C1) into each item's metadata dict
+    # so store_one_embedding_in_db can persist them as column values.
+    if indexing_job_id or model_version or model_path:
+        embedding_dim = len(embeddings[0]) if embeddings and hasattr(embeddings[0], '__len__') else None
+        for md in metadata:
+            if indexing_job_id:
+                md["indexing_job_id"] = indexing_job_id
+            if model_version:
+                md["model_version"] = model_version
+            if model_path:
+                md["model_path"] = model_path
+            if embedding_dim is not None:
+                md["embedding_dimension"] = embedding_dim
 
     if store_fn is None:
         from umrs.server.sql import store_embeddings_in_db  # noqa: boundary

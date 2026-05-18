@@ -350,3 +350,92 @@ def cleanup_expired_traces(
     """Remove execution traces that have passed their TTL."""
     count = trace_store.cleanup_expired()
     return {"removed": count}
+
+
+# ---------------------------------------------------------------------------
+# Replay endpoints (MEM-B5)
+# ---------------------------------------------------------------------------
+
+
+class InputSnapshotResponse(BaseModel):
+    """Stored input snapshot for a trace."""
+
+    trace_id: str
+    inputs_hash: str | None = None
+    inputs_snapshot: dict[str, Any] | None = None
+    inputs_ref: str | None = None
+
+
+class OutputSnapshotResponse(BaseModel):
+    """Stored output snapshot for a trace."""
+
+    trace_id: str
+    outputs_hash: str | None = None
+    outputs_snapshot: dict[str, Any] | None = None
+    outputs_ref: str | None = None
+
+
+@router.get(
+    "/{trace_id}/inputs",
+    response_model=InputSnapshotResponse,
+    summary="Get input snapshot for replay",
+)
+def get_trace_inputs(
+    trace_id: str,
+    trace_store: ExecutionTraceStore = Depends(get_trace_store),
+) -> dict[str, Any]:
+    """Get the stored input snapshot for deterministic replay."""
+    record = trace_store.get_trace(trace_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Trace not found: {trace_id}",
+        )
+    return {
+        "trace_id": trace_id,
+        "inputs_hash": record.inputs_hash,
+        "inputs_snapshot": record.inputs_snapshot,
+        "inputs_ref": record.inputs_ref,
+    }
+
+
+@router.get(
+    "/{trace_id}/outputs",
+    response_model=OutputSnapshotResponse,
+    summary="Get output snapshot",
+)
+def get_trace_outputs(
+    trace_id: str,
+    trace_store: ExecutionTraceStore = Depends(get_trace_store),
+) -> dict[str, Any]:
+    """Get the stored output snapshot for a completed trace."""
+    record = trace_store.get_trace(trace_id)
+    if record is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Trace not found: {trace_id}",
+        )
+    return {
+        "trace_id": trace_id,
+        "outputs_hash": record.outputs_hash,
+        "outputs_snapshot": record.outputs_snapshot,
+        "outputs_ref": record.outputs_ref,
+    }
+
+
+@router.get(
+    "/step/{step_name}",
+    response_model=TraceListResponse,
+    summary="Find traces by step name",
+)
+def find_traces_by_step(
+    step_name: str,
+    trace_status: str | None = Query(None, alias="status"),
+    trace_store: ExecutionTraceStore = Depends(get_trace_store),
+) -> dict[str, Any]:
+    """Find all traces for a given step name (for replay comparison)."""
+    traces = trace_store.find_traces_by_step(step_name, trace_status)
+    return {
+        "traces": [t.to_dict() for t in traces],
+        "count": len(traces),
+    }

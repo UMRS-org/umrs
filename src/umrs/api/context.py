@@ -101,8 +101,12 @@ class ContextPackRequest(BaseModel):
     max_tokens: int = 4096
     include_summary: bool = True
     include_memory: bool = True
+    include_rag: bool = False
     memory_query: str | None = None
     memory_limit: int = 5
+    rag_query: str | None = None
+    rag_namespace_id: str | None = None
+    rag_limit: int = 5
 
 
 class ContextPackResponse(BaseModel):
@@ -112,7 +116,9 @@ class ContextPackResponse(BaseModel):
     messages: list[MessageResponse]
     summary: str | None = None
     memory_items: list[dict[str, Any]] = Field(default_factory=list)
+    retrieval_context: list[dict[str, Any]] = Field(default_factory=list)
     total_tokens: int = 0
+    token_breakdown: dict[str, int] = Field(default_factory=dict)
 
 
 class MemoryItemCreate(BaseModel):
@@ -300,39 +306,79 @@ class _ContextStore:
     # --- Context Pack ---
 
     def pack_context(self, req: ContextPackRequest) -> ContextPackResponse:
-        """Assemble context window: summary + recent messages + memory."""
+        """Assemble context window: summary + recent messages + memory + RAG."""
+        # Validate conversation exists
+        conv = self.get_conversation(req.conversation_id)
+        if conv is None:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
         messages = self.get_messages(req.conversation_id, limit=req.max_tokens // 4)
 
         summary: str | None = None
+        summary_tokens = 0
         if req.include_summary:
             summaries = self._get_summaries(req.conversation_id)
             if summaries:
                 summary = summaries[-1].get("content")
+                summary_tokens = summaries[-1].get("token_count", 0)
 
         memory_items: list[dict[str, Any]] = []
+        memory_tokens = 0
         if req.include_memory and req.memory_query:
-            conv = self.get_conversation(req.conversation_id)
-            if conv:
-                mem_results = self.search_memory(
-                    MemorySearchRequest(
-                        user_id=conv.user_id,
-                        project_id=conv.project_id,
-                        query=req.memory_query,
-                        limit=req.memory_limit,
-                    )
+            mem_results = self.search_memory(
+                MemorySearchRequest(
+                    user_id=conv.user_id,
+                    project_id=conv.project_id,
+                    query=req.memory_query,
+                    limit=req.memory_limit,
                 )
-                memory_items = [
-                    {"content": m.content, "importance": m.importance}
-                    for m in mem_results.items
-                ]
+            )
+            memory_items = [
+                {"content": m.content, "importance": m.importance}
+                for m in mem_results.items
+            ]
+            # Estimate ~4 chars per token for memory items
+            memory_tokens = sum(len(m["content"]) // 4 for m in memory_items)
 
-        total_tokens = sum(m.token_count for m in messages)
+        # RAG retrieval (keyword search over memory items with different query)
+        retrieval_context: list[dict[str, Any]] = []
+        rag_tokens = 0
+        if req.include_rag and req.rag_query:
+            rag_results = self.search_memory(
+                MemorySearchRequest(
+                    user_id=conv.user_id,
+                    project_id=req.rag_namespace_id or conv.project_id,
+                    query=req.rag_query,
+                    limit=req.rag_limit,
+                )
+            )
+            retrieval_context = [
+                {
+                    "content": m.content,
+                    "source": m.source,
+                    "importance": m.importance,
+                }
+                for m in rag_results.items
+            ]
+            rag_tokens = sum(len(r["content"]) // 4 for r in retrieval_context)
+
+        message_tokens = sum(m.token_count for m in messages)
+        total_tokens = message_tokens + summary_tokens + memory_tokens + rag_tokens
+
         return ContextPackResponse(
             conversation_id=req.conversation_id,
             messages=messages,
             summary=summary,
             memory_items=memory_items,
+            retrieval_context=retrieval_context,
             total_tokens=total_tokens,
+            token_breakdown={
+                "messages": message_tokens,
+                "summary": summary_tokens,
+                "memory": memory_tokens,
+                "retrieval": rag_tokens,
+            },
         )
 
     def _get_summaries(self, conversation_id: str) -> list[dict]:
@@ -743,7 +789,11 @@ def append_messages(
 
 @router.post("/pack")
 def pack_context(req: ContextPackRequest) -> ContextPackResponse:
-    """Assemble context window for an LLM call."""
+    """Assemble context window for an LLM call.
+
+    Combines conversation summary, recent messages, memory items,
+    and optional RAG retrieval into a single payload with token breakdown.
+    """
     return get_context_store().pack_context(req)
 
 
