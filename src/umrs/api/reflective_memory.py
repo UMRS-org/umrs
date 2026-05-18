@@ -1,0 +1,118 @@
+"""Reflective memory inspection REST API (MEM-D4).
+
+Provides:
+- GET    /umrs/reflective-memory                    Inspect all reflective memory
+- DELETE /umrs/reflective-memory/{tier}/{entry_id}  Delete a specific entry
+- POST   /umrs/reflective-memory/{tier}/reset       Reset (deactivate) a tier
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel, Field
+
+from ..jobs.adaptive_planning import AdaptivePlanningEngine
+from ..jobs.reflective_memory import ReflectiveMemoryInspector
+from ..jobs.routing_feedback import RoutingFeedbackStore
+from ..jobs.workflow_outcome import WorkflowOutcomeStore
+
+logger = logging.getLogger(__name__)
+
+router = APIRouter(prefix="/umrs/reflective-memory", tags=["reflective-memory"])
+
+
+# ---------------------------------------------------------------------------
+# Dependency
+# ---------------------------------------------------------------------------
+
+_inspector: ReflectiveMemoryInspector | None = None
+
+
+def get_inspector() -> ReflectiveMemoryInspector:
+    global _inspector
+    if _inspector is None:
+        db_url = os.environ.get("DATABASE_URL") or os.environ.get("UMRS_DB_URL")
+        outcome_store = WorkflowOutcomeStore(db_url=db_url)
+        routing_store = RoutingFeedbackStore(db_url=db_url)
+        planning_engine = AdaptivePlanningEngine(outcome_store, routing_store)
+        _inspector = ReflectiveMemoryInspector(
+            outcome_store=outcome_store,
+            routing_store=routing_store,
+            planning_engine=planning_engine,
+        )
+    return _inspector
+
+
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
+
+class EntryResponse(BaseModel):
+    entry_id: str
+    tier: str
+    source_store: str
+    summary: str
+    data: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = ""
+
+
+class SnapshotResponse(BaseModel):
+    entries: list[EntryResponse] = Field(default_factory=list)
+    total_outcomes: int = 0
+    total_routing_feedback: int = 0
+    total_heuristics: int = 0
+    active_heuristics: int = 0
+    generated_at: str | None = None
+
+
+VALID_TIERS = {"outcome", "routing", "heuristic"}
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@router.get("", response_model=SnapshotResponse)
+def inspect(
+    tier: str | None = Query(None),
+    workflow_name: str | None = Query(None),
+    model_name: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+):
+    if tier and tier not in VALID_TIERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid tier: {tier!r}; must be one of {VALID_TIERS}",
+        )
+    inspector = get_inspector()
+    snap = inspector.inspect(
+        tier=tier,
+        workflow_name=workflow_name,
+        model_name=model_name,
+        limit=limit,
+    )
+    return SnapshotResponse(**snap.to_dict())
+
+
+@router.delete("/{tier}/{entry_id}")
+def delete_entry(tier: str, entry_id: str):
+    if tier not in VALID_TIERS:
+        raise HTTPException(status_code=400, detail=f"Invalid tier: {tier!r}")
+    inspector = get_inspector()
+    ok = inspector.delete_entry(entry_id, tier)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Entry not found or deletion not supported")
+    return {"status": "deleted", "entry_id": entry_id, "tier": tier}
+
+
+@router.post("/{tier}/reset")
+def reset_tier(tier: str):
+    if tier not in VALID_TIERS:
+        raise HTTPException(status_code=400, detail=f"Invalid tier: {tier!r}")
+    inspector = get_inspector()
+    count = inspector.reset_tier(tier)
+    return {"status": "reset", "tier": tier, "entries_affected": count}
