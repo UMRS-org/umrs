@@ -129,6 +129,7 @@ fi
 source "${VENV_DIR}/bin/activate"
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1
+export UMRS_AUTH_MODE="${UMRS_AUTH_MODE:-strict}"
 
 # ─── Create s3cfg for admin ──────────────────────────────────────────────────
 S3CFG="${SCRIPT_DIR}/s3cfg"

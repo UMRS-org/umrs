@@ -23,10 +23,13 @@ from pydantic import BaseModel, Field, model_validator
 
 from ..orchestrator.endpoint_registry import (
     EndpointRegistry,
+    RegisteredEndpoint,
     EndpointStatus,
     get_registry,
 )
+from ..orchestrator.endpoint_mounts import validate_mount_source
 from ..orchestrator.readiness import get_readiness_poller
+from ..shared.auth import JWTError, resolve_jwt_secret, validate_jwt
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +51,204 @@ def _raise_strict_project_auth_error() -> None:
 
 def _header_str(value: Any) -> str | None:
     return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _bearer_token(authorization: str | None) -> str | None:
+    value = _header_str(authorization)
+    if not value:
+        return None
+    parts = value.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    return parts[1]
+
+
+def _jwt_claims(
+    authorization: str | None,
+    *,
+    required: bool = False,
+) -> dict[str, Any] | None:
+    token = _bearer_token(authorization)
+    if not token:
+        if required:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing Authorization bearer token",
+            )
+        return None
+    if token.count(".") != 2:
+        if required:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Authorization bearer token is not a JWT",
+            )
+        return None
+    try:
+        return validate_jwt(token, resolve_jwt_secret())
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(exc),
+        ) from exc
+
+
+def _claim_values(claims: dict[str, Any], *names: str) -> list[str]:
+    values: list[str] = []
+    for name in names:
+        value = claims.get(name)
+        if isinstance(value, str) and value.strip():
+            values.append(value.strip())
+        elif isinstance(value, list):
+            values.extend(
+                item.strip() for item in value if isinstance(item, str) and item.strip()
+            )
+    return values
+
+
+def _claim_project_id(claims: dict[str, Any]) -> str | None:
+    values = _claim_values(claims, "project_id", "project", "tenant_id", "tenant")
+    return values[0] if values else None
+
+
+def _claim_project_memberships(claims: dict[str, Any]) -> set[str]:
+    memberships = set(_claim_values(
+        claims,
+        "project_memberships",
+        "project_ids",
+        "projects",
+        "allowed_projects",
+    ))
+    project_id = _claim_project_id(claims)
+    if project_id:
+        memberships.add(project_id)
+    return memberships
+
+
+def _claim_is_admin(claims: dict[str, Any] | None) -> bool:
+    if not claims:
+        return False
+    return "admin" in set(_claim_values(claims, "roles", "groups"))
+
+
+def _claim_can_access_project(claims: dict[str, Any], project_id: str) -> bool:
+    if _claim_is_admin(claims):
+        return True
+    memberships = _claim_project_memberships(claims)
+    return "*" in memberships or project_id in memberships
+
+
+def _forbid_if_project_mismatch(
+    endpoint: RegisteredEndpoint,
+    project_id: str | None,
+) -> None:
+    if project_id is not None and endpoint.project_id != project_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Endpoint not found",
+        )
+
+
+def _resolve_authenticated_project_id(
+    authorization: str | None,
+    x_user_id: str | None,
+    x_verified_project_id: str | None,
+    x_project_id: str | None,
+    *,
+    optional: bool = False,
+) -> str | None:
+    strict = _strict_auth_mode()
+    claims = _jwt_claims(authorization, required=False)
+    verified_user_id = _header_str(x_user_id)
+    verified_project_id = _header_str(x_verified_project_id)
+    requested_project_id = verified_project_id or _header_str(x_project_id)
+
+    if claims:
+        return _project_id_authorized_by_claims(claims, requested_project_id)
+
+    if strict and verified_user_id and verified_project_id:
+        return verified_project_id
+
+    if strict:
+        _raise_strict_project_auth_error()
+
+    return _legacy_project_id(authorization, x_project_id, optional=optional)
+
+
+def _project_id_authorized_by_claims(
+    claims: dict[str, Any],
+    requested_project_id: str | None,
+) -> str:
+    effective_project_id = requested_project_id or _claim_project_id(claims)
+    if not effective_project_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="JWT is missing project_id claim",
+        )
+    if not _claim_can_access_project(claims, effective_project_id):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Requested project is not allowed by JWT project memberships",
+        )
+    return effective_project_id
+
+
+def _legacy_project_id(
+    authorization: str | None,
+    x_project_id: str | None,
+    *,
+    optional: bool,
+) -> str | None:
+    project_id = _header_str(x_project_id)
+    if project_id:
+        return project_id
+    if authorization and authorization.startswith("Bearer "):
+        if optional:
+            return "default-project"
+        logger.warning("JWT project_id extraction not implemented, using default")
+        return "default-project"
+    return None
+
+
+def _header_bool(value: str | None) -> bool:
+    normalized = _header_str(value)
+    return normalized is not None and normalized.lower() in {"1", "true", "yes", "on"}
+
+
+def _caller_is_admin(
+    authorization: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+) -> bool:
+    claims = _jwt_claims(authorization, required=False)
+    if claims is not None:
+        return _claim_is_admin(claims)
+    return _header_str(x_user_id) is not None and _header_bool(x_verified_is_admin)
+
+
+def _require_internal_endpoint_writer(
+    authorization: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+) -> None:
+    if not _strict_auth_mode():
+        return
+    if not _caller_is_admin(authorization, x_user_id, x_verified_is_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Endpoint registry mutation requires admin JWT in strict mode",
+        )
+
+
+def _enforce_provision_authorization(
+    request: "ProvisionRequest",
+    *,
+    is_admin: bool,
+) -> None:
+    if request.tier == "system" and not is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only admins may provision system-tier endpoints",
+        )
 
 router = APIRouter(prefix="/umrs/endpoints", tags=["endpoints"])
 
@@ -359,7 +560,11 @@ class EndpointMountSpec(BaseModel):
     target: str = Field(..., min_length=1, description="Container target path")
 
     @model_validator(mode="after")
-    def _validate_target_path(self) -> "EndpointMountSpec":
+    def _validate_paths(self) -> "EndpointMountSpec":
+        try:
+            self.source = validate_mount_source(self.source)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
         if not self.target.startswith("/"):
             raise ValueError("mount target must be an absolute container path")
         return self
@@ -559,6 +764,7 @@ class HealthResponse(BaseModel):
 
 def get_project_id(
     authorization: str | None = Header(None),
+    x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_project_id: str | None = Header(None),
 ) -> str:
@@ -571,23 +777,14 @@ def get_project_id(
     Raises:
         HTTPException: If project_id cannot be determined.
     """
-    verified_project_id = _header_str(x_verified_project_id)
-    if _strict_auth_mode() and verified_project_id:
-        return verified_project_id
-    if _strict_auth_mode():
-        _raise_strict_project_auth_error()
-
-    # MVP: Accept X-Project-ID header for testing
-    project_id = _header_str(x_project_id)
+    project_id = _resolve_authenticated_project_id(
+        authorization,
+        x_user_id,
+        x_verified_project_id,
+        x_project_id,
+    )
     if project_id:
         return project_id
-
-    # TODO: Production - decode JWT and extract project_id claim
-    if authorization and authorization.startswith("Bearer "):
-        # For now, just return a default for testing
-        # In production: decode JWT and extract project_id
-        logger.warning("JWT project_id extraction not implemented, using default")
-        return "default-project"
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -597,21 +794,18 @@ def get_project_id(
 
 def get_project_id_optional(
     authorization: str | None = Header(None),
+    x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_project_id: str | None = Header(None),
 ) -> str | None:
     """Get project_id if available, None otherwise (for admin endpoints)."""
-    verified_project_id = _header_str(x_verified_project_id)
-    if _strict_auth_mode() and verified_project_id:
-        return verified_project_id
-    if _strict_auth_mode():
-        return None
-    project_id = _header_str(x_project_id)
-    if project_id:
-        return project_id
-    if authorization and authorization.startswith("Bearer "):
-        return "default-project"
-    return None
+    return _resolve_authenticated_project_id(
+        authorization,
+        x_user_id,
+        x_verified_project_id,
+        x_project_id,
+        optional=True,
+    )
 
 
 def _resolve_provision_project_id(
@@ -707,16 +901,28 @@ def _resolve_requested_model_path(
     """Resolve the actual model storage path for endpoint provisioning."""
     normalized_path = model_path.strip() if model_path else None
     if normalized_path and normalized_path != _DEFAULT_PROVISION_MODEL_PATH:
-        return normalized_path
+        return _validated_model_path_override(normalized_path)
 
     entry = model_entry or _resolve_registered_model_entry(model_name)
     if entry and entry.get("storage_ref"):
         return entry["storage_ref"]
 
     if model_name.startswith("/"):
-        return model_name
+        return _validated_model_path_override(model_name)
 
     return None
+
+
+def _validated_model_path_override(model_path: str) -> str:
+    if "://" in model_path and not model_path.startswith("file://"):
+        return model_path
+    try:
+        return validate_mount_source(model_path)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid model_path: {exc}",
+        ) from exc
 
 
 def _serving_profile(model_entry: dict[str, Any] | None) -> dict[str, Any]:
@@ -1137,6 +1343,7 @@ async def list_endpoints(
 )
 async def register_endpoint(
     request: EndpointRegisterRequest,
+    _authorized: None = Depends(_require_internal_endpoint_writer),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointResponse:
     """Register a new endpoint."""
@@ -1163,6 +1370,7 @@ async def register_endpoint(
 async def update_endpoint_status(
     job_id: str,
     request: EndpointStatusUpdate,
+    _authorized: None = Depends(_require_internal_endpoint_writer),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointResponse:
     """Update endpoint status (internal use)."""
@@ -1193,9 +1401,18 @@ async def update_endpoint_status(
 )
 async def mark_endpoint_used(
     job_id: str,
+    project_id: str | None = Depends(get_project_id_optional),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointResponse:
     """Mark endpoint as used (update last_used_at)."""
+
+    existing = registry.get_by_job_id(job_id)
+    if not existing:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Endpoint not found: {job_id}",
+        )
+    _forbid_if_project_mismatch(existing, project_id)
 
     endpoint = registry.mark_used(job_id)
     if not endpoint:
@@ -1214,6 +1431,7 @@ async def mark_endpoint_used(
 )
 async def remove_endpoint(
     job_id: str,
+    _authorized: None = Depends(_require_internal_endpoint_writer),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> None:
     """Remove an endpoint from the registry."""
@@ -1232,6 +1450,7 @@ async def remove_endpoint(
     summary="Get registry statistics",
 )
 async def get_registry_stats(
+    _authorized: None = Depends(_require_internal_endpoint_writer),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> RegistryStatsResponse:
     """Get registry statistics."""
@@ -1342,6 +1561,7 @@ async def health_check(
 )
 async def get_endpoint(
     job_id: str,
+    project_id: str | None = Depends(get_project_id_optional),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> EndpointResponse:
     """Get endpoint details by job_id."""
@@ -1352,6 +1572,7 @@ async def get_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Endpoint not found: {job_id}",
         )
+    _forbid_if_project_mismatch(endpoint, project_id)
 
     endpoint = await _refresh_endpoint_readiness(registry, endpoint)
 
@@ -1387,6 +1608,7 @@ async def get_endpoint(
 async def provision_endpoint(
     request: ProvisionRequest,
     project_id: str | None = Depends(get_project_id_optional),
+    is_admin: bool = Depends(_caller_is_admin),
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Provision a new endpoint or return existing one."""
@@ -1400,6 +1622,7 @@ async def provision_endpoint(
     )
 
     effective_project_id = _resolve_provision_project_id(request, project_id)
+    _enforce_provision_authorization(request, is_admin=is_admin)
 
     # Check for existing warm endpoint first
     if request.prefer_warm:
@@ -1684,6 +1907,7 @@ async def provision_endpoint(
 async def deprovision_endpoint(
     job_id: str,
     force: bool = Query(False, description="Force cleanup even if in use"),
+    project_id: str | None = Depends(get_project_id_optional),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> None:
     """Deprovision (stop and cleanup) an endpoint."""
@@ -1695,6 +1919,7 @@ async def deprovision_endpoint(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Endpoint not found: {job_id}",
         )
+    _forbid_if_project_mismatch(endpoint, project_id)
 
     service = get_orchestration_service()
 
