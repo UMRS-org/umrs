@@ -48,8 +48,10 @@ mkdir -p "$LOG_DIR"
 if [[ "$START_MODE" != "--server" ]]; then
     echo "Starting infrastructure containers..."
 
-    # Postgres
-    if ! podman inspect umrs-postgres >/dev/null 2>&1; then
+    # Postgres — skip if native postgres is already listening
+    if ss -tlnp 2>/dev/null | grep -q ":${POSTGRES_PORT:-5432}" ; then
+        echo "  Postgres already listening on port ${POSTGRES_PORT:-5432} (native/external)."
+    elif ! podman inspect umrs-postgres >/dev/null 2>&1; then
         echo "  Creating postgres container..."
         podman run -d --name umrs-postgres \
             -e POSTGRES_USER="${POSTGRES_USER:-umrs}" \
@@ -87,7 +89,8 @@ if [[ "$START_MODE" != "--server" ]]; then
     # Wait for postgres
     echo -n "  Waiting for postgres..."
     for i in $(seq 1 30); do
-        if podman exec umrs-postgres pg_isready -h localhost -U "${POSTGRES_USER:-umrs}" >/dev/null 2>&1; then
+        if pg_isready -h 127.0.0.1 -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER:-umrs}" >/dev/null 2>&1 || \
+           podman exec umrs-postgres pg_isready -h localhost -U "${POSTGRES_USER:-umrs}" >/dev/null 2>&1; then
             echo " ready."
             break
         fi
@@ -96,17 +99,16 @@ if [[ "$START_MODE" != "--server" ]]; then
         [[ "$i" -eq 30 ]] && echo " WARNING: postgres not ready after 30s"
     done
 
-    # Create AI4S database if it doesn't exist
-    podman exec umrs-postgres psql -U "${POSTGRES_USER:-umrs}" -d postgres \
-        -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_AI4S:-umrs_ai4s}'" \
+    # Create AI4S database if it doesn't exist (works with native or container)
+    _pg_cmd() { psql -h 127.0.0.1 -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER:-umrs}" "$@" 2>/dev/null || \
+                podman exec umrs-postgres psql -U "${POSTGRES_USER:-umrs}" "$@" 2>/dev/null; }
+    _pg_cmd -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_AI4S:-umrs_ai4s}'" \
         | grep -q 1 || \
-    podman exec umrs-postgres psql -U "${POSTGRES_USER:-umrs}" -d postgres \
-        -c "CREATE DATABASE ${POSTGRES_DB_AI4S:-umrs_ai4s};" 2>/dev/null || true
+    _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_AI4S:-umrs_ai4s};" || true
 
     # Ensure pgvector extension in both databases
     for db in "${POSTGRES_DB_RCCS:-umrs_rccs}" "${POSTGRES_DB_AI4S:-umrs_ai4s}"; do
-        podman exec umrs-postgres psql -U "${POSTGRES_USER:-umrs}" -d "$db" \
-            -c "CREATE EXTENSION IF NOT EXISTS vector;" 2>/dev/null || true
+        _pg_cmd -d "$db" -c "CREATE EXTENSION IF NOT EXISTS vector;" || true
     done
 
     # Wait for minio
