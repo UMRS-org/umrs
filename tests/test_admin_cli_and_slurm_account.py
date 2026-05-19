@@ -106,6 +106,31 @@ class TestUserStoreCRUD:
         raw = json.loads((store.dir / "alice.json").read_text())
         assert "slurm_account" not in raw
 
+    def test_set_slurm_account_for_site(self, store: UserStore) -> None:
+        store.create("alice")
+        rec = store.set_slurm_account_for_site("alice", "rccs-front", "group-a")
+        assert rec.slurm_accounts == {"rccs-front": "group-a"}
+        rec = store.set_slurm_account_for_site("alice", "ai4s", "group-b")
+        assert rec.slurm_accounts == {"rccs-front": "group-a", "ai4s": "group-b"}
+        # Clear one site
+        rec = store.set_slurm_account_for_site("alice", "rccs-front", None)
+        assert rec.slurm_accounts == {"ai4s": "group-b"}
+        # Verify JSON round-trip
+        raw = json.loads((store.dir / "alice.json").read_text())
+        assert raw["slurm_accounts"] == {"ai4s": "group-b"}
+
+    def test_resolve_slurm_account_per_site(self, store: UserStore) -> None:
+        store.create("alice", slurm_account="default-group")
+        store.set_slurm_account_for_site("alice", "rccs-front", "group-a")
+        rec = store.get("alice")
+        # Per-site takes precedence
+        assert rec.resolve_slurm_account("rccs-front") == "group-a"
+        # Unknown site falls back to flat field
+        assert rec.resolve_slurm_account("unknown-site") == "default-group"
+        # No site name falls back to flat field
+        assert rec.resolve_slurm_account(None) == "default-group"
+        assert rec.resolve_slurm_account() == "default-group"
+
     def test_project_membership(self, store: UserStore) -> None:
         store.create("alice")
         store.add_project("alice", "proj-a")

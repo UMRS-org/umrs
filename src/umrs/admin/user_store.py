@@ -4,7 +4,8 @@ This is the single read/write layer used by ``umrs-server admin`` subcommands.
 It does NOT go over ZMQ; it manipulates the JSON files directly so the CLI
 can be used for bootstrap, recovery, and maintenance with the daemon stopped.
 
-Admin-only metadata (``role``, ``slurm_account``, ``projects``, ``disabled``,
+Admin-only metadata (``role``, ``slurm_account``, ``slurm_accounts``,
+``projects``, ``disabled``,
 ``email``, ``quota``) is stored as extra top-level keys on the same user JSON
 file. The existing client schema does not enforce ``additionalProperties:
 False`` at the top level, so the daemon continues to load these files
@@ -46,6 +47,10 @@ class UserRecord:
     email: str = ""
     role: str = "user"
     slurm_account: str | None = None
+    # Per-site Slurm account overrides keyed by site name (e.g.
+    # ``{"rccs-front": "group-a", "ai4s": "group-b"}``).
+    # When present, takes precedence over the flat ``slurm_account``.
+    slurm_accounts: dict[str, str] = field(default_factory=dict)
     projects: list[str] = field(default_factory=list)
     disabled: bool = False
     quota: dict[str, Any] = field(default_factory=dict)
@@ -69,11 +74,21 @@ class UserRecord:
         }
         if self.slurm_account:
             out["slurm_account"] = self.slurm_account
+        if self.slurm_accounts:
+            out["slurm_accounts"] = dict(self.slurm_accounts)
         # Extras (s3_configuration_file, experiences, ...) are restored last so
         # they never clobber the admin-managed fields above.
         for k, v in self.extras.items():
             out.setdefault(k, v)
         return out
+
+    def resolve_slurm_account(self, site_name: str | None = None) -> str | None:
+        """Return the Slurm account for *site_name*, falling back to the flat field."""
+        if site_name and self.slurm_accounts:
+            acct = self.slurm_accounts.get(site_name)
+            if acct:
+                return acct
+        return self.slurm_account
 
     @classmethod
     def from_json(cls, data: dict[str, Any]) -> UserRecord:
@@ -83,6 +98,7 @@ class UserRecord:
             "email",
             "role",
             "slurm_account",
+            "slurm_accounts",
             "projects",
             "disabled",
             "quota",
@@ -90,12 +106,19 @@ class UserRecord:
             "last_updated",
         }
         extras = {k: v for k, v in data.items() if k not in known}
+        raw_accounts = data.get("slurm_accounts")
+        slurm_accounts: dict[str, str] = {}
+        if isinstance(raw_accounts, dict):
+            slurm_accounts = {
+                str(k): str(v) for k, v in raw_accounts.items() if v
+            }
         return cls(
             username=str(data.get("username", "")),
             fullname=str(data.get("fullname", "")),
             email=str(data.get("email", "")),
             role=str(data.get("role", "user")),
             slurm_account=data.get("slurm_account") or None,
+            slurm_accounts=slurm_accounts,
             projects=list(data.get("projects", []) or []),
             disabled=bool(data.get("disabled", False)),
             quota=dict(data.get("quota", {}) or {}),
@@ -250,6 +273,18 @@ class UserStore:
         self, username: str, slurm_account: str | None
     ) -> UserRecord:
         return self.update(username, slurm_account=slurm_account or None)
+
+    def set_slurm_account_for_site(
+        self, username: str, site_name: str, slurm_account: str | None,
+    ) -> UserRecord:
+        """Set or clear the Slurm account for a specific site."""
+        record = self.get(username)
+        accounts = dict(record.slurm_accounts)
+        if slurm_account:
+            accounts[site_name] = slurm_account
+        else:
+            accounts.pop(site_name, None)
+        return self.update(username, slurm_accounts=accounts)
 
     def add_project(self, username: str, project_id: str) -> UserRecord:
         record = self.get(username)
