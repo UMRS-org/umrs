@@ -137,6 +137,7 @@ access_key = ${MINIO_ROOT_USER}
 secret_key = ${MINIO_ROOT_PASSWORD}
 host_base = 127.0.0.1:${MINIO_PORT:-9000}
 host_bucket = 127.0.0.1:${MINIO_PORT:-9000}
+bucket_location = us-east-1
 use_https = False
 signature_v2 = False
 EOF
@@ -219,7 +220,7 @@ echo "  HTTP port: ${UMRS_RCCS_PORT:-8000}"
 
 export UMRS_SITE_CONFIG="${SCRIPT_DIR}/../rccs-front/site.yaml"
 export UMRS_CONFIG="${SCRIPT_DIR}"
-export ZMQ_PORT=5555
+export UMRS_CONTROL_PORT=5555
 export UMRS_HTTP_PORT="${UMRS_RCCS_PORT:-8000}"
 export DB_HOST="127.0.0.1"
 export DB_PORT="${POSTGRES_PORT:-5432}"
@@ -246,7 +247,7 @@ echo "  ZMQ port: 5557"
 echo "  HTTP port: ${UMRS_AI4S_PORT:-8002}"
 
 export UMRS_SITE_CONFIG="${SCRIPT_DIR}/../ai4s/site.yaml"
-export ZMQ_PORT=5557
+export UMRS_CONTROL_PORT=5557
 export UMRS_HTTP_PORT="${UMRS_AI4S_PORT:-8002}"
 export UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-umrs_ai4s}"
 
