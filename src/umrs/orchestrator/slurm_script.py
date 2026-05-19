@@ -16,7 +16,8 @@ def render_sbatch_script(
     partition = kwargs.get("partition_override") or kwargs.get("partition", cfg.slurm_partition)
     nodelist_hint = kwargs.get("nodelist_hint")
     time_limit = kwargs.get("time", cfg.slurm_time)
-    gpus = kwargs.get("gpu_count") or kwargs.get("gpus", cfg.slurm_gpus)
+    # When site config sets gpus=0, GRES is not available (exclusive nodes).
+    gpus = 0 if cfg.slurm_gpus == 0 else (kwargs.get("gpu_count") or kwargs.get("gpus", cfg.slurm_gpus))
     node_count = kwargs.get("node_count")
     cpus = kwargs.get("cpus", cfg.slurm_cpus)
     mem = kwargs.get("mem", cfg.slurm_mem)
@@ -54,13 +55,13 @@ def _script_header(
     nodelist = f"\n#SBATCH --nodelist={nodelist_hint}" if nodelist_hint else ""
     nodes = node_count if node_count and node_count > 1 else (cfg.slurm_nodes if cfg.slurm_nodes > 1 else 1)
     nodes_line = f"\n#SBATCH --nodes={nodes}" if nodes > 1 else ""
+    mem_line = f"\n#SBATCH --mem={mem}" if mem else ""
+    gres_line = f"\n#SBATCH --gres=gpu:{gpus}" if gpus else ""
     return f"""#!/bin/bash
 #SBATCH --job-name=mini-rivault
 #SBATCH --partition={partition}{nodelist}{nodes_line}
-#SBATCH --time={time_limit}
-#SBATCH --gres=gpu:{gpus}
-#SBATCH --cpus-per-task={cpus}
-#SBATCH --mem={mem}
+#SBATCH --time={time_limit}{gres_line}
+#SBATCH --cpus-per-task={cpus}{mem_line}
 #SBATCH --output={cfg.slurm_log_dir}/job-%j.out
 #SBATCH --error={cfg.slurm_log_dir}/job-%j.err
 
