@@ -26,16 +26,28 @@ echo "Running on node: $(hostname)"
 echo "Fully qualified name: $(hostname -f)"
 echo "=============================="
 
-SCRIPT_PATH="${BASH_SOURCE[0]}"
-if command -v readlink >/dev/null 2>&1; then
-    _resolved_script="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || true)"
-    if [[ -n "$_resolved_script" ]]; then
-        SCRIPT_PATH="$_resolved_script"
+if [[ -n "${RIVAULT_WRAPPER_DIR:-}" ]]; then
+    WRAPPER_DIR="$RIVAULT_WRAPPER_DIR"
+else
+    SCRIPT_PATH="${BASH_SOURCE[0]}"
+    if command -v readlink >/dev/null 2>&1; then
+        _resolved_script="$(readlink -f "$SCRIPT_PATH" 2>/dev/null || true)"
+        if [[ -n "$_resolved_script" ]]; then
+            SCRIPT_PATH="$_resolved_script"
+        fi
     fi
+    WRAPPER_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 fi
-WRAPPER_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 REPO_ROOT="$(cd "${WRAPPER_DIR}/../.." && pwd)"
 SITE_CONFIG_PATH="${UMRS_SITE_CONFIG:-${WRAPPER_DIR}/site.yaml}"
+
+if [[ -z "${LITELLM_MASTER_KEY:-}" && -f "${WRAPPER_DIR}/.env" ]]; then
+    _litellm_master_key="$(awk -F= '$1 == "LITELLM_MASTER_KEY" {sub(/^[^=]*=/, ""); print; exit}' "${WRAPPER_DIR}/.env")"
+    if [[ -n "$_litellm_master_key" ]]; then
+        export LITELLM_MASTER_KEY="$_litellm_master_key"
+    fi
+    unset _litellm_master_key
+fi
 
 load_site_env_defaults() {
     local python_bin
@@ -130,14 +142,17 @@ mask_secret_state() {
 # Points to mini-rivault-llm/ inside the umrs repo on Lustre so that all
 # serve-model.yaml, nginx_fs/, coredns_fs/, litellm_fs/ etc. are accessible
 # from compute nodes. Override via RIVAULT_DIR env var.
-# Prefer SLURM_SUBMIT_DIR (the cwd of the sbatch invocation) so the
-# inner script is always picked from the same worktree as the wrapper.
-_DEFAULT_REPO="${SLURM_SUBMIT_DIR:-/lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs}"
+# Prefer SLURM_SUBMIT_DIR only when sbatch was launched from a full UMRS
+# checkout; front-end remote submissions often run from the login home dir.
+_DEFAULT_REPO="$REPO_ROOT"
+if [[ -n "${SLURM_SUBMIT_DIR:-}" && -d "${SLURM_SUBMIT_DIR}/src/umrs/mini-rivault-llm" ]]; then
+    _DEFAULT_REPO="$SLURM_SUBMIT_DIR"
+fi
 RIVAULT_DIR="${RIVAULT_DIR:-${_DEFAULT_REPO}/src/umrs/mini-rivault-llm}"
 
 if [[ ! -d "$RIVAULT_DIR" ]]; then
     echo "ERROR: RIVAULT_DIR not found: $RIVAULT_DIR"
-    echo "  Check that the repo is cloned at /lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs or set RIVAULT_DIR."
+    echo "  Check that the repo is cloned at $REPO_ROOT or set RIVAULT_DIR."
     exit 1
 fi
 
@@ -383,6 +398,19 @@ echo "[wrapper]   sam3 path: ${SAM3_MODEL_PATH}"
 echo "[wrapper]   hmae path: ${HMAE_MODEL_PATH}"
 echo "[wrapper]   vision image: ${BENTOML_VISION_IMAGE}"
 echo "[wrapper]   vision tarball: ${_VISION_TARBALL} (arch=${_VISION_HOST_ARCH})"
+
+JOB_INFO_DIR="${JOB_INFO_DIR:-${WRAPPER_DIR}/jobs}"
+JOB_INFO_FILE="${JOB_INFO_DIR}/rivault-job-${SLURM_JOB_ID}.info"
+mkdir -p "$JOB_INFO_DIR"
+cat > "$JOB_INFO_FILE" <<EOF
+RIVAULT_STATUS=running
+RIVAULT_NODE=$(hostname -f 2>/dev/null || hostname)
+RIVAULT_LITELLM_PORT=${NGINX_LITELLM_DOCKER_PORT}
+RIVAULT_VLLM_PORT=${VLLM_PORT:-8000}
+RIVAULT_MODEL_PATH=${VLLM_MODEL_PATH:-${USER_MODEL_PATH:-}}
+EOF
+trap 'rm -f "$JOB_INFO_FILE"' EXIT
+echo "[wrapper]   job info: ${JOB_INFO_FILE}"
 
 # Fix cgroup manager for Slurm compute nodes (no systemd user session)
 export CONTAINERS_CGROUP_MANAGER=cgroupfs

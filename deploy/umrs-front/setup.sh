@@ -59,19 +59,19 @@ if [[ ! -f "${SCRIPT_DIR}/.env" ]]; then
 
 # PostgreSQL (shared for both stacks via separate databases)
 POSTGRES_USER=umrs
-POSTGRES_PASSWORD=umrs-front-secret-2026
-POSTGRES_DB_RCCS=umrs_rccs
-POSTGRES_DB_AI4S=umrs_ai4s
+POSTGRES_PASSWORD=CHANGEME_POSTGRES_PASSWORD
+POSTGRES_DB_RCCS=front_rccs
+POSTGRES_DB_AI4S=front_ai4s
 
 # MinIO (shared instance, buckets per cluster)
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=minioadmin-secret-2026
+MINIO_ROOT_USER=CHANGEME_MINIO_USER
+MINIO_ROOT_PASSWORD=CHANGEME_MINIO_PASSWORD
 
 # LiteLLM (auth key for endpoints)
-LITELLM_MASTER_KEY=sk-ll-umrs-front-2026
+LITELLM_MASTER_KEY=sk-ll-CHANGEME
 
 # UMRS Admin token
-UMRS_ADMIN_TOKEN=umrs-admin-front-2026
+UMRS_ADMIN_TOKEN=CHANGEME_ADMIN_TOKEN
 
 # Ports
 UMRS_RCCS_PORT=8000

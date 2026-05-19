@@ -56,7 +56,7 @@ if [[ "$START_MODE" != "--server" ]]; then
         podman run -d --name umrs-postgres \
             -e POSTGRES_USER="${POSTGRES_USER:-umrs}" \
             -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}" \
-            -e POSTGRES_DB="${POSTGRES_DB_RCCS:-umrs_rccs}" \
+            -e POSTGRES_DB="${POSTGRES_DB_RCCS:-front_rccs}" \
             -p 127.0.0.1:${POSTGRES_PORT:-5432}:5432 \
             -v umrs_pg_data:/var/lib/postgresql/data \
             docker.io/pgvector/pgvector:pg15 \
@@ -107,7 +107,7 @@ if [[ "$START_MODE" != "--server" ]]; then
     _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_AI4S:-umrs_ai4s};" || true
 
     # Ensure pgvector extension in both databases
-    for db in "${POSTGRES_DB_RCCS:-umrs_rccs}" "${POSTGRES_DB_AI4S:-umrs_ai4s}"; do
+    for db in "${POSTGRES_DB_RCCS:-front_rccs}" "${POSTGRES_DB_AI4S:-front_ai4s}"; do
         _pg_cmd -d "$db" -c "CREATE EXTENSION IF NOT EXISTS vector;" || true
     done
 
@@ -213,6 +213,33 @@ for pidfile in "${SCRIPT_DIR}"/server-*.pid; do
     rm -f "$pidfile"
 done
 
+_stop_port_listener() {
+    local port="$1"
+    local label="$2"
+    local listener_pids
+
+    listener_pids=$(ss -H -ltnp 2>/dev/null \
+        | awk -v port=":${port}" '$4 ~ port "$" { print $0 }' \
+        | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' \
+        | sort -u)
+
+    for listener_pid in $listener_pids; do
+        [[ "$listener_pid" == "$$" ]] && continue
+        echo "Stopping stale ${label} listener on port ${port} (PID ${listener_pid})..."
+        kill "$listener_pid" 2>/dev/null || true
+    done
+}
+
+_stop_port_listener "${UMRS_RCCS_PORT:-8000}" "RCCS HTTP"
+_stop_port_listener "5555" "RCCS ZMQ"
+_stop_port_listener "${UMRS_AI4S_PORT:-8002}" "AI4S HTTP"
+_stop_port_listener "5557" "AI4S ZMQ"
+sleep 2
+_stop_port_listener "${UMRS_RCCS_PORT:-8000}" "RCCS HTTP"
+_stop_port_listener "5555" "RCCS ZMQ"
+_stop_port_listener "${UMRS_AI4S_PORT:-8002}" "AI4S HTTP"
+_stop_port_listener "5557" "AI4S ZMQ"
+
 # ─── Start UMRS server for RCCS Cloud ────────────────────────────────────────
 echo ""
 echo "Starting UMRS server (RCCS Cloud)..."
@@ -228,7 +255,7 @@ export DB_HOST="127.0.0.1"
 export DB_PORT="${POSTGRES_PORT:-5432}"
 export DB_SUPERUSER="${POSTGRES_USER:-umrs}"
 export DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD}"
-export UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-umrs_rccs}"
+export UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}"
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}"
 export UMRS_ADMIN_TOKEN="${UMRS_ADMIN_TOKEN:-}"
 export UMRS_TUNNEL_MODE=true
@@ -241,6 +268,23 @@ RCCS_PID=$!
 echo "$RCCS_PID" > "${SCRIPT_DIR}/server-rccs.pid"
 echo "  PID: $RCCS_PID"
 
+echo -n "  Waiting for RCCS HTTP bootstrap..."
+for i in $(seq 1 60); do
+    if curl -sf "http://127.0.0.1:${UMRS_RCCS_PORT:-8000}/health" >/dev/null 2>&1; then
+        echo " ready."
+        break
+    fi
+    if ! kill -0 "$RCCS_PID" 2>/dev/null; then
+        echo " failed."
+        echo "ERROR: RCCS server failed during bootstrap. Check ${LOG_DIR}/server-rccs.log"
+        tail -20 "${LOG_DIR}/server-rccs.log" 2>/dev/null || true
+        exit 1
+    fi
+    echo -n "."
+    sleep 1
+    [[ "$i" -eq 60 ]] && echo " WARNING: RCCS HTTP not ready after 60s"
+done
+
 # ─── Start UMRS server for AI4S ──────────────────────────────────────────────
 echo ""
 echo "Starting UMRS server (AI4S)..."
@@ -251,7 +295,7 @@ echo "  HTTP port: ${UMRS_AI4S_PORT:-8002}"
 export UMRS_SITE_CONFIG="${SCRIPT_DIR}/../ai4s/site.yaml"
 export UMRS_CONTROL_PORT=5557
 export UMRS_HTTP_PORT="${UMRS_AI4S_PORT:-8002}"
-export UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-umrs_ai4s}"
+export UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-front_ai4s}"
 
 nohup python "${REPO_ROOT}/src/server_umrs.py" \
     -c "${CONF_FILE}" \

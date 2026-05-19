@@ -26,9 +26,11 @@ Configuration in site.yaml::
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
+import shlex
 from datetime import datetime
 from typing import Any, Optional
 
@@ -39,6 +41,7 @@ from .base import (
 )
 from .slurm_backend import SlurmBackend
 from .ssh_control import SSHControlConfig, SSHControlManager
+from .tunnel_pool import TunnelPool, TunnelPoolConfig
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,7 @@ class RemoteSlurmBackend(SlurmBackend):
             self._ssh_config = SSHControlConfig.from_site_config(extra)
 
         self._ssh: Optional[SSHControlManager] = None
+        self._tunnel_pool: TunnelPool | None = None
 
     @property
     def backend_name(self) -> str:
@@ -92,6 +96,27 @@ class RemoteSlurmBackend(SlurmBackend):
             except Exception:
                 pass
         return extra.get("slurm_wrapper_script")
+
+    def _job_info_dir(self) -> str:
+        """Return the remote shared directory for Slurm job info files."""
+        info_dir = getattr(self.config, "slurm_job_info_dir", "/tmp")
+        extra = getattr(self.config, "extra", {}) or {}
+        if extra.get("slurm_job_info_dir"):
+            return str(extra["slurm_job_info_dir"])
+        try:
+            from .site_config import load_site_config
+            site = load_site_config()
+            return str(site.extra.get("slurm_job_info_dir", info_dir))
+        except Exception:
+            return str(info_dir)
+
+    def _control_dir(self) -> str:
+        """Return the remote shared directory for graceful stop requests."""
+        return f"{self._job_info_dir().rstrip('/')}/control"
+
+    def _stop_request_path(self, job_id: str) -> str:
+        """Return the remote shared stop request path for a Slurm job."""
+        return f"{self._control_dir()}/stop-{job_id}.request"
 
     async def submit_job(
         self,
@@ -144,11 +169,7 @@ class RemoteSlurmBackend(SlurmBackend):
         sbatch_args = ["sbatch", "--parsable"]
 
         # Output/error dirs
-        output_dir = (getattr(self.config, "extra", None) or {}).get("slurm_job_info_dir", "/tmp")
-        try:
-            output_dir = site.extra.get("slurm_job_info_dir", output_dir)
-        except Exception:
-            pass
+        output_dir = self._job_info_dir()
         sbatch_args.append(f"--output={output_dir}/slurm-%j.out")
         sbatch_args.append(f"--error={output_dir}/slurm-%j.err")
 
@@ -200,6 +221,9 @@ class RemoteSlurmBackend(SlurmBackend):
             )
         env_overrides["VLLM_MODEL_PATH"] = model_path
         env_overrides.setdefault("VLLM_SERVED_MODEL_NAME", env_overrides.get("MODEL_NAME", model_path))
+        env_overrides.setdefault("RIVAULT_WRAPPER_DIR", os.path.dirname(wrapper_script))
+        env_overrides.setdefault("JOB_INFO_DIR", output_dir)
+        env_overrides.setdefault("RIVAULT_CONTROL_DIR", self._control_dir())
 
         # Build --export arg: ALL plus per-job overrides
         export_parts = ["ALL"]
@@ -238,6 +262,8 @@ class RemoteSlurmBackend(SlurmBackend):
             info = self._parse_info_content(info_content)
             status = self._status_from_info(info)
             endpoint = self._endpoint_from_info(status, info)
+            if endpoint is not None:
+                endpoint = await self._endpoint_via_tunnel(endpoint)
             return JobInfo(
                 job_id=job_id,
                 status=status,
@@ -251,9 +277,46 @@ class RemoteSlurmBackend(SlurmBackend):
         status = await self._query_slurm_job_status(job_id)
         return JobInfo(job_id=job_id, status=status, backend=self.backend_name)
 
+    async def _endpoint_via_tunnel(self, endpoint: EndpointInfo) -> EndpointInfo:
+        """Return a front-end local endpoint backed by an SSH forward tunnel."""
+        local_port = await self._get_tunnel_pool().open_tunnel(
+            endpoint.node,
+            endpoint.litellm_port,
+            local_port=endpoint.litellm_port,
+        )
+        return EndpointInfo(
+            node="127.0.0.1",
+            litellm_port=local_port,
+            vllm_port=endpoint.vllm_port,
+        )
+
+    def _get_tunnel_pool(self) -> TunnelPool:
+        if self._tunnel_pool is None:
+            local_port_min = 12000
+            local_port_max = 12999
+            try:
+                from .site_config import load_site_config
+                site = load_site_config()
+                local_port_min = site.network.port_range_min
+                local_port_max = site.network.port_range_max
+            except Exception:
+                pass
+
+            self._tunnel_pool = TunnelPool(
+                TunnelPoolConfig(
+                    ssh_target=self._ssh_config.ssh_target,
+                    ssh_user=self._ssh_config.ssh_user,
+                    ssh_port=self._ssh_config.ssh_port,
+                    local_port_min=local_port_min,
+                    local_port_max=local_port_max,
+                    control_path=self._ssh_config.control_path,
+                )
+            )
+        return self._tunnel_pool
+
     async def _read_remote_job_info(self, job_id: str) -> Optional[str]:
         """Read job info file from remote filesystem via SSH."""
-        info_dir = self.config.slurm_job_info_dir
+        info_dir = self._job_info_dir()
         info_path = f"{info_dir}/rivault-job-{job_id}.info"
         ssh = await self._get_ssh()
         return await ssh.read_remote_file(info_path)
@@ -294,14 +357,66 @@ class RemoteSlurmBackend(SlurmBackend):
 
     async def cleanup(self, job_id: str, force: bool = False) -> None:
         """Cancel a Slurm job via remote scancel."""
-        signal = "KILL" if force else "TERM"
+        info_content = await self._read_remote_job_info(job_id)
+        if info_content is not None and self._tunnel_pool is not None:
+            info = self._parse_info_content(info_content)
+            endpoint = self._endpoint_from_info(JobStatus.RUNNING, info)
+            if endpoint is not None:
+                await self._tunnel_pool.close_tunnel(endpoint.node, endpoint.litellm_port)
+
         ssh = await self._get_ssh()
-        await ssh.run_remote(f"scancel --signal={signal} {job_id}")
+        info_dir = self._job_info_dir()
+        info_path = f"{info_dir}/rivault-job-{job_id}.info"
+
+        if not force:
+            stop_request = self._stop_request_path(job_id)
+            control_dir = self._control_dir()
+            result = await ssh.run_remote(
+                "mkdir -p {control_dir} && touch {stop_request}".format(
+                    control_dir=shlex.quote(control_dir),
+                    stop_request=shlex.quote(stop_request),
+                )
+            )
+            if result.ok:
+                graceful_timeout = int(os.environ.get("RIVAULT_GRACEFUL_STOP_TIMEOUT", "20"))
+                logger.info(
+                    "requested graceful remote compute-node stop for %s via %s",
+                    job_id,
+                    stop_request,
+                )
+                if await self._wait_for_remote_job_exit(job_id, graceful_timeout):
+                    await ssh.run_remote(f"rm -f {shlex.quote(info_path)}")
+                    return
+            else:
+                logger.warning(
+                    "failed to create remote graceful stop request for %s: %s",
+                    job_id,
+                    result.stderr.strip(),
+                )
+
+        cmd = f"scancel -Q {shlex.quote(job_id)}"
+        if force:
+            cmd = f"scancel -Q --full --signal=KILL {shlex.quote(job_id)}"
+        result = await ssh.run_remote(cmd)
+        if not result.ok:
+            logger.warning(
+                "remote scancel failed for %s (force=%s): %s",
+                job_id,
+                force,
+                result.stderr.strip(),
+            )
 
         # Clean up remote info file.
-        info_dir = self.config.slurm_job_info_dir
-        info_path = f"{info_dir}/rivault-job-{job_id}.info"
-        await ssh.run_remote(f"rm -f {info_path}")
+        await ssh.run_remote(f"rm -f {shlex.quote(info_path)}")
+
+    async def _wait_for_remote_job_exit(self, job_id: str, timeout_sec: int) -> bool:
+        """Wait briefly for a remote Slurm job to leave the active queue."""
+        for _ in range(max(timeout_sec, 0)):
+            status = await self._query_slurm_job_status(job_id)
+            if status in (JobStatus.STOPPED, JobStatus.FAILED, JobStatus.UNKNOWN):
+                return True
+            await asyncio.sleep(1)
+        return False
 
     async def list_jobs(
         self,
@@ -317,7 +432,7 @@ class RemoteSlurmBackend(SlurmBackend):
         status_filter: list[JobStatus] | None,
     ) -> list[JobInfo]:
         """List job info files on remote filesystem."""
-        info_dir = self.config.slurm_job_info_dir
+        info_dir = self._job_info_dir()
         ssh = await self._get_ssh()
         result = await ssh.run_remote(
             f"ls {info_dir}/rivault-job-*.info 2>/dev/null || true"
@@ -361,7 +476,7 @@ class RemoteSlurmBackend(SlurmBackend):
 
     async def cleanup_orphans(self) -> int:
         """Clean up orphaned job info files via SSH."""
-        info_dir = self.config.slurm_job_info_dir
+        info_dir = self._job_info_dir()
         ssh = await self._get_ssh()
 
         result = await ssh.run_remote(
@@ -429,6 +544,9 @@ class RemoteSlurmBackend(SlurmBackend):
 
     async def shutdown(self) -> None:
         """Clean shutdown of SSH connection."""
+        if self._tunnel_pool is not None:
+            await self._tunnel_pool.shutdown()
+            self._tunnel_pool = None
         if self._ssh:
             await self._ssh.close()
             self._ssh = None

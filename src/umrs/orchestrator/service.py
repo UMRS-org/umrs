@@ -183,7 +183,7 @@ class OrchestrationService:
     def _classify_backend_name(backend_name: str) -> BackendType:
         """Collapse backend names into the coarse BackendType enum."""
         normalized = backend_name.lower()
-        if normalized in ("slurm", "slurm-podman"):
+        if normalized in ("slurm", "slurm-podman", "slurm-remote"):
             return BackendType.SLURM
         if normalized in ("kubernetes", "k8s"):
             return BackendType.KUBERNETES

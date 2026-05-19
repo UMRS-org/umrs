@@ -1,9 +1,17 @@
 # UMRS AI4S Supercomputer Deployment
 
+*Validated: 2026-05-19 — Gateway-backed Slurm smoke e2e passing*
+
 ## Overview
 
 This deployment profile targets the RIKEN AI for Science Supercomputer
 (400× GB200 NVL4 nodes) from a front-end server (`umrs-front`).
+
+The profile is **validated at smoke level**: UMRS on `umrs-front` submits real
+Slurm jobs to AI4S, opens an SSH tunnel back to the allocated compute node, and
+the client-facing Gateway (`:18082`) serves chat requests through that tunnel.
+Full production requires staging a vLLM Apptainer SIF image and model weights
+on AI4S Lustre (see §Production Readiness below).
 
 ## Architecture
 
@@ -148,7 +156,52 @@ chmod +x start.sh stop.sh
 ```bash
 curl http://localhost:8002/health       # UMRS (AI4S)
 curl http://localhost:8082/health       # Gateway (AI4S)
+
+# Full ready check (gateway + sidecar + umrs)
+curl http://localhost:18082/ready
 ```
+
+## AI4S-Specific Slurm Requirements
+
+AI4S Slurm operates in **configless DNS-SRV mode**. Non-interactive SSH
+sessions (e.g. the UMRS SSH ControlMaster) do not source `.bashrc`, so
+`SLURM_CONF_SERVER` is not set automatically.
+
+UMRS injects this via `extra.ssh_remote_env` in `site.yaml`:
+
+```yaml
+extra:
+  ssh_remote_env:
+    SLURM_CONF_SERVER: "sv08,sv09"
+```
+
+Do **not** remove this setting or Slurm commands (`sbatch`, `squeue`, `scancel`)
+will fail silently in non-login sessions.
+
+### Memory Requests
+
+AI4S rejects `--mem=0` with `MaxMemPerLimit` because the scheduler interprets
+`0` as "all node memory" (up to 1562.50 G) and the account QoS blocks it.
+`site.yaml` must specify a bounded value:
+
+```yaml
+scheduler:
+  memory: "64G"   # explicit bounded request required on AI4S
+```
+
+Use a realistic value for the model being served. The smoke wrapper uses 64 G;
+production Qwen3-32B on a full B200 node would use 256–512 G.
+
+### sbatch GPU Syntax
+
+Both of the following syntaxes are accepted on AI4S `1n1gpu`:
+
+```bash
+--gpus-per-node=1   # official AI4S docs style
+--gres=gpu:1        # also accepted
+```
+
+UMRS uses `--gres=gpu:N` for compatibility with all cluster flavours.
 
 ## Container Runtime: Apptainer/Singularity
 
@@ -167,31 +220,98 @@ Example sbatch with Apptainer:
 #SBATCH --partition=1n1gpu
 #SBATCH --gpus-per-node=1
 #SBATCH --time=04:00:00
+#SBATCH --mem=256G
 
 apptainer run --nv \
-  --bind /lustre/models:/models:ro \
-  --bind /lustre/scratch:/scratch \
-  /lustre/images/mini-rivault.sif \
+  --bind /work/hps0/home/ea0022/umrs_models:/models:ro \
+  --bind /work/hps0/home/ea0022/scratch:/scratch \
+  /work/hps0/home/ea0022/images/mini-rivault-aarch64.sif \
   --model /models/Qwen3-32B --port 8001
 ```
 
+## Smoke Wrapper (Pre-production Validation)
+
+Before the full Apptainer SIF and production model weights are staged, UMRS
+can validate the complete client → Gateway → UMRS → Slurm → compute path
+using the lightweight Python HTTP smoke wrapper:
+
+```
+umrs/deploy/ai4s/serve-openai-smoke.slurm
+```
+
+This wrapper:
+- Allocates a real Slurm node on `1n1gpu`
+- Writes `rivault-job-<JOBID>.info` to `JOB_INFO_DIR` so UMRS can discover the
+  compute node and open a local tunnel
+- Serves a minimal OpenAI-compatible HTTP server (health, models, chat)
+- Responds to chat completions with `"gateway hpc ready"` (no GPU required)
+- Watches for `stop-<JOBID>.request` in `RIVAULT_CONTROL_DIR` and exits cleanly
+
+### Register the smoke model
+
+```bash
+R4_GATEWAY_URL=http://127.0.0.1:18082 \
+  r4 model register ai4s-smoke \
+  --path /work/hps0/home/ea0022/umrs_models/ai4s-smoke \
+  --scope system --type llm --backend vllm \
+  --service-kind openai --max-model-len 128 --gpu-mem-util 0.1 --tp 1 \
+  --no-detect
+```
+
+### Run the smoke e2e test
+
+```bash
+R4_GATEWAY_URL=http://127.0.0.1:18082 \
+  R4_API_KEY=$R4_API_KEY \
+  R4_PROJECT_ID=$R4_PROJECT_ID \
+  SLURM_TEST_MODEL_NAME=ai4s-smoke \
+  HPC_TEST_PROVISION_TIMEOUT=600 \
+  python -m pytest tests/test_hpc_gateway_e2e.py::TestGatewayHPCE2E::test_gateway_provision_chat_and_teardown -q -s
+```
+
+Expected: `1 passed` in ~30 s (Slurm queue permitting). Job output confirms
+node, port, and clean stop-request handling.
+
 ## Coexistence with rccs-front
 
-Both profiles can run simultaneously on the same umrs-front:
+Both profiles run simultaneously on the same `umrs-front` host. The dual-server
+stack is managed by `umrs/deploy/umrs-front/start.sh`.
 
-| Service | rccs-front port | ai4s port |
-|---------|----------------|-----------|
-| UMRS API | 8000 | 8002 |
-| Gateway | 8080 | 8082 |
-| PostgreSQL | 5432 | 5433 |
-| MinIO (S3) | 9000 | 9002 |
-| MinIO Console | 9001 | 9003 |
-| Tunnel pool | 12000-12999 | 13000-13999 |
+| Service | rccs-front | ai4s |
+|---------|-----------|------|
+| UMRS HTTP | `0.0.0.0:8000` | `0.0.0.0:8002` |
+| UMRS ZMQ | `127.0.0.1:5555` | `127.0.0.1:5557` |
+| Gateway (via tunnel) | `127.0.0.1:18080` | `127.0.0.1:18082` |
+| Sidecar | `127.0.0.1:8083` | `127.0.0.1:8084` |
+| PostgreSQL | `127.0.0.1:5432` (shared native) | — |
+| MinIO | `0.0.0.0:9000` (shared) | — |
+| Endpoint tunnel pool | `12000–12999` | `13000–13999` |
+
+PostgreSQL is **native** on `umrs-front` (not a Podman container). `start.sh`
+detects this and skips Podman Postgres launch if port 5432 is already open.
+
+## Production Readiness
+
+The following are required before running a real vLLM workload on AI4S:
+
+- [ ] Build `mini-rivault-aarch64.sif` (aarch64 target for Grace/B200)
+- [ ] Stage SIF to `/work/hps0/home/ea0022/images/`
+- [ ] Stage model weights to `/work/hps0/home/ea0022/umrs_models/<model-name>/`
+- [ ] Update `site.yaml` `runtime.rivault_dir` to the staged directory
+- [ ] Update `site.yaml` `scheduler.memory` to match the model (256G for 32B)
+- [ ] Register the production model via `r4 model register`
+- [ ] Set `LITELLM_MASTER_KEY` in `.env` and the sbatch script consistently
+- [ ] Verify `TRANSFORMERS_OFFLINE=1` is exported inside the container
 
 ## Troubleshooting
 
-- **SSH fails to AI4S**: Verify `134.160.189.24` is reachable from umrs-front (R-CCS internal network)
-- **"Permission denied"**: Verify key is authorized for `ea0022` on AI4S
-- **ProxyJump needed?**: If umrs-front cannot directly reach `134.160.189.24`, add `ProxyJump masaru.nagaso@rccs-cloud` to SSH config
-- **Singularity image not found**: Stage the SIF on Lustre before submitting jobs
-- **GPU not accessible**: Ensure `--nv` flag is in sbatch script and partition has GPU allocation
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `squeue`/`sbatch` silently fails | `SLURM_CONF_SERVER` not set | Ensure `extra.ssh_remote_env.SLURM_CONF_SERVER: "sv08,sv09"` in `site.yaml` |
+| Job cancelled immediately, `MaxMemPerLimit` | `--mem=0` sent to scheduler | Set `scheduler.memory: "64G"` (or higher) in `site.yaml` |
+| SSH fails to AI4S | Host/key not configured on `umrs-front` | Verify `~/.ssh/config` `Host AI4S` entry with `rccs_key` identity |
+| Raw IP `134.160.189.24` rejected from `umrs-front` | Key config tied to SSH alias | Use the `AI4S` alias, not raw IP, in `extra.ssh_target` |
+| ProxyJump needed | `umrs-front` cannot directly reach `134.160.189.24` | Add `ProxyJump masaru.nagaso@rccs-cloud` to `~/.ssh/config` `Host AI4S` |
+| Singularity image not found | SIF not staged | Stage the SIF to Lustre first |
+| GPU not accessible | Missing `--nv` flag | Ensure `--nv` is in the sbatch script |
+| UMRS sees `pending` host forever | Job-info file not written | Check sbatch stdout for wrapper errors; verify `JOB_INFO_DIR` writable |

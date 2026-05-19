@@ -38,7 +38,7 @@ scheduler:
   time_limit: "04:00:00"                      # Max allowed: 96h (unlimited on 4n4gpu-p)
   gpus: 1                                     # --gpus-per-node=1 for 1n1gpu
   cpus: 8
-  memory: ""                                  # Let scheduler decide based on partition
+  memory: "64G"                              # AI4S rejects --mem=0; request a bounded smoke allocation
 
 runtime:
   kind: singularity                           # Apptainer on AI4S
@@ -53,13 +53,13 @@ runtime:
   storage_root: ""
 
 storage:
-  model_cache_dir: ""                         # Set to Lustre path on AI4S (TBD)
+  model_cache_dir: /work/hps0/home/ea0022/umrs_models
   sam3_model_path: ""
   hmae_model_path: ""
   hmae_config_path: ""
   hmae_checkpoint: ""
   vision_tarball: ""
-  user_model_path: ""
+  user_model_path: /work/hps0/home/ea0022/umrs_models
   s3_tunnel_host: ""
   s3_tunnel_port: 9000
 
@@ -94,7 +94,7 @@ database:
 #   umrs-front: mnagaso
 #   AI4S login: ea0022
 extra:
-  ssh_target: 134.160.189.24                  # AI4S login node IP
+  ssh_target: AI4S                            # umrs-front SSH alias for AI4S login
   ssh_user: ea0022                            # AI4S account
   ssh_port: 22
   ssh_connect_timeout: 15
@@ -110,7 +110,10 @@ extra:
   ssh_reverse_tunnels:
     - "127.0.0.1:9000:127.0.0.1:9000"
   # Job info file path on AI4S Lustre (accessible from login+compute)
-  slurm_job_info_dir: ""                      # Set after Lustre path is determined
+  slurm_job_info_dir: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/jobs
+  # Smoke wrapper used until the full Singularity/vLLM image and production
+  # models are staged on AI4S Lustre.
+  slurm_wrapper_script: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-openai-smoke.slurm
   # Environment variables injected before every remote command.
   # Required: AI4S uses configless Slurm with DNS SRV; non-login SSH
   # sessions don't source .bashrc so SLURM_CONF_SERVER is not set.
@@ -126,60 +129,42 @@ partition_profiles:
   1n1gpu:
     arch: aarch64
     gpu_vendor: nvidia
-    gpu_memory_gb: 173.2                      # B200 per-GPU
-    oci_runtime: ""                           # Singularity, not OCI
     userns_mode: ""                           # Not applicable for Singularity
-    network_backend: ""
     vllm_docker_tag: ""                       # Use Singularity SIF image
     gpus: 1
     needs_netavark_switch: false
   1n2gpu:
     arch: aarch64
     gpu_vendor: nvidia
-    gpu_memory_gb: 173.2
-    oci_runtime: ""
     userns_mode: ""
-    network_backend: ""
     vllm_docker_tag: ""
     gpus: 2
     needs_netavark_switch: false
   1n4gpu:
     arch: aarch64
     gpu_vendor: nvidia
-    gpu_memory_gb: 173.2
-    oci_runtime: ""
     userns_mode: ""
-    network_backend: ""
     vllm_docker_tag: ""
     gpus: 4
     needs_netavark_switch: false
   2n4gpu:
     arch: aarch64
     gpu_vendor: nvidia
-    gpu_memory_gb: 173.2
-    oci_runtime: ""
     userns_mode: ""
-    network_backend: ""
     vllm_docker_tag: ""
     gpus: 4
     needs_netavark_switch: false
   4n4gpu:
     arch: aarch64
     gpu_vendor: nvidia
-    gpu_memory_gb: 173.2
-    oci_runtime: ""
     userns_mode: ""
-    network_backend: ""
     vllm_docker_tag: ""
     gpus: 4
     needs_netavark_switch: false
   4n4gpu-p:
     arch: aarch64
     gpu_vendor: nvidia
-    gpu_memory_gb: 173.2
-    oci_runtime: ""
     userns_mode: ""
-    network_backend: ""
     vllm_docker_tag: ""
     gpus: 4
     needs_netavark_switch: false
