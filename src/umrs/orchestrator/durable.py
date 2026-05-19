@@ -175,6 +175,13 @@ class DurableOrchestrationService:
                 self._model_store_conn = None
 
         # Create backend factory that wraps the orchestrator
+        try:
+            from umrs.admin.user_store import UserStore
+            user_store = UserStore()
+        except Exception:
+            logger.debug("UserStore unavailable; per-user Slurm accounts disabled")
+            user_store = None
+
         backend_factory = create_backend_factory(
             orchestrator=orch.backend,
             registry=orch.registry,
@@ -182,6 +189,7 @@ class DurableOrchestrationService:
             get_job_with_attempts=self._job_service.get_job_with_attempts,
             model_store=model_store,
             path_validator=path_validator,
+            user_store=user_store,
         )
         self._job_service.set_backend_factory(backend_factory)
 
