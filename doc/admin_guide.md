@@ -97,6 +97,12 @@ umrs-server admin user add alice \
     --project team-alpha
 ```
 
+For multi-cluster deployments, use `--site` to scope the Slurm account:
+
+```bash
+umrs-server admin user set-slurm-account alice research-gpu --site rccs-front
+```
+
 This creates two files automatically:
 - `<user_files_dir>/alice.json` — server-side admin record
 - `<user_files_dir>/alice.client.json` — client config template (send to user)

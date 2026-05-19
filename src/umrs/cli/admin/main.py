@@ -172,13 +172,16 @@ def _write_client_template(username: str, fullname: str, out_path) -> None:
 
 
 def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
+    # When --site is given, scope the slurm account to that site.
+    site_name = getattr(args, "site", None)
+    create_slurm_account = args.slurm_account if not site_name else None
     try:
         rec = store.create(
             args.username,
             fullname=args.fullname or "",
             email=args.email or "",
             role=args.role,
-            slurm_account=args.slurm_account,
+            slurm_account=create_slurm_account,
             projects=args.project or [],
         )
     except UserStoreError as exc:
@@ -197,6 +200,15 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
             return 2
         print(f"error: {exc}", file=sys.stderr)
         return 2
+
+    # Apply per-site slurm account after creation if --site was given.
+    if site_name and args.slurm_account:
+        try:
+            rec = store.set_slurm_account_for_site(
+                args.username, site_name, args.slurm_account,
+            )
+        except UserStoreError as exc:
+            print(f"warning: user created but failed to set site account: {exc}", file=sys.stderr)
 
     # Auto-generate a client config template alongside the admin record.
     _maybe_emit_template(args, store, rec)
@@ -401,11 +413,20 @@ def _cmd_user_set_role(args: argparse.Namespace, store: UserStore) -> int:
 
 def _cmd_user_set_slurm_account(args: argparse.Namespace, store: UserStore) -> int:
     try:
-        rec = store.set_slurm_account(args.username, args.account)
+        if args.site:
+            rec = store.set_slurm_account_for_site(
+                args.username, args.site, args.account,
+            )
+            label = f"slurm_accounts[{args.site}]"
+            value = rec.slurm_accounts.get(args.site, "(unset)")
+        else:
+            rec = store.set_slurm_account(args.username, args.account)
+            label = "slurm_account"
+            value = rec.slurm_account or "(unset)"
     except UserStoreError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    print(f"set slurm_account={rec.slurm_account or '(unset)'} on {args.username}")
+    print(f"set {label}={value} on {args.username}")
     return 0
 
 
@@ -838,6 +859,11 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         help="Slurm accounting name used for #SBATCH --account when submitting",
     )
     add_p.add_argument(
+        "--site",
+        default=None,
+        help="Scope the --slurm-account to a specific site (e.g. rccs-front, ai4s)",
+    )
+    add_p.add_argument(
         "--project",
         action="append",
         default=None,
@@ -924,6 +950,11 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         nargs="?",
         default=None,
         help="Slurm account (omit to clear)",
+    )
+    slurm_p.add_argument(
+        "--site",
+        default=None,
+        help="Scope the account to a specific site (e.g. rccs-front, ai4s)",
     )
     slurm_p.set_defaults(func=_cmd_user_set_slurm_account)
 

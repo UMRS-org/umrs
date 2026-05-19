@@ -199,6 +199,15 @@ class RemoteSlurmBackend(SlurmBackend):
         else:
             sbatch_args.append("--mem=0")
 
+        # Slurm account: per-user override > site config default
+        slurm_account = kwargs.pop("slurm_account", None) or site.scheduler.account
+        if slurm_account:
+            sbatch_args.append(f"--account={slurm_account}")
+
+        # QoS
+        if site.scheduler.qos:
+            sbatch_args.append(f"--qos={site.scheduler.qos}")
+
         # Nodelist hint
         nodelist_hint = kwargs.pop("nodelist_hint", None)
         if nodelist_hint:
@@ -208,6 +217,10 @@ class RemoteSlurmBackend(SlurmBackend):
         node_count = kwargs.pop("node_count", None)
         if node_count and node_count > 1:
             sbatch_args.append(f"--nodes={node_count}")
+
+        # Extra sbatch args from site config
+        for extra in getattr(site.scheduler, "extra_sbatch", []):
+            sbatch_args.append(extra)
 
         # Pop unused kwargs before building env
         kwargs.pop("min_gpu_memory_gb", None)

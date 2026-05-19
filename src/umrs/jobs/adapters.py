@@ -147,14 +147,23 @@ class EndpointProvisionBackend(OrchestratorBackend):
     def _resolve_slurm_account(self, user_id: str) -> str | None:
         """Look up the submitting user's Slurm account from their admin record.
 
+        Uses the per-site ``slurm_accounts`` dict when available, falling back
+        to the flat ``slurm_account`` field.
+
         Returns ``None`` when no UserStore is configured, the user is not
-        enrolled, or the record has no ``slurm_account`` set.
+        enrolled, or the record has no account set for the current site.
         """
         if not self._user_store or not user_id:
             return None
         try:
+            from umrs.orchestrator.site_config import load_site_config
+            site_name: str | None = None
+            try:
+                site_name = load_site_config().name
+            except Exception:
+                pass
             record = self._user_store.get(user_id)
-            return record.slurm_account
+            return record.resolve_slurm_account(site_name)
         except Exception:
             logger.debug("Could not resolve slurm_account for user %s", user_id)
             return None

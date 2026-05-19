@@ -67,6 +67,13 @@ umrs-server admin user add alice \
     --project team-alpha
 ```
 
+For multi-cluster deployments, scope the Slurm account to a specific site:
+
+```bash
+umrs-server admin user set-slurm-account alice research-gpu --site rccs-front
+umrs-server admin user set-slurm-account alice gpu-group --site ai4s
+```
+
 What this produces:
 
 | File | Purpose |
