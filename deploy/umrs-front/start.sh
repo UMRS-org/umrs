@@ -42,6 +42,11 @@ set -o allexport
 source .env
 set +o allexport
 
+MINIO_BIND="${MINIO_BIND:-0.0.0.0}"
+if [[ "$MINIO_BIND" == "0.0.0.0" || "$MINIO_BIND" == "::" ]]; then
+    echo "WARNING: MinIO API will bind to ${MINIO_BIND}:${MINIO_PORT:-9000}; ensure host/firewall access is restricted to trusted cluster paths."
+fi
+
 mkdir -p "$LOG_DIR"
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
@@ -74,7 +79,7 @@ if [[ "$START_MODE" != "--server" ]]; then
         podman run -d --name umrs-minio \
             -e MINIO_ROOT_USER="${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}" \
             -e MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}" \
-            -p 0.0.0.0:${MINIO_PORT:-9000}:9000 \
+            -p "${MINIO_BIND}:${MINIO_PORT:-9000}:9000" \
             -p 127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001 \
             -v umrs_minio_data:/data \
             docker.io/minio/minio:latest \
@@ -332,7 +337,7 @@ echo "╔═══════════════════════�
 echo "║  UMRS Dual-Cluster Stack (umrs-front)                       ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo "║  Postgres:     127.0.0.1:${POSTGRES_PORT:-5432}                         ║"
-echo "║  MinIO:        0.0.0.0:${MINIO_PORT:-9000}                            ║"
+echo "║  MinIO:        ${MINIO_BIND}:${MINIO_PORT:-9000}                            ║"
 echo "║                                                              ║"
 echo "║  RCCS Cloud:                                                 ║"
 echo "║    UMRS HTTP:  0.0.0.0:${UMRS_RCCS_PORT:-8000}  (PID $RCCS_PID)           ║"
