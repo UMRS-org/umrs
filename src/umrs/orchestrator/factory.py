@@ -44,6 +44,10 @@ def _lazy_register_builtins() -> None:
         from .slurm_podman_backend import SlurmPodmanBackend
         register_backend("slurm-podman", SlurmPodmanBackend)
 
+    if "slurm-remote" not in _BACKEND_REGISTRY:
+        from .remote_slurm_backend import RemoteSlurmBackend
+        register_backend("slurm-remote", RemoteSlurmBackend)
+
 
 def _detect_backend() -> str:
     """Auto-detect the best available backend."""

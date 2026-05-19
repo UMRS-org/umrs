@@ -1,0 +1,53 @@
+# Pool roster: AI4S Supercomputer — 3 large models
+# Usage: R4_GATEWAY_URL=http://localhost:8002 r4 pool up pool-ai4s.yaml
+#
+# Target: ai4s-front → SSH → AI4S login (GB200 NVL4, 173.2 GiB/GPU × 4)
+#
+# Model sizing notes (GB200 B200 @ 173.2 GiB/GPU, 4/node = 692.8 GiB):
+#
+#   DeepSeek-V4-Pro (deepseek-ai/DeepSeek-V4-Pro):
+#     - 1.6T total params, 49B activated (MoE)
+#     - Stored in FP4+FP8 mixed (~862B stored params)
+#     - 1M context, Hybrid Attention (CSA+HCA)
+#     - Needs 2n4gpu (8× B200 = 1385.6 GiB) for safe loading
+#     - vLLM/SGLang supported
+#
+#   GLM-5.1 (zai-org/GLM-5.1):
+#     - 754B stored params (MoE, glm_moe_dsa architecture)
+#     - BF16 weights → ~1.5 TB; FP8 → ~754 GiB
+#     - Needs 2n4gpu (8× B200) with FP8 quantization
+#     - vLLM v0.19.0+, SGLang v0.5.10+ required
+#
+#   Kimi K2.6 (moonshotai/Kimi-K2.6):
+#     - 1T total params, 32B activated (MoE, 384 experts, 8 active)
+#     - Native INT4 quantization → ~500 GiB
+#     - 256K context, multimodal (MoonViT vision encoder)
+#     - Fits in 1n4gpu (4× B200 = 692.8 GiB) with INT4
+#     - vLLM/SGLang/KTransformers supported
+
+pool: ai4s-research
+defaults:
+  tier: user
+  timeout: 1200           # 20 min — large MoE models take time to load
+
+endpoints:
+  - name: deepseek-v4-pro
+    model: deepseek-ai/DeepSeek-V4-Pro
+    gpu_count: 8
+    max_model_len: 131072
+    # 1.6T MoE (49B active), FP4+FP8 mixed, 1M context capable
+    # Partition: 2n4gpu (2 nodes × 4 GPUs = 8× B200, 1385.6 GiB)
+
+  - name: glm-5.1
+    model: zai-org/GLM-5.1
+    gpu_count: 8
+    max_model_len: 32768
+    # 754B MoE (glm_moe_dsa), BF16 stored → needs FP8 for 8-GPU fit
+    # Partition: 2n4gpu (2 nodes × 4 GPUs = 8× B200, 1385.6 GiB)
+
+  - name: kimi-k2.6
+    model: moonshotai/Kimi-K2.6
+    gpu_count: 4
+    max_model_len: 131072
+    # 1T MoE (32B active, 384 experts), native INT4 → ~500 GiB
+    # Partition: 1n4gpu (1 node × 4 GPUs = 4× B200, 692.8 GiB)
