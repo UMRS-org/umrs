@@ -144,7 +144,7 @@ class RemoteSlurmBackend(SlurmBackend):
         sbatch_args = ["sbatch", "--parsable"]
 
         # Output/error dirs
-        output_dir = (self.config.extra or {}).get("slurm_job_info_dir", "/tmp")
+        output_dir = (getattr(self.config, "extra", None) or {}).get("slurm_job_info_dir", "/tmp")
         try:
             output_dir = site.extra.get("slurm_job_info_dir", output_dir)
         except Exception:
