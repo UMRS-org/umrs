@@ -61,7 +61,7 @@ def _expand_env_refs(value: Any) -> Any:
 class SchedulerConfig:
     """Cluster job scheduler settings."""
 
-    kind: str = "slurm"                         # slurm | k8s | compose
+    kind: str = "slurm"                         # slurm | slurm-remote | k8s | compose
     partition: str = ""                         # Slurm partition or comma-separated candidates / K8s namespace
     account: str = ""                           # Slurm account
     qos: str = ""                               # Slurm QoS

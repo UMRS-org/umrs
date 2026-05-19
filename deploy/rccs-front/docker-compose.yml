@@ -1,0 +1,94 @@
+# UMRS deployment for rccs-front server — all services in containers.
+#
+# Unlike rccs-cloud (where UMRS runs natively for Slurm CLI access),
+# the front-end server runs EVERYTHING in containers because Slurm
+# commands are routed via SSH to the login node.
+#
+# Topology:
+#   - This server: Gateway + UMRS + Postgres + MinIO (all containerized)
+#   - Login node: SSH target for sbatch/squeue/scancel (no persistent services)
+#   - Compute nodes: Mini-RiVault instances (via Slurm jobs)
+#
+# Usage:
+#   cd deploy/rccs-front
+#   ./start.sh
+#   # or: podman-compose up -d
+#
+# Prerequisites:
+#   - Set environment variables in .env
+#   - SSH key access to rccs-cloud configured (for UMRS SSH control)
+#   - VPN accessible for client connections
+
+services:
+  postgres:
+    image: docker.io/pgvector/pgvector:pg15
+    container_name: umrs-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-umrs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-umrs_db}
+    command: ["postgres", "-c", "unix_socket_directories="]
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ../../docker/init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
+    restart: unless-stopped
+
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: umrs-minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "0.0.0.0:9000:9000"       # Accessible from VPN clients + reverse tunnel to login
+      - "127.0.0.1:9001:9001"     # Console: local only
+    command: server /data --console-address ":9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  umrs-server:
+    build:
+      context: ../..
+      dockerfile: docker/Dockerfile
+    container_name: umrs-server
+    environment:
+      UMRS_SITE_CONFIG: /app/deploy/rccs-front/site.yaml
+      UMRS_REGISTRY_POSTGRES_DSN: "postgresql://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-umrs_db}"
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      RIVAULT_ORCHESTRATOR: slurm-remote
+    ports:
+      - "0.0.0.0:8000:8000"       # UMRS API (VPN clients)
+    volumes:
+      # SSH key for ControlMaster to login node
+      - ${SSH_KEY_PATH:-~/.ssh}:/home/umrs/.ssh:ro
+      # Site config
+      - ./site.yaml:/app/deploy/rccs-front/site.yaml:ro
+    depends_on:
+      - postgres
+      - minio
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../../../gateway
+      dockerfile: Dockerfile
+    container_name: umrs-gateway
+    environment:
+      UMRS_BASE_URL: http://umrs-server:8000
+      LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY}
+      RATE_LIMIT_RPS: ${RATE_LIMIT_RPS:-10}
+    ports:
+      - "0.0.0.0:8080:8080"       # Gateway API (VPN clients)
+    depends_on:
+      - umrs-server
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+  minio_data:
