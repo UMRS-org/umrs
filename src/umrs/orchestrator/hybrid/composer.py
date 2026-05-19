@@ -286,6 +286,7 @@ class HybridOrchestrator(OrchestratorBackend):
             memory_mb=kwargs.get("memory_mb", 65536),
             partition=kwargs.get("partition", self.config.slurm_partition),
             time_limit=kwargs.get("time", self.config.slurm_time),
+            slurm_account=kwargs.get("slurm_account"),
             labels=kwargs.get("labels", {}),
         )
 

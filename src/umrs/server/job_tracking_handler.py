@@ -154,6 +154,42 @@ class DurableJobCommandBackend:
         if self._db_pool is not None:
             self._db_pool.closeall()
 
+    def _check_slurm_account(self, client_id: str) -> str | None:
+        """Return an error message if the user may not submit Slurm jobs.
+
+        Returns ``None`` (no error) when:
+        - The backend is not Slurm (compose / k8s dev deployments).
+        - The UserStore is not available (graceful fallback).
+        - The user has a ``slurm_account`` configured.
+
+        Users without a ``slurm_account`` can still use shared system-tier
+        endpoints and local inference — they just cannot submit HPC jobs.
+        """
+        import os
+
+        # Only enforce when running against a Slurm backend.
+        if not os.getenv("SLURM_PARTITION") and not os.getenv("SLURM_ACCOUNT"):
+            return None
+
+        try:
+            from umrs.admin.user_store import UserStore, UserStoreError
+
+            store = UserStore()
+            if not store.exists(client_id):
+                return None  # Unknown user — allow through for dev setups
+            record = store.get(client_id)
+            if not record.slurm_account:
+                return (
+                    f"User {client_id!r} has no slurm_account configured. "
+                    f"Ask an admin to run: "
+                    f"umrs-server admin user set-slurm-account {client_id} <account>"
+                )
+        except Exception:
+            # UserStore unavailable — allow through so development
+            # and compose deployments are not blocked.
+            pass
+        return None
+
     def _submit_endpoint_cleanup(self, client_id: str, job) -> str:
         cleanup_spec = {
             "target": "endpoint",
@@ -203,6 +239,14 @@ class DurableJobCommandBackend:
 
         try:
             job_type = _parse_job_type((payload.get("job_type") or "").strip())
+
+            # Guard: reject endpoint_provision from users without a Slurm
+            # account when the execution backend requires one.
+            if job_type == JobType.ENDPOINT_PROVISION:
+                acct_err = self._check_slurm_account(client_id)
+                if acct_err:
+                    return json.dumps({"status": "error", "message": acct_err})
+
             project_id = payload.get("project_id", "default")
             spec = _validate_job_spec(job_type, payload.get("spec", {}))
             priority = int(payload.get("priority", 0))

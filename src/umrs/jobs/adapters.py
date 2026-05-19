@@ -128,6 +128,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
         orchestrator: BaseOrchestrator,
         registry: EndpointRegistry,
         port_manager,
+        user_store=None,
     ):
         """
         Initialize adapter.
@@ -136,10 +137,27 @@ class EndpointProvisionBackend(OrchestratorBackend):
             orchestrator: Underlying orchestrator (Compose/K8s/Slurm)
             registry: Endpoint registry for registration
             port_manager: Port allocation manager
+            user_store: Optional UserStore for resolving per-user Slurm accounts
         """
         self.orchestrator = orchestrator
         self.registry = registry
         self.port_manager = port_manager
+        self._user_store = user_store
+
+    def _resolve_slurm_account(self, user_id: str) -> str | None:
+        """Look up the submitting user's Slurm account from their admin record.
+
+        Returns ``None`` when no UserStore is configured, the user is not
+        enrolled, or the record has no ``slurm_account`` set.
+        """
+        if not self._user_store or not user_id:
+            return None
+        try:
+            record = self._user_store.get(user_id)
+            return record.slurm_account
+        except Exception:
+            logger.debug("Could not resolve slurm_account for user %s", user_id)
+            return None
 
     @property
     def backend_name(self) -> str:
@@ -233,12 +251,19 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 submit_env.setdefault("VLLM_MODEL", model_name)
             submit_env.update(mount_env)
 
+            # Resolve per-user Slurm account from the user record so sbatch
+            # attributes the job to the submitting user's fairshare group.
+            slurm_account = self._resolve_slurm_account(job.user_id)
+
             # Submit to underlying orchestrator
-            job_info = await self.orchestrator.submit_job(
-                model_path=model_path,
-                env=submit_env,
-                gpu_count=gpu_count,
-            )
+            submit_kwargs: dict[str, Any] = {
+                "model_path": model_path,
+                "env": submit_env,
+                "gpu_count": gpu_count,
+            }
+            if slurm_account:
+                submit_kwargs["slurm_account"] = slurm_account
+            job_info = await self.orchestrator.submit_job(**submit_kwargs)
 
             if not job_info or not job_info.job_id:
                 # Release port on failure
@@ -817,6 +842,7 @@ def create_backend_factory(
     s3_client=None,
     model_store=None,
     path_validator=None,
+    user_store=None,
 ):
     """
     Create a backend factory function for JobService.
@@ -829,6 +855,7 @@ def create_backend_factory(
         s3_client: S3 client (optional)
         model_store: Model registry store for download jobs (optional)
         path_validator: Path validator for download jobs (optional)
+        user_store: Optional UserStore for per-user Slurm account resolution
 
     Returns:
         Factory function: (JobType) -> OrchestratorBackend
@@ -838,6 +865,7 @@ def create_backend_factory(
         orchestrator=orchestrator,
         registry=registry,
         port_manager=port_manager,
+        user_store=user_store,
     )
     index_backend = IndexBuildBackend()
     cleanup_backend = CleanupBackend(
