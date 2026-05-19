@@ -58,6 +58,14 @@ class RemoteSlurmBackend(SlurmBackend):
             self._ssh_config = ssh_config
         else:
             extra = getattr(config, "extra", {}) or {}
+            if not extra.get("ssh_target"):
+                # Fallback: load extra from site config directly
+                try:
+                    from .site_config import load_site_config
+                    site = load_site_config()
+                    extra = site.extra or {}
+                except Exception:
+                    pass
             self._ssh_config = SSHControlConfig.from_site_config(extra)
 
         self._ssh: Optional[SSHControlManager] = None
