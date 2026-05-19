@@ -293,6 +293,14 @@ def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeyp
         )
         verified_response = client.post(
             "/umrs/endpoints/provision",
+            headers={
+                "X-User-ID": "gateway-user",
+                "X-Verified-Project-ID": "verified-project",
+            },
+            json={"project_id": "body-project", "model": "qwen3-8b"},
+        )
+        spoofed_verified_response = client.post(
+            "/umrs/endpoints/provision",
             headers={"X-Verified-Project-ID": "verified-project"},
             json={"project_id": "body-project", "model": "qwen3-8b"},
         )
@@ -301,6 +309,7 @@ def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeyp
 
     assert response.status_code == 401
     assert verified_response.status_code == 202
+    assert spoofed_verified_response.status_code == 401
     assert service.requests[0].project_id == "verified-project"
 
 
@@ -378,7 +387,10 @@ def test_provision_endpoint_forwards_mounts_to_service(monkeypatch):
     assert response.status_code == 202
     request = service.requests[0]
     assert request.tier == "project"
-    assert request.mounts == body["mounts"]
+    assert request.mounts["mcp_servers"][0]["target"] == "/mcp-servers/tools"
+    assert request.mounts["mcp_servers"][0]["source"].endswith("/home/alice/tools")
+    assert request.mounts["project_data"] == body["mounts"]["project_data"]
+    assert request.mounts["rag_index"] == body["mounts"]["rag_index"]
     assert request.egress_domains == ["api.example.com"]
     assert request.metadata["tier"] == "project"
 
