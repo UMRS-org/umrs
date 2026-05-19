@@ -81,6 +81,18 @@ class RemoteSlurmBackend(SlurmBackend):
         await self._ssh.ensure_connected()
         return self._ssh
 
+    def _get_wrapper_script(self) -> str | None:
+        """Get the remote wrapper script path from site config extra."""
+        extra = getattr(self.config, "extra", {}) or {}
+        if not extra.get("slurm_wrapper_script"):
+            try:
+                from .site_config import load_site_config
+                site = load_site_config()
+                extra = site.extra or {}
+            except Exception:
+                pass
+        return extra.get("slurm_wrapper_script")
+
     async def submit_job(
         self,
         model_path: str | None = None,
@@ -91,10 +103,13 @@ class RemoteSlurmBackend(SlurmBackend):
         if not model:
             raise ValueError("model_path is required (set VLLM_MODEL_PATH or pass explicitly)")
 
-        # Generate sbatch script content.
+        wrapper_script = self._get_wrapper_script()
+        if wrapper_script:
+            return await self._submit_wrapper_job(model, wrapper_script, **kwargs)
+
+        # Legacy: generate Singularity-based sbatch script and pipe via stdin.
         script_content = self._build_sbatch_script(model, **kwargs)
 
-        # Submit via SSH: pipe script to remote sbatch.
         ssh = await self._get_ssh()
         result = await ssh.run_remote_with_stdin(
             "sbatch --parsable",
@@ -105,12 +120,109 @@ class RemoteSlurmBackend(SlurmBackend):
         if not result.ok:
             raise RuntimeError(f"Remote sbatch failed: {result.stderr}")
 
-        job_id = result.stdout.strip().split(";")[0]  # Handle "JOBID;CLUSTER" format
+        job_id = result.stdout.strip().split(";")[0]
 
         return JobInfo(
             job_id=job_id,
             status=JobStatus.PENDING,
             model_path=model,
+            created_at=datetime.now(),
+            backend=self.backend_name,
+        )
+
+    async def _submit_wrapper_job(
+        self,
+        model_path: str,
+        wrapper_script: str,
+        **kwargs: Any,
+    ) -> JobInfo:
+        """Submit a site-provided wrapper script (e.g. serve-model.slurm) via remote sbatch."""
+        # Build sbatch CLI args from site config.
+        from .site_config import load_site_config
+        site = load_site_config()
+
+        sbatch_args = ["sbatch", "--parsable"]
+
+        # Output/error dirs
+        output_dir = (self.config.extra or {}).get("slurm_job_info_dir", "/tmp")
+        try:
+            output_dir = site.extra.get("slurm_job_info_dir", output_dir)
+        except Exception:
+            pass
+        sbatch_args.append(f"--output={output_dir}/slurm-%j.out")
+        sbatch_args.append(f"--error={output_dir}/slurm-%j.err")
+
+        # Partition
+        partition = kwargs.pop("partition_override", None) or site.scheduler.partition.split(",")[0]
+        if partition:
+            sbatch_args.append(f"--partition={partition}")
+
+        # Time limit
+        if site.scheduler.time_limit:
+            sbatch_args.append(f"--time={site.scheduler.time_limit}")
+
+        # GPUs (only if > 0)
+        gpu_count = kwargs.pop("gpu_count", None)
+        effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
+        if effective_gpus:
+            sbatch_args.append(f"--gres=gpu:{effective_gpus}")
+
+        # CPUs
+        if site.scheduler.cpus:
+            sbatch_args.append(f"--cpus-per-task={site.scheduler.cpus}")
+
+        # Memory (only if set)
+        if site.scheduler.memory:
+            sbatch_args.append(f"--mem={site.scheduler.memory}")
+
+        # Nodelist hint
+        nodelist_hint = kwargs.pop("nodelist_hint", None)
+        if nodelist_hint:
+            sbatch_args.append(f"--nodelist={nodelist_hint}")
+
+        # Node count
+        node_count = kwargs.pop("node_count", None)
+        if node_count and node_count > 1:
+            sbatch_args.append(f"--nodes={node_count}")
+
+        # Pop unused kwargs before building env
+        kwargs.pop("min_gpu_memory_gb", None)
+
+        # Build environment exports for the job
+        env_overrides: dict[str, str] = {}
+        requested_env = kwargs.pop("env", None)
+        if isinstance(requested_env, dict):
+            env_overrides.update(
+                {k: str(v) for k, v in requested_env.items() if isinstance(v, (str, int, float))}
+            )
+        env_overrides["VLLM_MODEL_PATH"] = model_path
+        env_overrides.setdefault("VLLM_SERVED_MODEL_NAME", env_overrides.get("MODEL_NAME", model_path))
+
+        # Build --export arg: ALL plus per-job overrides
+        export_parts = ["ALL"]
+        for k, v in env_overrides.items():
+            export_parts.append(f"{k}={v}")
+        sbatch_args.append(f"--export={','.join(export_parts)}")
+
+        # Append the wrapper script path
+        sbatch_args.append(wrapper_script)
+
+        cmd = " ".join(sbatch_args)
+        logger.info("Submitting wrapper job: %s", cmd)
+
+        ssh = await self._get_ssh()
+        result = await ssh.run_remote(cmd, timeout=60)
+
+        if not result.ok:
+            raise RuntimeError(f"Remote sbatch failed: {result.stderr}")
+
+        job_id = result.stdout.strip().split(";")[0]
+        logger.info("Submitted wrapper job %s", job_id)
+
+        return JobInfo(
+            job_id=job_id,
+            status=JobStatus.PENDING,
+            model_path=model_path,
             created_at=datetime.now(),
             backend=self.backend_name,
         )
