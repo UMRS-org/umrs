@@ -66,6 +66,8 @@ POSTGRES_DB_AI4S=front_ai4s
 # MinIO (shared instance, buckets per cluster)
 MINIO_ROOT_USER=CHANGEME_MINIO_USER
 MINIO_ROOT_PASSWORD=CHANGEME_MINIO_PASSWORD
+# Set to 127.0.0.1 for tunnel-only deployments; 0.0.0.0 requires host firewalling.
+MINIO_BIND=0.0.0.0
 
 # LiteLLM (auth key for endpoints)
 LITELLM_MASTER_KEY=sk-ll-CHANGEME

@@ -284,7 +284,7 @@ stack is managed by `umrs/deploy/umrs-front/start.sh`.
 | Gateway (via tunnel) | `127.0.0.1:18080` | `127.0.0.1:18082` |
 | Sidecar | `127.0.0.1:8083` | `127.0.0.1:8084` |
 | PostgreSQL | `127.0.0.1:5432` (shared native) | — |
-| MinIO | `0.0.0.0:9000` (shared) | — |
+| MinIO | `${MINIO_BIND:-0.0.0.0}:9000` (shared) | — |
 | Endpoint tunnel pool | `12000–12999` | `13000–13999` |
 
 PostgreSQL is **native** on `umrs-front` (not a Podman container). `start.sh`
