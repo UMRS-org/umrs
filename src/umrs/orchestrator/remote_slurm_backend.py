@@ -161,11 +161,12 @@ class RemoteSlurmBackend(SlurmBackend):
         if site.scheduler.time_limit:
             sbatch_args.append(f"--time={site.scheduler.time_limit}")
 
-        # GPUs (only if > 0)
+        # GPUs (only if site allows GRES tracking — gpus=0 means no GRES)
         gpu_count = kwargs.pop("gpu_count", None)
-        effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
-        if effective_gpus:
-            sbatch_args.append(f"--gres=gpu:{effective_gpus}")
+        if site.scheduler.gpus != 0:
+            effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
+            if effective_gpus:
+                sbatch_args.append(f"--gres=gpu:{effective_gpus}")
 
         # CPUs
         if site.scheduler.cpus:
