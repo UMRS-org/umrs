@@ -171,9 +171,11 @@ class RemoteSlurmBackend(SlurmBackend):
         if site.scheduler.cpus:
             sbatch_args.append(f"--cpus-per-task={site.scheduler.cpus}")
 
-        # Memory (only if set)
+        # Memory (explicit value or --mem=0 to suppress DefMemPerCPU default)
         if site.scheduler.memory:
             sbatch_args.append(f"--mem={site.scheduler.memory}")
+        else:
+            sbatch_args.append("--mem=0")
 
         # Nodelist hint
         nodelist_hint = kwargs.pop("nodelist_hint", None)
