@@ -269,6 +269,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 "model_path": model_path,
                 "env": submit_env,
                 "gpu_count": gpu_count,
+                "requesting_user": job.user_id,
             }
             if slurm_account:
                 submit_kwargs["slurm_account"] = slurm_account
