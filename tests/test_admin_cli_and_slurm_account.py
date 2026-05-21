@@ -284,6 +284,60 @@ class TestAdminCLI:
         assert _run(d, "user", "delete", "alice", "--purge", "-y") == 0
         assert not (d / "alice.json").exists()
 
+    def test_user_delete_deprovision_uses_persisted_extras(
+        self,
+        tmp_path: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import importlib
+
+        admin_main_module = importlib.import_module("umrs.cli.admin.main")
+
+        captured: dict[str, Any] = {}
+
+        def fake_deprovision_user(user_cfg: dict[str, Any], admin_s3_cfg: str) -> None:
+            captured["user_cfg"] = user_cfg
+            captured["admin_s3_cfg"] = admin_s3_cfg
+
+        d = tmp_path / "ufiles"
+        store = UserStore(d)
+        store.create(
+            "alice",
+            extras={
+                "experiences": [
+                    {
+                        "xp_name": "omics",
+                        "sql_username": "alice_db",
+                        "modalities": [
+                            {
+                                "s3": {
+                                    "bucket_alias": "input",
+                                    "need_output_bucket": True,
+                                }
+                            }
+                        ],
+                    }
+                ],
+                "s3_configuration_file": "~/.s3cfg_alice",
+            },
+        )
+
+        monkeypatch.setitem(sys.modules, "umrs.server.provisioning", type("_M", (), {
+            "deprovision_user": staticmethod(fake_deprovision_user),
+        })())
+        monkeypatch.setattr(admin_main_module, "_maybe_signal_reload", lambda args: None)
+
+        assert _run(d, "user", "delete", "alice", "--purge", "--deprovision", "-y") == 0
+        out = capsys.readouterr().out
+
+        assert captured["user_cfg"]["username"] == "alice"
+        assert captured["user_cfg"]["experiences"][0]["xp_name"] == "omics"
+        assert captured["user_cfg"]["s3_configuration_file"] == "~/.s3cfg_alice"
+        assert captured["admin_s3_cfg"] == ""
+        assert "deprovisioned and deleted" in out
+        assert not (d / "alice.json").exists()
+
     def test_user_add_duplicate_returns_error(self, tmp_path: Path) -> None:
         d = tmp_path / "ufiles"
         assert _run(d, "user", "add", "alice") == 0

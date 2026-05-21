@@ -1645,10 +1645,15 @@ async def provision_endpoint(
     # which is incorrect for multi-user environments.
     if requesting_user:
         try:
-            from ..admin.user_store import UserStore
+            from ..admin.user_store import UserStore, UserStoreError
 
             _user_store = UserStore()
             _user_record = _user_store.get(requesting_user)
+            if _user_record.disabled:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"User '{requesting_user}' is disabled.",
+                )
             _site_name: str | None = None
             try:
                 from ..orchestrator.site_config import load_site_config as _load_sc
@@ -1667,11 +1672,20 @@ async def provision_endpoint(
                 )
         except HTTPException:
             raise
+        except UserStoreError as _use:
+            # User record not found in the store — reject rather than proceed.
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"User '{requesting_user}' is not registered. "
+                       "Ask an admin to run: "
+                       f"umrs-server admin user add {requesting_user}",
+            ) from _use
         except Exception:
-            # User store unavailable or user not found — log and proceed
-            # (non-strict mode or development environment)
+            # User store infrastructure failure (I/O error, corrupt file, etc.).
+            # Log and proceed to avoid blocking provisioning when the store is
+            # temporarily unreachable (e.g. NFS hiccup in development).
             logger.warning(
-                "Could not verify slurm_account for user %s; proceeding",
+                "User store unavailable while verifying user %s; proceeding without validation",
                 requesting_user,
                 exc_info=True,
             )

@@ -330,14 +330,10 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
             print("aborted", file=sys.stderr)
             return 1
 
-        # Load the user config to get experiences/modalities for teardown.
-        user_json_path = store._path_for(args.username)
-        try:
-            with open(user_json_path, encoding="utf-8") as f:
-                user_cfg = json.load(f)
-        except Exception as exc:
-            print(f"error: cannot load user config for deprovisioning: {exc}", file=sys.stderr)
-            return 2
+        # UserRecord preserves unknown top-level config in extras, so the
+        # deprovisioner can consume the same payload shape without reloading
+        # the JSON file through a store-private path helper.
+        user_cfg = rec.to_json()
 
         # Resolve admin S3 config from the server config file.
         from umrs.shared.config import (
@@ -636,8 +632,20 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
         return 2
 
     secret = _resolve_jwt_secret(args)
-    email = args.email or f"{args.user}@dev.local"
-    roles = args.roles or ["admin"]
+    # Look up the user record for role/email defaults.
+    _user_rec: UserRecord | None = None
+    try:
+        _user_rec = _store.get(args.user)
+    except UserStoreError:
+        pass
+    if _user_rec and _user_rec.disabled:
+        print(f"error: user {args.user!r} is disabled; refusing to generate token", file=sys.stderr)
+        return 2
+    email = args.email or (_user_rec.email if _user_rec and _user_rec.email else f"{args.user}@dev.local")
+    if args.roles:
+        roles = args.roles
+    else:
+        roles = [_user_rec.role] if _user_rec else ["user"]
     projects = getattr(args, "projects", None) or None
     payload = _build_jwt_payload(
         args.user, email, args.project, roles, args.days,
@@ -1035,11 +1043,13 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
     )
     jwt_p.add_argument(
         "--roles", "-r", nargs="*", default=None,
-        help="Roles list. Default: admin",
+        help="Roles list. Default: read from user record (falls back to 'user')",
     )
+    import os as _os
+    _default_days = int(_os.environ.get("UMRS_JWT_DEFAULT_DAYS", "30"))
     jwt_p.add_argument(
-        "--days", "-d", type=int, default=30,
-        help="Token validity in days. Default: 30",
+        "--days", "-d", type=int, default=_default_days,
+        help="Token validity in days. Default: 30 (or $UMRS_JWT_DEFAULT_DAYS)",
     )
     jwt_p.add_argument(
         "--secret", "-s", default=None,
