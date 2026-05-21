@@ -31,6 +31,9 @@ scheduler:
   gpus: 0
   cpus: 8
   memory: ""
+  slurm_delegation: per_user_ssh
+  service_pubkey_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/keys/umrs-service.pub
+  slurm_proxy_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/bin/umrs-slurm-proxy
 
 runtime:
   kind: podman-compose

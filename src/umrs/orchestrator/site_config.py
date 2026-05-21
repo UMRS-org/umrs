@@ -72,6 +72,17 @@ class SchedulerConfig:
     nodes: int = 1                              # Number of Slurm nodes (>1 for multi-node PP)
     extra_sbatch: list[str] = field(default_factory=list)  # e.g. ["--constraint=a100"]
 
+    # Per-user SSH delegation for Slurm job submission.
+    # - service_account: UMRS daemon submits all jobs as itself (default)
+    # - per_user_ssh: UMRS SSH's as the requesting user to submit sbatch
+    slurm_delegation: str = "service_account"   # service_account | per_user_ssh
+    # Path to UMRS service ed25519 public key on shared filesystem.
+    # Users enroll by appending this key to their ~/.ssh/authorized_keys.
+    service_pubkey_path: str = ""
+    # Path to the forced-command proxy script on shared filesystem.
+    # Only allows sbatch, squeue, sacct, scancel commands.
+    slurm_proxy_path: str = ""
+
 
 @dataclass
 class RuntimeConfig:

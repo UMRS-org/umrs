@@ -52,6 +52,11 @@ class RemoteSlurmBackend(SlurmBackend):
 
     All Slurm CLI commands are executed remotely via SSH ControlMaster.
     Job info files on the shared filesystem are read via SSH cat.
+
+    When ``slurm_delegation`` is ``per_user_ssh``, job submission and cancellation
+    are executed as the requesting user via a per-user SSH connection using the
+    UMRS service identity key. The user must have enrolled the service public key
+    in their ~/.ssh/authorized_keys (via ``r4 onboard``).
     """
 
     def __init__(self, config: Any, ssh_config: Optional[SSHControlConfig] = None) -> None:
@@ -74,6 +79,21 @@ class RemoteSlurmBackend(SlurmBackend):
         self._ssh: Optional[SSHControlManager] = None
         self._tunnel_pool: TunnelPool | None = None
 
+        # Per-user SSH delegation state
+        self._delegation_mode: str = "service_account"
+        self._service_identity_file: str = ""
+        self._user_ssh_pool: dict[str, SSHControlManager] = {}
+        try:
+            from .site_config import load_site_config
+            site = load_site_config()
+            self._delegation_mode = site.scheduler.slurm_delegation
+            # Derive private key path from pubkey path (strip .pub suffix)
+            pubkey_path = site.scheduler.service_pubkey_path
+            if pubkey_path.endswith(".pub"):
+                self._service_identity_file = pubkey_path[:-4]
+        except Exception:
+            pass
+
     @property
     def backend_name(self) -> str:
         return "slurm-remote"
@@ -84,6 +104,38 @@ class RemoteSlurmBackend(SlurmBackend):
             self._ssh = SSHControlManager(self._ssh_config)
         await self._ssh.ensure_connected()
         return self._ssh
+
+    async def _get_ssh_for_user(self, username: str) -> SSHControlManager:
+        """Get or create a per-user SSH control manager for delegated submission.
+
+        Uses the UMRS service identity key to connect as the target user.
+        The user must have enrolled the service pubkey in their authorized_keys.
+        Falls back to the service-account connection if delegation is not configured.
+        """
+        if self._delegation_mode != "per_user_ssh" or not self._service_identity_file:
+            return await self._get_ssh()
+
+        if username not in self._user_ssh_pool:
+            # Build a user-specific SSH config based on service config
+            user_config = SSHControlConfig(
+                ssh_target=self._ssh_config.ssh_target,
+                ssh_user=username,
+                ssh_port=self._ssh_config.ssh_port,
+                connect_timeout=self._ssh_config.connect_timeout,
+                command_timeout=self._ssh_config.command_timeout,
+                control_path="",  # Auto-generated per-user socket
+                server_alive_interval=self._ssh_config.server_alive_interval,
+                server_alive_count_max=self._ssh_config.server_alive_count_max,
+                reverse_tunnels=[],  # No tunnels for per-user connections
+                proxy_jump=self._ssh_config.proxy_jump,
+                identity_file=self._service_identity_file,
+                remote_env=self._ssh_config.remote_env,
+            )
+            self._user_ssh_pool[username] = SSHControlManager(user_config)
+
+        mgr = self._user_ssh_pool[username]
+        await mgr.ensure_connected()
+        return mgr
 
     def _get_wrapper_script(self) -> str | None:
         """Get the remote wrapper script path from site config extra."""
@@ -123,19 +175,29 @@ class RemoteSlurmBackend(SlurmBackend):
         model_path: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
-        """Submit a Slurm job via remote SSH sbatch."""
+        """Submit a Slurm job via remote SSH sbatch.
+
+        When per-user delegation is active and ``requesting_user`` is provided,
+        the sbatch is executed as that user via the UMRS service identity key.
+        """
         model = model_path or self.config.model_path
         if not model:
             raise ValueError("model_path is required (set VLLM_MODEL_PATH or pass explicitly)")
 
+        # Determine which SSH connection to use for submission
+        requesting_user = kwargs.pop("requesting_user", None)
+
         wrapper_script = self._get_wrapper_script()
         if wrapper_script:
-            return await self._submit_wrapper_job(model, wrapper_script, **kwargs)
+            return await self._submit_wrapper_job(model, wrapper_script, requesting_user=requesting_user, **kwargs)
 
         # Legacy: generate Singularity-based sbatch script and pipe via stdin.
         script_content = self._build_sbatch_script(model, **kwargs)
 
-        ssh = await self._get_ssh()
+        if requesting_user and self._delegation_mode == "per_user_ssh":
+            ssh = await self._get_ssh_for_user(requesting_user)
+        else:
+            ssh = await self._get_ssh()
         result = await ssh.run_remote_with_stdin(
             "sbatch --parsable",
             script_content.encode(),
@@ -159,6 +221,7 @@ class RemoteSlurmBackend(SlurmBackend):
         self,
         model_path: str,
         wrapper_script: str,
+        requesting_user: str | None = None,
         **kwargs: Any,
     ) -> JobInfo:
         """Submit a site-provided wrapper script (e.g. serve-model.slurm) via remote sbatch."""
@@ -250,7 +313,10 @@ class RemoteSlurmBackend(SlurmBackend):
         cmd = " ".join(sbatch_args)
         logger.info("Submitting wrapper job: %s", cmd)
 
-        ssh = await self._get_ssh()
+        if requesting_user and self._delegation_mode == "per_user_ssh":
+            ssh = await self._get_ssh_for_user(requesting_user)
+        else:
+            ssh = await self._get_ssh()
         result = await ssh.run_remote(cmd, timeout=60)
 
         if not result.ok:
@@ -560,6 +626,10 @@ class RemoteSlurmBackend(SlurmBackend):
         if self._tunnel_pool is not None:
             await self._tunnel_pool.shutdown()
             self._tunnel_pool = None
+        # Close per-user SSH connections
+        for username, mgr in list(self._user_ssh_pool.items()):
+            await mgr.close()
+        self._user_ssh_pool.clear()
         if self._ssh:
             await self._ssh.close()
             self._ssh = None

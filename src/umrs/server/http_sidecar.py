@@ -149,8 +149,25 @@ def _create_app():
 
     @app.get("/health")
     async def health():
-        """Liveness probe — returns ok if the process is alive."""
-        return {"status": "ok"}
+        """Liveness probe — returns ok if the process is alive.
+
+        Also includes non-secret site capabilities for client discovery
+        (scheduler kind, delegation mode, site name).
+        """
+        caps: dict[str, str] = {}
+        try:
+            from umrs.orchestrator.site_config import load_site_config
+
+            site = load_site_config()
+            caps["scheduler_kind"] = site.scheduler.kind
+            caps["slurm_delegation"] = site.scheduler.slurm_delegation
+            caps["site_name"] = site.name
+            if site.scheduler.slurm_delegation == "per_user_ssh":
+                caps["service_pubkey_path"] = site.scheduler.service_pubkey_path
+                caps["slurm_proxy_path"] = site.scheduler.slurm_proxy_path
+        except Exception:
+            pass
+        return {"status": "ok", "site_capabilities": caps}
 
     @app.get("/readiness")
     async def readiness():

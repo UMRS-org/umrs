@@ -39,6 +39,9 @@ scheduler:
   gpus: 1                                     # --gpus-per-node=1 for 1n1gpu
   cpus: 8
   memory: "64G"                              # AI4S rejects --mem=0; request a bounded smoke allocation
+  slurm_delegation: per_user_ssh
+  service_pubkey_path: /work/hps0/home/ea0022/ai4s-platform/keys/umrs-service.pub
+  slurm_proxy_path: /work/hps0/home/ea0022/ai4s-platform/bin/umrs-slurm-proxy
 
 runtime:
   kind: singularity                           # Apptainer on AI4S
