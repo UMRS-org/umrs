@@ -808,6 +808,21 @@ def get_project_id_optional(
     )
 
 
+def _get_requesting_user(
+    authorization: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+) -> str | None:
+    """Extract the requesting username from JWT ``sub`` or verified header.
+
+    Returns the username string, or None if the caller is unauthenticated
+    (non-strict mode).
+    """
+    claims = _jwt_claims(authorization, required=False)
+    if claims is not None:
+        return claims.get("sub") or claims.get("user_id")
+    return _header_str(x_user_id)
+
+
 def _resolve_provision_project_id(
     request: ProvisionRequest,
     authenticated_project_id: str | None,
@@ -1609,6 +1624,7 @@ async def provision_endpoint(
     request: ProvisionRequest,
     project_id: str | None = Depends(get_project_id_optional),
     is_admin: bool = Depends(_caller_is_admin),
+    requesting_user: str | None = Depends(_get_requesting_user),
     registry: EndpointRegistry = Depends(get_registry),
 ):
     """Provision a new endpoint or return existing one."""
@@ -1623,6 +1639,42 @@ async def provision_endpoint(
 
     effective_project_id = _resolve_provision_project_id(request, project_id)
     _enforce_provision_authorization(request, is_admin=is_admin)
+
+    # Validate that the requesting user has a Slurm account configured.
+    # Without one, the job would run under the deployer's default account
+    # which is incorrect for multi-user environments.
+    if requesting_user:
+        try:
+            from ..admin.user_store import UserStore
+
+            _user_store = UserStore()
+            _user_record = _user_store.get(requesting_user)
+            _site_name: str | None = None
+            try:
+                from ..orchestrator.site_config import load_site_config as _load_sc
+                _site_name = _load_sc().name
+            except FileNotFoundError:
+                pass
+            _acct = _user_record.resolve_slurm_account(_site_name)
+            if not _acct:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=(
+                        f"User '{requesting_user}' has no Slurm account configured. "
+                        "Ask an admin to run: "
+                        f"umrs-server admin user set-slurm-account {requesting_user} <account>"
+                    ),
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            # User store unavailable or user not found — log and proceed
+            # (non-strict mode or development environment)
+            logger.warning(
+                "Could not verify slurm_account for user %s; proceeding",
+                requesting_user,
+                exc_info=True,
+            )
 
     # Check for existing warm endpoint first
     if request.prefer_warm:
@@ -1859,6 +1911,7 @@ async def provision_endpoint(
         min_gpu_memory_gb=serving_profile.get("min_gpu_memory_gb"),
         env_vars=env_vars,
         metadata=request_metadata,
+        requesting_user=requesting_user,
     )
 
     try:

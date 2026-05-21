@@ -109,6 +109,7 @@ class ProvisionRequest:
     partition_override: str | None = None  # Override site partition for this request
     nodelist_hint: str | None = None  # Slurm --nodelist hint (e.g. "ai-h200-brc-00")
     min_gpu_memory_gb: float | None = None  # Resource hint from model catalog for partition selection
+    requesting_user: str | None = None  # Username for per-user Slurm delegation & accounting
 
 
 @dataclass
@@ -341,6 +342,30 @@ class OrchestrationService:
             if temp_poller is not None:
                 await temp_poller.close()
 
+    @staticmethod
+    def _resolve_slurm_account(username: str | None) -> str | None:
+        """Look up the Slurm account for *username* from the user store.
+
+        Returns None if the user store is unavailable, the user does not
+        exist, or the user has no account configured.
+        """
+        if not username:
+            return None
+        try:
+            from umrs.admin.user_store import UserStore
+
+            store = UserStore()
+            record = store.get(username)
+            site_name: str | None = None
+            try:
+                site_name = load_site_config().name
+            except FileNotFoundError:
+                pass
+            return record.resolve_slurm_account(site_name)
+        except Exception:
+            logger.debug("Could not resolve slurm_account for user %s", username, exc_info=True)
+            return None
+
     async def provision(
         self,
         request: ProvisionRequest,
@@ -476,6 +501,8 @@ class OrchestrationService:
                 partition_override=request.partition_override,
                 nodelist_hint=request.nodelist_hint,
                 min_gpu_memory_gb=request.min_gpu_memory_gb,
+                requesting_user=request.requesting_user,
+                slurm_account=self._resolve_slurm_account(request.requesting_user),
             )
 
             if not job_info or not job_info.job_id:
@@ -492,6 +519,8 @@ class OrchestrationService:
             endpoint_metadata.update(mount_metadata)
             endpoint_metadata.setdefault("allocated_host", target_host)
             endpoint_metadata.setdefault("allocated_port", port)
+            if request.requesting_user:
+                endpoint_metadata.setdefault("requesting_user", request.requesting_user)
             actual_host = job_info.endpoint.node if job_info.endpoint else target_host
             actual_port = (
                 job_info.endpoint.litellm_port

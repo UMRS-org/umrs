@@ -1400,7 +1400,10 @@ def _action_ping(ctx):
         admin_token=ctx.admin_token,
     )
     try:
-        ping_result = api.ping(timeout_ms=ctx.connection.health_check_timeout_ms)
+        # Use explicit --timeout-ms from CLI args (default 2000) rather than
+        # the profile's health_check_timeout_ms (which can be 15s+).
+        timeout = getattr(args, "timeout_ms", None) or ctx.connection.health_check_timeout_ms
+        ping_result = api.ping(timeout_ms=timeout)
         endpoint_info = {
             "profile": ctx.connection.profile_name or "(none)",
             "server_host": ctx.connection.server_host,
