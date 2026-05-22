@@ -916,6 +916,11 @@ def _handle_login(args):
 
     host = args.host
     port = args.port
+    gateway_url = getattr(args, 'gateway_url', None)
+
+    # --gateway-url implies --mode gateway
+    if gateway_url and args.mode == 'direct':
+        args.mode = 'gateway'
     mode = args.mode
     api_key = args.api_key
     username = args.username
@@ -969,17 +974,21 @@ def _handle_login(args):
     profile_data = {
         "name": profile_name,
         "mode": mode,
-        "zmq": {
+    }
+    if gateway_url:
+        profile_data["gateway_url"] = gateway_url.rstrip("/")
+    if mode != "gateway":
+        # ZMQ config only for direct/ssh_tunnel modes
+        profile_data["zmq"] = {
             "host": host,
             "control_port": port,
             "data_port_range": {"start": port + 1, "end": port + 8},
             "tunnel_mode": mode == "ssh_tunnel",
             "health_check_timeout_ms": 5000,
-        },
-        "services": {
-            "minio_url": minio_url,
-            "rag_url": rag_url,
-        },
+        }
+    profile_data["services"] = {
+        "minio_url": minio_url,
+        "rag_url": rag_url,
     }
     if mode == "ssh_tunnel":
         profile_data["ssh"] = {
@@ -1006,26 +1015,38 @@ def _handle_login(args):
     print(f"  JWT stored → {token_path}")
 
     # --- 4. Verify connection ---
-    print(f"  Verifying connection to {host}:{port} ...")
-    try:
-        mq = MessageQueue(
-            role="client",
-            queue_type="control",
-            server_ip=host,
-            port=port,
-            tunnel_mode=(mode == "ssh_tunnel"),
-            prefer_env_server_host=False,
-        )
-        mq.set_timeouts(5000, 5000)
-        if mq.ping():
-            print(f"  ✓ Server is reachable")
-        else:
-            print(f"  ✗ Server did not respond to ping (may still be starting)")
-    except Exception as e:
-        print(f"  ✗ Connection check failed: {e}")
-        print(f"  Profile saved — you can retry with `umrs-client ping`")
-
-    print(f"\n✓ Login complete for user '{username}' on {host}:{port}")
+    if mode == "gateway" and gateway_url:
+        print(f"  Verifying connection to {gateway_url} ...")
+        try:
+            result = _http_ping(gateway_url, api_key)
+            if result.get("server_ready"):
+                print(f"  ✓ Server is reachable via gateway")
+            else:
+                print(f"  ✗ Server not ready via gateway (may still be starting)")
+        except Exception as e:
+            print(f"  ✗ Connection check failed: {e}")
+            print(f"  Profile saved — you can retry with `umrs-client ping`")
+        print(f"\n✓ Login complete for user '{username}' via {gateway_url}")
+    else:
+        print(f"  Verifying connection to {host}:{port} ...")
+        try:
+            mq = MessageQueue(
+                role="client",
+                queue_type="control",
+                server_ip=host,
+                port=port,
+                tunnel_mode=(mode == "ssh_tunnel"),
+                prefer_env_server_host=False,
+            )
+            mq.set_timeouts(5000, 5000)
+            if mq.is_server_ready(timeout_ms=5000):
+                print(f"  ✓ Server is reachable")
+            else:
+                print(f"  ✗ Server did not respond to ping (may still be starting)")
+        except Exception as e:
+            print(f"  ✗ Connection check failed: {e}")
+            print(f"  Profile saved — you can retry with `umrs-client ping`")
+        print(f"\n✓ Login complete for user '{username}' on {host}:{port}")
     print(f"  Profile: {profile_name}")
     print(f"  Run `umrs-client ping` to verify full connectivity.")
     return 0
@@ -1372,6 +1393,69 @@ def _disabled_admin_message():
 
 
 # ---------------------------------------------------------------------------
+# HTTP transport helpers — used when gateway_url is configured
+# ---------------------------------------------------------------------------
+
+def _http_ping(gateway_url: str, api_key: str | None = None) -> dict:
+    """Ping the UMRS server via the HTTP gateway."""
+    import urllib.request
+    import urllib.error
+
+    url = f"{gateway_url.rstrip('/')}/gw/ops/ping"
+    req = urllib.request.Request(url, method="GET")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = _json.loads(resp.read().decode("utf-8"))
+            return body
+    except urllib.error.HTTPError as e:
+        return {"status": "error", "server_ready": False, "message": f"HTTP {e.code}: {e.reason}"}
+    except Exception as e:
+        return {"status": "error", "server_ready": False, "message": str(e)}
+
+
+def _http_reload(gateway_url: str, api_key: str | None = None) -> dict:
+    """Trigger config reload via the HTTP gateway."""
+    import urllib.request
+    import urllib.error
+
+    url = f"{gateway_url.rstrip('/')}/gw/ops/reload"
+    data = b"{}"
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = _json.loads(resp.read().decode("utf-8"))
+            return body
+    except urllib.error.HTTPError as e:
+        return {"status": "error", "message": f"HTTP {e.code}: {e.reason}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def _get_gateway_url_from_ctx(ctx) -> str | None:
+    """Extract gateway_url from the connection profile if available."""
+    conn = ctx.connection
+    return getattr(conn, "gateway_url", None) if conn else None
+
+
+def _get_api_key_from_profile(ctx) -> str | None:
+    """Read the JWT from the profile's token file."""
+    conn = ctx.connection
+    profile_path = getattr(conn, "profile_path", None)
+    if not profile_path:
+        return None
+    from pathlib import Path as _Path
+    token_path = _Path(profile_path).with_suffix(".token")
+    if token_path.is_file():
+        return token_path.read_text(encoding="utf-8").strip()
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Client context — shared state passed to every action handler
 # ---------------------------------------------------------------------------
 @dataclass
@@ -1394,6 +1478,29 @@ class _ClientContext:
 
 def _action_ping(ctx):
     args = ctx.args
+
+    # --- HTTP gateway path (no ZMQ needed) ---
+    gateway_url = _get_gateway_url_from_ctx(ctx)
+    if gateway_url:
+        api_key = _get_api_key_from_profile(ctx)
+        ping_result = _http_ping(gateway_url, api_key)
+        endpoint_info = {
+            "profile": ctx.connection.profile_name or "(none)",
+            "gateway_url": gateway_url,
+        }
+        if args.output == 'json':
+            print(api_json(output_format='json', **ping_result, **endpoint_info))
+        else:
+            ready = ping_result.get("server_ready", False)
+            dot = _status_dot(ready)
+            status_word = _green("ready") if ready else _red("not ready")
+            profile_label = _bold(ctx.connection.profile_name) if ctx.connection.profile_name else _dim("(none)")
+            print(f"  {dot} Server {status_word}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {gateway_url}")
+            if not ready and ping_result.get("message"):
+                print(f"    {_dim(ping_result['message'])}")
+        return 0
+
+    # --- ZMQ path (original) ---
     api = UMRSControlAPI(
         ctx.control_mq,
         _resolve_control_client_id(ctx.user),
@@ -1900,6 +2007,29 @@ def _action_status(ctx):
 
 def _action_maintenance(ctx):
     args = ctx.args
+
+    # --- HTTP gateway path for reload ---
+    gateway_url = _get_gateway_url_from_ctx(ctx)
+    if gateway_url and args.action == "reload":
+        api_key = _get_api_key_from_profile(ctx)
+        parsed = _http_reload(gateway_url, api_key)
+        if parsed.get("status") == "ok":
+            if args.output == 'json':
+                print(api_json(action=args.action, accepted=True, output_format='json'))
+            else:
+                print(f"{_green('✓')} {_bold(args.action)} accepted")
+                summary = parsed.get("summary", "")
+                if summary:
+                    print(f"  {summary[:200]}")
+        else:
+            if args.output == 'json':
+                print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
+            else:
+                msg = parsed.get("message") or parsed.get("error") or "rejected"
+                print(f"{_red('✗')} {_bold(args.action)} rejected: {msg}")
+        return 0
+
+    # --- ZMQ path (original) ---
     client_id = (ctx.user.get('username') if isinstance(ctx.user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', '_')
     api = UMRSControlAPI(
         ctx.control_mq,
@@ -2495,8 +2625,10 @@ def main():
     login_p.add_argument('--host', default='127.0.0.1', help='UMRS server host')
     login_p.add_argument('--port', type=int, default=5555, help='UMRS ZMQ control port')
     login_p.add_argument('--api-key', '-k', help='JWT or onboarding token')
-    login_p.add_argument('--mode', default='direct', choices=['direct', 'ssh_tunnel'],
-                         help='Connection mode')
+    login_p.add_argument('--mode', default='direct', choices=['direct', 'ssh_tunnel', 'gateway'],
+                         help='Connection mode (gateway uses HTTP through the gateway)')
+    login_p.add_argument('--gateway-url', default=None,
+                         help='Gateway HTTP URL (e.g. http://134.160.189.136:50080). Implies --mode gateway')
     login_p.add_argument('--username', default=None, help='UMRS username (auto-extracted from JWT)')
     login_p.add_argument('--profile-name', default=None, help='Connection profile name (default: auto)')
 
@@ -2591,6 +2723,38 @@ def main():
         explicit_control_port=args.control_port,
     )
 
+    # --- Gateway-only mode: skip ZMQ for supported actions ---
+    _gateway_http_actions = {"ping", "reload"}
+    gateway_url = getattr(connection, "gateway_url", None)
+    if gateway_url and args.action in _gateway_http_actions:
+        # Resolve admin token and config state without ZMQ
+        admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
+        config_state = resolve_loaded_config(
+            explicit_server_config_path=args.server_conf,
+            explicit_user_config_path=args.conf,
+            explicit_s3_config_path=args.s3cfg,
+        )
+        configure_file = config_state.user.path if config_state.user.path else None
+        user = None
+        if configure_file and config_state.user.valid:
+            try:
+                user = load_client_cfg_file(configure_file)
+            except (Exception, SystemExit):
+                pass
+        ctx = _ClientContext(
+            args=args,
+            control_mq=None,  # type: ignore[arg-type]
+            connection=connection,
+            admin_token=admin_token,
+            config_state=config_state,
+            configure_file=configure_file,
+            user=user,
+            buckets_cfg=None,
+        )
+        handler = _ACTION_HANDLERS.get(args.action)
+        if handler:
+            sys.exit(handler(ctx))
+        sys.exit(1)
 
     # Connect to message queue
     control_mq = MessageQueue(

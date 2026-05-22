@@ -61,6 +61,7 @@ def _create_app():
         llm_router,
         mcp_router,
         models_router,
+        ops_router,
         pipelines_router,
         policy_router,
         provenance_router,
@@ -89,6 +90,7 @@ def _create_app():
     app.include_router(llm_router)
     app.include_router(mcp_router)
     app.include_router(models_router)
+    app.include_router(ops_router)
     app.include_router(pipelines_router)
     app.include_router(policy_router)
     app.include_router(rag_router)

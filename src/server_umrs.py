@@ -680,6 +680,10 @@ def main():
         _sidecar_thread = start_http_sidecar()
         if _sidecar_thread is not None:
             print(f"HTTP sidecar started (thread={_sidecar_thread.name}).")
+            # Provide server state to the ops reload endpoint so that
+            # POST /umrs/ops/reload can trigger hot-reload over HTTP.
+            from umrs.api.ops import set_reload_context
+            set_reload_context(configure_file, server_cfg.buckets_cfg, server_cfg.user_config_map)
         else:
             print("HTTP sidecar disabled by configuration.")
     except Exception as _sc_exc:
