@@ -140,10 +140,11 @@ def _coerce_rag_url(profile: ConnectionProfile) -> str:
 profile_schema: dict[str, Any] = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
-    "required": ["name", "mode", "zmq"],
+    "required": ["name", "mode"],
     "properties": {
         "name": {"type": "string", "minLength": 1},
-        "mode": {"type": "string", "enum": ["ssh_tunnel", "direct"]},
+        "mode": {"type": "string", "enum": ["ssh_tunnel", "direct", "gateway"]},
+        "gateway_url": {"type": "string", "minLength": 1},
         "zmq": {
             "type": "object",
             "required": ["host"],
@@ -214,6 +215,7 @@ class ConnectionProfile:
     local_forwards: list[dict[str, Any]] = field(default_factory=list)
     command_hint: str | None = None
     path: str | None = None
+    gateway_url: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -248,6 +250,7 @@ class ResolvedConnection:
     command_hint: str | None = None
     allocated_data_port: int | None = None
     sources: dict[str, str] = field(default_factory=dict)
+    gateway_url: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -294,8 +297,12 @@ def _load_profile_content(path: Path) -> dict[str, Any]:
 
 
 def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProfile:
-    zmq_cfg = content["zmq"]
     mode = content["mode"]
+    zmq_cfg = content.get("zmq") or {}
+
+    # Gateway-only mode: ZMQ config is optional.
+    server_host = zmq_cfg.get("host", "127.0.0.1")
+
     tunnel_mode = zmq_cfg.get("tunnel_mode")
     if tunnel_mode is None:
         tunnel_mode = mode == "ssh_tunnel"
@@ -310,7 +317,7 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
     profile = ConnectionProfile(
         name=content["name"],
         mode=mode,
-        server_host=zmq_cfg["host"],
+        server_host=server_host,
         control_port=int(zmq_cfg.get("control_port", 5555)),
         data_port_range=data_port_range or DataPortRange.single(DEFAULT_DATA_PORT),
         tunnel_mode=bool(tunnel_mode),
@@ -321,6 +328,7 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         local_forwards=list(ssh_cfg.get("local_forwards") or []),
         command_hint=ssh_cfg.get("command_hint"),
         path=str(path),
+        gateway_url=content.get("gateway_url"),
     )
     if not profile.minio_url:
         profile.minio_url = _default_service_url(profile.server_host, 9000, profile.tunnel_mode)
@@ -522,6 +530,7 @@ def resolve_connection(
         local_forwards=list(profile.local_forwards) if profile else [],
         command_hint=profile.command_hint if profile else None,
         sources=sources,
+        gateway_url=profile.gateway_url if profile else None,
     )
 
 

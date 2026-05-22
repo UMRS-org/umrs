@@ -375,6 +375,27 @@ class EndpointRegistry:
                 self._persist(endpoint)
             return endpoint
 
+    def extend_ttl(self, job_id: str, new_expires_at: datetime) -> RegisteredEndpoint | None:
+        """Extend endpoint TTL to a new expiration time.
+
+        Only extends (never shortens). Returns the updated endpoint or None
+        if not found. Used by the janitor to align endpoint TTL with the
+        backend job's remaining lifetime.
+        """
+        with self._lock:
+            endpoint = self._by_job_id.get(job_id)
+            if not endpoint:
+                return None
+            if endpoint.expires_at is None or new_expires_at > endpoint.expires_at:
+                endpoint.expires_at = new_expires_at
+                self._persist(endpoint)
+                logger.debug(
+                    "Extended TTL for %s to %s",
+                    job_id,
+                    new_expires_at.isoformat(),
+                )
+            return endpoint
+
     def get(
         self,
         project_id: str,

@@ -1075,6 +1075,208 @@ def _add_slurm_parsers(slurm_sub: argparse._SubParsersAction) -> None:
     acc_p.set_defaults(func=_cmd_slurm_accounts)
 
 
+# ---------------------------------------------------------------------------
+# endpoint subcommand handlers (admin-scoped, reads from running UMRS)
+# ---------------------------------------------------------------------------
+
+def _umrs_base_url(args: argparse.Namespace) -> str:
+    """Resolve the UMRS HTTP base URL."""
+    import os
+
+    return getattr(args, "umrs_url", None) or os.environ.get(
+        "UMRS_BASE_URL", "http://localhost:8000"
+    )
+
+
+def _umrs_api_get(url: str) -> dict:
+    """GET from UMRS API. Returns parsed JSON."""
+    import urllib.request
+    import urllib.error
+
+    req = urllib.request.Request(url, method="GET")
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode() if exc.fp else ""
+        print(f"error: UMRS API returned {exc.code}: {body}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    except urllib.error.URLError as exc:
+        print(
+            f"error: cannot reach UMRS at {url}: {exc.reason}\n"
+            "hint: is the UMRS server running? Set --umrs-url or $UMRS_BASE_URL.",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+
+
+def _umrs_api_delete(url: str) -> dict | None:
+    """DELETE from UMRS API. Returns parsed JSON or None."""
+    import urllib.request
+    import urllib.error
+
+    req = urllib.request.Request(url, method="DELETE")
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode() if exc.fp else ""
+        print(f"error: UMRS API returned {exc.code}: {body}", file=sys.stderr)
+        raise SystemExit(2) from exc
+    except urllib.error.URLError as exc:
+        print(
+            f"error: cannot reach UMRS at {url}: {exc.reason}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2) from exc
+
+
+def _cmd_endpoint_list(args: argparse.Namespace, _store: UserStore) -> int:
+    """List all endpoints across all projects (admin view)."""
+    base = _umrs_base_url(args)
+    data = _umrs_api_get(f"{base}/umrs/endpoints")
+
+    endpoints = data if isinstance(data, list) else data.get("endpoints", [])
+
+    # Apply filters
+    status_filter = getattr(args, "status", None)
+    if status_filter:
+        endpoints = [e for e in endpoints if e.get("status") == status_filter]
+
+    tier_filter = getattr(args, "tier", None)
+    if tier_filter:
+        endpoints = [
+            e for e in endpoints
+            if e.get("tier") == tier_filter or e.get("owner_type") == tier_filter
+        ]
+
+    if getattr(args, "json", False):
+        _print_json(endpoints)
+        return 0
+
+    if not endpoints:
+        print("(no endpoints)")
+        return 0
+
+    # Table output
+    cols = ["JOB_ID", "MODEL", "PROJECT", "STATUS", "TIER", "OWNER", "BACKEND", "HOST:PORT"]
+    widths = {c: len(c) for c in cols}
+    rows = []
+    for ep in endpoints:
+        job_id = str(ep.get("job_id", ""))[-12:]
+        model = str(ep.get("model", ""))[:30]
+        project = str(ep.get("project_id", ""))[:16]
+        ep_status = str(ep.get("status", ""))
+        tier = str(ep.get("tier", ep.get("owner_type", "")))
+        owner = str(ep.get("owner_id", ""))[:16]
+        backend = str(ep.get("backend", ""))
+        host_port = f"{ep.get('host', '?')}:{ep.get('port', '?')}"
+        row = [job_id, model, project, ep_status, tier, owner, backend, host_port]
+        rows.append(row)
+        for i, c in enumerate(cols):
+            widths[c] = max(widths[c], len(row[i]))
+
+    fmt = "  ".join(f"{{:<{widths[c]}}}" for c in cols)
+    print(fmt.format(*cols))
+    print(fmt.format(*(("-" * widths[c]) for c in cols)))
+    for row in rows:
+        print(fmt.format(*row))
+
+    print(f"\nTotal: {len(endpoints)} endpoint(s)")
+    return 0
+
+
+def _cmd_endpoint_stop(args: argparse.Namespace, _store: UserStore) -> int:
+    """Force-stop an endpoint by job_id (admin)."""
+    base = _umrs_base_url(args)
+    job_id = args.job_id
+
+    if not getattr(args, "yes", False):
+        if not _confirm(f"Force-stop endpoint {job_id}?", False):
+            print("aborted", file=sys.stderr)
+            return 1
+
+    result = _umrs_api_delete(f"{base}/umrs/endpoints/{job_id}?force=true")
+    if getattr(args, "json", False):
+        _print_json(result or {"status": "stopped", "job_id": job_id})
+    else:
+        print(f"stopped endpoint {job_id}")
+    return 0
+
+
+def _cmd_endpoint_show(args: argparse.Namespace, _store: UserStore) -> int:
+    """Show detailed info for a single endpoint."""
+    base = _umrs_base_url(args)
+    data = _umrs_api_get(f"{base}/umrs/endpoints/{args.job_id}")
+    _print_json(data)
+    return 0
+
+
+def _cmd_endpoint_stats(args: argparse.Namespace, _store: UserStore) -> int:
+    """Show endpoint registry statistics."""
+    base = _umrs_base_url(args)
+    data = _umrs_api_get(f"{base}/umrs/endpoints/stats")
+    _print_json(data)
+    return 0
+
+
+def _add_endpoint_parsers(endpoint_sub: argparse._SubParsersAction) -> None:
+    list_p = endpoint_sub.add_parser(
+        "list",
+        help="List all endpoints across all users/projects (admin view)",
+        description=(
+            "Query the running UMRS endpoint registry and display all "
+            "active endpoints. Unlike 'r4 endpoint list' which is scoped "
+            "to the current user's project, this shows everything."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  umrs-server admin endpoint list\n"
+            "  umrs-server admin endpoint list --status ready\n"
+            "  umrs-server admin endpoint list --tier system --json"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    list_p.add_argument(
+        "--status", choices=["pending", "provisioning", "starting", "ready",
+                             "degraded", "expired", "failed", "terminated"],
+        help="Filter by endpoint status",
+    )
+    list_p.add_argument(
+        "--tier", choices=["system", "project", "user"],
+        help="Filter by deployment tier",
+    )
+    list_p.add_argument("--json", action="store_true")
+    list_p.set_defaults(func=_cmd_endpoint_list)
+
+    show_p = endpoint_sub.add_parser(
+        "show", help="Show detailed info for an endpoint",
+    )
+    show_p.add_argument("job_id", help="Endpoint job ID")
+    show_p.set_defaults(func=_cmd_endpoint_show)
+
+    stop_p = endpoint_sub.add_parser(
+        "stop",
+        help="Force-stop an endpoint (admin kill)",
+        description=(
+            "Force-stop an endpoint by job_id. This tears down the underlying "
+            "Slurm/K8s/Compose job and removes the endpoint from the registry."
+        ),
+    )
+    stop_p.add_argument("job_id", help="Endpoint job ID to stop")
+    stop_p.add_argument("-y", "--yes", action="store_true", help="Skip confirmation")
+    stop_p.add_argument("--json", action="store_true")
+    stop_p.set_defaults(func=_cmd_endpoint_stop)
+
+    stats_p = endpoint_sub.add_parser(
+        "stats", help="Show endpoint registry statistics",
+    )
+    stats_p.add_argument("--json", action="store_true")
+    stats_p.set_defaults(func=_cmd_endpoint_stats)
+
+
 def _cmd_reload(args: argparse.Namespace, _store: UserStore) -> int:
     """Explicitly send SIGHUP to the daemon to hot-reload user records."""
     pid_file = getattr(args, "pid_file", None) or resolve_pid_file_path()
@@ -1155,6 +1357,34 @@ def build_parser() -> argparse.ArgumentParser:
 
     slurm_p = sub.add_parser("slurm", help="Slurm helpers (read-only)")
     _add_slurm_parsers(slurm_p.add_subparsers(dest="action", required=True))
+
+    endpoint_p = sub.add_parser(
+        "endpoint",
+        help="Inspect and manage live endpoints (admin view, requires running UMRS)",
+        description=(
+            "Admin-scoped endpoint management. Queries the running UMRS "
+            "server to list, inspect, and force-stop endpoints across all "
+            "users and projects. Unlike 'r4 endpoint' which is scoped to "
+            "the current user's project, these commands see everything.\n\n"
+            "Requires a running UMRS server (set --umrs-url or $UMRS_BASE_URL)."
+        ),
+        epilog=(
+            "Examples:\n"
+            "  umrs-server admin endpoint list\n"
+            "  umrs-server admin endpoint list --status ready --json\n"
+            "  umrs-server admin endpoint show <job_id>\n"
+            "  umrs-server admin endpoint stop <job_id> -y\n"
+            "  umrs-server admin endpoint stats"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    endpoint_p.add_argument(
+        "--umrs-url",
+        dest="umrs_url",
+        default=None,
+        help="UMRS server URL (default: $UMRS_BASE_URL or http://localhost:8000)",
+    )
+    _add_endpoint_parsers(endpoint_p.add_subparsers(dest="action", required=True))
 
     config_p = sub.add_parser(
         "config",

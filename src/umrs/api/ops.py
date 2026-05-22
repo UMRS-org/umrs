@@ -2,9 +2,11 @@
 
 Provides operator-facing inspection of the running UMRS instance:
 
-- GET /umrs/ops/health       — Subsystem health summary
-- GET /umrs/ops/topology     — Active runtime topology (jobs, transports, bridges)
-- GET /umrs/ops/timeline     — Job-attempt timeline for recent activity
+- GET  /umrs/ops/health       — Subsystem health summary
+- GET  /umrs/ops/topology     — Active runtime topology (jobs, transports, bridges)
+- GET  /umrs/ops/timeline     — Job-attempt timeline for recent activity
+- GET  /umrs/ops/ping         — Lightweight liveness check (no admin required)
+- POST /umrs/ops/reload       — Trigger configuration reload (admin-only)
 """
 
 from __future__ import annotations
@@ -360,4 +362,116 @@ def ops_timeline(
         "events": events,
         "total": len(events),
         "window_minutes": window_minutes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Lightweight ping (no admin required) — used by umrs-client over HTTP
+# ---------------------------------------------------------------------------
+
+class OpsPingResponse(BaseModel):
+    status: str
+    server_ready: bool
+    uptime_seconds: float = 0.0
+
+
+@router.get(
+    "/ping",
+    response_model=OpsPingResponse,
+    summary="Lightweight readiness check",
+)
+def ops_ping() -> dict[str, Any]:
+    """Return server readiness without requiring admin privileges.
+
+    Intended for ``umrs-client ping --gateway-url`` to verify connectivity
+    via the HTTP Gateway when ZMQ is not directly reachable.
+
+    NOTE: This endpoint is unauthenticated — do not expose internal state
+    beyond a boolean readiness flag.
+    """
+    return {
+        "status": "ok",
+        "server_ready": True,
+        "uptime_seconds": 0.0,  # omitted from unauthenticated response
+    }
+
+
+# ---------------------------------------------------------------------------
+# Configuration reload via HTTP (admin-only)
+# ---------------------------------------------------------------------------
+
+class OpsReloadRequest(BaseModel):
+    """Optional request body for reload.  Currently empty — the server
+    re-reads its own ``configure_file`` from disk."""
+    pass
+
+
+class OpsReloadResponse(BaseModel):
+    status: str
+    summary: str = ""
+    error: str | None = None
+
+
+# Module-level references set during startup so reload can access server state.
+_reload_configure_file: str | None = None
+_reload_buckets_cfg: Any = None
+_reload_user_config_map: Any = None
+
+
+def set_reload_context(
+    configure_file: str,
+    buckets_cfg: Any,
+    user_config_map: Any,
+) -> None:
+    """Provide server state references needed by the HTTP reload endpoint.
+
+    Called once during UMRS server startup, after the ZMQ main loop state
+    is initialised.
+    """
+    global _reload_configure_file, _reload_buckets_cfg, _reload_user_config_map
+    _reload_configure_file = configure_file
+    _reload_buckets_cfg = buckets_cfg
+    _reload_user_config_map = user_config_map
+
+
+@router.post(
+    "/reload",
+    response_model=OpsReloadResponse,
+    summary="Trigger configuration reload",
+)
+def ops_reload(
+    _admin: None = Depends(require_ops_admin),
+) -> dict[str, Any]:
+    """Re-read the server configuration from disk and re-provision users.
+
+    This is the HTTP equivalent of the ZMQ ``RELOAD`` command.  The server
+    re-reads ``configure_file``, creates any missing MinIO/Postgres
+    resources, and updates the live ``buckets_cfg``.
+
+    Requires admin privileges.
+    """
+    if _reload_configure_file is None or _reload_buckets_cfg is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Reload context not initialised — server may still be starting",
+        )
+
+    from umrs.server.maintenance import reload_configuration
+
+    outcome = reload_configuration(
+        _reload_configure_file,
+        _reload_buckets_cfg,
+        _reload_user_config_map,
+        log_output=True,
+    )
+
+    if "error" in outcome:
+        return {
+            "status": "error",
+            "summary": outcome.get("summary", ""),
+            "error": outcome["error"],
+        }
+    return {
+        "status": "ok",
+        "summary": outcome.get("summary", "Reload complete"),
     }

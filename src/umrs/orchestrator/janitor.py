@@ -47,6 +47,15 @@ class JanitorConfig:
     enable_stuck_cleanup: bool = True
     enable_liveness_cleanup: bool = True
 
+    # Auto-extend TTL for endpoints whose backend jobs are still alive.
+    # When enabled, each janitor cycle checks READY endpoints near expiry
+    # and extends their expires_at by ttl_auto_extend_sec if the backend
+    # (Slurm/K8s/Compose) job is still running. This prevents the registry
+    # from killing endpoints whose Slurm allocation is still valid.
+    enable_ttl_auto_extend: bool = True
+    ttl_auto_extend_sec: int = 600  # extend by 10 minutes each cycle
+    ttl_auto_extend_threshold_sec: int = 120  # extend when <2 min remain
+
     @classmethod
     def from_env(cls) -> JanitorConfig:
         """Create config from environment variables."""
@@ -61,6 +70,9 @@ class JanitorConfig:
             enable_orphan_cleanup=os.getenv("JANITOR_ENABLE_ORPHAN", "true").lower() == "true",
             enable_stuck_cleanup=os.getenv("JANITOR_ENABLE_STUCK", "true").lower() == "true",
             enable_liveness_cleanup=os.getenv("JANITOR_ENABLE_LIVENESS", "true").lower() == "true",
+            enable_ttl_auto_extend=os.getenv("JANITOR_ENABLE_TTL_AUTO_EXTEND", "true").lower() == "true",
+            ttl_auto_extend_sec=int(os.getenv("JANITOR_TTL_AUTO_EXTEND_SEC", "600")),
+            ttl_auto_extend_threshold_sec=int(os.getenv("JANITOR_TTL_AUTO_EXTEND_THRESHOLD_SEC", "120")),
         )
 
 
@@ -69,6 +81,7 @@ class CleanupResult:
     """Result of a cleanup run."""
 
     ttl_expired: int = 0
+    ttl_extended: int = 0
     stuck_cleaned: int = 0
     orphans_cleaned: int = 0
     ghosts_pruned: int = 0
@@ -87,6 +100,7 @@ class CleanupResult:
         """Convert to dictionary."""
         return {
             "ttl_expired": self.ttl_expired,
+            "ttl_extended": self.ttl_extended,
             "stuck_cleaned": self.stuck_cleaned,
             "orphans_cleaned": self.orphans_cleaned,
             "ghosts_pruned": self.ghosts_pruned,
@@ -182,6 +196,12 @@ class Janitor:
             liveness_result = await self._cleanup_ghost_ready()
             result.ghosts_pruned = liveness_result
 
+        # Auto-extend TTL before checking expiry — ensures we don't kill
+        # endpoints whose backend Slurm/K8s jobs are still alive.
+        if self.config.enable_ttl_auto_extend:
+            extend_result = await self._auto_extend_ttl()
+            result.ttl_extended = extend_result
+
         if self.config.enable_ttl_cleanup:
             ttl_result = await self._cleanup_ttl_expired()
             result.ttl_expired = ttl_result
@@ -255,6 +275,65 @@ class Janitor:
 
         return pruned
 
+    async def _auto_extend_ttl(self) -> int:
+        """Extend TTL for READY endpoints whose backend jobs are still alive.
+
+        When an endpoint's TTL is about to expire but the backend
+        Slurm/K8s/Compose job is still running, the registry TTL should
+        not kill it prematurely.  This task checks each near-expiry endpoint
+        against the backend and extends ``expires_at`` when the job is alive.
+        """
+        from .base import JobStatus
+
+        extended = 0
+        now = datetime.utcnow()
+        threshold = timedelta(seconds=self.config.ttl_auto_extend_threshold_sec)
+
+        endpoints = self.registry.list_all(
+            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+        )
+        for endpoint in endpoints:
+            if not endpoint.expires_at:
+                continue
+
+            remaining = endpoint.expires_at - now
+            if remaining > threshold:
+                continue  # Not near expiry yet
+
+            # Near expiry — check backend liveness
+            try:
+                info = await self.backend.get_job_status(endpoint.job_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "TTL auto-extend check for %s skipped (backend error): %s",
+                    endpoint.job_id,
+                    exc,
+                )
+                continue  # Inconclusive — don't extend, but don't kill either
+
+            status_value = getattr(info, "status", None)
+            if status_value not in (
+                JobStatus.PENDING,
+                JobStatus.STARTING,
+                JobStatus.READY,
+                JobStatus.RUNNING,
+            ):
+                continue  # Job is terminal — let TTL cleanup handle it
+
+            # Backend job is alive — extend TTL
+            new_expires = now + timedelta(seconds=self.config.ttl_auto_extend_sec)
+            self.registry.extend_ttl(endpoint.job_id, new_expires)
+            extended += 1
+            logger.info(
+                "Auto-extended TTL for %s/%s (job_id=%s) by %ds",
+                endpoint.project_id,
+                endpoint.model,
+                endpoint.job_id,
+                self.config.ttl_auto_extend_sec,
+            )
+
+        return extended
+
     async def _cleanup_ttl_expired(self) -> int:
         """
         Clean up endpoints that have exceeded their TTL.
@@ -267,12 +346,13 @@ class Janitor:
 
         endpoints = self.registry.list_all()
         for endpoint in endpoints:
-            if endpoint.status not in (EndpointStatus.READY, EndpointStatus.WARM):
+            if endpoint.status not in (EndpointStatus.READY, EndpointStatus.DEGRADED):
                 continue
 
             # Check if TTL has expired (with grace period)
-            expiry = endpoint.created_at + timedelta(seconds=endpoint.ttl_sec) + grace
-            if now > expiry:
+            if not endpoint.expires_at:
+                continue
+            if now > endpoint.expires_at + grace:
                 logger.info(f"TTL expired for endpoint {endpoint.job_id}, cleaning up")
                 success = await self._cleanup_endpoint(endpoint.job_id)
                 if success:
