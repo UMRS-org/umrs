@@ -1076,6 +1076,141 @@ def _add_slurm_parsers(slurm_sub: argparse._SubParsersAction) -> None:
 
 
 # ---------------------------------------------------------------------------
+# zmq subcommand handlers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CLIENT_KEYS_DIR = "~/.config/umrs/curve-keys/clients"
+_DEFAULT_SERVER_KEYS_DIR = "~/.config/umrs/curve-keys/server"
+
+
+def _cmd_zmq_keygen(args: argparse.Namespace, _store: UserStore) -> int:
+    """Generate a CURVE keypair for a user (client) or the server."""
+    from pathlib import Path
+
+    from umrs.core.zmq_security import generate_curve_keypair
+
+    name = args.name
+    is_server = args.server
+    out_dir = args.output_dir
+
+    if out_dir:
+        keys_dir = out_dir
+    elif is_server:
+        keys_dir = str(Path(_DEFAULT_SERVER_KEYS_DIR).expanduser())
+    else:
+        keys_dir = str(Path(_DEFAULT_CLIENT_KEYS_DIR).expanduser())
+
+    pub_path, sec_path = generate_curve_keypair(keys_dir, name)
+
+    if args.json:
+        _print_json({
+            "name": name,
+            "type": "server" if is_server else "client",
+            "public_key_file": pub_path,
+            "secret_key_file": sec_path,
+        })
+    else:
+        kind = "server" if is_server else "client"
+        print(f"Generated CURVE {kind} keypair for '{name}':")
+        print(f"  Public key:  {pub_path}")
+        print(f"  Secret key:  {sec_path}")
+        if not is_server:
+            print()
+            print("Next steps:")
+            print(f"  1. Copy {name}.key to the server's UMRS_ZMQ_CURVE_CLIENT_KEYS_DIR")
+            print(f"  2. Give {sec_path} to the user (keep secret!)")
+            print(f"  3. The user sets UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY and")
+            print(f"     UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY from {sec_path}")
+        else:
+            print()
+            print("Next steps:")
+            print(f"  1. Set UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY from {pub_path}")
+            print(f"  2. Set UMRS_ZMQ_CURVE_SERVER_SECRET_KEY from {sec_path}")
+            print(f"  3. Distribute the public key to all clients")
+    return 0
+
+
+def _cmd_zmq_list_keys(args: argparse.Namespace, _store: UserStore) -> int:
+    """List CURVE client keys in the keys directory."""
+    from pathlib import Path
+
+    keys_dir = args.keys_dir or str(Path(_DEFAULT_CLIENT_KEYS_DIR).expanduser())
+    keys_path = Path(keys_dir)
+
+    if not keys_path.is_dir():
+        print(f"Keys directory does not exist: {keys_dir}", file=sys.stderr)
+        return 1
+
+    rows = []
+    for key_file in sorted(keys_path.glob("*.key")):
+        if key_file.name.endswith(".key_secret"):
+            continue
+        username = key_file.stem
+        try:
+            from umrs.core.zmq_security import load_public_key_z85
+
+            z85 = load_public_key_z85(str(key_file))
+        except Exception as exc:
+            z85 = f"<error: {exc}>"
+        has_secret = key_file.with_name(f"{username}.key_secret").exists()
+        rows.append({
+            "username": username,
+            "public_key": z85,
+            "has_secret": has_secret,
+            "file": str(key_file),
+        })
+
+    if args.json:
+        _print_json(rows)
+    elif not rows:
+        print(f"No client keys found in {keys_dir}")
+    else:
+        for row in rows:
+            secret_marker = " (+ secret)" if row["has_secret"] else ""
+            print(f"  {row['username']:20s}  {row['public_key'][:16]}…{secret_marker}")
+        print(f"\n{len(rows)} key(s) in {keys_dir}")
+    return 0
+
+
+def _add_zmq_parsers(zmq_sub: argparse._SubParsersAction) -> None:
+    keygen_p = zmq_sub.add_parser(
+        "keygen",
+        help="Generate a CURVE keypair for a user or the server",
+        description=(
+            "Generate a ZMTP CURVE keypair. For client keys, the public key "
+            "file (<name>.key) should be placed in UMRS_ZMQ_CURVE_CLIENT_KEYS_DIR "
+            "on the server. The secret key file (<name>.key_secret) is given to "
+            "the user.\n\n"
+            "For server keys, set UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY and "
+            "UMRS_ZMQ_CURVE_SERVER_SECRET_KEY from the generated files."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    keygen_p.add_argument("name", help="Key name (typically the UMRS username, or 'server')")
+    keygen_p.add_argument(
+        "--server", action="store_true",
+        help="Generate a server keypair instead of a client keypair",
+    )
+    keygen_p.add_argument(
+        "-o", "--output-dir", dest="output_dir", default=None,
+        help="Output directory (default: ~/.config/umrs/curve-keys/{clients,server})",
+    )
+    keygen_p.add_argument("--json", action="store_true")
+    keygen_p.set_defaults(func=_cmd_zmq_keygen)
+
+    list_p = zmq_sub.add_parser(
+        "list-keys",
+        help="List registered CURVE client public keys",
+    )
+    list_p.add_argument(
+        "--keys-dir", dest="keys_dir", default=None,
+        help="Client keys directory (default: ~/.config/umrs/curve-keys/clients)",
+    )
+    list_p.add_argument("--json", action="store_true")
+    list_p.set_defaults(func=_cmd_zmq_list_keys)
+
+
+# ---------------------------------------------------------------------------
 # endpoint subcommand handlers (admin-scoped, reads from running UMRS)
 # ---------------------------------------------------------------------------
 
@@ -1357,6 +1492,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     slurm_p = sub.add_parser("slurm", help="Slurm helpers (read-only)")
     _add_slurm_parsers(slurm_p.add_subparsers(dest="action", required=True))
+
+    zmq_p = sub.add_parser(
+        "zmq",
+        help="ZMQ CURVE key management",
+        description=(
+            "Generate and manage ZMTP CURVE keypairs for authenticated ZMQ "
+            "transport. Use 'keygen' to create server or client keypairs, "
+            "and 'list-keys' to inspect the client keys directory."
+        ),
+    )
+    _add_zmq_parsers(zmq_p.add_subparsers(dest="action", required=True))
 
     endpoint_p = sub.add_parser(
         "endpoint",

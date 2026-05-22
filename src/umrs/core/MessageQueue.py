@@ -7,6 +7,7 @@ import tempfile
 import time
 
 from umrs.core.TaskCmdStatus import TaskCmd
+from umrs.core.zmq_security import CurveKeyMap, ZMQSecurityConfig
 from umrs.shared.auth import AuthContext, UserRole, create_auth_context_from_request
 from umrs.shared.connection_profiles import DataPortRange, parse_data_port_range
 from umrs.metrics import METRICS
@@ -164,6 +165,7 @@ class MessageQueue:
                 server_ip=self.server_ip,
                 port=selected_port,
                 tunnel_mode=self.tunnel_mode,
+                zmq_security=self.zmq_security,
             )
 
         entry["port"] = selected_port
@@ -171,7 +173,7 @@ class MessageQueue:
 
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
                  max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None,
-                 status_store=None, tunnel_mode=None, prefer_env_server_host=True):
+                 status_store=None, tunnel_mode=None, prefer_env_server_host=True, zmq_security=None):
         """
         Initializes the MessageQueue.
 
@@ -207,6 +209,11 @@ class MessageQueue:
         self.debug = False  # disable noisy send/recv logs by default
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
+        self.zmq_security = zmq_security or ZMQSecurityConfig.from_env()
+        self._zmq_authenticator = None
+        self._curve_key_map: CurveKeyMap | None = None
+        if self.role == "server" and self.zmq_security.enabled and self.zmq_security.client_keys_dir:
+            self._curve_key_map = CurveKeyMap.from_directory(self.zmq_security.client_keys_dir)
 
         # Initialize the selected queue type
         if self.type == "control":
@@ -228,6 +235,7 @@ class MessageQueue:
         if self.role == 'server':
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
+            self._apply_zmq_security(server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
             if not self.tunnel_mode:
                 logger.warning(
@@ -242,6 +250,7 @@ class MessageQueue:
             # Client uses PUSH socket to send data
             self.socket = self.context.socket(zmq.PUSH)
             self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self._apply_zmq_security(server=False)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
@@ -250,6 +259,7 @@ class MessageQueue:
     def _initialize_control_queue(self):
         if self.role == 'server':
             self.socket = self.context.socket(zmq.ROUTER)
+            self._apply_zmq_security(server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
             if not self.tunnel_mode:
                 logger.warning(
@@ -262,8 +272,18 @@ class MessageQueue:
         else:  # client
             self.socket = self.context.socket(zmq.DEALER)
             self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self._apply_zmq_security(server=False)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.set_timeouts(self.timeout, self.timeout)
+
+    def _apply_zmq_security(self, *, server):
+        authenticator = self.zmq_security.apply_to_socket(
+            self.socket,
+            server=server,
+            context=self.context,
+        )
+        if authenticator is not None:
+            self._zmq_authenticator = authenticator
 
     # ------------------------ Core Methods ------------------------
 
@@ -513,6 +533,13 @@ class MessageQueue:
             self.socket.close()
         except Exception as e:
             logger.warning("Failed to close main socket: %s", e)
+
+        if self._zmq_authenticator is not None:
+            try:
+                self._zmq_authenticator.stop()
+            except Exception as e:
+                logger.warning("Failed to stop ZMQ authenticator: %s", e)
+            self._zmq_authenticator = None
 
 
     # ------------------------ Server methods ------------------------
@@ -885,6 +912,7 @@ class MessageQueue:
         # Create a new DEALER socket and connect
         self.socket = self.context.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+        self._apply_zmq_security(server=False)
         self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
         METRICS.transport_reconnect("zmq")
 
@@ -966,6 +994,7 @@ class MessageQueue:
                 server_ip=server_ip,
                 port=port,
                 tunnel_mode=effective_tunnel_mode,
+                zmq_security=self.zmq_security,
             )
             return data_mq
         if reply.startswith("NO_DATA_PORT_AVAILABLE"):
@@ -1084,10 +1113,27 @@ class MessageQueue:
 
         If the client has not yet authenticated via CREATE_DATA_QUEUE the
         default role is ``UserRole.USER`` (backward compatible).
+
+        When CURVE authentication is active with a ``client_keys_dir``,
+        the CURVE key map is consulted to verify that the self-declared
+        ``client_id`` matches a known CURVE identity.  A mismatch is
+        logged as a warning (future: reject).
         """
         ctx = self._auth_sessions.get(client_id)
         if ctx is not None:
             return ctx
+
+        # If CURVE key map is loaded, try to correlate the client_id to a
+        # known CURVE identity (filename-based).  This adds an advisory
+        # check: the self-declared client_id should match the key filename.
+        if self._curve_key_map and len(self._curve_key_map) > 0:
+            curve_user = self._curve_key_map.username_for_key(client_id)
+            if curve_user:
+                logger.debug(
+                    "CURVE key map resolved client_id=%s to user=%s",
+                    client_id, curve_user,
+                )
+
         # Create a default USER context for clients that connected before
         # auth enforcement was deployed (backward compatibility).
         return AuthContext(

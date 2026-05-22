@@ -26,6 +26,7 @@ import sys
 import traceback
 from typing import Any
 
+from umrs.core.zmq_security import ZMQSecurityConfig
 from umrs.pipeline_sdk.step import StepContext
 
 # Logging to stderr keeps stdout clean for the pickle reply.
@@ -322,6 +323,11 @@ def zmq_pool_main(bind_address: str) -> int:
 
     zmq_ctx = zmq.Context()
     sock = zmq_ctx.socket(zmq.REP)
+    authenticator = ZMQSecurityConfig.from_env().apply_to_socket(
+        sock,
+        server=True,
+        context=zmq_ctx,
+    )
     sock.bind(bind_address)
     logger.info("zmq_pool_main listening on %s", bind_address)
 
@@ -379,6 +385,8 @@ def zmq_pool_main(bind_address: str) -> int:
             sock.send(pickle.dumps(reply))
     finally:
         sock.close(linger=0)
+        if authenticator is not None:
+            authenticator.stop()
         zmq_ctx.term()
 
     return 0
@@ -403,6 +411,11 @@ def zmq_dealer_main(connect_address: str) -> int:
     sock = zmq_ctx.socket(zmq.DEALER)
     if worker_id:
         sock.setsockopt_string(zmq.IDENTITY, worker_id)
+    ZMQSecurityConfig.from_env().apply_to_socket(
+        sock,
+        server=False,
+        context=zmq_ctx,
+    )
     sock.connect(connect_address)
     logger.info(
         "zmq_dealer_main connected to %s (identity=%s)",
