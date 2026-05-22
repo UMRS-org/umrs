@@ -389,10 +389,14 @@ if [[ -n "${_site_model_root:-}" && -d "$_site_model_root" ]]; then
 fi
 export MODEL_ALLOWED_PATHS="${MODEL_ALLOWED_PATHS:-${DEFAULT_MODEL_ALLOWED_PATHS}}"
 
-# ─── Phase 2l invariant: bind ZMQ on 127.0.0.1 only ─────────────────────────
-# RCCS-cloud exposes ZMQ to clients via SSH tunnels (Tier B); binding on
-# 0.0.0.0 would let any login-node user hit the data plane. Keep tunnel mode
-# on by default but allow operators to override via env when debugging.
+# ─── Tunnel mode: connectivity layer for HPC ─────────────────────────────────
+# UMRS_TUNNEL_MODE controls *connectivity*, not authentication.
+# On RCCS, ZMQ ports are firewall-blocked; SSH port-forwarding is the only
+# network path a client can use to reach the ZMQ plane.  Binding on 127.0.0.1
+# ensures no process on the login node can reach ZMQ without going through the
+# SSH tunnel.  In direct-connect deployments (k8s, cloud VPC) where ZMQ ports
+# are routable, set UMRS_TUNNEL_MODE=false and enable UMRS_ZMQ_AUTH_TYPE=curve
+# for cryptographic authentication instead.
 export UMRS_TUNNEL_MODE="${UMRS_TUNNEL_MODE:-true}"
 
 DEFAULT_RIVAULT_SLURM_SCRIPT="${SCRIPT_DIR}/serve-model.slurm"

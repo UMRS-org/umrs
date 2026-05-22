@@ -53,6 +53,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from umrs.core.zmq_security import ZMQSecurityConfig
 from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
 logger = logging.getLogger(__name__)
@@ -1491,6 +1492,11 @@ class _RemoteWorker:
         timeout_ms = int(self._timeout * 1000) if self._timeout else -1
         sock.setsockopt(self._zmq.SNDTIMEO, timeout_ms)
         sock.setsockopt(self._zmq.RCVTIMEO, timeout_ms)
+        ZMQSecurityConfig.from_env().apply_to_socket(
+            sock,
+            server=False,
+            context=self._zmq_ctx,
+        )
         sock.connect(self.address)
         return sock
 
@@ -1898,6 +1904,7 @@ class RouterPoolExecutor:
     _shutdown_event: threading.Event = field(
         default_factory=threading.Event, init=False, repr=False
     )
+    _zmq_authenticator: Any = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         import zmq  # type: ignore
@@ -1905,6 +1912,11 @@ class RouterPoolExecutor:
         self._zmq = zmq
         self._zmq_ctx = zmq.Context()
         self._sock = self._zmq_ctx.socket(zmq.ROUTER)
+        self._zmq_authenticator = ZMQSecurityConfig.from_env().apply_to_socket(
+            self._sock,
+            server=True,
+            context=self._zmq_ctx,
+        )
         self._sock.bind(self.bind_address)
         logger.info("RouterPoolExecutor listening on %s", self.bind_address)
         # Background thread to receive replies.
@@ -2033,6 +2045,12 @@ class RouterPoolExecutor:
                 self._sock.close(linger=0)
             except Exception:  # noqa: BLE001
                 pass
+        if self._zmq_authenticator is not None:
+            try:
+                self._zmq_authenticator.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._zmq_authenticator = None
         if self._zmq_ctx is not None:
             try:
                 self._zmq_ctx.term()
