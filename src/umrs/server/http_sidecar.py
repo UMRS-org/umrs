@@ -163,6 +163,31 @@ def _create_app():
         except Exception:
             logger.warning("MCP store unavailable in HTTP sidecar — /umrs/mcp/* will return 503")
 
+        try:
+            from umrs.api.audit_events import set_audit_store
+            from umrs.api.audit_store import AuditStore, ensure_audit_schema
+
+            audit_conn = db_pool.getconn()
+            ensure_audit_schema(audit_conn)
+            audit_conn.commit()
+            app.state.umrs_audit_store_conn = audit_conn
+            set_audit_store(AuditStore(audit_conn))
+            logger.info("Audit store initialized for HTTP sidecar")
+        except Exception:
+            logger.warning("Audit store unavailable — using in-memory buffer only")
+
+        try:
+            from umrs.api.governance import GovernanceStore, ensure_governance_schema
+
+            gov_conn = db_pool.getconn()
+            ensure_governance_schema(gov_conn)
+            gov_conn.commit()
+            app.state.umrs_governance_store_conn = gov_conn
+            app.state.umrs_governance_store = GovernanceStore(gov_conn)
+            logger.info("Governance store initialized for HTTP sidecar")
+        except Exception:
+            logger.warning("Governance store unavailable — quota enforcement disabled")
+
     @app.get("/health")
     async def health():
         """Liveness probe — returns ok if the process is alive.
