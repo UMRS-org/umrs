@@ -1275,13 +1275,22 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
         raise HTTPException(status_code=500, detail="Embeddings backend not initialized")
 
     # Map Gateway request to internal format
+    # Resolve xp_name: use project_id if it matches a known experience,
+    # otherwise leave it as None to use the first embedding-enabled entry.
+    resolved_xp = None
+    if DB_MODEL_STORE:
+        for _p, entry in DB_MODEL_STORE.items():
+            if entry.get("xp_name") == payload.project_id:
+                resolved_xp = payload.project_id
+                break
+
     internal_request = RAGQARequest(
         query=payload.query,
         top_k=payload.top_k,
         user=None,  # Could extract from project_id mapping
         modality="text",
         bucket_alias=None,
-        xp_name=payload.project_id,  # Use project_id as experience name
+        xp_name=resolved_xp,
         max_context_chunks=payload.top_k,
         enable_query_rewrite=True,
     )
@@ -1317,34 +1326,155 @@ async def rag_upload(
 ) -> GatewayUploadResponse:
     """Upload a document for RAG indexing.
 
-    The document is processed, chunked, and indexed into pgvector.
+    The document is processed, chunked, embedded, and indexed into pgvector.
     """
     import hashlib
     import uuid
+    from datetime import datetime
 
-    # This is a placeholder implementation
-    # Full implementation would:
-    # 1. Save file to S3/MinIO via UMRS
-    # 2. Extract text using appropriate parser (PDF, DOCX, etc.)
-    # 3. Chunk the text
-    # 4. Generate embeddings
-    # 5. Store in pgvector
+    from psycopg2 import sql as psql
+
+    from umrs.shared.utils import _chunk_text_without_nlp, compute_md5
 
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename required")
+    if EMBEDDINGS is None:
+        raise HTTPException(status_code=500, detail="Embeddings not initialized")
+    if not DB_MODEL_STORE:
+        raise HTTPException(status_code=500, detail="RAG store not configured")
+
+    # Read file content
+    raw_content = await file.read()
+    try:
+        text = raw_content.decode("utf-8")
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="Only UTF-8 text files are supported for now.",
+        )
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    # Resolve target table from DB_MODEL_STORE using project_id as xp_name
+    entry = None
+    for _path, e in DB_MODEL_STORE.items():
+        if e.get("xp_name") == project_id and e.get("store_embeddings_flag", False):
+            entry = e
+            break
+    # Fallback: match any entry with embeddings enabled
+    if entry is None:
+        for _path, e in DB_MODEL_STORE.items():
+            if e.get("store_embeddings_flag", False):
+                entry = e
+                break
+    if entry is None:
+        raise HTTPException(
+            status_code=500,
+            detail="No embedding-enabled table found in configuration.",
+        )
+
+    data_base = entry["data_base"]
+    table_name = entry["table_name"]
+    bucket_alias = entry.get("bucket_alias", "uploads")
 
     # Generate document ID
-    content = await file.read()
-    content_hash = hashlib.sha256(content).hexdigest()[:12]
+    content_hash = hashlib.sha256(raw_content).hexdigest()[:12]
     document_id = f"doc-{content_hash}-{uuid.uuid4().hex[:8]}"
 
-    # Placeholder: In production, this would process and index the document
-    # For now, we just acknowledge the upload
+    # Chunk the text (simple token-based chunking without spaCy dependency)
+    try:
+        tokenizer = EMBEDDINGS.client.tokenizer
+    except AttributeError:
+        tokenizer = None
+    max_tokens = int(os.getenv("UMRS_RAG_CHUNK_MAX_TOKENS", "256"))
+    chunks = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=max_tokens)
+
+    if not chunks:
+        raise HTTPException(status_code=400, detail="No chunks produced from document")
+
+    # Compute embeddings for all chunks
+    chunk_texts = [c["text"] for c in chunks]
+    from umrs.shared.utils import add_document_prefix
+
+    model_name = getattr(EMBEDDINGS, "model_name", None)
+    prefixed_texts = add_document_prefix(chunk_texts, model_name)
+    embeddings = EMBEDDINGS.embed_documents(prefixed_texts)
+
+    # Insert into pgvector
+    s3_base = f"{bucket_alias}/{file.filename}"
+    date_str = datetime.today().strftime("%Y-%m-%d")
+    time_str = datetime.now().strftime("%H:%M:%S")
+    file_checksum = hashlib.md5(raw_content).hexdigest()
+
+    db_pool = data_base.db_pool
+    conn = db_pool.getconn()
+    try:
+        cur = conn.cursor()
+        has_content = data_base.has_column(table_name, "_content")
+        has_embedding = data_base.has_column(table_name, "embedding")
+
+        for i, (chunk, emb) in enumerate(zip(chunks, embeddings)):
+            s3_object = f"{s3_base}#chunk{i}"
+            chunk_text = chunk["text"]
+            chunk_start = chunk["start"]
+            chunk_end = chunk["end"]
+            chunk_md5 = chunk.get("md5") or compute_md5(chunk_text)
+
+            if has_embedding and has_content:
+                insert_sql = psql.SQL(
+                    """
+                    INSERT INTO {table} (
+                        s3_object, embedding, date, time, checksum, model,
+                        _content, chunk_start, chunk_end, chunk_md5
+                    ) VALUES (%s, %s::vector, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (s3_object, chunk_start) DO UPDATE SET
+                        embedding = EXCLUDED.embedding,
+                        _content = EXCLUDED._content,
+                        chunk_end = EXCLUDED.chunk_end,
+                        chunk_md5 = EXCLUDED.chunk_md5,
+                        date = EXCLUDED.date,
+                        time = EXCLUDED.time
+                    """
+                ).format(table=psql.Identifier(table_name))
+                cur.execute(
+                    insert_sql,
+                    (
+                        s3_object, emb, date_str, time_str,
+                        file_checksum, model_name or "unknown",
+                        chunk_text, chunk_start, chunk_end, chunk_md5,
+                    ),
+                )
+            elif has_embedding:
+                insert_sql = psql.SQL(
+                    """
+                    INSERT INTO {table} (
+                        s3_object, embedding, date, time, checksum, model
+                    ) VALUES (%s, %s::vector, %s, %s, %s, %s)
+                    ON CONFLICT (s3_object) DO UPDATE SET
+                        embedding = EXCLUDED.embedding,
+                        date = EXCLUDED.date,
+                        time = EXCLUDED.time
+                    """
+                ).format(table=psql.Identifier(table_name))
+                cur.execute(
+                    insert_sql,
+                    (s3_object, emb, date_str, time_str, file_checksum, model_name or "unknown"),
+                )
+
+        conn.commit()
+        cur.close()
+    except Exception as exc:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Database insertion failed: {exc}")
+    finally:
+        db_pool.putconn(conn)
+
     return GatewayUploadResponse(
         document_id=document_id,
-        filename=file.filename,
-        status="pending",  # Would be "indexed" after processing
-        chunks=0,  # Would be actual chunk count after processing
+        filename=file.filename or "",
+        status="indexed",
+        chunks=len(chunks),
     )
 
 
@@ -1362,6 +1492,72 @@ def rag_list_documents(
 
     # Return empty list for now - documents would be populated after upload
     return []
+
+
+@app.get("/rag/stats")
+def rag_stats(
+    project_id: str = Query(None, description="Filter stats by project (optional)"),
+) -> dict:
+    """Return RAG corpus statistics.
+
+    Provides document count, chunk count, embedding dimensions, and index health.
+    """
+    import psycopg2
+
+    db_url = os.getenv("UMRS_RAG_DATABASE_URL", os.getenv("DATABASE_URL", ""))
+    stats: dict = {
+        "status": "ok",
+        "embedding_model": os.getenv("UMRS_RAG_EMBEDDING_MODEL", "intfloat/e5-base-v2"),
+        "embedding_dimensions": int(os.getenv("UMRS_RAG_EMBEDDING_DIM", "768")),
+    }
+
+    if not db_url:
+        stats["status"] = "no_database"
+        stats["documents"] = 0
+        stats["chunks"] = 0
+        return stats
+
+    try:
+        conn = psycopg2.connect(db_url)
+        cur = conn.cursor()
+
+        # Total chunks
+        if project_id:
+            cur.execute(
+                "SELECT COUNT(*) FROM rag_chunks WHERE metadata->>'project_id' = %s",
+                (project_id,),
+            )
+        else:
+            cur.execute("SELECT COUNT(*) FROM rag_chunks")
+        stats["chunks"] = cur.fetchone()[0]
+
+        # Distinct documents
+        if project_id:
+            cur.execute(
+                "SELECT COUNT(DISTINCT metadata->>'document_id') FROM rag_chunks WHERE metadata->>'project_id' = %s",
+                (project_id,),
+            )
+        else:
+            cur.execute("SELECT COUNT(DISTINCT metadata->>'document_id') FROM rag_chunks")
+        stats["documents"] = cur.fetchone()[0]
+
+        # Distinct projects
+        cur.execute("SELECT COUNT(DISTINCT metadata->>'project_id') FROM rag_chunks")
+        stats["projects"] = cur.fetchone()[0]
+
+        # Average chunks per document
+        if stats["documents"] > 0:
+            stats["avg_chunks_per_doc"] = round(stats["chunks"] / stats["documents"], 1)
+        else:
+            stats["avg_chunks_per_doc"] = 0
+
+        cur.close()
+        conn.close()
+    except Exception as e:
+        stats["status"] = "error"
+        stats["error"] = str(e)
+
+    return stats
 
 
 @app.delete("/rag/documents/{document_id}")

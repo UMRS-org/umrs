@@ -266,6 +266,7 @@ export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}"
 export UMRS_ADMIN_TOKEN="${UMRS_ADMIN_TOKEN:-}"
 export UMRS_TUNNEL_MODE=true
 export S3_PRESIGN_ENDPOINT="http://127.0.0.1:${MINIO_PORT:-9000}"
+export UMRS_RAG_DIRECT_URL="http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
 
 nohup python "${REPO_ROOT}/src/server_umrs.py" \
     -c "${CONF_FILE}" \
@@ -310,6 +311,55 @@ AI4S_PID=$!
 echo "$AI4S_PID" > "${SCRIPT_DIR}/server-ai4s.pid"
 echo "  PID: $AI4S_PID"
 
+# ─── Start RAG Service (standalone) ─────────────────────────────────────────
+RAG_ENABLED=false
+if [[ "${UMRS_RAG_ENABLE:-true}" == "true" || "${UMRS_RAG_ENABLE:-true}" == "1" ]]; then
+    RAG_ENABLED=true
+fi
+
+if [[ "$RAG_ENABLED" == "true" ]]; then
+    echo ""
+    echo "Starting RAG service (standalone)..."
+    echo "  Port: ${UMRS_RAG_PORT:-8081}"
+
+    # Kill stale RAG process if any
+    RAG_BLOCKING_PID=$(ss -tlnp "sport = :${UMRS_RAG_PORT:-8081}" 2>/dev/null \
+        | awk -F'pid=' '/pid=/{print $2}' | awk -F',' '{print $1}' | head -1)
+    if [[ -n "${RAG_BLOCKING_PID:-}" ]]; then
+        echo "  Stopping stale RAG on port ${UMRS_RAG_PORT:-8081} (PID ${RAG_BLOCKING_PID})..."
+        kill "$RAG_BLOCKING_PID" 2>/dev/null || true
+        sleep 2
+    fi
+
+    export UMRS_RAG_PORT="${UMRS_RAG_PORT:-8081}"
+    export UMRS_RAG_BIND_HOST="127.0.0.1"
+    export UMRS_CONFIG="${SCRIPT_DIR}"
+    export OPENBLAS_NUM_THREADS=1
+
+    nohup python -m umrs.api.rag_service \
+        >> "${LOG_DIR}/rag-service.log" 2>&1 &
+    RAG_PID=$!
+    echo "$RAG_PID" > "${SCRIPT_DIR}/rag-service.pid"
+
+    echo -n "  Waiting for RAG readiness..."
+    for i in $(seq 1 120); do
+        if curl -sf "http://127.0.0.1:${UMRS_RAG_PORT:-8081}/docs" >/dev/null 2>&1; then
+            echo " ready (PID $RAG_PID)."
+            break
+        fi
+        if ! kill -0 "$RAG_PID" 2>/dev/null; then
+            echo " failed."
+            echo "  WARNING: RAG service exited. Check ${LOG_DIR}/rag-service.log"
+            tail -10 "${LOG_DIR}/rag-service.log" 2>/dev/null || true
+            RAG_ENABLED=false
+            break
+        fi
+        echo -n "."
+        sleep 1
+        [[ "$i" -eq 120 ]] && echo " WARNING: RAG not ready after 120s"
+    done
+fi
+
 # ─── Verify servers started ──────────────────────────────────────────────────
 echo ""
 echo -n "Verifying servers..."
@@ -348,10 +398,17 @@ echo "║  AI4S:                                                       ║"
 echo "║    UMRS HTTP:  0.0.0.0:${UMRS_AI4S_PORT:-8002}  (PID $AI4S_PID)           ║"
 echo "║    Site:       ai4s/site.yaml                                ║"
 echo "║    Target:     134.160.189.24 (ea0022, SSH)                  ║"
+if [[ "$RAG_ENABLED" == "true" ]]; then
+echo "║                                                              ║"
+echo "║  RAG Service:  127.0.0.1:${UMRS_RAG_PORT:-8081}  (PID ${RAG_PID:-?})     ║"
+fi
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Logs:"
 echo "  RCCS:  tail -f ${LOG_DIR}/server-rccs.log"
 echo "  AI4S:  tail -f ${LOG_DIR}/server-ai4s.log"
+if [[ "$RAG_ENABLED" == "true" ]]; then
+echo "  RAG:   tail -f ${LOG_DIR}/rag-service.log"
+fi
 echo ""
 echo "Stop:    ./stop.sh"

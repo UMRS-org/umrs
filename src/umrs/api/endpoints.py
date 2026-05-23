@@ -1933,6 +1933,13 @@ async def provision_endpoint(
 
         if result.success and result.endpoint and result.endpoint.is_usable:
             # Ready immediately (unlikely for real provisioning)
+            from .audit_events import emit_audit
+            emit_audit(
+                "endpoint.created",
+                user_id=requesting_user or "",
+                project_id=effective_project_id,
+                details={"model": request.model, "tier": request.tier, "job_id": result.job_id},
+            )
             return ProvisionResponse(
                 status="ready",
                 job_id=result.job_id,
@@ -1940,6 +1947,13 @@ async def provision_endpoint(
             )
         elif result.success:
             # Provisioning started
+            from .audit_events import emit_audit
+            emit_audit(
+                "endpoint.provisioning",
+                user_id=requesting_user or "",
+                project_id=effective_project_id,
+                details={"model": request.model, "tier": request.tier, "job_id": result.job_id},
+            )
             response = ProvisionResponse(
                 status="provisioning",
                 job_id=result.job_id,
@@ -1951,6 +1965,14 @@ async def provision_endpoint(
                 headers={"Retry-After": "30"},
             )
         else:
+            from .audit_events import emit_audit
+            emit_audit(
+                "endpoint.provision_failed",
+                user_id=requesting_user or "",
+                project_id=effective_project_id,
+                outcome="error",
+                details={"model": request.model, "error": result.error},
+            )
             return ProvisionResponse(
                 status="failed",
                 job_id=result.job_id,
@@ -1959,6 +1981,14 @@ async def provision_endpoint(
 
     except Exception as e:
         logger.exception(f"Provision failed: {e}")
+        from .audit_events import emit_audit
+        emit_audit(
+            "endpoint.provision_failed",
+            user_id=requesting_user or "",
+            project_id=effective_project_id,
+            outcome="error",
+            details={"model": request.model, "error": str(e)},
+        )
         return ProvisionResponse(
             status="failed",
             error=str(e),
@@ -1996,3 +2026,10 @@ async def deprovision_endpoint(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to deprovision endpoint: {job_id}",
         )
+
+    from .audit_events import emit_audit
+    emit_audit(
+        "endpoint.deprovisioned",
+        project_id=endpoint.project_id if endpoint else "",
+        details={"job_id": job_id, "force": force},
+    )
