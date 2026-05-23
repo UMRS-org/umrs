@@ -683,6 +683,12 @@ async def create_model(
         if scope == ModelScope.SYSTEM:
             owner_id = None
 
+        # Governance quota check (before creation)
+        project_id_for_quota = request.project_id or ""
+        if project_id_for_quota:
+            from .governance import check_quota as _check_model_quota
+            _check_model_quota(project_id_for_quota, "models")
+
         model = store.create_model(
             name=request.name,
             scope=scope,
@@ -695,6 +701,14 @@ async def create_model(
             serving_profile=serving_profile,
             capabilities=capabilities,
             ctx=ctx,
+        )
+
+        # Governance tracking
+        from .governance import record_resource_created
+        record_resource_created(
+            "models", model.model_id, ctx.user_id,
+            project_id=request.project_id or "",
+            tier=scope.value,
         )
 
         logger.info(
@@ -885,6 +899,11 @@ async def delete_model(
     """
     try:
         store.delete_model(model_id, ctx)
+
+        # Governance tracking
+        from .governance import record_resource_deleted
+        record_resource_deleted("models", model_id)
+
         logger.info("User %s deleted model %s", ctx.user_id, model_id)
     except ModelNotFoundError:
         raise HTTPException(

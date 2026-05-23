@@ -803,6 +803,280 @@ async def governance_cleanup_orphans(
 
 
 # ---------------------------------------------------------------------------
+# Resource sharing
+# ---------------------------------------------------------------------------
+
+
+@router.post("/governance/shares")
+async def governance_create_share(
+    resource_type: str = Query(..., description="Resource type"),
+    resource_id: str = Query(..., description="Resource ID"),
+    granted_to: str = Query(..., description="User or group ID to share with"),
+    granted_to_type: str = Query("user", description="'user' or 'group'"),
+    access_level: str = Query("read", description="'read' or 'write'"),
+    expires_at: str | None = Query(None, description="ISO 8601 expiry (optional)"),
+    user_id: str = Header("", alias="x-user-id"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """Share a resource with a user or group.
+
+    The caller must be the resource owner or an admin.
+    """
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    if granted_to_type not in ("user", "group"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="granted_to_type must be 'user' or 'group'",
+        )
+    if access_level not in ("read", "write"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="access_level must be 'read' or 'write'",
+        )
+
+    # Authorization: owner or admin
+    expected_admin = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    is_admin = bool(expected_admin and admin_token == expected_admin)
+
+    if not is_admin:
+        owner = store.get_owner(resource_type, resource_id)
+        if not owner or owner.get("owner_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the resource owner or admin can create shares",
+            )
+
+    share = store.create_share(
+        resource_type, resource_id, granted_to,
+        granted_to_type=granted_to_type,
+        access_level=access_level,
+        granted_by=user_id or "admin",
+        expires_at=expires_at,
+    )
+
+    from .audit_events import emit_audit
+    emit_audit(
+        "governance.share_created",
+        actor=user_id or "admin",
+        details={
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "granted_to": granted_to,
+            "granted_to_type": granted_to_type,
+            "access_level": access_level,
+        },
+    )
+
+    return share
+
+
+@router.delete("/governance/shares")
+async def governance_revoke_share(
+    resource_type: str = Query(..., description="Resource type"),
+    resource_id: str = Query(..., description="Resource ID"),
+    granted_to: str = Query(..., description="User or group ID to revoke"),
+    granted_to_type: str = Query("user", description="'user' or 'group'"),
+    user_id: str = Header("", alias="x-user-id"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """Revoke a specific share. Caller must be resource owner or admin."""
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    expected_admin = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    is_admin = bool(expected_admin and admin_token == expected_admin)
+
+    if not is_admin:
+        owner = store.get_owner(resource_type, resource_id)
+        if not owner or owner.get("owner_id") != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only the resource owner or admin can revoke shares",
+            )
+
+    deleted = store.revoke_share(
+        resource_type, resource_id, granted_to,
+        granted_to_type=granted_to_type,
+    )
+
+    if deleted:
+        from .audit_events import emit_audit
+        emit_audit(
+            "governance.share_revoked",
+            actor=user_id or "admin",
+            details={
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "granted_to": granted_to,
+                "granted_to_type": granted_to_type,
+            },
+        )
+
+    return {"revoked": deleted}
+
+
+@router.get("/governance/shares")
+async def governance_list_shares(
+    resource_type: str = Query("", description="Filter by resource type"),
+    resource_id: str = Query("", description="Filter by resource ID"),
+    user_id: str = Header("", alias="x-user-id"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """List shares for a resource or for the current user."""
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    if resource_type and resource_id:
+        # List shares for a specific resource (owner or admin)
+        expected_admin = os.environ.get("UMRS_ADMIN_TOKEN", "")
+        is_admin = bool(expected_admin and admin_token == expected_admin)
+
+        if not is_admin:
+            owner = store.get_owner(resource_type, resource_id)
+            if not owner or owner.get("owner_id") != user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Only the resource owner or admin can list shares",
+                )
+
+        shares = store.list_shares_for_resource(resource_type, resource_id)
+    else:
+        # List shares granted to the current user
+        shares = store.list_shares_for_user(user_id)
+
+    return {"shares": shares, "count": len(shares)}
+
+
+# ---------------------------------------------------------------------------
+# Governance analytics
+# ---------------------------------------------------------------------------
+
+
+@router.get("/governance/analytics")
+async def governance_analytics(
+    project_id: str = Query("", description="Filter by project (empty = all)"),
+    since: float = Query(0.0, description="Unix timestamp lower bound"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """Aggregate governance analytics: usage trends, quota health, event distribution.
+
+    Returns a summary suitable for dashboards and operational monitoring.
+    Requires admin authentication.
+    """
+    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    if not expected or admin_token != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+
+    from .governance import get_governance_store
+    from .audit_events import query_audit_events
+
+    analytics: dict[str, Any] = {
+        "quota_utilization": [],
+        "resource_counts": {},
+        "event_summary": {},
+        "recent_denials": [],
+        "recent_warnings": [],
+    }
+
+    # Quota utilization across projects
+    store = get_governance_store()
+    if store is not None:
+        cur = store.conn.cursor()
+        try:
+            if project_id:
+                cur.execute(
+                    "SELECT project_id, resource_type, max_count, current_count, warn_count "
+                    "FROM resource_quotas WHERE project_id = %s ORDER BY resource_type",
+                    (project_id,),
+                )
+            else:
+                cur.execute(
+                    "SELECT project_id, resource_type, max_count, current_count, warn_count "
+                    "FROM resource_quotas ORDER BY project_id, resource_type"
+                )
+            for row in cur.fetchall():
+                pct = (row[3] / row[2] * 100) if row[2] > 0 else 0
+                analytics["quota_utilization"].append({
+                    "project_id": row[0],
+                    "resource_type": row[1],
+                    "max_count": row[2],
+                    "current_count": row[3],
+                    "warn_count": row[4],
+                    "utilization_pct": round(pct, 1),
+                })
+        except Exception:
+            store.conn.rollback()
+        finally:
+            cur.close()
+
+        # Resource counts by type
+        cur2 = store.conn.cursor()
+        try:
+            if project_id:
+                cur2.execute(
+                    "SELECT resource_type, COUNT(*) FROM resource_ownership "
+                    "WHERE project_id = %s GROUP BY resource_type ORDER BY resource_type",
+                    (project_id,),
+                )
+            else:
+                cur2.execute(
+                    "SELECT resource_type, COUNT(*) FROM resource_ownership "
+                    "GROUP BY resource_type ORDER BY resource_type"
+                )
+            analytics["resource_counts"] = {row[0]: row[1] for row in cur2.fetchall()}
+        except Exception:
+            store.conn.rollback()
+        finally:
+            cur2.close()
+
+    # Governance event distribution from audit trail
+    gov_events = query_audit_events(
+        event="governance.",
+        since=since,
+        limit=500,
+    )
+    if project_id:
+        gov_events = [e for e in gov_events if e.get("project_id") == project_id]
+
+    event_counts: dict[str, int] = {}
+    for ev in gov_events:
+        name = ev.get("event", "unknown")
+        event_counts[name] = event_counts.get(name, 0) + 1
+    analytics["event_summary"] = event_counts
+
+    # Recent denials and warnings
+    analytics["recent_denials"] = [
+        e for e in gov_events if e.get("outcome") == "denied"
+    ][:20]
+    analytics["recent_warnings"] = [
+        e for e in gov_events
+        if e.get("event") == "governance.quota_warning"
+    ][:20]
+
+    return analytics
+
+
+# ---------------------------------------------------------------------------
 # Schema version introspection
 # ---------------------------------------------------------------------------
 

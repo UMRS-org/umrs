@@ -234,6 +234,15 @@ async def upload_document(
     """Upload a document for RAG indexing."""
     _user_id, project_id = _get_caller_identity(request)
 
+    # Governance quota check
+    try:
+        from .governance import check_quota
+        check_quota(project_id, "rag_documents")
+    except Exception as exc:
+        if hasattr(exc, "status_code"):
+            raise
+        pass  # governance not active
+
     if not file.filename:
         raise HTTPException(status_code=400, detail="Filename required")
 
@@ -275,6 +284,16 @@ async def upload_document(
                     "chunks": result.get("chunks", 0),
                 },
             )
+
+            # Governance tracking
+            from .governance import record_resource_created
+            record_resource_created(
+                "rag_documents",
+                result.get("document_id", file.filename or "unknown"),
+                _user_id,
+                project_id=project_id,
+            )
+
             return UploadResponse(
                 document_id=result.get("document_id", ""),
                 filename=file.filename,
@@ -349,6 +368,10 @@ async def delete_document(
                     status_code=response.status_code,
                     detail=f"Failed to delete: {response.text}",
                 )
+
+            # Governance tracking (best-effort)
+            from .governance import record_resource_deleted
+            record_resource_deleted("rag_documents", document_id, project_id)
 
             return {"status": "deleted", "document_id": document_id}
 
