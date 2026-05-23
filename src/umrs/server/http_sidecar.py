@@ -53,6 +53,9 @@ def _create_app():
     """Create a minimal FastAPI app mounting the Gateway-facing UMRS routers."""
     from fastapi import FastAPI
 
+    from umrs.server.structured_logging import configure_structured_logging
+    configure_structured_logging()
+
     from umrs.api import (
         egress_audit_router,
         endpoints_router,
