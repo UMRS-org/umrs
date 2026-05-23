@@ -16,7 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-GOVERNANCE_SCHEMA_VERSION = 2
+GOVERNANCE_SCHEMA_VERSION = 3
 
 CREATE_RESOURCE_OWNERSHIP_TABLE = """
 CREATE TABLE IF NOT EXISTS resource_ownership (
@@ -119,11 +119,13 @@ def _apply_governance_migrations(conn, cur, from_version: int, to_version: int) 
     """Apply sequential governance schema migrations.
 
     Version 2: Added ownership lifecycle columns and orphan detection support.
+    Version 3: Added warn_count to resource_quotas for soft quota warnings.
     """
     migrations: dict[int, str] = {
         # Version 1: initial schema (tables created above)
         # Version 2: ownership lifecycle support — no DDL needed, only
         # new store methods (transfer_owner, find_orphans, cleanup_orphans)
+        3: "ALTER TABLE resource_quotas ADD COLUMN IF NOT EXISTS warn_count INTEGER DEFAULT NULL",
     }
 
     for version in range(from_version + 1, to_version + 1):
@@ -277,16 +279,27 @@ class GovernanceStore:
         project_id: str,
         resource_type: str,
         max_count: int,
+        *,
+        warn_count: int | None = None,
     ) -> None:
-        """Set or update the quota for a project+resource_type."""
+        """Set or update the quota for a project+resource_type.
+
+        Parameters
+        ----------
+        warn_count : int | None
+            Optional soft warning threshold. When current_count reaches
+            warn_count, a governance.quota_warning audit event is emitted
+            but the operation is still allowed. Set to None to disable.
+        """
         cur = self.conn.cursor()
         try:
             cur.execute(
-                "INSERT INTO resource_quotas (project_id, resource_type, max_count) "
-                "VALUES (%s, %s, %s) "
+                "INSERT INTO resource_quotas (project_id, resource_type, max_count, warn_count) "
+                "VALUES (%s, %s, %s, %s) "
                 "ON CONFLICT (project_id, resource_type) DO UPDATE SET "
-                "max_count = EXCLUDED.max_count, updated_at = NOW()",
-                (project_id, resource_type, max_count),
+                "max_count = EXCLUDED.max_count, warn_count = EXCLUDED.warn_count, "
+                "updated_at = NOW()",
+                (project_id, resource_type, max_count, warn_count),
             )
             self.conn.commit()
         except Exception:
@@ -304,7 +317,8 @@ class GovernanceStore:
         cur = self.conn.cursor()
         try:
             cur.execute(
-                "SELECT project_id, resource_type, max_count, current_count, updated_at "
+                "SELECT project_id, resource_type, max_count, current_count, "
+                "updated_at, warn_count "
                 "FROM resource_quotas WHERE project_id = %s AND resource_type = %s",
                 (project_id, resource_type),
             )
@@ -323,6 +337,7 @@ class GovernanceStore:
             "max_count": row[2],
             "current_count": row[3],
             "updated_at": str(row[4]),
+            "warn_count": row[5],
         }
 
     def increment_usage(self, project_id: str, resource_type: str) -> bool:
@@ -367,7 +382,8 @@ class GovernanceStore:
         cur = self.conn.cursor()
         try:
             cur.execute(
-                "SELECT project_id, resource_type, max_count, current_count, updated_at "
+                "SELECT project_id, resource_type, max_count, current_count, "
+                "updated_at, warn_count "
                 "FROM resource_quotas WHERE project_id = %s ORDER BY resource_type",
                 (project_id,),
             )
@@ -385,6 +401,7 @@ class GovernanceStore:
                 "max_count": r[2],
                 "current_count": r[3],
                 "updated_at": str(r[4]),
+                "warn_count": r[5],
             }
             for r in rows
         ]
@@ -580,7 +597,8 @@ def check_quota(project_id: str, resource_type: str) -> None:
     """Check if the project is within quota for resource_type.
 
     Raises HTTPException(409) if quota exceeded, or does nothing if no
-    governance store or no quota is configured.
+    governance store or no quota is configured. Emits a governance audit
+    event on quota violation.
     """
     store = _governance_store
     if store is None or not project_id:
@@ -590,7 +608,34 @@ def check_quota(project_id: str, resource_type: str) -> None:
     if quota is None:
         return  # no quota defined — allow
 
+    # Soft quota warning (warn_count)
+    warn_count = quota.get("warn_count")
+    if warn_count is not None and quota["current_count"] >= warn_count and quota["current_count"] < quota["max_count"]:
+        from .audit_events import emit_audit
+        emit_audit(
+            "governance.quota_warning",
+            project_id=project_id,
+            outcome="success",
+            details={
+                "resource_type": resource_type,
+                "current": quota["current_count"],
+                "warn_at": warn_count,
+                "max": quota["max_count"],
+            },
+        )
+
     if quota["current_count"] >= quota["max_count"]:
+        from .audit_events import emit_audit
+        emit_audit(
+            "governance.quota_exceeded",
+            project_id=project_id,
+            outcome="denied",
+            details={
+                "resource_type": resource_type,
+                "current": quota["current_count"],
+                "max": quota["max_count"],
+            },
+        )
         from fastapi import HTTPException, status
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -614,6 +659,7 @@ def record_resource_created(
     """Record ownership and increment quota usage for a newly created resource.
 
     Best-effort — never raises on governance failures.
+    Emits governance.resource_created audit event.
     """
     store = _governance_store
     if store is None:
@@ -633,6 +679,21 @@ def record_resource_created(
         except Exception:
             logger.debug("Governance: failed to increment quota for %s/%s", project_id, resource_type, exc_info=True)
 
+    try:
+        from .audit_events import emit_audit
+        emit_audit(
+            "governance.resource_created",
+            actor=owner_id,
+            project_id=project_id,
+            scope=tier,
+            details={
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+            },
+        )
+    except Exception:
+        pass
+
 
 def record_resource_deleted(
     resource_type: str,
@@ -642,6 +703,7 @@ def record_resource_deleted(
     """Remove ownership and decrement quota usage for a deleted resource.
 
     Best-effort — never raises on governance failures.
+    Emits governance.resource_deleted audit event.
     """
     store = _governance_store
     if store is None:
@@ -657,3 +719,16 @@ def record_resource_deleted(
             store.decrement_usage(project_id, resource_type)
         except Exception:
             logger.debug("Governance: failed to decrement quota for %s/%s", project_id, resource_type, exc_info=True)
+
+    try:
+        from .audit_events import emit_audit
+        emit_audit(
+            "governance.resource_deleted",
+            project_id=project_id,
+            details={
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+            },
+        )
+    except Exception:
+        pass

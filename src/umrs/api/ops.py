@@ -487,6 +487,7 @@ async def audit_trace(
     request_id: str = Query("", description="Correlation/request ID to filter by"),
     event: str = Query("", description="Event name substring filter"),
     actor: str = Query("", description="Actor/user filter"),
+    project_id: str = Query("", description="Project ID filter"),
     since: float = Query(0.0, description="Unix timestamp lower bound"),
     until: float = Query(0.0, description="Unix timestamp upper bound"),
     limit: int = Query(50, ge=1, le=500, description="Maximum results"),
@@ -507,6 +508,9 @@ async def audit_trace(
         until=until,
         limit=limit,
     )
+    # Apply project_id filter post-query (ring buffer doesn't support it natively)
+    if project_id:
+        events = [e for e in events if e.get("project_id") == project_id]
     return {"events": events, "count": len(events), "persistent": _audit_store_available()}
 
 
@@ -648,12 +652,24 @@ async def governance_set_quota(
     project_id: str = Query(..., description="Project ID"),
     resource_type: str = Query(..., description="Resource type (endpoints, mcp_servers, etc.)"),
     max_count: int = Query(..., ge=0, description="Maximum allowed count"),
+    warn_count: int | None = Query(None, ge=0, description="Soft warning threshold (optional)"),
     admin_token: str = Header("", alias="x-admin-token"),
 ):
-    """Set quota for a project + resource type (admin-only)."""
+    """Set quota for a project + resource type (admin-only).
+
+    When warn_count is set, the system emits a governance.quota_warning
+    audit event when usage reaches the warning threshold but does not
+    block operations until max_count is reached.
+    """
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+
+    if warn_count is not None and warn_count >= max_count:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"warn_count ({warn_count}) must be less than max_count ({max_count})",
+        )
 
     from .governance import get_governance_store
 
@@ -664,15 +680,25 @@ async def governance_set_quota(
             detail="Governance store not initialized",
         )
 
-    store.set_quota(project_id, resource_type, max_count)
+    store.set_quota(project_id, resource_type, max_count, warn_count=warn_count)
 
     from .audit_events import emit_audit
     emit_audit(
         "governance.quota_set",
         project_id=project_id,
-        details={"resource_type": resource_type, "max_count": max_count},
+        details={
+            "resource_type": resource_type,
+            "max_count": max_count,
+            "warn_count": warn_count,
+        },
     )
-    return {"status": "ok", "project_id": project_id, "resource_type": resource_type, "max_count": max_count}
+    return {
+        "status": "ok",
+        "project_id": project_id,
+        "resource_type": resource_type,
+        "max_count": max_count,
+        "warn_count": warn_count,
+    }
 
 
 @router.get("/governance/orphans")
@@ -718,6 +744,62 @@ async def governance_orphans(
 
     orphans = store.find_orphans(resource_type, known_ids)
     return {"resource_type": resource_type, "orphans": orphans, "count": len(orphans)}
+
+
+@router.delete("/governance/orphans")
+async def governance_cleanup_orphans(
+    resource_type: str = Query(..., description="Resource type to clean up"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """Remove orphaned ownership records for a resource type (admin-only).
+
+    Compares governance ownership records against live registries,
+    then deletes stale entries. Emits audit event for the cleanup.
+    """
+    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    if not expected or admin_token != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    known_ids: list[str] = []
+    if resource_type == "endpoints":
+        try:
+            from .endpoints import get_registry
+            registry = get_registry()
+            all_endpoints = registry.list_all()
+            known_ids = [ep.job_id for ep in all_endpoints]
+        except Exception:
+            logger.warning("Cannot enumerate live endpoints for orphan cleanup")
+    elif resource_type == "mcp_servers":
+        try:
+            from .mcp import _get_store as _get_mcp_store
+            mcp_store = _get_mcp_store()
+            servers = mcp_store.list_servers()
+            known_ids = [s.server_id for s in servers]
+        except Exception:
+            logger.warning("Cannot enumerate live MCP servers for orphan cleanup")
+
+    deleted = store.cleanup_orphans(resource_type, known_ids)
+
+    from .audit_events import emit_audit
+    emit_audit(
+        "governance.orphans_cleaned",
+        details={
+            "resource_type": resource_type,
+            "deleted": deleted,
+            "live_count": len(known_ids),
+        },
+    )
+
+    return {"resource_type": resource_type, "deleted": deleted}
 
 
 # ---------------------------------------------------------------------------
