@@ -88,6 +88,12 @@ def _create_app():
     from umrs.server.correlation import CorrelationIDMiddleware
     app.add_middleware(CorrelationIDMiddleware)
 
+    # Structured error responses: all HTTPException responses include
+    # error_id and request_id for distributed tracing and automation.
+    from fastapi import HTTPException as _HTTPException
+    from umrs.api.error_responses import structured_http_exception_handler
+    app.add_exception_handler(_HTTPException, structured_http_exception_handler)
+
     app.include_router(egress_audit_router)
     app.include_router(endpoints_router)
     app.include_router(files_router)
