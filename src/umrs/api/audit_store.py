@@ -8,6 +8,11 @@ this store is the durable persistence layer.
 Schema:
     audit_events table — one row per audit event, indexed for trace queries.
     audit_schema_version table — tracks schema migrations.
+
+Schema evolution:
+    Each version bump is a forward-only migration. The ensure_audit_schema()
+    function checks the current stored version and applies migrations in
+    sequence. Downgrades are not supported — rollback by restoring from backup.
 """
 
 from __future__ import annotations
@@ -60,12 +65,38 @@ CREATE TABLE IF NOT EXISTS audit_schema_version (
 
 
 def ensure_audit_schema(conn) -> None:
-    """Create audit tables and indexes if they don't exist."""
+    """Create audit tables and indexes if they don't exist.
+
+    Performs forward-only schema migration: checks current stored version,
+    applies any pending migrations, and updates the version record.
+
+    Raises RuntimeError if the stored version is *newer* than the code
+    (indicates a rollback scenario that needs manual intervention).
+    """
     cur = conn.cursor()
     try:
+        # Bootstrap tables
         cur.execute(CREATE_AUDIT_EVENTS_TABLE)
         cur.execute(CREATE_AUDIT_INDEXES)
         cur.execute(CREATE_AUDIT_SCHEMA_VERSION_TABLE)
+        conn.commit()
+
+        # Check existing version
+        cur.execute("SELECT version FROM audit_schema_version WHERE id = 1")
+        row = cur.fetchone()
+        stored_version = row[0] if row else 0
+
+        if stored_version > AUDIT_STORE_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Audit schema version {stored_version} is newer than code version "
+                f"{AUDIT_STORE_SCHEMA_VERSION}. Cannot downgrade. "
+                "Deploy the newer code version or restore from backup."
+            )
+
+        if stored_version < AUDIT_STORE_SCHEMA_VERSION:
+            _apply_audit_migrations(conn, cur, stored_version, AUDIT_STORE_SCHEMA_VERSION)
+
+        # Upsert version
         cur.execute(
             "INSERT INTO audit_schema_version (id, version) VALUES (1, %s) "
             "ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, "
@@ -73,12 +104,38 @@ def ensure_audit_schema(conn) -> None:
             (AUDIT_STORE_SCHEMA_VERSION,),
         )
         conn.commit()
-        logger.info("Audit schema ensured (version %d)", AUDIT_STORE_SCHEMA_VERSION)
+        logger.info(
+            "Audit schema ensured (version %d, migrated from %d)",
+            AUDIT_STORE_SCHEMA_VERSION, stored_version,
+        )
+    except RuntimeError:
+        conn.rollback()
+        raise
     except Exception:
         conn.rollback()
         raise
     finally:
         cur.close()
+
+
+def _apply_audit_migrations(conn, cur, from_version: int, to_version: int) -> None:
+    """Apply sequential migrations between versions.
+
+    Each migration is a function keyed by target version number.
+    Add new migrations here as the schema evolves.
+    """
+    migrations: dict[int, str] = {
+        # Version 1: initial schema (tables already created above)
+        # Future example:
+        # 2: "ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS severity VARCHAR(16) DEFAULT 'info'",
+    }
+
+    for version in range(from_version + 1, to_version + 1):
+        sql = migrations.get(version)
+        if sql:
+            logger.info("Applying audit schema migration to version %d", version)
+            cur.execute(sql)
+            conn.commit()
 
 
 class AuditStore:

@@ -16,7 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-GOVERNANCE_SCHEMA_VERSION = 1
+GOVERNANCE_SCHEMA_VERSION = 2
 
 CREATE_RESOURCE_OWNERSHIP_TABLE = """
 CREATE TABLE IF NOT EXISTS resource_ownership (
@@ -64,13 +64,36 @@ CREATE TABLE IF NOT EXISTS governance_schema_version (
 
 
 def ensure_governance_schema(conn) -> None:
-    """Create governance tables and indexes if they don't exist."""
+    """Create governance tables and indexes if they don't exist.
+
+    Performs forward-only schema migration with version checking.
+    Raises RuntimeError if stored version is newer than code.
+    """
     cur = conn.cursor()
     try:
+        # Bootstrap tables
         cur.execute(CREATE_RESOURCE_OWNERSHIP_TABLE)
         cur.execute(CREATE_RESOURCE_QUOTAS_TABLE)
         cur.execute(CREATE_GOVERNANCE_INDEXES)
         cur.execute(CREATE_GOVERNANCE_SCHEMA_VERSION_TABLE)
+        conn.commit()
+
+        # Check existing version
+        cur.execute("SELECT version FROM governance_schema_version WHERE id = 1")
+        row = cur.fetchone()
+        stored_version = row[0] if row else 0
+
+        if stored_version > GOVERNANCE_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"Governance schema version {stored_version} is newer than code version "
+                f"{GOVERNANCE_SCHEMA_VERSION}. Cannot downgrade. "
+                "Deploy the newer code version or restore from backup."
+            )
+
+        if stored_version < GOVERNANCE_SCHEMA_VERSION:
+            _apply_governance_migrations(conn, cur, stored_version, GOVERNANCE_SCHEMA_VERSION)
+
+        # Upsert version
         cur.execute(
             "INSERT INTO governance_schema_version (id, version) VALUES (1, %s) "
             "ON CONFLICT (id) DO UPDATE SET version = EXCLUDED.version, "
@@ -78,12 +101,37 @@ def ensure_governance_schema(conn) -> None:
             (GOVERNANCE_SCHEMA_VERSION,),
         )
         conn.commit()
-        logger.info("Governance schema ensured (version %d)", GOVERNANCE_SCHEMA_VERSION)
+        logger.info(
+            "Governance schema ensured (version %d, migrated from %d)",
+            GOVERNANCE_SCHEMA_VERSION, stored_version,
+        )
+    except RuntimeError:
+        conn.rollback()
+        raise
     except Exception:
         conn.rollback()
         raise
     finally:
         cur.close()
+
+
+def _apply_governance_migrations(conn, cur, from_version: int, to_version: int) -> None:
+    """Apply sequential governance schema migrations.
+
+    Version 2: Added ownership lifecycle columns and orphan detection support.
+    """
+    migrations: dict[int, str] = {
+        # Version 1: initial schema (tables created above)
+        # Version 2: ownership lifecycle support — no DDL needed, only
+        # new store methods (transfer_owner, find_orphans, cleanup_orphans)
+    }
+
+    for version in range(from_version + 1, to_version + 1):
+        sql = migrations.get(version)
+        if sql:
+            logger.info("Applying governance schema migration to version %d", version)
+            cur.execute(sql)
+            conn.commit()
 
 
 class GovernanceStore:
@@ -340,3 +388,272 @@ class GovernanceStore:
             }
             for r in rows
         ]
+
+    # ---- Ownership lifecycle ----
+
+    def transfer_owner(
+        self,
+        resource_type: str,
+        resource_id: str,
+        new_owner_id: str,
+        *,
+        new_project_id: str | None = None,
+    ) -> bool:
+        """Transfer ownership of a resource to a new owner.
+
+        Optionally moves the resource to a new project. Returns True if
+        a record was updated.
+        """
+        cur = self.conn.cursor()
+        try:
+            if new_project_id is not None:
+                cur.execute(
+                    "UPDATE resource_ownership SET owner_id = %s, project_id = %s "
+                    "WHERE resource_type = %s AND resource_id = %s",
+                    (new_owner_id, new_project_id, resource_type, resource_id),
+                )
+            else:
+                cur.execute(
+                    "UPDATE resource_ownership SET owner_id = %s "
+                    "WHERE resource_type = %s AND resource_id = %s",
+                    (new_owner_id, resource_type, resource_id),
+                )
+            updated = cur.rowcount > 0
+            self.conn.commit()
+            return updated
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+    def list_by_project(
+        self,
+        project_id: str,
+        *,
+        resource_type: str = "",
+    ) -> list[dict[str, Any]]:
+        """List all resources belonging to a project."""
+        conditions = ["project_id = %s"]
+        params: list[Any] = [project_id]
+        if resource_type:
+            conditions.append("resource_type = %s")
+            params.append(resource_type)
+
+        where = " AND ".join(conditions)
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                f"SELECT resource_type, resource_id, owner_id, project_id, tier, "
+                f"created_at, metadata FROM resource_ownership WHERE {where} "
+                f"ORDER BY created_at DESC",
+                params,
+            )
+            rows = cur.fetchall()
+        except Exception:
+            self.conn.rollback()
+            return []
+        finally:
+            cur.close()
+
+        return [
+            {
+                "resource_type": r[0],
+                "resource_id": r[1],
+                "owner_id": r[2],
+                "project_id": r[3],
+                "tier": r[4],
+                "created_at": str(r[5]),
+                "metadata": r[6] if isinstance(r[6], dict) else {},
+            }
+            for r in rows
+        ]
+
+    def find_orphans(
+        self,
+        resource_type: str,
+        known_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        """Find ownership records whose resource_id is not in the known set.
+
+        This is the primary orphan detection mechanism. Compare ownership
+        records against the live registry (endpoints, MCP servers, etc.)
+        to find stale ownership entries.
+        """
+        if not known_ids:
+            # If no known IDs, all records of this type are orphans
+            return self.list_by_project("", resource_type=resource_type)
+
+        cur = self.conn.cursor()
+        try:
+            placeholders = ",".join(["%s"] * len(known_ids))
+            cur.execute(
+                f"SELECT resource_type, resource_id, owner_id, project_id, tier, "
+                f"created_at, metadata FROM resource_ownership "
+                f"WHERE resource_type = %s AND resource_id NOT IN ({placeholders})",
+                [resource_type, *known_ids],
+            )
+            rows = cur.fetchall()
+        except Exception:
+            self.conn.rollback()
+            return []
+        finally:
+            cur.close()
+
+        return [
+            {
+                "resource_type": r[0],
+                "resource_id": r[1],
+                "owner_id": r[2],
+                "project_id": r[3],
+                "tier": r[4],
+                "created_at": str(r[5]),
+                "metadata": r[6] if isinstance(r[6], dict) else {},
+            }
+            for r in rows
+        ]
+
+    def cleanup_orphans(
+        self,
+        resource_type: str,
+        known_ids: list[str],
+    ) -> int:
+        """Remove ownership records not in the known set. Returns count deleted."""
+        if not known_ids:
+            cur = self.conn.cursor()
+            try:
+                cur.execute(
+                    "DELETE FROM resource_ownership WHERE resource_type = %s",
+                    (resource_type,),
+                )
+                count = cur.rowcount
+                self.conn.commit()
+                return count
+            except Exception:
+                self.conn.rollback()
+                return 0
+            finally:
+                cur.close()
+
+        cur = self.conn.cursor()
+        try:
+            placeholders = ",".join(["%s"] * len(known_ids))
+            cur.execute(
+                f"DELETE FROM resource_ownership "
+                f"WHERE resource_type = %s AND resource_id NOT IN ({placeholders})",
+                [resource_type, *known_ids],
+            )
+            count = cur.rowcount
+            self.conn.commit()
+            return count
+        except Exception:
+            self.conn.rollback()
+            return 0
+        finally:
+            cur.close()
+
+
+# ---------------------------------------------------------------------------
+# Module-level accessor (same pattern as JobStore, MCPServerStore)
+# ---------------------------------------------------------------------------
+
+_governance_store: GovernanceStore | None = None
+
+
+def set_governance_store(store: GovernanceStore) -> None:
+    """Register the global GovernanceStore instance (called during sidecar init)."""
+    global _governance_store
+    _governance_store = store
+
+
+def get_governance_store() -> GovernanceStore | None:
+    """Return the governance store, or None if not initialized."""
+    return _governance_store
+
+
+# ---------------------------------------------------------------------------
+# Enforcement helpers — called from resource creation/deletion paths
+# ---------------------------------------------------------------------------
+
+
+def check_quota(project_id: str, resource_type: str) -> None:
+    """Check if the project is within quota for resource_type.
+
+    Raises HTTPException(409) if quota exceeded, or does nothing if no
+    governance store or no quota is configured.
+    """
+    store = _governance_store
+    if store is None or not project_id:
+        return  # governance not active — allow
+
+    quota = store.get_quota(project_id, resource_type)
+    if quota is None:
+        return  # no quota defined — allow
+
+    if quota["current_count"] >= quota["max_count"]:
+        from fastapi import HTTPException, status
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Quota exceeded: project '{project_id}' has "
+                f"{quota['current_count']}/{quota['max_count']} {resource_type}. "
+                "Contact admin to increase quota."
+            ),
+        )
+
+
+def record_resource_created(
+    resource_type: str,
+    resource_id: str,
+    owner_id: str,
+    *,
+    project_id: str = "",
+    tier: str = "user",
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Record ownership and increment quota usage for a newly created resource.
+
+    Best-effort — never raises on governance failures.
+    """
+    store = _governance_store
+    if store is None:
+        return
+
+    try:
+        store.register_owner(
+            resource_type, resource_id, owner_id,
+            project_id=project_id, tier=tier, metadata=metadata,
+        )
+    except Exception:
+        logger.debug("Governance: failed to record ownership for %s/%s", resource_type, resource_id, exc_info=True)
+
+    if project_id:
+        try:
+            store.increment_usage(project_id, resource_type)
+        except Exception:
+            logger.debug("Governance: failed to increment quota for %s/%s", project_id, resource_type, exc_info=True)
+
+
+def record_resource_deleted(
+    resource_type: str,
+    resource_id: str,
+    project_id: str = "",
+) -> None:
+    """Remove ownership and decrement quota usage for a deleted resource.
+
+    Best-effort — never raises on governance failures.
+    """
+    store = _governance_store
+    if store is None:
+        return
+
+    try:
+        store.remove_owner(resource_type, resource_id)
+    except Exception:
+        logger.debug("Governance: failed to remove ownership for %s/%s", resource_type, resource_id, exc_info=True)
+
+    if project_id:
+        try:
+            store.decrement_usage(project_id, resource_type)
+        except Exception:
+            logger.debug("Governance: failed to decrement quota for %s/%s", project_id, resource_type, exc_info=True)

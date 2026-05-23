@@ -250,6 +250,10 @@ async def register_server(
     # SSRF protection: validate URL before storing
     _validate_mcp_url(req.url)
 
+    # Governance: quota check before registration
+    from .governance import check_quota
+    check_quota(req.project_id or "", "mcp_servers")
+
     store = _get_store()
     server = store.register_server(
         name=req.name,
@@ -270,6 +274,12 @@ async def register_server(
         "mcp.registered",
         project_id=req.project_id or "",
         details={"name": req.name, "url": req.url, "server_id": server.server_id},
+    )
+    from .governance import record_resource_created
+    record_resource_created(
+        "mcp_servers", server.server_id, "",
+        project_id=req.project_id or "",
+        metadata={"name": req.name, "url": req.url},
     )
 
     return _server_to_response(server)
@@ -309,6 +319,8 @@ async def unregister_server(server_id_or_name: str) -> dict[str, str]:
 
     from .audit_events import emit_audit
     emit_audit("mcp.unregistered", details={"server": server_id_or_name})
+    from .governance import record_resource_deleted
+    record_resource_deleted("mcp_servers", server_id_or_name)
 
     return {"status": "unregistered", "server": server_id_or_name}
 
