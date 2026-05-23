@@ -475,3 +475,31 @@ def ops_reload(
         "status": "ok",
         "summary": outcome.get("summary", "Reload complete"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Audit trace inspection
+# ---------------------------------------------------------------------------
+
+
+@router.get("/audit/trace")
+async def audit_trace(
+    request_id: str = Query("", description="Correlation/request ID to filter by"),
+    event: str = Query("", description="Event name substring filter"),
+    actor: str = Query("", description="Actor/user filter"),
+    limit: int = Query(50, ge=1, le=500, description="Maximum results"),
+):
+    """Query recent audit events from the in-memory buffer.
+
+    Returns matching audit events for distributed trace reconstruction.
+    Filter by request_id to see all operations in a single request chain.
+    """
+    from .audit_events import query_audit_events
+
+    events = query_audit_events(
+        request_id=request_id,
+        event=event,
+        actor=actor,
+        limit=limit,
+    )
+    return {"events": events, "count": len(events)}

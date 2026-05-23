@@ -45,6 +45,12 @@ _AUDIT_LEVEL = getattr(logging, os.getenv("UMRS_AUDIT_LEVEL", "INFO").upper(), l
 # Schema version for forward compatibility.
 AUDIT_SCHEMA_VERSION = "1"
 
+# In-memory ring buffer of recent audit events for trace inspection.
+# Size configurable via UMRS_AUDIT_BUFFER_SIZE (default 1000).
+_AUDIT_BUFFER_SIZE = int(os.getenv("UMRS_AUDIT_BUFFER_SIZE", "1000"))
+_audit_buffer: list[dict[str, Any]] = []
+_audit_buffer_lock = __import__("threading").Lock()
+
 
 def _get_correlation_id() -> str:
     """Retrieve correlation ID from request context (best-effort)."""
@@ -104,3 +110,36 @@ def emit_audit(
     }
 
     logger.log(_AUDIT_LEVEL, json.dumps(record, default=str))
+
+    # Store in ring buffer for trace inspection
+    with _audit_buffer_lock:
+        _audit_buffer.append(record)
+        if len(_audit_buffer) > _AUDIT_BUFFER_SIZE:
+            del _audit_buffer[: len(_audit_buffer) - _AUDIT_BUFFER_SIZE]
+
+
+def query_audit_events(
+    *,
+    request_id: str = "",
+    event: str = "",
+    actor: str = "",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    """Query the in-memory audit buffer.
+
+    Returns matching audit events, most recent first.
+    """
+    with _audit_buffer_lock:
+        results = list(_audit_buffer)
+
+    # Filter
+    if request_id:
+        results = [r for r in results if r.get("request_id") == request_id]
+    if event:
+        results = [r for r in results if event in r.get("event", "")]
+    if actor:
+        results = [r for r in results if r.get("actor") == actor]
+
+    # Most recent first, limited
+    results.reverse()
+    return results[:limit]
