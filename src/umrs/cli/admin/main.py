@@ -213,6 +213,15 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
     # Auto-generate a client config template alongside the admin record.
     _maybe_emit_template(args, store, rec)
 
+    # Warn if Slurm account is not set (required for endpoint provisioning).
+    if not rec.slurm_account and not rec.slurm_accounts:
+        print(
+            f"warning: no Slurm account set for {rec.username}. "
+            f"Endpoint provisioning (r4 endpoint up) will fail until one is set.\n"
+            f"  hint: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>",
+            file=sys.stderr,
+        )
+
     if args.json:
         out = rec.to_json()
         tpl_path = _client_template_path(args, store, rec)
@@ -274,17 +283,20 @@ def _maybe_emit_template(args, store, rec) -> None:
         print()
         print("  Onboarding steps for the new user:")
         if token_hint:
-            print(f"  r4 (HTTP path):")
+            print(f"  1. (recommended) r4 via Gateway HTTP:")
             print(f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}")
-            print(f"  umrs-client (ZMQ path):")
+            print(f"  2. (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:")
             print(f"       umrs-client login --host <HOST> --api-key {token_hint}")
         else:
             print(f"  1. Generate a token for the user:")
             print(f"       umrs-server admin token generate-jwt --user {rec.username}")
             print(f"  2. Give the token to the user, who runs:")
             print(f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key <TOKEN>")
-            print(f"     or:")
+            print(f"     (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:")
             print(f"       umrs-client login --host <HOST> --api-key <TOKEN>")
+        if not rec.slurm_account and not rec.slurm_accounts:
+            print(f"  NOTE: set a Slurm account before the user can provision endpoints:")
+            print(f"       umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>")
 
 
 def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
@@ -579,7 +591,15 @@ def _resolve_jwt_secret(args: argparse.Namespace) -> str:
     # Delegate to shared resolution logic.
     from umrs.shared.auth import resolve_jwt_secret
 
-    return resolve_jwt_secret()
+    resolved = resolve_jwt_secret()
+    if resolved == "dev-secret-change-in-production":
+        print(
+            "warning: using insecure dev-default JWT secret. "
+            "Set $JWT_SECRET or deploy ~/.config/umrs/gateway/jwt.secret "
+            "for production use.",
+            file=sys.stderr,
+        )
+    return resolved
 
 
 def _build_jwt_payload(
@@ -1434,14 +1454,19 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Common onboarding flow:\n"
-            "  1. Register a user:\n"
-            "       umrs-server admin user add <username> --fullname \"Your Name\" --role user\n"
-            "  2. List registered users:\n"
-            "       umrs-server admin user list\n"
-            "  3. Show one user record:\n"
-            "       umrs-server admin user show <username>\n"
-            "  4. Ask the user to initialize the client side:\n"
-            "       umrs-client config init --username <username>\n\n"
+            "  1. Register a user (with Slurm account for HPC):\n"
+            "       umrs-server admin user add <username> --fullname \"Your Name\" "
+            "--role user --slurm-account <ACCOUNT>\n"
+            "  2. Generate an authentication token:\n"
+            "       umrs-server admin token generate-jwt --user <username> --project <project>\n"
+            "  3. Give the token to the user, who runs:\n"
+            "       r4 auth login --gateway-url <GATEWAY_URL> --api-key <TOKEN>\n"
+            "  Shortcut: combine steps 1-3 with --issue-token:\n"
+            "       umrs-server admin user add <username> --role user "
+            "--slurm-account <ACCOUNT> --issue-token\n\n"
+            "Diagnostics:\n"
+            "  umrs-server admin user list\n"
+            "  umrs-server admin user show <username>\n\n"
             "Shell completion:\n"
             "  eval \"$(umrs-server completion bash)\""
         ),
