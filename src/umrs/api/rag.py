@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/rag", tags=["rag-proxy"])
 
+
+def _trace_headers() -> dict[str, str]:
+    """Build headers that propagate correlation ID to downstream services."""
+    try:
+        from umrs.server.correlation import get_request_id
+        rid = get_request_id()
+        if rid:
+            return {"X-Request-ID": rid}
+    except Exception:
+        pass
+    return {}
+
 # RAG service port inside mini-rivault container
 _RAG_PORT = int(os.environ.get("MINI_RIVAULT_RAG_PORT", "8003"))
 
@@ -185,7 +197,7 @@ async def query_rag(
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(rag_url, json=request_body.model_dump())
+            response = await client.post(rag_url, json=request_body.model_dump(), headers=_trace_headers())
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -243,7 +255,7 @@ async def upload_document(
             }
             data = {"project_id": project_id}
 
-            response = await client.post(rag_url, files=files, data=data)
+            response = await client.post(rag_url, files=files, data=data, headers=_trace_headers())
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -288,7 +300,7 @@ async def list_documents(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(rag_url, params={"project_id": project_id})
+            response = await client.get(rag_url, params={"project_id": project_id}, headers=_trace_headers())
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -327,7 +339,7 @@ async def delete_document(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.delete(rag_url, params={"project_id": project_id})
+            response = await client.delete(rag_url, params={"project_id": project_id}, headers=_trace_headers())
 
             if response.status_code == 404:
                 raise HTTPException(status_code=404, detail="Document not found")
@@ -359,7 +371,7 @@ async def get_document(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(rag_url, params={"project_id": project_id})
+            response = await client.get(rag_url, params={"project_id": project_id}, headers=_trace_headers())
 
             if response.status_code == 404:
                 raise HTTPException(status_code=404, detail="Document not found")
@@ -397,7 +409,7 @@ async def rag_stats(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(rag_url, params={"project_id": project_id})
+            response = await client.get(rag_url, params={"project_id": project_id}, headers=_trace_headers())
 
             if response.status_code != 200:
                 raise HTTPException(

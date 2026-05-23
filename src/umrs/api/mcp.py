@@ -541,10 +541,20 @@ async def _proxy_tool_call(
 
     for attempt in range(_MCP_MAX_RETRIES):
         try:
+            # Propagate correlation ID to MCP server
+            call_headers: dict[str, str] = {"Content-Type": "application/json"}
+            try:
+                from umrs.server.correlation import get_request_id
+                rid = get_request_id()
+                if rid:
+                    call_headers["X-Request-ID"] = rid
+            except Exception:
+                pass
+
             async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
                 url,
                 json=payload,
-                headers={"Content-Type": "application/json"},
+                headers=call_headers,
             ) as response:
                 result = await _parse_tool_response(response, tool_name)
                 if result is not None:
