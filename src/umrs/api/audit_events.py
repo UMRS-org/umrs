@@ -51,6 +51,15 @@ _AUDIT_BUFFER_SIZE = int(os.getenv("UMRS_AUDIT_BUFFER_SIZE", "1000"))
 _audit_buffer: list[dict[str, Any]] = []
 _audit_buffer_lock = __import__("threading").Lock()
 
+# Optional persistent store — set via set_audit_store() during sidecar init.
+_audit_store: Any = None
+
+
+def set_audit_store(store) -> None:
+    """Register a persistent AuditStore for write-through."""
+    global _audit_store
+    _audit_store = store
+
 
 def _get_correlation_id() -> str:
     """Retrieve correlation ID from request context (best-effort)."""
@@ -111,11 +120,18 @@ def emit_audit(
 
     logger.log(_AUDIT_LEVEL, json.dumps(record, default=str))
 
-    # Store in ring buffer for trace inspection
+    # Store in ring buffer for fast recent queries
     with _audit_buffer_lock:
         _audit_buffer.append(record)
         if len(_audit_buffer) > _AUDIT_BUFFER_SIZE:
             del _audit_buffer[: len(_audit_buffer) - _AUDIT_BUFFER_SIZE]
+
+    # Write through to persistent store if available
+    if _audit_store is not None:
+        try:
+            _audit_store.write(record)
+        except Exception:
+            logger.debug("Audit persistent write failed", exc_info=True)
 
 
 def query_audit_events(
@@ -123,23 +139,43 @@ def query_audit_events(
     request_id: str = "",
     event: str = "",
     actor: str = "",
+    since: float = 0.0,
+    until: float = 0.0,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
-    """Query the in-memory audit buffer.
+    """Query audit events, preferring persistent store if available.
 
     Returns matching audit events, most recent first.
+    Falls back to in-memory ring buffer when no persistent store is configured.
     """
+    # Try persistent store first
+    if _audit_store is not None:
+        try:
+            return _audit_store.query(
+                request_id=request_id,
+                event=event,
+                actor=actor,
+                since=since,
+                until=until,
+                limit=limit,
+            )
+        except Exception:
+            logger.debug("Persistent audit query failed, falling back to buffer")
+
+    # Fall back to in-memory buffer
     with _audit_buffer_lock:
         results = list(_audit_buffer)
 
-    # Filter
     if request_id:
         results = [r for r in results if r.get("request_id") == request_id]
     if event:
         results = [r for r in results if event in r.get("event", "")]
     if actor:
         results = [r for r in results if r.get("actor") == actor]
+    if since > 0:
+        results = [r for r in results if r.get("ts", 0) >= since]
+    if until > 0:
+        results = [r for r in results if r.get("ts", 0) <= until]
 
-    # Most recent first, limited
     results.reverse()
     return results[:limit]

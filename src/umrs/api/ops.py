@@ -487,12 +487,15 @@ async def audit_trace(
     request_id: str = Query("", description="Correlation/request ID to filter by"),
     event: str = Query("", description="Event name substring filter"),
     actor: str = Query("", description="Actor/user filter"),
+    since: float = Query(0.0, description="Unix timestamp lower bound"),
+    until: float = Query(0.0, description="Unix timestamp upper bound"),
     limit: int = Query(50, ge=1, le=500, description="Maximum results"),
 ):
-    """Query recent audit events from the in-memory buffer.
+    """Query audit events for distributed trace reconstruction.
 
-    Returns matching audit events for distributed trace reconstruction.
-    Filter by request_id to see all operations in a single request chain.
+    Uses persistent Postgres store when available, falls back to in-memory
+    ring buffer. Filter by request_id to see all operations in a single
+    request chain. Use since/until for time-window queries.
     """
     from .audit_events import query_audit_events
 
@@ -500,6 +503,42 @@ async def audit_trace(
         request_id=request_id,
         event=event,
         actor=actor,
+        since=since,
+        until=until,
         limit=limit,
     )
-    return {"events": events, "count": len(events)}
+    return {"events": events, "count": len(events), "persistent": _audit_store_available()}
+
+
+@router.delete("/audit/retention")
+async def audit_retention_cleanup(
+    days: int = Query(30, ge=1, le=365, description="Delete events older than N days"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """Delete audit events older than the specified retention window.
+
+    Requires admin authentication via x-admin-token header.
+    """
+    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    if not expected or admin_token != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+
+    from .audit_events import _audit_store
+
+    if _audit_store is None:
+        return {"status": "skipped", "message": "No persistent audit store configured"}
+
+    cutoff = time.time() - (days * 86400)
+    deleted = _audit_store.delete_before(cutoff)
+    return {
+        "status": "ok",
+        "deleted": deleted,
+        "retention_days": days,
+        "cutoff_ts": cutoff,
+    }
+
+
+def _audit_store_available() -> bool:
+    """Check if persistent audit store is configured."""
+    from .audit_events import _audit_store
+    return _audit_store is not None
