@@ -83,6 +83,11 @@ def _create_app():
         redoc_url="/redoc" if enable_docs else None,
     )
 
+    # Correlation ID middleware: extracts X-Request-ID from Gateway (NGINX)
+    # or X-Correlation-ID from R4 SDK; makes it available via get_request_id().
+    from umrs.server.correlation import CorrelationIDMiddleware
+    app.add_middleware(CorrelationIDMiddleware)
+
     app.include_router(egress_audit_router)
     app.include_router(endpoints_router)
     app.include_router(files_router)
