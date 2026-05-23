@@ -16,7 +16,7 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-GOVERNANCE_SCHEMA_VERSION = 3
+GOVERNANCE_SCHEMA_VERSION = 4
 
 CREATE_RESOURCE_OWNERSHIP_TABLE = """
 CREATE TABLE IF NOT EXISTS resource_ownership (
@@ -53,6 +53,29 @@ CREATE INDEX IF NOT EXISTS idx_quotas_project
     ON resource_quotas(project_id);
 """
 
+# Resource sharing — explicit grants beyond scope-based visibility
+CREATE_RESOURCE_SHARES_TABLE = """
+CREATE TABLE IF NOT EXISTS resource_shares (
+    share_id SERIAL PRIMARY KEY,
+    resource_type VARCHAR(64) NOT NULL,
+    resource_id VARCHAR(128) NOT NULL,
+    granted_to VARCHAR(128) NOT NULL,
+    granted_to_type VARCHAR(16) NOT NULL DEFAULT 'user',
+    access_level VARCHAR(16) NOT NULL DEFAULT 'read',
+    granted_by VARCHAR(128) NOT NULL DEFAULT '',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ DEFAULT NULL,
+    UNIQUE (resource_type, resource_id, granted_to, granted_to_type)
+);
+"""
+
+CREATE_SHARES_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_shares_grantee
+    ON resource_shares(granted_to, granted_to_type);
+CREATE INDEX IF NOT EXISTS idx_shares_resource
+    ON resource_shares(resource_type, resource_id);
+"""
+
 CREATE_GOVERNANCE_SCHEMA_VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS governance_schema_version (
     id INTEGER PRIMARY KEY DEFAULT 1,
@@ -75,6 +98,8 @@ def ensure_governance_schema(conn) -> None:
         cur.execute(CREATE_RESOURCE_OWNERSHIP_TABLE)
         cur.execute(CREATE_RESOURCE_QUOTAS_TABLE)
         cur.execute(CREATE_GOVERNANCE_INDEXES)
+        cur.execute(CREATE_RESOURCE_SHARES_TABLE)
+        cur.execute(CREATE_SHARES_INDEXES)
         cur.execute(CREATE_GOVERNANCE_SCHEMA_VERSION_TABLE)
         conn.commit()
 
@@ -120,19 +145,26 @@ def _apply_governance_migrations(conn, cur, from_version: int, to_version: int) 
 
     Version 2: Added ownership lifecycle columns and orphan detection support.
     Version 3: Added warn_count to resource_quotas for soft quota warnings.
+    Version 4: Added resource_shares table for explicit sharing, group_id to ownership.
     """
-    migrations: dict[int, str] = {
+    migrations: dict[int, list[str]] = {
         # Version 1: initial schema (tables created above)
         # Version 2: ownership lifecycle support — no DDL needed, only
         # new store methods (transfer_owner, find_orphans, cleanup_orphans)
-        3: "ALTER TABLE resource_quotas ADD COLUMN IF NOT EXISTS warn_count INTEGER DEFAULT NULL",
+        3: ["ALTER TABLE resource_quotas ADD COLUMN IF NOT EXISTS warn_count INTEGER DEFAULT NULL"],
+        4: [
+            "ALTER TABLE resource_ownership ADD COLUMN IF NOT EXISTS group_id VARCHAR(128) NOT NULL DEFAULT ''",
+            CREATE_RESOURCE_SHARES_TABLE,
+            CREATE_SHARES_INDEXES,
+        ],
     }
 
     for version in range(from_version + 1, to_version + 1):
-        sql = migrations.get(version)
-        if sql:
+        sqls = migrations.get(version)
+        if sqls:
             logger.info("Applying governance schema migration to version %d", version)
-            cur.execute(sql)
+            for sql in sqls:
+                cur.execute(sql)
             conn.commit()
 
 
@@ -566,6 +598,263 @@ class GovernanceStore:
         except Exception:
             self.conn.rollback()
             return 0
+        finally:
+            cur.close()
+
+    # ---- Resource Sharing ----
+
+    def create_share(
+        self,
+        resource_type: str,
+        resource_id: str,
+        granted_to: str,
+        *,
+        granted_to_type: str = "user",
+        access_level: str = "read",
+        granted_by: str = "",
+        expires_at: str | None = None,
+    ) -> dict[str, Any]:
+        """Create or update an explicit resource share.
+
+        Parameters
+        ----------
+        granted_to_type : str
+            "user" or "group" — the kind of entity receiving access.
+        access_level : str
+            "read" or "write".
+        expires_at : str | None
+            ISO 8601 timestamp for share expiry, or None for permanent.
+        """
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                "INSERT INTO resource_shares "
+                "(resource_type, resource_id, granted_to, granted_to_type, "
+                "access_level, granted_by, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (resource_type, resource_id, granted_to, granted_to_type) "
+                "DO UPDATE SET access_level = EXCLUDED.access_level, "
+                "granted_by = EXCLUDED.granted_by, expires_at = EXCLUDED.expires_at "
+                "RETURNING share_id, created_at",
+                (resource_type, resource_id, granted_to, granted_to_type,
+                 access_level, granted_by, expires_at),
+            )
+            row = cur.fetchone()
+            self.conn.commit()
+            return {
+                "share_id": row[0],
+                "resource_type": resource_type,
+                "resource_id": resource_id,
+                "granted_to": granted_to,
+                "granted_to_type": granted_to_type,
+                "access_level": access_level,
+                "granted_by": granted_by,
+                "created_at": str(row[1]),
+                "expires_at": expires_at,
+            }
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+    def revoke_share(
+        self,
+        resource_type: str,
+        resource_id: str,
+        granted_to: str,
+        *,
+        granted_to_type: str = "user",
+    ) -> bool:
+        """Revoke a specific share. Returns True if deleted."""
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                "DELETE FROM resource_shares "
+                "WHERE resource_type = %s AND resource_id = %s "
+                "AND granted_to = %s AND granted_to_type = %s",
+                (resource_type, resource_id, granted_to, granted_to_type),
+            )
+            deleted = cur.rowcount > 0
+            self.conn.commit()
+            return deleted
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            cur.close()
+
+    def revoke_all_shares(
+        self,
+        resource_type: str,
+        resource_id: str,
+    ) -> int:
+        """Revoke all shares for a resource. Returns count deleted."""
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                "DELETE FROM resource_shares "
+                "WHERE resource_type = %s AND resource_id = %s",
+                (resource_type, resource_id),
+            )
+            count = cur.rowcount
+            self.conn.commit()
+            return count
+        except Exception:
+            self.conn.rollback()
+            return 0
+        finally:
+            cur.close()
+
+    def list_shares_for_resource(
+        self,
+        resource_type: str,
+        resource_id: str,
+    ) -> list[dict[str, Any]]:
+        """List all active shares for a resource."""
+        cur = self.conn.cursor()
+        try:
+            cur.execute(
+                "SELECT share_id, resource_type, resource_id, granted_to, "
+                "granted_to_type, access_level, granted_by, created_at, expires_at "
+                "FROM resource_shares "
+                "WHERE resource_type = %s AND resource_id = %s "
+                "AND (expires_at IS NULL OR expires_at > NOW()) "
+                "ORDER BY created_at",
+                (resource_type, resource_id),
+            )
+            rows = cur.fetchall()
+        except Exception:
+            self.conn.rollback()
+            return []
+        finally:
+            cur.close()
+
+        return [
+            {
+                "share_id": r[0],
+                "resource_type": r[1],
+                "resource_id": r[2],
+                "granted_to": r[3],
+                "granted_to_type": r[4],
+                "access_level": r[5],
+                "granted_by": r[6],
+                "created_at": str(r[7]),
+                "expires_at": str(r[8]) if r[8] else None,
+            }
+            for r in rows
+        ]
+
+    def list_shares_for_user(
+        self,
+        user_id: str,
+        *,
+        user_groups: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """List all resources shared with a user (directly or via groups).
+
+        Includes both direct user shares and group-inherited shares.
+        Filters out expired shares.
+        """
+        cur = self.conn.cursor()
+        try:
+            # Build conditions: direct user shares + group shares
+            conditions = [
+                "(granted_to = %s AND granted_to_type = 'user')",
+            ]
+            params: list[Any] = [user_id]
+
+            if user_groups:
+                placeholders = ",".join(["%s"] * len(user_groups))
+                conditions.append(
+                    f"(granted_to IN ({placeholders}) AND granted_to_type = 'group')"
+                )
+                params.extend(user_groups)
+
+            where = " OR ".join(conditions)
+            cur.execute(
+                f"SELECT share_id, resource_type, resource_id, granted_to, "
+                f"granted_to_type, access_level, granted_by, created_at, expires_at "
+                f"FROM resource_shares "
+                f"WHERE ({where}) AND (expires_at IS NULL OR expires_at > NOW()) "
+                f"ORDER BY created_at DESC",
+                params,
+            )
+            rows = cur.fetchall()
+        except Exception:
+            self.conn.rollback()
+            return []
+        finally:
+            cur.close()
+
+        return [
+            {
+                "share_id": r[0],
+                "resource_type": r[1],
+                "resource_id": r[2],
+                "granted_to": r[3],
+                "granted_to_type": r[4],
+                "access_level": r[5],
+                "granted_by": r[6],
+                "created_at": str(r[7]),
+                "expires_at": str(r[8]) if r[8] else None,
+            }
+            for r in rows
+        ]
+
+    def has_share_access(
+        self,
+        resource_type: str,
+        resource_id: str,
+        user_id: str,
+        *,
+        user_groups: list[str] | None = None,
+        required_level: str = "read",
+    ) -> bool:
+        """Check if a user has explicit share access to a resource.
+
+        Parameters
+        ----------
+        required_level : str
+            "read" — any access level grants read.
+            "write" — only "write" access grants this.
+        """
+        cur = self.conn.cursor()
+        try:
+            # Build grantee conditions
+            conditions = [
+                "(granted_to = %s AND granted_to_type = 'user')",
+            ]
+            params: list[Any] = [user_id]
+
+            if user_groups:
+                placeholders = ",".join(["%s"] * len(user_groups))
+                conditions.append(
+                    f"(granted_to IN ({placeholders}) AND granted_to_type = 'group')"
+                )
+                params.extend(user_groups)
+
+            grantee_where = " OR ".join(conditions)
+
+            # Access level filter
+            if required_level == "write":
+                level_filter = "AND access_level = 'write'"
+            else:
+                level_filter = ""  # Any access level grants read
+
+            cur.execute(
+                f"SELECT 1 FROM resource_shares "
+                f"WHERE resource_type = %s AND resource_id = %s "
+                f"AND ({grantee_where}) "
+                f"AND (expires_at IS NULL OR expires_at > NOW()) "
+                f"{level_filter} "
+                f"LIMIT 1",
+                [resource_type, resource_id, *params],
+            )
+            return cur.fetchone() is not None
+        except Exception:
+            self.conn.rollback()
+            return False
         finally:
             cur.close()
 

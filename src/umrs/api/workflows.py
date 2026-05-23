@@ -279,6 +279,17 @@ async def upload_workflow(
 ):
     _require_verified_workflow_identity(x_user_id, x_verified_project_id)
     resolved_user_id = _verified_workflow_user(user_id, x_user_id)
+
+    # Governance quota check
+    project_id = x_verified_project_id or ""
+    try:
+        from .governance import check_quota
+        check_quota(project_id, "workflows")
+    except Exception as exc:
+        if hasattr(exc, "status_code"):
+            raise
+        pass  # governance not active
+
     if not file.filename:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required")
 
@@ -319,6 +330,13 @@ async def upload_workflow(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(result.get("message", "Workflow registration failed")),
         )
+
+    # Governance tracking
+    from .governance import record_resource_created
+    record_resource_created(
+        "workflows", resolved_workflow_name, resolved_user_id,
+        project_id=project_id, tier=scope,
+    )
 
     return WorkflowUploadResponse(
         status="ok",

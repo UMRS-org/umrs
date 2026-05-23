@@ -553,6 +553,15 @@ async def create_pipeline(
     """
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
 
+    # Governance quota check
+    try:
+        from .governance import check_quota
+        check_quota(project_id, "pipelines")
+    except Exception as exc:
+        if hasattr(exc, "status_code"):
+            raise
+        pass  # governance not active
+
     # Validate components
     validator = get_component_validator()
     if request.chunker:
@@ -583,6 +592,13 @@ async def create_pipeline(
         pipeline = store.create_pipeline(pipeline)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+
+    # Governance tracking
+    from .governance import record_resource_created
+    record_resource_created(
+        "pipelines", pipeline.pipeline_id, user_id,
+        project_id=project_id,
+    )
 
     logger.info(f"Created pipeline {pipeline.pipeline_id} for project {project_id}")
     return pipeline_to_response(pipeline)
@@ -682,6 +698,11 @@ async def delete_pipeline(
         raise HTTPException(status_code=403, detail="Access denied to this pipeline")
 
     store.delete_pipeline(pipeline_id)
+
+    # Governance tracking
+    from .governance import record_resource_deleted
+    record_resource_deleted("pipelines", pipeline_id, project_id)
+
     logger.info(f"Deleted pipeline {pipeline_id}")
 
 
@@ -709,6 +730,15 @@ async def create_rag_profile(
     - LLM integration settings
     """
     user_id, project_id = extract_user_project(x_user_id, x_project_id)
+
+    # Governance quota check
+    try:
+        from .governance import check_quota
+        check_quota(project_id, "rag_profiles")
+    except Exception as exc:
+        if hasattr(exc, "status_code"):
+            raise
+        pass  # governance not active
 
     # Validate reranker
     validator = get_component_validator()
@@ -741,6 +771,13 @@ async def create_rag_profile(
         profile = store.create_rag_profile(profile)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e)) from e
+
+    # Governance tracking
+    from .governance import record_resource_created
+    record_resource_created(
+        "rag_profiles", profile.profile_id, user_id,
+        project_id=project_id,
+    )
 
     logger.info(f"Created RAG profile {profile.profile_id} for project {project_id}")
     return rag_profile_to_response(profile)
@@ -849,6 +886,11 @@ async def delete_rag_profile(
         raise HTTPException(status_code=403, detail="Access denied to this profile")
 
     store.delete_rag_profile(profile_id)
+
+    # Governance tracking
+    from .governance import record_resource_deleted
+    record_resource_deleted("rag_profiles", profile_id, project_id)
+
     logger.info(f"Deleted RAG profile {profile_id}")
 
 
