@@ -32,6 +32,9 @@ router = APIRouter(prefix="/umrs/rag", tags=["rag-proxy"])
 # RAG service port inside mini-rivault container
 _RAG_PORT = int(os.environ.get("MINI_RIVAULT_RAG_PORT", "8003"))
 
+# Direct RAG service URL for standalone deployments (bypasses endpoint discovery)
+_RAG_DIRECT_URL = os.environ.get("UMRS_RAG_DIRECT_URL", "").strip()
+
 # Timeouts
 _CONNECT_TIMEOUT = float(os.environ.get("RAG_PROXY_CONNECT_TIMEOUT", "10"))
 _READ_TIMEOUT = float(os.environ.get("RAG_PROXY_READ_TIMEOUT", "3600"))
@@ -121,7 +124,14 @@ def _discover_rag_endpoint(
 
     RAG is model-agnostic; we find any usable endpoint for the project.
     Returns the RAG service base URL.
+
+    If UMRS_RAG_DIRECT_URL is set, uses that directly (standalone mode)
+    without requiring an active GPU endpoint.
     """
+    # Standalone mode: RAG service runs natively on the front-end server
+    if _RAG_DIRECT_URL:
+        return _RAG_DIRECT_URL.rstrip("/")
+
     endpoints = registry.list_all(
         project_id=project_id,
         status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
@@ -242,6 +252,17 @@ async def upload_document(
                 )
 
             result = response.json()
+            from .audit_events import emit_audit
+            emit_audit(
+                "rag.upload",
+                user_id=_user_id,
+                project_id=project_id,
+                details={
+                    "filename": file.filename,
+                    "document_id": result.get("document_id", ""),
+                    "chunks": result.get("chunks", 0),
+                },
+            )
             return UploadResponse(
                 document_id=result.get("document_id", ""),
                 filename=file.filename,
@@ -360,4 +381,32 @@ async def get_document(
 
     except httpx.RequestError as e:
         logger.exception("Get document failed: %s", e)
+        raise HTTPException(status_code=503, detail="RAG service unavailable") from e
+
+
+@router.get("/stats")
+async def rag_stats(
+    request: Request,
+    registry: EndpointRegistry = Depends(get_registry),
+):
+    """Get RAG corpus statistics for the current project."""
+    _user_id, project_id = _get_caller_identity(request)
+
+    rag_base = _discover_rag_endpoint(registry, project_id)
+    rag_url = f"{rag_base}/rag/stats"
+
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.get(rag_url, params={"project_id": project_id})
+
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to get RAG stats: {response.text}",
+                )
+
+            return response.json()
+
+    except httpx.RequestError as e:
+        logger.exception("RAG stats request failed: %s", e)
         raise HTTPException(status_code=503, detail="RAG service unavailable") from e

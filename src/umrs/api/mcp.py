@@ -15,8 +15,10 @@ Provides:
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 import os
+import urllib.parse
 from typing import Any
 
 import aiohttp
@@ -27,6 +29,100 @@ from ..mcp.store import (
     MCPServerNotFoundError,
     MCPServerStore,
 )
+
+
+# =============================================================================
+# URL Validation / SSRF Protection
+# =============================================================================
+
+# Blocked IP ranges: RFC 1918, link-local, loopback, metadata endpoints
+_BLOCKED_NETWORKS = [
+    ipaddress.ip_network("127.0.0.0/8"),       # Loopback
+    ipaddress.ip_network("10.0.0.0/8"),        # RFC 1918
+    ipaddress.ip_network("172.16.0.0/12"),     # RFC 1918
+    ipaddress.ip_network("192.168.0.0/16"),    # RFC 1918
+    ipaddress.ip_network("169.254.0.0/16"),    # Link-local / cloud metadata
+    ipaddress.ip_network("::1/128"),           # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),          # IPv6 ULA
+    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
+]
+
+# Blocked hostnames (cloud metadata endpoints)
+_BLOCKED_HOSTNAMES = {
+    "metadata.google.internal",
+    "metadata.gce.internal",
+}
+
+# Env-configurable allowlist overrides (comma-separated CIDRs or hostnames)
+_MCP_URL_ALLOWLIST = os.getenv("MCP_URL_ALLOWLIST", "").strip()
+
+
+def _validate_mcp_url(url: str) -> None:
+    """
+    Validate MCP server URL to prevent SSRF attacks.
+
+    Blocks:
+    - Private/internal IP ranges (RFC 1918, link-local, loopback)
+    - Cloud metadata endpoints (169.254.169.254, metadata.google.internal)
+    - Non-HTTP(S) schemes
+    - URLs without a hostname
+
+    Raises HTTPException(422) on validation failure.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid URL format: {url}",
+        )
+
+    # Scheme check
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"MCP server URL must use http or https scheme, got: {parsed.scheme!r}",
+        )
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="MCP server URL must include a hostname",
+        )
+
+    # Check blocked hostnames
+    if hostname.lower() in _BLOCKED_HOSTNAMES:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"MCP server URL hostname is blocked (metadata endpoint): {hostname}",
+        )
+
+    # Check if hostname is an IP address and validate against blocked ranges
+    try:
+        addr = ipaddress.ip_address(hostname)
+        # Check allowlist first
+        if _MCP_URL_ALLOWLIST:
+            for entry in _MCP_URL_ALLOWLIST.split(","):
+                entry = entry.strip()
+                if not entry:
+                    continue
+                try:
+                    if addr in ipaddress.ip_network(entry, strict=False):
+                        return  # Explicitly allowed
+                except ValueError:
+                    if entry == hostname:
+                        return  # Hostname match in allowlist
+
+        for network in _BLOCKED_NETWORKS:
+            if addr in network:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"MCP server URL resolves to a blocked network ({network}): {hostname}",
+                )
+    except ValueError:
+        # Not an IP address — it's a hostname, check blocklist only
+        pass
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +247,9 @@ async def register_server(
 
     If a server with the same name exists, it is updated (upsert).
     """
+    # SSRF protection: validate URL before storing
+    _validate_mcp_url(req.url)
+
     store = _get_store()
     server = store.register_server(
         name=req.name,
@@ -165,6 +264,14 @@ async def register_server(
         project_id=req.project_id,
     )
     logger.info("Registered MCP server: %s (id=%s)", server.name, server.server_id)
+
+    from .audit_events import emit_audit
+    emit_audit(
+        "mcp.registered",
+        project_id=req.project_id or "",
+        details={"name": req.name, "url": req.url, "server_id": server.server_id},
+    )
+
     return _server_to_response(server)
 
 
@@ -199,6 +306,10 @@ async def unregister_server(server_id_or_name: str) -> dict[str, str]:
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Server not found: {server_id_or_name}",
         )
+
+    from .audit_events import emit_audit
+    emit_audit("mcp.unregistered", details={"server": server_id_or_name})
+
     return {"status": "unregistered", "server": server_id_or_name}
 
 
