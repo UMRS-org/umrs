@@ -542,3 +542,224 @@ def _audit_store_available() -> bool:
     """Check if persistent audit store is configured."""
     from .audit_events import _audit_store
     return _audit_store is not None
+
+
+# ---------------------------------------------------------------------------
+# Governance introspection
+# ---------------------------------------------------------------------------
+
+
+@router.get("/governance/ownership")
+async def governance_ownership(
+    owner_id: str = Query("", description="Filter by owner"),
+    project_id: str = Query("", description="Filter by project"),
+    resource_type: str = Query("", description="Filter by resource type"),
+):
+    """List resource ownership records."""
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    if owner_id:
+        records = store.list_owned(
+            owner_id, resource_type=resource_type, project_id=project_id,
+        )
+    elif project_id:
+        records = store.list_by_project(project_id, resource_type=resource_type)
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Provide owner_id or project_id as filter",
+        )
+
+    return {"records": records, "count": len(records)}
+
+
+@router.post("/governance/ownership/transfer")
+async def governance_transfer(
+    resource_type: str = Query(..., description="Resource type"),
+    resource_id: str = Query(..., description="Resource identifier"),
+    new_owner_id: str = Query(..., description="New owner user ID"),
+    new_project_id: str | None = Query(None, description="Move to new project"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """Transfer ownership of a resource (admin-only)."""
+    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    if not expected or admin_token != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    updated = store.transfer_owner(
+        resource_type, resource_id, new_owner_id,
+        new_project_id=new_project_id,
+    )
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"No ownership record: {resource_type}/{resource_id}",
+        )
+
+    from .audit_events import emit_audit
+    emit_audit(
+        "governance.ownership_transferred",
+        details={
+            "resource_type": resource_type,
+            "resource_id": resource_id,
+            "new_owner": new_owner_id,
+            "new_project": new_project_id,
+        },
+    )
+    return {"status": "transferred", "resource_type": resource_type, "resource_id": resource_id}
+
+
+@router.get("/governance/quotas")
+async def governance_quotas(
+    project_id: str = Query(..., description="Project ID"),
+):
+    """List quotas for a project."""
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    quotas = store.list_quotas(project_id)
+    return {"project_id": project_id, "quotas": quotas}
+
+
+@router.put("/governance/quotas")
+async def governance_set_quota(
+    project_id: str = Query(..., description="Project ID"),
+    resource_type: str = Query(..., description="Resource type (endpoints, mcp_servers, etc.)"),
+    max_count: int = Query(..., ge=0, description="Maximum allowed count"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """Set quota for a project + resource type (admin-only)."""
+    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    if not expected or admin_token != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    store.set_quota(project_id, resource_type, max_count)
+
+    from .audit_events import emit_audit
+    emit_audit(
+        "governance.quota_set",
+        project_id=project_id,
+        details={"resource_type": resource_type, "max_count": max_count},
+    )
+    return {"status": "ok", "project_id": project_id, "resource_type": resource_type, "max_count": max_count}
+
+
+@router.get("/governance/orphans")
+async def governance_orphans(
+    resource_type: str = Query(..., description="Resource type to check"),
+    admin_token: str = Header("", alias="x-admin-token"),
+):
+    """Detect orphaned ownership records for a resource type (admin-only).
+
+    Compares governance ownership records against live registries.
+    """
+    expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
+    if not expected or admin_token != expected:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+
+    from .governance import get_governance_store
+
+    store = get_governance_store()
+    if store is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Governance store not initialized",
+        )
+
+    # Gather known live IDs from the relevant registry
+    known_ids: list[str] = []
+    if resource_type == "endpoints":
+        try:
+            from .endpoints import get_registry
+            registry = get_registry()
+            all_endpoints = registry.list_all()
+            known_ids = [ep.job_id for ep in all_endpoints]
+        except Exception:
+            logger.warning("Cannot enumerate live endpoints for orphan check")
+    elif resource_type == "mcp_servers":
+        try:
+            from .mcp import _get_store as _get_mcp_store
+            mcp_store = _get_mcp_store()
+            servers = mcp_store.list_servers()
+            known_ids = [s.server_id for s in servers]
+        except Exception:
+            logger.warning("Cannot enumerate live MCP servers for orphan check")
+
+    orphans = store.find_orphans(resource_type, known_ids)
+    return {"resource_type": resource_type, "orphans": orphans, "count": len(orphans)}
+
+
+# ---------------------------------------------------------------------------
+# Schema version introspection
+# ---------------------------------------------------------------------------
+
+
+@router.get("/schema/versions")
+async def schema_versions():
+    """Report current schema versions for all persistent stores.
+
+    Useful for deployment validation, migration audits, and
+    upgrade compatibility checks.
+    """
+    versions: dict[str, Any] = {}
+
+    # Audit schema
+    try:
+        from .audit_store import AUDIT_STORE_SCHEMA_VERSION
+        versions["audit"] = {
+            "code_version": AUDIT_STORE_SCHEMA_VERSION,
+            "status": "active" if _audit_store_available() else "unavailable",
+        }
+    except ImportError:
+        versions["audit"] = {"status": "not_installed"}
+
+    # Governance schema
+    try:
+        from .governance import GOVERNANCE_SCHEMA_VERSION, get_governance_store
+        store = get_governance_store()
+        versions["governance"] = {
+            "code_version": GOVERNANCE_SCHEMA_VERSION,
+            "status": "active" if store is not None else "unavailable",
+        }
+    except ImportError:
+        versions["governance"] = {"status": "not_installed"}
+
+    # MCP schema
+    try:
+        from ..mcp.schema import MCP_SCHEMA_VERSION
+        versions["mcp"] = {"code_version": MCP_SCHEMA_VERSION}
+    except ImportError:
+        versions["mcp"] = {"status": "not_installed"}
+
+    return {"schemas": versions}

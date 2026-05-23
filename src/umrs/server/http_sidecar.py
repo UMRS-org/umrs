@@ -177,13 +177,15 @@ def _create_app():
             logger.warning("Audit store unavailable — using in-memory buffer only")
 
         try:
-            from umrs.api.governance import GovernanceStore, ensure_governance_schema
+            from umrs.api.governance import GovernanceStore, ensure_governance_schema, set_governance_store
 
             gov_conn = db_pool.getconn()
             ensure_governance_schema(gov_conn)
             gov_conn.commit()
             app.state.umrs_governance_store_conn = gov_conn
-            app.state.umrs_governance_store = GovernanceStore(gov_conn)
+            gov_store = GovernanceStore(gov_conn)
+            app.state.umrs_governance_store = gov_store
+            set_governance_store(gov_store)
             logger.info("Governance store initialized for HTTP sidecar")
         except Exception:
             logger.warning("Governance store unavailable — quota enforcement disabled")

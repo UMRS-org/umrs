@@ -1640,6 +1640,10 @@ async def provision_endpoint(
     effective_project_id = _resolve_provision_project_id(request, project_id)
     _enforce_provision_authorization(request, is_admin=is_admin)
 
+    # Governance: quota check before provisioning
+    from .governance import check_quota
+    check_quota(effective_project_id, "endpoints")
+
     # Validate that the requesting user has a Slurm account configured.
     # Without one, the job would run under the deployer's default account
     # which is incorrect for multi-user environments.
@@ -1940,6 +1944,12 @@ async def provision_endpoint(
                 project_id=effective_project_id,
                 details={"model": request.model, "tier": request.tier, "job_id": result.job_id},
             )
+            from .governance import record_resource_created
+            record_resource_created(
+                "endpoints", result.job_id, requesting_user or "",
+                project_id=effective_project_id, tier=request.tier,
+                metadata={"model": request.model},
+            )
             return ProvisionResponse(
                 status="ready",
                 job_id=result.job_id,
@@ -1953,6 +1963,12 @@ async def provision_endpoint(
                 user_id=requesting_user or "",
                 project_id=effective_project_id,
                 details={"model": request.model, "tier": request.tier, "job_id": result.job_id},
+            )
+            from .governance import record_resource_created
+            record_resource_created(
+                "endpoints", result.job_id, requesting_user or "",
+                project_id=effective_project_id, tier=request.tier,
+                metadata={"model": request.model},
             )
             response = ProvisionResponse(
                 status="provisioning",
@@ -2032,4 +2048,9 @@ async def deprovision_endpoint(
         "endpoint.deprovisioned",
         project_id=endpoint.project_id if endpoint else "",
         details={"job_id": job_id, "force": force},
+    )
+    from .governance import record_resource_deleted
+    record_resource_deleted(
+        "endpoints", job_id,
+        project_id=endpoint.project_id if endpoint else "",
     )
