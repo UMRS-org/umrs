@@ -451,10 +451,21 @@ class GovernanceStore:
         """Transfer ownership of a resource to a new owner.
 
         Optionally moves the resource to a new project. Returns True if
-        a record was updated.
+        a record was updated.  Uses SELECT ... FOR UPDATE to serialize
+        concurrent transfers of the same resource.
         """
         cur = self.conn.cursor()
         try:
+            # Lock the row to prevent concurrent transfer races
+            cur.execute(
+                "SELECT resource_id FROM resource_ownership "
+                "WHERE resource_type = %s AND resource_id = %s FOR UPDATE",
+                (resource_type, resource_id),
+            )
+            if cur.fetchone() is None:
+                self.conn.rollback()
+                return False
+
             if new_project_id is not None:
                 cur.execute(
                     "UPDATE resource_ownership SET owner_id = %s, project_id = %s "
