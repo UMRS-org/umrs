@@ -11,11 +11,12 @@ trace store and does not import from ``umrs.api`` or ``umrs.server``.
 from __future__ import annotations
 
 import logging
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
 
-from .execution_trace_store import ExecutionTraceStore, TraceRecord
+from .execution_trace_store import TraceRecord
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +136,16 @@ class LineageGraph:
         }
 
 
+@dataclass
+class _LineageParts:
+    nodes: list[LineageNode] = field(default_factory=list)
+    edges: list[LineageEdge] = field(default_factory=list)
+    children_map: dict[str, list[str]] = field(default_factory=dict)
+    parent_set: set[str] = field(default_factory=set)
+    durations: dict[str, float] = field(default_factory=dict)
+    execution_id: str | None = None
+
+
 def _trace_to_node(trace: TraceRecord) -> LineageNode:
     """Convert a TraceRecord to a LineageNode."""
     return LineageNode(
@@ -211,79 +222,87 @@ def build_lineage_graph(
     if not traces:
         return LineageGraph(job_id=job_id, metrics=LineageGraphMetrics())
 
-    # Build nodes and edge maps
-    nodes: list[LineageNode] = []
-    edges: list[LineageEdge] = []
-    trace_ids: set[str] = {t.trace_id for t in traces}
-    children_map: dict[str, list[str]] = {}
-    parent_set: set[str] = set()
-    durations: dict[str, float] = {}
-
-    execution_id: str | None = None
-
-    for trace in traces:
-        nodes.append(_trace_to_node(trace))
-
-        if trace.execution_id and not execution_id:
-            execution_id = trace.execution_id
-
-        dur = _duration_seconds(trace.started_at, trace.finished_at)
-        if dur is not None:
-            durations[trace.trace_id] = dur
-
-        if trace.parent_trace_id and trace.parent_trace_id in trace_ids:
-            edges.append(LineageEdge(
-                source=trace.parent_trace_id,
-                target=trace.trace_id,
-            ))
-            parent_set.add(trace.trace_id)
-            children_map.setdefault(trace.parent_trace_id, []).append(trace.trace_id)
-
-    # Root nodes have no parent within this job's traces
-    root_ids = [t.trace_id for t in traces if t.trace_id not in parent_set]
-    # Leaf nodes have no children within this job's traces
-    leaf_ids = [t.trace_id for t in traces if t.trace_id not in children_map]
-
-    # Compute metrics
-    depth_cache: dict[str, int] = {}
-    max_depth = 0
-    for root_id in root_ids:
-        d = _compute_depth(root_id, children_map, depth_cache)
-        max_depth = max(max_depth, d)
-
-    # Status counts
-    succeeded = sum(1 for t in traces if t.status == "succeeded")
-    failed = sum(1 for t in traces if t.status == "failed")
-    running = sum(1 for t in traces if t.status == "running")
-
-    # Total duration: earliest start to latest finish
-    starts = [t.started_at for t in traces if t.started_at]
-    ends = [t.finished_at for t in traces if t.finished_at]
-    total_dur = None
-    if starts and ends:
-        total_dur = _duration_seconds(min(starts), max(ends))
-
-    critical_path = _compute_critical_path(root_ids, children_map, durations)
-
-    metrics = LineageGraphMetrics(
-        total_nodes=len(nodes),
-        total_edges=len(edges),
-        depth=max_depth,
-        root_count=len(root_ids),
-        leaf_count=len(leaf_ids),
-        succeeded_count=succeeded,
-        failed_count=failed,
-        running_count=running,
-        total_duration_seconds=total_dur,
-        critical_path_seconds=critical_path,
-    )
+    parts = _collect_lineage_parts(traces)
+    root_ids = _root_ids(traces, parts.parent_set)
+    leaf_ids = _leaf_ids(traces, parts.children_map)
 
     return LineageGraph(
         job_id=job_id,
-        execution_id=execution_id,
-        nodes=nodes,
-        edges=edges,
+        execution_id=parts.execution_id,
+        nodes=parts.nodes,
+        edges=parts.edges,
         root_ids=root_ids,
         leaf_ids=leaf_ids,
-        metrics=metrics,
+        metrics=_build_metrics(traces, parts, root_ids, leaf_ids),
     )
+
+
+def _collect_lineage_parts(traces: list[TraceRecord]) -> _LineageParts:
+    parts = _LineageParts()
+    trace_ids: set[str] = {t.trace_id for t in traces}
+    for trace in traces:
+        parts.nodes.append(_trace_to_node(trace))
+        parts.execution_id = parts.execution_id or trace.execution_id
+        _record_trace_duration(parts, trace)
+        _record_trace_edge(parts, trace, trace_ids)
+    return parts
+
+
+def _record_trace_duration(parts: _LineageParts, trace: TraceRecord) -> None:
+    duration = _duration_seconds(trace.started_at, trace.finished_at)
+    if duration is not None:
+        parts.durations[trace.trace_id] = duration
+
+
+def _record_trace_edge(parts: _LineageParts, trace: TraceRecord, trace_ids: set[str]) -> None:
+    if not trace.parent_trace_id or trace.parent_trace_id not in trace_ids:
+        return
+    parts.edges.append(LineageEdge(source=trace.parent_trace_id, target=trace.trace_id))
+    parts.parent_set.add(trace.trace_id)
+    parts.children_map.setdefault(trace.parent_trace_id, []).append(trace.trace_id)
+
+
+def _root_ids(traces: list[TraceRecord], parent_set: set[str]) -> list[str]:
+    return [trace.trace_id for trace in traces if trace.trace_id not in parent_set]
+
+
+def _leaf_ids(traces: list[TraceRecord], children_map: dict[str, list[str]]) -> list[str]:
+    return [trace.trace_id for trace in traces if trace.trace_id not in children_map]
+
+
+def _build_metrics(
+    traces: list[TraceRecord],
+    parts: _LineageParts,
+    root_ids: list[str],
+    leaf_ids: list[str],
+) -> LineageGraphMetrics:
+    depth_cache: dict[str, int] = {}
+    status_counts = Counter(trace.status for trace in traces)
+    return LineageGraphMetrics(
+        total_nodes=len(parts.nodes),
+        total_edges=len(parts.edges),
+        depth=_max_depth(root_ids, parts.children_map, depth_cache),
+        root_count=len(root_ids),
+        leaf_count=len(leaf_ids),
+        succeeded_count=status_counts["succeeded"],
+        failed_count=status_counts["failed"],
+        running_count=status_counts["running"],
+        total_duration_seconds=_total_duration_seconds(traces),
+        critical_path_seconds=_compute_critical_path(root_ids, parts.children_map, parts.durations),
+    )
+
+
+def _max_depth(
+    root_ids: list[str],
+    children_map: dict[str, list[str]],
+    depth_cache: dict[str, int],
+) -> int:
+    return max((_compute_depth(root_id, children_map, depth_cache) for root_id in root_ids), default=0)
+
+
+def _total_duration_seconds(traces: list[TraceRecord]) -> float | None:
+    starts = [trace.started_at for trace in traces if trace.started_at]
+    ends = [trace.finished_at for trace in traces if trace.finished_at]
+    if starts and ends:
+        return _duration_seconds(min(starts), max(ends))
+    return None

@@ -6,6 +6,7 @@ a structured diff showing what changed between two workflow runs.
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -93,91 +94,102 @@ def compute_provenance_diff(
         job_id_a=prov_a.get("job_id", ""),
         job_id_b=prov_b.get("job_id", ""),
     )
+    diff.job_level_diffs.extend(_job_level_diffs(prov_a, prov_b))
+    diff.artifact_diffs.extend(_artifact_diffs(prov_a, prov_b))
+    diff.step_diffs.extend(_step_diffs(traces_a, traces_b))
+    diff.summary = _summary_counts(diff)
+    return diff
 
-    # Compare job-level fields
-    for f in _JOB_COMPARE_FIELDS:
-        old_val = prov_a.get(f)
-        new_val = prov_b.get(f)
-        if old_val != new_val:
-            diff.job_level_diffs.append(FieldDiff(field=f, old=old_val, new=new_val))
-
-    # Compare model refs
+def _job_level_diffs(prov_a: dict[str, Any], prov_b: dict[str, Any]) -> list[FieldDiff]:
+    diffs = _changed_fields(prov_a, prov_b, _JOB_COMPARE_FIELDS)
     model_a = prov_a.get("model") or {}
     model_b = prov_b.get("model") or {}
-    for f in _MODEL_COMPARE_FIELDS:
-        old_val = model_a.get(f)
-        new_val = model_b.get(f)
-        if old_val != new_val:
-            diff.job_level_diffs.append(
-                FieldDiff(field=f"model.{f}", old=old_val, new=new_val)
-            )
+    diffs.extend(_changed_fields(model_a, model_b, _MODEL_COMPARE_FIELDS, prefix="model."))
+    diffs.extend(_changed_fields(prov_a, prov_b, ["total_duration_seconds"]))
+    return diffs
 
-    # Compare duration
-    dur_a = prov_a.get("total_duration_seconds")
-    dur_b = prov_b.get("total_duration_seconds")
-    if dur_a != dur_b:
-        diff.job_level_diffs.append(
-            FieldDiff(field="total_duration_seconds", old=dur_a, new=dur_b)
-        )
 
-    # Compare artifacts
-    arts_a = {a.get("uri", ""): a for a in prov_a.get("artifacts", [])}
-    arts_b = {a.get("uri", ""): a for a in prov_b.get("artifacts", [])}
+def _changed_fields(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    fields: list[str],
+    *,
+    prefix: str = "",
+) -> list[FieldDiff]:
+    return [
+        FieldDiff(field=f"{prefix}{field}", old=left.get(field), new=right.get(field))
+        for field in fields
+        if left.get(field) != right.get(field)
+    ]
 
+
+def _artifact_diffs(prov_a: dict[str, Any], prov_b: dict[str, Any]) -> list[FieldDiff]:
+    arts_a = _artifact_map(prov_a)
+    arts_b = _artifact_map(prov_b)
+    diffs: list[FieldDiff] = []
     for uri in sorted(set(arts_a) | set(arts_b)):
-        if uri in arts_a and uri not in arts_b:
-            diff.artifact_diffs.append(
-                FieldDiff(field=uri, old="present", new="absent")
-            )
-        elif uri not in arts_a and uri in arts_b:
-            diff.artifact_diffs.append(
-                FieldDiff(field=uri, old="absent", new="present")
-            )
-        else:
-            a_hash = arts_a[uri].get("sha256")
-            b_hash = arts_b[uri].get("sha256")
-            if a_hash and b_hash and a_hash != b_hash:
-                diff.artifact_diffs.append(
-                    FieldDiff(field=f"{uri}:sha256", old=a_hash, new=b_hash)
-                )
+        artifact_diff = _artifact_diff_for_uri(uri, arts_a, arts_b)
+        if artifact_diff is not None:
+            diffs.append(artifact_diff)
+    return diffs
 
-    # Compare execution traces (step-level)
-    if traces_a is not None and traces_b is not None:
-        steps_a = {t.get("step_name", ""): t for t in traces_a}
-        steps_b = {t.get("step_name", ""): t for t in traces_b}
-        all_steps = sorted(set(steps_a) | set(steps_b))
 
-        for step in all_steps:
-            if step in steps_a and step not in steps_b:
-                diff.step_diffs.append(StepDiff(step_name=step, status="removed"))
-            elif step not in steps_a and step in steps_b:
-                diff.step_diffs.append(StepDiff(step_name=step, status="added"))
-            else:
-                ta = steps_a[step]
-                tb = steps_b[step]
-                field_diffs = _compare_trace_fields(ta, tb)
-                status = "changed" if field_diffs else "unchanged"
-                diff.step_diffs.append(
-                    StepDiff(step_name=step, status=status, field_diffs=field_diffs)
-                )
+def _artifact_map(provenance: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {artifact.get("uri", ""): artifact for artifact in provenance.get("artifacts", [])}
 
-    # Summary counts
-    changed = sum(1 for sd in diff.step_diffs if sd.status == "changed")
-    added = sum(1 for sd in diff.step_diffs if sd.status == "added")
-    removed = sum(1 for sd in diff.step_diffs if sd.status == "removed")
-    unchanged = sum(1 for sd in diff.step_diffs if sd.status == "unchanged")
 
-    diff.summary = {
+def _artifact_diff_for_uri(
+    uri: str,
+    arts_a: dict[str, dict[str, Any]],
+    arts_b: dict[str, dict[str, Any]],
+) -> FieldDiff | None:
+    if uri in arts_a and uri not in arts_b:
+        return FieldDiff(field=uri, old="present", new="absent")
+    if uri not in arts_a and uri in arts_b:
+        return FieldDiff(field=uri, old="absent", new="present")
+    a_hash = arts_a[uri].get("sha256")
+    b_hash = arts_b[uri].get("sha256")
+    if a_hash and b_hash and a_hash != b_hash:
+        return FieldDiff(field=f"{uri}:sha256", old=a_hash, new=b_hash)
+    return None
+
+
+def _step_diffs(
+    traces_a: list[dict[str, Any]] | None,
+    traces_b: list[dict[str, Any]] | None,
+) -> list[StepDiff]:
+    if traces_a is None or traces_b is None:
+        return []
+    steps_a = {trace.get("step_name", ""): trace for trace in traces_a}
+    steps_b = {trace.get("step_name", ""): trace for trace in traces_b}
+    return [_step_diff(step, steps_a, steps_b) for step in sorted(set(steps_a) | set(steps_b))]
+
+
+def _step_diff(
+    step: str,
+    steps_a: dict[str, dict[str, Any]],
+    steps_b: dict[str, dict[str, Any]],
+) -> StepDiff:
+    if step in steps_a and step not in steps_b:
+        return StepDiff(step_name=step, status="removed")
+    if step not in steps_a and step in steps_b:
+        return StepDiff(step_name=step, status="added")
+    field_diffs = _compare_trace_fields(steps_a[step], steps_b[step])
+    status = "changed" if field_diffs else "unchanged"
+    return StepDiff(step_name=step, status=status, field_diffs=field_diffs)
+
+
+def _summary_counts(diff: ProvenanceDiff) -> dict[str, int]:
+    status_counts = Counter(step_diff.status for step_diff in diff.step_diffs)
+    return {
         "job_field_changes": len(diff.job_level_diffs),
         "artifact_changes": len(diff.artifact_diffs),
-        "steps_changed": changed,
-        "steps_added": added,
-        "steps_removed": removed,
-        "steps_unchanged": unchanged,
+        "steps_changed": status_counts["changed"],
+        "steps_added": status_counts["added"],
+        "steps_removed": status_counts["removed"],
+        "steps_unchanged": status_counts["unchanged"],
         "total_steps": len(diff.step_diffs),
     }
-
-    return diff
 
 
 _TRACE_COMPARE_FIELDS = [
