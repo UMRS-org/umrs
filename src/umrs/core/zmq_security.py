@@ -34,7 +34,7 @@ def _env_flag(env: Mapping[str, str], name: str, default: bool = False) -> bool:
 
 def _validate_curve_key(name: str, value: str | None) -> bytes:
     if not value:
-        raise ValueError(f"{name} is required when UMRS_ZMQ_AUTH_TYPE=curve")
+        raise ValueError(f"{name} is required when UMRS_ZMQ_AUTH_TYPE is curve or session")
     try:
         encoded = value.encode("ascii")
     except UnicodeEncodeError as exc:
@@ -50,9 +50,16 @@ def _validate_curve_key(name: str, value: str | None) -> bytes:
 class ZMQSecurityConfig:
     """ZMQ socket security configuration.
 
-    ``curve`` uses ZMTP CURVE with the RFC 27 ZAP authenticator. Server sockets
-    require either a trusted client certificate directory or an explicit
-    allow-any development escape hatch.
+    ``curve`` uses ZMTP CURVE with the RFC 27 ZAP authenticator backed by a
+    static client-keys directory.
+
+    ``session`` uses ZMTP CURVE with an in-memory
+    :class:`~umrs.core.session_curve_provider.SessionCredentialsProvider`
+    as the ZAP backend (ephemeral session-scoped credentials).
+
+    Server sockets in ``curve`` mode require either a trusted client
+    certificate directory or an explicit allow-any development escape hatch.
+    Server sockets in ``session`` mode require a ``credentials_provider``.
     """
 
     auth_type: str = "none"
@@ -62,6 +69,9 @@ class ZMQSecurityConfig:
     client_secret_key: str | None = None
     client_keys_dir: str | None = None
     allow_any_client_key: bool = False
+    # Session-mode only: the provider is shared across all sockets in a process.
+    # Not serialisable — intentionally excluded from __eq__/hash by frozen=True.
+    credentials_provider: Any | None = field(default=None, compare=False, hash=False)
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> "ZMQSecurityConfig":
@@ -85,6 +95,11 @@ class ZMQSecurityConfig:
     def enabled(self) -> bool:
         return self.auth_type != "none"
 
+    @property
+    def is_session_mode(self) -> bool:
+        """True when using ephemeral session-scoped CURVE credentials."""
+        return self.auth_type == "session"
+
     def apply_to_socket(self, socket: Any, *, server: bool, context: Any = None) -> Any | None:
         """Apply configured security options before bind/connect.
 
@@ -93,9 +108,9 @@ class ZMQSecurityConfig:
         """
         if self.auth_type == "none":
             return None
-        if self.auth_type != "curve":
+        if self.auth_type not in ("curve", "session"):
             raise ValueError(
-                "Unsupported UMRS_ZMQ_AUTH_TYPE={!r}; expected 'none' or 'curve'".format(
+                "Unsupported UMRS_ZMQ_AUTH_TYPE={!r}; expected 'none', 'curve', or 'session'".format(
                     self.auth_type
                 )
             )
@@ -135,23 +150,37 @@ class ZMQSecurityConfig:
     def _start_curve_authenticator(self, context: Any) -> Any:
         if context is None:
             raise ValueError("A ZMQ context is required for CURVE server authentication")
-        if not self.client_keys_dir and not self.allow_any_client_key:
-            raise ValueError(
-                "UMRS_ZMQ_CURVE_CLIENT_KEYS_DIR is required for authenticated CURVE servers "
-                "unless UMRS_ZMQ_CURVE_ALLOW_ANY_CLIENT_KEY=true is set for development"
-            )
 
-        from zmq.auth import CURVE_ALLOW_ANY
         from zmq.auth.thread import ThreadAuthenticator
 
         authenticator = ThreadAuthenticator(context)
         authenticator.start()
-        location = CURVE_ALLOW_ANY if self.allow_any_client_key else self.client_keys_dir
-        authenticator.configure_curve(domain="*", location=location)
-        logger.info(
-            "ZMQ CURVE authentication enabled (%s)",
-            "allow-any development mode" if self.allow_any_client_key else self.client_keys_dir,
-        )
+
+        if self.auth_type == "session":
+            # Session mode: use in-memory callback provider
+            if self.credentials_provider is None:
+                raise ValueError(
+                    "credentials_provider is required when UMRS_ZMQ_AUTH_TYPE=session"
+                )
+            authenticator.configure_curve_callback(
+                domain="*", credentials_provider=self.credentials_provider
+            )
+            logger.info("ZMQ CURVE authentication enabled (session-scoped, callback provider)")
+        else:
+            # Static curve mode: file-based key directory
+            if not self.client_keys_dir and not self.allow_any_client_key:
+                raise ValueError(
+                    "UMRS_ZMQ_CURVE_CLIENT_KEYS_DIR is required for authenticated CURVE servers "
+                    "unless UMRS_ZMQ_CURVE_ALLOW_ANY_CLIENT_KEY=true is set for development"
+                )
+            from zmq.auth import CURVE_ALLOW_ANY
+
+            location = CURVE_ALLOW_ANY if self.allow_any_client_key else self.client_keys_dir
+            authenticator.configure_curve(domain="*", location=location)
+            logger.info(
+                "ZMQ CURVE authentication enabled (%s)",
+                "allow-any development mode" if self.allow_any_client_key else self.client_keys_dir,
+            )
         return authenticator
 
 

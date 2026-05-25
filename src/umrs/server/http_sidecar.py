@@ -73,6 +73,7 @@ def _create_app():
         traces_router,
         vision_router,
         workflows_router,
+        zmq_sessions_router,
     )
 
     environment = os.environ.get("GATEWAY_ENVIRONMENT", "development").lower()
@@ -113,6 +114,7 @@ def _create_app():
     app.include_router(provenance_router)
     app.include_router(traces_router)
     app.include_router(workflows_router)
+    app.include_router(zmq_sessions_router)
 
     db_pool = None
 

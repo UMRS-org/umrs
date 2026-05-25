@@ -1888,6 +1888,7 @@ class RouterPoolExecutor:
     bind_address: str = "tcp://0.0.0.0:5560"
     name: str = "router"
     timeout_seconds: float | None = None
+    session_curve_provider: Any = None
 
     # -- internal state --
     _zmq_ctx: Any = field(default=None, init=False, repr=False)
@@ -1912,7 +1913,15 @@ class RouterPoolExecutor:
         self._zmq = zmq
         self._zmq_ctx = zmq.Context()
         self._sock = self._zmq_ctx.socket(zmq.ROUTER)
-        self._zmq_authenticator = ZMQSecurityConfig.from_env().apply_to_socket(
+
+        zmq_sec = ZMQSecurityConfig.from_env()
+        # Inject session provider when using ephemeral session CURVE mode
+        if zmq_sec.is_session_mode and self.session_curve_provider is not None:
+            if zmq_sec.credentials_provider is not self.session_curve_provider:
+                from dataclasses import replace as _dc_replace
+                zmq_sec = _dc_replace(zmq_sec, credentials_provider=self.session_curve_provider)
+
+        self._zmq_authenticator = zmq_sec.apply_to_socket(
             self._sock,
             server=True,
             context=self._zmq_ctx,
