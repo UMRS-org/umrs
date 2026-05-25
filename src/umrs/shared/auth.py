@@ -930,14 +930,94 @@ def resolve_jwt_secret() -> str:
     return "dev-secret-change-in-production"
 
 
+# ---------------------------------------------------------------------------
+# JWKS / RS256 support (Okta / OIDC)
+# ---------------------------------------------------------------------------
+
+# Lazy-cached JWKS key set — populated on first RS256 request.
+_jwks_cache: dict | None = None
+
+
+def _resolve_jwks_url() -> str | None:
+    """Return ``$JWT_JWKS_URL`` if configured, else ``None``."""
+    return os.environ.get("JWT_JWKS_URL") or None
+
+
+def _fetch_jwks(url: str) -> dict:
+    """Fetch the JWKS document from *url* (network call)."""
+    import urllib.request
+
+    req = urllib.request.Request(url, method="GET")
+    with urllib.request.urlopen(req, timeout=10) as resp:  # noqa: S310
+        return json.loads(resp.read())
+
+
+def _find_jwks_key(jwks_data: dict, kid: str) -> dict | None:
+    """Return the JWK dict whose ``kid`` matches, or ``None``."""
+    for key_data in jwks_data.get("keys", []):
+        if key_data.get("kid") == kid:
+            return key_data
+    return None
+
+
+def _get_jwks_signing_key(token: str, jwks_url: str) -> dict:
+    """Return the JWKS key dict that signed *token*.
+
+    Caches the JWKS document; re-fetches once when *kid* is missing.
+    """
+    global _jwks_cache
+
+    from jose import jwt as jose_jwt
+
+    header = jose_jwt.get_unverified_header(token)
+    kid = header.get("kid")
+    if not kid:
+        raise JWTError("Token header missing 'kid' — cannot match JWKS key")
+
+    if _jwks_cache is None:
+        _jwks_cache = _fetch_jwks(jwks_url)
+
+    key_data = _find_jwks_key(_jwks_cache, kid)
+    if key_data is not None:
+        return key_data
+
+    # kid not found — refresh cache and retry once.
+    _jwks_cache = _fetch_jwks(jwks_url)
+    key_data = _find_jwks_key(_jwks_cache, kid)
+    if key_data is not None:
+        return key_data
+
+    raise JWTError(f"No JWKS key found for kid={kid}")
+
+
+def _resolve_key_and_algorithms(
+    token: str,
+    secret: str,
+) -> tuple[Any, list[str]]:
+    """Return ``(key, algorithms)`` for JWT decoding.
+
+    When ``$JWT_JWKS_URL`` is set the token is validated against the
+    JWKS endpoint (RS256).  Otherwise fall back to the HS256 shared
+    secret.
+    """
+    jwks_url = _resolve_jwks_url()
+    if jwks_url:
+        return _get_jwks_signing_key(token, jwks_url), ["RS256"]
+    return secret, ["HS256"]
+
+
 def validate_jwt(token: str, secret: str) -> dict[str, Any]:
     """Validate a JWT and return its claims.
 
-    Uses ``python-jose`` for signature verification (HS256).
+    Supports two modes:
+
+    * **HS256** (default): Uses *secret* as HMAC-SHA256 key.
+    * **RS256 / JWKS**: When ``$JWT_JWKS_URL`` is set, validates
+      against the public keys published at that URL (e.g. Okta).
 
     Args:
         token: The raw JWT string.
-        secret: HMAC-SHA256 signing secret.
+        secret: HMAC-SHA256 signing secret (used only in HS256 mode).
 
     Returns:
         Decoded claims dictionary.
@@ -954,11 +1034,13 @@ def validate_jwt(token: str, secret: str) -> dict[str, Any]:
             "Install with: pip install python-jose[cryptography]"
         )
 
+    key, algorithms = _resolve_key_and_algorithms(token, secret)
+
     try:
         claims = jose_jwt.decode(
             token,
-            secret,
-            algorithms=["HS256"],
+            key,
+            algorithms=algorithms,
             options={"require_exp": True, "require_sub": True},
         )
     except JoseJWTError as exc:
