@@ -81,6 +81,17 @@ UMRS_AI4S_PORT=8002
 MINIO_PORT=9000
 MINIO_CONSOLE_PORT=9001
 POSTGRES_PORT=5432
+
+# Network / Tunnel mode
+# Set UMRS_TUNNEL_MODE=true to bind ZMQ to 127.0.0.1 (SSH tunnel required).
+# Set UMRS_TUNNEL_MODE=false (default) for direct network access (no SSH tunnel).
+UMRS_TUNNEL_MODE=false
+# External IP/hostname used by compute nodes and clients to reach services.
+# Only used when UMRS_TUNNEL_MODE=false.
+UMRS_SERVER_HOST=0.0.0.0
+# S3 presigned URL endpoint — use the external IP when not tunneling so
+# compute nodes can reach MinIO directly.
+# S3_PRESIGN_ENDPOINT=http://134.160.189.136:9000
 ENVEOF
     log "*** Edit .env to set proper secrets before starting ***"
 fi
