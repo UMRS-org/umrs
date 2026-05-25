@@ -166,6 +166,7 @@ class MessageQueue:
                 port=selected_port,
                 tunnel_mode=self.tunnel_mode,
                 zmq_security=self.zmq_security,
+                session_curve_provider=self._session_curve_provider,
             )
 
         entry["port"] = selected_port
@@ -173,7 +174,8 @@ class MessageQueue:
 
     def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
                  max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None,
-                 status_store=None, tunnel_mode=None, prefer_env_server_host=True, zmq_security=None):
+                 status_store=None, tunnel_mode=None, prefer_env_server_host=True, zmq_security=None,
+                 session_curve_provider=None):
         """
         Initializes the MessageQueue.
 
@@ -191,6 +193,11 @@ class MessageQueue:
             target_message_size (int): Max size per message (for POSIX/SYSV).
             status_store: a dictionnary to store event related to task in server.
                           Shared with UMRSTasks (ZeroMQ reads theis event while UMRSTasks writes it)
+            session_curve_provider: Optional
+                :class:`~umrs.core.session_curve_provider.SessionCredentialsProvider`.
+                When supplied (or when ``zmq_security.is_session_mode`` and this is the
+                root server MessageQueue), the provider is wired into the ZAP
+                authenticator and shared with child data queues.
         """
         self.role = role.lower()
         self.type = queue_type.lower()
@@ -211,8 +218,30 @@ class MessageQueue:
         self._last_control_auth: dict[str, str] = {}
         self.zmq_security = zmq_security or ZMQSecurityConfig.from_env()
         self._zmq_authenticator = None
+        self._session_curve_provider = session_curve_provider
         self._curve_key_map: CurveKeyMap | None = None
-        if self.role == "server" and self.zmq_security.enabled and self.zmq_security.client_keys_dir:
+
+        # Session mode: build or adopt the shared credentials provider and
+        # inject it into the ZMQSecurityConfig for the authenticator.
+        if self.role == "server" and self.zmq_security.is_session_mode:
+            if self._session_curve_provider is None:
+                from umrs.core.session_curve_provider import SessionCredentialsProvider
+                self._session_curve_provider = SessionCredentialsProvider()
+                self._session_curve_provider.start()
+            # Ensure the config carries the provider (frozen dataclass →
+            # reconstruct only when the field differs).
+            if self.zmq_security.credentials_provider is not self._session_curve_provider:
+                from dataclasses import replace as _dc_replace
+                self.zmq_security = _dc_replace(
+                    self.zmq_security, credentials_provider=self._session_curve_provider
+                )
+            # Publish to HTTP API layer so /umrs/zmq/session endpoints work.
+            try:
+                from umrs.api.zmq_sessions import set_session_curve_provider
+                set_session_curve_provider(self._session_curve_provider)
+            except Exception:
+                logger.debug("ZMQ session HTTP API not available — skipping provider publish")
+        elif self.role == "server" and self.zmq_security.enabled and self.zmq_security.client_keys_dir:
             self._curve_key_map = CurveKeyMap.from_directory(self.zmq_security.client_keys_dir)
 
         # Initialize the selected queue type
@@ -1118,15 +1147,27 @@ class MessageQueue:
         the CURVE key map is consulted to verify that the self-declared
         ``client_id`` matches a known CURVE identity.  A mismatch is
         logged as a warning (future: reject).
+
+        When session-mode CURVE is active, the credentials provider is
+        used instead to resolve the user identity from the CURVE public key.
         """
         ctx = self._auth_sessions.get(client_id)
         if ctx is not None:
             return ctx
 
+        # Session-mode: resolve identity from the credentials provider
+        if self._session_curve_provider is not None:
+            session_user = self._session_curve_provider.user_id_for_key(client_id)
+            if session_user:
+                logger.debug(
+                    "Session CURVE provider resolved client_id=%s to user=%s",
+                    client_id, session_user,
+                )
+
         # If CURVE key map is loaded, try to correlate the client_id to a
         # known CURVE identity (filename-based).  This adds an advisory
         # check: the self-declared client_id should match the key filename.
-        if self._curve_key_map and len(self._curve_key_map) > 0:
+        elif self._curve_key_map and len(self._curve_key_map) > 0:
             curve_user = self._curve_key_map.username_for_key(client_id)
             if curve_user:
                 logger.debug(
