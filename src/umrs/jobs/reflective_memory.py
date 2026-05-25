@@ -70,6 +70,13 @@ class ReflectiveMemorySnapshot:
         }
 
 
+@dataclass
+class _EntryBatch:
+    entries: list[ReflectiveMemoryEntry]
+    total: int
+    active: int = 0
+
+
 class ReflectiveMemoryInspector:
     """Unified inspection interface for reflective memory.
 
@@ -117,59 +124,23 @@ class ReflectiveMemoryInspector:
         active_heuristics = 0
 
         # Outcomes (MEM-D1)
-        if (tier is None or tier == "outcome") and self._outcomes:
-            outcomes = self._outcomes.list_outcomes(
-                workflow_name=workflow_name,
-                model_used=model_name,
-                limit=limit,
-            )
-            total_outcomes = len(outcomes)
-            for o in outcomes:
-                entries.append(ReflectiveMemoryEntry(
-                    entry_id=o.outcome_id,
-                    tier="outcome",
-                    source_store="WorkflowOutcomeStore",
-                    summary=f"[{o.status}] {o.workflow_name} (model={o.model_used or 'N/A'})",
-                    data=o.to_dict(),
-                    created_at=_iso(o.created_at) or "",
-                ))
+        if _include_tier(tier, "outcome") and self._outcomes:
+            batch = self._outcome_entries(workflow_name, model_name, limit)
+            entries.extend(batch.entries)
+            total_outcomes = batch.total
 
         # Routing feedback (MEM-D2)
-        if (tier is None or tier == "routing") and self._routing:
-            feedbacks = self._routing.list_feedback(
-                model_name=model_name,
-                limit=limit,
-            )
-            total_routing = len(feedbacks)
-            for f in feedbacks:
-                accepted_str = "pending"
-                if f.user_accepted is True:
-                    accepted_str = "accepted"
-                elif f.user_accepted is False:
-                    accepted_str = "rejected"
-                entries.append(ReflectiveMemoryEntry(
-                    entry_id=f.feedback_id,
-                    tier="routing",
-                    source_store="RoutingFeedbackStore",
-                    summary=f"[{f.outcome}] {f.model_selected} → {accepted_str} (step={f.step_name})",
-                    data=f.to_dict(),
-                    created_at=_iso(f.created_at) or "",
-                ))
+        if _include_tier(tier, "routing") and self._routing:
+            batch = self._routing_entries(model_name, limit)
+            entries.extend(batch.entries)
+            total_routing = batch.total
 
         # Heuristics (MEM-D3)
-        if (tier is None or tier == "heuristic") and self._planning:
-            heuristics = self._planning.list_heuristics(workflow_name=workflow_name)
-            total_heuristics = len(heuristics)
-            active_heuristics = sum(1 for h in heuristics if h.is_active)
-            for h in heuristics[:limit]:
-                entries.append(ReflectiveMemoryEntry(
-                    entry_id=h.heuristic_id,
-                    tier="heuristic",
-                    source_store="AdaptivePlanningEngine",
-                    summary=f"[{h.rule_type}] {h.condition} → {h.action} (conf={h.confidence:.2f})",
-                    data=h.to_dict(),
-                    created_at=_iso(h.created_at) or "",
-                ))
+        if _include_tier(tier, "heuristic") and self._planning:
+            batch = self._heuristic_entries(workflow_name, limit)
+            entries.extend(batch.entries)
+            total_heuristics = batch.total
+            active_heuristics = batch.active
 
         return ReflectiveMemorySnapshot(
             entries=entries,
@@ -177,6 +148,37 @@ class ReflectiveMemoryInspector:
             total_routing_feedback=total_routing,
             total_heuristics=total_heuristics,
             active_heuristics=active_heuristics,
+        )
+
+    def _outcome_entries(
+        self,
+        workflow_name: str | None,
+        model_name: str | None,
+        limit: int,
+    ) -> _EntryBatch:
+        outcomes = self._outcomes.list_outcomes(
+            workflow_name=workflow_name,
+            model_used=model_name,
+            limit=limit,
+        )
+        return _EntryBatch(
+            entries=[_outcome_entry(outcome) for outcome in outcomes],
+            total=len(outcomes),
+        )
+
+    def _routing_entries(self, model_name: str | None, limit: int) -> _EntryBatch:
+        feedbacks = self._routing.list_feedback(model_name=model_name, limit=limit)
+        return _EntryBatch(
+            entries=[_routing_entry(feedback) for feedback in feedbacks],
+            total=len(feedbacks),
+        )
+
+    def _heuristic_entries(self, workflow_name: str | None, limit: int) -> _EntryBatch:
+        heuristics = self._planning.list_heuristics(workflow_name=workflow_name)
+        return _EntryBatch(
+            entries=[_heuristic_entry(heuristic) for heuristic in heuristics[:limit]],
+            total=len(heuristics),
+            active=sum(1 for heuristic in heuristics if heuristic.is_active),
         )
 
     def delete_entry(self, entry_id: str, tier: str) -> bool:
@@ -205,3 +207,44 @@ class ReflectiveMemoryInspector:
                 if self._planning.deactivate_heuristic(h.heuristic_id):
                     count += 1
         return count
+
+
+def _include_tier(selected: str | None, candidate: str) -> bool:
+    return selected is None or selected == candidate
+
+
+def _outcome_entry(outcome: Any) -> ReflectiveMemoryEntry:
+    return ReflectiveMemoryEntry(
+        entry_id=outcome.outcome_id,
+        tier="outcome",
+        source_store="WorkflowOutcomeStore",
+        summary=f"[{outcome.status}] {outcome.workflow_name} (model={outcome.model_used or 'N/A'})",
+        data=outcome.to_dict(),
+        created_at=_iso(outcome.created_at) or "",
+    )
+
+
+def _routing_entry(feedback: Any) -> ReflectiveMemoryEntry:
+    return ReflectiveMemoryEntry(
+        entry_id=feedback.feedback_id,
+        tier="routing",
+        source_store="RoutingFeedbackStore",
+        summary=f"[{feedback.outcome}] {feedback.model_selected} → {_accepted_label(feedback.user_accepted)} (step={feedback.step_name})",
+        data=feedback.to_dict(),
+        created_at=_iso(feedback.created_at) or "",
+    )
+
+
+def _accepted_label(user_accepted: bool | None) -> str:
+    return {True: "accepted", False: "rejected"}.get(user_accepted, "pending")
+
+
+def _heuristic_entry(heuristic: Any) -> ReflectiveMemoryEntry:
+    return ReflectiveMemoryEntry(
+        entry_id=heuristic.heuristic_id,
+        tier="heuristic",
+        source_store="AdaptivePlanningEngine",
+        summary=f"[{heuristic.rule_type}] {heuristic.condition} → {heuristic.action} (conf={heuristic.confidence:.2f})",
+        data=heuristic.to_dict(),
+        created_at=_iso(heuristic.created_at) or "",
+    )

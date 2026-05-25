@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -102,6 +103,20 @@ class ModelRoutingSummary:
             "acceptance_rate": self.acceptance_rate,
             "correction_targets": self.correction_targets,
         }
+
+
+@dataclass
+class _FeedbackSummaryStats:
+    total: int
+    succeeded: int
+    failed: int
+    accepted: int
+    rejected: int
+    corrected: int
+    avg_latency_ms: float | None
+    avg_quality_score: float | None
+    acceptance_rate: float
+    correction_targets: dict[str, int]
 
 
 VALID_OUTCOMES = {"succeeded", "failed", "timeout", "rejected", ""}
@@ -267,77 +282,51 @@ class RoutingFeedbackStore:
     ) -> list[RoutingFeedback]:
         """List routing feedback with optional filters."""
         if self.db_enabled:
-            conn = self._get_conn()
-            try:
-                with conn.cursor() as cur:
-                    conditions = []
-                    params: list[Any] = []
-                    if model_name:
-                        conditions.append("model_selected = %s")
-                        params.append(model_name)
-                    if job_id:
-                        conditions.append("job_id = %s")
-                        params.append(job_id)
-                    if step_type:
-                        conditions.append("step_type = %s")
-                        params.append(step_type)
-                    where = ""
-                    if conditions:
-                        where = "WHERE " + " AND ".join(conditions)
-                    params.append(limit)
-                    cur.execute(
-                        f"SELECT * FROM routing_feedback {where} ORDER BY created_at DESC LIMIT %s",
-                        params,
-                    )
-                    return [self._row_to_feedback(cur, r) for r in cur.fetchall()]
-            finally:
-                conn.close()
+            return self._list_feedback_db(model_name, job_id, step_type, limit)
 
-        results = list(self._mem.values())
-        if model_name:
-            results = [f for f in results if f.model_selected == model_name]
-        if job_id:
-            results = [f for f in results if f.job_id == job_id]
-        if step_type:
-            results = [f for f in results if f.step_type == step_type]
+        results = _filter_feedback(self._mem.values(), model_name, job_id, step_type)
         results.sort(key=lambda f: f.created_at, reverse=True)
         return results[:limit]
 
     def summarize_model(self, model_name: str) -> ModelRoutingSummary:
         """Build aggregated routing summary for a model."""
         feedbacks = self.list_feedback(model_name=model_name, limit=10000)
-
-        total = len(feedbacks)
-        succeeded = sum(1 for f in feedbacks if f.outcome == "succeeded")
-        failed = sum(1 for f in feedbacks if f.outcome in ("failed", "timeout"))
-        accepted = sum(1 for f in feedbacks if f.user_accepted is True)
-        rejected = sum(1 for f in feedbacks if f.user_accepted is False and not f.user_correction)
-        corrected = sum(1 for f in feedbacks if f.user_correction is not None)
-
-        latencies = [f.latency_ms for f in feedbacks if f.latency_ms is not None]
-        scores = [f.quality_score for f in feedbacks if f.quality_score is not None]
-
-        correction_targets: dict[str, int] = {}
-        for f in feedbacks:
-            if f.user_correction:
-                correction_targets[f.user_correction] = correction_targets.get(f.user_correction, 0) + 1
-
-        feedback_count = accepted + rejected + corrected
-        acceptance_rate = accepted / feedback_count if feedback_count > 0 else 0.0
+        stats = _feedback_summary_stats(feedbacks)
 
         return ModelRoutingSummary(
             model_name=model_name,
-            total_selections=total,
-            succeeded=succeeded,
-            failed=failed,
-            user_accepted=accepted,
-            user_rejected=rejected,
-            user_corrected=corrected,
-            avg_latency_ms=sum(latencies) / len(latencies) if latencies else None,
-            avg_quality_score=sum(scores) / len(scores) if scores else None,
-            acceptance_rate=round(acceptance_rate, 4),
-            correction_targets=correction_targets,
+            total_selections=stats.total,
+            succeeded=stats.succeeded,
+            failed=stats.failed,
+            user_accepted=stats.accepted,
+            user_rejected=stats.rejected,
+            user_corrected=stats.corrected,
+            avg_latency_ms=stats.avg_latency_ms,
+            avg_quality_score=stats.avg_quality_score,
+            acceptance_rate=stats.acceptance_rate,
+            correction_targets=stats.correction_targets,
         )
+
+    def _list_feedback_db(
+        self,
+        model_name: str | None,
+        job_id: str | None,
+        step_type: str | None,
+        limit: int,
+    ) -> list[RoutingFeedback]:
+        conditions, params = _feedback_query_parts(model_name, job_id, step_type)
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        params.append(limit)
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"SELECT * FROM routing_feedback {where} ORDER BY created_at DESC LIMIT %s",
+                    params,
+                )
+                return [self._row_to_feedback(cur, row) for row in cur.fetchall()]
+        finally:
+            conn.close()
 
     def delete_feedback(self, feedback_id: str) -> bool:
         """Delete a single feedback record."""
@@ -378,3 +367,102 @@ class RoutingFeedbackStore:
             user_id=d.get("user_id", ""),
             created_at=d.get("created_at", _now()),
         )
+
+
+def _feedback_query_parts(
+    model_name: str | None,
+    job_id: str | None,
+    step_type: str | None,
+) -> tuple[list[str], list[Any]]:
+    conditions: list[str] = []
+    params: list[Any] = []
+    if model_name:
+        conditions.append("model_selected = %s")
+        params.append(model_name)
+    if job_id:
+        conditions.append("job_id = %s")
+        params.append(job_id)
+    if step_type:
+        conditions.append("step_type = %s")
+        params.append(step_type)
+    return conditions, params
+
+
+def _filter_feedback(
+    feedbacks: Any,
+    model_name: str | None,
+    job_id: str | None,
+    step_type: str | None,
+) -> list[RoutingFeedback]:
+    filters = _active_feedback_filters(model_name, job_id, step_type)
+    return [feedback for feedback in feedbacks if _matches_filters(feedback, filters)]
+
+
+def _active_feedback_filters(
+    model_name: str | None,
+    job_id: str | None,
+    step_type: str | None,
+) -> list[tuple[str, str]]:
+    candidates = [
+        ("model_selected", model_name),
+        ("job_id", job_id),
+        ("step_type", step_type),
+    ]
+    return [(field, value) for field, value in candidates if value]
+
+
+def _matches_filters(feedback: RoutingFeedback, filters: list[tuple[str, str]]) -> bool:
+    return all(getattr(feedback, field) == value for field, value in filters)
+
+
+def _feedback_summary_stats(feedbacks: list[RoutingFeedback]) -> _FeedbackSummaryStats:
+    outcomes = Counter(feedback.outcome for feedback in feedbacks)
+    accepted = _accepted_count(feedbacks)
+    rejected = _rejected_count(feedbacks)
+    corrected = _corrected_count(feedbacks)
+    return _FeedbackSummaryStats(
+        total=len(feedbacks),
+        succeeded=outcomes["succeeded"],
+        failed=outcomes["failed"] + outcomes["timeout"],
+        accepted=accepted,
+        rejected=rejected,
+        corrected=corrected,
+        avg_latency_ms=_average([feedback.latency_ms for feedback in feedbacks]),
+        avg_quality_score=_average([feedback.quality_score for feedback in feedbacks]),
+        acceptance_rate=_acceptance_rate(accepted, rejected, corrected),
+        correction_targets=_correction_targets(feedbacks),
+    )
+
+
+def _accepted_count(feedbacks: list[RoutingFeedback]) -> int:
+    return sum(1 for feedback in feedbacks if feedback.user_accepted is True)
+
+
+def _rejected_count(feedbacks: list[RoutingFeedback]) -> int:
+    return sum(
+        1
+        for feedback in feedbacks
+        if feedback.user_accepted is False and not feedback.user_correction
+    )
+
+
+def _corrected_count(feedbacks: list[RoutingFeedback]) -> int:
+    return sum(1 for feedback in feedbacks if feedback.user_correction is not None)
+
+
+def _average(values: list[float | None]) -> float | None:
+    present = [value for value in values if value is not None]
+    return sum(present) / len(present) if present else None
+
+
+def _acceptance_rate(accepted: int, rejected: int, corrected: int) -> float:
+    feedback_count = accepted + rejected + corrected
+    return round(accepted / feedback_count, 4) if feedback_count > 0 else 0.0
+
+
+def _correction_targets(feedbacks: list[RoutingFeedback]) -> dict[str, int]:
+    targets: dict[str, int] = {}
+    for feedback in feedbacks:
+        if feedback.user_correction:
+            targets[feedback.user_correction] = targets.get(feedback.user_correction, 0) + 1
+    return targets

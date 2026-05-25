@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .execution_trace_store import ExecutionTraceStore, TraceRecord
-from .models import AttemptStatus, Job, JobStatus
+from .models import JobStatus
 from .store import JobStore
 
 logger = logging.getLogger(__name__)
@@ -127,6 +127,16 @@ class SessionRecoveryResult:
         }
 
 
+@dataclass
+class _RecoveredStepSummary:
+    completed: list[RecoveredStep]
+    failed: list[RecoveredStep]
+    running: list[RecoveredStep]
+    last_completed_step: str | None
+    first_failed_step: str | None
+    resume_from_step: str | None
+
+
 class SessionRecoverer:
     """Recovers in-flight session state from execution traces after crash.
 
@@ -229,79 +239,91 @@ class SessionRecoverer:
         if not traces:
             return None
 
-        # Determine execution_id from traces
-        execution_id = None
-        for t in traces:
-            if t.execution_id:
-                execution_id = t.execution_id
-                break
-
-        # Build recovered steps
-        recovered_steps: list[RecoveredStep] = []
-        for trace in traces:
-            has_checkpoint = False
-            if self._checkpoint_store is not None:
-                try:
-                    ckpt = self._checkpoint_store.latest_checkpoint(
-                        trace.attempt_id or "", trace.step_name
-                    )
-                    has_checkpoint = ckpt is not None
-                except Exception:
-                    pass
-
-            step = RecoveredStep(
-                trace_id=trace.trace_id,
-                step_name=trace.step_name,
-                step_type=trace.step_type,
-                status=trace.status,
-                progress=trace.progress,
-                has_inputs=trace.inputs_snapshot is not None or trace.inputs_ref is not None,
-                has_outputs=trace.outputs_snapshot is not None or trace.outputs_ref is not None,
-                has_checkpoint=has_checkpoint,
-                error=trace.error,
-                started_at=trace.started_at,
-                finished_at=trace.finished_at,
-            )
-            recovered_steps.append(step)
-
-        # Compute aggregates
-        completed = [s for s in recovered_steps if s.status == "succeeded"]
-        failed = [s for s in recovered_steps if s.status == "failed"]
-        running = [s for s in recovered_steps if s.status in ("running", "pending")]
-
-        last_completed_step = completed[-1].step_name if completed else None
-        first_failed_step = failed[0].step_name if failed else None
-
-        # Determine resume point: first non-succeeded step
-        resume_from = None
-        for s in recovered_steps:
-            if s.status != "succeeded":
-                resume_from = s.step_name
-                break
-
-        # Check job retry eligibility
-        can_retry = False
-        try:
-            job = self._job_store.get_job(job_id)
-            if job is not None:
-                can_retry = job.can_retry()
-                job_status = job.status.value if hasattr(job.status, "value") else str(job.status)
-            else:
-                job_status = "unknown"
-        except Exception:
-            job_status = "unknown"
+        recovered_steps = [self._trace_to_recovered_step(trace) for trace in traces]
+        summary = _recovered_step_summary(recovered_steps)
+        can_retry, job_status = self._job_retry_status(job_id)
 
         return RecoveredSession(
             job_id=job_id,
-            execution_id=execution_id,
+            execution_id=_execution_id_from_traces(traces),
             job_status=job_status,
             can_retry=can_retry,
             total_steps=len(recovered_steps),
-            completed_steps=len(completed),
-            failed_steps=len(failed),
-            running_steps=len(running),
-            last_completed_step=last_completed_step,
-            first_failed_step=first_failed_step,
-            resume_from_step=resume_from,
+            completed_steps=len(summary.completed),
+            failed_steps=len(summary.failed),
+            running_steps=len(summary.running),
+            last_completed_step=summary.last_completed_step,
+            first_failed_step=summary.first_failed_step,
+            resume_from_step=summary.resume_from_step,
             steps=recovered_steps,
         )
+
+    def _trace_to_recovered_step(self, trace: TraceRecord) -> RecoveredStep:
+        return RecoveredStep(
+            trace_id=trace.trace_id,
+            step_name=trace.step_name,
+            step_type=trace.step_type,
+            status=trace.status,
+            progress=trace.progress,
+            has_inputs=trace.inputs_snapshot is not None or trace.inputs_ref is not None,
+            has_outputs=trace.outputs_snapshot is not None or trace.outputs_ref is not None,
+            has_checkpoint=self._has_checkpoint(trace),
+            error=trace.error,
+            started_at=trace.started_at,
+            finished_at=trace.finished_at,
+        )
+
+    def _has_checkpoint(self, trace: TraceRecord) -> bool:
+        if self._checkpoint_store is None:
+            return False
+        try:
+            ckpt = self._checkpoint_store.latest_checkpoint(
+                trace.attempt_id or "", trace.step_name
+            )
+            return ckpt is not None
+        except Exception:
+            return False
+
+    def _job_retry_status(self, job_id: str) -> tuple[bool, str]:
+        try:
+            job = self._job_store.get_job(job_id)
+        except Exception:
+            return False, "unknown"
+        if job is None:
+            return False, "unknown"
+        job_status = job.status.value if hasattr(job.status, "value") else str(job.status)
+        return job.can_retry(), job_status
+
+
+def _execution_id_from_traces(traces: list[TraceRecord]) -> str | None:
+    return next((trace.execution_id for trace in traces if trace.execution_id), None)
+
+
+def _recovered_step_summary(steps: list[RecoveredStep]) -> _RecoveredStepSummary:
+    completed = _steps_with_status(steps, {"succeeded"})
+    failed = _steps_with_status(steps, {"failed"})
+    running = _steps_with_status(steps, {"running", "pending"})
+    return _RecoveredStepSummary(
+        completed=completed,
+        failed=failed,
+        running=running,
+        last_completed_step=_last_step_name(completed),
+        first_failed_step=_first_step_name(failed),
+        resume_from_step=_resume_from_step(steps),
+    )
+
+
+def _steps_with_status(steps: list[RecoveredStep], statuses: set[str]) -> list[RecoveredStep]:
+    return [step for step in steps if step.status in statuses]
+
+
+def _last_step_name(steps: list[RecoveredStep]) -> str | None:
+    return steps[-1].step_name if steps else None
+
+
+def _first_step_name(steps: list[RecoveredStep]) -> str | None:
+    return steps[0].step_name if steps else None
+
+
+def _resume_from_step(steps: list[RecoveredStep]) -> str | None:
+    return next((step.step_name for step in steps if step.status != "succeeded"), None)
