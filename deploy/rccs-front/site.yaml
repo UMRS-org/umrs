@@ -6,8 +6,11 @@
 # Postgres, MinIO) run here. Slurm jobs are submitted remotely via
 # SSH to the rccs-cloud login node.
 #
-# Topology:
-#   client --VPN--> umrs-front --SSH--> rccs-cloud (login) --sbatch--> compute
+# Topology (no-tunnel production):
+#   client --HTTP--> umrs-front (direct) --SSH--> rccs-cloud (login) --sbatch--> compute
+#
+# Topology (tunnel mode):
+#   client --SSH--> umrs-front --SSH--> rccs-cloud (login) --sbatch--> compute
 #
 # Key differences from rccs-cloud:
 #   - scheduler.kind = slurm-remote (SSH-based Slurm access)
