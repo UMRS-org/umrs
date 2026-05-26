@@ -56,7 +56,7 @@ def parse_data_port_range(
     *,
     default: DataPortRange | None = None,
 ) -> DataPortRange | None:
-    if raw is None or raw == "":
+    if _empty_data_port_range_value(raw):
         return default
 
     if isinstance(raw, DataPortRange):
@@ -66,22 +66,37 @@ def parse_data_port_range(
         return DataPortRange.single(raw)
 
     if isinstance(raw, str):
-        value = raw.strip()
-        if not value:
-            return default
-        if "-" not in value:
-            return DataPortRange.single(int(value))
-        start_raw, end_raw = value.split("-", 1)
-        return DataPortRange(start=int(start_raw.strip()), end=int(end_raw.strip()))
+        return _parse_data_port_range_string(raw, default)
 
     if isinstance(raw, dict):
-        if "start" not in raw:
-            raise ValueError("data_port_range requires a start value")
-        start = int(raw["start"])
-        end = int(raw.get("end", start))
-        return DataPortRange(start=start, end=end)
+        return _parse_data_port_range_mapping(raw)
 
     raise ValueError(f"Unsupported data port range value: {raw!r}")
+
+
+def _empty_data_port_range_value(raw: Any) -> bool:
+    return raw is None or raw == ""
+
+
+def _parse_data_port_range_string(
+    raw: str,
+    default: DataPortRange | None,
+) -> DataPortRange | None:
+    value = raw.strip()
+    if not value:
+        return default
+    if "-" not in value:
+        return DataPortRange.single(int(value))
+    start_raw, end_raw = value.split("-", 1)
+    return DataPortRange(start=int(start_raw.strip()), end=int(end_raw.strip()))
+
+
+def _parse_data_port_range_mapping(raw: dict[str, Any]) -> DataPortRange:
+    if "start" not in raw:
+        raise ValueError("data_port_range requires a start value")
+    start = int(raw["start"])
+    end = int(raw.get("end", start))
+    return DataPortRange(start=start, end=end)
 
 
 def _env_flag(name: str, default: bool | None = None) -> bool | None:
@@ -330,10 +345,12 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         path=str(path),
         gateway_url=content.get("gateway_url"),
     )
-    if not profile.minio_url:
-        profile.minio_url = _default_service_url(profile.server_host, 9000, profile.tunnel_mode)
-    if not profile.rag_url:
-        profile.rag_url = _default_service_url(profile.server_host, 8081, profile.tunnel_mode)
+    return _with_default_service_urls(profile)
+
+
+def _with_default_service_urls(profile: ConnectionProfile) -> ConnectionProfile:
+    profile.minio_url = profile.minio_url or _default_service_url(profile.server_host, 9000, profile.tunnel_mode)
+    profile.rag_url = profile.rag_url or _default_service_url(profile.server_host, 8081, profile.tunnel_mode)
     return profile
 
 
@@ -423,81 +440,152 @@ def resolve_connection(
 ) -> ResolvedConnection:
     profile_name, profile_source = resolve_profile_name(explicit_profile_name)
     profile = load_connection_profile(profile_name) if profile_name else None
-
     sources: dict[str, str] = {}
 
-    if explicit_server_ip:
-        server_host = explicit_server_ip
-        sources["server_host"] = "flag:--server-ip"
-    elif os.environ.get("UMRS_SERVER_HOST"):
-        server_host = os.environ["UMRS_SERVER_HOST"]
-        sources["server_host"] = "env:UMRS_SERVER_HOST"
-    elif profile:
-        server_host = profile.server_host
-        sources["server_host"] = f"profile:{profile.name}"
-    else:
-        server_host = "127.0.0.1"
-        sources["server_host"] = "default"
+    parts = _connection_parts(profile, profile_name, explicit_server_ip, explicit_control_port, sources)
+    return _resolved_connection(profile, profile_source, parts)
 
-    if explicit_control_port is not None:
-        control_port = explicit_control_port
-        sources["control_port"] = "flag:--control-port"
-    elif _env_int("UMRS_CONTROL_PORT") is not None:
-        control_port = _env_int("UMRS_CONTROL_PORT")
-        sources["control_port"] = "env:UMRS_CONTROL_PORT"
-    elif profile:
-        control_port = profile.control_port
-        sources["control_port"] = f"profile:{profile.name}"
-    else:
-        control_port = 5555
-        sources["control_port"] = "default"
 
+def _connection_parts(
+    profile: ConnectionProfile | None,
+    profile_name: str | None,
+    explicit_server_ip: str | None,
+    explicit_control_port: int | None,
+    sources: dict[str, str],
+) -> dict[str, Any]:
+    profile_source_label = f"profile:{profile.name}" if profile else ""
+    server_host = _connection_value(
+        sources, "server_host", [
+            (explicit_server_ip, "flag:--server-ip"),
+            (os.environ.get("UMRS_SERVER_HOST"), "env:UMRS_SERVER_HOST"),
+            (_profile_attr(profile, "server_host"), profile_source_label),
+        ], "127.0.0.1", "default",
+    )
+    control_port = _connection_value(
+        sources, "control_port", [
+            (explicit_control_port, "flag:--control-port"),
+            (_env_int("UMRS_CONTROL_PORT"), "env:UMRS_CONTROL_PORT"),
+            (_profile_attr(profile, "control_port"), profile_source_label),
+        ], 5555, "default",
+    )
+    data_port_range = _resolve_data_port_range(profile, sources)
+    tunnel_mode = _connection_value(
+        sources, "tunnel_mode", [
+            (_env_flag("UMRS_TUNNEL_MODE", None), "env:UMRS_TUNNEL_MODE"),
+            (_profile_attr(profile, "tunnel_mode"), profile_source_label),
+        ], False, "default",
+    )
+    health_check_timeout_ms = _connection_value(
+        sources, "health_check_timeout_ms", [
+            (_env_int("UMRS_HEALTH_CHECK_TIMEOUT_MS"), "env:UMRS_HEALTH_CHECK_TIMEOUT_MS"),
+            (_profile_attr(profile, "health_check_timeout_ms"), profile_source_label),
+        ], 5000, "default",
+    )
+    base_profile = _base_connection_profile(
+        profile, profile_name, server_host, control_port, data_port_range, tunnel_mode, health_check_timeout_ms
+    )
+
+    minio_url = _coerce_minio_url(base_profile)
+    rag_url = _coerce_rag_url(base_profile)
+    sources["minio_url"] = "env/profile/default"
+    sources["rag_url"] = "env/profile/default"
+    return {
+        "server_host": server_host, "control_port": control_port, "data_port_range": data_port_range,
+        "tunnel_mode": tunnel_mode, "health_check_timeout_ms": health_check_timeout_ms,
+        "minio_url": minio_url, "rag_url": rag_url, "sources": sources,
+    }
+
+
+def _resolved_connection(
+    profile: ConnectionProfile | None,
+    profile_source: str | None,
+    parts: dict[str, Any],
+) -> ResolvedConnection:
+    return ResolvedConnection(
+        profile_name=_profile_attr(profile, "name"),
+        profile_path=_profile_attr(profile, "path"),
+        profile_source=profile_source,
+        mode=_connection_mode(profile, parts["tunnel_mode"]),
+        server_host=parts["server_host"],
+        control_port=parts["control_port"],
+        data_port_range=parts["data_port_range"],
+        tunnel_mode=parts["tunnel_mode"],
+        health_check_timeout_ms=parts["health_check_timeout_ms"],
+        minio_url=parts["minio_url"],
+        rag_url=parts["rag_url"],
+        ssh_host=_profile_attr(profile, "ssh_host"),
+        local_forwards=list(profile.local_forwards) if profile else [],
+        command_hint=_profile_attr(profile, "command_hint"),
+        sources=parts["sources"],
+        gateway_url=_profile_attr(profile, "gateway_url"),
+    )
+
+
+def _profile_attr(profile: ConnectionProfile | None, attr: str) -> Any:
+    return getattr(profile, attr) if profile else None
+
+
+def _connection_mode(profile: ConnectionProfile | None, tunnel_mode: bool) -> str:
+    if tunnel_mode:
+        return "ssh_tunnel"
+    return profile.mode if profile else "direct"
+
+
+def _connection_value(
+    sources: dict[str, str],
+    key: str,
+    choices: list[tuple[Any, str]],
+    default: Any,
+    default_source: str,
+) -> Any:
+    for value, source in choices:
+        if value is not None and value != "":
+            sources[key] = source
+            return value
+    sources[key] = default_source
+    return default
+
+
+def _resolve_data_port_range(
+    profile: ConnectionProfile | None,
+    sources: dict[str, str],
+) -> DataPortRange:
     env_data_port = _env_int("UMRS_DATA_PORT")
     env_data_port_range = _env_port_range("UMRS_DATA_PORT_RANGE")
+    env_data_base_port = _env_int("UMRS_DATA_BASE_PORT")
     if env_data_port is not None:
-        data_port_range = DataPortRange.single(env_data_port)
-        sources["data_base_port"] = "env:UMRS_DATA_PORT"
-        sources["data_port_range"] = "env:UMRS_DATA_PORT"
-    elif env_data_port_range is not None:
-        data_port_range = env_data_port_range
-        sources["data_base_port"] = "env:UMRS_DATA_PORT_RANGE"
-        sources["data_port_range"] = "env:UMRS_DATA_PORT_RANGE"
-    elif _env_int("UMRS_DATA_BASE_PORT") is not None:
-        data_port_range = DataPortRange.single(_env_int("UMRS_DATA_BASE_PORT"))
-        sources["data_base_port"] = "env:UMRS_DATA_BASE_PORT"
-        sources["data_port_range"] = "env:UMRS_DATA_BASE_PORT"
-    elif profile:
-        data_port_range = profile.data_port_range
-        sources["data_base_port"] = f"profile:{profile.name}"
-        sources["data_port_range"] = f"profile:{profile.name}"
-    else:
-        data_port_range = DataPortRange.single(DEFAULT_DATA_PORT)
-        sources["data_base_port"] = "default"
-        sources["data_port_range"] = "default"
+        return _data_port_source(DataPortRange.single(env_data_port), "env:UMRS_DATA_PORT", sources)
+    if env_data_port_range is not None:
+        return _data_port_source(env_data_port_range, "env:UMRS_DATA_PORT_RANGE", sources)
+    if env_data_base_port is not None:
+        return _data_port_source(DataPortRange.single(env_data_base_port), "env:UMRS_DATA_BASE_PORT", sources)
+    if profile:
+        return _data_port_source(profile.data_port_range, f"profile:{profile.name}", sources)
+    return _data_port_source(DataPortRange.single(DEFAULT_DATA_PORT), "default", sources)
 
-    tunnel_override = _env_flag("UMRS_TUNNEL_MODE", None)
-    if tunnel_override is not None:
-        tunnel_mode = tunnel_override
-        sources["tunnel_mode"] = "env:UMRS_TUNNEL_MODE"
-    elif profile:
-        tunnel_mode = profile.tunnel_mode
-        sources["tunnel_mode"] = f"profile:{profile.name}"
-    else:
-        tunnel_mode = False
-        sources["tunnel_mode"] = "default"
 
-    health_timeout = _env_int("UMRS_HEALTH_CHECK_TIMEOUT_MS")
-    if health_timeout is not None:
-        health_check_timeout_ms = health_timeout
-        sources["health_check_timeout_ms"] = "env:UMRS_HEALTH_CHECK_TIMEOUT_MS"
-    elif profile:
-        health_check_timeout_ms = profile.health_check_timeout_ms
-        sources["health_check_timeout_ms"] = f"profile:{profile.name}"
-    else:
-        health_check_timeout_ms = 5000
-        sources["health_check_timeout_ms"] = "default"
+def _data_port_source(
+    data_port_range: DataPortRange,
+    source: str,
+    sources: dict[str, str],
+) -> DataPortRange:
+    sources["data_base_port"] = source
+    sources["data_port_range"] = source
+    return data_port_range
 
-    base_profile = profile or ConnectionProfile(
+
+def _base_connection_profile(
+    profile: ConnectionProfile | None,
+    profile_name: str | None,
+    server_host: str,
+    control_port: int,
+    data_port_range: DataPortRange,
+    tunnel_mode: bool,
+    health_check_timeout_ms: int,
+) -> ConnectionProfile:
+    if profile:
+        return profile
+    return ConnectionProfile(
         name=profile_name or "implicit-default",
         mode="ssh_tunnel" if tunnel_mode else "direct",
         server_host=server_host,
@@ -505,32 +593,6 @@ def resolve_connection(
         data_port_range=data_port_range,
         tunnel_mode=tunnel_mode,
         health_check_timeout_ms=health_check_timeout_ms,
-    )
-
-    minio_url = _coerce_minio_url(base_profile)
-    rag_url = _coerce_rag_url(base_profile)
-    sources["minio_url"] = "env/profile/default"
-    sources["rag_url"] = "env/profile/default"
-
-    mode = "ssh_tunnel" if tunnel_mode else (profile.mode if profile else "direct")
-
-    return ResolvedConnection(
-        profile_name=profile.name if profile else None,
-        profile_path=profile.path if profile else None,
-        profile_source=profile_source,
-        mode=mode,
-        server_host=server_host,
-        control_port=control_port,
-        data_port_range=data_port_range,
-        tunnel_mode=tunnel_mode,
-        health_check_timeout_ms=health_check_timeout_ms,
-        minio_url=minio_url,
-        rag_url=rag_url,
-        ssh_host=profile.ssh_host if profile else None,
-        local_forwards=list(profile.local_forwards) if profile else [],
-        command_hint=profile.command_hint if profile else None,
-        sources=sources,
-        gateway_url=profile.gateway_url if profile else None,
     )
 
 

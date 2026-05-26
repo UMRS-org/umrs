@@ -231,89 +231,15 @@ class SiteConfig:
         values loaded from ``site.yaml`` without refactoring every call-site.
         """
         env: dict[str, str] = {}
-
-        # Scheduler
-        partition_candidates = _split_partitions(self.scheduler.partition)
-        if partition_candidates:
-            env["SLURM_PARTITIONS"] = ",".join(partition_candidates)
-            env["SLURM_PARTITION"] = partition_candidates[0]
-        elif self.scheduler.partition:
-            env["SLURM_PARTITION"] = self.scheduler.partition
-        env["SLURM_TIME"] = self.scheduler.time_limit
-        env["SLURM_GPUS"] = str(self.scheduler.gpus)
-        env["SLURM_CPUS"] = str(self.scheduler.cpus)
-        env["SLURM_MEM"] = self.scheduler.memory
-        env["SLURM_NODES"] = str(self.scheduler.nodes)
-
-        # Runtime
-        if self.runtime.rivault_dir:
-            env["RIVAULT_DIR"] = self.runtime.rivault_dir
-        if self.runtime.repo_dir:
-            env["UMRS_REPO"] = self.runtime.repo_dir
-        if self.runtime.vision_image:
-            env["BENTOML_VISION_IMAGE"] = self.runtime.vision_image
-        if self.runtime.profiles:
-            env["RIVAULT_PROFILES"] = " ".join(self.runtime.profiles)
-
-
-        # Storage
-        if self.storage.model_cache_dir:
-            env["VLLM_PATH_TO_HUGGINGFACE"] = self.storage.model_cache_dir
-        if self.storage.sam3_model_path:
-            env["SAM3_MODEL_PATH"] = self.storage.sam3_model_path
-        if self.storage.hmae_model_path:
-            env["HMAE_MODEL_PATH"] = self.storage.hmae_model_path
-        if self.storage.hmae_config_path:
-            env["HMAE_CONFIG_PATH"] = self.storage.hmae_config_path
-        if self.storage.hmae_checkpoint:
-            env["HMAE_CHECKPOINT"] = self.storage.hmae_checkpoint
-        if self.storage.vision_tarball:
-            env["VISION_TARBALL"] = self.storage.vision_tarball
-        env["USER_MODEL_PATH"] = self.storage.user_model_path
-        if self.storage.s3_tunnel_host:
-            env["UMRS_S3_TUNNEL_HOST"] = self.storage.s3_tunnel_host
-        env["UMRS_S3_TUNNEL_PORT"] = str(self.storage.s3_tunnel_port)
-
-        # Network
-        env["NGINX_LITELLM_DOCKER_PORT"] = str(self.network.litellm_port)
-        if self.network.litellm_master_key:
-            env["LITELLM_MASTER_KEY"] = self.network.litellm_master_key
-        env["RIVAULT_PORT_MIN"] = str(self.network.port_range_min)
-        env["RIVAULT_PORT_MAX"] = str(self.network.port_range_max)
-        env["RIVAULT_PORT_STRATEGY"] = self.network.port_strategy
-        env["RIVAULT_REMOTE_PORT"] = str(self.network.litellm_port)
-        if self.network.egress_proxy_url:
-            env["RIVAULT_HTTP_PROXY"] = self.network.egress_proxy_url
-            env["RIVAULT_HTTPS_PROXY"] = self.network.egress_proxy_url
-            env["EGRESS_GUARD_PROXY_URL"] = self.network.egress_proxy_url
-        if self.network.egress_no_proxy:
-            env["RIVAULT_NO_PROXY"] = self.network.egress_no_proxy
-
-        # vLLM
-        env["VLLM_MODEL"] = self.vllm.model
-        env["VLLM_DOCKER_TAG"] = self.vllm.docker_tag
-        env["VLLM_GPU_MEM_UTIL"] = str(self.vllm.gpu_mem_util)
-        env["VLLM_MAX_MODEL_LEN"] = str(self.vllm.max_model_len)
-        env["VLLM_MAX_NUM_SEQS"] = str(self.vllm.max_num_seqs)
-        env["VLLM_TENSOR_PARALLEL_SIZE"] = str(self.vllm.tensor_parallel_size)
-        env["VLLM_GPU_MEMORY_UTILIZATION"] = str(self.vllm.gpu_mem_util)
-        env["VLLM_ENABLE_PREFIX_CACHING"] = "true" if self.vllm.enable_prefix_caching else "false"
-
-        # Database
-        env["DB_HOST"] = self.database.host
-        env["DB_PORT"] = str(self.database.port)
-        if self.database.superuser:
-            env["DB_SUPERUSER"] = self.database.superuser
-            env["POSTGRES_USER"] = self.database.superuser
-        if self.database.superuser_password:
-            env["DB_SUPERUSER_PASSWORD"] = self.database.superuser_password
-            env["POSTGRES_PASSWORD"] = self.database.superuser_password
-        if self.database.user_password:
-            env["DB_USER_PASSWORD"] = self.database.user_password
-        if self.database.registry_dsn:
-            env["UMRS_REGISTRY_BACKEND"] = "postgres"
-            env["UMRS_REGISTRY_POSTGRES_DSN"] = self.database.registry_dsn
-
+        for layer in (
+            _scheduler_env(self.scheduler),
+            _runtime_env(self.runtime),
+            _storage_env(self.storage),
+            _network_env(self.network),
+            _vllm_env(self.vllm),
+            _database_env(self.database),
+        ):
+            env.update(layer)
         return {k: v for k, v in env.items() if v}
 
     def inject_env(self, overwrite: bool = False) -> None:
@@ -327,6 +253,104 @@ class SiteConfig:
         for key, value in self.to_env().items():
             if overwrite or key not in os.environ:
                 os.environ[key] = value
+
+
+def _scheduler_env(scheduler: SchedulerConfig) -> dict[str, str]:
+    env: dict[str, str] = {}
+    partition_candidates = _split_partitions(scheduler.partition)
+    if partition_candidates:
+        env["SLURM_PARTITIONS"] = ",".join(partition_candidates)
+        env["SLURM_PARTITION"] = partition_candidates[0]
+    elif scheduler.partition:
+        env["SLURM_PARTITION"] = scheduler.partition
+    env["SLURM_TIME"] = scheduler.time_limit
+    env["SLURM_GPUS"] = str(scheduler.gpus)
+    env["SLURM_CPUS"] = str(scheduler.cpus)
+    env["SLURM_MEM"] = scheduler.memory
+    env["SLURM_NODES"] = str(scheduler.nodes)
+    return env
+
+
+def _runtime_env(runtime: RuntimeConfig) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if runtime.rivault_dir:
+        env["RIVAULT_DIR"] = runtime.rivault_dir
+    if runtime.repo_dir:
+        env["UMRS_REPO"] = runtime.repo_dir
+    if runtime.vision_image:
+        env["BENTOML_VISION_IMAGE"] = runtime.vision_image
+    if runtime.profiles:
+        env["RIVAULT_PROFILES"] = " ".join(runtime.profiles)
+    return env
+
+
+def _storage_env(storage: StorageConfig) -> dict[str, str]:
+    env: dict[str, str] = {}
+    if storage.model_cache_dir:
+        env["VLLM_PATH_TO_HUGGINGFACE"] = storage.model_cache_dir
+    if storage.sam3_model_path:
+        env["SAM3_MODEL_PATH"] = storage.sam3_model_path
+    if storage.hmae_model_path:
+        env["HMAE_MODEL_PATH"] = storage.hmae_model_path
+    if storage.hmae_config_path:
+        env["HMAE_CONFIG_PATH"] = storage.hmae_config_path
+    if storage.hmae_checkpoint:
+        env["HMAE_CHECKPOINT"] = storage.hmae_checkpoint
+    if storage.vision_tarball:
+        env["VISION_TARBALL"] = storage.vision_tarball
+    env["USER_MODEL_PATH"] = storage.user_model_path
+    if storage.s3_tunnel_host:
+        env["UMRS_S3_TUNNEL_HOST"] = storage.s3_tunnel_host
+    env["UMRS_S3_TUNNEL_PORT"] = str(storage.s3_tunnel_port)
+    return env
+
+
+def _network_env(network: NetworkConfig) -> dict[str, str]:
+    env: dict[str, str] = {
+        "NGINX_LITELLM_DOCKER_PORT": str(network.litellm_port),
+        "RIVAULT_PORT_MIN": str(network.port_range_min),
+        "RIVAULT_PORT_MAX": str(network.port_range_max),
+        "RIVAULT_PORT_STRATEGY": network.port_strategy,
+        "RIVAULT_REMOTE_PORT": str(network.litellm_port),
+    }
+    if network.litellm_master_key:
+        env["LITELLM_MASTER_KEY"] = network.litellm_master_key
+    if network.egress_proxy_url:
+        env["RIVAULT_HTTP_PROXY"] = network.egress_proxy_url
+        env["RIVAULT_HTTPS_PROXY"] = network.egress_proxy_url
+        env["EGRESS_GUARD_PROXY_URL"] = network.egress_proxy_url
+    if network.egress_no_proxy:
+        env["RIVAULT_NO_PROXY"] = network.egress_no_proxy
+    return env
+
+
+def _vllm_env(vllm: VllmConfig) -> dict[str, str]:
+    return {
+        "VLLM_MODEL": vllm.model,
+        "VLLM_DOCKER_TAG": vllm.docker_tag,
+        "VLLM_GPU_MEM_UTIL": str(vllm.gpu_mem_util),
+        "VLLM_MAX_MODEL_LEN": str(vllm.max_model_len),
+        "VLLM_MAX_NUM_SEQS": str(vllm.max_num_seqs),
+        "VLLM_TENSOR_PARALLEL_SIZE": str(vllm.tensor_parallel_size),
+        "VLLM_GPU_MEMORY_UTILIZATION": str(vllm.gpu_mem_util),
+        "VLLM_ENABLE_PREFIX_CACHING": "true" if vllm.enable_prefix_caching else "false",
+    }
+
+
+def _database_env(database: DatabaseConfig) -> dict[str, str]:
+    env: dict[str, str] = {"DB_HOST": database.host, "DB_PORT": str(database.port)}
+    if database.superuser:
+        env["DB_SUPERUSER"] = database.superuser
+        env["POSTGRES_USER"] = database.superuser
+    if database.superuser_password:
+        env["DB_SUPERUSER_PASSWORD"] = database.superuser_password
+        env["POSTGRES_PASSWORD"] = database.superuser_password
+    if database.user_password:
+        env["DB_USER_PASSWORD"] = database.user_password
+    if database.registry_dsn:
+        env["UMRS_REGISTRY_BACKEND"] = "postgres"
+        env["UMRS_REGISTRY_POSTGRES_DSN"] = database.registry_dsn
+    return env
 
 
 # ---------------------------------------------------------------------------
