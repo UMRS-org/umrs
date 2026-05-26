@@ -66,6 +66,26 @@ class ReadinessResult:
         }
 
 
+@dataclass(frozen=True)
+class _ReadinessTarget:
+    job_id: str
+    host: str
+    port: int
+    probe_model: str | None
+    probe_kind: str
+    probe_path: str | None
+    on_progress: Callable[[ReadinessResult], None] | None
+
+
+@dataclass
+class _ReadinessPoll:
+    target: _ReadinessTarget
+    start_time: float
+    result: ReadinessResult
+    attempt: int = 0
+    last_error: str | None = None
+
+
 @dataclass
 class ReadinessConfig:
     """Configuration for readiness polling."""
@@ -122,6 +142,50 @@ class ReadinessConfig:
                 os.getenv("RIVAULT_READINESS_PROBE_READ_TIMEOUT_SEC", "30.0")
             ),
         )
+
+
+def _probe_url(
+    host: str,
+    port: int,
+    probe_kind: str,
+    probe_path: str | None,
+) -> tuple[str, str]:
+    normalized_probe = "http" if probe_kind == "bentoml" else probe_kind
+    if normalized_probe == "http":
+        path = _normalized_probe_path(probe_path)
+        return normalized_probe, f"http://{host}:{port}{path}"
+    return normalized_probe, f"http://{host}:{port}/v1/models"
+
+
+def _normalized_probe_path(probe_path: str | None) -> str:
+    path = probe_path or "/readyz"
+    return path if path.startswith("/") else f"/{path}"
+
+
+def _models_from_response(data: dict[str, Any]) -> list[str]:
+    models: list[str] = []
+    for model in data.get("data") or []:
+        model_id = model.get("id") or model.get("model")
+        if model_id:
+            models.append(model_id)
+    return models
+
+
+def _chat_probe_payload(model: str) -> dict[str, Any]:
+    return {
+        "model": model,
+        "messages": [{"role": "user", "content": "ready"}],
+        "max_tokens": 1,
+        "temperature": 0.0,
+    }
+
+
+def _chat_probe_target(
+    probe_model: str | None,
+    expected_model: str | None,
+    models: list[str],
+) -> str | None:
+    return probe_model or expected_model or (models[0] if models else None)
 
 
 class ReadinessPoller:
@@ -205,18 +269,9 @@ class ReadinessPoller:
         Returns:
             Tuple of (is_ready, models_list, error_message)
         """
-        normalized_probe = "http" if probe_kind == "bentoml" else probe_kind
-        if normalized_probe == "http":
-            path = probe_path or "/readyz"
-            if not path.startswith("/"):
-                path = f"/{path}"
-            url = f"http://{host}:{port}{path}"
-        else:
-            url = f"http://{host}:{port}/v1/models"
+        normalized_probe, url = _probe_url(host, port, probe_kind, probe_path)
         client = await self._get_client()
-        headers = None
-        if self.config.auth_token:
-            headers = {"Authorization": f"Bearer {self.config.auth_token}"}
+        headers = self._auth_headers()
 
         try:
             response = await client.get(url, headers=headers)
@@ -227,64 +282,13 @@ class ReadinessPoller:
             if normalized_probe == "http":
                 return True, [], ""
 
-            data = response.json()
-            models = []
-
-            # Parse models from response
-            if "data" in data:
-                for model in data["data"]:
-                    model_id = model.get("id") or model.get("model")
-                    if model_id:
-                        models.append(model_id)
-
-            # Validation
-            if self.config.require_models and not models:
-                return False, models, "No models in response"
-
-            if self.config.expected_model and self.config.expected_model not in models:
-                return (
-                    False,
-                    models,
-                    f"Expected model '{self.config.expected_model}' not found",
-                )
+            models = _models_from_response(response.json())
+            validation_error = self._model_validation_error(models)
+            if validation_error:
+                return False, models, validation_error
 
             if normalized_probe == "chat":
-                target_model = probe_model or self.config.expected_model or (models[0] if models else None)
-                if not target_model:
-                    return False, models, "Chat probe requires a model name"
-
-                try:
-                    probe_response = await client.post(
-                        f"http://{host}:{port}/v1/chat/completions",
-                        headers=headers,
-                        json={
-                            "model": target_model,
-                            "messages": [{"role": "user", "content": "ready"}],
-                            "max_tokens": 1,
-                            "temperature": 0.0,
-                        },
-                        timeout=httpx.Timeout(
-                            connect=self.config.connect_timeout_sec,
-                            read=self.config.probe_read_timeout_sec,
-                            write=5.0,
-                            pool=5.0,
-                        ),
-                    )
-                except httpx.ConnectError as e:
-                    return False, models, f"Chat probe connection error: {e}"
-                except httpx.TimeoutException:
-                    return False, models, "Chat probe timeout"
-                except Exception as e:
-                    return False, models, f"Chat probe error: {e}"
-
-                if probe_response.status_code != 200:
-                    return (
-                        False,
-                        models,
-                        "Chat probe HTTP "
-                        f"{probe_response.status_code}: "
-                        f"{self._truncate_error_detail(probe_response.text)}",
-                    )
+                return await self._check_chat_probe(client, host, port, headers, probe_model, models)
 
             return True, models, ""
 
@@ -294,6 +298,92 @@ class ReadinessPoller:
             return False, [], "Request timeout"
         except Exception as e:
             return False, [], f"Error: {e}"
+
+    def _auth_headers(self) -> dict[str, str] | None:
+        if self.config.auth_token:
+            return {"Authorization": f"Bearer {self.config.auth_token}"}
+        return None
+
+    def _model_validation_error(self, models: list[str]) -> str | None:
+        if self.config.require_models and not models:
+            return "No models in response"
+        if self.config.expected_model and self.config.expected_model not in models:
+            return f"Expected model '{self.config.expected_model}' not found"
+        return None
+
+    async def _check_chat_probe(
+        self,
+        client: httpx.AsyncClient,
+        host: str,
+        port: int,
+        headers: dict[str, str] | None,
+        probe_model: str | None,
+        models: list[str],
+    ) -> tuple[bool, list[str], str]:
+        target_model = _chat_probe_target(probe_model, self.config.expected_model, models)
+        if not target_model:
+            return False, models, "Chat probe requires a model name"
+
+        probe_response, probe_error = await self._post_chat_probe(
+            client, host, port, headers, target_model
+        )
+        if probe_error:
+            return False, models, probe_error
+
+        http_error = self._chat_probe_http_error(probe_response)
+        if http_error:
+            return False, models, http_error
+        return True, models, ""
+
+    async def _post_chat_probe(
+        self,
+        client: httpx.AsyncClient,
+        host: str,
+        port: int,
+        headers: dict[str, str] | None,
+        target_model: str,
+    ) -> tuple[httpx.Response | None, str | None]:
+        try:
+            probe_response = await client.post(
+                f"http://{host}:{port}/v1/chat/completions",
+                headers=headers,
+                json=_chat_probe_payload(target_model),
+                timeout=httpx.Timeout(
+                    connect=self.config.connect_timeout_sec,
+                    read=self.config.probe_read_timeout_sec,
+                    write=5.0,
+                    pool=5.0,
+                ),
+            )
+        except httpx.ConnectError as e:
+            return None, f"Chat probe connection error: {e}"
+        except httpx.TimeoutException:
+            return None, "Chat probe timeout"
+        except Exception as e:
+            return None, f"Chat probe error: {e}"
+        return probe_response, None
+
+    def _chat_probe_http_error(self, probe_response: httpx.Response | None) -> str | None:
+        if probe_response is None or probe_response.status_code == 200:
+            return None
+        return (
+            "Chat probe HTTP "
+            f"{probe_response.status_code}: "
+            f"{self._truncate_error_detail(probe_response.text)}"
+        )
+
+    def _start_result(self, job_id: str, host: str, port: int) -> ReadinessResult:
+        result = ReadinessResult(
+            state=ReadinessState.POLLING,
+            job_id=job_id,
+            host=host,
+            port=port,
+        )
+        logger.info(
+            f"Starting readiness polling for {job_id} at {host}:{port} "
+            f"(timeout={self.config.timeout_sec}s, auth={'yes' if self.config.auth_token else 'no'})"
+        )
+        return result
 
     async def wait_for_ready(
         self,
@@ -305,95 +395,109 @@ class ReadinessPoller:
         probe_path: str | None = None,
         on_progress: Callable[[ReadinessResult], None] | None = None,
     ) -> ReadinessResult:
-        """
-        Wait for endpoint to become ready.
-
-        Args:
-            job_id: Job identifier for logging.
-            host: Hostname or IP address.
-            port: LiteLLM port.
-            on_progress: Optional callback for progress updates.
-
-        Returns:
-            ReadinessResult with final state.
-        """
-        start_time = time.monotonic()
-        attempt = 0
-
-        result = ReadinessResult(
-            state=ReadinessState.POLLING,
-            job_id=job_id,
-            host=host,
-            port=port,
+        """Wait for endpoint to become ready and return the final state."""
+        poll = self._start_poll(
+            _ReadinessTarget(job_id, host, port, probe_model, probe_kind, probe_path, on_progress)
         )
-
-        logger.info(
-            f"Starting readiness polling for {job_id} at {host}:{port} "
-            f"(timeout={self.config.timeout_sec}s, auth={'yes' if self.config.auth_token else 'no'})"
-        )
-
-        last_error: str | None = None
 
         while True:
-            elapsed = time.monotonic() - start_time
+            ready_result = await self._poll_ready_once(poll)
+            if ready_result is not None:
+                return ready_result
 
-            # Check timeout
-            if elapsed >= self.config.timeout_sec:
-                result.state = ReadinessState.TIMEOUT
-                result.elapsed_sec = elapsed
-                result.error = f"Timeout after {self.config.timeout_sec}s"
-                logger.warning(f"Readiness timeout for {job_id}: {result.error}")
-                return result
+    def _start_poll(self, target: _ReadinessTarget) -> _ReadinessPoll:
+        return _ReadinessPoll(
+            target=target,
+            start_time=time.monotonic(),
+            result=self._start_result(target.job_id, target.host, target.port),
+        )
 
-            # Perform check
-            attempt += 1
-            result.attempts = attempt
+    async def _poll_ready_once(self, poll: _ReadinessPoll) -> ReadinessResult | None:
+        elapsed = time.monotonic() - poll.start_time
 
-            is_ready, models, error = await self._check_once(
-                host,
-                port,
-                probe_model=probe_model,
-                probe_kind=probe_kind,
-                probe_path=probe_path,
+        timeout_result = self._timeout_result(poll.result, poll.target.job_id, elapsed)
+        if timeout_result is not None:
+            return timeout_result
+
+        poll.attempt += 1
+        poll.result.attempts = poll.attempt
+        is_ready, models, error = await self._check_once(
+            poll.target.host,
+            poll.target.port,
+            probe_model=poll.target.probe_model,
+            probe_kind=poll.target.probe_kind,
+            probe_path=poll.target.probe_path,
+        )
+
+        ready_result = self._ready_result(
+            poll.result, poll.target.job_id, poll.attempt, models, is_ready, poll.start_time
+        )
+        if ready_result is not None:
+            return ready_result
+
+        poll.last_error = self._record_pending(poll, error)
+        await self._sleep_before_next_attempt(poll.attempt, elapsed)
+        return None
+
+    async def _sleep_before_next_attempt(self, attempt: int, elapsed: float) -> None:
+        delay = self._calculate_delay(attempt)
+        remaining = self.config.timeout_sec - elapsed
+        delay = min(delay, remaining)
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    def _timeout_result(
+        self,
+        result: ReadinessResult,
+        job_id: str,
+        elapsed: float,
+    ) -> ReadinessResult | None:
+        if elapsed < self.config.timeout_sec:
+            return None
+        result.state = ReadinessState.TIMEOUT
+        result.elapsed_sec = elapsed
+        result.error = f"Timeout after {self.config.timeout_sec}s"
+        logger.warning(f"Readiness timeout for {job_id}: {result.error}")
+        return result
+
+    def _ready_result(
+        self,
+        result: ReadinessResult,
+        job_id: str,
+        attempt: int,
+        models: list[str],
+        is_ready: bool,
+        start_time: float,
+    ) -> ReadinessResult | None:
+        if not is_ready:
+            return None
+        result.state = ReadinessState.READY
+        result.models = models
+        result.elapsed_sec = time.monotonic() - start_time
+        logger.info(
+            f"Endpoint {job_id} ready after {attempt} attempts "
+            f"({result.elapsed_sec:.1f}s). Models: {models}"
+        )
+        return result
+
+    def _record_pending(self, poll: _ReadinessPoll, error: str) -> str | None:
+        if poll.attempt == 1 or poll.attempt % 5 == 0 or error != poll.last_error:
+            poll.result.elapsed_sec = time.monotonic() - poll.start_time
+            logger.info(
+                "Readiness pending for %s at %s:%s after attempt %s (%.1fs): %s",
+                poll.target.job_id,
+                poll.target.host,
+                poll.target.port,
+                poll.attempt,
+                poll.result.elapsed_sec,
+                error or "not ready",
             )
-
-            if is_ready:
-                result.state = ReadinessState.READY
-                result.models = models
-                result.elapsed_sec = time.monotonic() - start_time
-                logger.info(
-                    f"Endpoint {job_id} ready after {attempt} attempts "
-                    f"({result.elapsed_sec:.1f}s). Models: {models}"
-                )
-                return result
-
-            # Log progress
-            if attempt == 1 or attempt % 5 == 0 or error != last_error:
-                result.elapsed_sec = time.monotonic() - start_time
-                logger.info(
-                    "Readiness pending for %s at %s:%s after attempt %s (%.1fs): %s",
-                    job_id,
-                    host,
-                    port,
-                    attempt,
-                    result.elapsed_sec,
-                    error or "not ready",
-                )
-                last_error = error
-
-            # Progress callback
-            if on_progress:
-                result.elapsed_sec = time.monotonic() - start_time
-                result.error = error
-                on_progress(result)
-
-            # Calculate delay and wait
-            delay = self._calculate_delay(attempt)
-            remaining = self.config.timeout_sec - elapsed
-            delay = min(delay, remaining)
-
-            if delay > 0:
-                await asyncio.sleep(delay)
+            poll.last_error = error
+        if poll.target.on_progress:
+            poll.result.elapsed_sec = time.monotonic() - poll.start_time
+            poll.result.error = error
+            poll.target.on_progress(poll.result)
+        return poll.last_error
 
     async def check_ready(
         self,

@@ -200,21 +200,36 @@ def _validate_user(path: Path) -> ConfigLayer:
         layer.error = str(exc)
         return layer
     layer.valid = True
-    bucket_aliases = sorted({
-        (mod.get("s3") or {}).get("bucket_alias")
-        for xp in (user_cfg.get("experiences") or [])
-        for mod in (xp.get("modalities") or [])
-        if (mod.get("s3") or {}).get("bucket_alias")
-    })
-    layer.details = {
+    layer.details = _user_config_details(user_cfg)
+    return layer
+
+
+def _user_config_details(user_cfg: dict[str, Any]) -> dict[str, Any]:
+    experiences = user_cfg.get("experiences") or []
+    return {
         "username": user_cfg.get("username"),
         "fullname": user_cfg.get("fullname"),
         "s3_configuration_file": user_cfg.get("s3_configuration_file"),
-        "experience_count": len(user_cfg.get("experiences") or []),
-        "experience_names": [xp.get("xp_name") for xp in user_cfg.get("experiences") or []],
-        "bucket_aliases": bucket_aliases,
+        "experience_count": len(experiences),
+        "experience_names": [xp.get("xp_name") for xp in experiences],
+        "bucket_aliases": _bucket_aliases(experiences),
     }
-    return layer
+
+
+def _bucket_aliases(experiences: list[dict[str, Any]]) -> list[str]:
+    aliases: set[str] = set()
+    for experience in experiences:
+        aliases.update(_experience_bucket_aliases(experience))
+    return sorted(aliases)
+
+
+def _experience_bucket_aliases(experience: dict[str, Any]) -> list[str]:
+    aliases: list[str] = []
+    for modality in experience.get("modalities") or []:
+        alias = (modality.get("s3") or {}).get("bucket_alias")
+        if alias:
+            aliases.append(alias)
+    return aliases
 
 
 def _validate_s3(path: Path) -> ConfigLayer:
@@ -352,7 +367,20 @@ def resolve_loaded_config(
     current_user = _read_pointer(get_current_user_config_path())
     current_s3 = _read_pointer(get_current_s3_config_path())
 
-    server = _resolve_selector(
+    server = _resolve_server_layer(explicit_server_config_path, current_server, discovered)
+    user = _resolve_user_layer(explicit_user_config_path, current_user, discovered, server)
+    s3 = _resolve_s3_layer(explicit_s3_config_path, current_s3, discovered, user)
+    warnings = _loaded_config_warnings(server, user, s3)
+
+    return ResolvedLoadedConfig(server=server, user=user, s3=s3, warnings=warnings)
+
+
+def _resolve_server_layer(
+    explicit_server_config_path: str | None,
+    current_server: str | None,
+    discovered: dict[str, list[ConfigFileCandidate]],
+) -> ConfigLayer:
+    return _resolve_selector(
         "server",
         explicit_server_config_path,
         current_server,
@@ -360,12 +388,14 @@ def resolve_loaded_config(
         get_current_server_config_path(),
     )
 
-    derived_user_path = None
-    if not explicit_user_config_path and not current_user and server.valid:
-        server_user_paths = server.details.get("user_config_paths") or []
-        if len(server_user_paths) == 1:
-            derived_user_path = server_user_paths[0]
 
+def _resolve_user_layer(
+    explicit_user_config_path: str | None,
+    current_user: str | None,
+    discovered: dict[str, list[ConfigFileCandidate]],
+    server: ConfigLayer,
+) -> ConfigLayer:
+    derived_user_path = _derived_user_path(explicit_user_config_path, current_user, server)
     user = _resolve_selector(
         "user",
         explicit_user_config_path or derived_user_path,
@@ -375,11 +405,27 @@ def resolve_loaded_config(
     )
     if derived_user_path and user.path == str(Path(derived_user_path).expanduser()):
         user.source = f"server:{server.path}"
+    return user
 
-    derived_s3_path = None
-    if user.valid:
-        derived_s3_path = user.details.get("s3_configuration_file")
 
+def _derived_user_path(
+    explicit_user_config_path: str | None,
+    current_user: str | None,
+    server: ConfigLayer,
+) -> str | None:
+    if explicit_user_config_path or current_user or not server.valid:
+        return None
+    server_user_paths = server.details.get("user_config_paths") or []
+    return server_user_paths[0] if len(server_user_paths) == 1 else None
+
+
+def _resolve_s3_layer(
+    explicit_s3_config_path: str | None,
+    current_s3: str | None,
+    discovered: dict[str, list[ConfigFileCandidate]],
+    user: ConfigLayer,
+) -> ConfigLayer:
+    derived_s3_path = user.details.get("s3_configuration_file") if user.valid else None
     s3 = _resolve_selector(
         "s3",
         explicit_s3_config_path,
@@ -390,31 +436,49 @@ def resolve_loaded_config(
     if not s3.path and derived_s3_path:
         s3 = _VALIDATORS["s3"](Path(derived_s3_path).expanduser())
         s3.source = f"user:{user.path}"
-    elif (
+    elif _should_mark_user_s3_source(derived_s3_path, s3):
+        s3.source = f"user:{user.path}"
+    return s3
+
+
+def _should_mark_user_s3_source(derived_s3_path: str | None, s3: ConfigLayer) -> bool:
+    return bool(
         derived_s3_path
         and s3.path == str(Path(derived_s3_path).expanduser())
         and not (s3.source and (s3.source.startswith("current:") or s3.source.startswith("flag:")))
-    ):
-        s3.source = f"user:{user.path}"
+    )
 
+
+def _loaded_config_warnings(
+    server: ConfigLayer,
+    user: ConfigLayer,
+    s3: ConfigLayer,
+) -> list[str]:
     warnings: list[str] = []
-    if server.valid and user.valid:
-        server_user_paths = {
-            _normalize_path(path)
-            for path in (server.details.get("user_config_paths") or [])
-        }
-        if server_user_paths and _normalize_path(user.path) not in server_user_paths:
-            warnings.append("Selected user config is not listed in the selected server config.")
-
-    if user.valid and s3.valid:
-        user_s3_path = user.details.get("s3_configuration_file")
-        if user_s3_path and _normalize_path(user_s3_path) != _normalize_path(s3.path):
-            warnings.append("An explicit S3 config override is active for this client session.")
-
+    if _selected_user_missing_from_server(server, user):
+        warnings.append("Selected user config is not listed in the selected server config.")
+    if _has_explicit_s3_override(user, s3):
+        warnings.append("An explicit S3 config override is active for this client session.")
     if user.valid and not s3.valid and s3.path:
         warnings.append("The resolved S3 config is invalid; runtime operations may fail unless a fallback applies.")
+    return warnings
 
-    return ResolvedLoadedConfig(server=server, user=user, s3=s3, warnings=warnings)
+
+def _selected_user_missing_from_server(server: ConfigLayer, user: ConfigLayer) -> bool:
+    if not (server.valid and user.valid):
+        return False
+    server_user_paths = {
+        _normalize_path(path)
+        for path in (server.details.get("user_config_paths") or [])
+    }
+    return bool(server_user_paths and _normalize_path(user.path) not in server_user_paths)
+
+
+def _has_explicit_s3_override(user: ConfigLayer, s3: ConfigLayer) -> bool:
+    if not (user.valid and s3.valid):
+        return False
+    user_s3_path = user.details.get("s3_configuration_file")
+    return bool(user_s3_path and _normalize_path(user_s3_path) != _normalize_path(s3.path))
 
 
 def _select_candidate_path(kind: str, selection: str) -> Path:
