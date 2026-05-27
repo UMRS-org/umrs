@@ -61,3 +61,4 @@ __pycache__/
 *.tar.gz
 *.csv
 !demos/sample_data/**/*.csv
+demos_jens/internal_genAI/

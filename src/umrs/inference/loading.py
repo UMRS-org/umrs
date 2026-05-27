@@ -205,6 +205,7 @@ def load_model(model_cfg, modality, task=None):
     # Attach extra attributes for vision models
     if model_type == "HMAE":
         em._hmae_config = _hmae_config
+        em.device = device
     elif model_type == "SAM3":
         em._sam3_processor = _sam3_processor
 

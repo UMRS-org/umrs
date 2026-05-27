@@ -27,10 +27,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="hmae_full" source "${SCRIPT_DIR}/../lib/common.sh"
 
 # Ensure HMAE Inference experience is in user config (idempotent).
-ensure_experience "${SCRIPT_DIR}/experience.json"
+ensure_experience "${SCRIPT_DIR}/experience.json" --update
 
 MAX_IMAGES="${MAX_IMAGES:-3}"
-FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
+FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-1}"
 RELOAD_SETTLE_SECONDS="${RELOAD_SETTLE_SECONDS:-30}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 HMAE_ASSET_ROOT="${HMAE_ASSET_ROOT:-${SCRIPT_DIR}/../../tmp/hmae}"
@@ -38,36 +38,62 @@ HMAE_INFER_DIR="${HMAE_INFER_DIR:-${SCRIPT_DIR}/../../tmp/hmae-infer}"
 HMAE_LOCAL_CHECKPOINT="${HMAE_LOCAL_CHECKPOINT:-${HMAE_ASSET_ROOT}/latest_checkpoint.pth}"
 HMAE_LOCAL_CONFIG="${HMAE_LOCAL_CONFIG:-${HMAE_INFER_DIR}/configs/infer_hmae_vit_b.yaml}"
 HMAE_REQUIRE_RESULTS="${HMAE_REQUIRE_RESULTS:-0}"
+HMAE_S3CFG="${HMAE_S3CFG:-$(CONF="${CONF}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
 
-# Test images: use local HMAE sample slices staged in umrs/tmp/hmae.
-IMAGE_DIR="${IMAGE_DIR:-${HMAE_ASSET_ROOT}/images}"
+path = Path(os.environ["CONF"]).expanduser()
+if path.exists():
+    print(json.loads(path.read_text()).get("s3_configuration_file", ""))
+PY
+)}"
+HMAE_S3CFG="${HMAE_S3CFG:-${HOME}/.config/umrs/s3cfg}"
+
+# Test images: use the Spring-8 concrete volume slices for this demo.
+IMAGE_DIR="${IMAGE_DIR:-${HMAE_ASSET_ROOT}/spring8concrete}"
 
 # All 3 HMAE tasks and their bucket aliases
 HMAE_TASKS=("reconstruction" "mae_reconstruction" "feature_extraction")
 HMAE_BUCKETS=("demo-hmae" "demo-hmae-mae" "demo-hmae-features")
 
-# S3 output bucket names (derived from demo_user naming convention)
-# Format: <username>.<xp_name>.<bucket_alias>-output  (lowercase, spaces→hyphens)
-HMAE_OUTPUT_BUCKETS=(
-    "demo-user.hmae-inference.demo-hmae-output"
-    "demo-user.hmae-inference.demo-hmae-mae-output"
-    "demo-user.hmae-inference.demo-hmae-features-output"
-)
-HMAE_INPUT_BUCKETS=(
-    "demo-user.hmae-inference.demo-hmae"
-    "demo-user.hmae-inference.demo-hmae-mae"
-    "demo-user.hmae-inference.demo-hmae-features"
-)
+bucket_names_for_alias() {
+    local alias="$1"
+    CONF="${CONF}" BUCKET_ALIAS="${alias}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+def bucket_name(username, xp_name, alias, output=False):
+    value = f"{username}.{xp_name}.{alias}"
+    if output:
+        value += "-output"
+    return value.lower().replace(" ", "-").replace("_", "-")
+
+conf = json.loads(Path(os.environ["CONF"]).expanduser().read_text())
+alias = os.environ["BUCKET_ALIAS"]
+username = conf.get("username", "demo_user")
+for xp in conf.get("experiences", []):
+    for modality in xp.get("modalities", []):
+        if (modality.get("s3") or {}).get("bucket_alias") == alias:
+            xp_name = xp.get("xp_name", "HMAE Inference")
+            print(bucket_name(username, xp_name, alias), bucket_name(username, xp_name, alias, output=True))
+            raise SystemExit(0)
+raise SystemExit(f"bucket alias not found in {os.environ['CONF']}: {alias}")
+PY
+}
 
 # Helper: clear all objects from an S3 bucket (via local boto3 + s3cfg)
 clear_s3_bucket() {
     local bucket="$1"
-    python3 - "$bucket" <<'PY'
+    python3 - "$bucket" "$HMAE_S3CFG" <<'PY'
 import sys, configparser, os, boto3
 bucket = sys.argv[1]
+s3cfg = os.path.expanduser(sys.argv[2])
 cfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
-s3cfg = os.path.expanduser("~/.config/umrs/s3cfg")
-cfg.read(s3cfg)
+read_files = cfg.read(s3cfg)
+if not read_files:
+    raise SystemExit(f"S3 config not found: {s3cfg}")
 protocol = "https" if cfg.getboolean("default", "use_https", fallback=False) else "http"
 endpoint = f"{protocol}://{cfg.get('default', 'host_base')}"
 s3 = boto3.client("s3", endpoint_url=endpoint,
@@ -95,7 +121,7 @@ echo "HMAE assets  : ${HMAE_ASSET_ROOT}"
 echo "HMAE config  : ${HMAE_LOCAL_CONFIG}"
 echo "Checkpoint   : ${HMAE_LOCAL_CHECKPOINT}"
 echo "Tasks        : ${HMAE_TASKS[*]}"
-echo "Force recomp : ${FORCE_RECOMPUTE:-no}"
+echo "Force recomp : ${FORCE_RECOMPUTE}"
 echo ""
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -113,7 +139,7 @@ log "Step 2: Checking test images..."
 if [[ ! -d "$IMAGE_DIR" ]]; then
     die "Image directory not found: $IMAGE_DIR"
 fi
-IMAGE_COUNT=$(find "$IMAGE_DIR" -maxdepth 1 -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.tiff" \) | wc -l)
+IMAGE_COUNT=$(find "$IMAGE_DIR" -maxdepth 1 -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.tiff" \) | wc -l)
 if [[ "$IMAGE_COUNT" -eq 0 ]]; then
     die "No image files found in $IMAGE_DIR"
 fi
@@ -124,7 +150,7 @@ if [[ "$IMAGE_COUNT" -gt "$MAX_IMAGES" ]]; then
     UPLOAD_DIR="${SCRIPT_DIR}/.upload_staging"
     rm -rf "$UPLOAD_DIR"
     mkdir -p "$UPLOAD_DIR"
-    find "$IMAGE_DIR" -maxdepth 1 -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.tiff" \) \
+    find "$IMAGE_DIR" -maxdepth 1 -type f \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.tiff" \) | sort \
         | head -n "$MAX_IMAGES" | while read -r f; do ln -sf "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "$UPLOAD_DIR/$(basename "$f")"; done
     log "  Staged ${MAX_IMAGES} of ${IMAGE_COUNT} images for upload"
 else
@@ -136,8 +162,7 @@ fi
 for i in "${!HMAE_TASKS[@]}"; do
     TASK="${HMAE_TASKS[$i]}"
     BUCKET="${HMAE_BUCKETS[$i]}"
-    OUTPUT_BUCKET="${HMAE_OUTPUT_BUCKETS[$i]}"
-    INPUT_BUCKET="${HMAE_INPUT_BUCKETS[$i]}"
+    read -r INPUT_BUCKET OUTPUT_BUCKET < <(bucket_names_for_alias "$BUCKET")
     TASK_RESULTS_DIR="${RESULTS_DIR}/${TASK}"
 
     log ""
@@ -152,7 +177,7 @@ for i in "${!HMAE_TASKS[@]}"; do
     $CLIENT upload_dir "$UPLOAD_DIR" "$BUCKET"
     ok "Images uploaded for ${TASK} — server will process automatically"
 
-    if [[ -n "$FORCE_RECOMPUTE" ]]; then
+    if [[ "$FORCE_RECOMPUTE" != "0" ]]; then
         log "FORCE_RECOMPUTE set — triggering full recompute..."
         maybe_admin_recompute || warn "recompute returned non-zero"
     fi
@@ -165,8 +190,7 @@ for i in "${!HMAE_TASKS[@]}"; do
     if download_results_bounded "$BUCKET" "$TASK_RESULTS_DIR" --force-overwrite; then
         DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))
         log "  ${TASK} processing + download took ${DOWNLOAD_ELAPSED}s"
-        RESULT_COUNT=$(find "$TASK_RESULTS_DIR" -type f 2>/dev/null | wc -l)
-        ok "${TASK}: ${RESULT_COUNT} file(s) downloaded to ${TASK_RESULTS_DIR}"
+        check_result_files "$TASK_RESULTS_DIR" "$HMAE_REQUIRE_RESULTS" "$TASK"
     else
         if [[ "$HMAE_REQUIRE_RESULTS" = "1" ]]; then
             die "Could not download ${TASK} results"

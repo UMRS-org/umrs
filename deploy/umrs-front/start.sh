@@ -38,9 +38,15 @@ if [[ ! -f .env ]]; then
     echo "ERROR: .env not found. Create from template in setup.sh"
     exit 1
 fi
+ENV_UMRS_SERVER_HOST="${UMRS_SERVER_HOST:-}"
+ENV_S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-}"
+ENV_S3_BUCKET="${S3_BUCKET:-}"
 set -o allexport
 source .env
 set +o allexport
+[[ -n "$ENV_UMRS_SERVER_HOST" ]] && UMRS_SERVER_HOST="$ENV_UMRS_SERVER_HOST"
+[[ -n "$ENV_S3_ENDPOINT_URL" ]] && S3_ENDPOINT_URL="$ENV_S3_ENDPOINT_URL"
+[[ -n "$ENV_S3_BUCKET" ]] && S3_BUCKET="$ENV_S3_BUCKET"
 
 MINIO_BIND="${MINIO_BIND:-0.0.0.0}"
 if [[ "$MINIO_BIND" == "0.0.0.0" || "$MINIO_BIND" == "::" ]]; then
@@ -48,6 +54,11 @@ if [[ "$MINIO_BIND" == "0.0.0.0" || "$MINIO_BIND" == "::" ]]; then
 fi
 
 mkdir -p "$LOG_DIR"
+
+UMRS_RCCS_ZMQ_PORT="${UMRS_RCCS_ZMQ_PORT:-50090}"
+UMRS_RCCS_DATA_PORT_RANGE="${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}"
+UMRS_AI4S_ZMQ_PORT="${UMRS_AI4S_ZMQ_PORT:-50100}"
+UMRS_AI4S_DATA_PORT_RANGE="${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}"
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
 if [[ "$START_MODE" != "--server" ]]; then
@@ -135,6 +146,39 @@ source "${VENV_DIR}/bin/activate"
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export PYTHONUNBUFFERED=1
 export UMRS_AUTH_MODE="${UMRS_AUTH_MODE:-strict}"
+export S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-http://127.0.0.1:${MINIO_PORT:-9000}}"
+export S3_ACCESS_KEY="${S3_ACCESS_KEY:-${MINIO_ROOT_USER}}"
+export S3_SECRET_KEY="${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}"
+export S3_REGION="${S3_REGION:-us-east-1}"
+export S3_BUCKET="${S3_BUCKET:-r4-data}"
+export S3_USE_SSL="${S3_USE_SSL:-false}"
+
+python - <<'PY'
+import os
+
+import boto3
+from botocore.config import Config as BotoConfig
+from botocore.exceptions import ClientError
+
+bucket = os.environ["S3_BUCKET"]
+s3 = boto3.client(
+    "s3",
+    endpoint_url=os.environ["S3_ENDPOINT_URL"],
+    aws_access_key_id=os.environ["S3_ACCESS_KEY"],
+    aws_secret_access_key=os.environ["S3_SECRET_KEY"],
+    region_name=os.environ.get("S3_REGION", "us-east-1"),
+    config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
+    use_ssl=os.environ.get("S3_USE_SSL", "false").lower() == "true",
+    verify=os.environ.get("S3_USE_SSL", "false").lower() == "true",
+)
+try:
+    s3.head_bucket(Bucket=bucket)
+except ClientError as exc:
+    code = exc.response.get("Error", {}).get("Code")
+    if code not in {"404", "NoSuchBucket"}:
+        raise
+    s3.create_bucket(Bucket=bucket)
+PY
 
 # ─── Create s3cfg for admin ──────────────────────────────────────────────────
 S3CFG="${SCRIPT_DIR}/s3cfg"
@@ -206,6 +250,50 @@ EOF
 EOF
 fi
 
+CONF_FILE="${CONF_FILE}" SCRIPT_DIR="${SCRIPT_DIR}" python - <<'PY'
+import json
+import os
+from pathlib import Path
+
+conf_path = Path(os.environ["CONF_FILE"])
+script_dir = Path(os.environ["SCRIPT_DIR"])
+user_files_dir = script_dir / "user_files"
+if not conf_path.exists() or not user_files_dir.is_dir():
+    raise SystemExit(0)
+
+conf = json.loads(conf_path.read_text())
+existing_users = list(conf.get("users") or [])
+candidate_users = [str(user) for user in existing_users]
+
+for user_file in sorted(user_files_dir.glob("*.json")):
+    rel = f"./user_files/{user_file.name}"
+    if rel not in candidate_users:
+        candidate_users.append(rel)
+
+users = []
+seen = set()
+required_keys = {"username", "fullname", "s3_configuration_file", "experiences"}
+for user in candidate_users:
+    user_path = Path(user)
+    if not user_path.is_absolute():
+        user_path = script_dir / user_path
+    try:
+        payload = json.loads(user_path.read_text())
+    except Exception as exc:
+        print(f"WARNING: skipping unreadable user config {user}: {exc}")
+        continue
+    missing = sorted(required_keys - set(payload))
+    if missing:
+        print(f"WARNING: skipping invalid user config {user}: missing {', '.join(missing)}")
+        continue
+    if user not in seen:
+        users.append(user)
+        seen.add(user)
+
+conf["users"] = users
+conf_path.write_text(json.dumps(conf, indent=2) + "\n")
+PY
+
 # ─── Stop existing servers ───────────────────────────────────────────────────
 for pidfile in "${SCRIPT_DIR}"/server-*.pid; do
     [[ -f "$pidfile" ]] || continue
@@ -218,6 +306,43 @@ for pidfile in "${SCRIPT_DIR}"/server-*.pid; do
     fi
     rm -f "$pidfile"
 done
+
+# Keep the RCCS login-node MinIO reverse tunnel alive for Slurm jobs.
+# Compute jobs forward minio-host:19000 -> login:9000, so login:9000 must
+# reverse-forward to this front-end MinIO instance.
+RCCS_MINIO_TUNNEL_PIDFILE="${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid"
+if [[ -f "$RCCS_MINIO_TUNNEL_PIDFILE" ]]; then
+    tunnel_pid=$(cat "$RCCS_MINIO_TUNNEL_PIDFILE")
+    if kill -0 "$tunnel_pid" 2>/dev/null; then
+        echo "Stopping existing RCCS MinIO reverse tunnel (PID $tunnel_pid)..."
+        kill "$tunnel_pid" 2>/dev/null || true
+        sleep 1
+        kill -0 "$tunnel_pid" 2>/dev/null && kill -9 "$tunnel_pid" 2>/dev/null || true
+    fi
+    rm -f "$RCCS_MINIO_TUNNEL_PIDFILE"
+fi
+
+RCCS_SSH_TARGET="${RCCS_SSH_TARGET:-rccs-cloud}"
+RCCS_MINIO_REVERSE_SPEC="${RCCS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
+echo "Starting RCCS MinIO reverse tunnel: ${RCCS_SSH_TARGET} ${RCCS_MINIO_REVERSE_SPEC}"
+ssh -nNT \
+    -R "$RCCS_MINIO_REVERSE_SPEC" \
+    -o ExitOnForwardFailure=yes \
+    -o ServerAliveInterval=30 \
+    -o ServerAliveCountMax=3 \
+    "$RCCS_SSH_TARGET" \
+    >> "${LOG_DIR}/rccs-minio-reverse-tunnel.log" 2>&1 &
+echo $! > "$RCCS_MINIO_TUNNEL_PIDFILE"
+sleep 2
+if ! kill -0 "$(cat "$RCCS_MINIO_TUNNEL_PIDFILE")" 2>/dev/null; then
+    echo "ERROR: RCCS MinIO reverse tunnel failed to start. Check ${LOG_DIR}/rccs-minio-reverse-tunnel.log"
+    tail -20 "${LOG_DIR}/rccs-minio-reverse-tunnel.log" 2>/dev/null || true
+    exit 1
+fi
+if ! ssh "$RCCS_SSH_TARGET" "curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null"; then
+    echo "ERROR: RCCS login node cannot reach MinIO through the reverse tunnel."
+    exit 1
+fi
 
 _stop_port_listener() {
     local port="$1"
@@ -237,27 +362,33 @@ _stop_port_listener() {
 }
 
 _stop_port_listener "${UMRS_RCCS_PORT:-8000}" "RCCS HTTP"
-_stop_port_listener "5555" "RCCS ZMQ"
+_stop_port_listener "${UMRS_RCCS_ZMQ_PORT}" "RCCS ZMQ"
+[[ "${UMRS_RCCS_ZMQ_PORT}" == "5555" ]] || _stop_port_listener "5555" "legacy RCCS ZMQ"
 _stop_port_listener "${UMRS_AI4S_PORT:-8002}" "AI4S HTTP"
-_stop_port_listener "5557" "AI4S ZMQ"
+_stop_port_listener "${UMRS_AI4S_ZMQ_PORT}" "AI4S ZMQ"
+[[ "${UMRS_AI4S_ZMQ_PORT}" == "5557" ]] || _stop_port_listener "5557" "legacy AI4S ZMQ"
 sleep 2
 _stop_port_listener "${UMRS_RCCS_PORT:-8000}" "RCCS HTTP"
-_stop_port_listener "5555" "RCCS ZMQ"
+_stop_port_listener "${UMRS_RCCS_ZMQ_PORT}" "RCCS ZMQ"
+[[ "${UMRS_RCCS_ZMQ_PORT}" == "5555" ]] || _stop_port_listener "5555" "legacy RCCS ZMQ"
 _stop_port_listener "${UMRS_AI4S_PORT:-8002}" "AI4S HTTP"
-_stop_port_listener "5557" "AI4S ZMQ"
+_stop_port_listener "${UMRS_AI4S_ZMQ_PORT}" "AI4S ZMQ"
+[[ "${UMRS_AI4S_ZMQ_PORT}" == "5557" ]] || _stop_port_listener "5557" "legacy AI4S ZMQ"
 
 # ─── Start UMRS server for RCCS Cloud ────────────────────────────────────────
 echo ""
 echo "Starting UMRS server (RCCS Cloud)..."
 echo "  Site config: ${SCRIPT_DIR}/../rccs-front/site.yaml"
-echo "  ZMQ port: 5555"
+echo "  ZMQ port: ${UMRS_RCCS_ZMQ_PORT}"
+echo "  ZMQ data ports: ${UMRS_RCCS_DATA_PORT_RANGE}"
 echo "  HTTP port: ${UMRS_RCCS_PORT:-8000}"
 echo "  Tunnel mode: ${UMRS_TUNNEL_MODE}"
 echo "  Server host: ${UMRS_SERVER_HOST}"
 
 export UMRS_SITE_CONFIG="${SCRIPT_DIR}/../rccs-front/site.yaml"
 export UMRS_CONFIG="${SCRIPT_DIR}"
-export UMRS_CONTROL_PORT=5555
+export UMRS_CONTROL_PORT="${UMRS_RCCS_ZMQ_PORT}"
+export UMRS_DATA_PORT_RANGE="${UMRS_RCCS_DATA_PORT_RANGE}"
 export UMRS_HTTP_PORT="${UMRS_RCCS_PORT:-8000}"
 export DB_HOST="127.0.0.1"
 export DB_PORT="${POSTGRES_PORT:-5432}"
@@ -269,6 +400,13 @@ export UMRS_ADMIN_TOKEN="${UMRS_ADMIN_TOKEN:-}"
 export UMRS_TUNNEL_MODE="${UMRS_TUNNEL_MODE:-false}"
 export UMRS_SERVER_HOST="${UMRS_SERVER_HOST:-0.0.0.0}"
 export S3_PRESIGN_ENDPOINT="${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}"
+export VISION_S3_PRESIGN_ENDPOINT="${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}"
+export S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-http://127.0.0.1:${MINIO_PORT:-9000}}"
+export S3_ACCESS_KEY="${S3_ACCESS_KEY:-${MINIO_ROOT_USER}}"
+export S3_SECRET_KEY="${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}"
+export S3_REGION="${S3_REGION:-us-east-1}"
+export S3_BUCKET="${S3_BUCKET:-r4-data}"
+export S3_USE_SSL="${S3_USE_SSL:-false}"
 export UMRS_RAG_DIRECT_URL="http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
 
 nohup python "${REPO_ROOT}/src/server_umrs.py" \
@@ -299,12 +437,14 @@ done
 echo ""
 echo "Starting UMRS server (AI4S)..."
 echo "  Site config: ${SCRIPT_DIR}/../ai4s/site.yaml"
-echo "  ZMQ port: 5557"
+echo "  ZMQ port: ${UMRS_AI4S_ZMQ_PORT}"
+echo "  ZMQ data ports: ${UMRS_AI4S_DATA_PORT_RANGE}"
 echo "  HTTP port: ${UMRS_AI4S_PORT:-8002}"
 echo "  Tunnel mode: ${UMRS_TUNNEL_MODE}"
 
 export UMRS_SITE_CONFIG="${SCRIPT_DIR}/../ai4s/site.yaml"
-export UMRS_CONTROL_PORT=5557
+export UMRS_CONTROL_PORT="${UMRS_AI4S_ZMQ_PORT}"
+export UMRS_DATA_PORT_RANGE="${UMRS_AI4S_DATA_PORT_RANGE}"
 export UMRS_HTTP_PORT="${UMRS_AI4S_PORT:-8002}"
 export UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-front_ai4s}"
 

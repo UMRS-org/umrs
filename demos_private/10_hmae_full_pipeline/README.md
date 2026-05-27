@@ -18,10 +18,10 @@ These files describe the intended full HMAE pipeline.
 ## Important Current-State Note
 
 The shipped `run_demo.sh` is simpler than the full workflow description above.
-It currently uploads a subset of images to the configured HMAE bucket
-(`user1-hmae` by default) and downloads whatever the server-side HMAE
-experience produces. It does **not** automatically force the site to execute
-all three HMAE modes unless your server/workflow setup has been wired for that.
+It uploads Spring-8 concrete PNG slices to the configured `demo_user` HMAE
+buckets (`demo-hmae`, `demo-hmae-mae`, and `demo-hmae-features`) and downloads
+the server-side HMAE outputs for each task. It does **not** re-register the
+workflow package unless you explicitly run the workflow commands below.
 
 The checked-in workflow bundle is the uploadable form used by the current CLI:
 `source.type = "uploaded"` with `path = "steps"`.
@@ -166,14 +166,14 @@ umrs-client upload-workflow ./workflow --name hmae-full-pipeline
 # 2. Verify registration
 umrs-client --output text workflow list --name hmae-full-pipeline
 
-# 3. Upload input images to the bucket you want the workflow to use
-umrs-client upload_dir ../../tmp/hmae/images user1-hmae
+# 3. Upload Spring-8 concrete inputs to the bucket you want the workflow to use
+umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae
 
 # 4. Trigger the registered workflow against that bucket
-umrs-client workflow run hmae-full-pipeline --bucket user1-hmae
+umrs-client workflow run hmae-full-pipeline --bucket demo-hmae
 
 # 5. Download results written by the workflow
-umrs-client download_results user1-hmae ./results/workflow --force-overwrite
+umrs-client download_results demo-hmae ./results/workflow --force-overwrite
 ```
 
 ### When to use `workflow run`
@@ -194,36 +194,36 @@ Useful overrides:
 
 ```bash
 MAX_IMAGES=5 bash run_demo.sh
-IMAGE_DIR=../../tmp/hmae/images bash run_demo.sh
-HMAE_BUCKET=my-hmae-bucket bash run_demo.sh
+IMAGE_DIR=../../tmp/hmae/spring8concrete bash run_demo.sh
+HMAE_BUCKET=demo-hmae bash run_demo.sh
 ```
 
 ## Running Manually
 
 The full pipeline runs 3 HMAE tasks sequentially, each using a different
-bucket alias configured in `user1.json`:
+bucket alias configured for `demo_user`:
 
 ```bash
 # 1. Verify server connectivity
 umrs-client ping
 
-# 2. Task 1: Reconstruction (bucket: user1-hmae)
+# 2. Task 1: Reconstruction (bucket: demo-hmae)
 #    Full image reconstruction — the model reconstructs the input image
 #    and outputs the reconstructed version as PNG + pkl.
-umrs-client upload_dir ../../tmp/hmae/images user1-hmae
-umrs-client download_results user1-hmae ./results/reconstruction --force-overwrite
+umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae
+umrs-client download_results demo-hmae ./results/reconstruction --force-overwrite
 
-# 3. Task 2: MAE Reconstruction (bucket: user1-hmae-mae)
+# 3. Task 2: MAE Reconstruction (bucket: demo-hmae-mae)
 #    Masked autoencoder reconstruction — the model masks random patches,
 #    reconstructs them, and reports the reconstruction loss (anomaly score).
-umrs-client upload_dir ../../tmp/hmae/images user1-hmae-mae
-umrs-client download_results user1-hmae-mae ./results/mae_reconstruction --force-overwrite
+umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae-mae
+umrs-client download_results demo-hmae-mae ./results/mae_reconstruction --force-overwrite
 
-# 4. Task 3: Feature Extraction (bucket: user1-hmae-features)
+# 4. Task 3: Feature Extraction (bucket: demo-hmae-features)
 #    Extracts CLS and patch-level feature vectors for downstream analysis.
 #    Outputs .pt (PyTorch tensor) files plus pkl metadata.
-umrs-client upload_dir ../../tmp/hmae/images user1-hmae-features
-umrs-client download_results user1-hmae-features ./results/feature_extraction --force-overwrite
+umrs-client upload_dir ../../tmp/hmae/spring8concrete demo-hmae-features
+umrs-client download_results demo-hmae-features ./results/feature_extraction --force-overwrite
 ```
 
 This private demo assumes the HMAE task buckets are already configured by the
@@ -237,8 +237,8 @@ site. It does not treat admin reload as part of the normal user flow.
 
 | Setting | Default |
 |---|---|
-| Bucket alias | `user1-hmae` |
-| Image source | `../../tmp/hmae/images` |
+| Bucket alias | `demo-hmae` |
+| Image source | `../../tmp/hmae/spring8concrete` |
 | Result dir | `results/` |
 
 ## Public Analogue

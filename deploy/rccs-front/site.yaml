@@ -34,7 +34,7 @@ scheduler:
   gpus: 0
   cpus: 8
   memory: ""
-  slurm_delegation: per_user_ssh
+  slurm_delegation: service_account
   service_pubkey_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/keys/umrs-service.pub
   slurm_proxy_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/bin/umrs-slurm-proxy
 
@@ -53,8 +53,8 @@ runtime:
 
 storage:
   model_cache_dir: ""  # No local model cache — models on Lustre (login+compute only)
-  sam3_model_path: ""
-  hmae_model_path: ""
+  sam3_model_path: /lvs0/dne1/rccs-dmp/masaru.nagaso/umrs_models/sam3.1
+  hmae_model_path: /lvs0/dne1/rccs-dmp/masaru.nagaso/umrs_models/hmae
   hmae_config_path: ""
   hmae_checkpoint: ""
   vision_tarball: ""
@@ -92,7 +92,7 @@ database:
 # when scheduler.kind = slurm-remote.
 extra:
   ssh_target: rccs-cloud
-  ssh_user: ""  # Uses SSH config alias; set explicitly if needed
+  ssh_user: "masaru.nagaso"
   ssh_port: 22
   ssh_connect_timeout: 15
   ssh_command_timeout: 30

@@ -2,12 +2,12 @@ FROM python:3.11-slim AS base
 
 # System dependencies for OpenCV headless
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    libglib2.0-0 libgl1 && \
+    git libglib2.0-0 libgl1 && \
     rm -rf /var/lib/apt/lists/*
 
-# Install uv (fast Python package manager) — kept at runtime for custom
-# adapter dependency installation via requirements.txt auto-discovery.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+# Install uv from PyPI instead of a GHCR multi-stage copy; compute-node
+# rootless podman builds can pull Python packages but may not resolve GHCR.
+RUN python -m pip install --no-cache-dir uv
 ENV UV_SYSTEM_PYTHON=1 UV_NO_CACHE=1
 
 WORKDIR /app
@@ -20,10 +20,7 @@ RUN uv pip install \
 # Install remaining Python dependencies
 COPY src/umrs/vision_service/requirements-vision.txt .
 RUN uv pip install -r requirements-vision.txt
-
-# Install decord for future video support (fall back to decord2 shim if needed)
-RUN uv pip install decord==0.6.0 || \
-    { uv pip install decord2==3.2.0; }
+RUN uv pip install "sam3 @ git+https://github.com/facebookresearch/sam3.git@8e451d5eb43c817b64ae7577fb7b9ae223db88a9"
 
 # Copy UMRS source (models, vision service, etc.)
 COPY src/umrs/ /app/umrs/

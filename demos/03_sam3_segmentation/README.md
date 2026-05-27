@@ -60,7 +60,7 @@ umrs-client model list --scope system
 umrs-client model list --scope user
 
 # Optional: only if your site exposes a writable, allowed staging root
-umrs-client model download facebook/sam2-hiera-small --name sam3 \
+umrs-client model download sam3.1 --name sam3.1 \
   --scope user --server-side --staging-dir /path/to/site-user-model-root
 
 # 3. Upload images
@@ -95,7 +95,7 @@ The model is registered in `vision_models.json`:
 {
   "modality_name": "segmentation",
   "model": {
-    "model_name": "facebook/sam3",
+    "model_name": "sam3.1",
     "vector_size": "256",
     "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
     "vision_model_type": "sam3",
@@ -109,11 +109,11 @@ The model is registered in `vision_models.json`:
 Environment overrides in `env.vision`:
 
 ```bash
-SAM3_MODEL_PATH=./rivault/models/sam3
+SAM3_MODEL_PATH=./rivault/models/sam3.1
 RIVAULT_PROFILES="harness vllm vision-bentoml"
 ```
 
-On shared deployments, `sam3` is usually pre-staged by the site/operator.
+On shared deployments, `sam3.1` is usually pre-staged by the site/operator.
 Normal users should not expect to create a new `system`-scoped SAM3 model from
 the demo shell.
 

@@ -7,7 +7,7 @@
         "data": { "type": "file", "mime_type": "image/png" }
       },
       "model": {
-        "model_name": "facebook/sam3",
+        "model_name": "sam3.1",
         "vector_size": "256",
         "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "vision_model_type": "sam3",

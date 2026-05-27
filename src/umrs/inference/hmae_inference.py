@@ -28,6 +28,29 @@ logger = logging.getLogger(__name__)
 
 _model_cache = {}
 
+_HMAE_TASK_ALIASES = {
+    "reconstruction": "reconstruction",
+    "reconstruct": "reconstruction",
+    "full_reconstruction": "reconstruction",
+    "custom:reconstruction": "reconstruction",
+    "mae_reconstruction": "mae_reconstruction",
+    "mae": "mae_reconstruction",
+    "masked_reconstruction": "mae_reconstruction",
+    "custom:mae_reconstruction": "mae_reconstruction",
+    "feature_extraction": "feature_extraction",
+    "features": "feature_extraction",
+    "embedding": "feature_extraction",
+    "custom:feature_extraction": "feature_extraction",
+}
+
+
+def normalize_hmae_task(task=None):
+    """Normalize reference hmae-infer mode names to UMRS task names."""
+    if task is None:
+        return "reconstruction"
+    key = str(task).strip().lower().replace("-", "_")
+    return _HMAE_TASK_ALIASES.get(key, key)
+
 
 # ---------------------------------------------------------------------------
 # Model loading
@@ -339,6 +362,7 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
     Returns:
         (cls_embeddings, checksums, metadata_list, saved_keys)
     """
+    task = normalize_hmae_task(task)
     config = self._hmae_config
     model = self.model
     device = self.device
@@ -443,10 +467,7 @@ def make_hmae_compute_func(modality, cfg_file, task=None):
     with open(cfg_file) as f:
         yaml.safe_load(f)
 
-    resolved_task = task if task is not None else "reconstruction"
-    # embedding uses the same code path as feature_extraction
-    if resolved_task == "embedding":
-        resolved_task = "feature_extraction"
+    resolved_task = normalize_hmae_task(task)
 
     def func(self, s3, s3_keys, path_to_bucket, output_bucket, skip_existing=True):
         return compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, resolved_task, skip_existing=skip_existing)

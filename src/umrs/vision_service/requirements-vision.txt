@@ -9,3 +9,6 @@ matplotlib
 boto3
 bentoml==1.4.35
 requests
+setuptools
+einops
+pycocotools

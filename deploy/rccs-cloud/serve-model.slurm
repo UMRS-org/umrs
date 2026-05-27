@@ -526,16 +526,16 @@ _build_vision_image() {
     echo "[wrapper] Building vision image on compute node (may take several minutes)..."
     local build_status
 
-    if podman build --cgroup-manager=cgroupfs -t "${_VISION_IMAGE}" \
-         -f "${_UMRS_REPO}/src/umrs/vision_service/Dockerfile" "${_UMRS_REPO}"; then
+    podman build --cgroup-manager=cgroupfs -t "${_VISION_IMAGE}" \
+         -f "${_UMRS_REPO}/src/umrs/vision_service/Dockerfile" "${_UMRS_REPO}"
+    build_status=$?
+    if [[ "${build_status}" -eq 0 ]]; then
         echo "[wrapper] Saving tarball to Lustre: ${_VISION_TARBALL}"
         mkdir -p "$(dirname "${_VISION_TARBALL}")"
         podman save "${_VISION_IMAGE}" -o "${_VISION_TARBALL}.tmp" && mv "${_VISION_TARBALL}.tmp" "${_VISION_TARBALL}"
         echo "[wrapper] Vision image built and cached (${_VISION_HOST_ARCH})."
         return 0
     fi
-
-    build_status=$?
 
     echo "[wrapper] ERROR: podman build failed (exit ${build_status}). Vision service will not be available."
     return "${build_status}"
@@ -550,7 +550,7 @@ if [[ -f "${_VISION_TARBALL}" ]]; then
     echo "[wrapper] Vision image loaded (${_VISION_HOST_ARCH})."
 else
     echo "[wrapper] No tarball at ${_VISION_TARBALL}; building natively..."
-    _build_vision_image || true
+    _build_vision_image || exit $?
 fi
 
 # ─── Delegate to the main serve-model.slurm in RIVAULT_DIR ───────────────────

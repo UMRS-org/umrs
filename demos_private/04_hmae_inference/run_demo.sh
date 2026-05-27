@@ -22,6 +22,7 @@
 #   HMAE_ASSET_ROOT       — local HMAE data/checkpoint root (default: umrs/tmp/hmae)
 #   HMAE_INFER_DIR        — local hmae-infer checkout (default: umrs/tmp/hmae-infer)
 #   HMAE_REGISTER_MODEL   — set to 1 to register HMAE_LOCAL_MODEL_DIR
+#   FORCE_RECOMPUTE       — default: 1; set 0 to skip admin recompute attempt
 # =============================================================================
 set -Eeuo pipefail
 
@@ -29,10 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_TAG="hmae_demo" source "${SCRIPT_DIR}/../lib/common.sh"
 
 # Ensure HMAE Inference experience is in user config (idempotent).
-ensure_experience "${SCRIPT_DIR}/experience.json"
+ensure_experience "${SCRIPT_DIR}/experience.json" --update
 
 BUCKET_ALIAS="${HMAE_BUCKET:-demo-hmae}"
-FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-}"
+FORCE_RECOMPUTE="${FORCE_RECOMPUTE:-1}"
 MAX_IMAGES="${MAX_IMAGES:-3}"
 RESULTS_DIR="${SCRIPT_DIR}/results"
 REMOTE_HMAE_MODEL_PATH="${UMRS_REMOTE_HMAE_MODEL_PATH:-}"
@@ -43,23 +44,56 @@ HMAE_LOCAL_CHECKPOINT="${HMAE_LOCAL_CHECKPOINT:-${HMAE_ASSET_ROOT}/latest_checkp
 HMAE_LOCAL_CONFIG="${HMAE_LOCAL_CONFIG:-${HMAE_INFER_DIR}/configs/infer_hmae_vit_b.yaml}"
 HMAE_REGISTER_MODEL="${HMAE_REGISTER_MODEL:-0}"
 HMAE_REQUIRE_RESULTS="${HMAE_REQUIRE_RESULTS:-0}"
+HMAE_S3CFG="${HMAE_S3CFG:-$(CONF="${CONF}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
 
-# S3 bucket names (derived from user1.json naming convention)
-INPUT_S3_BUCKET="user1.hmae-inference.${BUCKET_ALIAS}"
-OUTPUT_S3_BUCKET="user1.hmae-inference.${BUCKET_ALIAS}-output"
+path = Path(os.environ["CONF"]).expanduser()
+if path.exists():
+    print(json.loads(path.read_text()).get("s3_configuration_file", ""))
+PY
+)}"
+HMAE_S3CFG="${HMAE_S3CFG:-${HOME}/.config/umrs/s3cfg}"
 
-# Default image dir: use local HMAE sample slices staged in umrs/tmp/hmae.
-IMAGE_DIR="${1:-${IMAGE_DIR:-${HMAE_ASSET_ROOT}/images}}"
+read -r INPUT_S3_BUCKET OUTPUT_S3_BUCKET < <(CONF="${CONF}" BUCKET_ALIAS="${BUCKET_ALIAS}" python3 - <<'PY'
+import json
+import os
+from pathlib import Path
+
+def bucket_name(username, xp_name, alias, output=False):
+    value = f"{username}.{xp_name}.{alias}"
+    if output:
+        value += "-output"
+    return value.lower().replace(" ", "-").replace("_", "-")
+
+conf = json.loads(Path(os.environ["CONF"]).expanduser().read_text())
+alias = os.environ["BUCKET_ALIAS"]
+username = conf.get("username", "demo_user")
+for xp in conf.get("experiences", []):
+    for modality in xp.get("modalities", []):
+        if (modality.get("s3") or {}).get("bucket_alias") == alias:
+            xp_name = xp.get("xp_name", "HMAE Inference")
+            print(bucket_name(username, xp_name, alias), bucket_name(username, xp_name, alias, output=True))
+            raise SystemExit(0)
+raise SystemExit(f"bucket alias not found in {os.environ['CONF']}: {alias}")
+PY
+)
+
+# Default image dir: use the Spring-8 concrete volume slices for this demo.
+IMAGE_DIR="${1:-${IMAGE_DIR:-${HMAE_ASSET_ROOT}/spring8concrete}}"
 
 # Helper: clear all objects from an S3 bucket (via local boto3 + s3cfg)
 clear_s3_bucket() {
     local bucket="$1"
-    python3 - "$bucket" <<'PY'
+    python3 - "$bucket" "$HMAE_S3CFG" <<'PY'
 import sys, configparser, os, boto3
 bucket = sys.argv[1]
+s3cfg = os.path.expanduser(sys.argv[2])
 cfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
-s3cfg = os.path.expanduser("~/.config/umrs/s3cfg")
-cfg.read(s3cfg)
+read_files = cfg.read(s3cfg)
+if not read_files:
+    raise SystemExit(f"S3 config not found: {s3cfg}")
 protocol = "https" if cfg.getboolean("default", "use_https", fallback=False) else "http"
 endpoint = f"{protocol}://{cfg.get('default', 'host_base')}"
 s3 = boto3.client("s3", endpoint_url=endpoint,
@@ -155,7 +189,7 @@ log "Step 4b: Uploading volume slices to bucket '${BUCKET_ALIAS}'..."
 $CLIENT upload_dir "${UPLOAD_DIR}" "$BUCKET_ALIAS"
 ok "Images uploaded — server will process automatically"
 
-if [[ -n "$FORCE_RECOMPUTE" ]]; then
+if [[ "$FORCE_RECOMPUTE" != "0" ]]; then
     log "FORCE_RECOMPUTE set — triggering full recompute..."
     maybe_admin_recompute || warn "recompute returned non-zero"
 fi
@@ -170,7 +204,7 @@ mkdir -p "$RESULTS_DIR"
 if download_results_bounded "$BUCKET_ALIAS" "$RESULTS_DIR" --force-overwrite; then
     DOWNLOAD_ELAPSED=$(( SECONDS - UPLOAD_DONE ))
     log "  Processing + download took ${DOWNLOAD_ELAPSED}s"
-    ok "Results saved to ${RESULTS_DIR}/"
+    check_result_files "$RESULTS_DIR" "$HMAE_REQUIRE_RESULTS" "HMAE results"
 else
     if [[ "$HMAE_REQUIRE_RESULTS" = "1" ]]; then
         die "Could not download HMAE results"
