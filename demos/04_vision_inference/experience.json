@@ -10,10 +10,11 @@
         "data": { "type": "file", "mime_type": "image/png" }
       },
       "model": {
-        "model_name": "facebook/sam2-hiera-small",
+        "model_name": "sam3.1",
         "vector_size": "256",
         "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "vision_model_type": "sam3",
+        "vision_model_config": { "prompt": "cat" },
         "return_type": "file"
       },
       "sql": {

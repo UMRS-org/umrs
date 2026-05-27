@@ -26,9 +26,11 @@ structure clustering.
 ## Important Current-State Note
 
 The checked-in `run_demo.sh` does **not** automatically execute the full
-private multi-step workflow. It currently reuses the public SAM3-style bucket
-flow (`user1-sam3` by default) so the data path can still be exercised even if
-the full private workflow is not wired into the current site config.
+private multi-step workflow. In normal user mode it reuses the already
+provisioned SAM3 bucket flow (`demo-sam3` by default) so the data path can still
+be exercised even when the private `demo-defect` bucket has not been
+operator-provisioned. Use `DEFECT_BUCKET=demo-defect` only after an admin reload
+has provisioned that private experience server-side.
 
 If you want to upload the full workflow, use `workflow/` or `workflow_slurm/`
 directly with `umrs-client upload-workflow ...`. Those bundle directories are
@@ -38,7 +40,12 @@ already shaped to match the current CLI contract.
 
 ```bash
 cd demos_private/09_defect_analysis
-bash run_demo.sh
+DEFECT_BUCKET=demo-sam3 \
+  IMAGE_DIR=../../demos/sample_data/images \
+  MAX_IMAGES=1 \
+  RESULT_DOWNLOAD_TIMEOUT=1800 \
+  SAM3_REQUIRE_RESULTS=1 \
+  bash run_demo.sh
 ```
 
 Useful overrides:
@@ -46,7 +53,7 @@ Useful overrides:
 ```bash
 MAX_IMAGES=4 bash run_demo.sh
 IMAGE_DIR=/path/to/real/images bash run_demo.sh
-DEFECT_BUCKET=my-segmentation-bucket bash run_demo.sh
+DEFECT_BUCKET=demo-defect bash run_demo.sh  # only after operator provisioning
 ```
 
 ## Running Manually
@@ -73,23 +80,23 @@ umrs-client upload-workflow workflow/ --name structural-defect-analysis
 #    Images are dispatched to SAM3 segmentation on the GPU node.
 #    The segmentation model detects structural features and defects
 #    using text-prompted segmentation.
-umrs-client upload_dir ../../tmp/hmae/images user1-sam3
+umrs-client upload_dir ../../demos/sample_data/images demo-sam3
 
 # 4. Download segmentation results
 #    Retrieves bounding boxes, masks, scores, and overlay images.
-umrs-client download_results user1-sam3 ./results --force-overwrite
+umrs-client download_results demo-sam3 ./results --force-overwrite
 ```
 
 ## Script Defaults
 
 | Setting | Default |
 |---|---|
-| Bucket alias | `user1-sam3` |
+| Bucket alias | `demo-sam3` |
 | Image source | `../../tmp/hmae/images` |
-
-This private demo now follows the same general-user shape as the public vision
-paths: it assumes the SAM3 experience is already available on the site.
 | Result dir | `results/` |
+
+This private demo follows the same general-user shape as the public vision
+paths: it assumes the SAM3 experience is already available on the site.
 
 ## Public Analogue
 

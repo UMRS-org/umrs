@@ -296,6 +296,16 @@ class TestPathValidator:
                 owner_id="user-456",
             )
 
+    def test_scope_path_validation_user_accepts_operator_allowlist(self, monkeypatch):
+        """Test user scope can use explicit operator-managed roots."""
+        monkeypatch.setenv("MODEL_ALLOWED_PATHS", "/lvs0/site/models/*")
+        validator = PathValidator()
+        validator.validate_scope_path(
+            "/lvs0/site/models/sam3",
+            ModelScope.USER,
+            owner_id="user-456",
+        )
+
 
 # =============================================================================
 # ACL Enforcer Tests

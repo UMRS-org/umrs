@@ -68,12 +68,15 @@ class PathValidator:
     allowed_patterns: list[str]
 
     def __init__(self, allowed_patterns: list[str] | None = None):
+        self._operator_patterns: list[str] = []
         if allowed_patterns is not None:
             self.allowed_patterns = allowed_patterns
+            self._operator_patterns = allowed_patterns.copy()
         else:
             env_paths = os.environ.get("MODEL_ALLOWED_PATHS")
             if env_paths:
                 self.allowed_patterns = [p.strip() for p in env_paths.split(":")]
+                self._operator_patterns = self.allowed_patterns.copy()
             else:
                 self.allowed_patterns = DEFAULT_ALLOWED_PATHS.copy()
 
@@ -141,6 +144,9 @@ class PathValidator:
         if token is None:
             return []
         patterns = [pattern for pattern in self.allowed_patterns if token in pattern]
+        for pattern in self._operator_patterns:
+            if "{owner_id}" not in pattern and "{project_id}" not in pattern:
+                _append_unique(patterns, pattern)
         for pattern in _site_scope_patterns(scope):
             _append_unique(patterns, pattern)
         return patterns

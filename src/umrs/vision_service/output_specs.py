@@ -11,6 +11,14 @@ _HMAE_MODE_TO_TASK = {
     "reconstruct": "reconstruction",
     "mae": "mae_reconstruction",
     "features": "feature_extraction",
+    "reconstruction": "reconstruction",
+    "full_reconstruction": "reconstruction",
+    "custom:reconstruction": "reconstruction",
+    "mae_reconstruction": "mae_reconstruction",
+    "masked_reconstruction": "mae_reconstruction",
+    "custom:mae_reconstruction": "mae_reconstruction",
+    "embedding": "feature_extraction",
+    "custom:feature_extraction": "feature_extraction",
 }
 
 # HuggingFace task to primary output suffix mapping.
@@ -31,11 +39,9 @@ _HF_TASK_SUFFIXES: dict[str, str] = {
 
 def resolve_hmae_task(config: dict) -> str:
     """Resolve the effective HMAE task from adapter config."""
-    task = config.get("task")
-    if task:
-        return task
-    mode = config.get("mode", "")
-    return _HMAE_MODE_TO_TASK.get(mode, "reconstruction")
+    raw_task = config.get("task") or config.get("mode") or "reconstruction"
+    task = str(raw_task).strip().lower().replace("-", "_")
+    return _HMAE_MODE_TO_TASK.get(task, task)
 
 
 def describe_output_artifacts(model_type: str, key: str, config: dict) -> dict[str, str]:

@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import os
+from contextlib import nullcontext
 
 import numpy as np
 import torch
@@ -23,6 +24,27 @@ _sam3_cache = {}
 
 # Sentinel to distinguish Sam2 from Sam3 in the cache
 _MODEL_TYPE_KEY = "__model_type__"
+
+
+def _official_sam3_checkpoint(model_name_or_path):
+    """Return a local SAM3 checkpoint path for Meta's SAM3 runtime, if present."""
+    if not isinstance(model_name_or_path, str):
+        return None
+    if os.path.isfile(model_name_or_path) and model_name_or_path.endswith(
+        (".pt", ".pth")
+    ):
+        return model_name_or_path
+    if not os.path.isdir(model_name_or_path):
+        return None
+    for filename in ("sam3.1_multiplex.pt", "sam3.pt"):
+        checkpoint_path = os.path.join(model_name_or_path, filename)
+        if os.path.isfile(checkpoint_path):
+            return checkpoint_path
+    return None
+
+
+def _is_official_sam3_processor(processor):
+    return processor.__class__.__module__.startswith("sam3.")
 
 
 def _detect_model_type(model_name_or_path):
@@ -51,6 +73,35 @@ def load_sam3_model(model_name_or_path="facebook/sam3"):
         return _sam3_cache[model_name_or_path]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    official_checkpoint = _official_sam3_checkpoint(model_name_or_path)
+    if official_checkpoint is not None:
+        try:
+            from sam3 import build_sam3_image_model
+            from sam3.model.sam3_image_processor import (
+                Sam3Processor as OfficialSam3Processor,
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "Local SAM3 checkpoint detected, but the Meta SAM3 runtime is "
+                "not installed"
+            ) from exc
+
+        logger.info(
+            "Loading official SAM3 checkpoint '%s' on %s ...",
+            official_checkpoint,
+            device,
+        )
+        model = build_sam3_image_model(
+            checkpoint_path=official_checkpoint,
+            load_from_HF=False,
+            device=device,
+        )
+        processor = OfficialSam3Processor(model, device=device)
+        result = (model, processor, device)
+        _sam3_cache[model_name_or_path] = result
+        logger.info("Official SAM3 model loaded successfully")
+        return result
+
     model_type = _detect_model_type(model_name_or_path)
     logger.info("Detected model type: %s at '%s'", model_type, model_name_or_path)
 
@@ -220,6 +271,51 @@ def segment_image_with_text(model, processor, image, text_prompt, device="cuda",
                      "(text prompt '%s' ignored)", text_prompt)
         return _segment_sam2_auto(model, processor, image, device,
                                   mask_threshold=mask_threshold)
+
+    if _is_official_sam3_processor(processor):
+        processor.set_confidence_threshold(threshold)
+        autocast_ctx = (
+            torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+            if device == "cuda" and torch.cuda.is_available()
+            else nullcontext()
+        )
+        with autocast_ctx:
+            inference_state = processor.set_image(image.convert("RGB"))
+            inference_state = processor.set_text_prompt(
+                state=inference_state,
+                prompt=text_prompt,
+            )
+
+        mask_tensor = inference_state.get("masks")
+        if "masks_logits" in inference_state:
+            mask_tensor = inference_state["masks_logits"] > mask_threshold
+        boxes_tensor = inference_state.get("boxes")
+        scores_tensor = inference_state.get("scores")
+
+        if mask_tensor is None or len(mask_tensor) == 0:
+            return {"masks": [], "boxes": [], "scores": [], "num_objects": 0}
+
+        masks_np = [
+            mask.detach().squeeze().cpu().numpy().astype(np.uint8)
+            for mask in mask_tensor
+        ]
+        boxes_list = (
+            boxes_tensor.detach().cpu().tolist()
+            if boxes_tensor is not None
+            else []
+        )
+        scores_list = (
+            scores_tensor.detach().cpu().tolist()
+            if scores_tensor is not None
+            else []
+        )
+
+        return {
+            "masks": masks_np,
+            "boxes": boxes_list,
+            "scores": scores_list,
+            "num_objects": len(masks_np),
+        }
 
     # Sam3 path — text-prompted instance segmentation
     inputs = processor(images=image, text=text_prompt, return_tensors="pt").to(device)

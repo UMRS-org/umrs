@@ -214,6 +214,72 @@ download_results_bounded() {
     run_client_bounded "${RESULT_DOWNLOAD_TIMEOUT:-20}" download_results "$@"
 }
 
+result_file_count() {
+    find "$1" -type f 2>/dev/null | wc -l | tr -d ' '
+}
+
+check_result_files() {
+    local results_dir="$1"
+    local require_results="$2"
+    local label="$3"
+    local count
+
+    count="$(result_file_count "$results_dir")"
+    if [[ "$count" -gt 0 ]]; then
+        ok "${label}: ${count} file(s) downloaded to ${results_dir}"
+        return 0
+    fi
+    if [[ "$require_results" = "1" ]]; then
+        die "${label}: download completed but no result files were received"
+    fi
+    warn "${label}: download completed but no result files were received"
+    return 1
+}
+
+check_sam3_result_objects() {
+    local results_dir="$1"
+    local require_results="$2"
+    local label="$3"
+    local summary
+
+    if summary="$(python3 - "$results_dir" <<'PY'
+import pickle
+import sys
+from pathlib import Path
+
+results_dir = Path(sys.argv[1])
+pkl_files = sorted(results_dir.rglob("*.pkl"))
+if not pkl_files:
+    print(f"no SAM3 pickle results found in {results_dir}")
+    raise SystemExit(2)
+
+total_objects = 0
+summaries = []
+for pkl_file in pkl_files:
+    with pkl_file.open("rb") as handle:
+        payload = pickle.load(handle)
+    count = payload.get("num_objects")
+    if count is None:
+        count = len(payload.get("boxes") or [])
+    count = int(count or 0)
+    total_objects += count
+    summaries.append(f"{pkl_file.name}:{count}")
+
+print(f"{total_objects} object(s) across {len(pkl_files)} pickle file(s): " + ", ".join(summaries))
+raise SystemExit(0 if total_objects > 0 else 3)
+PY
+)"; then
+        ok "${label}: ${summary}"
+        return 0
+    fi
+
+    if [[ "$require_results" = "1" ]]; then
+        die "${label}: ${summary}"
+    fi
+    warn "${label}: ${summary}"
+    return 1
+}
+
 http_api_available() {
     local url="${1:-${UMRS_URL}}"
     curl -sf "${url%/}/openapi.json" >/dev/null 2>&1 \
