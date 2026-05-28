@@ -6,7 +6,6 @@
 sequenceDiagram
     participant U as User Workstation
     participant T as SSH Tunnel
-    participant GW as Gateway (NGINX :8080)
     participant UMRS as UMRS Server (ZMQ :5555)
     participant S3 as MinIO (:9000)
     participant SL as Slurm
