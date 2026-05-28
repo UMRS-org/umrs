@@ -88,10 +88,11 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
 
     if server_name == "MinIO":
         from umrs.shared.storage.minio import minio_grant_user_access, minio_s3_create_user
-        alias = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)
+        alias, s3cfg_content = minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file)
         if alias:
             for bucket in bucket_list:
                 minio_grant_user_access(username, bucket, alias)
+        return s3cfg_content
 
     else:
         raise RuntimeError(f"Do not know how to create user and buckets for server '{server_name}'")

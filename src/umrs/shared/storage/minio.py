@@ -327,10 +327,11 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         alias = {alias}
         """
 
+        s3cfg_content = textwrap.dedent(user_cfg)
         expanded_path = os.path.expanduser(user_s3_configuration_file)
         os.makedirs(os.path.dirname(expanded_path), exist_ok=True)
         with open(expanded_path, "w") as file:
-            file.write(textwrap.dedent(user_cfg))
+            file.write(s3cfg_content)
 
         print(f"==> Configuration file written to: {user_s3_configuration_file}")
     else:
@@ -362,8 +363,12 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         # Ensure user exists with the password declared in the user's config
         minio_create_user_with_policy(username, u_secret_key, alias, list_only_policy)
 
+        # Read existing s3cfg content for delivery to remote client
+        with open(user_cfg_path, encoding="utf-8") as f:
+            s3cfg_content = f.read()
 
-    return alias
+
+    return alias, s3cfg_content
 
 
 def minio_delete_user(username, target):

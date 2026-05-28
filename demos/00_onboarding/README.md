@@ -8,13 +8,13 @@ SSH tunnel guidance.
 
 ## What it does
 
-1. **Create user config** — generates `~/.config/umrs/users/demo_user.json`
-   (idempotent, skipped if already present)
+1. **Login** — authenticates and auto-creates the connection profile and user
+   config in one step (idempotent once the profile exists)
 2. **Show active profile** — confirms the connection profile is set
 3. **Pre-flight check** — verifies `umrs-client` can reach the server
 4. **Onboard** — calls `reload` to trigger server-side provisioning:
    - MinIO IAM user + per-bucket access policy
-   - (No experiences yet — subsequent demos add their own)
+   - (No additional experiences yet — subsequent demos add their own)
 5. **Confirm** — shows provisioned status and bucket list
 
 ## Usage
@@ -48,39 +48,20 @@ cd deploy/rccs-cloud
 umrs-server admin bootstrap --admin-user admin --json
 
 # Enroll demo_user
+# Run from the deploy directory — conf_umrs.json is discovered automatically
 umrs-server admin user add demo_user \
     --fullname "Demo User" \
-    --role user
+    --role user \
+    --slurm-account rccs-dmp --site rccs-front \
+    --issue-token --token-days 90
 ```
 
-This writes two files under `user_files_dir` (default `./user_files/`):
+The printed JWT is given to the user. The admin record is written to
+`user_files/demo_user.json` and the user is registered in `conf_umrs.json`.
 
-| File | Purpose |
-|------|---------|
-| `user_files/demo_user.json` | Admin record (role, quota, projects) — stays on the server |
-| `user_files/demo_user.client.json` | Client config template — hand this to the user |
-
-**On a local / single-machine setup** (admin and user are the same person),
-copy the template directly to the client config directory:
-
-```bash
-# Path will vary — check your umrs-server config for user_files_dir
-cp ./user_files/demo_user.client.json \
-   ~/.config/umrs/users/demo_user.client.json
-```
-
-Then in Step 2, pass it as `--template`:
-
-```bash
-umrs-client config init \
-    --username demo_user \
-    --template ~/.config/umrs/users/demo_user.client.json
-```
-
-**On a remote server**, transfer the file to the user's machine with `scp` or
-any secure channel, then run the same `config init --template` command above.
-
-If you skip the template (or don't have one), `config init --username demo_user --fullname "Demo User"` creates a minimal config from scratch — experiences get added later by each demo.
+**Note:** No `--config conf_umrs.json` flag is needed when running from the
+deploy directory. The admin CLI auto-discovers `conf_umrs.json` from the
+current working directory.
 
 ### Manage enrolled users
 
@@ -95,12 +76,15 @@ umrs-server admin user delete demo_user --purge -y
 
 ## Step 2 (User): Client-Side Setup
 
+`umrs-client login` handles all client-side setup in a single command — it
+creates the connection profile **and** the user config automatically.
+
 ```bash
-# Authenticate and create a connection profile in one step
+# Authenticate: creates connection profile + user config in one step
 umrs-client login --host <server-host> --api-key <token-from-admin>
 
-# Verify connectivity
-umrs-client ping
+# (Optional) Add workload-specific experiences
+umrs-client config import path/to/experience.json
 
 # Trigger provisioning (idempotent)
 umrs-client reload
@@ -109,27 +93,27 @@ umrs-client reload
 umrs-client list_buckets
 ```
 
-### Profile options
+### SSH tunnel (remote HPC)
+
+If the server is on a remote cluster, open an SSH tunnel first:
 
 ```bash
-# Direct mode (local development)
-umrs-client profile init --name local --mode direct
+ssh -N -L 5555:localhost:5555 -L 5556:localhost:5556 rccs-cloud &
 
-# SSH tunnel mode (remote HPC cluster)
-umrs-client profile init --name rccs --mode ssh_tunnel --ssh-host rccs-cloud
+umrs-client login --host 127.0.0.1 --mode ssh_tunnel --api-key <token>
 ```
 
-### Config options
+### Advanced: manual profile and config setup
+
+If you need more control than `login` provides:
 
 ```bash
-# Create config from scratch
+# Profile only (no login)
+umrs-client profile init --name local --mode direct
+umrs-client profile init --name rccs --mode ssh_tunnel --ssh-host rccs-cloud
+
+# Config only (no login)
 umrs-client config init --username demo_user --fullname "Demo User"
-
-# Create from admin-supplied template
-umrs-client config init --username demo_user --template demo_user.client.json
-
-# Register an existing config as active
-umrs-client config use --user ~/.config/umrs/users/demo_user.json
 ```
 
 ---

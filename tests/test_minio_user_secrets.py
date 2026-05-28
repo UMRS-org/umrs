@@ -67,7 +67,7 @@ def test_minio_s3_create_user_rewrites_unsafe_existing_secret(tmp_path, monkeypa
 
     monkeypatch.setattr(minio_storage, "minio_create_user_with_policy", fake_create_user)
 
-    alias = minio_storage.minio_s3_create_user(
+    alias, s3cfg_content = minio_storage.minio_s3_create_user(
         "user1",
         s3_connection=None,
         user_s3_configuration_file=str(user_cfg_path),
@@ -75,6 +75,7 @@ def test_minio_s3_create_user_rewrites_unsafe_existing_secret(tmp_path, monkeypa
     )
 
     assert alias == "myminio"
+    assert s3cfg_content is not None
     assert captured == {
         "user": "user1",
         "password": "safeSecret123",

@@ -343,7 +343,12 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
             summary = pretty_print_cfg(
                 {"buckets_cfg": filtered_store}, print_output=False
             )
-            return {"summary": summary}
+            result = {"summary": summary}
+            # Attach s3cfg credentials for this user (if available)
+            s3cfg_map = outcome.get("s3cfg_by_user") if isinstance(outcome, dict) else None
+            if s3cfg_map and client_id in s3cfg_map:
+                result["s3cfg_content"] = s3cfg_map[client_id]
+            return result
     except Exception as e:
         # If filtering fails for any reason, fall back to original outcome
         print(
@@ -403,8 +408,11 @@ def reload_configuration(
                     f"Warning: failed to close S3 connection during reload: {e}"
                 )
 
+        s3cfg_by_user = {}
         for u in new_users:
-            create_s3_sql_users(u, new_admin_s3_cfg)
+            s3cfg_content = create_s3_sql_users(u, new_admin_s3_cfg)
+            if s3cfg_content:
+                s3cfg_by_user[u["username"]] = s3cfg_content
 
         new_server_cfg = ServerCfg()
         for u in new_users:
@@ -417,7 +425,10 @@ def reload_configuration(
         if log_output:
             print(summary)
             print("\n✅ Reload complete.")
-        return {"summary": summary}
+        result = {"summary": summary}
+        if s3cfg_by_user:
+            result["s3cfg_by_user"] = s3cfg_by_user
+        return result
     except Exception as e:
         error_msg = f"\n❌ Reload failed: {e}"
         if log_output:
