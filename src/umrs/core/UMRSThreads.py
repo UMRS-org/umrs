@@ -402,6 +402,8 @@ class UMRSThreads:
             entry["requires_update"] = payload["requires_update"]
         if "error" in payload:
             entry["error"] = payload["error"]
+        if "s3cfg_content" in payload:
+            entry["s3cfg_content"] = payload["s3cfg_content"]
 
         # print(f"[{owner}]: {key} -> {entry}")
 

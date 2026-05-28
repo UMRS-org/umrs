@@ -141,8 +141,31 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
                 bucket_list.append(output_path_to_bucket)
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
+
+    # If the s3cfg path is not writable on this machine (e.g. client is on a
+    # remote Mac, path is /Users/... on a Linux server), fall back to a
+    # server-local path next to the user config file.
+    expanded_s3cfg = os.path.expanduser(user_s3_configuration_file)
+    s3cfg_parent = os.path.dirname(expanded_s3cfg) or "."
+    if not os.path.exists(s3cfg_parent):
+        try:
+            os.makedirs(s3cfg_parent, exist_ok=True)
+        except OSError:
+            config_file_path = user_cfg.get("config_file_path", "")
+            if config_file_path:
+                server_dir = os.path.dirname(os.path.expanduser(config_file_path))
+            else:
+                server_dir = "."
+            user_s3_configuration_file = os.path.join(
+                server_dir, f"s3cfg_{username}"
+            )
+            print(
+                f"Note: client s3cfg path '{user_cfg['s3_configuration_file']}' "
+                f"is not writable on this server; using '{user_s3_configuration_file}'"
+            )
+
     s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
-    s3_create_users_and_buckets(
+    s3cfg_content = s3_create_users_and_buckets(
         username,
         s3_connection,
         user_s3_configuration_file,
@@ -150,6 +173,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
         bucket_list,
     )
     s3_connection.close()
+    return s3cfg_content
 
 
 def is_client_configured(client_id, server_cfg):

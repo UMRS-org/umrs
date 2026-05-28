@@ -2032,6 +2032,38 @@ def _action_list_buckets(ctx):
     return 0
 
 
+def _maybe_write_s3cfg_from_status(parsed, user_cfg):
+    """Auto-write local s3cfg if the server delivered credentials in a reload status."""
+    if not isinstance(parsed, dict) or not isinstance(user_cfg, dict):
+        return
+    s3cfg_path = user_cfg.get("s3_configuration_file")
+    if not s3cfg_path:
+        return
+    expanded = os.path.expanduser(s3cfg_path)
+    if os.path.exists(expanded):
+        return  # already have a local s3cfg
+
+    # Look for s3cfg_content in any status entry (summary or summaries)
+    s3cfg_content = None
+    if "summary" in parsed and isinstance(parsed["summary"], dict):
+        s3cfg_content = parsed["summary"].get("s3cfg_content")
+    elif "summaries" in parsed and isinstance(parsed["summaries"], dict):
+        for entry in parsed["summaries"].values():
+            if isinstance(entry, dict) and "s3cfg_content" in entry:
+                s3cfg_content = entry["s3cfg_content"]
+                break
+    if not s3cfg_content:
+        return
+
+    try:
+        os.makedirs(os.path.dirname(expanded), exist_ok=True)
+        with open(expanded, "w", encoding="utf-8") as f:
+            f.write(s3cfg_content)
+        print(f"\n{_green('✓')} S3 credentials written to: {expanded}")
+    except Exception as e:
+        print(f"\n{_red('⚠')} Failed to write S3 credentials to '{expanded}': {e}")
+
+
 def _action_status(ctx):
     args = ctx.args
     effective_username = args.username
@@ -2049,6 +2081,9 @@ def _action_status(ctx):
             print(_json.dumps(parsed, ensure_ascii=False))
         else:
             print(format_status_text(parsed, status_target))
+
+        # Auto-write local s3cfg if the server delivered credentials
+        _maybe_write_s3cfg_from_status(parsed, ctx.user)
     except Exception as e:
         print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
     finally:

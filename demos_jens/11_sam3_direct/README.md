@@ -69,13 +69,19 @@ umrs-client config add-experience experience.json --update
 This adds (or replaces) the `"Jens SAM3 Direct"` experience in your user config
 file at `~/.config/umrs/users/<your_user>.json`.
 
-Then reload so the server picks up the new experience and creates the MinIO bucket:
+### 5. Reload so the server provisions the MinIO bucket
 
 ```bash
 umrs-client reload
 ```
 
-### 5. Stage input images
+Then check that provisioning succeeded:
+
+```bash
+umrs-client status
+```
+
+### 6. Stage input images
 
 Create a staging directory and symlink images into it:
 
@@ -97,7 +103,7 @@ Verify:
 ls -la "${UPLOAD_DIR}/"
 ```
 
-### 6. Upload images to UMRS
+### 7. Upload images to UMRS
 
 ```bash
 umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
@@ -106,7 +112,7 @@ umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
 This uploads the image(s) to MinIO bucket `jens-sam3-direct/<RUN_ID>/` and tells
 the UMRS server to dispatch the `internal_genAI` vision stack via Slurm.
 
-### 7. Wait and download results
+### 8. Wait and download results
 
 The Slurm job builds/starts the BentoML container, loads SAM3, runs inference,
 and uploads results back to S3. This can take several minutes on first run
@@ -120,7 +126,7 @@ umrs-client download_results "jens-sam3-direct/${RUN_ID}" "results/${RUN_ID}/art
 > **Tip**: If no results appear yet, wait and retry the `download_results`
 > command — the Slurm job may still be running.
 
-### 8. Inspect results
+### 9. Inspect results
 
 List downloaded files:
 
@@ -147,7 +153,7 @@ if 'scores' in data:
 
 ## Using your own images
 
-Replace step 5 with:
+Replace step 6 with:
 
 ```bash
 IMAGE_DIR=/path/to/your/images
@@ -159,7 +165,7 @@ find "${IMAGE_DIR}" -maxdepth 1 -type f \( -name '*.png' -o -name '*.jpg' -o -na
   | while read -r f; do ln -sf "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "${UPLOAD_DIR}/"; done
 ```
 
-Then continue from step 6.
+Then continue from step 7.
 
 ## Changing the text prompt
 

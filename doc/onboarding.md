@@ -63,6 +63,19 @@ The admin registers a new user on the server. Two onboarding paths are
 supported depending on whether the user authenticates via institutional OIDC
 (e.g. RIKEN Okta) or admin-issued JWT tokens.
 
+### Admin CLI auto-discovery
+
+The `umrs-server admin` command auto-discovers `conf_umrs.json` using the same
+chain as the daemon: **CWD → `$UMRS_CONFIG` → `~/.config/umrs`**. Run admin
+commands from the deploy directory and no `--config` flag is needed:
+
+```bash
+cd /path/to/deploy/rccs-cloud   # conf_umrs.json lives here
+umrs-server admin user add alice ...
+```
+
+New users are also automatically appended to `conf_umrs.json`'s `users` list.
+
 ### Path A: OIDC Onboarding (Institutional IdP)
 
 When users log in via OIDC, the IdP issues a JWT whose `sub` claim is an
@@ -81,6 +94,7 @@ mapping from the OIDC subject to the user's login-node OS account.
 **Registration:**
 
 ```bash
+# From the deploy directory — conf_umrs.json is discovered automatically
 umrs-server admin user add masaru.nagaso \
     --fullname "Masaru Nagaso" \
     --email masaru.nagaso@riken.jp \
@@ -115,6 +129,7 @@ is the UMRS username, so no OIDC subject mapping is needed.
 **Registration with inline onboarding token:**
 
 ```bash
+# From the deploy directory — conf_umrs.json is discovered automatically
 umrs-server admin user add alice \
     --fullname "Alice Smith" \
     --role user \
@@ -215,28 +230,40 @@ provisioned. It contains:
 The admin record is for server-side authorization. The client config is for
 workload provisioning (buckets, databases, embedding pipelines).
 
-### Recommended: Let `user add` Generate It
+### Recommended: `login` creates it automatically
 
-When the admin runs `umrs-server admin user add --issue-token`, an onboarding
-token is printed directly. The user authenticates and configures the client
-in a single command:
+`umrs-client login` now handles both profile creation *and* user config
+creation in one step. If `~/.config/umrs/users/<username>.json` does not
+exist, a default config is generated automatically:
 
 ```bash
-# User runs on their machine:
 umrs-client login --host <server-host> --api-key <token-from-admin>
 ```
 
-For deployments that still use template-based provisioning, the admin can
-generate a client config template and the user imports it:
+If a config file already exists at that path, login asks:
 
-```bash
-# Legacy template flow (still works):
-umrs-client config init \
-    --template alice.client.json \
-    --username alice
+```
+  User config already exists: ~/.config/umrs/users/alice.json
+  Overwrite with a fresh default config? [y/N]
 ```
 
-### Alternative: Generate Directly on the Client
+Press Enter (or `n`) to keep the existing config. Type `y` to regenerate from
+the default template.
+
+### Adding experiences after login
+
+The auto-generated config contains a single default text-embedding experience.
+Add workload-specific experiences with:
+
+```bash
+# Import an experience fragment (adds/replaces by xp_name)
+umrs-client config import path/to/experience.json
+
+# Then push to the server and provision resources
+umrs-client reload
+```
+
+### Alternative: Generate config explicitly
 
 ```bash
 # Interactive
@@ -244,6 +271,9 @@ umrs-client config init
 
 # Non-interactive
 umrs-client config init --username alice --fullname "Alice Smith"
+
+# From admin-supplied template (legacy flow, still works)
+umrs-client config init --username alice --template alice.client.json
 ```
 
 This writes to `~/.config/umrs/users/alice.json`.
@@ -369,29 +399,82 @@ r4 model list --limit 5
 
 ## Connection Profiles
 
-Before `umrs-client` commands work, a connection profile must exist.
+A **connection profile** tells `umrs-client` where the server is and how to
+reach it. It must exist before any `umrs-client` command can contact the
+server.
 
-The preferred way is to use `umrs-client login`, which creates a profile and
-authenticates in a single step:
+### Creating a profile (recommended)
+
+`umrs-client login` creates the profile and authenticates in a single step.
+It also auto-creates the user config (see Phase 3), so for most users this is
+the only setup command needed:
 
 ```bash
-# Typical: authenticate and set up profile
+# Direct ZMQ (local or same-host)
 umrs-client login --host <server-host> --api-key <token>
 
-# With explicit profile name
-umrs-client login --host <server-host> --api-key <token> --name rccs
+# SSH tunnel mode (remote HPC — forwards ZMQ port over SSH)
+umrs-client login --host <server-host> --mode ssh_tunnel --api-key <token>
+
+# Gateway / R4 mode (HTTPS)
+umrs-client login --gateway-url https://<gateway-host> --api-key <token>
+
+# With an explicit profile name (default is "<host>-<mode>")
+umrs-client login --host rccs-cloud --mode ssh_tunnel \
+    --profile-name rccs --api-key <token>
 ```
 
-Alternatively, profiles can be created manually (legacy flow):
+Profile files are saved to `~/.config/umrs/connections/<name>.json` and the
+JWT to `~/.config/umrs/connections/<name>.token`. The profile is automatically
+set as the active one.
+
+### Selecting a profile for subsequent commands
+
+```bash
+# Show currently active profile
+umrs-client profile show
+
+# List all profiles
+umrs-client profile list
+
+# Switch to a different profile
+umrs-client profile use rccs
+
+# Override per-command with --profile
+umrs-client --profile rccs list_buckets
+```
+
+### SSH tunnel setup (HPC)
+
+For SSH tunnel mode, open the tunnel before running any commands:
+
+```bash
+# Tunnel ZMQ control port (5555) and data ports (5556-5563)
+ssh -N -L 5555:localhost:5555 \
+       -L 5556:localhost:5556 \
+       -L 5557:localhost:5557 \
+       rccs-cloud &
+
+# Then login
+umrs-client login --host 127.0.0.1 --mode ssh_tunnel --api-key <token>
+```
+
+Or use the bootstrap script if provided by your deployment:
+
+```bash
+./bootstrap.sh --profile rccs-cloud --tunnel
+```
+
+### Creating a profile manually (advanced / legacy)
 
 ```bash
 # Direct mode (local development)
 umrs-client profile init --name local --mode direct
 
-# SSH tunnel mode (remote HPC cluster)
+# SSH tunnel mode
 umrs-client profile init --name rccs --mode ssh_tunnel --ssh-host rccs-cloud
 
-# Import existing profile
+# Import an existing profile JSON
 umrs-client profile import /path/to/profile.json
 umrs-client profile use my-profile
 ```
@@ -431,26 +514,32 @@ use the updated default.
 ## Full Onboarding Sequence Diagram
 
 ```
-Admin                          Server/Daemon                     User
+Admin (server node)            Server/Daemon                     User (client)
   │                                │                              │
   │─── bootstrap ─────────────────▶│                              │
   │◀── admin token ────────────────│                              │
   │                                │                              │
-  │─── user add alice ────────────▶│                              │
-  │    (writes alice.json)         │──── SIGHUP ──▶ hot-reload    │
+  │─── cd deploy/ && user add ────▶│  (auto-discovers conf_umrs)  │
+  │    alice.json written +        │──── SIGHUP ──▶ hot-reload    │
+  │    registered in conf_umrs.json│                              │
+  │─── token generate-jwt alice ──▶│                              │
+  │◀── JWT ────────────────────────│                              │
+  │──────────────────────────── give JWT to user ────────────────▶│
   │                                │                              │
+  │                                │           ◀── login ─────────│
+  │                                │    (creates profile +        │
+  │                                │     user config locally)     │
   │                                │                              │
-  │   ┌─────────────────────────── │ ◀── config init ─────────────│
-  │   │ (direct path only)         │                              │
-  │   └─────────────────────────── │ ◀── reload ──────────────────│
+  │                                │   ◀── config import xp.json ─│  (optional)
   │                                │                              │
+  │                                │           ◀── reload ────────│
   │                                │─── create MinIO IAM ────▶    │
   │                                │─── create buckets ──────▶    │
   │                                │─── create PG role ──────▶    │
   │                                │─── write s3cfg ─────────▶ (NFS)
   │                                │                              │
-  │                                │ ◀── ping ────────────────────│
-  │                                │ ◀── list_buckets ────────────│
+  │                                │           ◀── ping ──────────│
+  │                                │           ◀── list_buckets ──│
   │                                │──── [bucket list] ──────────▶│
 ```
 
