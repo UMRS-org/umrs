@@ -307,16 +307,19 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
     For reload: build a per-user configuration summary from the current
     buckets_cfg.
     """
+    # Normalize to uppercase for comparison with TaskCmd constants
+    # (callers may pass the lowercase status-store key).
+    cmd_upper = cmd.upper() if isinstance(cmd, str) else cmd
     try:
-        if cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
+        if cmd_upper in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
             filtered = _filter_dict_by_user(full, client_id)
             summary = pretty_print_recompute(
-                filtered, update=(cmd == "update"), print_output=False
+                filtered, update=(cmd_upper == TaskCmd.UPDATE), print_output=False
             )
             return {"summary": summary, "data": filtered}
 
-        if cmd == TaskCmd.CHECK:
+        if cmd_upper == TaskCmd.CHECK:
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
             filtered = _filter_dict_by_user(full, client_id)
             summary = pretty_print_check(filtered, print_output=False)
@@ -337,7 +340,7 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
                 "requires_update": requires_update,
             }
 
-        if cmd == TaskCmd.RELOAD:
+        if cmd_upper == TaskCmd.RELOAD:
             # Derive a per-user configuration view from the live buckets_cfg
             filtered_store = buckets_cfg.build_dict_for_user(client_id)
             summary = pretty_print_cfg(
