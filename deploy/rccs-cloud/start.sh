@@ -88,8 +88,11 @@ check_server_bootstrap_complete() {
 
     [[ -f "$LOG_FILE" ]] || return 1
 
+    # Primary marker (print-based, needs PYTHONUNBUFFERED to flush promptly).
+    # Fallback marker: "Starting HTTP sidecar" is emitted via the logging module
+    # (stderr, unbuffered) right after bootstrap finishes.
     tail -c "+$((log_offset + 1))" "$LOG_FILE" 2>/dev/null \
-        | grep -Fq "Server configuration done!"
+        | grep -Fq -e "Server configuration done!" -e "Starting HTTP sidecar"
 }
 
 check_postgres_catalog_ready() {
@@ -119,7 +122,9 @@ try:
             # Mirror the first role lookup used during user provisioning so
             # catalog corruption is caught before the native server starts.
             cur.execute("SELECT 1 FROM pg_roles WHERE rolname = %s;", (user,))
-            cur.fetchone()
+            if cur.fetchone() is None:
+                print(f"role {user!r} does not exist")
+                raise SystemExit(1)
 except Exception as exc:
     print(exc)
     raise SystemExit(1)
@@ -177,8 +182,22 @@ stop_managed_process() {
 rootlessport_pid_for_port() {
     local port="$1"
 
-    ss -ltnp "sport = :${port}" 2>/dev/null \
+    # Try rootlessport first, then fall back to any process holding the port.
+    # On some HPC login nodes ss -ltnp omits program names unless -e is added.
+    local pid
+    pid="$(ss -ltnp "sport = :${port}" 2>/dev/null \
         | awk -F'pid=' '/rootlessport/ {print $2}' \
+        | awk -F',' '{print $1}' \
+        | head -1)"
+    if [[ -n "$pid" ]]; then
+        echo "$pid"
+        return
+    fi
+
+    # Fallback: extract any PID from the ss output (covers cases where
+    # program name is not shown in -p but pid= is present).
+    ss -ltnpe "sport = :${port}" 2>/dev/null \
+        | awk -F'pid=' '/pid=/ {print $2}' \
         | awk -F',' '{print $1}' \
         | head -1
 }
@@ -348,6 +367,8 @@ set -o allexport
 source .env
 set +o allexport
 
+export DB_PORT="${DB_PORT:-5432}"
+
 if [[ -z "${UMRS_DATA_PORT_RANGE:-}" && -z "${UMRS_DATA_PORT:-}" ]]; then
     data_base_port="${UMRS_DATA_BASE_PORT:-5556}"
     data_port_count="${UMRS_DATA_PORT_COUNT:-8}"
@@ -419,7 +440,7 @@ fi
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
 if [[ "$START_MODE" != "--server" ]]; then
-    reconcile_infra_container umrs-postgres 5432
+    reconcile_infra_container umrs-postgres "$DB_PORT"
     reconcile_infra_container umrs-minio 9000 9001
 
     echo "Starting infrastructure containers (postgres, minio)..."
@@ -486,7 +507,7 @@ fi
 # Ensure ~/.local/bin is in PATH (mc, s3cmd and other user-installed tools).
 export PATH="${HOME}/.local/bin:${PATH}"
 
-# Database — containers publish postgres on localhost:5432
+# Database — containers publish postgres on localhost:${DB_PORT}
 export DB_HOST="127.0.0.1"
 export DB_PORT="${DB_PORT:-5432}"
 export DB_SUPERUSER="${POSTGRES_USER:-umrs}"
@@ -515,25 +536,23 @@ PY
     export UMRS_REGISTRY_POSTGRES_DSN
 fi
 
-if [[ "$START_MODE" != "--server" ]]; then
-    echo -n "Validating postgres catalog..."
-    postgres_catalog_check_output=""
-    if ! postgres_catalog_check_output="$(check_postgres_catalog_ready 2>&1)"; then
-        echo " failed."
-        echo "ERROR: PostgreSQL is listening, but a system catalog query failed."
-        echo "  This usually means the persistent pg_data volume is corrupted or incomplete."
-        if [[ -n "$postgres_catalog_check_output" ]]; then
-            echo "  Query error:"
-            printf '%s\n' "$postgres_catalog_check_output"
-        fi
-        echo "  Recovery: ./stop.sh --postgres-clean && ./start.sh"
-        echo "  Full reset: ./stop.sh --clean && ./start.sh"
-        echo "  Warning: --postgres-clean removes only postgres state; --clean also removes minio data."
-        echo "  Inspect postgres logs with: podman logs --tail 40 umrs-postgres"
-        exit 1
+echo -n "Validating postgres catalog..."
+postgres_catalog_check_output=""
+if ! postgres_catalog_check_output="$(check_postgres_catalog_ready 2>&1)"; then
+    echo " failed."
+    echo "ERROR: PostgreSQL is listening, but the UMRS database role/catalog check failed."
+    echo "  This usually means the persisted pg_data volume is corrupted or was initialized with different credentials."
+    if [[ -n "$postgres_catalog_check_output" ]]; then
+        echo "  Query error:"
+        printf '%s\n' "$postgres_catalog_check_output"
     fi
-    echo " ready."
+    echo "  Recovery: ./stop.sh --postgres-clean && ./start.sh"
+    echo "  Full reset: ./stop.sh --clean && ./start.sh"
+    echo "  Warning: --postgres-clean removes only postgres state; --clean also removes minio data."
+    echo "  Inspect postgres logs with: podman logs --tail 40 umrs-postgres"
+    exit 1
 fi
+echo " ready."
 
 # S3 presigned URL endpoint — compute nodes access MinIO via SSH tunnel
 # (localhost:9000 on compute → login node MinIO).
@@ -620,7 +639,9 @@ if [[ -f "$LOG_FILE" ]]; then
     LOG_START_SIZE=$(wc -c < "$LOG_FILE")
 fi
 
-nohup python "${REPO_ROOT}/src/server_umrs.py" \
+# PYTHONUNBUFFERED ensures print() output (including "Server configuration
+# done!") is flushed immediately so bootstrap detection sees it on disk.
+PYTHONUNBUFFERED=1 nohup python "${REPO_ROOT}/src/server_umrs.py" \
     -c "${SCRIPT_DIR}/conf_umrs.json" \
     >> "$LOG_FILE" 2>&1 &
 
@@ -629,7 +650,7 @@ echo "$SERVER_PID" > "$PID_FILE"
 
 # Verify the server finished bootstrap before starting dependent services.
 echo -n "Waiting for UMRS server bootstrap..."
-for i in $(seq 1 60); do
+for i in $(seq 1 120); do
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
         echo " failed (PID ${SERVER_PID} exited) — check ${LOG_FILE}"
         show_recent_log_tail "$LOG_FILE"
@@ -641,9 +662,10 @@ for i in $(seq 1 60); do
     fi
     echo -n "."
     sleep 0.5
-    if [[ "$i" -eq 60 ]]; then
-        echo " NOTE: server bootstrap not complete yet — check ${LOG_FILE}"
+    if [[ "$i" -eq 120 ]]; then
+        echo " failed: server bootstrap not complete yet — check ${LOG_FILE}"
         show_recent_log_tail "$LOG_FILE"
+        exit 1
     fi
 done
 
@@ -674,7 +696,7 @@ fi
 
 echo ""
 echo "=== UMRS stack running ==="
-echo "  postgres:    localhost:5432      (container)"
+echo "  postgres:    localhost:${DB_PORT}      (container)"
 echo "  minio:       localhost:9000      (container, console: localhost:9001)"
 echo "  umrs-server: localhost:5555      (native, PID $SERVER_PID)"
 echo "  umrs-http:   localhost:${UMRS_HTTP_PORT:-8082}      (sidecar for endpoint discovery)"

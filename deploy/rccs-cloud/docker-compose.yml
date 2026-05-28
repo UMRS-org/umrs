@@ -28,10 +28,10 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-umrs_db}
     # Rootless podman cannot chmod socket files → disable Unix sockets entirely.
-    # Only TCP connections needed (server connects to 127.0.0.1:5432).
+    # Only TCP connections needed (server connects to 127.0.0.1:${DB_PORT}).
     command: ["postgres", "-c", "unix_socket_directories="]
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:${DB_PORT:-5432}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ../../docker/init_pgvector.sql:/docker-entrypoint-initdb.d/init_pgvector.sql:ro
