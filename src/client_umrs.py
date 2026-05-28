@@ -919,6 +919,42 @@ def _handle_profile_init(args):
     return 0
 
 
+def _ensure_user_config_after_login(username: str, args) -> int:
+    """Create a default user config after login if none exists, or ask to overwrite."""
+    from umrs.shared.config import get_resolved_umrs_cfg_dir, get_users_default_cfg_subdir
+
+    users_dir = Path(get_resolved_umrs_cfg_dir()).expanduser() / get_users_default_cfg_subdir()
+    cfg_path = users_dir / f"{username}.json"
+
+    if cfg_path.exists():
+        # Ask whether to overwrite.
+        print(f"\n  User config already exists: {_dim(str(cfg_path))}")
+        try:
+            answer = input("  Overwrite with a fresh default config? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("")
+            return 0
+        if answer not in ("y", "yes"):
+            # Keep existing, just make sure it's the current config.
+            set_current_user_config(str(cfg_path))
+            print(f"  {_green('✓')} Kept existing config, set as current.")
+            return 0
+
+    cfg = _build_user_config_template(username, fullname="")
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    import json as _json_mod
+
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        _json_mod.dump(cfg, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+    set_current_user_config(str(cfg_path))
+    print(f"\n  {_green('✓')} User config created → {_bold(str(cfg_path))}")
+    print(f"  Add experiences via: {_cyan('umrs-client config import <experience.json>')}")
+    print(f"  Then reload:        {_cyan('umrs-client reload')}")
+    return 0
+
+
 def _handle_login(args):
     """Unified login: save JWT, create profile + user config, verify connection."""
     import getpass
@@ -1057,6 +1093,12 @@ def _handle_login(args):
             print(f"  Profile saved — you can retry with `umrs-client ping`")
         print(f"\n✓ Login complete for user '{username}' on {host}:{port}")
     print(f"  Profile: {profile_name}")
+
+    # --- 5. Auto-create user config if missing ---
+    rc = _ensure_user_config_after_login(username, args)
+    if rc:
+        return rc
+
     print(f"  Run `umrs-client ping` to verify full connectivity.")
     return 0
 
