@@ -96,6 +96,14 @@ def _is_bentoml_model_type(model_type):
     return "bentoml://" in str(model_type)
 
 
+def _active_vision_stack():
+    return os.environ.get("VISION_STACK", VISION_STACK)
+
+
+def _uses_jens_vision_stack():
+    return _active_vision_stack() == "jens"
+
+
 def _is_openai_model_type(model_type):
     return "openai://" in str(model_type)
 
@@ -835,6 +843,11 @@ def warmup_embedding_model(openai_url, model_name, api_key=None, timeout=120.0, 
 def _resolve_remote_port(model_cfg):
     """Determine the remote port for SSH tunnel based on model type."""
     if _is_bentoml_model_type(model_cfg["model_type"]):
+        if _uses_jens_vision_stack():
+            remote_port = get_rivault_remote_port()
+            if remote_port > 0:
+                return remote_port
+            return int(os.environ.get("NGINX_LITELLM_DOCKER_PORT", 4000))
         # BentoML vision models use a dedicated NGINX port (no path prefix)
         # to avoid httpx absolute-path resolution issues with /readyz etc.
         port = os.environ.get("BENTOML_VISION_DOCKER_PORT")
@@ -892,11 +905,19 @@ def _build_bentoml_model(model_cfg, local_port):
     vision_model_config = dict(model_cfg.get("vision_model_config", {}))
     task = model_cfg.get("_task")
 
-    from umrs.vision_service.bentoml_adapter import make_bentoml_vision_compute
-    compute_func = make_bentoml_vision_compute(
-        service_url, vision_model_type, vision_model_config,
-        task=task,
-    )
+    if _uses_jens_vision_stack():
+        from umrs.vision_service.bentoml_adapter import make_jens_vision_compute
+        compute_func = make_jens_vision_compute(
+            service_url, vision_model_type, vision_model_config,
+            task=task,
+            token=os.environ.get("JENS_VISION_TOKEN") or os.environ.get("LITELLM_MASTER_KEY"),
+        )
+    else:
+        from umrs.vision_service.bentoml_adapter import make_bentoml_vision_compute
+        compute_func = make_bentoml_vision_compute(
+            service_url, vision_model_type, vision_model_config,
+            task=task,
+        )
 
     return load_model_as_bentoml(
         model_cfg["model_name"],
@@ -985,11 +1006,11 @@ def launch_rivault_model(model_cfg):
     except Exception as e:
         print(f"Warning: failed to inject site config: {e}")
 
-    # Include vision_model_config task in cache key so different HMAE tasks
-    # (reconstruction, mae_reconstruction, feature_extraction) get separate
-    # model closures with the correct effective_config.
+    # Include vision_model_config task/prompt in cache key so model closures
+    # keep the correct effective_config for HMAE modes and SAM3 prompts.
     vmc = model_cfg.get("vision_model_config", {})
-    task_suffix = ":" + vmc["task"] if vmc.get("task") else ""
+    config_discriminator = vmc.get("task") or vmc.get("prompt")
+    task_suffix = f":{config_discriminator}" if config_discriminator else ""
     model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"] + task_suffix
     job_profiles = _resolve_profiles_for_model(model_cfg)
     job_metadata = _job_capabilities_for_profiles(job_profiles)
@@ -1002,7 +1023,7 @@ def launch_rivault_model(model_cfg):
 
     # --- 1. get a node from SLURM ---
     # Select slurm script based on VISION_STACK setting.
-    vision_stack = os.environ.get("VISION_STACK", VISION_STACK)
+    vision_stack = _active_vision_stack()
 
     if _is_bentoml_model_type(model_cfg["model_type"]) and vision_stack == "jens":
         rivault_slurm_script = get_jens_rivault_slurm_script()

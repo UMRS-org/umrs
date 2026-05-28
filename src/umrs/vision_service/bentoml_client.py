@@ -26,8 +26,6 @@ import random
 import time
 from typing import Any
 
-import bentoml
-
 logger = logging.getLogger(__name__)
 
 
@@ -177,6 +175,8 @@ def submit_and_wait(
         **kwargs: Forwarded to the endpoint's ``submit()``.
     """
 
+    import bentoml
+
     async def _run() -> dict:
         async with bentoml.AsyncHTTPClient(service_url, token=token) as client:
             return await async_submit_and_wait(
@@ -201,6 +201,8 @@ def submit_vision_and_wait(
 
     Creates a short-lived ``AsyncHTTPClient`` internally.
     """
+
+    import bentoml
 
     async def _run() -> dict:
         async with bentoml.AsyncHTTPClient(service_url, token=token) as client:
