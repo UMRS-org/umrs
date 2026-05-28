@@ -19,7 +19,6 @@ import logging
 import os
 import threading
 
-import bentoml
 from botocore.exceptions import ClientError
 
 from umrs.shared.storage.s3_presign import (
@@ -27,7 +26,10 @@ from umrs.shared.storage.s3_presign import (
     generate_presigned_put,
 )
 from umrs.vision_service.bentoml_client import async_submit_and_wait
-from umrs.vision_service.output_specs import describe_output_artifacts
+from umrs.vision_service.output_specs import (
+    describe_output_artifacts,
+    resolve_hmae_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +68,8 @@ async def _get_or_open_client(service_url: str, token: str | None):
         cached = _CLIENT_CACHE.get(key)
         if cached is not None:
             return cached
+        import bentoml
+
         client = bentoml.AsyncHTTPClient(service_url, token=token)
         await client.__aenter__()
         _CLIENT_CACHE[key] = client
@@ -138,6 +142,154 @@ def _vision_presign_endpoint():
     return endpoint or None
 
 
+def _jens_task_for_model(model_type: str, config: dict) -> str:
+    if model_type == "sam3":
+        return str(config.get("prompt") or config.get("task") or "object")
+    if model_type == "hmae":
+        return {
+            "reconstruction": "reconstruct",
+            "mae_reconstruction": "mae",
+            "feature_extraction": "features",
+        }.get(resolve_hmae_task(config), "reconstruct")
+    return str(config.get("task") or config.get("prompt") or "")
+
+
+def _jens_output_artifact(model_type: str, s3_key: str, config: dict) -> tuple[str, str]:
+    predicted = describe_output_artifacts(model_type, s3_key, config)
+    for out_key in predicted:
+        if out_key.endswith(".pkl"):
+            return out_key, "application/octet-stream"
+    if predicted:
+        out_key = next(iter(predicted))
+        return out_key, "application/octet-stream"
+    base = s3_key.rsplit(".", 1)[0] if "." in s3_key else s3_key
+    return f"{base}_{model_type}_results.pkl", "application/octet-stream"
+
+
+def make_jens_vision_compute(service_url: str, model_type, model_config,
+                             task=None, token: str | None = None,
+                             poll_interval=2.0, timeout=1200.0):
+    """Create a compute_embeddings closure for internal_genAI VisionFrontend.
+
+    The Jens stack exposes ``vision_task(image, model, task, out)`` rather
+    than UMRS's generic ``infer`` task.  UMRS still owns S3 and presigning:
+    the internal_genAI container receives a presigned input URL and uploads one
+    pickle result artifact through a presigned PUT URL.
+    """
+    effective_config = dict(model_config)
+    if task:
+        effective_config["task"] = task
+    effective_token = (
+        token
+        if token is not None
+        else os.environ.get("JENS_VISION_TOKEN") or os.environ.get("LITELLM_MASTER_KEY")
+    )
+
+    def _compute(self, s3, s3_keys, path_to_bucket, output_bucket, skip_existing=True):
+
+        async def _async_batch():
+            results = []
+            checksums = []
+            metadata_list = []
+            saved_keys = []
+
+            if _client_reuse_enabled():
+                client = await _get_or_open_client(service_url, effective_token)
+                _client_ctx = None
+            else:
+                import bentoml
+
+                _client_ctx = bentoml.AsyncHTTPClient(service_url, token=effective_token)
+                client = await _client_ctx.__aenter__()
+
+            try:
+                for idx, s3_key in enumerate(s3_keys):
+                    logger.info("[%d/%d] Jens BentoML %s: %s",
+                                idx + 1, len(s3_keys), model_type, s3_key)
+
+                    obj = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
+                    checksums.append(obj["ETag"].strip('"'))
+                    metadata_list.append(obj.get("Metadata", {}))
+
+                    target_bucket = output_bucket or path_to_bucket
+                    out_key, content_type = _jens_output_artifact(
+                        model_type,
+                        s3_key,
+                        effective_config,
+                    )
+
+                    if skip_existing and output_bucket:
+                        try:
+                            s3.head_object(Bucket=target_bucket, Key=out_key)
+                        except ClientError as exc:
+                            error_code = exc.response.get("Error", {}).get("Code")
+                            if error_code not in {"404", "NoSuchKey", "NotFound"}:
+                                raise
+                        else:
+                            output_s3_uri = f"s3://{target_bucket}/{out_key}"
+                            saved_keys.append(output_s3_uri)
+                            results.append({"status": "skipped", "output_s3_key": output_s3_uri})
+                            continue
+
+                    presign_endpoint = _vision_presign_endpoint()
+                    presigned_input_url = generate_presigned_get(
+                        s3,
+                        path_to_bucket,
+                        s3_key,
+                        ttl=_presigned_ttl_sec(),
+                        endpoint_override=presign_endpoint,
+                    )
+                    if not presigned_input_url:
+                        raise RuntimeError(f"Could not presign input s3://{path_to_bucket}/{s3_key}")
+
+                    presigned_output_url = generate_presigned_put(
+                        s3,
+                        target_bucket,
+                        out_key,
+                        content_type=content_type,
+                        ttl=_presigned_ttl_sec(),
+                        endpoint_override=presign_endpoint,
+                    )
+                    if not presigned_output_url:
+                        raise RuntimeError(f"Could not presign output s3://{target_bucket}/{out_key}")
+
+                    jens_task = _jens_task_for_model(str(model_type), effective_config)
+                    result = await async_submit_and_wait(
+                        client,
+                        "vision_task",
+                        poll_interval=poll_interval,
+                        timeout=timeout,
+                        image=presigned_input_url,
+                        model=model_type,
+                        task=jens_task,
+                        out=presigned_output_url,
+                    )
+
+                    if isinstance(result, dict) and result.get("status") not in {None, "success"}:
+                        raise RuntimeError(
+                            f"Jens BentoML {model_type} task failed for {s3_key}: "
+                            f"{result.get('status')}"
+                        )
+
+                    output_s3_uri = f"s3://{target_bucket}/{out_key}"
+                    if isinstance(result, dict):
+                        result.setdefault("source_image", f"s3://{path_to_bucket}/{s3_key}")
+                        result.setdefault("task", jens_task)
+                        result.setdefault("output_s3_key", output_s3_uri)
+                        result.setdefault("results_pkl_s3_key", output_s3_uri)
+                    results.append(result)
+                    saved_keys.append(output_s3_uri)
+            finally:
+                if _client_ctx is not None:
+                    await _client_ctx.__aexit__(None, None, None)
+
+            return results, checksums, metadata_list, saved_keys
+
+        return asyncio.run(_async_batch())
+
+    return _compute
+
+
 def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                                 task=None, token: str | None = None,
                                 poll_interval=2.0, timeout=1200.0):
@@ -178,6 +330,8 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                 client = await _get_or_open_client(service_url, token)
                 _client_ctx = None
             else:
+                import bentoml
+
                 _client_ctx = bentoml.AsyncHTTPClient(service_url, token=token)
                 client = await _client_ctx.__aenter__()
 
