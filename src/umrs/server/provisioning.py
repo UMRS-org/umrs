@@ -112,6 +112,54 @@ def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
         return
 
 
+def _resolve_s3cfg_path(user_cfg):
+    """Resolve the s3cfg path, falling back to a server-local path if needed.
+
+    When a remote client (e.g. Mac) has an s3cfg path like /Users/... that
+    doesn't exist on the Linux server, fall back to a server-local path next
+    to the user config file.  For write operations (create_s3_sql_users) the
+    parent directory is created; for read operations (configure_user) an
+    existing fallback file is used.
+    """
+    username = user_cfg["username"]
+    raw_path = user_cfg["s3_configuration_file"]
+    expanded = os.path.expanduser(raw_path)
+
+    # Fast path: the configured path (or its parent) is reachable.
+    if os.path.isfile(expanded):
+        return expanded
+
+    # Compute fallback next to the server-side user config file.
+    config_file_path = user_cfg.get("config_file_path", "")
+    if config_file_path:
+        server_dir = os.path.dirname(os.path.expanduser(config_file_path))
+    else:
+        server_dir = "."
+    fallback = os.path.join(server_dir, f"s3cfg_{username}")
+
+    # If the fallback already exists (written during a previous reload), use it.
+    if os.path.isfile(fallback):
+        print(
+            f"Note: using server-local s3cfg '{fallback}' "
+            f"(client path '{raw_path}' not found on this server)"
+        )
+        return fallback
+
+    # Try to create the parent of the original path; if that fails, use fallback.
+    s3cfg_parent = os.path.dirname(expanded) or "."
+    if not os.path.exists(s3cfg_parent):
+        try:
+            os.makedirs(s3cfg_parent, exist_ok=True)
+        except OSError:
+            print(
+                f"Note: client s3cfg path '{raw_path}' is not writable on "
+                f"this server; using '{fallback}'"
+            )
+            return fallback
+
+    return expanded
+
+
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
@@ -140,29 +188,7 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
                 )
                 bucket_list.append(output_path_to_bucket)
 
-    user_s3_configuration_file = user_cfg["s3_configuration_file"]
-
-    # If the s3cfg path is not writable on this machine (e.g. client is on a
-    # remote Mac, path is /Users/... on a Linux server), fall back to a
-    # server-local path next to the user config file.
-    expanded_s3cfg = os.path.expanduser(user_s3_configuration_file)
-    s3cfg_parent = os.path.dirname(expanded_s3cfg) or "."
-    if not os.path.exists(s3cfg_parent):
-        try:
-            os.makedirs(s3cfg_parent, exist_ok=True)
-        except OSError:
-            config_file_path = user_cfg.get("config_file_path", "")
-            if config_file_path:
-                server_dir = os.path.dirname(os.path.expanduser(config_file_path))
-            else:
-                server_dir = "."
-            user_s3_configuration_file = os.path.join(
-                server_dir, f"s3cfg_{username}"
-            )
-            print(
-                f"Note: client s3cfg path '{user_cfg['s3_configuration_file']}' "
-                f"is not writable on this server; using '{user_s3_configuration_file}'"
-            )
+    user_s3_configuration_file = _resolve_s3cfg_path(user_cfg)
 
     s3_connection, _ = connect_to_s3(admin_s3_configuration_file)
     s3cfg_content = s3_create_users_and_buckets(
@@ -310,7 +336,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
 
     print(f"######################\nConfiguring {fullname} ({username})\n######################")
 
-    user_s3_configuration_file = user_cfg["s3_configuration_file"]
+    user_s3_configuration_file = _resolve_s3cfg_path(user_cfg)
     s3_connection, bucket_location = connect_to_s3(user_s3_configuration_file)
 
     for xp in user_cfg["experiences"]:
