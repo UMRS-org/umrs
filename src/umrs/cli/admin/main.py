@@ -1628,9 +1628,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="CONF_UMRS_JSON",
         help=(
-            "Path to the daemon's conf_umrs.json. When given, user_files_dir "
-            "is resolved relative to this file (matching what the daemon sees). "
-            "Without this, the admin CLI may write to a different directory."
+            "Path to the daemon's conf_umrs.json. Auto-discovered from "
+            "$UMRS_CONFIG, CWD, or ~/.config/umrs when omitted."
         ),
     )
     parser.add_argument(
@@ -1753,12 +1752,39 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _discover_server_config() -> str | None:
+    """Find conf_umrs.json using the same discovery chain as the daemon."""
+    import os
+
+    from umrs.shared.config import (
+        get_default_json_server_file,
+        get_resolved_umrs_cfg_dir,
+    )
+
+    default_name = get_default_json_server_file()  # "conf_umrs.json"
+
+    # 1. CWD — the admin often runs from the deploy directory
+    cwd_candidate = os.path.join(os.getcwd(), default_name)
+    if os.path.isfile(cwd_candidate):
+        return os.path.abspath(cwd_candidate)
+
+    # 2. $UMRS_CONFIG / XDG / ~/.config/umrs  (same as daemon)
+    cfg_dir = get_resolved_umrs_cfg_dir()
+    env_candidate = os.path.join(cfg_dir, default_name)
+    if os.path.isfile(env_candidate):
+        return os.path.abspath(env_candidate)
+
+    return None
+
+
 def _resolve_user_files_dir_from_config(
     server_config: str | None, explicit_dir: str | None
 ) -> str | None:
-    """Derive user_files_dir from --config when --user-files-dir is absent."""
+    """Derive user_files_dir from conf_umrs.json (explicit or auto-discovered)."""
     if explicit_dir:
         return explicit_dir
+    if not server_config:
+        server_config = _discover_server_config()
     if not server_config:
         return None
     import os
@@ -1791,6 +1817,9 @@ def _resolve_user_files_dir_from_config(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    # Auto-discover conf_umrs.json so --config is rarely needed.
+    if not args.server_config:
+        args.server_config = _discover_server_config()
     user_files_dir = _resolve_user_files_dir_from_config(
         args.server_config, args.user_files_dir
     )
