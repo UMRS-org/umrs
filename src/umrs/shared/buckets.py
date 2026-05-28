@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from threading import RLock
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Union
 
 if TYPE_CHECKING:
     from umrs.server.sql import DataBase
@@ -47,7 +47,7 @@ class ClientBucketEntry:
     output_path_to_bucket: str | None = None
 
 
-BucketEntry = ServerBucketEntry | ClientBucketEntry
+BucketEntry = Union[ServerBucketEntry, ClientBucketEntry]
 
 
 class BucketsCfg:
