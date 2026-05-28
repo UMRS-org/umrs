@@ -42,7 +42,6 @@ class UserRole(str, Enum):
 
 # Commands that require admin role
 ADMIN_ONLY_COMMANDS: set[str] = frozenset({
-    "RELOAD",       # Reload server configuration (global, reprovisioning all users)
     "RECOMPUTE",    # Recompute embeddings across configured buckets
     "UPDATE",       # Update embeddings across configured buckets
     "CHECK",        # Global consistency check across all users' buckets
@@ -51,6 +50,7 @@ ADMIN_ONLY_COMMANDS: set[str] = frozenset({
 
 # Commands that users can run on their own data
 USER_ALLOWED_COMMANDS: set[str] = frozenset({
+    "RELOAD",       # Reload server configuration (re-provision buckets/users)
     "PROCESS_OBJECTS",
     "WAIT_OUTPUT",
     "FILE",
