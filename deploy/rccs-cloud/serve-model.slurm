@@ -183,7 +183,7 @@ export NGINX_LITELLM_DOCKER_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-8
 export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:?Set LITELLM_MASTER_KEY in .env}"
 
 # ─── Model cache on Lustre (inherit from server or set default) ──────────────
-export SAM3_MODEL_PATH="${SAM3_MODEL_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/sam3}"
+export SAM3_MODEL_PATH="${SAM3_MODEL_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/sam3.1}"
 export HMAE_MODEL_PATH="${HMAE_MODEL_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae}"
 export HMAE_CONFIG_PATH="${HMAE_CONFIG_PATH:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/infer_hmae_vit_b.yaml}"
 export HMAE_CHECKPOINT="${HMAE_CHECKPOINT:-/lvs0/dne1/rccs-dmp/${USER}/umrs_models/hmae/latest_checkpoint.pth}"

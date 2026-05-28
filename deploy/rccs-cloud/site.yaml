@@ -45,7 +45,7 @@ runtime:
 
 storage:
   model_cache_dir: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/hf
-  sam3_model_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/sam3
+  sam3_model_path: /lvs0/dne1/rccs-dmp/${USER}/umrs_models/sam3.1
   # HMAE is a user-specific private model.
   # Configure per-user via env overrides (HMAE_MODEL_PATH, HMAE_CONFIG_PATH, HMAE_CHECKPOINT).
   hmae_model_path: ""
