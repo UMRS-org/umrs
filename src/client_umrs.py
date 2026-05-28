@@ -2032,11 +2032,23 @@ def _action_list_buckets(ctx):
     return 0
 
 
-def _maybe_write_s3cfg_from_status(parsed, user_cfg):
+def _maybe_write_s3cfg_from_status(parsed, user_cfg, configure_file=None):
     """Auto-write local s3cfg if the server delivered credentials in a reload status."""
     if not isinstance(parsed, dict) or not isinstance(user_cfg, dict):
         return
-    s3cfg_path = user_cfg.get("s3_configuration_file")
+    # Prefer the original s3_configuration_file from the JSON config (before
+    # any profile auto-discovery override), so we write to the path the server
+    # knows about rather than an unrelated discovered s3cfg.
+    s3cfg_path = None
+    if configure_file:
+        try:
+            with open(os.path.expanduser(configure_file), encoding="utf-8") as _f:
+                orig = _json.load(_f)
+            s3cfg_path = orig.get("s3_configuration_file")
+        except Exception:
+            pass
+    if not s3cfg_path:
+        s3cfg_path = user_cfg.get("s3_configuration_file")
     if not s3cfg_path:
         return
     expanded = os.path.expanduser(s3cfg_path)
@@ -2048,7 +2060,7 @@ def _maybe_write_s3cfg_from_status(parsed, user_cfg):
     if "summary" in parsed and isinstance(parsed["summary"], dict):
         s3cfg_content = parsed["summary"].get("s3cfg_content")
     elif "summaries" in parsed and isinstance(parsed["summaries"], dict):
-        for entry in parsed["summaries"].values():
+        for _k, entry in parsed["summaries"].items():
             if isinstance(entry, dict) and "s3cfg_content" in entry:
                 s3cfg_content = entry["s3cfg_content"]
                 break
@@ -2083,7 +2095,7 @@ def _action_status(ctx):
             print(format_status_text(parsed, status_target))
 
         # Auto-write local s3cfg if the server delivered credentials
-        _maybe_write_s3cfg_from_status(parsed, ctx.user)
+        _maybe_write_s3cfg_from_status(parsed, ctx.user, configure_file=ctx.configure_file)
     except Exception as e:
         print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
     finally:
