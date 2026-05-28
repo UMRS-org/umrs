@@ -162,11 +162,11 @@ def _resolve_authenticated_project_id(
     verified_project_id = _header_str(x_verified_project_id)
     requested_project_id = verified_project_id or _header_str(x_project_id)
 
-    if claims:
-        return _project_id_authorized_by_claims(claims, requested_project_id)
-
     if strict and verified_user_id and verified_project_id:
         return verified_project_id
+
+    if claims:
+        return _project_id_authorized_by_claims(claims, requested_project_id)
 
     if strict:
         _raise_strict_project_auth_error()
@@ -1652,11 +1652,11 @@ async def provision_endpoint(
             from ..admin.user_store import UserStore, UserStoreError
 
             _user_store = UserStore()
-            _user_record = _user_store.get(requesting_user)
+            _user_record = _user_store.resolve_user(requesting_user)
             if _user_record.disabled:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
-                    detail=f"User '{requesting_user}' is disabled.",
+                    detail=f"User '{_user_record.username}' is disabled.",
                 )
             _site_name: str | None = None
             try:
@@ -1669,9 +1669,9 @@ async def provision_endpoint(
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
                     detail=(
-                        f"User '{requesting_user}' has no Slurm account configured. "
+                        f"User '{_user_record.username}' has no Slurm account configured. "
                         "Ask an admin to run: "
-                        f"umrs-server admin user set-slurm-account {requesting_user} <account>"
+                        f"umrs-server admin user set-slurm-account {_user_record.username} <account>"
                     ),
                 )
         except HTTPException:

@@ -175,6 +175,7 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
     # When --site is given, scope the slurm account to that site.
     site_name = getattr(args, "site", None)
     create_slurm_account = args.slurm_account if not site_name else None
+    oidc_subject = getattr(args, "oidc_subject", "") or ""
     try:
         rec = store.create(
             args.username,
@@ -183,6 +184,7 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
             role=args.role,
             slurm_account=create_slurm_account,
             projects=args.project or [],
+            oidc_subject=oidc_subject,
         )
     except UserStoreError as exc:
         # If the user already exists, still try to generate a client template
@@ -435,6 +437,17 @@ def _cmd_user_set_slurm_account(args: argparse.Namespace, store: UserStore) -> i
         print(f"error: {exc}", file=sys.stderr)
         return 2
     print(f"set {label}={value} on {args.username}")
+    return 0
+
+
+def _cmd_user_set_oidc_subject(args: argparse.Namespace, store: UserStore) -> int:
+    try:
+        rec = store.set_oidc_subject(args.username, args.subject or "")
+    except UserStoreError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    value = rec.oidc_subject or "(unset)"
+    print(f"set oidc_subject={value} on {args.username}")
     return 0
 
 
@@ -924,6 +937,15 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         default=30,
         help="Onboarding token validity in days (default: 30)",
     )
+    add_p.add_argument(
+        "--oidc-subject",
+        dest="oidc_subject",
+        default="",
+        help=(
+            "OIDC external identity subject (e.g. RIKEN ID '241723'). "
+            "Enables OIDC login to resolve the IdP subject to this UMRS username."
+        ),
+    )
     add_p.set_defaults(func=_cmd_user_add)
 
     list_p = user_sub.add_parser(
@@ -985,6 +1007,24 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         help="Scope the account to a specific site (e.g. rccs-front, ai4s)",
     )
     slurm_p.set_defaults(func=_cmd_user_set_slurm_account)
+
+    oidc_p = user_sub.add_parser(
+        "set-oidc-subject",
+        help="Set the OIDC external identity subject for a user",
+        description=(
+            "Map an OIDC identity provider subject (e.g. RIKEN ID '241723') "
+            "to a UMRS username.  When a JWT arrives with this subject as "
+            "the 'sub' claim, UMRS resolves it to the local user record."
+        ),
+    )
+    oidc_p.add_argument("username")
+    oidc_p.add_argument(
+        "subject",
+        nargs="?",
+        default="",
+        help="OIDC subject value (omit to clear)",
+    )
+    oidc_p.set_defaults(func=_cmd_user_set_oidc_subject)
 
     add_proj_p = user_sub.add_parser("add-to-project", help="Add a user to a project")
     add_proj_p.add_argument("username")

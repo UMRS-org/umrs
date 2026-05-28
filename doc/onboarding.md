@@ -36,6 +36,10 @@ enrollment; end users never touch `umrs-client` directly.
 
 See [R4 Quick Start](../../docs/r4/quickstart.md) and
 [R4 Admin Guide](../../docs/r4/admin-guide/README.md) for the Gateway path.
+For umrs-front HTTPS Gateway with OIDC, also see
+[umrs-front OIDC Deployment](../../docs/UMRS_FRONT_OIDC_DEPLOYMENT.md). OIDC
+authentication must still be paired with a UMRS user record, Slurm account, and
+per-user SSH enrollment before endpoint provisioning can run on HPC.
 
 ---
 
@@ -55,17 +59,84 @@ The admin token authorizes subsequent user management operations.
 
 ## Phase 2: Enroll Identity
 
-The admin registers a new user on the server. This creates **two files**
-automatically:
+The admin registers a new user on the server. Two onboarding paths are
+supported depending on whether the user authenticates via institutional OIDC
+(e.g. RIKEN Okta) or admin-issued JWT tokens.
+
+### Path A: OIDC Onboarding (Institutional IdP)
+
+When users log in via OIDC, the IdP issues a JWT whose `sub` claim is an
+opaque identifier (e.g. RIKEN ID `241723`). This value does not satisfy the
+local username regex `^[a-z][a-z0-9._-]{1,62}$`, so the admin must create a
+mapping from the OIDC subject to the user's login-node OS account.
+
+**Information to collect:**
+
+| Input | Example | Purpose |
+|-------|---------|---------|
+| OIDC subject (RIKEN ID) | `241723` | Maps IdP `sub` → UMRS user |
+| Login-node OS account | `masaru.nagaso` | UMRS username, SSH delegation target |
+| Slurm allocation account | `rccs-dmp` | `#SBATCH --account` for jobs |
+
+**Registration:**
+
+```bash
+umrs-server admin user add masaru.nagaso \
+    --fullname "Masaru Nagaso" \
+    --email masaru.nagaso@riken.jp \
+    --role user \
+    --project default \
+    --oidc-subject 241723 \
+    --slurm-account rccs-dmp --site rccs-front
+```
+
+When the user logs in via OIDC, the Gateway sidecar passes `X-User-ID: 241723`.
+UMRS `resolve_user("241723")` looks up the user record with
+`oidc_subject: "241723"`, resolving to `masaru.nagaso`.
+
+The OIDC subject can also be set or changed after user creation:
+
+```bash
+umrs-server admin user set-oidc-subject masaru.nagaso 241723
+```
+
+### Path B: JWT-Only Onboarding (No IdP)
+
+When OIDC is not available, the admin issues JWT tokens directly. The JWT `sub`
+is the UMRS username, so no OIDC subject mapping is needed.
+
+**Information to collect:**
+
+| Input | Example | Purpose |
+|-------|---------|---------|
+| Login-node OS account | `alice` | UMRS username, JWT `sub` claim |
+| Slurm allocation account | `rccs-dmp` | `#SBATCH --account` for jobs |
+
+**Registration with inline onboarding token:**
 
 ```bash
 umrs-server admin user add alice \
     --fullname "Alice Smith" \
     --role user \
     --email alice@example.com \
-    --slurm-account research-gpu \
-    --project team-alpha
+    --project default \
+    --slurm-account rccs-dmp --site rccs-front \
+    --issue-token --token-days 90
 ```
+
+The printed JWT is given to the user, who runs:
+
+```bash
+r4 auth login --gateway-url <GATEWAY_URL> --api-key <TOKEN>
+```
+
+Or generate additional tokens later:
+
+```bash
+umrs-server admin token generate-jwt --user alice --project default --days 90
+```
+
+### Common Post-Registration Steps
 
 For multi-cluster deployments, scope the Slurm account to a specific site:
 
@@ -90,6 +161,23 @@ the path with `--client-template <path>` or skip it entirely with
 `--no-client-template`.
 
 The daemon also receives `SIGHUP` for a best-effort hot-reload.
+
+### SSH Delegation Enrollment (HPC Deployments)
+
+After user registration, the UMRS service public key must be installed in the
+user's login-node account so UMRS can submit Slurm jobs on their behalf.
+
+Recommended (user runs on the login node):
+
+```bash
+r4 onboard
+```
+
+The command shows the service key fingerprint and asks before appending a
+forced-command line to `~/.ssh/authorized_keys`.
+
+If `r4 onboard` is not available, the admin can provide the forced-command
+line for the user to add manually to their `~/.ssh/authorized_keys`.
 
 ### Listing / Inspecting Users
 

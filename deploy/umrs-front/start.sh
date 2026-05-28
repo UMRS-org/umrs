@@ -59,6 +59,7 @@ UMRS_RCCS_ZMQ_PORT="${UMRS_RCCS_ZMQ_PORT:-50090}"
 UMRS_RCCS_DATA_PORT_RANGE="${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}"
 UMRS_AI4S_ZMQ_PORT="${UMRS_AI4S_ZMQ_PORT:-50100}"
 UMRS_AI4S_DATA_PORT_RANGE="${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}"
+UMRS_ZMQ_AUTH_TYPE="${UMRS_ZMQ_AUTH_TYPE:-none}"
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
 if [[ "$START_MODE" != "--server" ]]; then
@@ -152,6 +153,45 @@ export S3_SECRET_KEY="${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}"
 export S3_REGION="${S3_REGION:-us-east-1}"
 export S3_BUCKET="${S3_BUCKET:-r4-data}"
 export S3_USE_SSL="${S3_USE_SSL:-false}"
+
+# Generate persisted server CURVE keys when ZMQ CURVE/session auth is enabled.
+# Session mode uses these server keys plus an in-memory ZAP credential provider;
+# it does not use a static client key directory.
+if [[ "$UMRS_ZMQ_AUTH_TYPE" == "curve" || "$UMRS_ZMQ_AUTH_TYPE" == "session" ]]; then
+    ZMQ_CURVE_SERVER_KEYS_DIR="${UMRS_ZMQ_CURVE_SERVER_KEYS_DIR:-${HOME}/.config/umrs/curve-keys/server}"
+    mkdir -p "$ZMQ_CURVE_SERVER_KEYS_DIR"
+    chmod 700 "$ZMQ_CURVE_SERVER_KEYS_DIR"
+
+    if [[ -z "${UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY:-}" && -z "${UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE:-}" ]] || \
+       [[ -z "${UMRS_ZMQ_CURVE_SERVER_SECRET_KEY:-}" && -z "${UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE:-}" ]]; then
+        KEY_DIR="$ZMQ_CURVE_SERVER_KEYS_DIR" python - <<'PY'
+import os
+from pathlib import Path
+
+import zmq
+
+key_dir = Path(os.environ["KEY_DIR"])
+key_dir.mkdir(parents=True, exist_ok=True)
+public_path = key_dir / "server.key"
+secret_path = key_dir / "server.key_secret"
+
+if not public_path.exists() or not secret_path.exists():
+    public_key, secret_key = zmq.curve_keypair()
+    public_path.write_text(public_key.decode("ascii") + "\n", encoding="utf-8")
+    secret_path.write_text(secret_key.decode("ascii") + "\n", encoding="utf-8")
+
+public_path.chmod(0o600)
+secret_path.chmod(0o600)
+PY
+    fi
+
+    if [[ -z "${UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY:-}" && -z "${UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE:-}" ]]; then
+        export UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE="$ZMQ_CURVE_SERVER_KEYS_DIR/server.key"
+    fi
+    if [[ -z "${UMRS_ZMQ_CURVE_SERVER_SECRET_KEY:-}" && -z "${UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE:-}" ]]; then
+        export UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE="$ZMQ_CURVE_SERVER_KEYS_DIR/server.key_secret"
+    fi
+fi
 
 python - <<'PY'
 import os
@@ -261,6 +301,38 @@ user_files_dir = script_dir / "user_files"
 if not conf_path.exists() or not user_files_dir.is_dir():
     raise SystemExit(0)
 
+def _write_json(path, payload):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+
+
+def _canonical_config_ref(path):
+    try:
+        rel = path.relative_to(script_dir)
+    except ValueError:
+        return str(path)
+    return f"./{rel.as_posix()}"
+
+
+def _default_s3cfg_for(payload, fallback_name):
+    username = (
+        payload.get("s3_username")
+        or payload.get("username")
+        or payload.get("name")
+        or fallback_name
+    )
+    return f"~/.config/umrs/s3cfg_{username}"
+
+
+def _needs_remote_s3cfg_rewrite(value):
+    if not isinstance(value, str) or not value.strip():
+        return True
+    raw = value.strip()
+    if raw.startswith(("/Users/", "/private/var/")):
+        return True
+    return not (raw.startswith("~/") or Path(raw).is_absolute())
+
+
 conf = json.loads(conf_path.read_text())
 existing_users = list(conf.get("users") or [])
 candidate_users = [str(user) for user in existing_users]
@@ -273,6 +345,16 @@ for user_file in sorted(user_files_dir.glob("*.json")):
 users = []
 seen = set()
 required_keys = {"username", "fullname", "s3_configuration_file", "experiences"}
+changed = False
+conf_updates = {
+    "admin_s3_configuration_file": "~/.config/umrs/s3cfg",
+    "user_files_dir": "./user_files",
+}
+for key, value in conf_updates.items():
+    if conf.get(key) != value:
+        conf[key] = value
+        changed = True
+
 for user in candidate_users:
     user_path = Path(user)
     if not user_path.is_absolute():
@@ -286,12 +368,20 @@ for user in candidate_users:
     if missing:
         print(f"WARNING: skipping invalid user config {user}: missing {', '.join(missing)}")
         continue
-    if user not in seen:
-        users.append(user)
-        seen.add(user)
+    if _needs_remote_s3cfg_rewrite(payload.get("s3_configuration_file")):
+        payload["s3_configuration_file"] = _default_s3cfg_for(payload, user_path.stem)
+        _write_json(user_path, payload)
+    key = str(user_path.resolve())
+    if key not in seen:
+        canonical_user = _canonical_config_ref(user_path.resolve())
+        users.append(canonical_user)
+        seen.add(key)
+        if canonical_user != user:
+            changed = True
 
 conf["users"] = users
-conf_path.write_text(json.dumps(conf, indent=2) + "\n")
+if changed or conf.get("users") != existing_users:
+    conf_path.write_text(json.dumps(conf, indent=2) + "\n")
 PY
 
 # ─── Stop existing servers ───────────────────────────────────────────────────

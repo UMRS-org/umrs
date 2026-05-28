@@ -1035,13 +1035,26 @@ def validate_jwt(token: str, secret: str) -> dict[str, Any]:
         )
 
     key, algorithms = _resolve_key_and_algorithms(token, secret)
+    issuer = os.environ.get("JWT_ISSUER") or None
+    audience = os.environ.get("JWT_AUDIENCE") or None
+    decode_options = {
+        "require_exp": True,
+        "require_sub": True,
+        "verify_iss": bool(issuer),
+        "verify_aud": bool(audience),
+    }
+    decode_kwargs: dict[str, Any] = {"options": decode_options}
+    if issuer:
+        decode_kwargs["issuer"] = issuer
+    if audience:
+        decode_kwargs["audience"] = audience
 
     try:
         claims = jose_jwt.decode(
             token,
             key,
             algorithms=algorithms,
-            options={"require_exp": True, "require_sub": True},
+            **decode_kwargs,
         )
     except JoseJWTError as exc:
         raise JWTError(f"JWT validation failed: {exc}") from exc
