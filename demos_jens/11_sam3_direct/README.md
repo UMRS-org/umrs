@@ -10,6 +10,13 @@ Upload images through UMRS → Slurm dispatches `internal_genAI` on GPU → SAM3
 - SSH tunnel open (if running remotely against RCCS Cloud)
 - `umrs-client` installed and on PATH
 - `internal_genAI/bento/sam3infer/` contains `bpe.gz` and `sam3.pt` (pre-staged on compute node)
+- **Your user must be enrolled on the server.** If you haven't been enrolled yet,
+  ask an admin to run:
+  ```bash
+  umrs-client admin user add <your_user_config.json> --admin-token $UMRS_ADMIN_TOKEN
+  ```
+  Without enrollment, the server will reject your config upload and no MinIO
+  buckets will be created (you'll see "No bucket" errors on `upload_dir`).
 
 ---
 
@@ -61,6 +68,12 @@ umrs-client config add-experience experience.json --update
 
 This adds (or replaces) the `"Jens SAM3 Direct"` experience in your user config
 file at `~/.config/umrs/users/<your_user>.json`.
+
+Then reload so the server picks up the new experience and creates the MinIO bucket:
+
+```bash
+umrs-client reload
+```
 
 ### 5. Stage input images
 

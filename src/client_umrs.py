@@ -169,10 +169,16 @@ def _format_profile_text(connection, selected_profile, errors):
         for err in errors:
             lines.append(f"  {_red('!')} {err}")
     if hasattr(connection, 'sources') and connection.sources:
-        lines.append("")
-        lines.append(_section("Sources"))
-        for src_key, src_val in sorted(connection.sources.items()):
-            lines.append(_kv(src_key, _dim(src_val)))
+        # Only show non-profile sources (env overrides, defaults) to reduce noise
+        profile_name = getattr(connection, 'profile_name', None)
+        profile_tag = f"profile:{profile_name}" if profile_name else None
+        overrides = {k: v for k, v in connection.sources.items()
+                     if v != profile_tag}
+        if overrides:
+            lines.append("")
+            lines.append(_section("Overrides"))
+            for src_key, src_val in sorted(overrides.items()):
+                lines.append(_kv(src_key, _dim(src_val)))
     return "\n".join(lines)
 
 
@@ -546,6 +552,9 @@ def _handle_config_command(args):
         return _handle_config_init(args)
 
     if args.config_action == 'add-experience':
+        return _handle_config_add_experience(args)
+
+    if args.config_action == 'import':
         return _handle_config_add_experience(args)
 
     if args.config_action == 'remove-experience':
@@ -2664,6 +2673,9 @@ def main():
     cae_p = config_sub.add_parser('add-experience', help='Merge experience fragment(s) from a JSON file into the current user config')
     cae_p.add_argument('fragment', help='Path to a JSON file containing one experience object or an array of experiences')
     cae_p.add_argument('--update', action='store_true', default=False, help='Replace existing experience(s) with matching xp_name instead of skipping')
+    cie_p = config_sub.add_parser('import', help='Import experience(s) from a JSON file (alias for add-experience --update)')
+    cie_p.add_argument('fragment', help='Path to a JSON file containing one experience object or an array of experiences')
+    cie_p.add_argument('--no-update', dest='update', action='store_false', default=True, help='Skip existing experiences instead of replacing them')
     cre_p = config_sub.add_parser('remove-experience', help='Remove experience(s) by xp_name from the current user config')
     cre_p.add_argument('xp_names', nargs='+', help='One or more xp_name values to remove')
     config_sub.add_parser('list', help='List discovered conf_umrs.json, user*.json, and s3cfg candidates')

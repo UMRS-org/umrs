@@ -171,11 +171,93 @@ def _write_client_template(username: str, fullname: str, out_path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _maybe_register_in_server_config(
+    args: argparse.Namespace, store: UserStore, username: str
+) -> None:
+    """Register the user JSON in conf_umrs.json's ``users`` list.
+
+    Only acts when ``--config`` was given. Adds the path if not already
+    present, using a relative path when the user file is under the same
+    directory tree as the config file.
+    """
+    import os
+
+    server_config = getattr(args, "server_config", None)
+    if not server_config:
+        return
+    config_path = os.path.abspath(os.path.expanduser(server_config))
+    if not os.path.isfile(config_path):
+        return
+
+    user_file = str(store.dir / f"{username}.json")
+    config_dir = os.path.dirname(config_path)
+
+    # Prefer a relative path when the user file is under the config directory.
+    try:
+        rel = os.path.relpath(user_file, config_dir)
+        if not rel.startswith(".."):
+            # Normalise to ./ prefix for consistency with existing entries.
+            entry = f"./{rel}" if not rel.startswith("./") else rel
+        else:
+            entry = user_file
+    except ValueError:
+        entry = user_file
+
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"warning: could not read {config_path} to register user: {exc}",
+            file=sys.stderr,
+        )
+        return
+
+    users_list = cfg.setdefault("users", [])
+
+    # Check both the entry we'd add and the absolute path to avoid duplicates.
+    existing_abs = set()
+    for u in users_list:
+        try:
+            existing_abs.add(
+                os.path.abspath(
+                    os.path.join(config_dir, os.path.expanduser(u))
+                )
+            )
+        except Exception:
+            pass
+    if os.path.abspath(user_file) in existing_abs:
+        return
+
+    users_list.append(entry)
+
+    try:
+        tmp_path = config_path + ".tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump(cfg, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp_path, config_path)
+        print(f"registered {entry} in {os.path.basename(config_path)}")
+    except OSError as exc:
+        print(
+            f"warning: could not update {config_path}: {exc}",
+            file=sys.stderr,
+        )
+
+
 def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
     # When --site is given, scope the slurm account to that site.
     site_name = getattr(args, "site", None)
     create_slurm_account = args.slurm_account if not site_name else None
     oidc_subject = getattr(args, "oidc_subject", "") or ""
+
+    # Include s3_configuration_file and default experience so the daemon can
+    # provision MinIO buckets from the same JSON it reads for admin metadata.
+    client_extras = _build_client_config_template(args.username, args.fullname or "")
+    # Remove keys that are already first-class admin fields.
+    for k in ("username", "fullname"):
+        client_extras.pop(k, None)
+
     try:
         rec = store.create(
             args.username,
@@ -185,6 +267,7 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
             slurm_account=create_slurm_account,
             projects=args.project or [],
             oidc_subject=oidc_subject,
+            extras=client_extras,
         )
     except UserStoreError as exc:
         # If the user already exists, still try to generate a client template
@@ -232,6 +315,10 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
         _print_json(out)
     else:
         print(f"created user {rec.username} at {store.dir / (rec.username + '.json')}")
+
+    # Auto-register in conf_umrs.json when --config is given.
+    _maybe_register_in_server_config(args, store, rec.username)
+
     return 0
 
 
@@ -525,14 +612,37 @@ def _cmd_config_show(args: argparse.Namespace, _store: UserStore) -> int:
         f"${UMRS_CFG_ENV_VAR_NAME}" if os.environ.get(UMRS_CFG_ENV_VAR_NAME)
         else "default"
     )
-    server_json = os.path.join(cfg_dir, get_default_json_server_file())
+
+    # When --config is given, use that as the server JSON; otherwise fallback
+    server_config_path = getattr(args, "server_config", None)
+    if server_config_path:
+        server_json = os.path.abspath(os.path.expanduser(server_config_path))
+    else:
+        server_json = os.path.join(cfg_dir, get_default_json_server_file())
     server_json_exists = os.path.isfile(server_json)
 
-    user_files_dir = resolve_server_user_files_dir()
-    user_files_source = (
-        f"${UMRS_USER_FILES_ENV_VAR_NAME}" if os.environ.get(UMRS_USER_FILES_ENV_VAR_NAME)
-        else "default"
-    )
+    # Resolve user_files_dir from --config or --user-files-dir or defaults
+    explicit_dir = getattr(args, "user_files_dir", None)
+    if explicit_dir:
+        user_files_dir = os.path.abspath(os.path.expanduser(explicit_dir))
+        user_files_source = "--user-files-dir"
+    elif server_config_path and server_json_exists:
+        try:
+            with open(server_json, encoding="utf-8") as fh:
+                server_cfg = json.load(fh)
+            user_files_dir = resolve_server_user_files_dir(
+                config_file=server_json, server_cfg=server_cfg
+            )
+            user_files_source = f"--config ({os.path.basename(server_json)})"
+        except Exception:
+            user_files_dir = resolve_server_user_files_dir()
+            user_files_source = "default"
+    else:
+        user_files_dir = resolve_server_user_files_dir()
+        user_files_source = (
+            f"${UMRS_USER_FILES_ENV_VAR_NAME}" if os.environ.get(UMRS_USER_FILES_ENV_VAR_NAME)
+            else "default"
+        )
     user_files_exists = os.path.isdir(user_files_dir)
 
     if args.json:
@@ -1513,6 +1623,17 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--config",
+        dest="server_config",
+        default=None,
+        metavar="CONF_UMRS_JSON",
+        help=(
+            "Path to the daemon's conf_umrs.json. When given, user_files_dir "
+            "is resolved relative to this file (matching what the daemon sees). "
+            "Without this, the admin CLI may write to a different directory."
+        ),
+    )
+    parser.add_argument(
         "--user-files-dir",
         dest="user_files_dir",
         default=None,
@@ -1632,10 +1753,48 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _resolve_user_files_dir_from_config(
+    server_config: str | None, explicit_dir: str | None
+) -> str | None:
+    """Derive user_files_dir from --config when --user-files-dir is absent."""
+    if explicit_dir:
+        return explicit_dir
+    if not server_config:
+        return None
+    import os
+
+    from umrs.shared.config import resolve_server_user_files_dir
+
+    config_path = os.path.abspath(os.path.expanduser(server_config))
+    if not os.path.isfile(config_path):
+        print(
+            f"warning: --config file not found: {config_path}; "
+            f"falling back to default user_files resolution",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        with open(config_path, encoding="utf-8") as fh:
+            server_cfg = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        print(
+            f"warning: cannot parse --config {config_path}: {exc}; "
+            f"falling back to default user_files resolution",
+            file=sys.stderr,
+        )
+        return None
+    return resolve_server_user_files_dir(
+        config_file=config_path, server_cfg=server_cfg
+    )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    store = UserStore(user_files_dir=args.user_files_dir)
+    user_files_dir = _resolve_user_files_dir_from_config(
+        args.server_config, args.user_files_dir
+    )
+    store = UserStore(user_files_dir=user_files_dir)
     func = getattr(args, "func", None)
     if func is None:
         parser.print_help()
