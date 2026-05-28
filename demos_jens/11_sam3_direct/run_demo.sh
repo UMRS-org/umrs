@@ -95,13 +95,13 @@ $CLIENT upload_dir "${UPLOAD_DIR}" "${BUCKET_ALIAS}/${RUN_ID}"
 ok "Images uploaded; UMRS server will dispatch internal_genAI"
 
 log "Step 5: Waiting for result artifacts..."
-mkdir -p "${RESULTS_DIR}/artifacts"
-if download_results_bounded "${BUCKET_ALIAS}/${RUN_ID}" "${RESULTS_DIR}/artifacts" --force-overwrite; then
-    check_result_files "${RESULTS_DIR}/artifacts" "${SAM3_REQUIRE_RESULTS:-0}" "SAM3 results"
+mkdir -p "${RESULTS_DIR}"
+if download_results_bounded "${BUCKET_ALIAS}/${RUN_ID}" "${RESULTS_DIR}" --force-overwrite; then
+    check_result_files "${RESULTS_DIR}" "${SAM3_REQUIRE_RESULTS:-0}" "SAM3 results"
 else
     [[ "${SAM3_REQUIRE_RESULTS:-0}" = "1" ]] && die "Could not download SAM3 results"
     warn "Could not download SAM3 results yet"
 fi
 
 banner "Demo 11 Complete"
-find "${RESULTS_DIR}/artifacts" -type f -maxdepth 3 -print 2>/dev/null | sort || true
+find "${RESULTS_DIR}" -type f -maxdepth 3 -print 2>/dev/null | sort || true
