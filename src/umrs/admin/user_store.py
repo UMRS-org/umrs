@@ -56,6 +56,11 @@ class UserRecord:
     quota: dict[str, Any] = field(default_factory=dict)
     created_at: str = ""
     last_updated: str = ""
+    # OIDC external identity subject (e.g. RIKEN ID "241723").  When set,
+    # ``UserStore.resolve_user()`` can map an incoming OIDC ``sub`` claim
+    # back to this UMRS username even though the subject value itself does
+    # not satisfy the local username regex.
+    oidc_subject: str = ""
     # Preserve any other top-level keys the daemon cares about
     # (s3_configuration_file, experiences, ...) verbatim.
     extras: dict[str, Any] = field(default_factory=dict)
@@ -72,6 +77,8 @@ class UserRecord:
             "created_at": self.created_at,
             "last_updated": self.last_updated,
         }
+        if self.oidc_subject:
+            out["oidc_subject"] = self.oidc_subject
         if self.slurm_account:
             out["slurm_account"] = self.slurm_account
         if self.slurm_accounts:
@@ -104,6 +111,7 @@ class UserRecord:
             "quota",
             "created_at",
             "last_updated",
+            "oidc_subject",
         }
         extras = {k: v for k, v in data.items() if k not in known}
         raw_accounts = data.get("slurm_accounts")
@@ -124,6 +132,7 @@ class UserRecord:
             quota=dict(data.get("quota", {}) or {}),
             created_at=str(data.get("created_at", "")),
             last_updated=str(data.get("last_updated", "")),
+            oidc_subject=str(data.get("oidc_subject", "")),
             extras=extras,
         )
 
@@ -218,6 +227,7 @@ class UserStore:
         slurm_account: str | None = None,
         projects: builtins.list[str] | None = None,
         quota: dict[str, Any] | None = None,
+        oidc_subject: str = "",
         extras: dict[str, Any] | None = None,
     ) -> UserRecord:
         if role not in VALID_ROLES:
@@ -227,6 +237,14 @@ class UserStore:
         path = self._path(username)
         if path.exists():
             raise UserStoreError(f"User {username!r} already exists at {path}")
+        # Reject duplicate OIDC subjects across different users.
+        if oidc_subject:
+            existing = self.lookup_by_oidc_subject(oidc_subject)
+            if existing is not None:
+                raise UserStoreError(
+                    f"OIDC subject {oidc_subject!r} is already mapped to "
+                    f"user {existing.username!r}"
+                )
         now = _now_iso()
         record = UserRecord(
             username=username,
@@ -239,6 +257,7 @@ class UserStore:
             quota=dict(quota or {}),
             created_at=now,
             last_updated=now,
+            oidc_subject=oidc_subject,
             extras=dict(extras or {}),
         )
         self._write(path, record.to_json())
@@ -273,6 +292,53 @@ class UserStore:
         self, username: str, slurm_account: str | None
     ) -> UserRecord:
         return self.update(username, slurm_account=slurm_account or None)
+
+    def set_oidc_subject(
+        self, username: str, oidc_subject: str,
+    ) -> UserRecord:
+        """Set or clear the OIDC external identity subject for a user."""
+        # Reject duplicate subjects when setting (not when clearing).
+        if oidc_subject:
+            existing = self.lookup_by_oidc_subject(oidc_subject)
+            if existing is not None and existing.username != username:
+                raise UserStoreError(
+                    f"OIDC subject {oidc_subject!r} is already mapped to "
+                    f"user {existing.username!r}"
+                )
+        return self.update(username, oidc_subject=oidc_subject)
+
+    def lookup_by_oidc_subject(self, subject: str) -> UserRecord | None:
+        """Return the user whose ``oidc_subject`` matches *subject*, or None."""
+        if not subject:
+            return None
+        for rec in self.list():
+            if rec.oidc_subject and rec.oidc_subject == subject:
+                return rec
+        return None
+
+    def resolve_user(self, identity: str) -> UserRecord:
+        """Look up a user by username first, then by OIDC subject.
+
+        This is the primary entry point for resolving an incoming identity
+        (JWT ``sub`` or ``X-User-ID`` header) to a local user record.
+        It enables OIDC flows where the JWT ``sub`` is a numeric IdP
+        identifier (e.g. RIKEN ID ``241723``) that does not pass the
+        local username regex but has been registered as the user's
+        ``oidc_subject``.
+        """
+        # Fast path: direct username lookup.
+        try:
+            return self.get(identity)
+        except UserStoreError:
+            pass
+        # Slow path: scan for OIDC subject match.
+        rec = self.lookup_by_oidc_subject(identity)
+        if rec is not None:
+            return rec
+        raise UserStoreError(
+            f"No user found for identity {identity!r} "
+            "(checked username and oidc_subject)"
+        )
 
     def set_slurm_account_for_site(
         self, username: str, site_name: str, slurm_account: str | None,

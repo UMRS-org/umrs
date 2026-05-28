@@ -94,6 +94,17 @@ UMRS_TUNNEL_MODE=false
 # External IP/hostname used by compute nodes and clients to reach services.
 # Only used when UMRS_TUNNEL_MODE=false.
 UMRS_SERVER_HOST=0.0.0.0
+
+# ZeroMQ security. Production OIDC/JWT deployments should use session mode:
+# server-side CURVE plus ZAP-backed ephemeral client sessions.
+UMRS_ZMQ_AUTH_TYPE=session
+
+# OIDC/JWKS validation for r4 --oidc tokens. Leave JWT_AUDIENCE empty until
+# the Okta access-token audience is confirmed.
+JWT_ISSUER=https://riken.okta.com
+JWT_JWKS_URL=https://riken.okta.com/oauth2/v1/keys
+JWT_AUDIENCE=
+JWT_DEFAULT_PROJECT=default
 # S3 presigned URL endpoint — use the external IP when not tunneling so
 # compute nodes can reach MinIO directly.
 # S3_PRESIGN_ENDPOINT=http://134.160.189.136:9000

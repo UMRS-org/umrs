@@ -284,6 +284,7 @@ def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeyp
     app = FastAPI()
     app.include_router(router)
     app.dependency_overrides[get_registry] = _new_registry
+    app.dependency_overrides[endpoints_api._get_requesting_user] = lambda: None
 
     with TestClient(app) as client:
         response = client.post(
@@ -311,6 +312,24 @@ def test_provision_endpoint_strict_mode_requires_verified_project_header(monkeyp
     assert verified_response.status_code == 202
     assert spoofed_verified_response.status_code == 401
     assert service.requests[0].project_id == "verified-project"
+
+
+def test_strict_mode_verified_project_header_allows_projectless_oidc_token(monkeypatch):
+    monkeypatch.setenv("UMRS_AUTH_MODE", "strict")
+    monkeypatch.setattr(
+        endpoints_api,
+        "_jwt_claims",
+        lambda authorization, required=False: {"sub": "241723", "roles": ["user"]},
+    )
+
+    project_id = endpoints_api._resolve_authenticated_project_id(
+        "Bearer oidc-token",
+        "241723",
+        "verified-project",
+        None,
+    )
+
+    assert project_id == "verified-project"
 
 
 def test_provision_endpoint_forwards_wait_false(monkeypatch):
