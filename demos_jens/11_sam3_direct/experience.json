@@ -14,7 +14,7 @@
         }
       },
       "model": {
-        "model_name": "internal-genai-sam3",
+        "model_name": "sam3.1",
         "vector_size": "256",
         "model_type": "rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/infer/submit",
         "vision_model_type": "sam3",
