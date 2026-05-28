@@ -341,11 +341,10 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
             }
 
         if cmd_upper == TaskCmd.RELOAD:
-            # Derive a per-user configuration view from the live buckets_cfg
-            filtered_store = buckets_cfg.build_dict_for_user(client_id)
-            summary = pretty_print_cfg(
-                {"buckets_cfg": filtered_store}, print_output=False
-            )
+            # Use the summary already produced by reload_configuration().
+            # (pretty_print_cfg expects a ServerCfg, not a plain dict, so we
+            # cannot easily rebuild a per-user view here.)
+            summary = outcome.get("summary", "") if isinstance(outcome, dict) else str(outcome)
             result = {"summary": summary}
             # Attach s3cfg credentials for this user (if available)
             s3cfg_map = outcome.get("s3cfg_by_user") if isinstance(outcome, dict) else None
