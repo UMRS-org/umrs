@@ -90,7 +90,42 @@ Then check that provisioning succeeded:
 umrs-client status
 ```
 
-### 6. Stage input images
+### 6. Register the model in the model registry (optional)
+
+The HMAE checkpoint is pre-staged on the compute node. To make the model
+visible in `umrs-client model list` and the monitor Models tab, register it:
+
+```bash
+umrs-client model register hmae \
+  /path/to/internal_genAI/bento/hmaeinfer/checkpoints \
+  --type vision \
+  --description "HMAE hierarchical masked auto-encoder"
+```
+
+Replace `/path/to/internal_genAI/bento/hmaeinfer/checkpoints` with the actual
+path on the server where `latest_checkpoint.pth` resides.
+
+If you have the checkpoint locally and want to copy it to the server staging
+area **and** register in one step:
+
+```bash
+umrs-client model upload ./hmaeinfer/checkpoints \
+  --name hmae \
+  --type vision \
+  --description "HMAE hierarchical masked auto-encoder" \
+  --register-path /path/on/server/models/hmae
+```
+
+> **Note**: `--register-path` is needed when client and server have different
+> filesystems (e.g. Mac → HPC). It tells the server which path to record.
+
+Verify:
+
+```bash
+umrs-client model list
+```
+
+### 7. Stage input images
 
 Create a staging directory and symlink images into it:
 
@@ -118,28 +153,28 @@ Verify:
 ls -la "${UPLOAD_DIR}/"
 ```
 
-### 7. Upload & run — MAE mode (masked reconstruction)
+### 8. Upload & run — MAE mode (masked reconstruction)
 
 ```bash
 umrs-client upload_dir "${UPLOAD_DIR}" "jens-hmae-mae/${RUN_ID}"
 ```
 
-### 8. Upload & run — Reconstruct mode (full reconstruction)
+### 9. Upload & run — Reconstruct mode (full reconstruction)
 
 ```bash
 umrs-client upload_dir "${UPLOAD_DIR}" "jens-hmae-reconstruct/${RUN_ID}"
 ```
 
-### 9. Upload & run — Features mode (encoder feature extraction)
+### 10. Upload & run — Features mode (encoder feature extraction)
 
 ```bash
 umrs-client upload_dir "${UPLOAD_DIR}" "jens-hmae-features/${RUN_ID}"
 ```
 
 > **Note**: Each upload dispatches the vision stack for that particular mode.
-> You can run just one mode if you prefer — steps 7, 8, 9 are independent.
+> You can run just one mode if you prefer — steps 8, 9, 10 are independent.
 
-### 10. Wait and download results
+### 11. Wait and download results
 
 Each Slurm job builds/starts the BentoML container, loads the HMAE checkpoint,
 runs inference, and uploads results back to S3. This can take several minutes on
@@ -165,7 +200,7 @@ umrs-client download_results "jens-hmae-features/${RUN_ID}" "results/${RUN_ID}/f
 > **Tip**: If no results appear yet, wait and retry the `download_results`
 > command — the Slurm job may still be running.
 
-### 11. Inspect results
+### 12. Inspect results
 
 List all downloaded files:
 
@@ -208,7 +243,7 @@ if 'features' in data:
 
 ## Using your own images
 
-Replace step 6 with:
+Replace step 7 with:
 
 ```bash
 IMAGE_DIR=/path/to/your/images
@@ -220,7 +255,7 @@ find "${IMAGE_DIR}" -maxdepth 1 -type f \( -name '*.png' -o -name '*.jpg' -o -na
   | while read -r f; do ln -sf "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "${UPLOAD_DIR}/"; done
 ```
 
-Then continue from step 7.
+Then continue from step 8.
 
 ## Running the automated script (alternative)
 

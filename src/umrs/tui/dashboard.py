@@ -9,13 +9,15 @@ Usage (via client subcommand):
 
 Tabs:
     1  Jobs        Durable job queue with detail expansion
-    2  Status      Server task summaries (recompute/update/check/reload)
-    3  Models      Registered model catalog
-    4  Workflows   Registered workflows and their steps
-    5  Connection  Active connection profile + server health
+    2  Endpoints   Endpoint provisioning jobs (filtered view)
+    3  Status      Server task summaries (recompute/update/check/reload)
+    4  Models      Registered model catalog
+    5  Workflows   Registered workflows and their steps
+    6  Connection  Active connection profile + server health
+    7  Logs        Client-side activity log
 
 Keyboard shortcuts (global):
-    1-5         Switch tab
+    1-7         Switch tab
     q / Ctrl+C  Quit
     r           Force refresh
     a           Open quick actions
@@ -61,15 +63,17 @@ from .keybindings import KeyReader
 
 # ── Tab constants ─────────────────────────────────────────────────────
 TAB_JOBS = "jobs"
+TAB_ENDPOINTS = "endpoints"
 TAB_STATUS = "status"
 TAB_MODELS = "models"
 TAB_WORKFLOWS = "workflows"
 TAB_CONNECTION = "connection"
 TAB_LOGS = "logs"
 
-TAB_ORDER = [TAB_JOBS, TAB_STATUS, TAB_MODELS, TAB_WORKFLOWS, TAB_CONNECTION, TAB_LOGS]
+TAB_ORDER = [TAB_JOBS, TAB_ENDPOINTS, TAB_STATUS, TAB_MODELS, TAB_WORKFLOWS, TAB_CONNECTION, TAB_LOGS]
 TAB_LABELS = {
     TAB_JOBS: "Jobs",
+    TAB_ENDPOINTS: "Endpoints",
     TAB_STATUS: "Status",
     TAB_MODELS: "Models",
     TAB_WORKFLOWS: "Workflows",
@@ -296,6 +300,12 @@ class Dashboard:
         self._model_detail_name: str | None = None
         self._model_scope_filter: str | None = None
 
+        # Endpoints
+        self._endpoints: list[dict[str, Any]] = []
+        self._endpoints_cursor = 0
+        self._endpoints_scroll_offset = 0
+        self._endpoint_detail_id: str | None = None
+
         # Workflows
         self._workflows: list[dict[str, Any]] = []
         self._wf_cursor = 0
@@ -362,6 +372,8 @@ class Dashboard:
         try:
             if self._tab == TAB_JOBS:
                 self._fetch_jobs()
+            elif self._tab == TAB_ENDPOINTS:
+                self._fetch_endpoints()
             elif self._tab == TAB_STATUS:
                 self._fetch_status()
             elif self._tab == TAB_MODELS:
@@ -402,6 +414,24 @@ class Dashboard:
         else:
             self._jobs_cursor = 0
             self._jobs_scroll_offset = 0
+
+    def _fetch_endpoints(self) -> None:
+        try:
+            parsed = self._api.list_endpoints()
+            if parsed.get("status") == "ok":
+                self._endpoints = parsed.get("endpoints", [])
+                self._last_error = None
+                self._log("INFO", f"Fetched {len(self._endpoints)} endpoints")
+            else:
+                self._last_error = parsed.get("message", "unknown error")
+        except Exception as e:
+            self._last_error = str(e)
+        if self._endpoints:
+            self._endpoints_cursor = max(0, min(self._endpoints_cursor, len(self._endpoints) - 1))
+            self._endpoints_scroll_offset = min(self._endpoints_scroll_offset, max(len(self._endpoints) - 1, 0))
+        else:
+            self._endpoints_cursor = 0
+            self._endpoints_scroll_offset = 0
 
     def _fetch_status(self) -> None:
         try:
@@ -486,6 +516,27 @@ class Dashboard:
                 self._log("WARN", f"Cancel failed: {parsed.get('message', '?')}")
         except Exception as e:
             self._set_flash(f"Cancel error: {e}")
+        self._force_refresh.set()
+
+    def _stop_selected_endpoint(self) -> None:
+        if not self._endpoints:
+            return
+        ep = self._endpoints[self._endpoints_cursor]
+        jid = ep.get("job_id")
+        ep_status = ep.get("status", "")
+        if ep_status in ("completed", "failed", "cancelled"):
+            self._set_flash(f"Endpoint {_short_id(jid)} already {ep_status}")
+            return
+        try:
+            parsed = self._api.stop_endpoint(jid)
+            if parsed.get("status") == "ok":
+                self._set_flash(f"Stopped endpoint {_short_id(jid)}")
+                self._log("INFO", f"Stopped endpoint {_short_id(jid)}")
+            else:
+                self._set_flash(f"Stop failed: {parsed.get('message', '?')}")
+                self._log("WARN", f"Stop failed: {parsed.get('message', '?')}")
+        except Exception as e:
+            self._set_flash(f"Stop error: {e}")
         self._force_refresh.set()
 
     def _do_reload(self) -> None:
@@ -954,6 +1005,7 @@ class Dashboard:
         self._stats = {
             "total_jobs": len(self._jobs),
             "job_counts": job_counts,
+            "total_endpoints": len(self._endpoints),
             "total_models": len(self._models),
             "total_workflows": len(self._workflows),
             "connected": self._ping_ok,
@@ -992,6 +1044,8 @@ class Dashboard:
         detail = False
         if self._tab == TAB_JOBS and self._detail_job_id:
             detail = True
+        elif self._tab == TAB_ENDPOINTS and self._endpoint_detail_id:
+            detail = True
         elif self._tab == TAB_MODELS and self._model_detail_name:
             detail = True
         elif self._tab == TAB_WORKFLOWS and self._wf_detail_name:
@@ -1015,6 +1069,9 @@ class Dashboard:
         if self._tab == TAB_JOBS:
             self._jobs_cursor = min(self._jobs_cursor + 1, max(len(self._jobs) - 1, 0))
             self._jobs_scroll_offset = self._adjust_scroll_offset(self._jobs_cursor, self._jobs_scroll_offset, page)
+        elif self._tab == TAB_ENDPOINTS:
+            self._endpoints_cursor = min(self._endpoints_cursor + 1, max(len(self._endpoints) - 1, 0))
+            self._endpoints_scroll_offset = self._adjust_scroll_offset(self._endpoints_cursor, self._endpoints_scroll_offset, page)
         elif self._tab == TAB_STATUS:
             self._status_cursor = min(self._status_cursor + 1, max(len(self._status_items) - 1, 0))
             self._status_scroll_offset = self._adjust_scroll_offset(self._status_cursor, self._status_scroll_offset, page)
@@ -1034,6 +1091,9 @@ class Dashboard:
         if self._tab == TAB_JOBS:
             self._jobs_cursor = max(self._jobs_cursor - 1, 0)
             self._jobs_scroll_offset = self._adjust_scroll_offset(self._jobs_cursor, self._jobs_scroll_offset, page)
+        elif self._tab == TAB_ENDPOINTS:
+            self._endpoints_cursor = max(self._endpoints_cursor - 1, 0)
+            self._endpoints_scroll_offset = self._adjust_scroll_offset(self._endpoints_cursor, self._endpoints_scroll_offset, page)
         elif self._tab == TAB_STATUS:
             self._status_cursor = max(self._status_cursor - 1, 0)
             self._status_scroll_offset = self._adjust_scroll_offset(self._status_cursor, self._status_scroll_offset, page)
@@ -1052,6 +1112,9 @@ class Dashboard:
         if self._tab == TAB_JOBS and self._jobs:
             jid = self._jobs[self._jobs_cursor].get("job_id")
             self._detail_job_id = None if self._detail_job_id == jid else jid
+        elif self._tab == TAB_ENDPOINTS and self._endpoints:
+            jid = self._endpoints[self._endpoints_cursor].get("job_id")
+            self._endpoint_detail_id = None if self._endpoint_detail_id == jid else jid
         elif self._tab == TAB_MODELS and self._models:
             name = self._models[self._models_cursor].get("name")
             self._model_detail_name = None if self._model_detail_name == name else name
@@ -1127,8 +1190,8 @@ class Dashboard:
 
         # Tab switching via number keys
         tab_keys = {
-            "1": TAB_JOBS, "2": TAB_STATUS, "3": TAB_MODELS,
-            "4": TAB_WORKFLOWS, "5": TAB_CONNECTION, "6": TAB_LOGS,
+            "1": TAB_JOBS, "2": TAB_ENDPOINTS, "3": TAB_STATUS, "4": TAB_MODELS,
+            "5": TAB_WORKFLOWS, "6": TAB_CONNECTION, "7": TAB_LOGS,
         }
         if key in tab_keys:
             self._switch_tab(tab_keys[key])
@@ -1174,7 +1237,7 @@ class Dashboard:
                 self._refresh_selected_status()
             elif key == "R":
                 self._do_reload()
-        elif self._tab in (TAB_MODELS, TAB_WORKFLOWS):
+        elif self._tab in (TAB_ENDPOINTS, TAB_MODELS, TAB_WORKFLOWS):
             nav_actions = {
                 "j": self._move_down,
                 "down": self._move_down,
@@ -1187,6 +1250,9 @@ class Dashboard:
             act = nav_actions.get(key)
             if act:
                 act()
+            # Endpoints-specific: 'c' cancels / stops the selected endpoint
+            if self._tab == TAB_ENDPOINTS and key == "c":
+                self._stop_selected_endpoint()
         elif self._tab == TAB_LOGS:
             log_actions = {
                 "j": self._move_down,
@@ -1246,6 +1312,10 @@ class Dashboard:
             job = self._jobs[self._jobs_cursor]
             if job.get("status") in ("running", "queued", "planned"):
                 actions.append({"label": f"Cancel Job {_short_id(job.get('job_id', ''))}", "key": "c", "action": "cancel_job"})
+        if self._tab == TAB_ENDPOINTS and self._endpoints:
+            ep = self._endpoints[self._endpoints_cursor]
+            if ep.get("status") in ("running", "queued", "planned"):
+                actions.append({"label": f"Stop Endpoint {_short_id(ep.get('job_id', ''))}", "key": "c", "action": "stop_endpoint"})
         if self._tab == TAB_WORKFLOWS and self._workflows:
             workflow_name = self._workflows[self._wf_cursor].get("name", "selected")
             actions.append({"label": f"Run Workflow {workflow_name}", "key": "", "action": "run_selected_workflow"})
@@ -1256,11 +1326,12 @@ class Dashboard:
             actions.append({"label": "Filter Workflows...", "key": "", "action": "workflow_filter_form"})
         actions.extend([
             {"label": "Show Jobs Tab", "key": "1", "action": "show_jobs"},
-            {"label": "Show Status Tab", "key": "2", "action": "show_status"},
-            {"label": "Show Models Tab", "key": "3", "action": "show_models"},
-            {"label": "Show Workflows Tab", "key": "4", "action": "show_workflows"},
-            {"label": "Show Connection Tab", "key": "5", "action": "show_connection"},
-            {"label": "Show Logs Tab", "key": "6", "action": "show_logs"},
+            {"label": "Show Endpoints Tab", "key": "2", "action": "show_endpoints"},
+            {"label": "Show Status Tab", "key": "3", "action": "show_status"},
+            {"label": "Show Models Tab", "key": "4", "action": "show_models"},
+            {"label": "Show Workflows Tab", "key": "5", "action": "show_workflows"},
+            {"label": "Show Connection Tab", "key": "6", "action": "show_connection"},
+            {"label": "Show Logs Tab", "key": "7", "action": "show_logs"},
         ])
         actions.append({"label": "Clear Log", "key": "", "action": "clear_log"})
         return actions
@@ -1289,6 +1360,8 @@ class Dashboard:
             self._refresh_selected_status()
         elif action == "cancel_job":
             self._cancel_selected_job()
+        elif action == "stop_endpoint":
+            self._stop_selected_endpoint()
         elif action == "model_download_form":
             self._open_model_download_form()
         elif action == "model_register_form":
@@ -1301,6 +1374,8 @@ class Dashboard:
             self._run_selected_workflow()
         elif action == "show_jobs":
             self._switch_tab(TAB_JOBS)
+        elif action == "show_endpoints":
+            self._switch_tab(TAB_ENDPOINTS)
         elif action == "show_status":
             self._switch_tab(TAB_STATUS)
         elif action == "show_models":
@@ -1433,7 +1508,7 @@ class Dashboard:
         t.add_column("Action")
         t.add_column("Tab", style="dim")
 
-        t.add_row("1-6", "Switch tab", "Global")
+        t.add_row("1-7", "Switch tab", "Global")
         t.add_row("q / Ctrl+C", "Quit", "Global")
         t.add_row("r", "Force refresh", "Global")
         t.add_row("a", "Quick actions menu", "Global")
@@ -1442,13 +1517,13 @@ class Dashboard:
         t.add_row("h / l", "Cycle form choices", "Forms")
         t.add_row("?", "Toggle this help", "Global")
         t.add_row("", "", "")
-        t.add_row("j / ↓", "Move selection down", "Jobs, Status, Models, Workflows, Logs")
-        t.add_row("k / ↑", "Move selection up", "Jobs, Status, Models, Workflows, Logs")
-        t.add_row("Enter", "Toggle detail view", "Jobs, Models, Workflows")
+        t.add_row("j / ↓", "Move selection down", "Jobs, Endpoints, Status, Models, Workflows, Logs")
+        t.add_row("k / ↑", "Move selection up", "Jobs, Endpoints, Status, Models, Workflows, Logs")
+        t.add_row("Enter", "Toggle detail view", "Jobs, Endpoints, Models, Workflows")
         t.add_row("Enter", "Refresh selected status", "Status")
         t.add_row("f", "Cycle status filter", "Jobs")
-        t.add_row("/", "Toggle compact/wide", "Jobs, Models, Workflows")
-        t.add_row("c", "Cancel selected job", "Jobs")
+        t.add_row("/", "Toggle compact/wide", "Jobs, Endpoints, Models, Workflows")
+        t.add_row("c", "Cancel selected job / stop endpoint", "Jobs, Endpoints")
         t.add_row("R", "Trigger server reload", "Status (requires --conf)")
         t.add_row("g / G", "Scroll to top / bottom", "Logs")
 
@@ -1584,6 +1659,130 @@ class Dashboard:
                 Layout(Panel(jobs_table, border_style="bright_white"), ratio=1),
             )
         return layout
+
+    # ==================================================================
+    # Rendering — Endpoints tab
+    # ==================================================================
+    @staticmethod
+    def _format_idle_ttl(seconds: int | None) -> str:
+        if not seconds:
+            return ""
+        if seconds % 86400 == 0:
+            return f"{seconds // 86400}d"
+        if seconds % 3600 == 0:
+            return f"{seconds // 3600}h"
+        if seconds % 60 == 0:
+            return f"{seconds // 60}m"
+        return f"{seconds}s"
+
+    def _build_endpoints_tab(self) -> Layout:
+        layout = Layout()
+
+        table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+        table.add_column("#", width=3, justify="right")
+        table.add_column("Job ID", min_width=10)
+        table.add_column("Status", min_width=10)
+        table.add_column("Model", min_width=20, style="bold")
+        table.add_column("Idle TTL", width=9)
+        table.add_column("Backend", min_width=12)
+        table.add_column("Created", min_width=10)
+
+        page = self._visible_page_size(with_detail=bool(self._endpoint_detail_id))
+        self._endpoints_scroll_offset = self._adjust_scroll_offset(self._endpoints_cursor, self._endpoints_scroll_offset, page)
+        start = self._endpoints_scroll_offset
+        end = min(start + page, len(self._endpoints))
+
+        for idx in range(start, end):
+            ep = self._endpoints[idx]
+            is_selected = idx == self._endpoints_cursor
+            row_style = "reverse" if is_selected else ""
+            spec = ep.get("spec") or {}
+            ep_status = ep.get("status", "?")
+            backend = ""
+            for attempt in reversed(ep.get("attempts") or []):
+                if attempt.get("backend_ref"):
+                    backend = str(attempt["backend_ref"])
+                    break
+            table.add_row(
+                str(idx + 1),
+                _short_id(ep.get("job_id", "")),
+                _style_status(ep_status),
+                spec.get("model", "—"),
+                self._format_idle_ttl(spec.get("idle_ttl_sec")),
+                Text(backend or "—", style="dim"),
+                _ago(ep.get("created_at")),
+                style=row_style,
+            )
+
+        total = len(self._endpoints)
+        running = sum(1 for e in self._endpoints if e.get("status") == "running")
+        summary = Text.from_markup(f"  total=[yellow]{total}[/yellow]")
+        if running:
+            summary.append_text(Text.from_markup(f"  [green]{running} running[/green]"))
+        if total:
+            summary.append_text(Text.from_markup(f"  [dim]{self._endpoints_cursor + 1}/{total}[/dim]"))
+
+        detail = self._build_endpoint_detail_panel()
+
+        if not self._endpoints:
+            empty = Panel(
+                Text("No endpoint jobs found. Use: umrs-client endpoint up ...", style="dim"),
+                border_style="dim",
+            )
+            layout.split_column(
+                Layout(summary, size=1),
+                Layout(empty, ratio=1),
+            )
+        elif detail:
+            layout.split_column(
+                Layout(summary, size=1),
+                Layout(Panel(table, border_style="bright_white"), ratio=2),
+                Layout(detail, ratio=1),
+            )
+        else:
+            layout.split_column(
+                Layout(summary, size=1),
+                Layout(Panel(table, border_style="bright_white"), ratio=1),
+            )
+        return layout
+
+    def _build_endpoint_detail_panel(self) -> Panel | None:
+        if not self._endpoint_detail_id or not self._endpoints:
+            return None
+        ep = next((e for e in self._endpoints if e.get("job_id") == self._endpoint_detail_id), None)
+        if not ep:
+            return None
+
+        detail_table = Table(show_header=False, expand=True, padding=(0, 2))
+        detail_table.add_column("Field", style="bold", width=18)
+        detail_table.add_column("Value", ratio=1)
+
+        spec = ep.get("spec") or {}
+        detail_table.add_row("job_id", ep.get("job_id", ""))
+        detail_table.add_row("status", ep.get("status", ""))
+        detail_table.add_row("project_id", ep.get("project_id", ""))
+        detail_table.add_row("model", spec.get("model", "—"))
+        detail_table.add_row("model_path", spec.get("model_path", "—"))
+        detail_table.add_row("idle_ttl", self._format_idle_ttl(spec.get("idle_ttl_sec")) or "—")
+        detail_table.add_row("tier", spec.get("tier", "—"))
+        detail_table.add_row("gpu_count", str(spec.get("gpu_count", "—")))
+        detail_table.add_row("max_model_len", str(spec.get("max_model_len", "—")))
+        detail_table.add_row("created_at", _iso_label(ep.get("created_at")))
+
+        attempts = ep.get("attempts") or []
+        if attempts:
+            latest = attempts[-1]
+            detail_table.add_row("", "")
+            detail_table.add_row("attempt #", str(latest.get("attempt_number", len(attempts))))
+            detail_table.add_row("attempt_status", latest.get("status", "—"))
+            detail_table.add_row("backend_ref", latest.get("backend_ref") or "—")
+            detail_table.add_row("started_at", _iso_label(latest.get("started_at")))
+
+        return Panel(
+            detail_table,
+            title=f"[bold]Endpoint: {_short_id(ep.get('job_id', ''))}[/bold]",
+            border_style="bright_blue",
+        )
 
     # ==================================================================
     # Rendering — Status tab
@@ -2144,6 +2343,9 @@ class Dashboard:
             bar.append(f" ({failed} failed)", style="red")
 
         bar.append("  │  ", style="dim")
+        # Endpoints
+        bar.append(f"Endpoints: {s.get('total_endpoints', 0)}", style="bold")
+        bar.append("  │  ", style="dim")
         # Models
         bar.append(f"Models: {s.get('total_models', 0)}", style="bold")
         bar.append("  │  ", style="dim")
@@ -2165,6 +2367,8 @@ class Dashboard:
 
         if self._tab == TAB_JOBS:
             content = self._build_jobs_tab()
+        elif self._tab == TAB_ENDPOINTS:
+            content = self._build_endpoints_tab()
         elif self._tab == TAB_STATUS:
             content = self._build_status_tab()
         elif self._tab == TAB_MODELS:
