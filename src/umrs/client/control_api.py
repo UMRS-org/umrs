@@ -134,6 +134,13 @@ class UMRSControlAPI:
     def cancel_job(self, job_id: str) -> dict[str, Any]:
         return self._request_json(TaskCmd.JOB_CANCEL, json.dumps({"job_id": job_id}))
 
+    def purge_buckets(self, bucket_names: list[str]) -> dict[str, Any]:
+        """Request server-side deletion of user-owned S3 buckets."""
+        return self._request_json(
+            TaskCmd.PURGE_BUCKETS,
+            json.dumps({"buckets": bucket_names}),
+        )
+
     def list_jobs(
         self,
         *,

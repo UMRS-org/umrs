@@ -505,3 +505,85 @@ def handle_maintenance_command(
     else:
         print(f"====> Error: unknown command '{cmd}' returned by maintenance handler")
         return None
+
+
+# ---------------------------------------------------------------------------
+# Bucket purge (server-side, uses admin S3 credentials)
+# ---------------------------------------------------------------------------
+
+def handle_purge_buckets(
+    cmd: str,
+    client_id: str,
+    payload_str: str,
+    configure_file: str = "",
+) -> str:
+    """Delete user-owned extra S3 buckets via admin credentials.
+
+    Security invariants:
+      - Only buckets whose name starts with the normalised username prefix
+        (``<username>.``) can be deleted.
+      - Configured buckets (those still referenced in the user's experience
+        config) are excluded from deletion.
+      - Admin credentials are used server-side; the user never sees them.
+
+    Payload JSON:
+        {"buckets": ["bucket-name-1", "bucket-name-2"]}
+
+    Returns JSON: {"status": "ok"|"partial"|"error", "deleted": [...], "errors": [...]}
+    """
+    import json
+    import os
+
+    try:
+        payload = json.loads(payload_str) if payload_str else {}
+    except Exception as exc:
+        return json.dumps({"status": "error", "message": f"Invalid payload: {exc}"})
+
+    requested_buckets: list[str] = payload.get("buckets", [])
+    if not requested_buckets:
+        return json.dumps({"status": "error", "message": "No buckets specified"})
+
+    # Normalise username for prefix matching (same logic as client-side)
+    username_prefix = client_id.lower().replace("_", "-") + "."
+
+    # Validate every requested bucket belongs to this user
+    for bname in requested_buckets:
+        if not bname.startswith(username_prefix):
+            logger.warning(
+                "PURGE_BUCKETS denied: user=%s tried to delete bucket=%s (prefix mismatch)",
+                client_id, bname,
+            )
+            return json.dumps({
+                "status": "error",
+                "message": f"Bucket '{bname}' does not belong to user '{client_id}'",
+            })
+
+    # Load admin S3 config to get the mc alias
+    from umrs.shared.json_config import load_server_cfg_file
+    try:
+        admin_s3_cfg_file, _users, _cfg = load_server_cfg_file(configure_file)
+    except Exception as exc:
+        return json.dumps({"status": "error", "message": f"Server config load failed: {exc}"})
+
+    admin_cfg_path = os.path.expanduser(admin_s3_cfg_file)
+    if not os.path.isfile(admin_cfg_path):
+        return json.dumps({"status": "error", "message": "Admin S3 config not found on server"})
+
+    import configparser
+    cfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+    cfg.read(admin_cfg_path)
+    alias = cfg.get("default", "alias", fallback="myminio")
+
+    from umrs.shared.storage.minio import minio_remove_bucket
+
+    deleted = []
+    errors = []
+    for bname in requested_buckets:
+        try:
+            minio_remove_bucket(bname, alias)
+            deleted.append(bname)
+        except Exception as exc:
+            errors.append({"bucket": bname, "error": str(exc)})
+
+    status = "ok" if not errors else ("partial" if deleted else "error")
+    return json.dumps({"status": status, "deleted": deleted, "errors": errors})

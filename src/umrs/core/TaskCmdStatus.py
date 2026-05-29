@@ -28,6 +28,8 @@ class TaskCmd:
     ENROLL_USER = "ENROLL_USER"          # admin-only: register a new user
     # Bootstrap context
     GET_BOOTSTRAP_CONTEXT = "GET_BOOTSTRAP_CONTEXT"  # return versioned user context
+    # Bucket management
+    PURGE_BUCKETS = "PURGE_BUCKETS"  # delete user-owned extra S3 buckets
 
     @classmethod
     def all_cmd(cls):

@@ -68,6 +68,7 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset({
     "LIST_WORKFLOWS",
     "RUN_WORKFLOW",
     "GET_BOOTSTRAP_CONTEXT",
+    "PURGE_BUCKETS",
 })
 
 
