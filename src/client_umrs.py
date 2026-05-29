@@ -2086,12 +2086,27 @@ def _build_remote_info(remote_names: dict[str, int], configured_paths: set[str],
     return result
 
 
+def _xp_name_from_bucket_path(bucket_path: str, username: str) -> str:
+    """Extract the experience name from a bucket path.
+
+    Bucket paths follow ``<user>.<xp_name>.<alias>[-output]``.
+    Returns the ``xp_name`` segment or ``"?"`` if the path cannot be parsed.
+    """
+    prefix = _normalise_recovery_part(username) + "."
+    if not bucket_path.startswith(prefix):
+        return "?"
+    rest = bucket_path[len(prefix):]
+    parts = rest.split(".", 1)
+    return parts[0] if len(parts) >= 2 else "?"
+
+
 def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None):
     buckets = []
     for alias, entry in bucket_cfg.items():
         if entry.username == username :
             buckets.append({
                 'bucket_alias': alias,
+                'experience': entry.xp_name,
                 'modality': entry.modality_name,
                 'task': entry.task,
                 'path_to_bucket': entry.path_to_bucket
@@ -2104,6 +2119,8 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
                 b['remote_status'] = ri["status"] if ri else "missing"
                 b['object_count'] = ri.get("object_count") if ri else None
             extra = remote_info.get("extra_buckets", [])
+            for eb in extra:
+                eb["experience"] = _xp_name_from_bucket_path(eb["name"], username)
             return api_json(buckets=buckets, extra_remote_buckets=extra, output_format=output_format)
         return api_json(buckets=buckets, output_format=output_format)
 
@@ -2113,10 +2130,12 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
         lines.append(f"  {_dim('No buckets found.')}")
     else:
         show_remote = remote_info is not None
+        w_xp = max(len("Experience"), *(len(b['experience']) for b in buckets))
         w_alias = max(len("Alias"), *(len(b['bucket_alias']) for b in buckets))
         w_mod = max(len("Modality"), *(len(b['modality']) for b in buckets))
         w_task = max(len("Task"), *(len(b.get('task', '')) for b in buckets))
         header_cells = [
+            _fmt_cell("Experience", w_xp, style=_bold),
             _fmt_cell("Alias", w_alias, style=_bold),
             _fmt_cell("Modality", w_mod, style=_bold),
             _fmt_cell("Task", w_task, style=_bold),
@@ -2128,12 +2147,13 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
             header_cells.append(_fmt_cell("Objects", w_objects, style=_bold))
         header_cells.append(_bold("Path"))
         lines.append("  " + "  ".join(header_cells))
-        sep_width = w_alias + w_mod + w_task + 6 + 4
+        sep_width = w_xp + w_alias + w_mod + w_task + 8 + 6
         if show_remote:
             sep_width += w_status + w_objects + 4
         lines.append(f"  {_dim('-' * sep_width)}")
         for b in buckets:
             row_cells = [
+                _fmt_cell(b['experience'], w_xp),
                 _fmt_cell(b['bucket_alias'], w_alias),
                 _fmt_cell(b['modality'], w_mod),
                 _fmt_cell(b.get('task', ''), w_task),
@@ -2158,7 +2178,9 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
                 lines.append("")
                 lines.append(_section(f"Extra remote buckets {_dim('(not in config)')}"))
                 for eb in extra:
-                    lines.append(f"  {eb['name']}  {_dim(str(eb.get('object_count', '')) + ' objects')}")
+                    xp = _xp_name_from_bucket_path(eb['name'], username)
+                    xp_label = f"  {_dim('experience=')}{ xp}"
+                    lines.append(f"  {eb['name']}  {_dim(str(eb.get('object_count', '')) + ' objects')}{xp_label}")
             warn = (remote_info or {}).get("warning")
             if warn:
                 lines.append(f"  {_yellow(warn)}")
