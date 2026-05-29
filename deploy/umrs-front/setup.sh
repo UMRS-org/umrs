@@ -95,6 +95,10 @@ UMRS_TUNNEL_MODE=false
 # Only used when UMRS_TUNNEL_MODE=false.
 UMRS_SERVER_HOST=0.0.0.0
 
+# Cluster master SSH targets used for bootstrap checks and reverse tunnels.
+RCCS_SSH_TARGET=masaru.nagaso@rccs-cloud
+AI4S_SSH_TARGET=ea0022@AI4S
+
 # ZeroMQ security. Production OIDC/JWT deployments should use session mode:
 # server-side CURVE plus ZAP-backed ephemeral client sessions.
 UMRS_ZMQ_AUTH_TYPE=session

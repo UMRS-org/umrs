@@ -5,8 +5,8 @@
 # Starts:
 #   - Postgres (podman container, port 5432)
 #   - MinIO (podman container, port 9000)
-#   - UMRS server for RCCS Cloud (ZMQ:5555, HTTP:8000)
-#   - UMRS server for AI4S (ZMQ:5557, HTTP:8002)
+#   - UMRS server for RCCS Cloud (ZMQ:50090, HTTP:8000)
+#   - UMRS server for AI4S (ZMQ:50100, HTTP:8002)
 #
 # Prerequisites:
 #   - Run ./setup.sh once (creates venv, installs deps)
@@ -397,42 +397,71 @@ for pidfile in "${SCRIPT_DIR}"/server-*.pid; do
     rm -f "$pidfile"
 done
 
-# Keep the RCCS login-node MinIO reverse tunnel alive for Slurm jobs.
+# Keep login-node MinIO reverse tunnels alive for Slurm jobs.
 # Compute jobs forward minio-host:19000 -> login:9000, so login:9000 must
-# reverse-forward to this front-end MinIO instance.
-RCCS_MINIO_TUNNEL_PIDFILE="${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid"
-if [[ -f "$RCCS_MINIO_TUNNEL_PIDFILE" ]]; then
-    tunnel_pid=$(cat "$RCCS_MINIO_TUNNEL_PIDFILE")
-    if kill -0 "$tunnel_pid" 2>/dev/null; then
-        echo "Stopping existing RCCS MinIO reverse tunnel (PID $tunnel_pid)..."
-        kill "$tunnel_pid" 2>/dev/null || true
-        sleep 1
-        kill -0 "$tunnel_pid" 2>/dev/null && kill -9 "$tunnel_pid" 2>/dev/null || true
-    fi
-    rm -f "$RCCS_MINIO_TUNNEL_PIDFILE"
-fi
+# reverse-forward to this front-end MinIO instance on each cluster.
+_start_minio_reverse_tunnel() {
+    local label="$1"
+    local ssh_target="$2"
+    local reverse_spec="$3"
+    local pidfile="$4"
+    local logfile="$5"
 
-RCCS_SSH_TARGET="${RCCS_SSH_TARGET:-rccs-cloud}"
+    if [[ -f "$pidfile" ]]; then
+        tunnel_pid=$(cat "$pidfile")
+        if kill -0 "$tunnel_pid" 2>/dev/null; then
+            echo "Stopping existing ${label} MinIO reverse tunnel (PID $tunnel_pid)..."
+            kill "$tunnel_pid" 2>/dev/null || true
+            sleep 1
+            kill -0 "$tunnel_pid" 2>/dev/null && kill -9 "$tunnel_pid" 2>/dev/null || true
+        fi
+        rm -f "$pidfile"
+    fi
+
+    echo "Starting ${label} MinIO reverse tunnel: ${ssh_target} ${reverse_spec}"
+    ssh -nNT \
+        -R "$reverse_spec" \
+        -o ExitOnForwardFailure=yes \
+        -o ServerAliveInterval=30 \
+        -o ServerAliveCountMax=3 \
+        "$ssh_target" \
+        >> "$logfile" 2>&1 &
+    echo $! > "$pidfile"
+    sleep 2
+    if ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+        echo "WARNING: ${label} MinIO reverse tunnel process exited. Checking existing login-node endpoint..."
+        tail -20 "$logfile" 2>/dev/null || true
+        if ssh "$ssh_target" "curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null"; then
+            echo "  ${label} login node already has a healthy MinIO endpoint on 127.0.0.1:9000."
+            rm -f "$pidfile"
+            return 0
+        fi
+        echo "ERROR: ${label} MinIO reverse tunnel failed to start. Check ${logfile}"
+        exit 1
+    fi
+    if ! ssh "$ssh_target" "curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null"; then
+        echo "ERROR: ${label} login node cannot reach MinIO through the reverse tunnel."
+        exit 1
+    fi
+}
+
+RCCS_SSH_TARGET="${RCCS_SSH_TARGET:-masaru.nagaso@rccs-cloud}"
+AI4S_SSH_TARGET="${AI4S_SSH_TARGET:-ea0022@AI4S}"
 RCCS_MINIO_REVERSE_SPEC="${RCCS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
-echo "Starting RCCS MinIO reverse tunnel: ${RCCS_SSH_TARGET} ${RCCS_MINIO_REVERSE_SPEC}"
-ssh -nNT \
-    -R "$RCCS_MINIO_REVERSE_SPEC" \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=3 \
+AI4S_MINIO_REVERSE_SPEC="${AI4S_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
+
+_start_minio_reverse_tunnel \
+    "RCCS" \
     "$RCCS_SSH_TARGET" \
-    >> "${LOG_DIR}/rccs-minio-reverse-tunnel.log" 2>&1 &
-echo $! > "$RCCS_MINIO_TUNNEL_PIDFILE"
-sleep 2
-if ! kill -0 "$(cat "$RCCS_MINIO_TUNNEL_PIDFILE")" 2>/dev/null; then
-    echo "ERROR: RCCS MinIO reverse tunnel failed to start. Check ${LOG_DIR}/rccs-minio-reverse-tunnel.log"
-    tail -20 "${LOG_DIR}/rccs-minio-reverse-tunnel.log" 2>/dev/null || true
-    exit 1
-fi
-if ! ssh "$RCCS_SSH_TARGET" "curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null"; then
-    echo "ERROR: RCCS login node cannot reach MinIO through the reverse tunnel."
-    exit 1
-fi
+    "$RCCS_MINIO_REVERSE_SPEC" \
+    "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" \
+    "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
+_start_minio_reverse_tunnel \
+    "AI4S" \
+    "$AI4S_SSH_TARGET" \
+    "$AI4S_MINIO_REVERSE_SPEC" \
+    "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" \
+    "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
 
 _stop_port_listener() {
     local port="$1"
@@ -629,12 +658,12 @@ echo "║                                                              ║"
 echo "║  RCCS Cloud:                                                 ║"
 echo "║    UMRS HTTP:  0.0.0.0:${UMRS_RCCS_PORT:-8000}  (PID $RCCS_PID)           ║"
 echo "║    Site:       rccs-front/site.yaml                          ║"
-echo "║    Target:     rccs-cloud (SSH)                              ║"
+echo "║    Target:     ${RCCS_SSH_TARGET} (SSH)                              ║"
 echo "║                                                              ║"
 echo "║  AI4S:                                                       ║"
 echo "║    UMRS HTTP:  0.0.0.0:${UMRS_AI4S_PORT:-8002}  (PID $AI4S_PID)           ║"
 echo "║    Site:       ai4s/site.yaml                                ║"
-echo "║    Target:     134.160.189.24 (ea0022, SSH)                  ║"
+echo "║    Target:     ${AI4S_SSH_TARGET} (SSH)                      ║"
 if [[ "$RAG_ENABLED" == "true" ]]; then
 echo "║                                                              ║"
 echo "║  RAG Service:  127.0.0.1:${UMRS_RAG_PORT:-8081}  (PID ${RAG_PID:-?})     ║"
