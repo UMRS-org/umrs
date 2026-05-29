@@ -116,6 +116,14 @@ def _fmt_cell(text, width=None, *, align="<", style=None):
     return style(text) if style else text
 
 
+def _fmt_cell_raw(styled_text, width):
+    """Pad a string that may contain ANSI codes to a visual width."""
+    import re as _re_mod
+    visible = _re_mod.sub(r"\x1b\[[0-9;]*m", "", styled_text)
+    pad = max(0, width - len(visible))
+    return styled_text + " " * pad
+
+
 def _section(title):
     """Return a colored section header line."""
     return _bold(_cyan(f"[{title}]"))
@@ -2014,7 +2022,71 @@ def action_ping(control_mq, output_format, timeout_ms=2000, connection=None):
         endpoint_info["control_port"] = connection.control_port
     return api_json(server_ready=ready, output_format=output_format, **endpoint_info)
 
-def action_list_buckets(bucket_cfg, username, output_format):
+
+def _probe_remote_buckets(username: str, user_cfg: dict | None) -> dict:
+    """Connect to MinIO/S3 and return remote bucket names with object counts.
+
+    Returns dict with:
+      - remote_names: {bucket_name: object_count}
+      - warning: optional error string if S3 probe failed
+    """
+    result: dict = {"remote_names": {}}
+    s3cfg_path_str = (user_cfg or {}).get("s3_configuration_file") or default_s3cfg_path(username)
+    s3cfg_path = Path(s3cfg_path_str).expanduser()
+    if not s3cfg_path.is_file():
+        result["warning"] = f"S3 config not found: {s3cfg_path} — cannot check remote"
+        return result
+    try:
+        import boto3
+    except ImportError:
+        result["warning"] = "boto3 not installed — cannot check remote"
+        return result
+    try:
+        cfg = _read_s3cfg(s3cfg_path)
+        endpoint_url, verify_ssl = _s3_endpoint_from_cfg(cfg)
+        s3 = boto3.client(
+            "s3",
+            endpoint_url=endpoint_url,
+            aws_access_key_id=cfg.get("access_key"),
+            aws_secret_access_key=cfg.get("secret_key"),
+            verify=verify_ssl,
+        )
+        response = s3.list_buckets()
+    except Exception as exc:
+        result["warning"] = f"S3 connection failed: {exc}"
+        return result
+
+    remote_names: dict[str, int] = {}
+    for item in response.get("Buckets", []):
+        bname = item.get("Name", "")
+        try:
+            count, _ = _bucket_object_stats(s3, bname)
+        except Exception:
+            count = 0
+        remote_names[bname] = count
+    result["remote_names"] = remote_names
+    return result
+
+
+def _build_remote_info(remote_names: dict[str, int], configured_paths: set[str], username: str) -> dict:
+    """Build the remote_info dict from raw remote bucket names and configured paths."""
+    result: dict = {"buckets": {}, "extra_buckets": []}
+    username_prefix = _normalise_recovery_part(username) + "."
+    for path in configured_paths:
+        if path in remote_names:
+            result["buckets"][path] = {"status": "synced", "object_count": remote_names[path]}
+        else:
+            result["buckets"][path] = {"status": "missing"}
+    for bname, count in sorted(remote_names.items()):
+        if bname in configured_paths:
+            continue
+        # Only show extra buckets belonging to this user
+        if bname.startswith(username_prefix):
+            result["extra_buckets"].append({"name": bname, "object_count": count})
+    return result
+
+
+def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None):
     buckets = []
     for alias, entry in bucket_cfg.items():
         if entry.username == username :
@@ -2025,39 +2097,72 @@ def action_list_buckets(bucket_cfg, username, output_format):
                 'path_to_bucket': entry.path_to_bucket
             })
     if output_format == 'json':
+        if remote_info is not None:
+            for b in buckets:
+                path = b['path_to_bucket']
+                ri = remote_info.get("buckets", {}).get(path)
+                b['remote_status'] = ri["status"] if ri else "missing"
+                b['object_count'] = ri.get("object_count") if ri else None
+            extra = remote_info.get("extra_buckets", [])
+            return api_json(buckets=buckets, extra_remote_buckets=extra, output_format=output_format)
         return api_json(buckets=buckets, output_format=output_format)
+
     # Text mode: formatted table with dynamic column widths
     lines = [_section(f"Buckets for {_bold(username)}")]
     if not buckets:
         lines.append(f"  {_dim('No buckets found.')}")
     else:
+        show_remote = remote_info is not None
         w_alias = max(len("Alias"), *(len(b['bucket_alias']) for b in buckets))
         w_mod = max(len("Modality"), *(len(b['modality']) for b in buckets))
         w_task = max(len("Task"), *(len(b.get('task', '')) for b in buckets))
-        lines.append(
-            "  "
-            + "  ".join(
-                [
-                    _fmt_cell("Alias", w_alias, style=_bold),
-                    _fmt_cell("Modality", w_mod, style=_bold),
-                    _fmt_cell("Task", w_task, style=_bold),
-                    _bold("Path"),
-                ]
-            )
-        )
-        lines.append(f"  {_dim('-' * (w_alias + w_mod + w_task + 6 + 4))}")
+        header_cells = [
+            _fmt_cell("Alias", w_alias, style=_bold),
+            _fmt_cell("Modality", w_mod, style=_bold),
+            _fmt_cell("Task", w_task, style=_bold),
+        ]
+        if show_remote:
+            w_status = max(len("Remote"), 7)  # "synced" is 6, "missing" is 7
+            w_objects = len("Objects")
+            header_cells.append(_fmt_cell("Remote", w_status, style=_bold))
+            header_cells.append(_fmt_cell("Objects", w_objects, style=_bold))
+        header_cells.append(_bold("Path"))
+        lines.append("  " + "  ".join(header_cells))
+        sep_width = w_alias + w_mod + w_task + 6 + 4
+        if show_remote:
+            sep_width += w_status + w_objects + 4
+        lines.append(f"  {_dim('-' * sep_width)}")
         for b in buckets:
-            lines.append(
-                "  "
-                + "  ".join(
-                    [
-                        _fmt_cell(b['bucket_alias'], w_alias),
-                        _fmt_cell(b['modality'], w_mod),
-                        _fmt_cell(b.get('task', ''), w_task),
-                        _dim(b['path_to_bucket']),
-                    ]
-                )
-            )
+            row_cells = [
+                _fmt_cell(b['bucket_alias'], w_alias),
+                _fmt_cell(b['modality'], w_mod),
+                _fmt_cell(b.get('task', ''), w_task),
+            ]
+            if show_remote:
+                path = b['path_to_bucket']
+                ri = (remote_info or {}).get("buckets", {}).get(path)
+                if ri and ri["status"] == "synced":
+                    status_str = _green("synced")
+                    obj_str = str(ri.get("object_count", ""))
+                else:
+                    status_str = _red("missing")
+                    obj_str = _dim("-")
+                row_cells.append(_fmt_cell_raw(status_str, w_status))
+                row_cells.append(_fmt_cell_raw(obj_str, w_objects))
+            row_cells.append(_dim(b['path_to_bucket']))
+            lines.append("  " + "  ".join(row_cells))
+
+        if show_remote:
+            extra = (remote_info or {}).get("extra_buckets", [])
+            if extra:
+                lines.append("")
+                lines.append(_section(f"Extra remote buckets {_dim('(not in config)')}"))
+                for eb in extra:
+                    lines.append(f"  {eb['name']}  {_dim(str(eb.get('object_count', '')) + ' objects')}")
+            warn = (remote_info or {}).get("warning")
+            if warn:
+                lines.append(f"  {_yellow(warn)}")
+
     return "\n".join(lines)
 
 def perform_upload_text(s3, full_bucket_name, text, data_mq, metadata_args):
@@ -2830,9 +2935,138 @@ def _action_list_buckets(ctx):
         print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
         ctx.control_mq.close()
         return 1
-    print(action_list_buckets(ctx.buckets_cfg, effective_username, args.output))
+    remote_info = None
+    if not getattr(args, 'no_check_remote', False):
+        probe = _probe_remote_buckets(effective_username, ctx.user)
+        # Collect configured bucket paths so we can compare
+        configured_paths: set[str] = set()
+        if ctx.buckets_cfg:
+            for alias, entry in ctx.buckets_cfg.items():
+                if entry.username == effective_username:
+                    configured_paths.add(entry.path_to_bucket)
+        if "warning" in probe:
+            remote_info = {"buckets": {}, "extra_buckets": [], "warning": probe["warning"]}
+        else:
+            remote_info = _build_remote_info(probe["remote_names"], configured_paths, effective_username)
+    print(action_list_buckets(ctx.buckets_cfg, effective_username, args.output, remote_info=remote_info))
     ctx.control_mq.close()
     return 0
+
+
+def _action_purge_remote_buckets(ctx):
+    """Delete extra remote S3 buckets that are not in the user config."""
+    args = ctx.args
+    effective_username = args.username or (ctx.user.get('username') if isinstance(ctx.user, dict) else None)
+    if not effective_username:
+        print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+        ctx.control_mq.close()
+        return 1
+
+    # Probe remote buckets
+    probe = _probe_remote_buckets(effective_username, ctx.user)
+    if "warning" in probe:
+        print(api_json(status='error', message=probe["warning"], output_format=args.output) if args.output == 'json'
+              else f"  {_red('✗')} {probe['warning']}")
+        ctx.control_mq.close()
+        return 1
+
+    # Build configured paths set
+    configured_paths: set[str] = set()
+    if ctx.buckets_cfg:
+        for alias, entry in ctx.buckets_cfg.items():
+            if entry.username == effective_username:
+                configured_paths.add(entry.path_to_bucket)
+
+    remote_info = _build_remote_info(probe["remote_names"], configured_paths, effective_username)
+    extra = remote_info.get("extra_buckets", [])
+
+    if not extra:
+        msg = "No extra remote buckets to purge."
+        print(api_json(status='ok', message=msg, output_format=args.output) if args.output == 'json'
+              else f"  {_green('✓')} {msg}")
+        ctx.control_mq.close()
+        return 0
+
+    # Show what will be deleted
+    if args.output != 'json':
+        print(_section("Extra remote buckets to purge"))
+        for eb in extra:
+            print(f"  {eb['name']}  {_dim(str(eb.get('object_count', 0)) + ' objects')}")
+        print()
+
+    # Confirmation
+    if not getattr(args, 'yes', False):
+        try:
+            answer = input(f"Delete {len(extra)} bucket(s) and all their objects? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in ("y", "yes"):
+            print("  Aborted.")
+            ctx.control_mq.close()
+            return 0
+
+    # Connect to S3 and delete
+    try:
+        import boto3
+    except ImportError:
+        print(api_json(status='error', message='boto3 not installed', output_format=args.output) if args.output == 'json'
+              else f"  {_red('✗')} boto3 not installed")
+        ctx.control_mq.close()
+        return 1
+
+    s3cfg_path_str = (ctx.user or {}).get("s3_configuration_file") or default_s3cfg_path(effective_username)
+    s3cfg_path = Path(s3cfg_path_str).expanduser()
+    cfg = _read_s3cfg(s3cfg_path)
+    endpoint_url, verify_ssl = _s3_endpoint_from_cfg(cfg)
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=cfg.get("access_key"),
+        aws_secret_access_key=cfg.get("secret_key"),
+        verify=verify_ssl,
+    )
+
+    deleted = []
+    errors = []
+    for eb in extra:
+        bname = eb["name"]
+        try:
+            # Delete all objects first (S3 requires empty bucket before deletion)
+            continuation_token = None
+            while True:
+                kwargs = {"Bucket": bname}
+                if continuation_token:
+                    kwargs["ContinuationToken"] = continuation_token
+                resp = s3.list_objects_v2(**kwargs)
+                objects = resp.get("Contents", [])
+                if objects:
+                    s3.delete_objects(
+                        Bucket=bname,
+                        Delete={"Objects": [{"Key": o["Key"]} for o in objects]},
+                    )
+                if not resp.get("IsTruncated"):
+                    break
+                continuation_token = resp.get("NextContinuationToken")
+            s3.delete_bucket(Bucket=bname)
+            deleted.append(bname)
+            if args.output != 'json':
+                print(f"  {_green('✓')} Deleted {bname}")
+        except Exception as exc:
+            errors.append({"bucket": bname, "error": str(exc)})
+            if args.output != 'json':
+                print(f"  {_red('✗')} Failed to delete {bname}: {exc}")
+
+    ctx.control_mq.close()
+
+    if args.output == 'json':
+        return api_json(status='ok' if not errors else 'partial',
+                        deleted=deleted, errors=errors, output_format=args.output)
+
+    if deleted and not errors:
+        print(f"\n  {_green('✓')} Purged {len(deleted)} bucket(s).")
+    elif errors:
+        print(f"\n  {_yellow('⚠')} Purged {len(deleted)}, failed {len(errors)}.")
+    return 1 if errors else 0
 
 
 def _maybe_write_s3cfg_from_status(parsed, user_cfg, configure_file=None):
@@ -3287,6 +3521,7 @@ _ACTION_HANDLERS = {
     'upload-workflow': _action_upload_workflow,
     'run-workflow': _action_run_workflow,
     'list_buckets': _action_list_buckets,
+    'purge_remote_buckets': _action_purge_remote_buckets,
     'status': _action_status,
     'recompute': _action_maintenance,
     'update': _action_maintenance,
@@ -3389,6 +3624,13 @@ def main():
     # New actions
     lb_p = subparsers.add_parser('list_buckets', help='List bucket aliases for a username')
     lb_p.add_argument('username', nargs='?', help='Username to filter buckets (defaults to config if omitted)')
+    lb_p.add_argument('--no-check-remote', action='store_true', default=False,
+                      help='Skip probing MinIO/S3 for remote bucket status (faster)')
+
+    prb_p = subparsers.add_parser('purge_remote_buckets', help='Delete extra remote S3 buckets not in user config')
+    prb_p.add_argument('username', nargs='?', help='Username (defaults to config if omitted)')
+    prb_p.add_argument('-y', '--yes', action='store_true', default=False,
+                       help='Skip confirmation prompt')
 
     status_p = subparsers.add_parser('status', help='Fetch the latest server summary for maintenance commands')
     configure_status_parser(status_p, include_username=True)
@@ -3726,7 +3968,7 @@ def main():
     # Only enforce config file for legacy mode or actions that need bucket/user config
     status_needs_config = args.action == 'status' and not getattr(args, 'username', None)
     requires_config =  args.action in {
-        'list_buckets', 'upload_file', 'upload_dir', "download_results",
+        'list_buckets', 'purge_remote_buckets', 'upload_file', 'upload_dir', "download_results",
         "recompute", "update", "reload", "export_embeddings"
     } or status_needs_config
 
