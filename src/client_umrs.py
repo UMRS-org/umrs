@@ -2980,6 +2980,22 @@ def _action_purge_remote_buckets(ctx):
     remote_info = _build_remote_info(probe["remote_names"], configured_paths, effective_username)
     extra = remote_info.get("extra_buckets", [])
 
+    # Filter by --bucket if specified
+    bucket_filter = getattr(args, 'buckets', None)
+    if bucket_filter:
+        filter_set = set(bucket_filter)
+        extra = [eb for eb in extra if eb["name"] in filter_set]
+        # Warn about filter names that don't match any extra bucket
+        found_names = {eb["name"] for eb in extra}
+        for f in bucket_filter:
+            if f not in found_names:
+                if f in configured_paths:
+                    if args.output != 'json':
+                        print(f"  {_yellow('⚠')} {f} is a configured bucket — skipping")
+                elif f not in probe["remote_names"]:
+                    if args.output != 'json':
+                        print(f"  {_yellow('⚠')} {f} not found on remote — skipping")
+
     if not extra:
         msg = "No extra remote buckets to purge."
         print(api_json(status='ok', message=msg, output_format=args.output) if args.output == 'json'
@@ -3027,11 +3043,13 @@ def _action_purge_remote_buckets(ctx):
     )
 
     deleted = []
+    emptied = []
     errors = []
     for eb in extra:
         bname = eb["name"]
         try:
             # Delete all objects first (S3 requires empty bucket before deletion)
+            obj_deleted = 0
             continuation_token = None
             while True:
                 kwargs = {"Bucket": bname}
@@ -3044,28 +3062,60 @@ def _action_purge_remote_buckets(ctx):
                         Bucket=bname,
                         Delete={"Objects": [{"Key": o["Key"]} for o in objects]},
                     )
+                    obj_deleted += len(objects)
                 if not resp.get("IsTruncated"):
                     break
                 continuation_token = resp.get("NextContinuationToken")
-            s3.delete_bucket(Bucket=bname)
-            deleted.append(bname)
-            if args.output != 'json':
-                print(f"  {_green('✓')} Deleted {bname}")
+            # Try to remove the bucket itself
+            try:
+                s3.delete_bucket(Bucket=bname)
+                deleted.append(bname)
+                if args.output != 'json':
+                    print(f"  {_green('✓')} Deleted {bname} ({obj_deleted} objects removed)")
+            except Exception:
+                # Local deletion denied — queue for server-side purge
+                emptied.append(bname)
         except Exception as exc:
             errors.append({"bucket": bname, "error": str(exc)})
             if args.output != 'json':
-                print(f"  {_red('✗')} Failed to delete {bname}: {exc}")
+                print(f"  {_red('✗')} Failed on {bname}: {exc}")
+
+    # Server-side purge for buckets that couldn't be deleted locally
+    if emptied:
+        if args.output != 'json':
+            print(f"  {_dim('Requesting server-side deletion for')} {len(emptied)} {_dim('bucket(s)...')}")
+        try:
+            api = UMRSControlAPI(ctx.control_mq, effective_username)
+            result = api.purge_buckets(emptied)
+            srv_deleted = result.get("deleted", [])
+            srv_errors = result.get("errors", [])
+            deleted.extend(srv_deleted)
+            for sd in srv_deleted:
+                if args.output != 'json':
+                    print(f"  {_green('✓')} Deleted {sd} (via server)")
+            for se in srv_errors:
+                errors.append(se)
+                if args.output != 'json':
+                    print(f"  {_red('✗')} Server failed on {se.get('bucket', '?')}: {se.get('error', '?')}")
+            # Remove successfully deleted from emptied list
+            emptied = [b for b in emptied if b not in set(srv_deleted)]
+        except Exception as exc:
+            if args.output != 'json':
+                print(f"  {_yellow('⚠')} Server-side purge failed: {exc}")
+            for b in emptied:
+                errors.append({"bucket": b, "error": f"server purge failed: {exc}"})
+            emptied = []
 
     ctx.control_mq.close()
 
     if args.output == 'json':
         return api_json(status='ok' if not errors else 'partial',
-                        deleted=deleted, errors=errors, output_format=args.output)
+                        deleted=deleted, emptied=emptied, errors=errors, output_format=args.output)
 
-    if deleted and not errors:
+    if deleted and not errors and not emptied:
         print(f"\n  {_green('✓')} Purged {len(deleted)} bucket(s).")
     elif errors:
-        print(f"\n  {_yellow('⚠')} Purged {len(deleted)}, failed {len(errors)}.")
+        print(f"\n  {_yellow('⚠')} Deleted {len(deleted)}, failed {len(errors)}.")
     return 1 if errors else 0
 
 
@@ -3629,6 +3679,8 @@ def main():
 
     prb_p = subparsers.add_parser('purge_remote_buckets', help='Delete extra remote S3 buckets not in user config')
     prb_p.add_argument('username', nargs='?', help='Username (defaults to config if omitted)')
+    prb_p.add_argument('--bucket', action='append', dest='buckets', metavar='NAME',
+                       help='Specific bucket name(s) to purge (repeatable; default: all extra)')
     prb_p.add_argument('-y', '--yes', action='store_true', default=False,
                        help='Skip confirmation prompt')
 

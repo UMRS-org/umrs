@@ -260,6 +260,8 @@ def server_event_loop(
             print(f"Error sending {cmd} response: {e}")
         update_status_func(TaskStatus.COMPLETED)
 
+    from umrs.server.maintenance import handle_purge_buckets
+
     # Map request/reply commands to their handler + extra kwargs.
     _REQUEST_REPLY_HANDLERS = {
         TaskCmd.MODEL_REGISTER: (handle_model_command, {"backend": model_command_backend}),
@@ -270,6 +272,7 @@ def server_event_loop(
         TaskCmd.JOB_LIST:       (handle_job_command,   {"backend": job_command_backend}),
         TaskCmd.LIST_WORKFLOWS: (handle_workflow_command, {}),
         TaskCmd.RUN_WORKFLOW:   (handle_workflow_command, {"job_backend": job_command_backend}),
+        TaskCmd.PURGE_BUCKETS:  (handle_purge_buckets, {"configure_file": configure_file}),
     }
 
     try:
