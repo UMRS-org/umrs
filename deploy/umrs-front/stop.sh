@@ -17,6 +17,20 @@ for pidfile in server-*.pid; do
     rm -f "$pidfile"
 done
 
+echo "Stopping MinIO reverse tunnels..."
+for pidfile in *-minio-reverse-tunnel.pid; do
+    [[ -f "$pidfile" ]] || continue
+    pid=$(cat "$pidfile")
+    name="${pidfile%.pid}"
+    if kill -0 "$pid" 2>/dev/null; then
+        echo "  Stopping $name (PID $pid)..."
+        kill "$pid" 2>/dev/null || true
+        sleep 1
+        kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pidfile"
+done
+
 case "${1:-}" in
     --all|--clean)
         echo "Stopping infrastructure containers..."

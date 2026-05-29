@@ -33,7 +33,7 @@ description: >-
 scheduler:
   kind: slurm-remote
   partition: 1n1gpu                           # Default partition; override per job
-  account: ""
+  account: ea0022
   qos: ""
   time_limit: "04:00:00"                      # Max allowed: 96h (unlimited on 4n4gpu-p)
   gpus: 1                                     # --gpus-per-node=1 for 1n1gpu
