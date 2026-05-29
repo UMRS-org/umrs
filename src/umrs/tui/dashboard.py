@@ -4,6 +4,7 @@ UMRS Monitor — Multi-tab Rich TUI for live system monitoring.
 Usage (via client subcommand):
     umrs-client monitor [--interval 3] [--status running] [--project demo]
     umrs-client monitor --tab status
+    umrs-client monitor --tab endpoints
     umrs-client monitor -c conf_umrs.json   # enables in-TUI reload
 
 Tabs:
@@ -248,6 +249,7 @@ class Dashboard:
         console: Console | None = None,
         *,
         initial_tab: str = TAB_JOBS,
+        job_type_filter: str | None = None,
         config_path: str | None = None,
         user_cfg: dict[str, Any] | None = None,
         connection_info: dict[str, Any] | None = None,
@@ -259,6 +261,7 @@ class Dashboard:
         self._interval = interval
         self._status_filter = status_filter
         self._project_filter = project_filter
+        self._job_type_filter = job_type_filter
         self._console = console or Console()
 
         # Tab state
@@ -381,6 +384,8 @@ class Dashboard:
             filters["status"] = self._status_filter
         if self._project_filter:
             filters["project_id"] = self._project_filter
+        if self._job_type_filter:
+            filters["job_type"] = self._job_type_filter
         try:
             resp = self._mq.request_job_list(self._client_id, filters)
             if resp.get("status") == "ok":
@@ -1548,10 +1553,11 @@ class Dashboard:
     def _build_jobs_tab(self) -> Layout:
         layout = Layout()
         filter_label = self._status_filter or "all"
+        type_label = self._job_type_filter or "all"
         total = len(self._jobs)
         pos_hint = f"  [dim]{self._jobs_cursor + 1}/{total}[/dim]" if total else ""
         summary = Text.from_markup(
-            f"  filter=[cyan]{filter_label}[/cyan]  total=[yellow]{total}[/yellow]{pos_hint}"
+            f"  filter=[cyan]{filter_label}[/cyan]  type=[cyan]{type_label}[/cyan]  total=[yellow]{total}[/yellow]{pos_hint}"
         )
 
         jobs_table = self._build_jobs_table()

@@ -15,6 +15,10 @@ from umrs.client.control_api import UMRSControlAPI
 from umrs.client.control_commands import (
     MODEL_SCOPE_CHOICES,
     MODEL_TYPE_CHOICES,
+    configure_endpoint_list_parser,
+    configure_endpoint_status_parser,
+    configure_endpoint_stop_parser,
+    configure_endpoint_up_parser,
     configure_job_cancel_parser,
     configure_job_list_parser,
     configure_job_status_parser,
@@ -26,6 +30,7 @@ from umrs.client.control_commands import (
     configure_status_parser,
     configure_workflow_list_parser,
     configure_workflow_run_parser,
+    parse_duration_seconds,
     parse_json_object_arg,
 )
 from umrs.cli.completion import (
@@ -218,6 +223,79 @@ def _build_monitor_capabilities(client_id, admin_token=None, user_cfg=None):
             "reload": auth_ctx.can_execute_command(TaskCmd.RELOAD, target_user=target_user, log_denial=False),
         },
     }
+
+
+def _select_experience(user_cfg, experience_name=None):
+    if not isinstance(user_cfg, dict):
+        if experience_name:
+            raise ValueError("--experience requires a loaded user config (-c/--conf or selected config)")
+        return None
+    experiences = user_cfg.get("experiences") or []
+    if experience_name:
+        for xp in experiences:
+            if xp.get("xp_name") == experience_name:
+                return xp
+        raise ValueError(f"Experience not found in user config: {experience_name}")
+    for xp in experiences:
+        if xp.get("xp_name") == "default":
+            return xp
+    return experiences[0] if experiences else None
+
+
+def _experience_endpoint_value(experience, *keys):
+    if not isinstance(experience, dict):
+        return None
+    endpoint_cfg = experience.get("endpoint")
+    if isinstance(endpoint_cfg, dict):
+        for key in keys:
+            if key in endpoint_cfg:
+                return endpoint_cfg[key]
+    for key in keys:
+        if key in experience:
+            return experience[key]
+    return None
+
+
+def _resolve_endpoint_idle_ttl_sec(args, user_cfg) -> int:
+    if getattr(args, "idle_ttl", None):
+        return parse_duration_seconds(args.idle_ttl, field_name="idle_ttl")
+
+    experience = _select_experience(user_cfg, getattr(args, "experience", None))
+    raw = _experience_endpoint_value(
+        experience,
+        "idle_ttl",
+        "idle_ttl_sec",
+        "endpoint_idle_ttl",
+        "endpoint_idle_ttl_sec",
+    )
+    if raw is None:
+        return parse_duration_seconds("30m", field_name="idle_ttl")
+    return parse_duration_seconds(raw, field_name="idle_ttl")
+
+
+def _latest_attempt(job):
+    attempts = job.get("attempts") or []
+    return attempts[-1] if attempts else {}
+
+
+def _endpoint_backend_ref(job) -> str:
+    for attempt in reversed(job.get("attempts") or []):
+        backend_ref = attempt.get("backend_ref")
+        if backend_ref:
+            return str(backend_ref)
+    return ""
+
+
+def _format_duration_label(seconds: int | None) -> str:
+    if not seconds:
+        return ""
+    if seconds % 86400 == 0:
+        return f"{seconds // 86400}d"
+    if seconds % 3600 == 0:
+        return f"{seconds // 3600}h"
+    if seconds % 60 == 0:
+        return f"{seconds // 60}m"
+    return f"{seconds}s"
 
 
 def _format_config_text(resolved, *, show_server=False):
@@ -1833,6 +1911,124 @@ def _action_job(ctx):
     return exit_code
 
 
+def _action_endpoint(ctx):
+    args = ctx.args
+    client_id = _resolve_control_client_id(ctx.user)
+    api = UMRSControlAPI(ctx.control_mq, client_id)
+    endpoint_action = args.endpoint_action
+    exit_code = 0
+    try:
+        if endpoint_action == 'up':
+            spec = parse_json_object_arg(args.spec, field_name='spec') if args.spec else {}
+            idle_ttl_sec = _resolve_endpoint_idle_ttl_sec(args, ctx.user)
+            parsed = api.endpoint_up(
+                model=args.model,
+                model_path=args.model_path,
+                project=args.project,
+                idle_ttl_sec=idle_ttl_sec,
+                tier=args.tier,
+                gpu_count=args.gpu_count,
+                max_model_len=args.max_model_len,
+                max_attempts=args.max_attempts,
+                spec=spec,
+                partition=getattr(args, 'partition', None),
+                node=getattr(args, 'node', None),
+            )
+        elif endpoint_action == 'list':
+            parsed = api.list_endpoints(
+                project=getattr(args, 'project', None),
+                status=getattr(args, 'status', None),
+                limit=getattr(args, 'limit', 200),
+                offset=getattr(args, 'offset', 0),
+            )
+        elif endpoint_action == 'status':
+            parsed = api.get_endpoint(args.job_id)
+        elif endpoint_action == 'stop':
+            parsed = api.stop_endpoint(args.job_id)
+        else:
+            print(api_json(status='error', message=f'Unknown endpoint action: {endpoint_action}', output_format=args.output))
+            return 1
+
+        if args.output == 'json':
+            print(_json.dumps(parsed, ensure_ascii=False))
+            if parsed.get('status') != 'ok':
+                exit_code = 1
+        else:
+            if parsed.get('status') == 'ok':
+                if endpoint_action == 'list':
+                    endpoints = parsed.get('endpoints') or parsed.get('jobs', [])
+                    if not endpoints:
+                        print(f"  {_dim('No endpoint jobs found.')}")
+                    else:
+                        print(_section("Endpoints"))
+                        print(
+                            "  "
+                            + "  ".join(
+                                [
+                                    _fmt_cell("Job ID", 18, style=_bold),
+                                    _fmt_cell("Status", 10, style=_bold),
+                                    _fmt_cell("Model", 24, style=_bold),
+                                    _fmt_cell("Idle TTL", 8, style=_bold),
+                                    _bold("Backend"),
+                                ]
+                            )
+                        )
+                        print(f"  {_dim('-' * 92)}")
+                        for job in endpoints:
+                            spec = job.get('spec') or {}
+                            status = job.get('status', '')
+                            if status in ('failed', 'cancelled'):
+                                status_str = _red(status)
+                            elif status == 'running':
+                                status_str = _cyan(status)
+                            elif status == 'completed':
+                                status_str = _green(status)
+                            else:
+                                status_str = _yellow(status)
+                            print(
+                                "  "
+                                + "  ".join(
+                                    [
+                                        _fmt_cell(job.get('job_id', ''), 18),
+                                        _fmt_cell(status_str, 10),
+                                        _fmt_cell(spec.get('model', ''), 24),
+                                        _fmt_cell(_format_duration_label(spec.get('idle_ttl_sec')), 8),
+                                        _dim(_endpoint_backend_ref(job) or '-'),
+                                    ]
+                                )
+                            )
+                elif endpoint_action == 'status':
+                    job = parsed.get('endpoint') or parsed.get('job', {})
+                    spec = job.get('spec') or {}
+                    latest = _latest_attempt(job)
+                    print(_section("Endpoint Details"))
+                    print(_kv("job_id", _bold(job.get('job_id', ''))))
+                    print(_kv("status", job.get('status', '')))
+                    print(_kv("project_id", job.get('project_id', '')))
+                    print(_kv("model", spec.get('model', '')))
+                    print(_kv("idle_ttl", _format_duration_label(spec.get('idle_ttl_sec')) or '-'))
+                    print(_kv("backend_ref", latest.get('backend_ref') or '-'))
+                elif endpoint_action == 'up':
+                    endpoint = parsed.get('endpoint') or {}
+                    print(f"{_green('✓')} Endpoint provisioning submitted")
+                    print(_kv("job_id", _bold(endpoint.get('job_id') or (parsed.get('job') or {}).get('job_id', ''))))
+                    print(_kv("model", endpoint.get('model') or args.model))
+                    print(_kv("idle_ttl", _format_duration_label(endpoint.get('idle_ttl_sec'))))
+                else:
+                    print(f"{_green('✓')} {parsed.get('message', 'OK')}")
+            else:
+                print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
+                exit_code = 1
+    except Exception as e:
+        exit_code = 1
+        print(api_json(status='error', action='endpoint', message=str(e), output_format=args.output))
+        if args.verbose:
+            traceback.print_exc()
+    finally:
+        ctx.control_mq.close()
+    return exit_code
+
+
 def _action_monitor(ctx):
     args = ctx.args
     client_id = _resolve_control_client_id(ctx.user)
@@ -1859,7 +2055,8 @@ def _action_monitor(ctx):
             interval=args.interval,
             status_filter=args.status,
             project_filter=args.project,
-            initial_tab=args.tab,
+            initial_tab='jobs' if args.tab == 'endpoints' else args.tab,
+            job_type_filter='endpoint_provision' if args.tab == 'endpoints' else None,
             config_path=ctx.configure_file if ctx.configure_file and ctx.config_state.user.valid else None,
             user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
             connection_info=conn_info,
@@ -2478,6 +2675,7 @@ _ACTION_HANDLERS = {
     'ping': _action_ping,
     'model': _action_model,
     'job': _action_job,
+    'endpoint': _action_endpoint,
     'monitor': _action_monitor,
     'workflow': _action_workflow,
     'upload-workflow': _action_upload_workflow,
@@ -2673,6 +2871,18 @@ def main():
     jl_p = job_sub.add_parser('list', help='List durable jobs with optional filters')
     configure_job_list_parser(jl_p)
 
+    # --- Endpoint control commands ---
+    endpoint_p = subparsers.add_parser('endpoint', help='Endpoint lifecycle commands (up, list, status, stop)')
+    endpoint_sub = endpoint_p.add_subparsers(dest='endpoint_action', required=True)
+    eup_p = endpoint_sub.add_parser('up', help='Provision a reusable endpoint job')
+    configure_endpoint_up_parser(eup_p)
+    el_p = endpoint_sub.add_parser('list', help='List endpoint provision jobs')
+    configure_endpoint_list_parser(el_p)
+    est_p = endpoint_sub.add_parser('status', help='Show endpoint provision job details')
+    configure_endpoint_status_parser(est_p)
+    esp_p = endpoint_sub.add_parser('stop', help='Stop an endpoint provision job')
+    configure_endpoint_stop_parser(esp_p)
+
     # --- Workflow upload command ---
     uw_p = subparsers.add_parser('upload-workflow', help='Upload a workflow directory (with workflow.json + step scripts) to the server')
     uw_p.add_argument('path', help='Local directory containing workflow.json and step scripts')
@@ -2704,7 +2914,7 @@ def main():
     mon_p.add_argument('--once', action='store_true', default=False,
                        help='Print dashboard once and exit (no live refresh)')
     mon_p.add_argument('--tab', default='jobs',
-                       choices=['jobs', 'status', 'models', 'workflows', 'connection'],
+                       choices=['jobs', 'endpoints', 'status', 'models', 'workflows', 'connection'],
                        help='Tab to display on startup (default: jobs)')
 
     # --- Disabled admin command ---

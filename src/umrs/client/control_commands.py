@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 
 from umrs.core.TaskCmdStatus import TaskCmd
 
@@ -18,6 +19,7 @@ MODEL_DOWNLOAD_SCOPE_DEFAULT = "user"
 JOB_SPEC_DEFAULT = "{}"
 JOB_PROJECT_DEFAULT = "default"
 JOB_MAX_ATTEMPTS_DEFAULT = 3
+ENDPOINT_IDLE_TTL_DEFAULT = "30m"
 WORKFLOW_PARAMS_DEFAULT = "{}"
 
 MAINTENANCE_ACTIONS = {
@@ -182,6 +184,84 @@ def configure_job_list_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--offset", type=int, default=0, help="Offset into the result set")
 
 
+def configure_endpoint_up_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--model", required=True, help="Model name to provision")
+    parser.add_argument("--model-path", default=None, help="Explicit server-side model path")
+    parser.add_argument("--project", default=JOB_PROJECT_DEFAULT, help="Project ID")
+    parser.add_argument("--experience", default=None, help="Experience name used for endpoint defaults")
+    parser.add_argument(
+        "--idle-ttl",
+        default=None,
+        help=(
+            "Idle timeout before UMRS cleans up the endpoint "
+            f"(default: {ENDPOINT_IDLE_TTL_DEFAULT}, overridable in experience JSON)"
+        ),
+    )
+    parser.add_argument("--tier", default="user", choices=("user", "project", "system"), help="Endpoint tier")
+    parser.add_argument("--gpu-count", type=int, default=1, help="GPU count")
+    parser.add_argument("--max-model-len", type=int, default=4096, help="vLLM max model length")
+    parser.add_argument("--max-attempts", type=int, default=JOB_MAX_ATTEMPTS_DEFAULT, help="Max retry attempts")
+    parser.add_argument("--spec", default=JOB_SPEC_DEFAULT, help="Additional endpoint spec as JSON string")
+    parser.add_argument("--partition", default=None, help="Override Slurm partition for this endpoint")
+    parser.add_argument("--node", default=None, help='Slurm nodelist hint (e.g. "ai-h200-brc-00")')
+
+
+def configure_endpoint_list_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--project", default=None, help="Filter by project ID")
+    parser.add_argument(
+        "--status",
+        default=None,
+        choices=JOB_STATUS_FILTER_CHOICES,
+        help="Filter by durable job status",
+    )
+    parser.add_argument("--limit", type=int, default=200, help="Maximum endpoints to return")
+    parser.add_argument("--offset", type=int, default=0, help="Offset into the result set")
+
+
+def configure_endpoint_status_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("job_id", help="Endpoint provision job ID to inspect")
+
+
+def configure_endpoint_stop_parser(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("job_id", help="Endpoint provision job ID to stop")
+
+
+def parse_duration_seconds(raw: object, *, field_name: str = "duration") -> int:
+    if isinstance(raw, bool):
+        raise ValueError(f"{field_name} must be a positive duration")
+    if isinstance(raw, int):
+        seconds = raw
+    else:
+        text = str(raw).strip().lower()
+        if not text:
+            raise ValueError(f"{field_name} must not be empty")
+        if text.isdigit():
+            seconds = int(text)
+        else:
+            match = re.fullmatch(
+                r"(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days)",
+                text,
+            )
+            if not match:
+                raise ValueError(
+                    f"Invalid {field_name}: {raw!r}. Use seconds or a suffix like 30m, 1h, or 2d."
+                )
+            amount = int(match.group(1))
+            unit = match.group(2)
+            if unit.startswith("s"):
+                multiplier = 1
+            elif unit.startswith("m"):
+                multiplier = 60
+            elif unit.startswith("h"):
+                multiplier = 3600
+            else:
+                multiplier = 86400
+            seconds = amount * multiplier
+    if seconds <= 0:
+        raise ValueError(f"{field_name} must be positive")
+    return seconds
+
+
 def configure_workflow_run_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("workflow_name", help="Name of the registered workflow to execute")
     parser.add_argument("--bucket", default=None, help="Bucket alias to use as input data source")
@@ -239,6 +319,17 @@ def build_control_command_parser(
     configure_job_status_parser(job_status)
     job_list = job_subparsers.add_parser("list", add_help=add_help)
     configure_job_list_parser(job_list)
+
+    endpoint = subparsers.add_parser("endpoint", add_help=add_help)
+    endpoint_subparsers = endpoint.add_subparsers(dest="endpoint_action", required=True)
+    endpoint_up = endpoint_subparsers.add_parser("up", add_help=add_help)
+    configure_endpoint_up_parser(endpoint_up)
+    endpoint_list = endpoint_subparsers.add_parser("list", add_help=add_help)
+    configure_endpoint_list_parser(endpoint_list)
+    endpoint_status = endpoint_subparsers.add_parser("status", add_help=add_help)
+    configure_endpoint_status_parser(endpoint_status)
+    endpoint_stop = endpoint_subparsers.add_parser("stop", add_help=add_help)
+    configure_endpoint_stop_parser(endpoint_stop)
 
     workflow = subparsers.add_parser("workflow", add_help=add_help)
     workflow_subparsers = workflow.add_subparsers(dest="workflow_action", required=True)
@@ -355,6 +446,7 @@ __all__ = [
     "JOB_PROJECT_DEFAULT",
     "JOB_SPEC_DEFAULT",
     "JOB_TYPE_CHOICES",
+    "ENDPOINT_IDLE_TTL_DEFAULT",
     "MAINTENANCE_ACTIONS",
     "MODEL_DOWNLOAD_SCOPE_DEFAULT",
     "MODEL_REGISTER_SCOPE_DEFAULT",
@@ -367,6 +459,10 @@ __all__ = [
     "build_control_command_parser",
     "configure_admin_token_parser",
     "configure_admin_user_parser",
+    "configure_endpoint_list_parser",
+    "configure_endpoint_status_parser",
+    "configure_endpoint_stop_parser",
+    "configure_endpoint_up_parser",
     "configure_job_cancel_parser",
     "configure_job_submit_parser",
     "configure_maintenance_parser",
@@ -377,6 +473,7 @@ __all__ = [
     "configure_status_parser",
     "configure_workflow_list_parser",
     "configure_workflow_run_parser",
+    "parse_duration_seconds",
     "parse_json_object_arg",
     "prepare_control_command_line",
 ]
