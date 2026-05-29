@@ -72,6 +72,7 @@ def test_umrs_client_help_points_to_r4_and_admin_cli(monkeypatch, capsys) -> Non
     assert exc.value.code == 0
     assert "Use r4 for Gateway-mediated research workflows" in captured.out
     assert "endpoint control" in captured.out
+    assert "experience recovery" in captured.out
     assert "Use umrs-server admin" in captured.out
 
 

@@ -93,6 +93,29 @@ umrs-client reload
 umrs-client list_buckets
 ```
 
+### Experience recovery and removal
+
+If you remove an experience from your user JSON and reload, UMRS stops routing to
+that experience but keeps the MinIO buckets and Postgres/pgvector data. Use this
+for reversible cleanup:
+
+```bash
+umrs-client experience remove <xp_name>
+umrs-client reload
+```
+
+If you need to rebuild the JSON stanza from existing storage state:
+
+```bash
+umrs-client experience recover <xp_name> \
+   --username demo_user \
+   --s3cfg ~/.config/umrs/s3cfg_demo_user \
+   --output-path recovered-experience.json
+```
+
+Review the recovered model fields before reload. MinIO/Postgres can identify the
+bucket, table, and vector shape, but may not prove the original model name.
+
 ### SSH tunnel (remote HPC)
 
 If the server is on a remote cluster, open an SSH tunnel first:

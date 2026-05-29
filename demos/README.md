@@ -7,7 +7,17 @@ These demos work with **any deployment** (Docker Compose, rccs-cloud, hpbd-atom,
 or any other setup) as long as the UMRS server is reachable from your client
 machine.
 
-> This file is the canonical walkthrough for the public demo suite.
+> This file is the compact index for the public demo suite. For a full
+> operator/user walkthrough, see [USER_MANUAL.md](USER_MANUAL.md).
+
+## Documentation Map
+
+| Document | Purpose |
+|----------|---------|
+| [README.md](README.md) | Quick setup, demo index, and command coverage |
+| [USER_MANUAL.md](USER_MANUAL.md) | End-to-end user workflow, experience lifecycle, recovery, and troubleshooting |
+| [00_onboarding/README.md](00_onboarding/README.md) | First-run onboarding and provisioning details |
+| [99_cleanup/README.md](99_cleanup/README.md) | Teardown and cleanup flow |
 
 ## Prerequisites
 
@@ -87,6 +97,34 @@ the server-side configuration.
 > **Note:** The normal user-facing demos assume the site/operator has already
 > prepared the server-side configuration. Admin-token flows are demonstrated
 > separately in the maintenance and auth demos.
+
+## Experience Lifecycle
+
+Most workload demos add an experience fragment to your user JSON, then reload so
+UMRS provisions the declared MinIO buckets and Postgres/pgvector database.
+
+```bash
+# Add or update a workload experience in the active user config
+umrs-client config add-experience path/to/experience.json --update
+
+# Provision declared buckets, IAM policy, Postgres role/database, and tables
+umrs-client reload
+
+# Remove an experience from the user JSON only; data is retained
+umrs-client experience remove <xp_name>
+
+# Recover a missing experience JSON from existing MinIO/S3 buckets and
+# optional Postgres/pgvector status
+umrs-client experience recover [xp_name] \
+  --username <user> \
+  --s3cfg ~/.config/umrs/s3cfg_<user> \
+  --output-path recovered-experience.json
+```
+
+Removing an experience does **not** delete MinIO buckets or pgvector data.
+Reload simply drops the experience from the active in-memory registry. If the
+same experience is re-added later, existing buckets and database tables can be
+reused. Use explicit purge tooling only when the data should be destroyed.
 
 ## Basic Usage
 
@@ -239,6 +277,9 @@ Need to manage files with presigned URLs?
 
 | Command | Demo | Description |
 |---------|------|-------------|
+| `config add-experience` | 00, workload demos | Merge an experience JSON fragment into the active user config |
+| `experience remove` | 00, 99 | Remove an experience from the user JSON while retaining MinIO/Postgres data |
+| `experience recover` | 00, 99 | Reconstruct an experience JSON fragment from MinIO/S3 and optional pgvector status |
 | `ping` | 00, 01 | Check server connectivity |
 | `reload` | 00, 06, 23 | Push config/workflow changes to the server |
 | `upload_file` | 17, 18, 24 | Upload a single file |

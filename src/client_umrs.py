@@ -494,16 +494,7 @@ def _handle_config_add_experience(args):
     if not fragment_path.is_file():
         raise FileNotFoundError(f"Fragment not found: {fragment_path}")
 
-    # Resolve target user config.
-    conf_path = getattr(args, 'conf', None)
-    if conf_path:
-        target = Path(conf_path).expanduser()
-    else:
-        target = _resolve_current_user_config_path()
-    if target is None or not target.is_file():
-        raise FileNotFoundError(
-            f"No user config found. Run 'umrs-client config init' first, or pass -c <path>."
-        )
+    target = _resolve_target_user_config_path(args)
 
     with open(fragment_path, encoding="utf-8") as f:
         fragment = _json_mod.load(f)
@@ -511,40 +502,12 @@ def _handle_config_add_experience(args):
     with open(target, encoding="utf-8") as f:
         user_cfg = _json_mod.load(f)
 
-    experiences = user_cfg.setdefault("experiences", [])
-    existing_names = {xp["xp_name"] for xp in experiences}
-
-    # Fragment can be a single experience dict or a list of experiences.
-    if isinstance(fragment, dict):
-        fragment_list = [fragment]
-    elif isinstance(fragment, list):
-        fragment_list = fragment
-    else:
-        raise ValueError("Fragment must be a JSON object (single experience) or array of experiences.")
-
-    added = []
-    skipped = []
-    for xp in fragment_list:
-        name = xp.get("xp_name")
-        if not name:
-            raise ValueError("Each experience fragment must have an 'xp_name' field.")
-        if name in existing_names:
-            if args.update:
-                # Replace existing experience with the new one.
-                experiences[:] = [x for x in experiences if x["xp_name"] != name]
-                experiences.append(xp)
-                added.append(name)
-            else:
-                skipped.append(name)
-        else:
-            experiences.append(xp)
-            added.append(name)
-            existing_names.add(name)
-
-    # Write back.
-    with open(target, "w", encoding="utf-8") as f:
-        _json_mod.dump(user_cfg, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    added, skipped = _merge_experience_fragments(
+        user_cfg,
+        _coerce_experience_fragments(fragment),
+        update=args.update,
+    )
+    _write_json_file(target, user_cfg)
 
     if args.output == 'json':
         print(api_json(
@@ -569,16 +532,7 @@ def _handle_config_remove_experience(args):
     """Remove experience(s) by xp_name from the current user config JSON."""
     import json as _json_mod
 
-    # Resolve target user config.
-    conf_path = getattr(args, 'conf', None)
-    if conf_path:
-        target = Path(conf_path).expanduser()
-    else:
-        target = _resolve_current_user_config_path()
-    if target is None or not target.is_file():
-        raise FileNotFoundError(
-            f"No user config found. Run 'umrs-client config init' first, or pass -c <path>."
-        )
+    target = _resolve_target_user_config_path(args)
 
     with open(target, encoding="utf-8") as f:
         user_cfg = _json_mod.load(f)
@@ -592,9 +546,7 @@ def _handle_config_remove_experience(args):
 
     not_found = names_to_remove - set(removed)
 
-    with open(target, "w", encoding="utf-8") as f:
-        _json_mod.dump(user_cfg, f, indent=2, ensure_ascii=False)
-        f.write("\n")
+    _write_json_file(target, user_cfg)
 
     if args.output == 'json':
         print(api_json(
@@ -602,6 +554,7 @@ def _handle_config_remove_experience(args):
             removed=removed,
             not_found=sorted(not_found),
             remaining=len(user_cfg["experiences"]),
+            resources_retained=bool(removed),
             target=str(target),
             output_format=args.output,
         ))
@@ -612,8 +565,655 @@ def _handle_config_remove_experience(args):
             print(f"{_dim('Not found (skipped):')} {', '.join(sorted(not_found))}")
         print(f"  Remaining experiences: {len(user_cfg['experiences'])}")
         print(f"  Config: {target}")
+        if removed:
+            print(f"  {_dim('MinIO buckets and Postgres/pgvector data are retained until explicit purge.')}")
 
     return 0
+
+
+def _resolve_target_user_config_path(args) -> Path:
+    conf_path = getattr(args, 'conf', None)
+    if conf_path:
+        target = Path(conf_path).expanduser()
+    else:
+        target = _resolve_current_user_config_path()
+    if target is None or not target.is_file():
+        raise FileNotFoundError(
+            "No user config found. Run 'umrs-client config init' first, or pass -c <path>."
+        )
+    return target
+
+
+def _write_json_file(path: Path, payload: dict | list) -> None:
+    import json as _json_mod
+
+    with open(path, "w", encoding="utf-8") as f:
+        _json_mod.dump(payload, f, indent=2, ensure_ascii=False)
+        f.write("\n")
+
+
+def _coerce_experience_fragments(fragment) -> list[dict]:
+    if isinstance(fragment, dict):
+        fragment_list = [fragment]
+    elif isinstance(fragment, list):
+        fragment_list = fragment
+    else:
+        raise ValueError("Fragment must be a JSON object (single experience) or array of experiences.")
+    for xp in fragment_list:
+        if not isinstance(xp, dict):
+            raise ValueError("Each experience fragment must be a JSON object.")
+        if not xp.get("xp_name"):
+            raise ValueError("Each experience fragment must have an 'xp_name' field.")
+    return fragment_list
+
+
+def _merge_experience_fragments(user_cfg: dict, fragment_list: list[dict], *, update: bool) -> tuple[list[str], list[str]]:
+    experiences = user_cfg.setdefault("experiences", [])
+    existing_names = {xp["xp_name"] for xp in experiences if "xp_name" in xp}
+
+    added = []
+    skipped = []
+    for xp in fragment_list:
+        name = xp["xp_name"]
+        if name in existing_names:
+            if update:
+                experiences[:] = [x for x in experiences if x.get("xp_name") != name]
+                experiences.append(xp)
+                added.append(name)
+            else:
+                skipped.append(name)
+        else:
+            experiences.append(xp)
+            added.append(name)
+            existing_names.add(name)
+    return added, skipped
+
+
+@dataclass
+class _RecoveredBucket:
+    bucket: str
+    username: str
+    xp_name: str
+    bucket_alias: str
+    output: bool = False
+    object_count: int | None = None
+    total_size_bytes: int | None = None
+    error: str | None = None
+
+
+@dataclass
+class _RecoveredTable:
+    db_name: str
+    xp_name: str
+    sql_username: str
+    table_name: str
+    columns: list[dict]
+    row_count: int | None = None
+    distinct_s3_objects: int | None = None
+    vector_size: int | None = None
+    task: str | None = None
+
+
+# Suffix → task mapping used to infer the task from a bucket alias when
+# Postgres is unavailable.
+_ALIAS_TASK_SUFFIXES: list[tuple[str, str]] = [
+    ("seg", "segmentation"),
+    ("segment", "segmentation"),
+    ("segmentation", "segmentation"),
+    ("mae", "mae_reconstruction"),
+    ("reconstruct", "reconstruction"),
+    ("reconstruction", "reconstruction"),
+    ("features", "feature_extraction"),
+    ("feature-extraction", "feature_extraction"),
+    ("detection", "detection"),
+    ("embedding", "embedding"),
+    ("text", "embedding"),
+]
+
+
+def _infer_task_from_alias(alias: str) -> str | None:
+    """Best-effort task inference from a bucket alias suffix."""
+    normalised = _normalise_recovery_part(alias)
+    for suffix, task in _ALIAS_TASK_SUFFIXES:
+        if normalised.endswith("-" + suffix) or normalised == suffix:
+            return task
+    return None
+
+
+def _normalise_recovery_part(value: str) -> str:
+    return str(value).strip().lower().replace(" ", "-").replace("_", "-")
+
+
+def _parse_recoverable_bucket_name(bucket_name: str, username: str) -> _RecoveredBucket | None:
+    username_part = _normalise_recovery_part(username)
+    name = str(bucket_name).strip().lower()
+    prefix = f"{username_part}."
+    if not name.startswith(prefix):
+        return None
+    rest = name[len(prefix):]
+    if "." not in rest:
+        return None
+    xp_name, bucket_alias = rest.split(".", 1)
+    if not xp_name or not bucket_alias:
+        return None
+    output = bucket_alias.endswith("-output")
+    if output:
+        bucket_alias = bucket_alias[: -len("-output")]
+    if not bucket_alias:
+        return None
+    return _RecoveredBucket(
+        bucket=name,
+        username=username_part,
+        xp_name=xp_name,
+        bucket_alias=bucket_alias,
+        output=output,
+    )
+
+
+def _read_s3cfg(path: Path) -> dict[str, str]:
+    import configparser
+
+    config = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+    if not config.read(path):
+        raise FileNotFoundError(f"S3 config not found: {path}")
+    if not config.has_section("default"):
+        raise ValueError(f"S3 config has no [default] section: {path}")
+    return dict(config.items("default"))
+
+
+def _s3_endpoint_from_cfg(cfg: dict[str, str]) -> tuple[str, bool]:
+    host = cfg.get("host_base") or cfg.get("host_bucket")
+    if not host:
+        raise ValueError("S3 config must define host_base or host_bucket")
+    use_https = str(cfg.get("use_https", "false")).lower() in ("1", "true", "yes", "on")
+    verify_ssl = str(cfg.get("check_ssl_certificate", "true")).lower() in ("1", "true", "yes", "on")
+    protocol = "https" if use_https else "http"
+    return f"{protocol}://{host}", verify_ssl
+
+
+def _bucket_object_stats(s3, bucket_name: str) -> tuple[int, int]:
+    object_count = 0
+    total_size = 0
+    continuation_token = None
+    while True:
+        kwargs = {"Bucket": bucket_name}
+        if continuation_token:
+            kwargs["ContinuationToken"] = continuation_token
+        response = s3.list_objects_v2(**kwargs)
+        contents = response.get("Contents", [])
+        object_count += len(contents)
+        total_size += sum(int(obj.get("Size", 0)) for obj in contents)
+        if not response.get("IsTruncated"):
+            return object_count, total_size
+        continuation_token = response.get("NextContinuationToken")
+
+
+def _list_recovery_buckets_from_s3(
+    *,
+    s3cfg_path: Path,
+    username: str,
+    xp_names: set[str] | None = None,
+    include_object_counts: bool = True,
+) -> tuple[list[_RecoveredBucket], list[str]]:
+    warnings = []
+    try:
+        import boto3
+    except ImportError as exc:
+        return [], [f"boto3 is required for MinIO/S3 recovery: {exc}"]
+
+    cfg = _read_s3cfg(s3cfg_path)
+    endpoint_url, verify_ssl = _s3_endpoint_from_cfg(cfg)
+    s3 = boto3.client(
+        "s3",
+        endpoint_url=endpoint_url,
+        aws_access_key_id=cfg.get("access_key"),
+        aws_secret_access_key=cfg.get("secret_key"),
+        verify=verify_ssl,
+    )
+    response = s3.list_buckets()
+    recovered = []
+    normalised_xp_names = {_normalise_recovery_part(xp) for xp in xp_names or set()}
+    for item in response.get("Buckets", []):
+        parsed = _parse_recoverable_bucket_name(item.get("Name", ""), username)
+        if parsed is None:
+            continue
+        if normalised_xp_names and _normalise_recovery_part(parsed.xp_name) not in normalised_xp_names:
+            continue
+        if include_object_counts:
+            try:
+                parsed.object_count, parsed.total_size_bytes = _bucket_object_stats(s3, parsed.bucket)
+            except Exception as exc:
+                parsed.error = str(exc)
+                warnings.append(f"could not count objects in bucket {parsed.bucket}: {exc}")
+        recovered.append(parsed)
+    return recovered, warnings
+
+
+def _postgres_recovery_params() -> dict[str, object]:
+    return {
+        "host": os.environ.get("DB_HOST", "localhost"),
+        "port": int(os.environ.get("DB_PORT", "5432")),
+        "user": os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres")),
+        "password": os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres")),
+        "connect_timeout": 3,
+    }
+
+
+def _pg_database_match(db_name: str, xp_name: str) -> tuple[str, str] | None:
+    candidates = {xp_name, xp_name.replace("-", "_"), xp_name.replace("_", "-")}
+    for candidate in sorted(candidates, key=len, reverse=True):
+        prefix = f"{candidate}_"
+        if db_name == candidate:
+            return candidate, ""
+        if db_name.startswith(prefix):
+            return candidate, db_name[len(prefix):]
+    return None
+
+
+def _parse_vector_size(type_name: str | None) -> int | None:
+    if not type_name:
+        return None
+    match = __import__("re").fullmatch(r"vector\((\d+)\)", str(type_name).strip().lower())
+    return int(match.group(1)) if match else None
+
+
+def _inspect_recovery_pg_tables(db_name: str, xp_name: str, sql_username: str, params: dict[str, object]) -> list[_RecoveredTable]:
+    import psycopg2
+    from psycopg2 import sql as psql
+
+    conn = psycopg2.connect(dbname=db_name, **params)
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema='public' AND table_type='BASE TABLE' "
+                "ORDER BY table_name"
+            )
+            table_names = [row[0] for row in cur.fetchall()]
+            tables = []
+            for table_name in table_names:
+                cur.execute(
+                    "SELECT a.attname, pg_catalog.format_type(a.atttypid, a.atttypmod) "
+                    "FROM pg_catalog.pg_attribute a "
+                    "JOIN pg_catalog.pg_class c ON a.attrelid = c.oid "
+                    "JOIN pg_catalog.pg_namespace n ON c.relnamespace = n.oid "
+                    "WHERE n.nspname = 'public' AND c.relname = %s "
+                    "AND a.attnum > 0 AND NOT a.attisdropped "
+                    "ORDER BY a.attnum",
+                    (table_name,),
+                )
+                columns = [{"name": row[0], "type": row[1]} for row in cur.fetchall()]
+                column_names = {column["name"] for column in columns}
+                row_count = None
+                distinct_s3_objects = None
+                with contextlib.suppress(Exception):
+                    cur.execute(psql.SQL("SELECT COUNT(*) FROM {}").format(psql.Identifier(table_name)))
+                    row_count = int(cur.fetchone()[0])
+                if "s3_object" in column_names:
+                    with contextlib.suppress(Exception):
+                        cur.execute(
+                            psql.SQL("SELECT COUNT(DISTINCT s3_object) FROM {} WHERE s3_object IS NOT NULL").format(
+                                psql.Identifier(table_name)
+                            )
+                        )
+                        distinct_s3_objects = int(cur.fetchone()[0])
+                vector_size = None
+                for column in columns:
+                    if column["name"] == "embedding":
+                        vector_size = _parse_vector_size(column.get("type"))
+                        break
+                tables.append(
+                    _RecoveredTable(
+                        db_name=db_name,
+                        xp_name=xp_name,
+                        sql_username=sql_username,
+                        table_name=table_name,
+                        columns=columns,
+                        row_count=row_count,
+                        distinct_s3_objects=distinct_s3_objects,
+                        vector_size=vector_size,
+                    )
+                )
+            return tables
+    finally:
+        conn.close()
+
+
+def _list_recovery_postgres_status(xp_names: set[str]) -> tuple[list[_RecoveredTable], list[str]]:
+    warnings = []
+    if not xp_names:
+        return [], warnings
+    try:
+        import psycopg2
+    except ImportError as exc:
+        return [], [f"psycopg2 is required for Postgres recovery: {exc}"]
+
+    params = _postgres_recovery_params()
+    try:
+        conn = psycopg2.connect(dbname="postgres", **params)
+    except Exception as exc:
+        return [], [f"could not inspect Postgres status: {exc}"]
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT datname FROM pg_database "
+                "WHERE datistemplate = false AND datallowconn = true "
+                "ORDER BY datname"
+            )
+            db_names = [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+    tables = []
+    for xp_name in xp_names:
+        for db_name in db_names:
+            match = _pg_database_match(db_name, xp_name)
+            if match is None:
+                continue
+            recovered_xp_name, sql_username = match
+            try:
+                tables.extend(_inspect_recovery_pg_tables(db_name, recovered_xp_name, sql_username, params))
+            except Exception as exc:
+                warnings.append(f"could not inspect Postgres database {db_name}: {exc}")
+    return tables, warnings
+
+
+def _metadata_columns_from_recovered_table(table: _RecoveredTable | None) -> list[dict]:
+    if table is None:
+        return []
+    system_columns = {
+        "id",
+        "s3_object",
+        "checksum",
+        "date",
+        "time",
+        "embedding",
+        "model",
+        "saved_s3_object",
+        "_content",
+        "chunk_start",
+        "chunk_end",
+        "chunk_md5",
+    }
+    return [
+        {"name": column["name"], "type": column["type"].upper()}
+        for column in table.columns
+        if column.get("name") not in system_columns
+    ]
+
+
+def _match_recovered_table(
+    tables: list[_RecoveredTable],
+    bucket_alias: str,
+    used_tables: set[tuple[str, str]],
+) -> _RecoveredTable | None:
+    alias_key = _normalise_recovery_part(bucket_alias)
+    for table in tables:
+        key = (table.db_name, table.table_name)
+        if key in used_tables:
+            continue
+        if _normalise_recovery_part(table.table_name) == alias_key:
+            used_tables.add(key)
+            return table
+    for table in tables:
+        key = (table.db_name, table.table_name)
+        if key not in used_tables:
+            used_tables.add(key)
+            return table
+    return None
+
+
+def _build_recovered_experience_fragments(
+    *,
+    username: str,
+    buckets: list[_RecoveredBucket],
+    tables: list[_RecoveredTable],
+    model_name: str,
+    model_type: str,
+    fallback_vector_size: str,
+    return_type: str,
+) -> list[dict]:
+    groups: dict[str, dict[str, object]] = {}
+    for bucket in buckets:
+        group = groups.setdefault(bucket.xp_name, {"buckets": {}, "tables": []})
+        bucket_map = group["buckets"]
+        item = bucket_map.setdefault(bucket.bucket_alias, {"input": None, "output": None})
+        item["output" if bucket.output else "input"] = bucket
+
+    for table in tables:
+        xp_key = _normalise_recovery_part(table.xp_name)
+        group = groups.setdefault(xp_key, {"buckets": {}, "tables": []})
+        group.setdefault("xp_name", table.xp_name)
+        group.setdefault("sql_username", table.sql_username)
+        group["tables"].append(table)
+
+    experiences = []
+    for xp_key in sorted(groups):
+        group = groups[xp_key]
+        xp_name = str(group.get("xp_name") or xp_key)
+        sql_username = str(group.get("sql_username") or username)
+        group_tables = list(group.get("tables") or [])
+        used_tables: set[tuple[str, str]] = set()
+        modalities = []
+        bucket_map = group.get("buckets") or {}
+        aliases = sorted(bucket_map.keys()) or [table.table_name for table in group_tables]
+        for alias in aliases:
+            pair = bucket_map.get(alias, {}) if isinstance(bucket_map, dict) else {}
+            output_bucket = pair.get("output") if isinstance(pair, dict) else None
+            table = _match_recovered_table(group_tables, alias, used_tables)
+            vector_size = str(table.vector_size) if table and table.vector_size else str(fallback_vector_size)
+            recovered_return_type = None
+            if return_type == "auto":
+                recovered_return_type = "file" if output_bucket else None
+            elif return_type != "none":
+                recovered_return_type = return_type
+            modality_name = table.table_name if table else alias
+            # Infer task from the modality_name / bucket alias when possible.
+            recovered_task = None
+            if table and table.task:
+                recovered_task = table.task
+            else:
+                recovered_task = _infer_task_from_alias(alias)
+            # store_embeddings: default to "no" when Postgres is unavailable —
+            # safer for vision workflows; user can edit to "yes" before reload.
+            store_embeddings = "no"
+            if table is not None:
+                store_embeddings = "yes" if table.vector_size else "no"
+
+            modality_entry: dict = {
+                "modality_name": modality_name,
+                "s3": {
+                    "bucket_alias": alias,
+                    "data": {
+                        "type": "file",
+                        "mime_type": "application/octet-stream",
+                    },
+                    **({"need_output_bucket": True} if output_bucket else {}),
+                },
+                "model": {
+                    "model_name": model_name,
+                    "vector_size": vector_size,
+                    "model_type": model_type,
+                    "return_type": recovered_return_type,
+                },
+                "sql": {
+                    "store_embeddings": store_embeddings,
+                    "table_name": table.table_name if table else alias,
+                    "meta_data": _metadata_columns_from_recovered_table(table),
+                },
+            }
+            if recovered_task:
+                modality_entry["task"] = recovered_task
+            modalities.append(modality_entry)
+        experiences.append(
+            {
+                "xp_name": xp_name,
+                "sql_username": sql_username,
+                "modalities": modalities,
+            }
+        )
+    return experiences
+
+
+def _recovered_bucket_to_dict(bucket: _RecoveredBucket) -> dict:
+    return {
+        "bucket": bucket.bucket,
+        "username": bucket.username,
+        "xp_name": bucket.xp_name,
+        "bucket_alias": bucket.bucket_alias,
+        "output": bucket.output,
+        "object_count": bucket.object_count,
+        "total_size_bytes": bucket.total_size_bytes,
+        "error": bucket.error,
+    }
+
+
+def _recovered_table_to_dict(table: _RecoveredTable) -> dict:
+    return {
+        "db_name": table.db_name,
+        "xp_name": table.xp_name,
+        "sql_username": table.sql_username,
+        "table_name": table.table_name,
+        "columns": table.columns,
+        "row_count": table.row_count,
+        "distinct_s3_objects": table.distinct_s3_objects,
+        "vector_size": table.vector_size,
+    }
+
+
+def _resolve_recovery_username(args, user_cfg: dict | None) -> str:
+    username = getattr(args, "username", None) or (user_cfg or {}).get("username")
+    if not username:
+        raise ValueError("Recovering experiences requires --username or a loaded user config.")
+    return username
+
+
+def _handle_experience_recover(args):
+    import json as _json_mod
+
+    target = None
+    user_cfg = None
+    with contextlib.suppress(Exception):
+        target = _resolve_target_user_config_path(args)
+        with open(target, encoding="utf-8") as f:
+            user_cfg = _json_mod.load(f)
+
+    username = _resolve_recovery_username(args, user_cfg)
+    xp_names = set(getattr(args, "xp_names", None) or [])
+    s3cfg_path = Path(getattr(args, "s3cfg", None) or (user_cfg or {}).get("s3_configuration_file") or default_s3cfg_path(username)).expanduser()
+    buckets, warnings = _list_recovery_buckets_from_s3(
+        s3cfg_path=s3cfg_path,
+        username=username,
+        xp_names=xp_names or None,
+        include_object_counts=not getattr(args, "no_object_count", False),
+    )
+    inferred_xp_names = {_normalise_recovery_part(bucket.xp_name) for bucket in buckets}
+    inferred_xp_names.update(_normalise_recovery_part(xp) for xp in xp_names)
+    tables = []
+    if not getattr(args, "no_postgres", False):
+        tables, pg_warnings = _list_recovery_postgres_status(inferred_xp_names)
+        warnings.extend(pg_warnings)
+    else:
+        warnings.append("Postgres inspection skipped; recovered SQL/model fields may use defaults.")
+    if not tables:
+        warnings.append("No Postgres/pgvector table status recovered; review model, vector_size, and table_name before reload.")
+
+    experiences = _build_recovered_experience_fragments(
+        username=username,
+        buckets=buckets,
+        tables=tables,
+        model_name=args.model_name,
+        model_type=args.model_type,
+        fallback_vector_size=str(args.vector_size),
+        return_type=args.return_type,
+    )
+    output_path = Path(args.output_path).expanduser() if getattr(args, "output_path", None) else None
+    if output_path:
+        output_payload = experiences[0] if len(experiences) == 1 else experiences
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_file(output_path, output_payload)
+
+    merge_result = None
+    if getattr(args, "merge", False):
+        if target is None:
+            target = _resolve_target_user_config_path(args)
+        with open(target, encoding="utf-8") as f:
+            target_cfg = _json_mod.load(f)
+        added, skipped = _merge_experience_fragments(
+            target_cfg,
+            experiences,
+            update=getattr(args, "update", False),
+        )
+        _write_json_file(target, target_cfg)
+        merge_result = {"target": str(target), "added": added, "skipped": skipped}
+
+    payload = {
+        "username": username,
+        "s3cfg": str(s3cfg_path),
+        "experiences": experiences,
+        "s3_buckets": [_recovered_bucket_to_dict(bucket) for bucket in buckets],
+        "postgres_tables": [_recovered_table_to_dict(table) for table in tables],
+        "warnings": warnings,
+    }
+    if output_path:
+        payload["output_path"] = str(output_path)
+    if merge_result:
+        payload["merge"] = merge_result
+
+    if args.output == "json":
+        print(api_json(**payload, output_format=args.output))
+    else:
+        if output_path:
+            print(f"{_green('✓')} Wrote recovered experience JSON: {_bold(str(output_path))}")
+        if merge_result:
+            print(f"{_green('✓')} Merged recovered experience(s) into: {_bold(merge_result['target'])}")
+        print(_section("Recovered Experiences"))
+        print(_json_mod.dumps(experiences, indent=2, ensure_ascii=False))
+        if warnings:
+            print(_section("Warnings"))
+            for warning in warnings:
+                print(f"  {_yellow(warning)}")
+        print(f"  {_dim('Review model fields before reload if recovery used S3/Postgres status only.')}")
+    return 0
+
+
+def _handle_experience_command(args):
+    if args.experience_action == "remove":
+        return _handle_config_remove_experience(args)
+    if args.experience_action == "recover":
+        return _handle_experience_recover(args)
+    raise ValueError(f"Unknown experience action: {args.experience_action}")
+
+
+def _configure_experience_recover_parser(parser):
+    parser.add_argument(
+        "xp_names",
+        nargs="*",
+        help="Optional xp_name values to recover; defaults to all accessible user buckets",
+    )
+    parser.add_argument("--username", default=None, help="UMRS username whose resources should be recovered")
+    parser.add_argument("-c", "--conf", default=None, help="User config JSON path used for username/s3cfg defaults")
+    parser.add_argument("--s3cfg", default=None, help="S3 config used to inspect MinIO buckets")
+    parser.add_argument("--output-path", default=None, help="Write recovered experience JSON to this path")
+    parser.add_argument("--merge", action="store_true", default=False, help="Merge recovered experiences into the user config")
+    parser.add_argument("--update", action="store_true", default=False, help="Replace existing xp_name entries when merging")
+    parser.add_argument("--no-postgres", action="store_true", default=False, help="Skip optional Postgres/pgvector inspection")
+    parser.add_argument("--no-object-count", action="store_true", default=False, help="Skip MinIO object counts for faster recovery")
+    parser.add_argument("--model-name", default="intfloat/e5-base-v2", help="Model name to place in recovered JSON")
+    parser.add_argument("--model-type", default="TransformerEncoder", help="Model type to place in recovered JSON")
+    parser.add_argument("--vector-size", default="768", help="Fallback vector size when Postgres cannot infer it")
+    parser.add_argument(
+        "--return-type",
+        default="auto",
+        choices=("auto", "none", "file", "embedding", "raw"),
+        help="Recovered model return_type; auto uses file when an output bucket exists",
+    )
+
+
+def _configure_experience_remove_parser(parser):
+    parser.add_argument("xp_names", nargs="+", help="One or more xp_name values to remove from the user JSON; MinIO/Postgres data is retained")
+    parser.add_argument("-c", "--conf", default=None, help="User config JSON path to edit")
 
 
 def _resolve_current_user_config_path():
@@ -637,6 +1237,9 @@ def _handle_config_command(args):
 
     if args.config_action == 'remove-experience':
         return _handle_config_remove_experience(args)
+
+    if args.config_action == 'recover-experience':
+        return _handle_experience_recover(args)
 
     if args.config_action == 'list':
         discovered = discover_loaded_config_profiles()
@@ -1423,31 +2026,34 @@ def action_list_buckets(bucket_cfg, username, output_format):
             })
     if output_format == 'json':
         return api_json(buckets=buckets, output_format=output_format)
-    # Text mode: formatted table
+    # Text mode: formatted table with dynamic column widths
     lines = [_section(f"Buckets for {_bold(username)}")]
     if not buckets:
         lines.append(f"  {_dim('No buckets found.')}")
     else:
+        w_alias = max(len("Alias"), *(len(b['bucket_alias']) for b in buckets))
+        w_mod = max(len("Modality"), *(len(b['modality']) for b in buckets))
+        w_task = max(len("Task"), *(len(b.get('task', '')) for b in buckets))
         lines.append(
             "  "
             + "  ".join(
                 [
-                    _fmt_cell("Alias", 20, style=_bold),
-                    _fmt_cell("Modality", 15, style=_bold),
-                    _fmt_cell("Task", 15, style=_bold),
+                    _fmt_cell("Alias", w_alias, style=_bold),
+                    _fmt_cell("Modality", w_mod, style=_bold),
+                    _fmt_cell("Task", w_task, style=_bold),
                     _bold("Path"),
                 ]
             )
         )
-        lines.append(f"  {_dim('-' * 80)}")
+        lines.append(f"  {_dim('-' * (w_alias + w_mod + w_task + 6 + 4))}")
         for b in buckets:
             lines.append(
                 "  "
                 + "  ".join(
                     [
-                        _fmt_cell(b['bucket_alias'], 20),
-                        _fmt_cell(b['modality'], 15),
-                        _fmt_cell(b.get('task', ''), 15),
+                        _fmt_cell(b['bucket_alias'], w_alias),
+                        _fmt_cell(b['modality'], w_mod),
+                        _fmt_cell(b.get('task', ''), w_task),
                         _dim(b['path_to_bucket']),
                     ]
                 )
@@ -2976,13 +3582,22 @@ def main():
     cie_p.add_argument('fragment', help='Path to a JSON file containing one experience object or an array of experiences')
     cie_p.add_argument('--no-update', dest='update', action='store_false', default=True, help='Skip existing experiences instead of replacing them')
     cre_p = config_sub.add_parser('remove-experience', help='Remove experience(s) by xp_name from the current user config')
-    cre_p.add_argument('xp_names', nargs='+', help='One or more xp_name values to remove')
+    _configure_experience_remove_parser(cre_p)
+    crx_p = config_sub.add_parser('recover-experience', help='Recover experience JSON from MinIO/S3 and optional Postgres status')
+    _configure_experience_recover_parser(crx_p)
     config_sub.add_parser('list', help='List discovered conf_umrs.json, user*.json, and s3cfg candidates')
     config_sub.add_parser('show', help='Show the resolved config stack for server, user, and s3 files')
     cu_p = config_sub.add_parser('use', help='Persist the current server/user/s3 config selections')
     cu_p.add_argument('--server', default=None, help='Server config file path or unique basename to select')
     cu_p.add_argument('--user', default=None, help='User config file path or unique basename to select')
     cu_p.add_argument('--s3', default=None, help='S3 config file path or unique basename to select')
+
+    experience_p = subparsers.add_parser('experience', help='Experience config commands (recover, remove)')
+    experience_sub = experience_p.add_subparsers(dest='experience_action', required=True)
+    er_p = experience_sub.add_parser('recover', help='Recover experience JSON from MinIO/S3 and optional Postgres status')
+    _configure_experience_recover_parser(er_p)
+    erm_p = experience_sub.add_parser('remove', help='Remove experience(s) by xp_name from the current user config')
+    _configure_experience_remove_parser(erm_p)
 
     if emit_completion_if_requested(parser, 'umrs-client', '_UMRS_CLIENT_COMPLETE'):
         return 0
@@ -3020,6 +3635,13 @@ def main():
     if args.action == 'config':
         try:
             sys.exit(_handle_config_command(args))
+        except Exception as e:
+            print(api_json(status='error', message=str(e), output_format=args.output))
+            sys.exit(1)
+
+    if args.action == 'experience':
+        try:
+            sys.exit(_handle_experience_command(args))
         except Exception as e:
             print(api_json(status='error', message=str(e), output_format=args.output))
             sys.exit(1)
