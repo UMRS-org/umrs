@@ -207,7 +207,8 @@ class UMRSTask:
             str_payload = json.dumps(export_args)
 
         elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
-                     TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW) or cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
+                     TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW) or cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL,
+                     TaskCmd.PURGE_BUCKETS):
             client_id, payload_str, _zmq_sender_id = full_payload
             str_payload = payload_str
 
