@@ -1,6 +1,31 @@
-# Demo 99: Full Demo Cleanup
+# Demo 99: Cleanup And Recovery
 
-Tears down all resources created during a demo session.
+Use this when you need to either remove an experience from active routing or
+tear down all resources created during a demo session.
+
+## Reversible Experience Cleanup
+
+Removing an experience from the user JSON is safe and reversible. It does not
+delete MinIO buckets, Postgres databases, tables, or pgvector embeddings.
+
+```bash
+umrs-client experience remove <xp_name>
+umrs-client reload
+```
+
+To recover the JSON later from retained storage state:
+
+```bash
+umrs-client experience recover <xp_name> \
+   --username <user> \
+   --s3cfg ~/.config/umrs/s3cfg_<user> \
+   --output-path recovered-experience.json
+```
+
+Review recovered model fields before reloading. Storage can prove bucket/table
+shape, but may not prove the exact original model name.
+
+## Full Destructive Cleanup
 
 ## What it does
 
