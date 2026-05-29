@@ -35,6 +35,14 @@ def _default_owner_type(project_id: str) -> str:
     return "user"
 
 
+def _positive_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 class EndpointStatus(str, Enum):
     """Status of a registered endpoint."""
 
@@ -243,7 +251,11 @@ class EndpointRegistry:
         Returns:
             The registered endpoint.
         """
-        ttl = ttl_sec if ttl_sec is not None else self._default_ttl_sec
+        metadata = dict(metadata or {})
+        idle_ttl_sec = _positive_int(metadata.get("idle_ttl_sec"))
+        if idle_ttl_sec is not None:
+            metadata["idle_ttl_sec"] = idle_ttl_sec
+        ttl = _positive_int(ttl_sec) or idle_ttl_sec or self._default_ttl_sec
         expires_at = datetime.utcnow() + timedelta(seconds=ttl)
 
         endpoint = RegisteredEndpoint(
@@ -255,7 +267,7 @@ class EndpointRegistry:
             status=EndpointStatus.PROVISIONING,
             backend=backend,
             expires_at=expires_at,
-            metadata=metadata or {},
+            metadata=metadata,
         )
 
         key = (project_id, model)
@@ -371,7 +383,11 @@ class EndpointRegistry:
         with self._lock:
             endpoint = self._by_job_id.get(job_id)
             if endpoint:
-                endpoint.last_used_at = datetime.utcnow()
+                now = datetime.utcnow()
+                endpoint.last_used_at = now
+                idle_ttl_sec = _positive_int(endpoint.metadata.get("idle_ttl_sec"))
+                if idle_ttl_sec:
+                    endpoint.expires_at = now + timedelta(seconds=idle_ttl_sec)
                 self._persist(endpoint)
             return endpoint
 

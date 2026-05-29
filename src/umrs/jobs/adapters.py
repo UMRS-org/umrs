@@ -11,6 +11,7 @@ Architecture:
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
@@ -206,6 +207,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
         gpu_count = spec.get("gpu_count", 1)
         max_model_len = spec.get("max_model_len", 4096)
         ttl_sec = spec.get("ttl_sec", 3600)
+        idle_ttl_sec = spec.get("idle_ttl_sec")
         requested_env = spec.get("env_vars") or {}
         mount_env, mount_metadata = build_mount_environment(
             tier=str(spec.get("tier") or "user"),
@@ -294,6 +296,11 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 "attempt_id": attempt.attempt_id,
                 "attempt_no": attempt.attempt_no,
             }
+            if idle_ttl_sec is not None:
+                with contextlib.suppress(TypeError, ValueError):
+                    parsed_idle_ttl = int(idle_ttl_sec)
+                    if parsed_idle_ttl > 0:
+                        endpoint_metadata["idle_ttl_sec"] = parsed_idle_ttl
             endpoint_metadata.update(mount_metadata)
             # Store the served model name so the gateway can discover by either name
             env_served_name = submit_env.get("VLLM_SERVED_MODEL_NAME")

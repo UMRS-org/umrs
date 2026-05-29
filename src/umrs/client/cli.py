@@ -13,7 +13,7 @@ ADMIN_DENIED_MESSAGE = (
 HELP_CROSS_REFERENCE = (
     "CLI map:\n"
     "  Use r4 for Gateway-mediated research workflows.\n"
-    "  Use umrs-client only for UMRS diagnostics/migration helpers.\n"
+    "  Use umrs-client for UMRS diagnostics, endpoint control, and migration helpers.\n"
     "  Use umrs-server admin for offline operator administration.\n"
     "  Enable completion with: eval \"$(umrs-client completion bash)\"\n"
 )

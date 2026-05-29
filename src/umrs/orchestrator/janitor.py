@@ -25,6 +25,13 @@ from .factory import get_orchestrator
 logger = logging.getLogger(__name__)
 
 
+def _has_idle_ttl(endpoint: Any) -> bool:
+    try:
+        return int((endpoint.metadata or {}).get("idle_ttl_sec") or 0) > 0
+    except (TypeError, ValueError):
+        return False
+
+
 @dataclass
 class JanitorConfig:
     """Configuration for janitor task."""
@@ -293,6 +300,8 @@ class Janitor:
             status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
         )
         for endpoint in endpoints:
+            if _has_idle_ttl(endpoint):
+                continue
             if not endpoint.expires_at:
                 continue
 

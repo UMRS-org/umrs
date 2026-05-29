@@ -9,6 +9,7 @@ from typing import Any
 from umrs.client.control_commands import (
     MAINTENANCE_ACTIONS,
     build_control_command_parser,
+    parse_duration_seconds,
     parse_json_object_arg,
     prepare_control_command_line,
 )
@@ -166,6 +167,81 @@ class UMRSControlAPI:
             return {"status": "error", "message": f"Job not found: {job_id}"}
         return {"status": "ok", "job": jobs[0]}
 
+    def endpoint_up(
+        self,
+        *,
+        model: str,
+        model_path: str | None = None,
+        project: str | None = None,
+        idle_ttl_sec: int = 1800,
+        tier: str = "user",
+        gpu_count: int = 1,
+        max_model_len: int = 4096,
+        max_attempts: int = 3,
+        spec: dict[str, Any] | None = None,
+        partition: str | None = None,
+        node: str | None = None,
+    ) -> dict[str, Any]:
+        endpoint_spec = dict(spec or {})
+        endpoint_spec.update(
+            {
+                "model": model,
+                "ttl_sec": idle_ttl_sec,
+                "idle_ttl_sec": idle_ttl_sec,
+                "tier": tier,
+                "gpu_count": gpu_count,
+                "max_model_len": max_model_len,
+            }
+        )
+        if model_path:
+            endpoint_spec["model_path"] = model_path
+
+        parsed = self.submit_job(
+            job_type="endpoint_provision",
+            spec=endpoint_spec,
+            project=project,
+            max_attempts=max_attempts,
+            keep_alive=True,
+            partition=partition,
+            node=node,
+        )
+        if parsed.get("status") == "ok":
+            parsed["endpoint"] = {
+                "job_id": (parsed.get("job") or {}).get("job_id"),
+                "model": model,
+                "project_id": project,
+                "idle_ttl_sec": idle_ttl_sec,
+            }
+        return parsed
+
+    def list_endpoints(
+        self,
+        *,
+        project: str | None = None,
+        status: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        parsed = self.list_jobs(
+            project=project,
+            status=status,
+            job_type="endpoint_provision",
+            limit=limit,
+            offset=offset,
+        )
+        if parsed.get("status") == "ok":
+            parsed["endpoints"] = parsed.get("jobs", [])
+        return parsed
+
+    def get_endpoint(self, job_id: str) -> dict[str, Any]:
+        parsed = self.get_job(job_id)
+        if parsed.get("status") == "ok":
+            parsed["endpoint"] = parsed.get("job")
+        return parsed
+
+    def stop_endpoint(self, job_id: str) -> dict[str, Any]:
+        return self.cancel_job(job_id)
+
     def list_workflows(
         self,
         *,
@@ -306,6 +382,37 @@ class UMRSControlAPI:
                     partition=args.partition,
                     node=args.node,
                 )
+        if args.action == "endpoint":
+            if args.endpoint_action == "up":
+                spec = parse_json_object_arg(args.spec, field_name="spec") if args.spec else {}
+                idle_ttl_sec = parse_duration_seconds(
+                    args.idle_ttl or "30m",
+                    field_name="idle_ttl",
+                )
+                return self.endpoint_up(
+                    model=args.model,
+                    model_path=args.model_path,
+                    project=args.project,
+                    idle_ttl_sec=idle_ttl_sec,
+                    tier=args.tier,
+                    gpu_count=args.gpu_count,
+                    max_model_len=args.max_model_len,
+                    max_attempts=args.max_attempts,
+                    spec=spec,
+                    partition=args.partition,
+                    node=args.node,
+                )
+            if args.endpoint_action == "list":
+                return self.list_endpoints(
+                    project=getattr(args, "project", None),
+                    status=getattr(args, "status", None),
+                    limit=getattr(args, "limit", 200),
+                    offset=getattr(args, "offset", 0),
+                )
+            if args.endpoint_action == "status":
+                return self.get_endpoint(args.job_id)
+            if args.endpoint_action == "stop":
+                return self.stop_endpoint(args.job_id)
         if args.action == "workflow":
             if args.workflow_action == "list":
                 return self.list_workflows(scope=args.scope, user=args.user, name=args.name)

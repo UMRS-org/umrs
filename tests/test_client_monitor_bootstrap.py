@@ -123,7 +123,7 @@ def _configure_monitor_main_dependencies(monkeypatch, fake_control_mq, user_cfg)
     monkeypatch.setattr(client_umrs, "create_auth_context_from_request", lambda client_id, token=None: _FakeAuthContext())
 
 
-def _monitor_argv():
+def _monitor_argv(tab="status"):
     return [
         "umrs-client",
         "--output",
@@ -133,7 +133,7 @@ def _monitor_argv():
         "monitor",
         "--once",
         "--tab",
-        "status",
+        tab,
         "--interval",
         "1.5",
         "--status",
@@ -143,12 +143,13 @@ def _monitor_argv():
     ]
 
 
-def _assert_dashboard_bootstrap(kwargs, user_cfg):
+def _assert_dashboard_bootstrap(kwargs, user_cfg, *, initial_tab="status", job_type_filter=None):
     assert kwargs["client_id"] == "configured-user"
     assert kwargs["interval"] == 1.5
     assert kwargs["status_filter"] == "running"
     assert kwargs["project_filter"] == "demo-project"
-    assert kwargs["initial_tab"] == "status"
+    assert kwargs["initial_tab"] == initial_tab
+    assert kwargs["job_type_filter"] == job_type_filter
     assert kwargs["config_path"] == "/tmp/monitor-user.json"
     assert kwargs["user_cfg"] is user_cfg
     assert kwargs["connection_info"] == _expected_connection_info()
@@ -173,4 +174,29 @@ def test_main_monitor_bootstraps_dashboard_with_capabilities(monkeypatch):
     assert dashboard_calls["render_once"] is True
     assert "run" not in dashboard_calls
     _assert_dashboard_bootstrap(dashboard_calls["kwargs"], user_cfg)
+    fake_control_mq.close.assert_called_once()
+
+
+def test_main_monitor_endpoints_tab_filters_endpoint_jobs(monkeypatch):
+    dashboard_calls = {}
+    _install_fake_dashboard(monkeypatch, dashboard_calls)
+
+    fake_control_mq = MagicMock()
+    fake_control_mq.is_server_ready.return_value = True
+    user_cfg = _monitor_user_cfg()
+
+    _configure_monitor_main_dependencies(monkeypatch, fake_control_mq, user_cfg)
+    monkeypatch.setattr(sys, "argv", _monitor_argv(tab="endpoints"))
+
+    with pytest.raises(SystemExit) as excinfo:
+        client_umrs.main()
+
+    assert excinfo.value.code == 0
+    assert dashboard_calls["render_once"] is True
+    _assert_dashboard_bootstrap(
+        dashboard_calls["kwargs"],
+        user_cfg,
+        initial_tab="jobs",
+        job_type_filter="endpoint_provision",
+    )
     fake_control_mq.close.assert_called_once()
