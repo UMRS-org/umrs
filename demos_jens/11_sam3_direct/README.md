@@ -81,7 +81,42 @@ Then check that provisioning succeeded:
 umrs-client status
 ```
 
-### 6. Stage input images
+### 6. Register the model in the model registry (optional)
+
+The SAM3 model weights are pre-staged on the compute node. To make the model
+visible in `umrs-client model list` and the monitor Models tab, register it:
+
+```bash
+umrs-client model register sam3 \
+  /path/to/internal_genAI/bento/sam3infer \
+  --type vision \
+  --description "SAM3 text-prompt segmentation"
+```
+
+Replace `/path/to/internal_genAI/bento/sam3infer` with the actual path on the
+server where `sam3.pt` and `bpe.gz` reside.
+
+If you have the model weights locally and want to copy them to the server
+staging area **and** register in one step:
+
+```bash
+umrs-client model upload ./sam3infer \
+  --name sam3 \
+  --type vision \
+  --description "SAM3 text-prompt segmentation" \
+  --register-path /path/on/server/models/sam3
+```
+
+> **Note**: `--register-path` is needed when client and server have different
+> filesystems (e.g. Mac → HPC). It tells the server which path to record.
+
+Verify:
+
+```bash
+umrs-client model list
+```
+
+### 7. Stage input images
 
 Create a staging directory and symlink images into it:
 
@@ -103,7 +138,7 @@ Verify:
 ls -la "${UPLOAD_DIR}/"
 ```
 
-### 7. Upload images to UMRS
+### 8. Upload images to UMRS
 
 ```bash
 umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
@@ -112,7 +147,7 @@ umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
 This uploads the image(s) to MinIO bucket `jens-sam3-direct/<RUN_ID>/` and tells
 the UMRS server to dispatch the `internal_genAI` vision stack via Slurm.
 
-### 8. Wait and download results
+### 9. Wait and download results
 
 The Slurm job builds/starts the BentoML container, loads SAM3, runs inference,
 and uploads results back to S3. This can take several minutes on first run
@@ -126,7 +161,7 @@ umrs-client download_results "jens-sam3-direct/${RUN_ID}" "results/${RUN_ID}/art
 > **Tip**: If no results appear yet, wait and retry the `download_results`
 > command — the Slurm job may still be running.
 
-### 9. Inspect results
+### 10. Inspect results
 
 List downloaded files:
 
@@ -153,7 +188,7 @@ if 'scores' in data:
 
 ## Using your own images
 
-Replace step 6 with:
+Replace step 7 with:
 
 ```bash
 IMAGE_DIR=/path/to/your/images
@@ -165,7 +200,7 @@ find "${IMAGE_DIR}" -maxdepth 1 -type f \( -name '*.png' -o -name '*.jpg' -o -na
   | while read -r f; do ln -sf "$(cd "$(dirname "$f")" && pwd)/$(basename "$f")" "${UPLOAD_DIR}/"; done
 ```
 
-Then continue from step 7.
+Then continue from step 8.
 
 ## Changing the text prompt
 

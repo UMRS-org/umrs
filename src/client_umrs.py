@@ -2788,8 +2788,8 @@ def _action_monitor(ctx):
             interval=args.interval,
             status_filter=args.status,
             project_filter=args.project,
-            initial_tab='jobs' if args.tab == 'endpoints' else args.tab,
-            job_type_filter='endpoint_provision' if args.tab == 'endpoints' else None,
+            initial_tab=args.tab,
+            job_type_filter=None,
             config_path=ctx.configure_file if ctx.configure_file and ctx.config_state.user.valid else None,
             user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
             connection_info=conn_info,
@@ -2966,6 +2966,8 @@ def _action_list_buckets(ctx):
             for alias, entry in ctx.buckets_cfg.items():
                 if entry.username == effective_username:
                     configured_paths.add(entry.path_to_bucket)
+                    if entry.output_path_to_bucket:
+                        configured_paths.add(entry.output_path_to_bucket)
         if "warning" in probe:
             remote_info = {"buckets": {}, "extra_buckets": [], "warning": probe["warning"]}
         else:
@@ -2998,6 +3000,8 @@ def _action_purge_remote_buckets(ctx):
         for alias, entry in ctx.buckets_cfg.items():
             if entry.username == effective_username:
                 configured_paths.add(entry.path_to_bucket)
+                if entry.output_path_to_bucket:
+                    configured_paths.add(entry.output_path_to_bucket)
 
     remote_info = _build_remote_info(probe["remote_names"], configured_paths, effective_username)
     extra = remote_info.get("extra_buckets", [])
@@ -3836,7 +3840,7 @@ def main():
     mon_p.add_argument('--once', action='store_true', default=False,
                        help='Print dashboard once and exit (no live refresh)')
     mon_p.add_argument('--tab', default='jobs',
-                       choices=['jobs', 'endpoints', 'status', 'models', 'workflows', 'connection'],
+                       choices=['jobs', 'endpoints', 'status', 'models', 'workflows', 'connection', 'logs'],
                        help='Tab to display on startup (default: jobs)')
 
     # --- Disabled admin command ---
