@@ -42,6 +42,7 @@ scheduler:
   slurm_delegation: per_user_ssh
   service_pubkey_path: /work/hps0/home/ea0022/ai4s-platform/keys/umrs-service.pub
   slurm_proxy_path: /work/hps0/home/ea0022/ai4s-platform/bin/umrs-slurm-proxy
+  require_user_slurm_account: false
 
 runtime:
   kind: singularity                           # Apptainer on AI4S

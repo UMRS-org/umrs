@@ -37,6 +37,7 @@ scheduler:
   slurm_delegation: per_user_ssh
   service_pubkey_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/keys/umrs-service.pub
   slurm_proxy_path: /lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/bin/umrs-slurm-proxy
+  require_user_slurm_account: false
 
 runtime:
   kind: podman-compose

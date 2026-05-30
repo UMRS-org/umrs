@@ -83,6 +83,12 @@ class SchedulerConfig:
     # Only allows sbatch, squeue, sacct, scancel commands.
     slurm_proxy_path: str = ""
 
+    # When True, endpoint provisioning rejects users who have no per-user
+    # Slurm account configured (HTTP 403).  When False (default), jobs
+    # fall back to ``account`` (the site master account) so users without
+    # login-node accounts can still submit jobs via UMRS.
+    require_user_slurm_account: bool = False
+
 
 @dataclass
 class RuntimeConfig:
