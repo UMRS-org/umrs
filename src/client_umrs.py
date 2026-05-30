@@ -1652,6 +1652,15 @@ def _handle_login(args):
     port = args.port
     gateway_url = getattr(args, 'gateway_url', None)
 
+    # If stdin is a TTY and no gateway URL was given, prompt for it so a bare
+    # ``umrs-client login`` is sufficient for the shared umrs-front deployment.
+    if not gateway_url and sys.stdin.isatty():
+        entered = input(
+            f"Gateway URL (leave blank for direct ZMQ at {host}:{port}): "
+        ).strip()
+        if entered:
+            gateway_url = entered
+
     # --gateway-url implies --mode gateway
     if gateway_url and args.mode == 'direct':
         args.mode = 'gateway'
