@@ -110,7 +110,9 @@ class RemoteSlurmBackend(SlurmBackend):
 
         Uses the UMRS service identity key to connect as the target user.
         The user must have enrolled the service pubkey in their authorized_keys.
-        Falls back to the service-account connection if delegation is not configured.
+        Falls back to the service-account connection if delegation is not
+        configured **or** if the per-user connection fails (user has not
+        enrolled yet).
         """
         if self._delegation_mode != "per_user_ssh" or not self._service_identity_file:
             return await self._get_ssh()
@@ -134,7 +136,19 @@ class RemoteSlurmBackend(SlurmBackend):
             self._user_ssh_pool[username] = SSHControlManager(user_config)
 
         mgr = self._user_ssh_pool[username]
-        await mgr.ensure_connected()
+        try:
+            await mgr.ensure_connected()
+        except Exception:
+            # Per-user SSH failed (user likely hasn't enrolled their key).
+            # Fall back to service account so the job can still proceed
+            # under the site master Slurm account.
+            logger.warning(
+                "Per-user SSH connection failed for %s; falling back to "
+                "service account.  The user may not have enrolled the UMRS "
+                "service key (r4 auth login / r4 onboard).",
+                username,
+            )
+            return await self._get_ssh()
         return mgr
 
     def _get_wrapper_script(self) -> str | None:

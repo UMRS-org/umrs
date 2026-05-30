@@ -1644,9 +1644,10 @@ async def provision_endpoint(
     from .governance import check_quota
     check_quota(effective_project_id, "endpoints")
 
-    # Validate that the requesting user has a Slurm account configured.
-    # Without one, the job would run under the deployer's default account
-    # which is incorrect for multi-user environments.
+    # Validate that the requesting user is registered and (optionally) has
+    # a Slurm account.  When ``require_user_slurm_account`` is False (the
+    # default) users without a per-user Slurm account can still submit jobs
+    # — the backend falls back to the site's master Slurm account.
     if requesting_user:
         try:
             from ..admin.user_store import UserStore, UserStoreError
@@ -1659,21 +1660,25 @@ async def provision_endpoint(
                     detail=f"User '{_user_record.username}' is disabled.",
                 )
             _site_name: str | None = None
+            _require_acct: bool = False
             try:
                 from ..orchestrator.site_config import load_site_config as _load_sc
-                _site_name = _load_sc().name
+                _sc = _load_sc()
+                _site_name = _sc.name
+                _require_acct = getattr(_sc.scheduler, "require_user_slurm_account", False)
             except FileNotFoundError:
                 pass
-            _acct = _user_record.resolve_slurm_account(_site_name)
-            if not _acct:
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN,
-                    detail=(
-                        f"User '{_user_record.username}' has no Slurm account configured. "
-                        "Ask an admin to run: "
-                        f"umrs-server admin user set-slurm-account {_user_record.username} <account>"
-                    ),
-                )
+            if _require_acct:
+                _acct = _user_record.resolve_slurm_account(_site_name)
+                if not _acct:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail=(
+                            f"User '{_user_record.username}' has no Slurm account configured. "
+                            "Ask an admin to run: "
+                            f"umrs-server admin user set-slurm-account {_user_record.username} <account>"
+                        ),
+                    )
         except HTTPException:
             raise
         except UserStoreError as _use:
