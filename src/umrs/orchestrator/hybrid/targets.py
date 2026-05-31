@@ -96,6 +96,13 @@ class JobSpec:
     # fairshare attributes the job to their own Slurm account.
     slurm_account: str | None = None
 
+    # Attribution: identity of the requesting user for audit/accounting.
+    # These fields are injected into the sbatch script as #SBATCH --comment
+    # and exported as environment variables inside the job.
+    requesting_user: str = ""
+    requesting_project: str = ""
+    requesting_session: str = ""
+
     # Labels/annotations
     labels: dict[str, str] = field(default_factory=dict)
 
@@ -404,11 +411,38 @@ class SlurmTarget(ExecutionTarget):
         if self.qos:
             lines.append(f"#SBATCH --qos={self.qos}")
 
+        # Attribution: embed requesting user identity for sacct auditing.
+        # This enables `sacct --format=Comment` to map jobs back to users
+        # even when submitted via the UMRS master service account.
+        attribution_parts = []
+        if spec.requesting_user:
+            attribution_parts.append(f"user={spec.requesting_user}")
+        if spec.requesting_project:
+            attribution_parts.append(f"project={spec.requesting_project}")
+        if spec.requesting_session:
+            attribution_parts.append(f"session={spec.requesting_session}")
+        if attribution_parts:
+            comment = ",".join(attribution_parts)
+            lines.append(f"#SBATCH --comment={comment}")
+
         # Output files
         log_dir = spec.extra.get("log_dir", "/var/log/rivault")
         lines.extend([
             f"#SBATCH --output={log_dir}/job-%j.out",
             f"#SBATCH --error={log_dir}/job-%j.err",
+            "",
+            "# Attribution environment — propagated into container",
+        ])
+
+        # Export attribution env vars for container-level auditing
+        if spec.requesting_user:
+            lines.append(f'export UMRS_USER="{spec.requesting_user}"')
+        if spec.requesting_project:
+            lines.append(f'export UMRS_PROJECT="{spec.requesting_project}"')
+        if spec.requesting_session:
+            lines.append(f'export UMRS_SESSION="{spec.requesting_session}"')
+
+        lines.extend([
             "",
             "# Write allocation info for discovery",
             f"INFO_DIR={self.job_info_dir}",
@@ -423,6 +457,8 @@ class SlurmTarget(ExecutionTarget):
             '  "status": "allocated",',
             '  "gpus": ' + str(spec.gpus) + ',',
             '  "cpus": ' + str(spec.cpus) + ',',
+            '  "user": "' + (spec.requesting_user or "unknown") + '",',
+            '  "project": "' + (spec.requesting_project or "") + '",',
             '  "allocated_at": "$(date -Iseconds)"',
             '}',
             'EOF',

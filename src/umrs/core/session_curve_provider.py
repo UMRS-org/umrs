@@ -27,11 +27,50 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
 CURVE_KEY_LEN = 40
+
+
+@dataclass(frozen=True)
+class SessionGrants:
+    """Authorization grants bound to a CURVE session.
+
+    Captured from JWT claims at registration time so every ZMQ request
+    carries identity + authorization context without an additional lookup.
+    """
+
+    projects: tuple[str, ...] = ()
+    roles: tuple[str, ...] = ("user",)
+    email: str = ""
+    # Capability-scoped session limits (empty = unrestricted for role)
+    max_gpus: int = 0  # 0 means no cap (use site default)
+    max_walltime_sec: int = 0  # 0 means no cap
+    allowed_operations: tuple[str, ...] = ()  # empty = all ops for role
+
+    def has_project(self, project_id: str) -> bool:
+        """Check if session has access to a project."""
+        if not self.projects:
+            return True  # No project restriction
+        return project_id in self.projects
+
+    def has_role(self, role: str) -> bool:
+        """Check if session carries a specific role."""
+        return role in self.roles
+
+    @property
+    def is_admin(self) -> bool:
+        return "admin" in self.roles
+
+    def effective_max_gpus(self, site_default: int = 8) -> int:
+        """Return effective GPU cap (session cap or site default)."""
+        return self.max_gpus if self.max_gpus > 0 else site_default
+
+    def effective_max_walltime(self, site_default: int = 172800) -> int:
+        """Return effective walltime cap in seconds (session cap or site default 48h)."""
+        return self.max_walltime_sec if self.max_walltime_sec > 0 else site_default
 
 
 @dataclass(frozen=True)
@@ -43,6 +82,7 @@ class SessionCurveEntry:
     user_id: str
     created_at: float  # time.time()
     expires_at: float  # time.time()
+    grants: SessionGrants = field(default_factory=SessionGrants)
 
     @property
     def is_expired(self) -> bool:
@@ -146,6 +186,7 @@ class SessionCredentialsProvider:
         ttl_seconds: int,
         *,
         session_id: Optional[str] = None,
+        grants: Optional[SessionGrants] = None,
     ) -> SessionCurveEntry:
         """Register an ephemeral CURVE public key for a session.
 
@@ -159,6 +200,9 @@ class SessionCredentialsProvider:
             Requested session lifetime.  Clamped to ``max_ttl_seconds``.
         session_id:
             Optional caller-supplied session ID.  Generated if omitted.
+        grants:
+            Authorization grants captured from JWT claims at registration.
+            If ``None``, a default ``SessionGrants()`` with role=user is used.
 
         Returns
         -------
@@ -187,6 +231,7 @@ class SessionCredentialsProvider:
             user_id=user_id,
             created_at=now,
             expires_at=now + effective_ttl,
+            grants=grants or SessionGrants(),
         )
 
         with self._lock:
@@ -262,6 +307,7 @@ class SessionCredentialsProvider:
                 user_id=old.user_id,
                 created_at=old.created_at,
                 expires_at=time.time() + effective_ttl,
+                grants=old.grants,
             )
             self._by_key[pubkey] = updated
         logger.debug("CURVE session refreshed: session=%s new_ttl=%ds", session_id, effective_ttl)
@@ -286,6 +332,18 @@ class SessionCredentialsProvider:
             if entry is None or entry.is_expired:
                 return None
             return entry.user_id
+
+    def lookup(self, pubkey_z85: str) -> Optional[SessionCurveEntry]:
+        """Return the full session entry for a CURVE public key.
+
+        This is the primary method for identity resolution after ZAP
+        authentication.  Returns ``None`` if the key is unknown or expired.
+        """
+        with self._lock:
+            entry = self._by_key.get(pubkey_z85)
+            if entry is None or entry.is_expired:
+                return None
+            return entry
 
     def active_session_count(self, user_id: Optional[str] = None) -> int:
         """Return the number of active (non-expired) sessions."""

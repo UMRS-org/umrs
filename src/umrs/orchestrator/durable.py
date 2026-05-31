@@ -239,17 +239,50 @@ class DurableOrchestrationService:
         Creates a job in QUEUED state. The scheduler will pick it up
         and submit to the backend.
 
+        Performs authorization checks before submission:
+        - GPU count within site/session limits
+        - Project access verified
+        - User not exceeding concurrent job limit
+
         Args:
             request: Durable provision request
 
         Returns:
             job_id: Durable job ID for tracking
 
+        Raises:
+            AuthorizationDenied: If policy check fails.
+            RuntimeError: If service not started.
+
         Note:
             This returns immediately. Use get_job() to check status.
         """
         if not self._started:
             raise RuntimeError("DurableOrchestrationService not started")
+
+        # Policy check: authorize the provisioning request
+        from umrs.shared.auth import AuthContext, UserRole
+        from umrs.shared.authorization import (
+            AuthorizationDenied,
+            ResourceRequest,
+            authorize,
+        )
+
+        auth_ctx = AuthContext(
+            user_id=request.user_id,
+            username=request.user_id,
+            role=UserRole.USER,
+            project_id=request.project_id,
+        )
+
+        resource = ResourceRequest(
+            project_id=request.project_id,
+            gpus=request.gpu_count,
+            operation="submit_job",
+        )
+
+        # authorize() raises AuthorizationDenied on failure
+        authorize(auth_ctx, operation="submit_job", resource=resource)
 
         # Build job spec from request
         spec = {
