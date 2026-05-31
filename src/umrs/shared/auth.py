@@ -997,13 +997,22 @@ def _resolve_key_and_algorithms(
 ) -> tuple[Any, list[str]]:
     """Return ``(key, algorithms)`` for JWT decoding.
 
-    When ``$JWT_JWKS_URL`` is set the token is validated against the
-    JWKS endpoint (RS256).  Otherwise fall back to the HS256 shared
-    secret.
+    When ``$JWT_JWKS_URL`` is set, tokens that carry a ``kid`` header
+    are validated against the JWKS endpoint (RS256).  Tokens without
+    ``kid`` fall back to the HS256 shared secret so that API-key JWTs
+    continue to work alongside OIDC tokens.
     """
     jwks_url = _resolve_jwks_url()
     if jwks_url:
-        return _get_jwks_signing_key(token, jwks_url), ["RS256"]
+        from jose import jwt as jose_jwt
+
+        try:
+            header = jose_jwt.get_unverified_header(token)
+            if header.get("kid"):
+                return _get_jwks_signing_key(token, jwks_url), ["RS256"]
+        except Exception:
+            pass
+        # No kid → fall through to HS256
     return secret, ["HS256"]
 
 
@@ -1036,19 +1045,31 @@ def validate_jwt(token: str, secret: str) -> dict[str, Any]:
         )
 
     key, algorithms = _resolve_key_and_algorithms(token, secret)
-    issuer = os.environ.get("JWT_ISSUER") or None
-    audience = os.environ.get("JWT_AUDIENCE") or None
-    decode_options = {
-        "require_exp": True,
-        "require_sub": True,
-        "verify_iss": bool(issuer),
-        "verify_aud": bool(audience),
-    }
-    decode_kwargs: dict[str, Any] = {"options": decode_options}
-    if issuer:
-        decode_kwargs["issuer"] = issuer
-    if audience:
-        decode_kwargs["audience"] = audience
+    using_jwks = algorithms == ["RS256"]
+
+    if using_jwks:
+        issuer = os.environ.get("JWT_ISSUER") or None
+        audience = os.environ.get("JWT_AUDIENCE") or None
+        decode_options = {
+            "require_exp": True,
+            "require_sub": True,
+            "verify_iss": bool(issuer),
+            "verify_aud": bool(audience),
+        }
+        decode_kwargs: dict[str, Any] = {"options": decode_options}
+        if issuer:
+            decode_kwargs["issuer"] = issuer
+        if audience:
+            decode_kwargs["audience"] = audience
+    else:
+        # HS256 API-key tokens: skip issuer/audience (OIDC-specific)
+        decode_options = {
+            "require_exp": True,
+            "require_sub": True,
+            "verify_iss": False,
+            "verify_aud": False,
+        }
+        decode_kwargs = {"options": decode_options}
 
     try:
         claims = jose_jwt.decode(
