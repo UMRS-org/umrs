@@ -315,6 +315,24 @@ class RemoteSlurmBackend(SlurmBackend):
         env_overrides.setdefault("JOB_INFO_DIR", output_dir)
         env_overrides.setdefault("RIVAULT_CONTROL_DIR", self._control_dir())
 
+        # Attribution: inject requesting user identity for Slurm accounting.
+        # These env vars are exported into the job so containers can log
+        # the originating user even when submitted via the master account.
+        if requesting_user:
+            env_overrides.setdefault("UMRS_USER", requesting_user)
+        project_id = kwargs.pop("project_id", None) or env_overrides.get("PROJECT_ID", "")
+        if project_id:
+            env_overrides.setdefault("UMRS_PROJECT", project_id)
+
+        # Slurm --comment for sacct attribution
+        attribution_parts = []
+        if requesting_user:
+            attribution_parts.append(f"user={requesting_user}")
+        if project_id:
+            attribution_parts.append(f"project={project_id}")
+        if attribution_parts:
+            sbatch_args.append(f"--comment={','.join(attribution_parts)}")
+
         # Build --export arg: ALL plus per-job overrides
         export_parts = ["ALL"]
         for k, v in env_overrides.items():

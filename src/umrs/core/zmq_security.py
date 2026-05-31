@@ -151,22 +151,27 @@ class ZMQSecurityConfig:
         if context is None:
             raise ValueError("A ZMQ context is required for CURVE server authentication")
 
-        from zmq.auth.thread import ThreadAuthenticator
-
-        authenticator = ThreadAuthenticator(context)
-        authenticator.start()
-
         if self.auth_type == "session":
-            # Session mode: use in-memory callback provider
+            # Session mode: use custom authenticator that returns session_id
+            # as the ZAP user-id (RFC 27 identity propagation)
             if self.credentials_provider is None:
                 raise ValueError(
                     "credentials_provider is required when UMRS_ZMQ_AUTH_TYPE=session"
                 )
+            authenticator = _SessionThreadAuthenticator(
+                context, credentials_provider=self.credentials_provider
+            )
+            authenticator.start()
             authenticator.configure_curve_callback(
                 domain="*", credentials_provider=self.credentials_provider
             )
-            logger.info("ZMQ CURVE authentication enabled (session-scoped, callback provider)")
+            logger.info("ZMQ CURVE authentication enabled (session-scoped, ZAP identity propagation)")
         else:
+            from zmq.auth.thread import ThreadAuthenticator
+
+            authenticator = ThreadAuthenticator(context)
+            authenticator.start()
+
             # Static curve mode: file-based key directory
             if not self.client_keys_dir and not self.allow_any_client_key:
                 raise ValueError(
@@ -182,6 +187,68 @@ class ZMQSecurityConfig:
                 "allow-any development mode" if self.allow_any_client_key else self.client_keys_dir,
             )
         return authenticator
+
+
+# ---------------------------------------------------------------------------
+# Session-mode ZAP authenticator with identity propagation (RFC 27)
+# ---------------------------------------------------------------------------
+
+
+class _SessionThreadAuthenticator:
+    """Custom ThreadAuthenticator that returns session_id as ZAP user-id.
+
+    RFC 27 allows the ZAP authenticator to return a user-id in the response.
+    pyzmq's default ``curve_user_id()`` returns the raw Z85 pubkey.  This
+    subclass overrides it to return the ``session_id`` from our
+    ``SessionCredentialsProvider``, making every ZMQ connection carry an
+    authenticated identity that can be resolved without a second lookup.
+
+    The identity flows as::
+
+        CURVE handshake → ZAP request → callback(allow) → curve_user_id()
+        → ZAP reply user-id → zmq.ROUTING_ID on server frames
+
+    This means ``get_auth_context()`` in MessageQueue can use the routing-id
+    directly as a session identifier for O(1) lookups.
+    """
+
+    def __init__(self, context: Any, *, credentials_provider: Any) -> None:
+        from zmq.auth.thread import ThreadAuthenticator
+
+        self._inner = ThreadAuthenticator(context)
+        self._credentials_provider = credentials_provider
+        # Monkey-patch curve_user_id on the inner authenticator
+        self._inner.curve_user_id = self._curve_user_id
+
+    def _curve_user_id(self, client_public_key: bytes) -> str:
+        """Return session_id as the ZAP identity for a CURVE client key.
+
+        Falls back to the Z85-encoded pubkey if the session is not found
+        (should not happen since callback already validated).
+        """
+        import zmq.utils.z85 as z85
+
+        z85_key = z85.encode(client_public_key).decode("ascii")
+        entry = self._credentials_provider.lookup(z85_key)
+        if entry is not None:
+            return entry.session_id
+        # Fallback: use the Z85 key itself (backward compat)
+        return z85_key
+
+    def start(self) -> None:
+        self._inner.start()
+
+    def stop(self) -> None:
+        self._inner.stop()
+
+    def is_alive(self) -> bool:
+        return self._inner.is_alive()
+
+    def configure_curve_callback(self, domain: str = "*", credentials_provider: Any = None) -> None:
+        self._inner.configure_curve_callback(domain=domain, credentials_provider=credentials_provider)
+
+    def configure_curve(self, domain: str = "*", location: Any = ".") -> None:
+        self._inner.configure_curve(domain=domain, location=location)
 
 
 # ---------------------------------------------------------------------------

@@ -3619,6 +3619,40 @@ _ACTION_HANDLERS = {
 }
 
 
+def _maybe_bootstrap_curve_session(connection) -> None:
+    """Bootstrap a CURVE session if the connection uses session-mode ZMQ auth.
+
+    This is a no-op when:
+    - No gateway_url is configured (direct ZMQ or static CURVE)
+    - UMRS_ZMQ_AUTH_TYPE is not 'session'
+    - No JWT token is available
+    """
+    gateway_url = getattr(connection, "gateway_url", None)
+    auth_type = os.environ.get("UMRS_ZMQ_AUTH_TYPE", "").lower()
+    if not gateway_url or auth_type != "session":
+        return
+
+    jwt_token = os.environ.get("UMRS_JWT_TOKEN") or os.environ.get("UMRS_API_KEY")
+    if not jwt_token:
+        return
+
+    try:
+        from umrs.client.session_bootstrap import bootstrap_curve_session
+
+        info = bootstrap_curve_session(
+            gateway_url=gateway_url,
+            jwt_token=jwt_token,
+        )
+        # Inject CURVE keys into environment so MessageQueue picks them up
+        os.environ["UMRS_CURVE_PUBKEY"] = info.client_public_key
+        os.environ["UMRS_CURVE_SECRETKEY"] = info.client_secret_key
+        os.environ["UMRS_CURVE_SERVER_PUBKEY"] = info.server_public_key
+        os.environ["UMRS_SESSION_ID"] = info.session_id
+    except Exception:
+        # Non-fatal: fall back to whatever auth the MessageQueue already supports
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="UMRS client",
@@ -4019,6 +4053,10 @@ def main():
         sys.exit(1)
 
     # Connect to message queue
+    # If the server uses session-mode CURVE auth and we have a gateway URL + JWT,
+    # bootstrap the CURVE session first so the ZMQ connection is authenticated.
+    _maybe_bootstrap_curve_session(connection)
+
     control_mq = MessageQueue(
         role = "client",
         queue_type = 'control',

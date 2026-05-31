@@ -216,6 +216,8 @@ class MessageQueue:
         self.debug = False  # disable noisy send/recv logs by default
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
+        # ZAP-verified session_id per routing-id (populated from frame metadata)
+        self._zap_user_ids: dict[bytes, str] = {}  # routing_id_bytes -> session_id
         self.zmq_security = zmq_security or ZMQSecurityConfig.from_env()
         self._zmq_authenticator = None
         self._session_curve_provider = session_curve_provider
@@ -448,7 +450,22 @@ class MessageQueue:
                 # ROUTER receives: [client_id][empty_delimiter][payload] from REQ
                 # or [client_id][payload] from DEALER
                 self._last_control_auth = {}
-                frames = self.socket.recv_multipart()
+                # Use copy=False to get Frame objects with ZAP metadata
+                raw_frames = self.socket.recv_multipart(copy=False)
+                frames = [bytes(f) for f in raw_frames]
+
+                # Extract ZAP user-id from message metadata (RFC 27 identity)
+                # The first frame carries the routing-id; ZAP metadata is on
+                # the payload frame but libzmq attaches it to all frames from
+                # the authenticated peer.
+                if self.zmq_security.is_session_mode and raw_frames:
+                    try:
+                        zap_uid = raw_frames[0].get("User-Id")
+                        if zap_uid:
+                            self._zap_user_ids[frames[0]] = zap_uid
+                    except Exception:
+                        pass  # Not all frames carry metadata (non-CURVE)
+
                 if len(frames) == 3:
                     client_id, second, third = frames
                     if second == b"":
@@ -1149,20 +1166,49 @@ class MessageQueue:
         ``client_id`` matches a known CURVE identity.  A mismatch is
         logged as a warning (future: reject).
 
-        When session-mode CURVE is active, the credentials provider is
-        used instead to resolve the user identity from the CURVE public key.
+        When session-mode CURVE is active, the ZAP-verified session_id
+        (propagated via RFC 27 user-id) is used for O(1) identity resolution.
+        Falls back to pubkey lookup when ZAP metadata is unavailable.
         """
         ctx = self._auth_sessions.get(client_id)
         if ctx is not None:
             return ctx
 
-        # Session-mode: resolve identity from the credentials provider
+        # Session-mode: prefer ZAP-verified identity (RFC 27 user-id propagation)
         if self._session_curve_provider is not None:
-            session_user = self._session_curve_provider.user_id_for_key(client_id)
-            if session_user:
-                logger.debug(
-                    "Session CURVE provider resolved client_id=%s to user=%s",
-                    client_id, session_user,
+            entry = None
+
+            # First try ZAP-verified session_id (cryptographically guaranteed)
+            client_id_bytes = client_id.encode("utf-8") if isinstance(client_id, str) else client_id
+            zap_session_id = self._zap_user_ids.get(client_id_bytes)
+            if zap_session_id:
+                entry = self._session_curve_provider.get_session(zap_session_id)
+                if entry is not None:
+                    logger.debug(
+                        "ZAP identity resolved: session=%s user=%s (RFC 27 verified)",
+                        zap_session_id, entry.user_id,
+                    )
+
+            # Fallback: lookup by pubkey (backward compat with older clients)
+            if entry is None:
+                entry = self._session_curve_provider.lookup(client_id)
+                if entry is not None:
+                    logger.debug(
+                        "Session CURVE provider resolved client_id=%s to user=%s projects=%s roles=%s",
+                        client_id, entry.user_id, entry.grants.projects, entry.grants.roles,
+                    )
+
+            if entry is not None:
+                # Determine role from grants
+                role = UserRole.ADMIN if entry.grants.is_admin else UserRole.USER
+                # Build fully-populated AuthContext from session grants
+                return AuthContext(
+                    user_id=entry.user_id,
+                    username=entry.user_id,
+                    role=role,
+                    project_id=entry.grants.projects[0] if entry.grants.projects else None,
+                    email=entry.grants.email or None,
+                    session_id=entry.session_id,
                 )
 
         # If CURVE key map is loaded, try to correlate the client_id to a

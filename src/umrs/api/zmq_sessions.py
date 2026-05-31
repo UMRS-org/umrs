@@ -7,7 +7,8 @@ Registration flow:
 1. Client authenticates via JWT (same as all other UMRS endpoints).
 2. Client generates a one-time CURVE keypair locally.
 3. Client POSTs the public key to ``/umrs/zmq/session``.
-4. Server registers the key in the :class:`SessionCredentialsProvider`.
+4. Server registers the key in the :class:`SessionCredentialsProvider`
+   with identity grants extracted from the JWT (projects, roles, email).
 5. Client can now connect via ZMQ CURVE using the ephemeral key.
 6. On logout/expiry the session is revoked automatically.
 """
@@ -15,6 +16,7 @@ Registration flow:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -48,11 +50,25 @@ def get_session_curve_provider() -> Any:
 
 
 # ---------------------------------------------------------------------------
-# Shared auth dependency: extract user_id from JWT
+# JWT claims container for session registration
 # ---------------------------------------------------------------------------
 
-def _require_user_id(authorization: str | None = Header(None)) -> str:
-    """Extract ``sub`` (user_id) from the JWT bearer token."""
+@dataclass
+class _JWTIdentity:
+    """Parsed JWT identity with all claims needed for session grants."""
+
+    user_id: str
+    email: str
+    projects: list[str]
+    roles: list[str]
+
+
+# ---------------------------------------------------------------------------
+# Shared auth dependency: extract full identity from JWT
+# ---------------------------------------------------------------------------
+
+def _extract_jwt_identity(authorization: str | None = Header(None)) -> _JWTIdentity:
+    """Extract full identity (sub, email, projects, roles) from the JWT bearer token."""
     from umrs.shared.auth import JWTError, resolve_jwt_secret, validate_jwt
 
     if not authorization:
@@ -81,7 +97,38 @@ def _require_user_id(authorization: str | None = Header(None)) -> str:
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="JWT missing 'sub' claim",
         )
-    return str(user_id)
+
+    # Extract projects: support both list and single-value claim
+    projects_claim = claims.get("projects") or claims.get("project_id")
+    if isinstance(projects_claim, str):
+        projects = [projects_claim] if projects_claim else []
+    elif isinstance(projects_claim, list):
+        projects = [str(p) for p in projects_claim]
+    else:
+        projects = []
+
+    # Extract roles: support both list and single-value
+    roles_claim = claims.get("roles") or claims.get("role")
+    if isinstance(roles_claim, str):
+        roles = [roles_claim] if roles_claim else ["user"]
+    elif isinstance(roles_claim, list):
+        roles = [str(r) for r in roles_claim]
+    else:
+        roles = ["user"]
+
+    email = str(claims.get("email", ""))
+
+    return _JWTIdentity(
+        user_id=str(user_id),
+        email=email,
+        projects=projects,
+        roles=roles,
+    )
+
+
+def _require_user_id(identity: _JWTIdentity = Depends(_extract_jwt_identity)) -> str:
+    """Backward-compatible dependency that returns just user_id."""
+    return identity.user_id
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +149,9 @@ class SessionRegisterRequest(BaseModel):
         le=86400,
         description="Requested session lifetime (60–86400 s)",
     )
+    # Optional capability restrictions (empty = full access for role)
+    max_gpus: int = Field(default=0, ge=0, description="Session GPU cap (0=unrestricted)")
+    max_walltime_sec: int = Field(default=0, ge=0, description="Session walltime cap (0=unrestricted)")
 
 
 class SessionRegisterResponse(BaseModel):
@@ -109,6 +159,7 @@ class SessionRegisterResponse(BaseModel):
     server_public_key: str
     expires_at: float
     ttl_seconds: int
+    grants: dict = Field(default_factory=dict, description="Session grants summary")
 
 
 class SessionInfoResponse(BaseModel):
@@ -170,21 +221,33 @@ async def get_server_key() -> ServerKeyResponse:
 )
 async def register_session(
     body: SessionRegisterRequest,
-    user_id: str = Depends(_require_user_id),
+    identity: _JWTIdentity = Depends(_extract_jwt_identity),
     provider: Any = Depends(get_session_curve_provider),
 ) -> SessionRegisterResponse:
     """Register the client's ephemeral CURVE public key.
 
     The client must first generate a keypair locally, then POST the
     public key here.  The server responds with its own public key and
-    the session ID.
+    the session ID.  Authorization grants from the JWT are bound to the
+    session for identity-aware ZMQ communication.
     """
+    from umrs.core.session_curve_provider import SessionGrants
     from umrs.core.zmq_security import ZMQSecurityConfig
+
+    # Build session grants from JWT claims + request capabilities
+    grants = SessionGrants(
+        projects=tuple(identity.projects),
+        roles=tuple(identity.roles),
+        email=identity.email,
+        max_gpus=body.max_gpus,
+        max_walltime_sec=body.max_walltime_sec,
+    )
 
     entry = provider.register(
         pubkey_z85=body.client_public_key,
-        user_id=user_id,
+        user_id=identity.user_id,
         ttl_seconds=body.ttl_seconds,
+        grants=grants,
     )
 
     cfg = ZMQSecurityConfig.from_env()
@@ -195,6 +258,13 @@ async def register_session(
         server_public_key=server_pub,
         expires_at=entry.expires_at,
         ttl_seconds=int(entry.ttl_remaining),
+        grants={
+            "user_id": identity.user_id,
+            "projects": identity.projects,
+            "roles": identity.roles,
+            "max_gpus": body.max_gpus,
+            "max_walltime_sec": body.max_walltime_sec,
+        },
     )
 
 
