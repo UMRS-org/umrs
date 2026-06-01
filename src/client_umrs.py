@@ -2307,6 +2307,38 @@ def _http_reload(gateway_url: str, api_key: str | None = None) -> dict:
         return {"status": "error", "message": str(e)}
 
 
+def _try_read_r4_token(profile_name: str | None) -> str | None:
+    """Read a JWT from r4's token store (stdlib only, no r4 import).
+
+    Falls back to r4's ``~/.config/r4/tokens.json`` when the umrs-client
+    ``.token`` file doesn't exist — sharing credentials across tools.
+    """
+    if not profile_name:
+        profile_name = "default"
+    try:
+        from pathlib import Path as _Path
+
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        r4_dir = _Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4"
+        tokens_path = r4_dir / "tokens.json"
+        if not tokens_path.is_file():
+            return None
+        import json as _json
+        data = _json.loads(tokens_path.read_text(encoding="utf-8"))
+        entry = data.get(profile_name, {})
+        token = entry.get("access_token")
+        if not token:
+            return None
+        # Check expiry if present (with 60s buffer)
+        import time as _time
+        expires_at = entry.get("expires_at")
+        if expires_at and _time.time() > (expires_at - 60):
+            return None
+        return token
+    except Exception:
+        return None
+
+
 def _get_gateway_url_from_ctx(ctx) -> str | None:
     """Extract gateway_url from the connection profile if available."""
     conn = ctx.connection
@@ -2314,16 +2346,17 @@ def _get_gateway_url_from_ctx(ctx) -> str | None:
 
 
 def _get_api_key_from_profile(ctx) -> str | None:
-    """Read the JWT from the profile's token file."""
+    """Read the JWT from the profile's token file, falling back to r4 tokens."""
     conn = ctx.connection
     profile_path = getattr(conn, "profile_path", None)
-    if not profile_path:
-        return None
-    from pathlib import Path as _Path
-    token_path = _Path(profile_path).with_suffix(".token")
-    if token_path.is_file():
-        return token_path.read_text(encoding="utf-8").strip()
-    return None
+    if profile_path:
+        from pathlib import Path as _Path
+        token_path = _Path(profile_path).with_suffix(".token")
+        if token_path.is_file():
+            return token_path.read_text(encoding="utf-8").strip()
+    # Fall back to r4 token store
+    profile_name = getattr(conn, "profile_name", None)
+    return _try_read_r4_token(profile_name)
 
 
 # ---------------------------------------------------------------------------
@@ -2350,7 +2383,41 @@ class _ClientContext:
 def _action_ping(ctx):
     args = ctx.args
 
-    # --- HTTP gateway path (no ZMQ needed) ---
+    # --- ZMQ path: preferred when a live MessageQueue is available ---
+    # Falls through to HTTP if ZMQ reports not-ready (e.g. port unreachable,
+    # CURVE bootstrap failed, or server genuinely not ready).
+    if ctx.control_mq is not None:
+        api = UMRSControlAPI(
+            ctx.control_mq,
+            _resolve_control_client_id(ctx.user),
+            admin_token=ctx.admin_token,
+        )
+        zmq_ready = False
+        try:
+            timeout = getattr(args, "timeout_ms", None) or ctx.connection.health_check_timeout_ms
+            ping_result = api.ping(timeout_ms=timeout)
+            zmq_ready = ping_result.get("server_ready", False)
+        except Exception:
+            pass
+        finally:
+            ctx.control_mq.close()
+
+        if zmq_ready:
+            endpoint_info = {
+                "profile": ctx.connection.profile_name or "(none)",
+                "server_host": ctx.connection.server_host,
+                "control_port": ctx.connection.control_port,
+            }
+            if args.output == 'json':
+                print(api_json(output_format='json', **ping_result, **endpoint_info))
+            else:
+                dot = _status_dot(True)
+                profile_label = _bold(ctx.connection.profile_name) if ctx.connection.profile_name else _dim("(none)")
+                print(f"  {dot} Server {_green('ready')}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {ctx.connection.server_host}:{ctx.connection.control_port} (zmq)")
+            return 0
+        # ZMQ not ready — fall through to HTTP gateway fallback
+
+    # --- HTTP gateway fallback ---
     gateway_url = _get_gateway_url_from_ctx(ctx)
     if gateway_url:
         api_key = _get_api_key_from_profile(ctx)
@@ -2371,33 +2438,7 @@ def _action_ping(ctx):
                 print(f"    {_dim(ping_result['message'])}")
         return 0
 
-    # --- ZMQ path (original) ---
-    api = UMRSControlAPI(
-        ctx.control_mq,
-        _resolve_control_client_id(ctx.user),
-        admin_token=ctx.admin_token,
-    )
-    try:
-        # Use explicit --timeout-ms from CLI args (default 2000) rather than
-        # the profile's health_check_timeout_ms (which can be 15s+).
-        timeout = getattr(args, "timeout_ms", None) or ctx.connection.health_check_timeout_ms
-        ping_result = api.ping(timeout_ms=timeout)
-        endpoint_info = {
-            "profile": ctx.connection.profile_name or "(none)",
-            "server_host": ctx.connection.server_host,
-            "control_port": ctx.connection.control_port,
-        }
-        if args.output == 'json':
-            print(api_json(output_format='json', **ping_result, **endpoint_info))
-        else:
-            ready = ping_result.get("server_ready", False)
-            dot = _status_dot(ready)
-            status_word = _green("ready") if ready else _red("not ready")
-            profile_label = _bold(ctx.connection.profile_name) if ctx.connection.profile_name else _dim("(none)")
-            print(f"  {dot} Server {status_word}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {ctx.connection.server_host}:{ctx.connection.control_port}")
-        return 0
-    finally:
-        ctx.control_mq.close()
+    return 1
 
 
 def _action_model(ctx):
@@ -3624,30 +3665,44 @@ def _maybe_bootstrap_curve_session(connection) -> None:
 
     This is a no-op when:
     - No gateway_url is configured (direct ZMQ or static CURVE)
-    - UMRS_ZMQ_AUTH_TYPE is not 'session'
-    - No JWT token is available
+    - zmq.auth_type in profile (or UMRS_ZMQ_AUTH_TYPE env) is not 'session'
+    - No JWT token is available (env vars or profile .token file)
     """
     gateway_url = getattr(connection, "gateway_url", None)
-    auth_type = os.environ.get("UMRS_ZMQ_AUTH_TYPE", "").lower()
-    if not gateway_url or auth_type != "session":
+    if not gateway_url:
         return
 
+    # Accept auth_type from profile field or env var
+    profile_auth_type = getattr(connection, "zmq_auth_type", None) or ""
+    auth_type = (profile_auth_type or os.environ.get("UMRS_ZMQ_AUTH_TYPE", "")).lower()
+    if auth_type != "session":
+        return
+
+    # Get JWT from env vars first, then fall back to profile .token file, then r4 tokens
     jwt_token = os.environ.get("UMRS_JWT_TOKEN") or os.environ.get("UMRS_API_KEY")
+    if not jwt_token:
+        profile_path = getattr(connection, "profile_path", None)
+        if profile_path:
+            from pathlib import Path as _Path
+            token_path = _Path(profile_path).with_suffix(".token")
+            if token_path.is_file():
+                jwt_token = token_path.read_text(encoding="utf-8").strip()
+    if not jwt_token:
+        profile_name = getattr(connection, "profile_name", None)
+        jwt_token = _try_read_r4_token(profile_name)
     if not jwt_token:
         return
 
     try:
         from umrs.client.session_bootstrap import bootstrap_curve_session
 
-        info = bootstrap_curve_session(
+        bootstrap_curve_session(
             gateway_url=gateway_url,
             jwt_token=jwt_token,
         )
-        # Inject CURVE keys into environment so MessageQueue picks them up
-        os.environ["UMRS_CURVE_PUBKEY"] = info.client_public_key
-        os.environ["UMRS_CURVE_SECRETKEY"] = info.client_secret_key
-        os.environ["UMRS_CURVE_SERVER_PUBKEY"] = info.server_public_key
-        os.environ["UMRS_SESSION_ID"] = info.session_id
+        # bootstrap_curve_session(set_env=True by default) injects correct
+        # UMRS_ZMQ_AUTH_TYPE / UMRS_ZMQ_CURVE_* env vars so MessageQueue picks
+        # them up automatically on construction.
     except Exception:
         # Non-fatal: fall back to whatever auth the MessageQueue already supports
         pass
@@ -4019,8 +4074,8 @@ def main():
         explicit_control_port=args.control_port,
     )
 
-    # --- Gateway-only mode: skip ZMQ for supported actions ---
-    _gateway_http_actions = {"ping", "reload"}
+    # --- Gateway-only mode: skip ZMQ for reload (no ZMQ needed) ---
+    _gateway_http_actions = {"reload"}
     gateway_url = getattr(connection, "gateway_url", None)
     if gateway_url and args.action in _gateway_http_actions:
         # Resolve admin token and config state without ZMQ
