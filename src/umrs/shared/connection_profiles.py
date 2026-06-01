@@ -178,6 +178,7 @@ profile_schema: dict[str, Any] = {
                 },
                 "tunnel_mode": {"type": "boolean"},
                 "health_check_timeout_ms": {"type": "integer", "minimum": 1000},
+                "auth_type": {"type": "string", "enum": ["none", "curve_static", "session"]},
             },
             "additionalProperties": False,
         },
@@ -231,6 +232,7 @@ class ConnectionProfile:
     command_hint: str | None = None
     path: str | None = None
     gateway_url: str | None = None
+    zmq_auth_type: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -266,6 +268,7 @@ class ResolvedConnection:
     allocated_data_port: int | None = None
     sources: dict[str, str] = field(default_factory=dict)
     gateway_url: str | None = None
+    zmq_auth_type: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -344,6 +347,7 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         command_hint=ssh_cfg.get("command_hint"),
         path=str(path),
         gateway_url=content.get("gateway_url"),
+        zmq_auth_type=zmq_cfg.get("auth_type"),
     )
     return _with_default_service_urls(profile)
 
@@ -426,6 +430,11 @@ def resolve_profile_name(explicit_name: str | None = None) -> tuple[str | None, 
     if env_name:
         return env_name, f"env:{UMRS_PROFILE_ENV_VAR_NAME}"
 
+    # Fall back to R4_PROFILE so a unified profile name works across tools
+    r4_profile = os.environ.get("R4_PROFILE")
+    if r4_profile:
+        return r4_profile, "env:R4_PROFILE"
+
     current_name = get_current_profile_name()
     if current_name:
         return current_name, f"current:{get_current_profile_path()}"
@@ -439,7 +448,15 @@ def resolve_connection(
     explicit_control_port: int | None = None,
 ) -> ResolvedConnection:
     profile_name, profile_source = resolve_profile_name(explicit_profile_name)
-    profile = load_connection_profile(profile_name) if profile_name else None
+    profile: ConnectionProfile | None = None
+    if profile_name:
+        try:
+            profile = load_connection_profile(profile_name)
+        except FileNotFoundError:
+            # Profile not in ~/.config/umrs/connections/ — try r4 config
+            profile = _try_load_r4_profile(profile_name)
+            if profile is not None:
+                profile_source = f"r4:{profile_name}"
     sources: dict[str, str] = {}
 
     parts = _connection_parts(profile, profile_name, explicit_server_ip, explicit_control_port, sources)
@@ -518,6 +535,7 @@ def _resolved_connection(
         command_hint=_profile_attr(profile, "command_hint"),
         sources=parts["sources"],
         gateway_url=_profile_attr(profile, "gateway_url"),
+        zmq_auth_type=_profile_attr(profile, "zmq_auth_type"),
     )
 
 
@@ -594,6 +612,87 @@ def _base_connection_profile(
         tunnel_mode=tunnel_mode,
         health_check_timeout_ms=health_check_timeout_ms,
     )
+
+
+# ---------------------------------------------------------------------------
+# r4 config read-through (stdlib only — no r4 package import)
+# ---------------------------------------------------------------------------
+
+def _resolve_r4_config_dir() -> Path:
+    """Return the r4 config directory (same logic as r4.config)."""
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return Path(xdg, "r4") if xdg else Path.home() / ".config" / "r4"
+
+
+def _try_load_r4_profile(name: str) -> ConnectionProfile | None:
+    """Attempt to build a ConnectionProfile from r4's config files.
+
+    Reads ``~/.config/r4/sources.json`` for the named source, extracting
+    gateway_url, ZMQ host/port, and auth_type.  Uses only stdlib (no r4
+    package import) to respect the import boundary.
+
+    Returns None if r4 config doesn't exist or the profile isn't found.
+    """
+    r4_dir = _resolve_r4_config_dir()
+
+    # Try sources.json first (has ZMQ details)
+    sources_path = r4_dir / "sources.json"
+    if sources_path.is_file():
+        try:
+            data = json.loads(sources_path.read_text(encoding="utf-8"))
+            for src in data.get("sources", []):
+                if src.get("name") != name or src.get("kind") != "platform":
+                    continue
+                url = src.get("url", "")
+                host = src.get("zmq_host") or _r4_extract_host(url)
+                port = src.get("zmq_control_port") or 5555
+                tunnel = src.get("zmq_tunnel_mode") or False
+                auth_type = src.get("zmq_auth_type")
+                return ConnectionProfile(
+                    name=name,
+                    mode="ssh_tunnel" if tunnel else "direct",
+                    server_host=host,
+                    control_port=int(port),
+                    data_port_range=DataPortRange(int(port) + 1, int(port) + 8),
+                    tunnel_mode=bool(tunnel),
+                    health_check_timeout_ms=5000,
+                    gateway_url=url or None,
+                    zmq_auth_type=auth_type,
+                )
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass
+
+    # Fallback: config.json profiles (simpler, may lack ZMQ details)
+    config_path = r4_dir / "config.json"
+    if config_path.is_file():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            profiles = data.get("profiles", {})
+            if name in profiles:
+                p = profiles[name]
+                url = p.get("gateway_url", "")
+                host = p.get("umrs_server_host") or _r4_extract_host(url)
+                port = p.get("umrs_control_port") or 5555
+                return ConnectionProfile(
+                    name=name,
+                    mode="direct",
+                    server_host=host,
+                    control_port=int(port),
+                    data_port_range=DataPortRange(int(port) + 1, int(port) + 8),
+                    tunnel_mode=False,
+                    health_check_timeout_ms=5000,
+                    gateway_url=url or None,
+                )
+        except (json.JSONDecodeError, OSError, KeyError):
+            pass
+
+    return None
+
+
+def _r4_extract_host(url: str) -> str:
+    """Extract hostname from a URL (stdlib only)."""
+    from urllib.parse import urlparse
+    return urlparse(url).hostname or "127.0.0.1"
 
 
 __all__ = [

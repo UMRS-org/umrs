@@ -658,6 +658,14 @@ def _cmd_config_show(args: argparse.Namespace, _store: UserStore) -> int:
     else:
         ok = "\u2713"
         no = "\u2717"
+        deploy_dir = getattr(args, "deploy_dir", None)
+        if deploy_dir:
+            print(f"Deploy directory:  {os.path.abspath(deploy_dir)}")
+            site_yaml = os.path.join(os.path.abspath(deploy_dir), "site.yaml")
+            print(f"  site.yaml:       {ok if os.path.isfile(site_yaml) else no}")
+            env_file = os.path.join(os.path.abspath(deploy_dir), ".env")
+            print(f"  .env:            {ok if os.path.isfile(env_file) else no}")
+            print()
         print(f"Config directory:  {cfg_dir}")
         print(f"  source:          {cfg_dir_source}")
         print(f"  exists:          {ok if os.path.isdir(cfg_dir) else no}")
@@ -1623,6 +1631,18 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
+        "--deploy-dir",
+        dest="deploy_dir",
+        default=None,
+        metavar="DIR",
+        help=(
+            "Path to a deployment directory (e.g. umrs/deploy/rccs-cloud or "
+            "umrs/deploy/ai4s). Loads .env and site.yaml from that directory "
+            "automatically, so you don't need to cd + source .env + export "
+            "UMRS_SITE_CONFIG manually. Resolves --config from the same dir."
+        ),
+    )
+    parser.add_argument(
         "--config",
         dest="server_config",
         default=None,
@@ -1752,6 +1772,67 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _apply_deploy_dir(deploy_dir: str) -> None:
+    """Load .env and set UMRS_SITE_CONFIG from a deployment directory.
+
+    This replaces the manual workflow::
+
+        cd /path/to/deploy/rccs-cloud
+        set -o allexport && source .env && set +o allexport
+        export UMRS_SITE_CONFIG="$PWD/site.yaml"
+        export PYTHONPATH="$(cd ../.. && pwd)/src${PYTHONPATH:+:$PYTHONPATH}"
+
+    with a single ``--deploy-dir /path/to/deploy/rccs-cloud`` flag.
+    """
+    import os
+    from pathlib import Path
+
+    d = Path(deploy_dir).resolve()
+    if not d.is_dir():
+        print(f"error: --deploy-dir does not exist: {d}", file=sys.stderr)
+        sys.exit(2)
+
+    # Load .env (key=value lines, skip comments and blanks)
+    env_file = d / ".env"
+    if env_file.is_file():
+        with open(env_file, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Don't overwrite existing env vars (same as set -o allexport
+                # followed by source — existing vars from outer shell win).
+                if key not in os.environ:
+                    os.environ[key] = value
+
+    # Set UMRS_SITE_CONFIG
+    site_yaml = d / "site.yaml"
+    if site_yaml.is_file():
+        os.environ["UMRS_SITE_CONFIG"] = str(site_yaml)
+    else:
+        print(
+            f"warning: no site.yaml in --deploy-dir {d}",
+            file=sys.stderr,
+        )
+
+    # Add UMRS source tree to PYTHONPATH if present
+    src_dir = d.parent.parent / "src"
+    if src_dir.is_dir():
+        existing = os.environ.get("PYTHONPATH", "")
+        if str(src_dir) not in existing.split(os.pathsep):
+            os.environ["PYTHONPATH"] = (
+                str(src_dir) + os.pathsep + existing if existing else str(src_dir)
+            )
+            # Also update sys.path for the current process
+            if str(src_dir) not in sys.path:
+                sys.path.insert(0, str(src_dir))
+
+
 def _discover_server_config() -> str | None:
     """Find conf_umrs.json using the same discovery chain as the daemon."""
     import os
@@ -1817,6 +1898,20 @@ def _resolve_user_files_dir_from_config(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+
+    # --deploy-dir: load .env + site.yaml before anything else.
+    deploy_dir = getattr(args, "deploy_dir", None)
+    if deploy_dir:
+        _apply_deploy_dir(deploy_dir)
+        # Auto-discover conf_umrs.json from the deploy directory itself.
+        import os
+        if not args.server_config:
+            candidate = os.path.join(
+                os.path.abspath(deploy_dir), "conf_umrs.json"
+            )
+            if os.path.isfile(candidate):
+                args.server_config = candidate
+
     # Auto-discover conf_umrs.json so --config is rarely needed.
     if not args.server_config:
         args.server_config = _discover_server_config()

@@ -99,18 +99,21 @@ def bootstrap_curve_session(
     base = gateway_url.rstrip("/")
     headers = {"Authorization": f"Bearer {jwt_token}"}
 
-    # Step 1: Get server CURVE public key (unauthenticated)
+    # Step 1: Get server CURVE public key (unauthenticated, best-effort).
+    # In session mode the server may not expose a static key endpoint (404);
+    # the server public key is returned by POST /umrs/zmq/session instead.
+    server_pub = ""
     try:
         resp = requests.get(
             f"{base}/umrs/zmq/server-key",
             timeout=timeout,
         )
         if resp.status_code == 404:
-            raise SessionBootstrapError(
-                "CURVE is not enabled on this server (404 from /umrs/zmq/server-key)"
-            )
-        resp.raise_for_status()
-        server_pub = resp.json()["server_public_key"]
+            # Session mode: no static server key — server_pub comes from POST response.
+            server_pub = ""
+        else:
+            resp.raise_for_status()
+            server_pub = resp.json().get("server_public_key", "")
     except requests.RequestException as exc:
         raise SessionBootstrapError(
             f"Failed to fetch server CURVE key: {exc}"
