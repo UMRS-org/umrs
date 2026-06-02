@@ -1,6 +1,5 @@
 import json
 import os
-import sys
 
 from jsonschema import ValidationError, validate
 
@@ -123,21 +122,24 @@ def load_client_cfg_file(json_filename, username_list=None):
 
   json_filename = os.path.expanduser(json_filename)
   if not os.path.exists(json_filename):
-    sys.exit(f"Client JSON file {json_filename} does not exist. Exiting...")
+    raise FileNotFoundError(f"Client JSON file {json_filename} does not exist")
 
   try:
     with open(json_filename, encoding="utf-8") as f:
       data = json.load(f)
   except json.decoder.JSONDecodeError as e:
-        sys.exit(f"Error: Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos}).\nExiting...")
+        raise ValueError(f"Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos})") from e
 
   try:
     validate(instance=data, schema=client_schema)
     if data["username"] in username_list:
-        sys.exit(f"Error: {json_filename} uses the same username than an other client configuration file.\nMerge the two configuration files or change the username.\n\tExiting...")
+        raise ValueError(
+            f"{json_filename} uses the same username as another client configuration file. "
+            "Merge the two configuration files or change the username."
+        )
     return data
   except ValidationError as e:
-      sys.exit(f"Invalid client JSON file {json_filename}: {e.message}.\nExiting...")
+      raise ValueError(f"Invalid client JSON file {json_filename}: {e.message}") from e
 
 
 __all__ = ["client_schema", "load_client_cfg_file"]
@@ -174,13 +176,13 @@ server_schema = {
 def load_server_cfg_json(json_filename):
     json_filename = os.path.abspath(os.path.expanduser(json_filename))
     if not os.path.exists(json_filename):
-      sys.exit(f"Server JSON file {json_filename} does not exist. Exiting...")
+      raise FileNotFoundError(f"Server JSON file {json_filename} does not exist")
 
     try:
       with open(json_filename, encoding="utf-8") as file:
         content = json.load(file)
     except json.decoder.JSONDecodeError as e:
-        sys.exit(f"Error: Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos}).\nExiting...")
+        raise ValueError(f"Failed to parse JSON file {json_filename}: {e.msg} (char {e.pos})") from e
 
     try:
       validate(instance=content, schema=server_schema)
@@ -198,7 +200,7 @@ def load_server_cfg_json(json_filename):
       ]
       return content
     except ValidationError as e:
-      sys.exit(f"Invalid server JSON file {json_filename}: {e.message}.\nExiting...")
+      raise ValueError(f"Invalid server JSON file {json_filename}: {e.message}") from e
 
 
 def load_server_cfg_file(json_filename):
@@ -215,4 +217,4 @@ def load_server_cfg_file(json_filename):
         users.append(user_content)
       return admin_s3_configuration_file, users, content
     except ValidationError as e:
-      sys.exit(f"Invalid server JSON file {json_filename}: {e.message}.\nExiting...")
+      raise ValueError(f"Invalid server JSON file {json_filename}: {e.message}") from e

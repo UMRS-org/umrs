@@ -92,13 +92,29 @@ def _read_pointer(path: Path) -> str | None:
     if not path.is_file():
         return None
     value = path.read_text(encoding="utf-8").strip()
-    return value or None
+    if not value:
+        return None
+    target = Path(value)
+    # Resolve relative paths against the pointer file's parent directory
+    # so that pointers remain portable across host/container mounts.
+    if not target.is_absolute():
+        target = (path.parent / target).resolve()
+        return str(target)
+    return value
 
 
 def _write_pointer(pointer_path: Path, target_path: Path) -> Path:
     pointer_path.parent.mkdir(parents=True, exist_ok=True)
-    normalized = _normalize_path(target_path)
-    pointer_path.write_text(normalized + "\n", encoding="utf-8")
+    resolved = Path(target_path).expanduser().resolve()
+    pointer_dir = pointer_path.parent.resolve()
+    # Store a relative path when the target is under the same config tree.
+    # This makes pointer files portable across host / container mounts
+    # (e.g. ~/.config/umrs on host → /home/r4user/.config/umrs in container).
+    try:
+        rel = resolved.relative_to(pointer_dir)
+        pointer_path.write_text(str(rel) + "\n", encoding="utf-8")
+    except ValueError:
+        pointer_path.write_text(str(resolved) + "\n", encoding="utf-8")
     return pointer_path
 
 
@@ -179,6 +195,9 @@ def _validate_server(path: Path) -> ConfigLayer:
     except SystemExit as exc:
         layer.error = str(exc)
         return layer
+    except Exception as exc:
+        layer.error = str(exc)
+        return layer
     layer.valid = True
     layer.details = {
         "user_config_paths": [user.get("config_file_path") for user in users],
@@ -197,6 +216,9 @@ def _validate_user(path: Path) -> ConfigLayer:
     try:
         user_cfg = load_client_cfg_file(str(path))
     except SystemExit as exc:
+        layer.error = str(exc)
+        return layer
+    except Exception as exc:
         layer.error = str(exc)
         return layer
     layer.valid = True
