@@ -71,6 +71,7 @@ def _create_app():
         rag_router,
         skills_router,
         traces_router,
+        usage_router,
         vision_router,
         workflows_router,
         zmq_sessions_router,
@@ -113,6 +114,7 @@ def _create_app():
     app.include_router(vision_router)
     app.include_router(provenance_router)
     app.include_router(traces_router)
+    app.include_router(usage_router)
     app.include_router(workflows_router)
     app.include_router(zmq_sessions_router)
 
@@ -191,6 +193,15 @@ def _create_app():
             logger.info("Governance store initialized for HTTP sidecar")
         except Exception:
             logger.warning("Governance store unavailable — quota enforcement disabled")
+
+        # Usage recording pool — shares the main DB pool with llm proxy
+        try:
+            from umrs.api.llm import set_usage_db_pool
+
+            set_usage_db_pool(db_pool)
+            logger.info("LLM usage recording pool initialized")
+        except Exception:
+            logger.warning("LLM usage recording unavailable — usage will not be tracked")
 
     @app.get("/health")
     async def health():
