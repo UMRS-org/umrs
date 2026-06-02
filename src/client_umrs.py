@@ -213,6 +213,17 @@ def _resolve_control_client_id(user_cfg=None):
         username = user_cfg.get("username")
         if username:
             return username
+    # Try connection profile username (set by r4 auth login)
+    try:
+        from umrs.shared.connection_profiles import get_current_profile_name, load_connection_profile
+
+        profile_name = get_current_profile_name()
+        if profile_name:
+            profile = load_connection_profile(profile_name)
+            if getattr(profile, "username", None):
+                return profile.username
+    except Exception:
+        pass
     return os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
 
 
