@@ -397,6 +397,72 @@ def ops_ping() -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Client connection info (unauthenticated, non-secret)
+# ---------------------------------------------------------------------------
+
+class ConnectInfoZMQ(BaseModel):
+    host: str
+    control_port: int
+    data_port_range: dict[str, int]
+    auth_type: str
+    tunnel_mode: bool
+
+
+class ConnectInfoResponse(BaseModel):
+    zmq: ConnectInfoZMQ
+
+
+@router.get(
+    "/connect-info",
+    response_model=ConnectInfoResponse,
+    summary="ZMQ connection parameters for client auto-discovery",
+)
+def ops_connect_info() -> dict[str, Any]:
+    """Return ZMQ transport parameters so clients can auto-configure.
+
+    This endpoint is unauthenticated — the information is non-secret
+    (ports, auth mode, bind address).  Clients query it during
+    ``r4 auth login`` to populate connection profiles automatically.
+    """
+    from umrs.shared.connection_profiles import parse_data_port_range
+
+    control_port = int(os.environ.get("UMRS_CONTROL_PORT", "5555"))
+    tunnel_mode = os.environ.get("UMRS_TUNNEL_MODE", "false").lower() in (
+        "true", "1", "yes",
+    )
+    auth_type = os.environ.get("UMRS_ZMQ_AUTH_TYPE", "none").lower()
+    host = os.environ.get("UMRS_SERVER_HOST", "127.0.0.1" if tunnel_mode else "0.0.0.0")
+
+    # Data port range: explicit env or default based on control port
+    data_range_env = os.environ.get("UMRS_DATA_PORT_RANGE")
+    data_base_env = os.environ.get("UMRS_DATA_BASE_PORT")
+    data_port_env = os.environ.get("UMRS_DATA_PORT")
+
+    if data_range_env:
+        dr = parse_data_port_range(data_range_env)
+        data_start, data_end = dr.start, dr.end
+    elif data_base_env:
+        data_start = int(data_base_env)
+        data_end = data_start + 7
+    elif data_port_env:
+        data_start = int(data_port_env)
+        data_end = data_start
+    else:
+        data_start = control_port + 1
+        data_end = control_port + 8
+
+    return {
+        "zmq": {
+            "host": host,
+            "control_port": control_port,
+            "data_port_range": {"start": data_start, "end": data_end},
+            "auth_type": auth_type,
+            "tunnel_mode": tunnel_mode,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Configuration reload via HTTP (admin-only)
 # ---------------------------------------------------------------------------
 
