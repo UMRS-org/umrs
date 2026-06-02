@@ -197,9 +197,9 @@ def _create_app():
         """Liveness probe — returns ok if the process is alive.
 
         Also includes non-secret site capabilities for client discovery
-        (scheduler kind, delegation mode, site name).
+        (scheduler kind, delegation mode, site name, ZMQ port).
         """
-        caps: dict[str, str] = {}
+        caps: dict[str, str | int] = {}
         try:
             from umrs.orchestrator.site_config import load_site_config
 
@@ -212,6 +212,13 @@ def _create_app():
                 caps["slurm_proxy_path"] = site.scheduler.slurm_proxy_path
         except Exception:
             pass
+        # Expose ZMQ control port for client auto-discovery
+        zmq_port = os.environ.get("UMRS_CONTROL_PORT")
+        if zmq_port:
+            try:
+                caps["zmq_control_port"] = int(zmq_port)
+            except ValueError:
+                pass
         return {"status": "ok", "site_capabilities": caps}
 
     @app.get("/readiness")
