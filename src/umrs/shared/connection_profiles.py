@@ -233,6 +233,7 @@ class ConnectionProfile:
     path: str | None = None
     gateway_url: str | None = None
     zmq_auth_type: str | None = None
+    username: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -348,6 +349,7 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         path=str(path),
         gateway_url=content.get("gateway_url"),
         zmq_auth_type=zmq_cfg.get("auth_type"),
+        username=content.get("username"),
     )
     return _with_default_service_urls(profile)
 
