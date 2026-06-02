@@ -3350,7 +3350,7 @@ def _action_maintenance(ctx):
                 print(f"{_green('✓')} {_bold(args.action)} accepted")
                 summary = parsed.get("summary", "")
                 if summary:
-                    print(f"  {summary[:200]}")
+                    print(summary)
         else:
             if args.output == 'json':
                 print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
@@ -3374,6 +3374,9 @@ def _action_maintenance(ctx):
                 print(api_json(action=args.action, accepted=True, output_format='json'))
             else:
                 print(f"{_green('✓')} {_bold(args.action)} accepted")
+                summary = parsed.get("summary", "")
+                if summary:
+                    print(summary)
         else:
             if args.output == 'json':
                 print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))

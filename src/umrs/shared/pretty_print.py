@@ -93,7 +93,7 @@ def pretty_print_cfg(cfg_dict, print_output=True):
 
     df.sort_values(by=["S3 user", "Bucket alias"], inplace=True)
     df.reset_index(drop=True, inplace=True)
-    message = "\nServer confuguration:" + "\n" + tabulate(df, headers='keys', tablefmt='fancy_grid')
+    message = "\nServer configuration:" + "\n" + tabulate(df, headers='keys', tablefmt='fancy_grid')
     if print_output:
         print(message)
     return message
