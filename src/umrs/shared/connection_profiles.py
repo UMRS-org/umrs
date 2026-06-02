@@ -211,6 +211,7 @@ profile_schema: dict[str, Any] = {
             },
             "additionalProperties": False,
         },
+        "username": {"type": "string", "minLength": 1},
     },
     "additionalProperties": False,
 }
