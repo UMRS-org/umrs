@@ -3775,9 +3775,12 @@ def _maybe_bootstrap_curve_session(connection) -> None:
         # bootstrap_curve_session(set_env=True by default) injects correct
         # UMRS_ZMQ_AUTH_TYPE / UMRS_ZMQ_CURVE_* env vars so MessageQueue picks
         # them up automatically on construction.
-    except Exception:
+    except Exception as exc:
         # Non-fatal: fall back to whatever auth the MessageQueue already supports
-        pass
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "CURVE session bootstrap failed (non-fatal): %s", exc,
+        )
 
 
 def main():
