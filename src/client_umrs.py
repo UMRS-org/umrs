@@ -2332,6 +2332,31 @@ def _http_reload(gateway_url: str, api_key: str | None = None) -> dict:
         return {"status": "error", "message": str(e)}
 
 
+def _http_model_list(gateway_url: str, api_key: str | None = None, scope: str | None = None) -> dict:
+    """List models via the HTTP gateway endpoint."""
+    import urllib.request
+    import urllib.error
+    import urllib.parse
+
+    url = f"{gateway_url.rstrip('/')}/gw/models"
+    if scope:
+        url = f"{url}?{urllib.parse.urlencode({'scope': scope})}"
+    req = urllib.request.Request(url, method="GET")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            body = _json.loads(resp.read().decode("utf-8"))
+            # Normalize HTTP response ({models:[...], total:N}) to ZMQ-compatible format
+            if isinstance(body, dict) and "models" in body and "status" not in body:
+                return {"status": "ok", "models": body["models"]}
+            return body
+    except urllib.error.HTTPError as e:
+        return {"status": "error", "message": f"HTTP {e.code}: {e.reason}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 def _try_read_r4_token(profile_name: str | None) -> str | None:
     """Read a JWT from r4's token store (stdlib only, no r4 import).
 
@@ -2493,7 +2518,16 @@ def _action_model(ctx):
                 huggingface_id=args.huggingface_id,
             )
         elif model_action == 'list':
-            parsed = api.list_models(scope=args.scope)
+            if ctx.control_mq is None:
+                # ZMQ not available (gateway-only mode) — use HTTP fallback
+                gateway_url = _get_gateway_url_from_ctx(ctx)
+                if not gateway_url:
+                    print(api_json(status='error', action='model', message='model list requires either a ZMQ connection or a gateway_url in the connection profile', output_format=args.output))
+                    return 1
+                api_key = _get_api_key_from_profile(ctx)
+                parsed = _http_model_list(gateway_url, api_key, scope=args.scope)
+            else:
+                parsed = api.list_models(scope=args.scope)
         elif model_action == 'download':
             target_name = args.name or args.repo_id.split('/')[-1]
             if args.server_side:
@@ -2619,7 +2653,8 @@ def _action_model(ctx):
         if args.verbose:
             traceback.print_exc()
     finally:
-        ctx.control_mq.close()
+        if ctx.control_mq is not None:
+            ctx.control_mq.close()
     return exit_code
 
 
@@ -4108,10 +4143,11 @@ def main():
         explicit_control_port=args.control_port,
     )
 
-    # --- Gateway-only mode: skip ZMQ for reload (no ZMQ needed) ---
+    # --- Gateway-only mode: skip ZMQ for actions that work over HTTP ---
     _gateway_http_actions = {"reload"}
     gateway_url = getattr(connection, "gateway_url", None)
-    if gateway_url and args.action in _gateway_http_actions:
+    _is_model_list = args.action == "model" and getattr(args, "model_action", None) == "list"
+    if gateway_url and (args.action in _gateway_http_actions or _is_model_list):
         # Resolve admin token and config state without ZMQ
         admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
         config_state = resolve_loaded_config(
