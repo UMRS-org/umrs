@@ -220,6 +220,23 @@ class UMRSMetrics:
             ["subsystem"],
         )
 
+        # -- LLM usage metering ----------------------------------------
+        self._llm_tokens = _counter(
+            "umrs_llm_tokens_total",
+            "LLM tokens processed through the proxy, by direction",
+            ["model", "direction"],  # direction = prompt | completion
+        )
+        self._llm_request_duration = _histogram(
+            "umrs_llm_request_duration_seconds",
+            "End-to-end LLM proxy latency in seconds",
+            ["model"],
+        )
+        self._llm_requests = _counter(
+            "umrs_llm_requests_total",
+            "Total LLM proxy requests",
+            ["model", "streaming"],
+        )
+
     # -- Job lifecycle -------------------------------------------------
 
     def job_submitted(self, backend: str) -> None:
@@ -346,6 +363,23 @@ class UMRSMetrics:
     def degradation_level(self, subsystem: str, level: int) -> None:
         """Set degradation level for a subsystem (0=healthy, 1=degraded, 2=unhealthy)."""
         self._degradation.labels(subsystem=subsystem).set(level)
+
+    # -- LLM usage metering --------------------------------------------
+
+    def llm_tokens(self, model: str, prompt: int, completion: int) -> None:
+        """Record prompt and completion tokens for an LLM request."""
+        if prompt:
+            self._llm_tokens.labels(model=model, direction="prompt").inc(prompt)
+        if completion:
+            self._llm_tokens.labels(model=model, direction="completion").inc(completion)
+
+    def llm_request_duration(self, model: str, seconds: float) -> None:
+        """Record end-to-end proxy latency."""
+        self._llm_request_duration.labels(model=model).observe(seconds)
+
+    def llm_request(self, model: str, streaming: bool) -> None:
+        """Increment LLM request counter."""
+        self._llm_requests.labels(model=model, streaming=str(streaming).lower()).inc()
 
 
 METRICS = UMRSMetrics()

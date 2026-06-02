@@ -28,10 +28,35 @@ from umrs.orchestrator.endpoint_registry import (
     RegisteredEndpoint,
     get_registry,
 )
+from umrs.api.llm_usage import (
+    ProxyTimer,
+    UsageRecord,
+    extract_usage_oneshot,
+    extract_usage_streaming,
+    fill_usage,
+    record_usage,
+)
+from umrs.server.correlation import get_request_id
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/llm", tags=["llm-proxy"])
+
+# ---------------------------------------------------------------------------
+# DB pool for usage recording (set by http_sidecar startup)
+# ---------------------------------------------------------------------------
+_usage_db_pool = None
+
+
+def set_usage_db_pool(pool) -> None:  # noqa: ANN001
+    """Inject the DB pool for usage recording."""
+    global _usage_db_pool
+    _usage_db_pool = pool
+
+
+def get_usage_db_pool():
+    """Return the DB pool for usage recording (may be None)."""
+    return _usage_db_pool
 
 def _resolve_litellm_service_key() -> str | None:
     return os.environ.get("GATEWAY_LITELLM_SERVICE_KEY") or os.environ.get("LITELLM_MASTER_KEY")
@@ -186,11 +211,16 @@ async def _proxy_streaming(
     upstream_url: str,
     headers: dict[str, str],
     body: bytes,
+    usage_record: UsageRecord | None = None,
+    timer: ProxyTimer | None = None,
 ) -> StreamingResponse:
     """Stream upstream response to the caller.
 
     The httpx client must stay open until the generator is fully consumed
     by the ASGI server, so we close it in the generator's ``finally``.
+    When *usage_record* is provided, the last few SSE chunks are
+    inspected for a ``usage`` block and the record is persisted
+    fire-and-forget after the stream ends.
     """
     client = httpx.AsyncClient(timeout=_PROXY_TIMEOUT)
     try:
@@ -216,13 +246,31 @@ async def _proxy_streaming(
             detail="Failed to connect to upstream service",
         ) from exc
 
+    # Keep the last few chunks for usage extraction (streaming).
+    # Only the tail matters — the final SSE event carries ``usage``.
+    _tail_chunks: list[bytes] = []
+    _MAX_TAIL = 5
+
     async def _yield():
         try:
             async for chunk in response.aiter_bytes():
+                if usage_record is not None:
+                    _tail_chunks.append(chunk)
+                    if len(_tail_chunks) > _MAX_TAIL:
+                        _tail_chunks.pop(0)
                 yield chunk
         finally:
             await response.aclose()
             await client.aclose()
+            # Fire-and-forget usage recording
+            if usage_record is not None:
+                usage_record.status_code = response.status_code
+                if timer is not None:
+                    usage_record.duration_ms = timer.elapsed_ms()
+                usage = extract_usage_streaming(_tail_chunks)
+                if usage:
+                    fill_usage(usage_record, usage)
+                record_usage(_usage_db_pool, usage_record)
 
     return StreamingResponse(
         _yield(),
@@ -236,6 +284,8 @@ async def _proxy_oneshot(
     upstream_url: str,
     headers: dict[str, str],
     body: bytes,
+    usage_record: UsageRecord | None = None,
+    timer: ProxyTimer | None = None,
 ) -> Response:
     """Non-streaming proxy: send request, return full response."""
     async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT) as client:
@@ -246,6 +296,16 @@ async def _proxy_oneshot(
                 headers=headers,
                 content=body,
             )
+            # Extract and record usage (fire-and-forget)
+            if usage_record is not None:
+                usage_record.status_code = response.status_code
+                if timer is not None:
+                    usage_record.duration_ms = timer.elapsed_ms()
+                usage = extract_usage_oneshot(response.content)
+                if usage:
+                    fill_usage(usage_record, usage)
+                record_usage(_usage_db_pool, usage_record)
+
             return Response(
                 content=response.content,
                 status_code=response.status_code,
@@ -277,6 +337,7 @@ async def _proxy_to_litellm(
     Proxy a request to the upstream LiteLLM endpoint.
 
     Handles both streaming and non-streaming responses.
+    Records token usage fire-and-forget when a DB pool is available.
     """
     upstream_url = f"{endpoint.litellm_url}/{path}"
     body = await request.body()
@@ -292,9 +353,41 @@ async def _proxy_to_litellm(
         with contextlib.suppress(ValueError, json.JSONDecodeError):
             is_streaming = json.loads(body).get("stream", False)
 
+    # Build usage record for billing
+    timer = ProxyTimer()
+    usage_record: UsageRecord | None = None
+    if _usage_db_pool is not None:
+        # Resolve endpoint tier from metadata
+        ep_tier = (
+            endpoint.metadata.get("tier")
+            or endpoint.metadata.get("owner_type")
+            or ""
+        )
+        # Requested model name (before rewrite)
+        req_model = ""
+        body_json = _json_body(body)
+        if body_json:
+            req_model = body_json.get("model", "")
+        usage_record = UsageRecord(
+            request_id=get_request_id(),
+            user_id=user_id,
+            project_id=project_id,
+            model=req_model or endpoint.model,
+            served_model=_upstream_model_name(endpoint),
+            endpoint_job_id=endpoint.job_id,
+            endpoint_tier=str(ep_tier),
+            is_streaming=is_streaming,
+        )
+
     if is_streaming:
-        return await _proxy_streaming(request, upstream_url, headers, body)
-    return await _proxy_oneshot(request, upstream_url, headers, body)
+        return await _proxy_streaming(
+            request, upstream_url, headers, body,
+            usage_record=usage_record, timer=timer,
+        )
+    return await _proxy_oneshot(
+        request, upstream_url, headers, body,
+        usage_record=usage_record, timer=timer,
+    )
 
 
 def _extract_model(body: dict) -> str:
