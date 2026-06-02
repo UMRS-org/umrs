@@ -333,6 +333,16 @@ def _format_config_text(resolved, *, show_server=False):
 
 
 def _print_config_candidates_text(discovered, *, show_server=False):
+    # Resolve which configs are actually in use (handles auto-discovery)
+    resolved_paths: dict[str, str | None] = {}
+    try:
+        resolved = resolve_loaded_config()
+        for kind in ("server", "user", "s3"):
+            layer = getattr(resolved, kind, None)
+            resolved_paths[kind] = layer.path if layer and layer.valid else None
+    except Exception:
+        pass
+
     headings = {
         "server": "Server Configs",
         "user": "User Configs",
@@ -346,10 +356,14 @@ def _print_config_candidates_text(discovered, *, show_server=False):
             print(f"  {_dim('(none)')}")
             print("")
             continue
+        active_path = resolved_paths.get(key)
         for candidate in candidates:
-            marker = _green("▸") if candidate.current else " "
+            is_active = candidate.current or (
+                active_path and os.path.realpath(candidate.path) == os.path.realpath(active_path)
+            )
+            marker = _green("▸") if is_active else " "
             dot = _status_dot(candidate.valid)
-            path_str = _bold(candidate.path) if candidate.current else candidate.path
+            path_str = _bold(candidate.path) if is_active else candidate.path
             print(f"  {marker} {dot} {path_str}")
             if candidate.error:
                 print(f"      {_red(candidate.error)}")
@@ -2438,6 +2452,15 @@ def _action_ping(ctx):
                 print(f"    {_dim(ping_result['message'])}")
         return 0
 
+    # Both ZMQ and HTTP failed — print diagnostic
+    profile_label = _bold(ctx.connection.profile_name) if ctx.connection and ctx.connection.profile_name else _dim("(none)")
+    host = getattr(ctx.connection, "server_host", "?") if ctx.connection else "?"
+    port = getattr(ctx.connection, "control_port", "?") if ctx.connection else "?"
+    print(f"  {_status_dot(False)} Server {_red('unreachable')}  {_dim('|')}  profile={profile_label}")
+    print(f"    ZMQ: {host}:{port} — not responding")
+    print(f"    HTTP: no gateway_url in connection profile")
+    print(f"    hint: switch profile with `umrs-client config use --profile <name>`")
+    print(f"          or add gateway_url to ~/.config/umrs/connections/{getattr(ctx.connection, 'profile_name', '?')}.json")
     return 1
 
 
