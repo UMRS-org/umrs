@@ -665,7 +665,16 @@ class MessageQueue:
                     with contextlib.suppress(RuntimeError):
                         self.send_string("CMD_ERROR", zmq_sender_id)
                     continue
-                return self._process_object_cmd(client_id, nb_objects, zmq_sender_id)
+                # Extract inline S3 keys if present (bypasses data-queue wait)
+                inline_keys = None
+                if len(splited_msg) > 3:
+                    raw_keys = ":".join(splited_msg[3:])
+                    if raw_keys:
+                        try:
+                            inline_keys = json.loads(raw_keys)
+                        except (json.JSONDecodeError, ValueError):
+                            logger.warning("Failed to parse inline S3 keys: %s", raw_keys[:120])
+                return self._process_object_cmd(client_id, nb_objects, zmq_sender_id, inline_keys=inline_keys)
 
             elif cmd == TaskCmd.FILE:  # prepare PUB-SUB request
                 if len(splited_msg) < 3:
@@ -917,7 +926,7 @@ class MessageQueue:
             except RuntimeError as e:
                 logger.error("Error sending NO_DATA_QUEUE to client: %s", e)
 
-    def _process_object_cmd(self, client_id, nb_objects, zmq_sender_id):
+    def _process_object_cmd(self, client_id, nb_objects, zmq_sender_id, *, inline_keys=None):
         if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
             data_queue = self.client_dictionary[client_id]["data_queue"]
             # ACK immediately so the client doesn't timeout while we collect S3 events
@@ -925,14 +934,21 @@ class MessageQueue:
                 self.send_string("ACKNOWLEDGE", zmq_sender_id)
             except RuntimeError as e:
                 logger.error("Error acknowledging object client: %s", e)
-            objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=60)
-            if len(objects) < nb_objects:
-                logger.warning(
-                    "Received %s/%s S3 events for client=%s (timeout)",
-                    len(objects),
-                    nb_objects,
-                    client_id,
+            if inline_keys is not None:
+                objects = inline_keys
+                logger.info(
+                    "Using %s inline S3 key(s) for client=%s (data-queue bypassed)",
+                    len(objects), client_id,
                 )
+            else:
+                objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=5)
+                if len(objects) < nb_objects:
+                    logger.warning(
+                        "Received %s/%s S3 events for client=%s (timeout)",
+                        len(objects),
+                        nb_objects,
+                        client_id,
+                    )
             return TaskCmd.PROCESS_OBJECTS, (client_id, objects)
         else:
             logger.warning("No data queue for client=%s", client_id)
@@ -1051,12 +1067,16 @@ class MessageQueue:
         else:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
-    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None):
+    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None, s3_keys=None):
         if self.role != "client":
             raise PermissionError("Only client can call 'notify_server'")
 
+        fields = [notification_type, client_id, nb_objects]
+        if s3_keys is not None:
+            import json as _json
+            fields.append(_json.dumps(s3_keys, ensure_ascii=False))
         self.send_control_request(
-            [notification_type, client_id, nb_objects],
+            fields,
             admin_token=admin_token,
         )
 
@@ -1272,7 +1292,6 @@ class MessageQueue:
         if self.role != 'client':
             raise PermissionError("notify_s3 can only be used by the client.")
 
-        # print(f"sending data to port: {self.port}")
         self.send_string(s3_object)
 
     def request_model_command(self, client_id, model_cmd, payload_json=""):

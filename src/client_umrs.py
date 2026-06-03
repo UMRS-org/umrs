@@ -3594,12 +3594,14 @@ def _action_s3_transfer(ctx):
         if category == "image":
             s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check=(modality not in ("volume", "movie", "volume_movie")))
             if s3_key and notify_server:
-                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
+                s3_uri = f"s3://{full_bucket_name}/{s3_key}"
+                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri])
             return s3_key, 1
         elif category == "text_file":
             s3_key = s3_store_text_file(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args)
             if s3_key and notify_server:
-                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1)
+                s3_uri = f"s3://{full_bucket_name}/{s3_key}"
+                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri])
             return s3_key, 1
         elif category == "text":
             try:
@@ -3613,7 +3615,8 @@ def _action_s3_transfer(ctx):
                             s3_key_list.append(s3_key)
                             nb_objects += 1
                     if notify_server and nb_objects > 0:
-                        ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
+                        s3_uris = [f"s3://{full_bucket_name}/{k}" for k in s3_key_list]
+                        ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects, s3_keys=s3_uris)
                     return s3_key_list, nb_objects
             except UnicodeDecodeError as e:
                 print(f"Unicode decoding error: {e}")
@@ -3645,7 +3648,8 @@ def _action_s3_transfer(ctx):
                     nb_objects += nb_sent
 
         if nb_objects > 0:
-            ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects)
+            s3_uris = [f"s3://{full_bucket_name}/{k}" for k in s3_key_list]
+            ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects, s3_keys=s3_uris)
         return s3_key_list, file_list
 
     def download_results_fn(full_bucket_name, modality, subdir):
@@ -3692,9 +3696,10 @@ def _action_s3_transfer(ctx):
             else:
                 data = parsed["summary"]["data"]
                 done = not any(
-                    entry["status"] != "Done"
+                    entry["status"] not in ("Done", "Idle")
                     and any(
-                        full_bucket_name.startswith(w["bucket"])
+                        w["bucket"] == full_bucket_name
+                        or full_bucket_name == w["bucket"] + "-output"
                         for w in entry["work"]
                     )
                     for entry in data
@@ -3830,6 +3835,7 @@ def _maybe_bootstrap_curve_session(connection) -> None:
         _logging.getLogger(__name__).debug(
             "CURVE session bootstrap failed (non-fatal): %s", exc,
         )
+        pass  # logged above at DEBUG level
 
 
 def main():
