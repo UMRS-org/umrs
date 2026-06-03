@@ -408,8 +408,14 @@ class ConnectInfoZMQ(BaseModel):
     tunnel_mode: bool
 
 
+class ConnectInfoServices(BaseModel):
+    minio_url: str | None = None
+    rag_url: str | None = None
+
+
 class ConnectInfoResponse(BaseModel):
     zmq: ConnectInfoZMQ
+    services: ConnectInfoServices | None = None
 
 
 @router.get(
@@ -451,7 +457,7 @@ def ops_connect_info() -> dict[str, Any]:
         data_start = control_port + 1
         data_end = control_port + 8
 
-    return {
+    result: dict[str, Any] = {
         "zmq": {
             "host": host,
             "control_port": control_port,
@@ -460,6 +466,19 @@ def ops_connect_info() -> dict[str, Any]:
             "tunnel_mode": tunnel_mode,
         },
     }
+
+    # Include service URLs when configured (allows clients to discover
+    # the correct MinIO/RAG endpoint instead of guessing from the host).
+    minio_url = os.environ.get("UMRS_MINIO_URL") or os.environ.get("MINIO_ENDPOINT")
+    rag_url = os.environ.get("RAG_URL")
+    if minio_url or rag_url:
+        result["services"] = {}
+        if minio_url:
+            result["services"]["minio_url"] = minio_url
+        if rag_url:
+            result["services"]["rag_url"] = rag_url
+
+    return result
 
 
 # ---------------------------------------------------------------------------

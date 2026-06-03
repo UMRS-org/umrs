@@ -3264,8 +3264,14 @@ def _action_purge_remote_buckets(ctx):
     return 1 if errors else 0
 
 
-def _maybe_write_s3cfg_from_status(parsed, user_cfg, configure_file=None):
-    """Auto-write local s3cfg if the server delivered credentials in a reload status."""
+def _maybe_write_s3cfg_from_status(parsed, user_cfg, configure_file=None, connection=None):
+    """Auto-write local s3cfg if the server delivered credentials in a reload status.
+
+    When *connection* carries a ``minio_url`` that differs from the
+    ``host_base`` inside the delivered content, the file is rewritten so the
+    client can reach MinIO directly (the server-generated s3cfg often contains
+    a localhost address that is unreachable from a remote client).
+    """
     if not isinstance(parsed, dict) or not isinstance(user_cfg, dict):
         return
     # Prefer the original s3_configuration_file from the JSON config (before
@@ -3299,6 +3305,27 @@ def _maybe_write_s3cfg_from_status(parsed, user_cfg, configure_file=None):
     if not s3cfg_content:
         return
 
+    # Rewrite host_base/host_bucket if the profile's minio_url points
+    # elsewhere (e.g. remote host vs server-local 127.0.0.1).
+    profile_minio = getattr(connection, "minio_url", None) if connection else None
+    if profile_minio:
+        try:
+            from urllib.parse import urlparse
+            parsed_url = urlparse(profile_minio)
+            profile_host = parsed_url.hostname
+            profile_port = parsed_url.port
+            if profile_host:
+                target_host = f"{profile_host}:{profile_port}" if profile_port else profile_host
+                import configparser as _cp
+                cfg = _cp.ConfigParser(inline_comment_prefixes=('#', ';'))
+                cfg.read_string(s3cfg_content)
+                if cfg.has_option("default", "host_base"):
+                    existing_host = cfg.get("default", "host_base").strip()
+                    if existing_host != target_host:
+                        s3cfg_content = s3cfg_content.replace(existing_host, target_host)
+        except Exception:
+            pass  # best-effort; write the original content
+
     try:
         os.makedirs(os.path.dirname(expanded), exist_ok=True)
         with open(expanded, "w", encoding="utf-8") as f:
@@ -3327,7 +3354,7 @@ def _action_status(ctx):
             print(format_status_text(parsed, status_target))
 
         # Auto-write local s3cfg if the server delivered credentials
-        _maybe_write_s3cfg_from_status(parsed, ctx.user, configure_file=ctx.configure_file)
+        _maybe_write_s3cfg_from_status(parsed, ctx.user, configure_file=ctx.configure_file, connection=ctx.connection)
     except Exception as e:
         print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
     finally:
@@ -3351,6 +3378,16 @@ def _action_maintenance(ctx):
                 summary = parsed.get("summary", "")
                 if summary:
                     print(summary)
+            # After HTTP reload, try to fetch s3cfg via ZMQ status
+            if isinstance(ctx.user, dict) and ctx.control_mq is not None:
+                try:
+                    effective_username = ctx.user.get('username', '')
+                    if effective_username:
+                        status_api = UMRSControlAPI(ctx.control_mq, effective_username)
+                        status_parsed = status_api.request_status("all")
+                        _maybe_write_s3cfg_from_status(status_parsed, ctx.user, configure_file=ctx.configure_file, connection=ctx.connection)
+                except Exception:
+                    pass  # s3cfg delivery is best-effort
         else:
             if args.output == 'json':
                 print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
@@ -3377,6 +3414,9 @@ def _action_maintenance(ctx):
                 summary = parsed.get("summary", "")
                 if summary:
                     print(summary)
+            # After successful reload, auto-write s3cfg if delivered
+            if args.action == "reload" and isinstance(ctx.user, dict):
+                _maybe_write_s3cfg_from_status(parsed, ctx.user, configure_file=ctx.configure_file, connection=ctx.connection)
         else:
             if args.output == 'json':
                 print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
@@ -3496,7 +3536,16 @@ def _action_s3_transfer(ctx):
     if not os.path.exists(expanded_cfg) and os.path.exists(default_docker_s3cfg):
         expanded_cfg = default_docker_s3cfg
 
-    s3, bucket_location = connect_to_s3(expanded_cfg)
+    # Use the profile's minio_url to override the s3cfg host_base when the
+    # client is connecting remotely (the server-generated s3cfg may contain a
+    # localhost address that is unreachable from the client machine).
+    endpoint_override = None
+    if hasattr(ctx, 'connection') and ctx.connection is not None:
+        profile_minio = getattr(ctx.connection, 'minio_url', None)
+        if profile_minio:
+            endpoint_override = profile_minio
+
+    s3, bucket_location = connect_to_s3(expanded_cfg, endpoint_url_override=endpoint_override)
 
     if args.action == "download_results":
         full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
