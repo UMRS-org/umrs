@@ -102,7 +102,13 @@ def pretty_print_cfg(cfg_dict, print_output=True):
 def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
     """Return a configuration summary filtered to a single user's buckets."""
     df = pd.DataFrame(columns=["Bucket alias", "Experience", "Modality", "Database", "SQL table", "Model", "Embeds?", "Metadata"])
-    buckets_cfg = cfg_dict if isinstance(cfg_dict, dict) else cfg_dict.buckets_cfg
+    # Accept dict, BucketsCfg (has .items()), or object with .buckets_cfg attr
+    if isinstance(cfg_dict, dict):
+        buckets_cfg = cfg_dict
+    elif hasattr(cfg_dict, 'items'):
+        buckets_cfg = cfg_dict
+    else:
+        buckets_cfg = cfg_dict.buckets_cfg
     for key, entry in buckets_cfg.items():
         if entry.s3_username != username:
             continue
