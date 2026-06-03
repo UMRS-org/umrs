@@ -495,30 +495,34 @@ def ops_connect_info(
 def _read_user_s3cfg(username: str) -> str | None:
     """Read existing s3cfg content for *username* from the server filesystem.
 
-    Searches the standard user-config path
-    ``~/.config/umrs/s3cfg_<username>`` and a fallback next to the
-    server JSON config file.  Returns ``None`` if no file is found.
+    Searches several locations in order (most authoritative first):
+
+    1. ``<configure_file_dir>/user_files/s3cfg_<username>``  (provisioning
+       fallback — written when the client path is unreachable on this server;
+       always reflects the most recent MinIO credentials)
+    2. ``<configure_file_dir>/s3cfg_<username>``  (next to server JSON config)
+    3. ``~/.config/umrs/s3cfg_<username>``  (standard user-config path)
+
+    Returns ``None`` if no file is found.
     """
+    candidates: list[str] = []
 
-    # Standard path
-    standard = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")
-    if os.path.isfile(standard):
-        try:
-            with open(standard, encoding="utf-8") as f:
-                return f.read()
-        except OSError:
-            pass
-
-    # Fallback: check alongside the server configure_file
+    # Provisioning fallback paths (most authoritative — written by reload)
     configure_file = os.environ.get("UMRS_CONFIGURE_FILE", "")
     if configure_file:
-        fallback = os.path.join(
-            os.path.dirname(os.path.expanduser(configure_file)),
-            f"s3cfg_{username}",
+        cfg_dir = os.path.dirname(os.path.expanduser(configure_file))
+        candidates.append(
+            os.path.join(cfg_dir, "user_files", f"s3cfg_{username}"),
         )
-        if os.path.isfile(fallback):
+        candidates.append(os.path.join(cfg_dir, f"s3cfg_{username}"))
+
+    # Standard path (may be stale if MinIO user was re-provisioned)
+    candidates.append(os.path.expanduser(f"~/.config/umrs/s3cfg_{username}"))
+
+    for path in candidates:
+        if os.path.isfile(path):
             try:
-                with open(fallback, encoding="utf-8") as f:
+                with open(path, encoding="utf-8") as f:
                     return f.read()
             except OSError:
                 pass
