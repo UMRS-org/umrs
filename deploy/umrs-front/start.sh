@@ -94,10 +94,12 @@ if [[ "$START_MODE" != "--server" ]]; then
             -e POSTGRES_USER="${POSTGRES_USER:-umrs}" \
             -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}" \
             -e POSTGRES_DB="${POSTGRES_DB_RCCS:-front_rccs}" \
+            -e POSTGRES_HOST_AUTH_METHOD=scram-sha-256 \
+            -e POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256" \
             -p 127.0.0.1:${_pg_port}:5432 \
             -v umrs_pg_data:/var/lib/postgresql/data \
             docker.io/pgvector/pgvector:pg15 \
-            postgres -c "unix_socket_directories="
+            postgres -c "listen_addresses=*" -c "unix_socket_directories="
     fi
 
     # MinIO
