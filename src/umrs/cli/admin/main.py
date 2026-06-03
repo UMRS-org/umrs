@@ -366,6 +366,8 @@ def _maybe_emit_template(args, store, rec) -> None:
                     roles=[rec.role],
                     days=getattr(args, "token_days", 30),
                     projects=rec.projects or None,
+                    gateway_url=getattr(args, "gateway_url", None) or None,
+                    profile=getattr(args, "profile", None) or None,
                 )
                 from jose import jwt as jose_jwt
 
@@ -380,15 +382,20 @@ def _maybe_emit_template(args, store, rec) -> None:
         print()
         print("  Onboarding steps for the new user:")
         if token_hint:
-            print(f"  1. (recommended) r4 via Gateway HTTP:")
-            print(f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}")
+            gw_hint = payload.get("gateway_url", "")
+            if gw_hint:
+                print(f"  1. (recommended) r4 via Gateway HTTP (gateway_url embedded — no flags needed):")
+                print(f"       r4 auth login --api-key {token_hint}")
+            else:
+                print(f"  1. (recommended) r4 via Gateway HTTP:")
+                print(f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}")
             print(f"  2. (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:")
             print(f"       umrs-client login --host <HOST> --api-key {token_hint}")
         else:
-            print(f"  1. Generate a token for the user:")
-            print(f"       umrs-server admin token generate-jwt --user {rec.username}")
+            print(f"  1. Generate a token for the user (embed --gateway-url for single-flag login):")
+            print(f"       umrs-server admin token generate-jwt --user {rec.username} --gateway-url <GATEWAY_URL>")
             print(f"  2. Give the token to the user, who runs:")
-            print(f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key <TOKEN>")
+            print(f"       r4 auth login --api-key <TOKEN>")
             print(f"     (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:")
             print(f"       umrs-client login --host <HOST> --api-key <TOKEN>")
         if not rec.slurm_account and not rec.slurm_accounts:
@@ -1083,6 +1090,18 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         type=int,
         default=30,
         help="Onboarding token validity in days (default: 30)",
+    )
+    add_p.add_argument(
+        "--gateway-url",
+        dest="gateway_url",
+        default=None,
+        help="Embed Gateway URL in the onboarding JWT so users can login with just --api-key",
+    )
+    add_p.add_argument(
+        "--profile",
+        dest="profile",
+        default=None,
+        help="Embed suggested profile name in the onboarding JWT",
     )
     add_p.add_argument(
         "--oidc-subject",
