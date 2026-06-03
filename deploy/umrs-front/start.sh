@@ -527,6 +527,7 @@ export S3_REGION="${S3_REGION:-us-east-1}"
 export S3_BUCKET="${S3_BUCKET:-r4-data}"
 export S3_USE_SSL="${S3_USE_SSL:-false}"
 export UMRS_RAG_DIRECT_URL="http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+export UMRS_ADMIN_S3_CONFIGURATION_FILE="${UMRS_ADMIN_S3_CONFIGURATION_FILE:-$HOME/.config/umrs/s3cfg}"
 
 nohup python "${REPO_ROOT}/src/server_umrs.py" \
     -c "${CONF_FILE}" \
@@ -652,7 +653,7 @@ echo "╠═══════════════════════�
 echo "║  Tunnel mode:  ${UMRS_TUNNEL_MODE}                                       ║"
 echo "║  Server host:  ${UMRS_SERVER_HOST}                                   ║"
 echo "║  Postgres:     127.0.0.1:${POSTGRES_PORT:-5432}                         ║"
-echo "║  MinIO:        ${MINIO_BIND}:${MINIO_PORT:-9000}                            ║"
+echo \"║  MinIO:        ${MINIO_BIND}:${MINIO_PORT:-9000}                            ║\"
 echo "║  S3 Presign:   ${S3_PRESIGN_ENDPOINT}          ║"
 echo "║                                                              ║"
 echo "║  RCCS Cloud:                                                 ║"

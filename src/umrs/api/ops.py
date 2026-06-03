@@ -416,6 +416,7 @@ class ConnectInfoServices(BaseModel):
 class ConnectInfoResponse(BaseModel):
     zmq: ConnectInfoZMQ
     services: ConnectInfoServices | None = None
+    s3cfg_content: str | None = None
 
 
 @router.get(
@@ -423,12 +424,16 @@ class ConnectInfoResponse(BaseModel):
     response_model=ConnectInfoResponse,
     summary="ZMQ connection parameters for client auto-discovery",
 )
-def ops_connect_info() -> dict[str, Any]:
+def ops_connect_info(
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
+) -> dict[str, Any]:
     """Return ZMQ transport parameters so clients can auto-configure.
 
-    This endpoint is unauthenticated — the information is non-secret
-    (ports, auth mode, bind address).  Clients query it during
-    ``r4 auth login`` to populate connection profiles automatically.
+    This endpoint is unauthenticated for basic discovery (ports, auth
+    mode, bind address).  When an ``X-User-ID`` header is provided
+    (forwarded by the Gateway after JWT validation), the response
+    additionally includes the user's ``s3cfg_content`` so the client
+    can write a local S3 configuration file at login time.
     """
     from umrs.shared.connection_profiles import parse_data_port_range
 
@@ -478,7 +483,88 @@ def ops_connect_info() -> dict[str, Any]:
         if rag_url:
             result["services"]["rag_url"] = rag_url
 
+    # Include per-user S3 credentials when caller identity is known.
+    if x_user_id:
+        s3cfg = _get_or_create_user_s3cfg(x_user_id)
+        if s3cfg:
+            result["s3cfg_content"] = s3cfg
+
     return result
+
+
+def _read_user_s3cfg(username: str) -> str | None:
+    """Read existing s3cfg content for *username* from the server filesystem.
+
+    Searches the standard user-config path
+    ``~/.config/umrs/s3cfg_<username>`` and a fallback next to the
+    server JSON config file.  Returns ``None`` if no file is found.
+    """
+
+    # Standard path
+    standard = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")
+    if os.path.isfile(standard):
+        try:
+            with open(standard, encoding="utf-8") as f:
+                return f.read()
+        except OSError:
+            pass
+
+    # Fallback: check alongside the server configure_file
+    configure_file = os.environ.get("UMRS_CONFIGURE_FILE", "")
+    if configure_file:
+        fallback = os.path.join(
+            os.path.dirname(os.path.expanduser(configure_file)),
+            f"s3cfg_{username}",
+        )
+        if os.path.isfile(fallback):
+            try:
+                with open(fallback, encoding="utf-8") as f:
+                    return f.read()
+            except OSError:
+                pass
+
+    return None
+
+
+def _get_or_create_user_s3cfg(username: str) -> str | None:
+    """Return the user's s3cfg content, auto-provisioning a MinIO user if needed.
+
+    First tries to read an existing s3cfg from disk (via ``_read_user_s3cfg``).
+    If none exists and ``UMRS_ADMIN_S3_CONFIGURATION_FILE`` is set, creates a
+    new MinIO IAM user with a per-user list policy and returns the generated
+    s3cfg content.  Returns ``None`` on any failure — login still succeeds
+    without s3cfg.
+    """
+    # Try existing file first (fast path)
+    existing = _read_user_s3cfg(username)
+    if existing:
+        return existing
+
+    # Auto-provision: create MinIO user on first login
+    admin_s3cfg = os.environ.get("UMRS_ADMIN_S3_CONFIGURATION_FILE", "")
+    if not admin_s3cfg:
+        # No admin config → cannot auto-provision
+        return None
+
+    try:
+        from umrs.shared.storage.s3 import connect_to_s3
+        from umrs.shared.storage.minio import minio_s3_create_user
+
+        user_s3cfg_path = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")
+
+        s3_connection, _ = connect_to_s3(admin_s3cfg)
+        try:
+            _alias, s3cfg_content = minio_s3_create_user(
+                username, s3_connection, user_s3cfg_path, admin_s3cfg,
+            )
+        finally:
+            s3_connection.close()
+
+        return s3cfg_content
+    except Exception as e:
+        # Best-effort: MinIO may be unavailable; login proceeds without s3cfg
+        print(f"Warning: auto-provision s3cfg for '{username}' failed: {e}")
+        return None
 
 
 # ---------------------------------------------------------------------------
