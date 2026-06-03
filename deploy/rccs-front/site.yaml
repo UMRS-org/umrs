@@ -28,7 +28,7 @@ description: >-
 scheduler:
   kind: slurm-remote
   partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3
-  account: rccs-dmp
+  account: cloud-users
   qos: ""
   time_limit: "04:00:00"
   gpus: 0
