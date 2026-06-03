@@ -653,7 +653,7 @@ echo "╠═══════════════════════�
 echo "║  Tunnel mode:  ${UMRS_TUNNEL_MODE}                                       ║"
 echo "║  Server host:  ${UMRS_SERVER_HOST}                                   ║"
 echo "║  Postgres:     127.0.0.1:${POSTGRES_PORT:-5432}                         ║"
-echo \"║  MinIO:        ${MINIO_BIND}:${MINIO_PORT:-9000}                            ║\"
+echo "║  MinIO:        ${MINIO_BIND}:${MINIO_PORT:-9000}                            ║"
 echo "║  S3 Presign:   ${S3_PRESIGN_ENDPOINT}          ║"
 echo "║                                                              ║"
 echo "║  RCCS Cloud:                                                 ║"
