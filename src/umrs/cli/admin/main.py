@@ -331,6 +331,14 @@ def _client_template_path(args, store, rec):
     return store.dir / f"{rec.username}.client.json"
 
 
+def _remove_client_template(store, username: str) -> None:
+    """Remove the auto-generated .client.json if it exists."""
+    client_path = store.dir / f"{username}.client.json"
+    if client_path.is_file():
+        client_path.unlink()
+        print(f"  removed {client_path}")
+
+
 def _maybe_emit_template(args, store, rec) -> None:
     tpl_path = _client_template_path(args, store, rec)
     if tpl_path is None:
@@ -457,6 +465,7 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
         deprovision_user(user_cfg, admin_s3_cfg or "")
 
         path = store.delete(args.username)
+        _remove_client_template(store, args.username)
         print(f"deprovisioned and deleted {path}")
         return 0
 
@@ -468,6 +477,7 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
             print("aborted", file=sys.stderr)
             return 1
         path = store.delete(args.username)
+        _remove_client_template(store, args.username)
         print(f"deleted {path}")
         return 0
     # Soft delete: mark disabled. Preserve job/audit history (Decision 1).
