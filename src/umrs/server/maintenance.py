@@ -614,5 +614,95 @@ def handle_purge_buckets(
         except Exception as exc:
             errors.append({"bucket": bname, "error": str(exc)})
 
+    # Remove orphaned experiences from the server-side user config so
+    # reload does not recreate the purged buckets.
+    removed_experiences = []
+    if deleted:
+        try:
+            removed_experiences = _remove_purged_experiences_from_user_config(
+                deleted, client_id, username_prefix, configure_file,
+            )
+        except Exception as exc:
+            logger.warning("Could not update user config after purge: %s", exc)
+
     status = "ok" if not errors else ("partial" if deleted else "error")
-    return json.dumps({"status": status, "deleted": deleted, "errors": errors})
+    result = {"status": status, "deleted": deleted, "errors": errors}
+    if removed_experiences:
+        result["removed_experiences"] = removed_experiences
+    return json.dumps(result)
+
+
+def _remove_purged_experiences_from_user_config(
+    deleted_buckets: list[str],
+    client_id: str,
+    username_prefix: str,
+    configure_file: str,
+) -> list[str]:
+    """Remove experiences whose buckets were all purged from the user config.
+
+    Returns the list of experience names that were removed.
+    """
+    import json as _json
+
+    # Extract normalised xp_names from deleted bucket names.
+    # Bucket format: <username_norm>.<xp_name_norm>.<alias>[-output]
+    purged_xp_names: set[str] = set()
+    for bname in deleted_buckets:
+        rest = bname[len(username_prefix):]  # already validated prefix
+        parts = rest.split(".", 1)
+        if len(parts) >= 2:
+            purged_xp_names.add(parts[0])
+
+    if not purged_xp_names:
+        return []
+
+    # Find the user's config file via server config
+    from umrs.shared.json_config import load_server_cfg_file
+    _admin_s3, users, _server_cfg = load_server_cfg_file(configure_file)
+    user_cfg = None
+    user_cfg_path = None
+    for u in users:
+        if u.get("username") == client_id:
+            user_cfg = u
+            user_cfg_path = u.get("config_file_path")
+            break
+
+    if not user_cfg or not user_cfg_path:
+        return []
+
+    experiences = user_cfg.get("experiences", [])
+    kept = []
+    removed_names = []
+    for xp in experiences:
+        xp_name = xp.get("xp_name", "")
+        # Normalise the same way as bucket names
+        xp_norm = xp_name.strip().lower().replace(" ", "-").replace("_", "-")
+        if xp_norm in purged_xp_names:
+            removed_names.append(xp_name)
+        else:
+            kept.append(xp)
+
+    if not removed_names:
+        return []
+
+    # Re-read the raw file to preserve structure, then update experiences
+    import os
+    cfg_path = os.path.expanduser(user_cfg_path)
+    with open(cfg_path, encoding="utf-8") as f:
+        raw_cfg = _json.load(f)
+
+    raw_cfg["experiences"] = [
+        xp for xp in raw_cfg.get("experiences", [])
+        if xp.get("xp_name", "").strip().lower().replace(" ", "-").replace("_", "-")
+        not in purged_xp_names
+    ]
+
+    with open(cfg_path, "w", encoding="utf-8") as f:
+        _json.dump(raw_cfg, f, indent=4, ensure_ascii=False)
+        f.write("\n")
+
+    logger.info(
+        "Removed %d experience(s) from %s after purge: %s",
+        len(removed_names), cfg_path, ", ".join(removed_names),
+    )
+    return removed_names
