@@ -741,7 +741,6 @@ def _build_jwt_payload(
     days: int,
     *,
     projects: list[str] | None = None,
-    gateway_url: str | None = None,
     profile: str | None = None,
 ) -> dict[str, Any]:
     """Build the JWT claims payload.
@@ -751,8 +750,8 @@ def _build_jwt_payload(
     multiple projects.  ``project_id`` is always emitted for backward
     compatibility (set to the first entry of *projects* when given).
 
-    Optional *gateway_url* and *profile* embed client-connection hints
-    so ``r4 auth login --api-key <token>`` can auto-configure everything.
+    Optional *profile* embeds a suggested profile name so
+    ``r4 auth login --api-key <token>`` can auto-select the profile.
     """
     import time
 
@@ -770,8 +769,6 @@ def _build_jwt_payload(
     }
     if projects and len(projects) > 1:
         payload["project_memberships"] = list(projects)
-    if gateway_url:
-        payload["gateway_url"] = gateway_url
     if profile:
         payload["profile"] = profile
     return payload
@@ -810,7 +807,6 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
     payload = _build_jwt_payload(
         args.user, email, args.project, roles, args.days,
         projects=projects,
-        gateway_url=getattr(args, "gateway_url", None),
         profile=getattr(args, "profile", None),
     )
     token = jose_jwt.encode(payload, secret, algorithm="HS256")
@@ -841,8 +837,6 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
         if memberships:
             print(f"  projects:   {', '.join(memberships)}")
         print(f"  roles:      {', '.join(roles)}")
-        if payload.get("gateway_url"):
-            print(f"  gateway:    {payload['gateway_url']}")
         if payload.get("profile"):
             print(f"  profile:    {payload['profile']}")
         print(f"  expires:    {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(payload['exp']))}")
@@ -1001,8 +995,8 @@ _GENERATE_JWT_DESCRIPTION = (
     "The token carries sub, project_id, roles, and exp claims. "
     "Use --projects to grant access to multiple projects in a single token "
     "(the first project becomes the default project_id). "
-    "Use --gateway-url and --profile to embed client-connection hints "
-    "so 'r4 auth login --api-key <token>' auto-configures everything. "
+    "Use --profile to embed a suggested profile name "
+    "so 'r4 auth login --api-key <token>' auto-selects the profile. "
     "For shared user sessions prefer OIDC/Okta. "
     "The signing secret is read from --secret, $JWT_SECRET, the persisted Gateway secret, "
     "or the built-in dev default. "
@@ -1248,10 +1242,6 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
     jwt_p.add_argument(
         "--secret", "-s", default=None,
         help="JWT signing secret. Default: $JWT_SECRET, Gateway secret, or dev default",
-    )
-    jwt_p.add_argument(
-        "--gateway-url", default=None,
-        help="Embed Gateway URL in token so 'r4 auth login --api-key <token>' auto-configures the client",
     )
     jwt_p.add_argument(
         "--profile", default=None,
