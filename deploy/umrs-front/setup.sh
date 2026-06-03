@@ -83,8 +83,8 @@ UMRS_RCCS_ZMQ_PORT=50090
 UMRS_RCCS_DATA_PORT_RANGE=50091-50098
 UMRS_AI4S_ZMQ_PORT=50100
 UMRS_AI4S_DATA_PORT_RANGE=50101-50108
-MINIO_PORT=9000
-MINIO_CONSOLE_PORT=9001
+MINIO_PORT=50009
+MINIO_CONSOLE_PORT=50011
 POSTGRES_PORT=5432
 
 # Network / Tunnel mode
@@ -111,7 +111,7 @@ JWT_AUDIENCE=
 JWT_DEFAULT_PROJECT=default
 # S3 presigned URL endpoint — use the external IP when not tunneling so
 # compute nodes can reach MinIO directly.
-# S3_PRESIGN_ENDPOINT=http://134.160.189.136:9000
+# S3_PRESIGN_ENDPOINT=http://134.160.189.136:50009
 ENVEOF
     log "*** Edit .env to set proper secrets before starting ***"
 fi

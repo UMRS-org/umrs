@@ -54,6 +54,7 @@ def test_minio_s3_create_user_rewrites_unsafe_existing_secret(tmp_path, monkeypa
 
     monkeypatch.setattr(minio_storage, "minio_check_create_alias", lambda *args, **kwargs: True)
     monkeypatch.setattr(minio_storage, "minio_check_create_list_only_policy", lambda alias: "listonly")
+    monkeypatch.setattr(minio_storage, "minio_check_create_user_list_policy", lambda alias, username: f"list-{username}")
     monkeypatch.setattr(
         "umrs.shared.storage.s3.s3_strong_password",
         lambda length=24: "safeSecret123",
@@ -80,7 +81,7 @@ def test_minio_s3_create_user_rewrites_unsafe_existing_secret(tmp_path, monkeypa
         "user": "user1",
         "password": "safeSecret123",
         "target": "myminio",
-        "policy_name": "listonly",
+        "policy_name": "list-user1",
     }
 
     cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))

@@ -384,6 +384,32 @@ def check_duplicated_database(users):
             databases_name_dict[db_name] = username
 
 
+def _migrate_list_policies(admin_s3_cfg_path, users):
+    """Migrate users from shared ``listonly`` to per-user ``list-{username}`` policy.
+
+    Best-effort: logs warnings but does not abort reload on failure.
+    """
+    import configparser as _cp
+    import os
+
+    try:
+        cfg = _cp.ConfigParser(inline_comment_prefixes=("#", ";"))
+        cfg.read(os.path.expanduser(admin_s3_cfg_path))
+        alias = cfg.get("default", "alias", fallback="myminio")
+    except Exception as e:
+        print(f"Warning: cannot read admin s3cfg for policy migration: {e}")
+        return
+
+    from umrs.shared.storage.minio import minio_migrate_user_list_policy
+
+    for u in users:
+        username = u["username"]
+        try:
+            minio_migrate_user_list_policy(username, alias)
+        except Exception as e:
+            print(f"Warning: policy migration failed for '{username}': {e}")
+
+
 def reload_configuration(
     configure_file, buckets_cfg, user_config_map, log_output=True
 ):
@@ -415,6 +441,9 @@ def reload_configuration(
             s3cfg_content = create_s3_sql_users(u, new_admin_s3_cfg)
             if s3cfg_content:
                 s3cfg_by_user[u["username"]] = s3cfg_content
+
+        # Migrate existing users from shared 'listonly' to per-user list policy
+        _migrate_list_policies(new_admin_s3_cfg, new_users)
 
         new_server_cfg = ServerCfg()
         for u in new_users:

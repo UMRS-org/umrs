@@ -571,6 +571,7 @@ export VISION_REQUIRE_PRESIGNED_URLS="${VISION_REQUIRE_PRESIGNED_URLS:-true}"
 export SENTENCE_TRANSFORMERS_HOME="${SENTENCE_TRANSFORMERS_DIR}"
 export HF_HOME="${HF_CACHE_DIR}"
 export UMRS_MODEL_STAGING_ROOT="${MODEL_DIR}"
+export UMRS_ADMIN_S3_CONFIGURATION_FILE="${UMRS_ADMIN_S3_CONFIGURATION_FILE:-$HOME/.config/umrs/s3cfg}"
 
 # Slurm wrapper script — site-specific (sets RIVAULT_DIR, model paths, profiles).
 # Override with RIVAULT_SLURM_SCRIPT in .env if your wrapper is elsewhere.
