@@ -1,6 +1,9 @@
 """Server maintenance operations: recompute, update, check, reload dispatch."""
 
+import json as _json
 import logging
+import os
+import tempfile
 import time
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
@@ -16,6 +19,56 @@ from umrs.shared.sql_helpers import create_db_name
 from umrs.shared.storage.s3 import list_s3_bucket
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# HTTP config persistence helper
+# ---------------------------------------------------------------------------
+
+def persist_uploaded_user_config(
+    user_config: dict, expected_username: str, configure_file: str,
+) -> None:
+    """Write a user config dict to disk so the next reload picks it up.
+
+    This is the HTTP-path equivalent of the ZMQ FILE upload flow.  It
+    serialises ``user_config`` to a temp file, then delegates to the
+    existing ``file_handling.persist_uploaded_user_config`` which validates
+    the schema, checks identity, and atomically replaces the user's JSON
+    file on the server.
+    """
+    from umrs.server.file_handling import (
+        persist_uploaded_user_config as _persist_file,
+    )
+    from umrs.shared.json_config import load_server_cfg_file
+
+    # Build a user_config_map so persist knows where the user's file is
+    _, users, _ = load_server_cfg_file(configure_file)
+    user_config_map: dict[str, str] = {}
+    for u in users:
+        uname = u.get("username")
+        if uname and u.get("config_file_path"):
+            user_config_map[uname] = u["config_file_path"]
+
+    fd, tmp_path = tempfile.mkstemp(suffix=".json", prefix="umrs_upload_")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            _json.dump(user_config, f, indent=4, ensure_ascii=False)
+            f.write("\n")
+        ok, uname, dest = _persist_file(
+            tmp_path, configure_file, user_config_map,
+            expected_username=expected_username,
+        )
+        if not ok:
+            raise ValueError(
+                f"Config persistence failed for user '{expected_username}'"
+            )
+        logger.info("Persisted HTTP-uploaded config for '%s' → %s", uname, dest)
+    finally:
+        # Clean up temp file if persist didn't remove it
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 # ---------------------------------------------------------------------------

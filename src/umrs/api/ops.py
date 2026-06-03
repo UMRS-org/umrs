@@ -572,9 +572,9 @@ def _get_or_create_user_s3cfg(username: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 class OpsReloadRequest(BaseModel):
-    """Optional request body for reload.  Currently empty — the server
-    re-reads its own ``configure_file`` from disk."""
-    pass
+    """Optional request body for reload.  When ``user_config`` is provided,
+    the server persists it to the user's config file before re-reading."""
+    user_config: dict | None = None
 
 
 class OpsReloadResponse(BaseModel):
@@ -611,6 +611,7 @@ def set_reload_context(
     summary="Trigger configuration reload",
 )
 def ops_reload(
+    body: OpsReloadRequest = OpsReloadRequest(),
     _admin: None = Depends(require_ops_admin),
     x_user_id: str | None = Header(None, alias="X-User-ID"),
 ) -> dict[str, Any]:
@@ -620,6 +621,10 @@ def ops_reload(
     re-reads ``configure_file``, creates any missing MinIO/Postgres
     resources, and updates the live ``buckets_cfg``.
 
+    When ``user_config`` is provided in the request body, the server
+    persists it to the user's config file before reloading — this is how
+    the client synchronises locally-added experiences to the server.
+
     Requires admin privileges.  When ``X-User-ID`` is provided, the
     returned summary is filtered to only show that user's buckets.
     """
@@ -628,6 +633,19 @@ def ops_reload(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Reload context not initialised — server may still be starting",
         )
+
+    # Persist uploaded user config before reload so the server sees it.
+    if body.user_config and x_user_id:
+        try:
+            from umrs.server.maintenance import persist_uploaded_user_config
+            persist_uploaded_user_config(
+                body.user_config, x_user_id, _reload_configure_file,
+            )
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to persist user config for %s: %s", x_user_id, exc,
+            )
 
     from umrs.server.maintenance import reload_configuration
 

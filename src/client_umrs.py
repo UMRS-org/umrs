@@ -2316,17 +2316,28 @@ def _http_ping(gateway_url: str, api_key: str | None = None) -> dict:
         return {"status": "error", "server_ready": False, "message": str(e)}
 
 
-def _http_reload(gateway_url: str, api_key: str | None = None) -> dict:
+def _http_reload(
+    gateway_url: str,
+    api_key: str | None = None,
+    *,
+    user_config: dict | None = None,
+    user_id: str | None = None,
+) -> dict:
     """Trigger config reload via the HTTP gateway."""
     import urllib.request
     import urllib.error
 
     url = f"{gateway_url.rstrip('/')}/gw/ops/reload"
-    data = b"{}"
+    payload: dict = {}
+    if user_config is not None:
+        payload["user_config"] = user_config
+    data = _json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(url, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     if api_key:
         req.add_header("Authorization", f"Bearer {api_key}")
+    if user_id:
+        req.add_header("X-User-ID", user_id)
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             body = _json.loads(resp.read().decode("utf-8"))
@@ -3409,7 +3420,22 @@ def _action_maintenance(ctx):
     gateway_url = _get_gateway_url_from_ctx(ctx)
     if gateway_url and args.action == "reload":
         api_key = _get_api_key_from_profile(ctx)
-        parsed = _http_reload(gateway_url, api_key)
+        # Include local user config in reload request so the server persists
+        # any locally-added experiences before re-reading its configuration.
+        user_config_json = None
+        if isinstance(ctx.user, dict) and ctx.config_state.user.valid:
+            try:
+                cfg_path = Path(ctx.config_state.user.path).expanduser()
+                if cfg_path.is_file():
+                    with open(cfg_path, encoding="utf-8") as f:
+                        user_config_json = _json.load(f)
+            except Exception:
+                pass  # best-effort; reload still proceeds without config upload
+        parsed = _http_reload(
+            gateway_url, api_key,
+            user_config=user_config_json,
+            user_id=ctx.user.get('username') if isinstance(ctx.user, dict) else None,
+        )
         if parsed.get("status") == "ok":
             if args.output == 'json':
                 print(api_json(action=args.action, accepted=True, output_format='json'))
