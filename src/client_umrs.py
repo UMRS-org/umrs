@@ -3266,6 +3266,41 @@ def _action_purge_remote_buckets(ctx):
         print(f"\n  {_green('✓')} Purged {len(deleted)} bucket(s).")
     elif errors:
         print(f"\n  {_yellow('⚠')} Deleted {len(deleted)}, failed {len(errors)}.")
+
+    # Remove orphaned experiences from local user config so they stay gone
+    # after server reload.
+    if deleted and isinstance(ctx.user, dict) and ctx.config_state.user.valid:
+        purged_xp_names = set()
+        for bname in deleted:
+            xp = _xp_name_from_bucket_path(bname, effective_username)
+            if xp != "?":
+                purged_xp_names.add(xp)
+        if purged_xp_names:
+            try:
+                import json as _json_mod
+
+                user_cfg_path = Path(ctx.config_state.user.path).expanduser()
+                with open(user_cfg_path, encoding="utf-8") as f:
+                    user_cfg = _json_mod.load(f)
+                experiences = user_cfg.get("experiences", [])
+                # Normalise xp_name to match bucket-path form (lower, hyphens)
+                kept = []
+                removed_names = []
+                for xp in experiences:
+                    xp_norm = _normalise_recovery_part(xp.get("xp_name", ""))
+                    if xp_norm in purged_xp_names:
+                        removed_names.append(xp.get("xp_name", xp_norm))
+                    else:
+                        kept.append(xp)
+                if removed_names:
+                    user_cfg["experiences"] = kept
+                    _write_json_file(user_cfg_path, user_cfg)
+                    for rn in removed_names:
+                        print(f"  {_green('✓')} Removed experience '{rn}' from local config")
+                    print(f"  {_dim('Run')} umrs-client reload {_dim('to sync with server.')}")
+            except Exception as exc:
+                print(f"  {_yellow('⚠')} Could not update local config: {exc}")
+
     return 1 if errors else 0
 
 
