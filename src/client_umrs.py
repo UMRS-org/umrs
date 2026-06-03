@@ -2215,6 +2215,11 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
                     xp = _xp_name_from_bucket_path(eb['name'], username)
                     xp_label = f"  {_dim('experience=')}{ xp}"
                     lines.append(f"  {eb['name']}  {_dim(str(eb.get('object_count', '')) + ' objects')}{xp_label}")
+                lines.append("")
+                lines.append(f"  {_dim('Hints:')}")
+                lines.append(f"  {_dim('  Remove extra buckets:')}  umrs-client purge_remote_buckets")
+                lines.append(f"  {_dim('  Add experience back:')}   umrs-client experience import <experience.json>")
+                lines.append(f"  {_dim('  Edit user config:')}      umrs-client config edit --user")
             warn = (remote_info or {}).get("warning")
             if warn:
                 lines.append(f"  {_yellow(warn)}")
