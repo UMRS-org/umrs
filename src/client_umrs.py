@@ -3786,8 +3786,52 @@ _ACTION_HANDLERS = {
 }
 
 
+def _maybe_load_saved_curve_session() -> bool:
+    """Try to load a saved CURVE session from ``~/.config/r4/curve-session.json``.
+
+    If a valid (non-expired, >60s remaining) session exists, inject its keys
+    into the environment so MessageQueue picks them up.  Returns True on success.
+
+    This avoids creating a new session on every client invocation when ``r4 login``
+    has already established one.  No r4 package import — reads the JSON directly.
+    """
+    try:
+        from pathlib import Path as _Path
+        import json as _json
+        import time as _time
+
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        session_path = (_Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4") / "curve-session.json"
+        if not session_path.is_file():
+            return False
+        data = _json.loads(session_path.read_text(encoding="utf-8"))
+        expires_at = data.get("expires_at", 0)
+        if _time.time() >= (expires_at - 60):
+            return False
+        server_pk = data.get("server_public_key", "")
+        client_pk = data.get("client_public_key", "")
+        client_sk = data.get("client_secret_key", "")
+        if not (server_pk and client_pk and client_sk):
+            return False
+        os.environ["UMRS_ZMQ_AUTH_TYPE"] = "session"
+        os.environ["UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY"] = server_pk
+        os.environ["UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY"] = client_pk
+        os.environ["UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY"] = client_sk
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "Loaded saved CURVE session from %s (TTL %.0fs)",
+            session_path, expires_at - _time.time(),
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _maybe_bootstrap_curve_session(connection) -> None:
     """Bootstrap a CURVE session if the connection uses session-mode ZMQ auth.
+
+    First tries to reuse a saved session from ``~/.config/r4/curve-session.json``
+    (written by ``r4 login``).  Falls back to bootstrapping a new session via HTTP.
 
     This is a no-op when:
     - No gateway_url is configured (direct ZMQ or static CURVE)
@@ -3802,6 +3846,10 @@ def _maybe_bootstrap_curve_session(connection) -> None:
     profile_auth_type = getattr(connection, "zmq_auth_type", None) or ""
     auth_type = (profile_auth_type or os.environ.get("UMRS_ZMQ_AUTH_TYPE", "")).lower()
     if auth_type != "session":
+        return
+
+    # Try to reuse a saved session from r4 login (avoids creating new sessions)
+    if _maybe_load_saved_curve_session():
         return
 
     # Get JWT from env vars first, then fall back to profile .token file, then r4 tokens
