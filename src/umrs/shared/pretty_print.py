@@ -99,6 +99,33 @@ def pretty_print_cfg(cfg_dict, print_output=True):
     return message
 
 
+def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
+    """Return a configuration summary filtered to a single user's buckets."""
+    df = pd.DataFrame(columns=["Bucket alias", "Experience", "Modality", "Database", "SQL table", "Model", "Embeds?", "Metadata"])
+    buckets_cfg = cfg_dict if isinstance(cfg_dict, dict) else cfg_dict.buckets_cfg
+    for key, entry in buckets_cfg.items():
+        if entry.s3_username != username:
+            continue
+        metadata_str = ""
+        for mentry in entry.metadata.values():
+            name = mentry["name"]
+            value_type = mentry["type"]
+            if metadata_str:
+                metadata_str += " ; "
+            metadata_str += f"{name} ({value_type})"
+        df.loc[len(df)] = [entry.bucket_alias, entry.xp_name, entry.modality_name, entry.db_name, entry.table_name, entry.model.model_name, entry.store_embeddings_flag, metadata_str]
+
+    df.sort_values(by=["Bucket alias"], inplace=True)
+    df.reset_index(drop=True, inplace=True)
+    if df.empty:
+        message = f"\nNo configuration found for user '{username}'."
+    else:
+        message = f"\nConfiguration for '{username}':\n" + tabulate(df, headers='keys', tablefmt='fancy_grid')
+    if print_output:
+        print(message)
+    return message
+
+
 def pretty_print_user_cfg(cfg_dict, print_output=True):
 
     df = pd.DataFrame(columns=["Modality", "Bucket alias", "Experience", "Bucket path", "DB name", "SQL user"])

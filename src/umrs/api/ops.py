@@ -612,6 +612,7 @@ def set_reload_context(
 )
 def ops_reload(
     _admin: None = Depends(require_ops_admin),
+    x_user_id: str | None = Header(None, alias="X-User-ID"),
 ) -> dict[str, Any]:
     """Re-read the server configuration from disk and re-provision users.
 
@@ -619,7 +620,8 @@ def ops_reload(
     re-reads ``configure_file``, creates any missing MinIO/Postgres
     resources, and updates the live ``buckets_cfg``.
 
-    Requires admin privileges.
+    Requires admin privileges.  When ``X-User-ID`` is provided, the
+    returned summary is filtered to only show that user's buckets.
     """
     if _reload_configure_file is None or _reload_buckets_cfg is None:
         raise HTTPException(
@@ -642,9 +644,19 @@ def ops_reload(
             "summary": outcome.get("summary", ""),
             "error": outcome["error"],
         }
+
+    summary = outcome.get("summary", "Reload complete")
+    # Filter summary to the requesting user when identity is known.
+    if x_user_id and _reload_buckets_cfg is not None:
+        from umrs.shared.pretty_print import pretty_print_cfg_for_user
+
+        summary = pretty_print_cfg_for_user(
+            _reload_buckets_cfg, x_user_id, print_output=False,
+        )
+
     return {
         "status": "ok",
-        "summary": outcome.get("summary", "Reload complete"),
+        "summary": summary,
     }
 
 
