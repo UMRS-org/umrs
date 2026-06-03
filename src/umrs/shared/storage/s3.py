@@ -99,12 +99,15 @@ def s3_create_users_and_buckets(username, s3_connection, user_s3_configuration_f
 
 
 
-def connect_to_s3(config_file):
+def connect_to_s3(config_file, *, endpoint_url_override: str | None = None):
     """
     Parses an S3 configuration file and returns a boto3 S3 client.
 
     Args:
-        file_path (str): Path to the S3 config file.
+        config_file (str): Path to the S3 config file.
+        endpoint_url_override (str | None): If provided, use this endpoint URL
+            instead of the ``host_base`` value in the config file.  Useful when
+            the config was generated on a remote server with a localhost address.
 
     Returns:
         boto3.client: Configured S3 client.
@@ -131,8 +134,11 @@ def connect_to_s3(config_file):
     bucket_location = config.get("default", "bucket_location")
 
     # Ensure correct protocol (http or https)
-    protocol = "https" if use_https else "http"
-    endpoint_url = f"{protocol}://{s3_host}"
+    if endpoint_url_override:
+        endpoint_url = endpoint_url_override
+    else:
+        protocol = "https" if use_https else "http"
+        endpoint_url = f"{protocol}://{s3_host}"
 
     print(f"--> Connecting to S3 service on: {endpoint_url}...")
 
