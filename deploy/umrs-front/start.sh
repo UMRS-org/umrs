@@ -65,24 +65,39 @@ UMRS_ZMQ_AUTH_TYPE="${UMRS_ZMQ_AUTH_TYPE:-none}"
 if [[ "$START_MODE" != "--server" ]]; then
     echo "Starting infrastructure containers..."
 
-    # Postgres — skip if native postgres is already listening
-    if ss -tlnp 2>/dev/null | grep -q ":${POSTGRES_PORT:-5432}" ; then
-        echo "  Postgres already listening on port ${POSTGRES_PORT:-5432} (native/external)."
-    elif ! podman inspect umrs-postgres >/dev/null 2>&1; then
+    # Postgres — prefer podman container; detect port conflicts
+    _pg_port="${POSTGRES_PORT:-5432}"
+    _pg_container_exists=false
+    _pg_container_running=false
+    if podman inspect umrs-postgres >/dev/null 2>&1; then
+        _pg_container_exists=true
+        [[ "$(podman inspect -f '{{.State.Status}}' umrs-postgres)" == "running" ]] && _pg_container_running=true
+    fi
+
+    if $_pg_container_running; then
+        echo "  Postgres container already running."
+    elif $_pg_container_exists; then
+        # Container exists but is stopped — check if port is free
+        if ss -tlnp 2>/dev/null | grep -q ":${_pg_port}\b"; then
+            echo "  WARNING: Port ${_pg_port} is occupied by another process (native postgres?)."
+            echo "           Attempting to use it — if UMRS fails to connect, stop the native"
+            echo "           postgres and re-run:  sudo systemctl stop postgresql"
+        else
+            echo "  Starting existing postgres container..."
+            podman start umrs-postgres
+        fi
+    elif ss -tlnp 2>/dev/null | grep -q ":${_pg_port}\b"; then
+        echo "  Postgres already listening on port ${_pg_port} (native/external)."
+    else
         echo "  Creating postgres container..."
         podman run -d --name umrs-postgres \
             -e POSTGRES_USER="${POSTGRES_USER:-umrs}" \
             -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}" \
             -e POSTGRES_DB="${POSTGRES_DB_RCCS:-front_rccs}" \
-            -p 127.0.0.1:${POSTGRES_PORT:-5432}:5432 \
+            -p 127.0.0.1:${_pg_port}:5432 \
             -v umrs_pg_data:/var/lib/postgresql/data \
             docker.io/pgvector/pgvector:pg15 \
             postgres -c "unix_socket_directories="
-    elif [[ "$(podman inspect -f '{{.State.Status}}' umrs-postgres)" != "running" ]]; then
-        echo "  Starting existing postgres container..."
-        podman start umrs-postgres
-    else
-        echo "  Postgres already running."
     fi
 
     # MinIO
@@ -107,7 +122,8 @@ if [[ "$START_MODE" != "--server" ]]; then
     echo -n "  Waiting for postgres..."
     for i in $(seq 1 30); do
         if pg_isready -h 127.0.0.1 -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER:-umrs}" >/dev/null 2>&1 || \
-           podman exec umrs-postgres pg_isready -h localhost -U "${POSTGRES_USER:-umrs}" >/dev/null 2>&1; then
+           podman exec umrs-postgres pg_isready -h localhost -U "${POSTGRES_USER:-umrs}" >/dev/null 2>&1 || \
+           bash -c "echo >/dev/tcp/127.0.0.1/${POSTGRES_PORT:-5432}" 2>/dev/null; then
             echo " ready."
             break
         fi
