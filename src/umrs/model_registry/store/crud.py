@@ -432,8 +432,8 @@ class ModelStore:
         self,
         model_id: str,
         ctx: AccessContext,
-    ) -> None:
-        """Delete a model entry (catalog only, not files)."""
+    ) -> ModelEntry:
+        """Delete a model catalog entry and return the deleted entry."""
         model = self.get_model(model_id)
         self.acl.enforce_write(model, ctx)
 
@@ -446,6 +446,7 @@ class ModelStore:
 
         logger.info("Deleted model %s (%s)", model_id, model.name)
         METRICS.model_event("deleted")
+        return model
 
     # -------------------------------------------------------------------------
     # Publish (U-815)

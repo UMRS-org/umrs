@@ -889,22 +889,43 @@ async def update_model(
 @router.delete("/{model_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_model(
     model_id: str,
+    delete_files: bool = Query(False, description="Also remove model files from disk"),
     ctx: AccessContext = Depends(get_access_context),
     store: ModelStore = Depends(get_model_store),
 ) -> None:
     """
     Delete a model entry (U-816).
 
-    Note: This only removes the catalog entry, not the actual model files.
+    When delete_files=true, also removes the model directory from disk.
     """
     try:
-        store.delete_model(model_id, ctx)
+        model = store.delete_model(model_id, ctx)
 
         # Governance tracking
         from .governance import record_resource_deleted
         record_resource_deleted("models", model_id)
 
         logger.info("User %s deleted model %s", ctx.user_id, model_id)
+
+        if delete_files and model.storage_ref:
+            import pathlib
+            import shutil
+
+            storage_path = pathlib.Path(model.storage_ref)
+            if storage_path.is_dir():
+                shutil.rmtree(storage_path)
+                logger.info(
+                    "Removed model files at %s for model %s",
+                    model.storage_ref,
+                    model_id,
+                )
+            elif storage_path.is_file():
+                storage_path.unlink()
+                logger.info(
+                    "Removed model file at %s for model %s",
+                    model.storage_ref,
+                    model_id,
+                )
     except ModelNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

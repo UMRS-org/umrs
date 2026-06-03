@@ -287,7 +287,10 @@ def _validate_register_request(client_id: str, payload: dict[str, Any]) -> dict[
 
     normalized_path = os.path.abspath(os.path.expanduser(path))
     if not os.path.exists(normalized_path):
-        raise ValueError(f"Path does not exist: {normalized_path}")
+        logger.warning(
+            "Path not reachable from UMRS server (may be on HPC filesystem): %s",
+            normalized_path,
+        )
 
     PathValidator().validate_scope_path(
         normalized_path,
