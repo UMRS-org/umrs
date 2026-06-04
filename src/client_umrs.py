@@ -208,6 +208,328 @@ def _extract_bucket_aliases(user_cfg):
     return sorted(aliases)
 
 
+# ---------------------------------------------------------------------------
+# umrs-client info — one-shot connection diagnostic
+# ---------------------------------------------------------------------------
+def _handle_info(args):
+    """Show transport, auth, and S3 status at a glance."""
+    import configparser as _cp
+
+    lines: list[str] = []
+
+    # --- Connection profile ---
+    connection = resolve_connection(
+        explicit_profile_name=args.profile,
+        explicit_server_ip=args.server_ip,
+        explicit_control_port=args.control_port,
+    )
+    prof = connection.profile_name or "(none)"
+    lines.append(_section("Connection Profile"))
+    lines.append(_kv("profile", _bold(prof)))
+    lines.append(_kv("mode", connection.mode))
+    lines.append(_kv("profile_path", _dim(connection.profile_path or "n/a")))
+
+    # --- Transport ---
+    lines.append("")
+    lines.append(_section("Transport"))
+
+    gateway_url = getattr(connection, "gateway_url", None)
+    zmq_host = connection.server_host
+    zmq_port = connection.control_port
+    zmq_auth = getattr(connection, "zmq_auth_type", None) or "none"
+    tunnel = connection.tunnel_mode
+
+    lines.append(_kv("zmq_host", f"{zmq_host}:{zmq_port}"))
+    lines.append(_kv("zmq_auth_type", zmq_auth))
+    lines.append(_kv("tunnel_mode", str(tunnel).lower()))
+    lines.append(_kv("data_port_range", connection.data_port_range_label))
+    if gateway_url:
+        lines.append(_kv("gateway_url", _bold(gateway_url)))
+    else:
+        lines.append(_kv("gateway_url", _dim("(not set)")))
+
+    # Which actions use which transport?
+    gateway_actions = {"reload", "list_buckets", "model list"} if gateway_url else set()
+    zmq_actions = {"ping", "status", "upload_file", "upload_dir", "download_results",
+                   "recompute", "update", "check", "export_embeddings",
+                   "job *", "endpoint *", "workflow *", "monitor"}
+    lines.append("")
+    lines.append(_kv("gateway_actions", ", ".join(sorted(gateway_actions)) if gateway_actions else _dim("none")))
+    lines.append(_kv("zmq_actions", _dim("all others (ping, upload, jobs, endpoints, ...)")))
+
+    # --- ZMQ reachability ---
+    lines.append("")
+    lines.append(_section("ZMQ Status"))
+    try:
+        # Load CURVE session so ZMQ check uses auth if available
+        _maybe_load_saved_curve_session()
+        mq = MessageQueue(
+            role="client",
+            queue_type="control",
+            server_ip=zmq_host,
+            port=zmq_port,
+            tunnel_mode=tunnel,
+            prefer_env_server_host=False,
+        )
+        ready = mq.is_server_ready(timeout_ms=min(connection.health_check_timeout_ms, 3000))
+        mq.close()
+        if ready:
+            lines.append(_kv("server", f"{_green('● reachable')}  {_dim(f'{zmq_host}:{zmq_port}')}"))
+        else:
+            lines.append(_kv("server", f"{_red('● not responding')}  {_dim(f'{zmq_host}:{zmq_port}')}"))
+    except Exception as exc:
+        lines.append(_kv("server", f"{_red('● error')}  {_dim(str(exc)[:80])}"))
+
+    # --- CURVE session ---
+    lines.append("")
+    lines.append(_section("CURVE Session"))
+    try:
+        from pathlib import Path as _Path
+        import time as _time
+
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        curve_path = (_Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4") / "curve-session.json"
+        if curve_path.is_file():
+            data = _json.loads(curve_path.read_text(encoding="utf-8"))
+            expires_at = data.get("expires_at", 0)
+            ttl = expires_at - _time.time()
+            if ttl > 60:
+                lines.append(_kv("status", _green("active")))
+                lines.append(_kv("ttl", f"{int(ttl)}s ({int(ttl / 3600)}h {int((ttl % 3600) / 60)}m)"))
+            elif ttl > 0:
+                lines.append(_kv("status", _yellow("expiring soon")))
+                lines.append(_kv("ttl", f"{int(ttl)}s"))
+            else:
+                lines.append(_kv("status", _red("expired")))
+            lines.append(_kv("file", _dim(str(curve_path))))
+        else:
+            lines.append(_kv("status", _dim("no session file")))
+            lines.append(_kv("file", _dim(str(curve_path))))
+    except Exception as exc:
+        lines.append(_kv("status", f"{_red('error')}  {_dim(str(exc)[:60])}"))
+
+    # --- HTTP Gateway ---
+    lines.append("")
+    lines.append(_section("HTTP Gateway"))
+    if gateway_url:
+        api_key = _get_api_key_from_profile_static(connection)
+        ping_result = _http_ping(gateway_url, api_key)
+        gw_ready = ping_result.get("server_ready", False)
+        if gw_ready:
+            lines.append(_kv("status", f"{_green('● reachable')}  {_dim(gateway_url)}"))
+        else:
+            msg = ping_result.get("message", "")
+            lines.append(_kv("status", f"{_red('● not reachable')}  {_dim(gateway_url)}"))
+            if msg:
+                lines.append(_kv("error", _dim(msg[:80])))
+        lines.append(_kv("auth_token", _green("present") if api_key else _red("missing")))
+    else:
+        lines.append(_kv("status", _dim("(no gateway_url configured)")))
+
+    # --- Auth / JWT ---
+    lines.append("")
+    lines.append(_section("Auth"))
+    profile_name = getattr(connection, "profile_name", None)
+
+    # Collect all token sources
+    jwt = None
+    jwt_source = None
+
+    # 1) r4 tokens.json (legacy per-profile store)
+    r4_token = _try_read_r4_token(profile_name)
+    if r4_token:
+        jwt = r4_token
+        jwt_source = f"tokens.json (profile={profile_name})"
+
+    # 2) r4 sources.json (active source api_key)
+    if not jwt:
+        try:
+            from pathlib import Path as _Path
+            xdg = os.environ.get("XDG_CONFIG_HOME")
+            sources_path = (_Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4") / "sources.json"
+            if sources_path.is_file():
+                src_data = _json.loads(sources_path.read_text(encoding="utf-8"))
+                active = src_data.get("active")
+                for src in src_data.get("sources", []):
+                    if src.get("name") == active:
+                        ak = src.get("api_key")
+                        if ak:
+                            jwt = ak
+                            jwt_source = f"sources.json (source={active})"
+                        break
+        except Exception:
+            pass
+
+    # 3) Profile .token file
+    profile_token = None
+    profile_token_path = None
+    profile_path = getattr(connection, "profile_path", None)
+    if profile_path:
+        from pathlib import Path as _Path
+        token_path = _Path(profile_path).with_suffix(".token")
+        if token_path.is_file():
+            profile_token = token_path.read_text(encoding="utf-8").strip()
+            profile_token_path = str(token_path)
+            if not jwt:
+                jwt = profile_token
+                jwt_source = f"profile .token ({profile_name})"
+
+    # Display token sources
+    if jwt_source:
+        lines.append(_kv("token", _green("present") + f"  {_dim(jwt_source)}"))
+    else:
+        lines.append(_kv("token", _red("not found")))
+
+    # Show JWT claims from whichever token we found
+    if jwt:
+        try:
+            import base64
+            payload_b64 = jwt.split(".")[1]
+            padding = 4 - len(payload_b64) % 4
+            payload_b64 += "=" * padding
+            claims = _json.loads(base64.urlsafe_b64decode(payload_b64))
+            sub = claims.get("sub", "?")
+            exp = claims.get("exp")
+            if exp:
+                import time as _time
+                ttl = exp - _time.time()
+                exp_str = f"{int(ttl)}s remaining" if ttl > 0 else _red("expired")
+            else:
+                exp_str = _dim("no expiry")
+            lines.append(_kv("subject", sub))
+            lines.append(_kv("expires", exp_str))
+            project = claims.get("project_id")
+            if project:
+                lines.append(_kv("project", project))
+        except Exception:
+            lines.append(_kv("claims", _dim("(decode failed)")))
+
+    # List all token files found
+    if profile_token_path:
+        lines.append(_kv("profile_token", _green("found") + f"  {_dim(profile_token_path)}"))
+    elif profile_path:
+        lines.append(_kv("profile_token", _dim("(not found)")))
+
+    # --- S3 / MinIO ---
+    lines.append("")
+    lines.append(_section("S3 / MinIO"))
+    lines.append(_kv("minio_url", connection.minio_url))
+
+    # Find s3cfg
+    config_state = resolve_loaded_config(
+        explicit_server_config_path=args.server_conf,
+        explicit_user_config_path=args.conf,
+        explicit_s3_config_path=args.s3cfg,
+    )
+    s3cfg_path = None
+    user = None
+    if config_state.user.valid and config_state.user.path:
+        try:
+            user = load_client_cfg_file(config_state.user.path)
+            if config_state.s3.valid and config_state.s3.path:
+                user = apply_s3_config_override(user, config_state.s3.path)
+            s3cfg_path = user.get("s3_configuration_file")
+        except Exception:
+            pass
+    if not s3cfg_path and config_state.s3.valid and config_state.s3.path:
+        s3cfg_path = config_state.s3.path
+
+    if s3cfg_path:
+        expanded = os.path.expanduser(s3cfg_path)
+        if os.path.exists(expanded):
+            lines.append(_kv("s3cfg", _green("found") + f"  {_dim(expanded)}"))
+            # Try to read and test connection
+            try:
+                cfg = _cp.ConfigParser(inline_comment_prefixes=('#', ';'))
+                cfg.read(expanded)
+                host_base = cfg.get("default", "host_base", fallback="?")
+                access_key = cfg.get("default", "access_key", fallback="?")
+                use_https = cfg.getboolean("default", "use_https", fallback=False)
+                lines.append(_kv("host_base", host_base))
+                lines.append(_kv("access_key", access_key))
+                lines.append(_kv("use_https", str(use_https).lower()))
+
+                # Quick S3 connectivity test
+                protocol = "https" if use_https else "http"
+                secret_key = cfg.get("default", "secret_key", fallback="")
+                import boto3
+                from botocore.config import Config as BotoConfig
+                s3_client = boto3.client(
+                    "s3",
+                    endpoint_url=f"{protocol}://{host_base}",
+                    aws_access_key_id=access_key,
+                    aws_secret_access_key=secret_key,
+                    config=BotoConfig(
+                        signature_version="s3v4",
+                        connect_timeout=5,
+                        read_timeout=5,
+                        retries={"max_attempts": 1},
+                    ),
+                    region_name=cfg.get("default", "bucket_location", fallback="us-east-1"),
+                    verify=cfg.getboolean("default", "check_ssl_certificate", fallback=True),
+                )
+                buckets = s3_client.list_buckets()
+                count = len(buckets.get("Buckets", []))
+                lines.append(_kv("connectivity", f"{_green('● ok')}  {_dim(f'{count} bucket(s)')}"))
+            except Exception as exc:
+                err_msg = str(exc)
+                if "SignatureDoesNotMatch" in err_msg:
+                    lines.append(_kv("connectivity", f"{_red('● auth failed')}  {_dim('SignatureDoesNotMatch — secret_key may be stale')}"))
+                elif "ConnectTimeoutError" in err_msg or "timed out" in err_msg.lower():
+                    lines.append(_kv("connectivity", f"{_red('● timeout')}  {_dim(f'{protocol}://{host_base}')}"))
+                else:
+                    lines.append(_kv("connectivity", f"{_red('● error')}  {_dim(err_msg[:80])}"))
+        else:
+            lines.append(_kv("s3cfg", f"{_red('missing')}  {_dim(expanded)}"))
+    else:
+        lines.append(_kv("s3cfg", _dim("(no s3cfg discovered)")))
+
+    # --- User Config ---
+    lines.append("")
+    lines.append(_section("User Config"))
+    if config_state.user.valid and config_state.user.path:
+        lines.append(_kv("user_config", _dim(config_state.user.path)))
+        if user:
+            lines.append(_kv("username", user.get("username", "?")))
+            xps = user.get("experiences", [])
+            lines.append(_kv("experiences", str(len(xps))))
+    else:
+        lines.append(_kv("user_config", _dim("(not found)")))
+
+    if args.output == 'json':
+        # Structured JSON output
+        info = {
+            "profile": prof,
+            "mode": connection.mode,
+            "zmq": {
+                "host": zmq_host,
+                "control_port": zmq_port,
+                "auth_type": zmq_auth,
+                "tunnel_mode": tunnel,
+                "data_port_range": connection.data_port_range_label,
+            },
+            "gateway_url": gateway_url,
+            "minio_url": connection.minio_url,
+            "s3cfg": s3cfg_path,
+        }
+        print(api_json(**info, output_format='json'))
+    else:
+        print("\n".join(lines))
+    return 0
+
+
+def _get_api_key_from_profile_static(connection) -> str | None:
+    """Read JWT from profile token file or r4 tokens (no ctx needed)."""
+    profile_path = getattr(connection, "profile_path", None)
+    if profile_path:
+        from pathlib import Path as _Path
+        token_path = _Path(profile_path).with_suffix(".token")
+        if token_path.is_file():
+            return token_path.read_text(encoding="utf-8").strip()
+    profile_name = getattr(connection, "profile_name", None)
+    return _try_read_r4_token(profile_name)
+
+
 def _resolve_control_client_id(user_cfg=None):
     if isinstance(user_cfg, dict):
         username = user_cfg.get("username")
@@ -3990,6 +4312,8 @@ def main():
     ping_p = subparsers.add_parser('ping', help='Check server readiness')
     configure_ping_parser(ping_p)
 
+    subparsers.add_parser('info', help='Show connection setup, transport modes, auth, and S3 status at a glance')
+
     ui_p = subparsers.add_parser('upload_file', help="Upload file to a bucket (ommit empty lines in case of 'text' modality)")
     ui_p.add_argument('file_path')
     ui_p.add_argument(
@@ -4306,6 +4630,13 @@ def main():
     if args.action == 'experience':
         try:
             sys.exit(_handle_experience_command(args))
+        except Exception as e:
+            print(api_json(status='error', message=str(e), output_format=args.output))
+            sys.exit(1)
+
+    if args.action == 'info':
+        try:
+            sys.exit(_handle_info(args))
         except Exception as e:
             print(api_json(status='error', message=str(e), output_format=args.output))
             sys.exit(1)
