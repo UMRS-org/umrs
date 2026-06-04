@@ -6,7 +6,7 @@ Provides operator-facing inspection of the running UMRS instance:
 - GET  /umrs/ops/topology     — Active runtime topology (jobs, transports, bridges)
 - GET  /umrs/ops/timeline     — Job-attempt timeline for recent activity
 - GET  /umrs/ops/ping         — Lightweight liveness check (no admin required)
-- POST /umrs/ops/reload       — Trigger configuration reload (admin-only)
+- POST /umrs/ops/reload       — Trigger configuration reload (any authenticated user)
 """
 
 from __future__ import annotations
@@ -144,6 +144,39 @@ def require_ops_admin(
             detail="Ops endpoints require admin privileges",
         )
     return
+
+
+def require_authenticated(
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_verified_is_admin: str | None = Header(None),
+    caller_user_id: str | None = Query(None, description="Caller's user ID"),
+) -> None:
+    """Require a valid authenticated caller but not necessarily admin.
+
+    Used for endpoints like reload that any authenticated user may invoke.
+    """
+    import os
+
+    # Gateway-verified headers present → authenticated
+    if x_user_id and x_verified_project_id:
+        return
+
+    # Strict mode: reject if no verified headers
+    if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing Gateway-verified caller identity",
+        )
+
+    # MVP/test mode: accept if any caller identity is provided
+    if caller_user_id:
+        return
+
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Authentication required",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -572,7 +605,7 @@ def _get_or_create_user_s3cfg(username: str) -> str | None:
 
 
 # ---------------------------------------------------------------------------
-# Configuration reload via HTTP (admin-only)
+# Configuration reload via HTTP (any authenticated user)
 # ---------------------------------------------------------------------------
 
 class OpsReloadRequest(BaseModel):
@@ -616,7 +649,7 @@ def set_reload_context(
 )
 def ops_reload(
     body: OpsReloadRequest = OpsReloadRequest(),
-    _admin: None = Depends(require_ops_admin),
+    _auth: None = Depends(require_authenticated),
     x_user_id: str | None = Header(None, alias="X-User-ID"),
 ) -> dict[str, Any]:
     """Re-read the server configuration from disk and re-provision users.
@@ -629,7 +662,7 @@ def ops_reload(
     persists it to the user's config file before reloading — this is how
     the client synchronises locally-added experiences to the server.
 
-    Requires admin privileges.  When ``X-User-ID`` is provided, the
+    Requires authentication.  When ``X-User-ID`` is provided, the
     returned summary is filtered to only show that user's buckets.
     """
     if _reload_configure_file is None or _reload_buckets_cfg is None:
