@@ -108,6 +108,8 @@ class TestControlMessageLogging:
         mq.role = "server"
         mq.type = "control"
         mq.socket = MagicMock()
+        mq.zmq_security = MagicMock(is_session_mode=False)
+        mq._zap_user_ids = {}
         mq.socket.recv_multipart.return_value = [
             b"client-1",
             b"ENROLL_USER:alice:1",

@@ -162,13 +162,15 @@ def _resolve_authenticated_project_id(
     verified_project_id = _header_str(x_verified_project_id)
     requested_project_id = verified_project_id or _header_str(x_project_id)
 
-    if strict and verified_user_id and verified_project_id:
+    if strict and verified_project_id:
         return verified_project_id
 
     if claims:
         return _project_id_authorized_by_claims(claims, requested_project_id)
 
     if strict:
+        if optional:
+            return None
         _raise_strict_project_auth_error()
 
     return _legacy_project_id(authorization, x_project_id, optional=optional)

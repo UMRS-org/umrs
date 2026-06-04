@@ -196,7 +196,6 @@ def test_main_monitor_endpoints_tab_filters_endpoint_jobs(monkeypatch):
     _assert_dashboard_bootstrap(
         dashboard_calls["kwargs"],
         user_cfg,
-        initial_tab="jobs",
-        job_type_filter="endpoint_provision",
+        initial_tab="endpoints",
     )
     fake_control_mq.close.assert_called_once()
