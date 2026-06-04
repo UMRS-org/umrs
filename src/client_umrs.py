@@ -3090,7 +3090,8 @@ def _action_list_buckets(ctx):
     effective_username = args.username or (ctx.user.get('username') if isinstance(ctx.user, dict) else None)
     if not effective_username:
         print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
-        ctx.control_mq.close()
+        if ctx.control_mq is not None:
+            ctx.control_mq.close()
         return 1
     remote_info = None
     if not getattr(args, 'no_check_remote', False):
@@ -3108,7 +3109,8 @@ def _action_list_buckets(ctx):
         else:
             remote_info = _build_remote_info(probe["remote_names"], configured_paths, effective_username)
     print(action_list_buckets(ctx.buckets_cfg, effective_username, args.output, remote_info=remote_info))
-    ctx.control_mq.close()
+    if ctx.control_mq is not None:
+        ctx.control_mq.close()
     return 0
 
 
@@ -4318,8 +4320,8 @@ def main():
         explicit_control_port=args.control_port,
     )
 
-    # --- Gateway-only mode: skip ZMQ for actions that work over HTTP ---
-    _gateway_http_actions = {"reload"}
+    # --- Gateway-only mode: skip ZMQ for actions that work over HTTP or local config ---
+    _gateway_http_actions = {"reload", "list_buckets"}
     gateway_url = getattr(connection, "gateway_url", None)
     _is_model_list = args.action == "model" and getattr(args, "model_action", None) == "list"
     if gateway_url and (args.action in _gateway_http_actions or _is_model_list):
@@ -4332,9 +4334,13 @@ def main():
         )
         configure_file = config_state.user.path if config_state.user.path else None
         user = None
+        buckets_cfg = None
         if configure_file and config_state.user.valid:
             try:
                 user = load_client_cfg_file(configure_file)
+                if config_state.s3.valid and config_state.s3.path:
+                    user = apply_s3_config_override(user, config_state.s3.path)
+                buckets_cfg = build_buckets_cfg(user)
             except (Exception, SystemExit):
                 pass
         ctx = _ClientContext(
@@ -4345,7 +4351,7 @@ def main():
             config_state=config_state,
             configure_file=configure_file,
             user=user,
-            buckets_cfg=None,
+            buckets_cfg=buckets_cfg,
         )
         handler = _ACTION_HANDLERS.get(args.action)
         if handler:
