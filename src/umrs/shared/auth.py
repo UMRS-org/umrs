@@ -46,7 +46,6 @@ ADMIN_ONLY_COMMANDS: set[str] = frozenset({
     "UPDATE",       # Update embeddings across configured buckets
     "CHECK",        # Global consistency check across all users' buckets
     "ENROLL_USER",  # Admin-only: register a new user on the server
-    "RELOAD",       # Reload server configuration (re-provision buckets/users)
 })
 
 # Commands that users can run on their own data
@@ -69,6 +68,7 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset({
     "RUN_WORKFLOW",
     "GET_BOOTSTRAP_CONTEXT",
     "PURGE_BUCKETS",
+    "RELOAD",       # Reload server configuration (re-provision buckets/users)
 })
 
 

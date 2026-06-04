@@ -175,10 +175,10 @@ class TestAuthorizeHelper:
         auth = self._make_authorize(
             AuthContext(user_id="u1", username="u1", role=UserRole.USER), replies
         )
-        result = auth("RELOAD", "u1", zmq_sender_id=b"sender")
+        result = auth("ENROLL_USER", "u1", zmq_sender_id=b"sender")
         assert result is None
         assert len(replies) == 1
-        assert replies[0] == ("UNAUTHORIZED:RELOAD", b"sender")
+        assert replies[0] == ("UNAUTHORIZED:ENROLL_USER", b"sender")
 
     def test_user_allowed_user_command(self):
         replies = []
@@ -194,7 +194,7 @@ class TestAuthorizeHelper:
         auth = self._make_authorize(
             AuthContext(user_id="u1", username="u1", role=UserRole.USER), replies
         )
-        result = auth("RELOAD", "u1")  # no zmq_sender_id
+        result = auth("ENROLL_USER", "u1")  # no zmq_sender_id
         assert result is None
         assert replies == []
 
@@ -270,7 +270,7 @@ class TestCommandCoverage:
         "STATUS", "CREATE_DATA_QUEUE", "HAND_CHECK",
     }
 
-    EXPECTED_ADMIN_COMMANDS = {"RELOAD", "RECOMPUTE", "UPDATE", "CHECK"}
+    EXPECTED_ADMIN_COMMANDS = {"RECOMPUTE", "UPDATE", "CHECK"}
 
     def test_all_user_commands_in_allowed_set(self):
         missing = self.EXPECTED_USER_COMMANDS - USER_ALLOWED_COMMANDS
