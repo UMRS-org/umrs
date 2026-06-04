@@ -35,6 +35,11 @@ def persist_uploaded_user_config(
     existing ``file_handling.persist_uploaded_user_config`` which validates
     the schema, checks identity, and atomically replaces the user's JSON
     file on the server.
+
+    When the user is not yet enrolled, the config file is created
+    automatically (``allow_create=True``) and ``conf_umrs.json`` is
+    updated — the subsequent ``reload_configuration`` call will provision
+    MinIO buckets and Postgres tables for the new user.
     """
     from umrs.server.file_handling import (
         persist_uploaded_user_config as _persist_file,
@@ -57,6 +62,7 @@ def persist_uploaded_user_config(
         ok, uname, dest = _persist_file(
             tmp_path, configure_file, user_config_map,
             expected_username=expected_username,
+            allow_create=True,
         )
         if not ok:
             raise ValueError(
