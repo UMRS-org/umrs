@@ -230,7 +230,7 @@ def _create_app():
                 caps["zmq_control_port"] = int(zmq_port)
             except ValueError:
                 pass
-        return {"status": "ok", "site_capabilities": caps}
+        return {"status": "ok"}
 
     @app.get("/readiness")
     async def readiness():
@@ -258,6 +258,7 @@ def _create_app():
                 healthy = False
         else:
             components["database"] = "not_configured"
+            healthy = False
 
         # Check job store
         from umrs.api.jobs import get_optional_job_store

@@ -12,6 +12,8 @@ from umrs.api.zmq_sessions import (
     router,
     set_session_curve_provider,
     _require_user_id,
+    _extract_jwt_identity,
+    _JWTIdentity,
 )
 from umrs.core.session_curve_provider import SessionCredentialsProvider, SessionCurveEntry
 
@@ -60,10 +62,23 @@ def _override_user(user_id: str):
     return _mock
 
 
+def _override_identity(user_id: str):
+    """Create a FastAPI dependency override for _extract_jwt_identity."""
+    async def _mock():
+        return _JWTIdentity(
+            user_id=user_id,
+            email=f"{user_id}@test.local",
+            projects=["test-project"],
+            roles=["user"],
+        )
+    return _mock
+
+
 @pytest.fixture()
 def alice_client(provider):
     app = _make_app()
     app.dependency_overrides[_require_user_id] = _override_user("alice")
+    app.dependency_overrides[_extract_jwt_identity] = _override_identity("alice")
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -72,6 +87,7 @@ def alice_client(provider):
 def bob_client(provider):
     app = _make_app()
     app.dependency_overrides[_require_user_id] = _override_user("bob")
+    app.dependency_overrides[_extract_jwt_identity] = _override_identity("bob")
     yield TestClient(app)
     app.dependency_overrides.clear()
 
@@ -217,6 +233,7 @@ class TestProviderUnavailable:
         set_session_curve_provider(None)
         app = _make_app()
         app.dependency_overrides[_require_user_id] = _override_user("alice")
+        app.dependency_overrides[_extract_jwt_identity] = _override_identity("alice")
         c = TestClient(app)
         resp = c.post(
             "/umrs/zmq/session",

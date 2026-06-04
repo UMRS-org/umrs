@@ -109,8 +109,9 @@ def bootstrap_curve_session(
             timeout=timeout,
         )
         if resp.status_code == 404:
-            # Session mode: no static server key — server_pub comes from POST response.
-            server_pub = ""
+            raise SessionBootstrapError(
+                "ZMQ CURVE sessions not enabled on server (server-key returned 404)"
+            )
         else:
             resp.raise_for_status()
             server_pub = resp.json().get("server_public_key", "")

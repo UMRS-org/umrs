@@ -93,6 +93,7 @@ def test_action_list_buckets_keeps_header_columns_aligned_with_color(monkeypatch
     bucket_cfg = {
         "test1-text": SimpleNamespace(
             username="test1",
+            xp_name="default",
             modality_name="text",
             task="embedding",
             path_to_bucket="test1.default.test1-text",
@@ -104,17 +105,19 @@ def test_action_list_buckets_keeps_header_columns_aligned_with_color(monkeypatch
 
     assert lines[1] == "  " + "  ".join(
         [
-            f"{'Alias':20s}",
-            f"{'Modality':15s}",
-            f"{'Task':15s}",
+            f"{'Experience':10s}",
+            f"{'Alias':10s}",
+            f"{'Modality':8s}",
+            f"{'Task':9s}",
             "Path",
         ]
     )
     assert lines[3] == "  " + "  ".join(
         [
-            f"{'test1-text':20s}",
-            f"{'text':15s}",
-            f"{'embedding':15s}",
+            f"{'default':10s}",
+            f"{'test1-text':10s}",
+            f"{'text':8s}",
+            f"{'embedding':9s}",
             "test1.default.test1-text",
         ]
     )

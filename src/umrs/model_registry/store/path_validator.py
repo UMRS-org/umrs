@@ -144,9 +144,6 @@ class PathValidator:
         if token is None:
             return []
         patterns = [pattern for pattern in self.allowed_patterns if token in pattern]
-        for pattern in self._operator_patterns:
-            if "{owner_id}" not in pattern and "{project_id}" not in pattern:
-                _append_unique(patterns, pattern)
         for pattern in _site_scope_patterns(scope):
             _append_unique(patterns, pattern)
         return patterns

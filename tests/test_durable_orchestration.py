@@ -259,7 +259,7 @@ class TestAdapters:
         )
 
         backend = IndexBuildBackend()
-        with patch("umrs.jobs.adapters.maintain_pgvector_index") as mock_maintain:
+        with patch("umrs.server.sql.maintain_pgvector_index") as mock_maintain:
             mock_maintain.return_value = {
                 "database": "xp_demo",
                 "table": "text_embeddings",
@@ -916,7 +916,7 @@ class TestScheduler:
         from umrs.jobs.scheduler import Scheduler
 
         job_store = MagicMock()
-        job_store.get_job.return_value = MagicMock(job_type=JobType.ENDPOINT_PROVISION)
+        job_store.get_job.return_value = MagicMock(job_type=JobType.ENDPOINT_PROVISION, next_run_at=None)
         job_store.create_attempt.return_value = "att-123"
         job_store.get_attempt.return_value = MagicMock(attempt_id="att-123")
 
