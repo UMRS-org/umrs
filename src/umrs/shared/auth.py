@@ -864,6 +864,21 @@ def create_auth_context_from_request(
             role = UserRole.ADMIN
             logger.info(f"Admin access granted for {username}")
 
+    # Fall back to the user record's stored role when no admin token was
+    # provided (or the token was invalid).  This lets operators who have
+    # been granted ``role: admin`` via ``umrs-server admin user set-role``
+    # exercise admin privileges without passing a token on every request.
+    if role != UserRole.ADMIN:
+        try:
+            from umrs.admin.user_store import UserStore  # lazy to avoid circular import
+
+            record = UserStore().get(username)
+            if record.role == "admin":
+                role = UserRole.ADMIN
+                logger.info(f"Admin access granted for {username} (user record role)")
+        except Exception:
+            pass  # user file missing or unreadable — stay with USER role
+
     return AuthContext(
         user_id=user_id,
         username=username,
