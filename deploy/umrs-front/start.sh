@@ -630,9 +630,12 @@ if [[ "$RAG_ENABLED" == "true" ]]; then
         --network=host \
         -v "${SCRIPT_DIR}:/work:ro,z" \
         -v "${HOME}/.config/umrs:/root/.config/umrs:z" \
+        -v "${SCRIPT_DIR}/s3cfg:/etc/umrs/s3cfg:ro,z" \
+        -v "${SCRIPT_DIR}/user_files:/etc/umrs/user_files:ro,z" \
         -e UMRS_RAG_PORT="${UMRS_RAG_PORT:-8081}" \
         -e UMRS_RAG_BIND_HOST="127.0.0.1" \
         -e UMRS_CONFIG="/work" \
+        -e UMRS_ADMIN_S3_CONFIGURATION_FILE="/etc/umrs/s3cfg" \
         -e OPENBLAS_NUM_THREADS=1 \
         -e S3_ENDPOINT_URL -e S3_ACCESS_KEY -e S3_SECRET_KEY \
         -e S3_REGION -e S3_BUCKET -e S3_USE_SSL \
@@ -640,6 +643,7 @@ if [[ "$RAG_ENABLED" == "true" ]]; then
         -e DB_PORT="${POSTGRES_PORT:-5432}" \
         -e DB_SUPERUSER="${POSTGRES_USER:-umrs}" \
         -e DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD}" \
+        -e UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}" \
         -e PYTHONUNBUFFERED=1 \
         "$UMRS_IMAGE" python -m umrs.api.rag_service
 
