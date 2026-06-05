@@ -91,9 +91,11 @@ POSTGRES_PORT=5432
 # Set UMRS_TUNNEL_MODE=true to bind ZMQ to 127.0.0.1 (SSH tunnel required).
 # Set UMRS_TUNNEL_MODE=false (default) for direct network access (no SSH tunnel).
 UMRS_TUNNEL_MODE=false
-# External IP/hostname used by compute nodes and clients to reach services.
-# Only used when UMRS_TUNNEL_MODE=false.
+# Bind address for the UMRS server (0.0.0.0 = all interfaces).
 UMRS_SERVER_HOST=0.0.0.0
+# Client-facing hostname advertised via connect-info. Clients use this to
+# reach ZMQ.  Must be a routable hostname/IP, never 0.0.0.0.
+UMRS_ADVERTISE_HOST=data0.ai.r-ccs.riken.jp
 
 # Cluster master SSH targets used for bootstrap checks and reverse tunnels.
 RCCS_SSH_TARGET=masaru.nagaso@rccs-cloud

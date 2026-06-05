@@ -475,7 +475,13 @@ def ops_connect_info(
         "true", "1", "yes",
     )
     auth_type = os.environ.get("UMRS_ZMQ_AUTH_TYPE", "none").lower()
-    host = os.environ.get("UMRS_SERVER_HOST", "127.0.0.1" if tunnel_mode else "0.0.0.0")
+    # Prefer UMRS_ADVERTISE_HOST (client-facing) over UMRS_SERVER_HOST (bind).
+    # 0.0.0.0 is a valid bind address but never a valid client destination.
+    host = (
+        os.environ.get("UMRS_ADVERTISE_HOST")
+        or os.environ.get("UMRS_SERVER_HOST")
+        or ("127.0.0.1" if tunnel_mode else "0.0.0.0")
+    )
 
     # Data port range: explicit env or default based on control port
     data_range_env = os.environ.get("UMRS_DATA_PORT_RANGE")

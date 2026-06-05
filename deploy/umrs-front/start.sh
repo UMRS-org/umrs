@@ -53,12 +53,14 @@ if [[ ! -f .env ]]; then
     exit 1
 fi
 ENV_UMRS_SERVER_HOST="${UMRS_SERVER_HOST:-}"
+ENV_UMRS_ADVERTISE_HOST="${UMRS_ADVERTISE_HOST:-}"
 ENV_S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-}"
 ENV_S3_BUCKET="${S3_BUCKET:-}"
 set -o allexport
 source .env
 set +o allexport
 [[ -n "$ENV_UMRS_SERVER_HOST" ]] && UMRS_SERVER_HOST="$ENV_UMRS_SERVER_HOST"
+[[ -n "$ENV_UMRS_ADVERTISE_HOST" ]] && UMRS_ADVERTISE_HOST="$ENV_UMRS_ADVERTISE_HOST"
 [[ -n "$ENV_S3_ENDPOINT_URL" ]] && S3_ENDPOINT_URL="$ENV_S3_ENDPOINT_URL"
 [[ -n "$ENV_S3_BUCKET" ]] && S3_BUCKET="$ENV_S3_BUCKET"
 
@@ -588,10 +590,12 @@ echo "  RCCS ZMQ port: ${UMRS_RCCS_ZMQ_PORT}, HTTP port: ${UMRS_RCCS_PORT:-8000}
 echo "  AI4S ZMQ port: ${UMRS_AI4S_ZMQ_PORT}, HTTP port: ${UMRS_AI4S_PORT:-8002}"
 echo "  Tunnel mode: ${UMRS_TUNNEL_MODE}"
 echo "  Server host: ${UMRS_SERVER_HOST}"
+echo "  Advertise host: ${UMRS_ADVERTISE_HOST:-<not set, will use SERVER_HOST>}"
 
 # Export variables needed by docker-compose.yaml
 export UMRS_TUNNEL_MODE="${UMRS_TUNNEL_MODE:-false}"
 export UMRS_SERVER_HOST="${UMRS_SERVER_HOST:-0.0.0.0}"
+export UMRS_ADVERTISE_HOST="${UMRS_ADVERTISE_HOST:-}"
 export S3_PRESIGN_ENDPOINT="${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}"
 export VISION_S3_PRESIGN_ENDPOINT="${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}"
 export UMRS_ADMIN_S3_CONFIGURATION_FILE="${UMRS_ADMIN_S3_CONFIGURATION_FILE:-/etc/umrs/s3cfg}"
