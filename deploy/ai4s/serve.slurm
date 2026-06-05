@@ -163,6 +163,7 @@ mkdir -p "${RUNTIME_CACHE}/home" "${RUNTIME_CACHE}/cache"
     --env HF_HUB_OFFLINE=1 \
     --env VLLM_NO_USAGE_STATS=1 \
     --env VLLM_DO_NOT_TRACK=1 \
+    --env LD_LIBRARY_PATH="/opt/venv/lib/python3.12/site-packages/nvidia/cu13/lib:/opt/venv/lib/python3.12/site-packages/torch/lib" \
     "${SIF_IMAGE}" /opt/venv/bin/python -m vllm.entrypoints.openai.api_server \
         --model /models \
         --served-model-name "${MODEL_NAME}" \
