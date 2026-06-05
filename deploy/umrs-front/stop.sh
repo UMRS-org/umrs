@@ -43,11 +43,16 @@ for pidfile in server-*.pid; do
     rm -f "$pidfile"
 done
 
-# Stop RAG service (still runs natively)
+# Stop RAG service container
+echo "  Stopping RAG container..."
+podman stop umrs-rag 2>/dev/null || true
+podman rm -f umrs-rag 2>/dev/null || true
+
+# Stop legacy native RAG (PID-managed, from before containerization)
 if [[ -f "rag-service.pid" ]]; then
     pid=$(cat "rag-service.pid")
     if kill -0 "$pid" 2>/dev/null; then
-        echo "  Stopping rag-service (PID $pid)..."
+        echo "  Stopping legacy native rag-service (PID $pid)..."
         kill "$pid" 2>/dev/null || true
         sleep 2
         kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
