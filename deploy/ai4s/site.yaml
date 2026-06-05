@@ -46,7 +46,7 @@ scheduler:
 
 runtime:
   kind: singularity                           # Apptainer on AI4S
-  rivault_dir: ""                             # Set to path on AI4S Lustre once staged
+  rivault_dir: /work/hps0/home/ea0022/images/mini-rivault-aarch64.sif  # aarch64 vLLM+LiteLLM+NGINX SIF (built 2026-06-06)
   repo_dir: ""
   vision_image: ""
   compose_file: ""
@@ -115,9 +115,10 @@ extra:
     - "127.0.0.1:9000:127.0.0.1:9000"
   # Job info file path on AI4S Lustre (accessible from login+compute)
   slurm_job_info_dir: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/jobs
-  # Smoke wrapper used until the full Singularity/vLLM image and production
-  # models are staged on AI4S Lustre.
-  slurm_wrapper_script: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-openai-smoke.slurm
+  # Real Singularity/vLLM wrapper. Runs the aarch64 mini-RiVault SIF on the
+  # allocated GB200 node and serves an OpenAI-compatible endpoint.
+  # (serve-openai-smoke.slurm kept for fallback/debugging.)
+  slurm_wrapper_script: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve.slurm
   # Environment variables injected before every remote command.
   # Required: AI4S uses configless Slurm with DNS SRV; non-login SSH
   # sessions don't source .bashrc so SLURM_CONF_SERVER is not set.
