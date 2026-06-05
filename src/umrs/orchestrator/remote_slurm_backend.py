@@ -231,6 +231,25 @@ class RemoteSlurmBackend(SlurmBackend):
             backend=self.backend_name,
         )
 
+    @staticmethod
+    def _select_partition(site: Any, gpu_count: int | None, node_count: int | None) -> str:
+        """Pick a Slurm partition from the requested GPU/node sizing.
+
+        AI4S declares partitions following a ``<nodes>n<gpus>gpu`` naming
+        convention (e.g. ``1n4gpu``, ``2n4gpu``). When such a profile exists for
+        the requested sizing, route to it so multi-GPU/multi-node jobs land on a
+        partition that can satisfy the allocation. Sites that do not follow this
+        convention (e.g. rccs-cloud) fall through to the configured default.
+        """
+        default = site.scheduler.partition.split(",")[0]
+        if not gpu_count:
+            return default
+        nodes = node_count if node_count and node_count > 1 else 1
+        candidate = f"{nodes}n{gpu_count}gpu"
+        if candidate in getattr(site, "partition_profiles", {}):
+            return candidate
+        return default
+
     async def _submit_wrapper_job(
         self,
         model_path: str,
@@ -250,8 +269,15 @@ class RemoteSlurmBackend(SlurmBackend):
         sbatch_args.append(f"--output={output_dir}/slurm-%j.out")
         sbatch_args.append(f"--error={output_dir}/slurm-%j.err")
 
-        # Partition
-        partition = kwargs.pop("partition_override", None) or site.scheduler.partition.split(",")[0]
+        # GPU / node sizing (popped up-front so partition selection can use them)
+        gpu_count = kwargs.pop("gpu_count", None)
+        node_count = kwargs.pop("node_count", None)
+        partition_override = kwargs.pop("partition_override", None)
+
+        # Partition. When the site declares partitions following the AI4S
+        # "<nodes>n<gpus>gpu" convention, auto-select the matching profile from
+        # the requested GPU/node sizing; otherwise fall back to the site default.
+        partition = partition_override or self._select_partition(site, gpu_count, node_count)
         if partition:
             sbatch_args.append(f"--partition={partition}")
 
@@ -260,7 +286,6 @@ class RemoteSlurmBackend(SlurmBackend):
             sbatch_args.append(f"--time={site.scheduler.time_limit}")
 
         # GPUs (only if site allows GRES tracking — gpus=0 means no GRES)
-        gpu_count = kwargs.pop("gpu_count", None)
         if site.scheduler.gpus != 0:
             effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
             if effective_gpus:
@@ -291,7 +316,6 @@ class RemoteSlurmBackend(SlurmBackend):
             sbatch_args.append(f"--nodelist={nodelist_hint}")
 
         # Node count
-        node_count = kwargs.pop("node_count", None)
         if node_count and node_count > 1:
             sbatch_args.append(f"--nodes={node_count}")
 
