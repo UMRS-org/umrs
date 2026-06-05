@@ -407,14 +407,11 @@ done
 # Keep login-node MinIO reverse tunnels alive for Slurm jobs.
 # Compute jobs forward minio-host:19000 -> login:9000, so login:9000 must
 # reverse-forward to this front-end MinIO instance on each cluster.
-_start_minio_reverse_tunnel() {
-    local label="$1"
-    local ssh_target="$2"
-    local reverse_spec="$3"
-    local pidfile="$4"
-    local logfile="$5"
-
+_stop_existing_tunnel() {
+    local pidfile="$1"
+    local label="$2"
     if [[ -f "$pidfile" ]]; then
+        local tunnel_pid
         tunnel_pid=$(cat "$pidfile")
         if kill -0 "$tunnel_pid" 2>/dev/null; then
             echo "Stopping existing ${label} MinIO reverse tunnel (PID $tunnel_pid)..."
@@ -424,6 +421,14 @@ _start_minio_reverse_tunnel() {
         fi
         rm -f "$pidfile"
     fi
+}
+
+_launch_tunnel() {
+    local label="$1"
+    local ssh_target="$2"
+    local reverse_spec="$3"
+    local pidfile="$4"
+    local logfile="$5"
 
     echo "Starting ${label} MinIO reverse tunnel: ${ssh_target} ${reverse_spec}"
     ssh -nNT \
@@ -434,7 +439,14 @@ _start_minio_reverse_tunnel() {
         "$ssh_target" \
         >> "$logfile" 2>&1 &
     echo $! > "$pidfile"
-    sleep 2
+}
+
+_verify_tunnel() {
+    local label="$1"
+    local ssh_target="$2"
+    local pidfile="$3"
+    local logfile="$4"
+
     if ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
         echo "WARNING: ${label} MinIO reverse tunnel process exited. Checking existing login-node endpoint..."
         tail -20 "$logfile" 2>/dev/null || true
@@ -457,18 +469,24 @@ AI4S_SSH_TARGET="${AI4S_SSH_TARGET:-ea0022@AI4S}"
 RCCS_MINIO_REVERSE_SPEC="${RCCS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
 AI4S_MINIO_REVERSE_SPEC="${AI4S_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
 
-_start_minio_reverse_tunnel \
-    "RCCS" \
-    "$RCCS_SSH_TARGET" \
-    "$RCCS_MINIO_REVERSE_SPEC" \
-    "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" \
-    "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
-_start_minio_reverse_tunnel \
-    "AI4S" \
-    "$AI4S_SSH_TARGET" \
-    "$AI4S_MINIO_REVERSE_SPEC" \
-    "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" \
-    "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+# Stop existing tunnels
+_stop_existing_tunnel "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "RCCS"
+_stop_existing_tunnel "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "AI4S"
+
+# Launch both tunnels in parallel
+_launch_tunnel "RCCS" "$RCCS_SSH_TARGET" "$RCCS_MINIO_REVERSE_SPEC" \
+    "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
+_launch_tunnel "AI4S" "$AI4S_SSH_TARGET" "$AI4S_MINIO_REVERSE_SPEC" \
+    "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+
+# Wait once for both SSH processes to establish
+sleep 3
+
+# Verify both tunnels
+_verify_tunnel "RCCS" "$RCCS_SSH_TARGET" \
+    "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
+_verify_tunnel "AI4S" "$AI4S_SSH_TARGET" \
+    "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
 
 _stop_port_listener() {
     local port="$1"
