@@ -96,6 +96,9 @@ cleanup() {
         wait "${CONTAINER_PID}" >/dev/null 2>&1 || true
     fi
     rm -f "${STOP_REQUEST_FILE}" >/dev/null 2>&1 || true
+    if [[ -n "${RUNTIME_CACHE:-}" ]]; then
+        rm -rf "${RUNTIME_CACHE}" >/dev/null 2>&1 || true
+    fi
     if [[ -f "${JOB_INFO_FILE}" ]]; then
         sed -i 's/RIVAULT_STATUS=.*/RIVAULT_STATUS=stopped/' "${JOB_INFO_FILE}" || true
         echo "RIVAULT_STOP_TIME=$(date -Iseconds)" >> "${JOB_INFO_FILE}" || true
@@ -131,26 +134,48 @@ echo "[serve] tool_parser=${VLLM_TOOL_CALL_PARSER} runtime=${CONTAINER_CMD}"
 
 write_job_info starting
 
-# ── Launch the mini-RiVault container ────────────────────────────────────────
-# Model weights are bind-mounted read-only at /models; the container runs fully
-# offline (TRANSFORMERS_OFFLINE=1 / HF_HUB_OFFLINE=1 are baked into the image).
-# --writable-tmpfs gives an in-memory overlay so the container's start.sh can
-# render its runtime config (litellm-config.yaml, nginx site, supervisord logs)
-# into the otherwise read-only SIF filesystem.
-"${CONTAINER_CMD}" exec --nv --cleanenv --writable-tmpfs \
+# ── Launch vLLM directly (OpenAI-compatible server) ──────────────────────────
+# The mini-RiVault SIF bundles vLLM+LiteLLM+NGINX, but its internal start.sh
+# renders config into read-only image paths (/opt/mini-rivault, /etc/nginx),
+# which cannot be made writable on AI4S: the site's underlay mount mode
+# disables --writable-tmpfs under --fakeroot, and a plain overlay leaves those
+# root-owned dirs unwritable for the unprivileged job user.
+#
+# vLLM already exposes an OpenAI-compatible API with bearer-token auth
+# (--api-key), so we run it directly on the external port the Gateway probes.
+# All writable runtime state (HF/torch/triton/vLLM caches, HOME) is redirected
+# to a per-job /tmp directory; the model weights stay read-only at /models.
+RUNTIME_CACHE="${TMPDIR:-/tmp}/rivault-${SLURM_JOB_ID}"
+mkdir -p "${RUNTIME_CACHE}/home" "${RUNTIME_CACHE}/cache"
+
+"${CONTAINER_CMD}" exec --nv --cleanenv \
     --bind "${HOST_MODEL_PATH}:/models:ro" \
-    --env VLLM_MODEL_PATH="/models" \
-    --env VLLM_SERVED_MODEL="${MODEL_NAME}" \
-    --env VLLM_PORT="${INNER_VLLM_PORT}" \
-    --env LITELLM_PORT="${INNER_LITELLM_PORT}" \
-    --env NGINX_PORT="${EXTERNAL_PORT}" \
-    --env VLLM_TP="${VLLM_TP}" \
-    --env VLLM_PP="${VLLM_PP}" \
-    --env VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN}" \
-    --env VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL}" \
-    --env VLLM_TOOL_CALL_PARSER="${VLLM_TOOL_CALL_PARSER}" \
-    --env LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}" \
-    "${SIF_IMAGE}" /opt/mini-rivault/start.sh &
+    --bind "${RUNTIME_CACHE}:${RUNTIME_CACHE}" \
+    --env HOME="${RUNTIME_CACHE}/home" \
+    --env XDG_CACHE_HOME="${RUNTIME_CACHE}/cache" \
+    --env HF_HOME="${RUNTIME_CACHE}/cache/hf" \
+    --env VLLM_CACHE_ROOT="${RUNTIME_CACHE}/cache/vllm" \
+    --env TRITON_CACHE_DIR="${RUNTIME_CACHE}/cache/triton" \
+    --env TORCHINDUCTOR_CACHE_DIR="${RUNTIME_CACHE}/cache/inductor" \
+    --env OUTLINES_CACHE_DIR="${RUNTIME_CACHE}/cache/outlines" \
+    --env XGRAMMAR_CACHE_DIR="${RUNTIME_CACHE}/cache/xgrammar" \
+    --env TRANSFORMERS_OFFLINE=1 \
+    --env HF_HUB_OFFLINE=1 \
+    --env VLLM_NO_USAGE_STATS=1 \
+    --env VLLM_DO_NOT_TRACK=1 \
+    "${SIF_IMAGE}" /opt/venv/bin/python -m vllm.entrypoints.openai.api_server \
+        --model /models \
+        --served-model-name "${MODEL_NAME}" \
+        --host 0.0.0.0 \
+        --port "${EXTERNAL_PORT}" \
+        -tp "${VLLM_TP}" \
+        -pp "${VLLM_PP}" \
+        --max-model-len "${VLLM_MAX_MODEL_LEN}" \
+        --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL}" \
+        --trust-remote-code \
+        --enable-auto-tool-choice \
+        --tool-call-parser "${VLLM_TOOL_CALL_PARSER}" \
+        --api-key "${LITELLM_MASTER_KEY}" &
 CONTAINER_PID=$!
 
 write_job_info running
