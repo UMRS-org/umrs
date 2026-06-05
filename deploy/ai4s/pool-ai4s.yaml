@@ -27,27 +27,33 @@
 
 pool: ai4s-research
 defaults:
-  tier: user
-  timeout: 1200           # 20 min — large MoE models take time to load
+  tier: system            # system tier → shared, visible to all users
+  timeout: 3600           # 60 min — 4-node Ray bootstrap + huge MoE load
 
 endpoints:
   - name: deepseek-v4-pro
     model: deepseek-ai/DeepSeek-V4-Pro
-    gpu_count: 8
-    max_model_len: 131072
-    # 1.6T MoE (49B active), FP4+FP8 mixed, 1M context capable
-    # Partition: 2n4gpu (2 nodes × 4 GPUs = 8× B200, 1385.6 GiB)
+    tier: system
+    gpu_count: 4           # GPUs per node
+    node_count: 4          # 4 nodes × 4 GPUs = 16× B200 (2770 GiB), Ray multi-node
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # native 1M context (full token size)
+    # 1.6T MoE (49B active), FP4+FP8 mixed; TP=4 (per node) × PP=4 (nodes)
 
   - name: glm-5.1
     model: zai-org/GLM-5.1
-    gpu_count: 8
-    max_model_len: 32768
-    # 754B MoE (glm_moe_dsa), BF16 stored → needs FP8 for 8-GPU fit
-    # Partition: 2n4gpu (2 nodes × 4 GPUs = 8× B200, 1385.6 GiB)
+    tier: system
+    gpu_count: 4
+    node_count: 4          # 16× B200 across 4 nodes via Ray
+    partition: 4n4gpu-p
+    max_model_len: 202752  # native context (full token size)
+    # 754B MoE (glm_moe_dsa); TP=4 × PP=4
 
   - name: kimi-k2.6
     model: moonshotai/Kimi-K2.6
+    tier: system
     gpu_count: 4
-    max_model_len: 131072
-    # 1T MoE (32B active, 384 experts), native INT4 → ~500 GiB
-    # Partition: 1n4gpu (1 node × 4 GPUs = 4× B200, 692.8 GiB)
+    node_count: 4          # placed on 4n4gpu-p alongside the others
+    partition: 4n4gpu-p
+    max_model_len: 262144  # native 256K context (full token size)
+    # 1T MoE (32B active, 384 experts), native INT4; TP=4 × PP=4
