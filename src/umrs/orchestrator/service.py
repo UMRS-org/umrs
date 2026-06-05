@@ -481,6 +481,15 @@ class OrchestrationService:
                     "MODEL_NAME": request.model,
                 }
             )
+            # Single-node tensor parallelism defaults to the requested GPU
+            # count (TP == GPUs on the node); honor an explicit override.
+            submit_env.setdefault("VLLM_TENSOR_PARALLEL_SIZE", str(request.gpu_count))
+            # Forward the LiteLLM master key from the orchestrator process
+            # environment so the mini-RiVault wrapper can authenticate the
+            # in-job LiteLLM proxy. Never overwrite an explicit request value.
+            litellm_master_key = os.environ.get("LITELLM_MASTER_KEY")
+            if litellm_master_key:
+                submit_env.setdefault("LITELLM_MASTER_KEY", litellm_master_key)
             service_kind = str(request.metadata.get("service_kind") or "openai")
             serving_backend = str(request.metadata.get("serving_backend") or "vllm")
             if service_kind == "bentoml_vision" or serving_backend == "bentoml":
