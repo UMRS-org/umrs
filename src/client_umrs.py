@@ -2695,6 +2695,119 @@ def _http_model_list(gateway_url: str, api_key: str | None = None, scope: str | 
         return {"status": "error", "message": str(e)}
 
 
+def _http_model_delete(
+    gateway_url: str,
+    *,
+    name: str,
+    scope: str = "user",
+    delete_files: bool = False,
+    api_key: str | None = None,
+) -> dict:
+    """Delete a model via the HTTP gateway endpoint.
+
+    First lists models to resolve name+scope to model_id, then sends
+    DELETE /gw/models/{model_id}.
+    """
+    import urllib.request
+    import urllib.error
+    import urllib.parse
+
+    # Resolve name+scope to model_id via list
+    list_result = _http_model_list(gateway_url, api_key, scope=scope)
+    if list_result.get("status") != "ok":
+        return list_result
+    matches = [
+        m for m in list_result.get("models", [])
+        if m.get("name") == name and m.get("scope") == scope
+    ]
+    if not matches:
+        return {"status": "error", "message": f"Model '{name}' not found in {scope} scope"}
+    model_id = matches[0].get("model_id") or matches[0].get("id")
+    if not model_id:
+        return {"status": "error", "message": f"Model '{name}' has no model_id — cannot delete via HTTP"}
+
+    url = f"{gateway_url.rstrip('/')}/gw/models/{model_id}"
+    if delete_files:
+        url = f"{url}?{urllib.parse.urlencode({'delete_files': 'true'})}"
+    req = urllib.request.Request(url, method="DELETE")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            if resp.status == 204:
+                return {"status": "ok", "message": f"Model '{display_label}' deleted"}
+            body = resp.read().decode("utf-8")
+            try:
+                return _json.loads(body)
+            except Exception:
+                return {"status": "ok", "message": f"Model '{display_label}' deleted"}
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+            detail = _json.loads(err_body).get("detail", err_body)
+            if isinstance(detail, dict) and "message" in detail:
+                detail = detail["message"]
+        except Exception:
+            detail = e.reason
+        return {"status": "error", "message": f"HTTP {e.code}: {detail}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+def _http_model_register(
+    gateway_url: str,
+    *,
+    name: str,
+    path: str,
+    model_type: str = "embedding",
+    scope: str = "user",
+    project_id: str | None = None,
+    description: str | None = None,
+    huggingface_id: str | None = None,
+    api_key: str | None = None,
+) -> dict:
+    """Register a model via the HTTP gateway endpoint (POST /gw/models)."""
+    import urllib.request
+    import urllib.error
+
+    url = f"{gateway_url.rstrip('/')}/gw/models"
+    body: dict = {
+        "name": name,
+        "storage_ref": os.path.abspath(path),
+        "model_type": model_type,
+        "scope": scope,
+    }
+    if project_id:
+        body["project_id"] = project_id
+    if description:
+        body["description"] = description
+    if huggingface_id:
+        body["huggingface_id"] = huggingface_id
+    data = _json.dumps(body).encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = _json.loads(resp.read().decode("utf-8"))
+            if isinstance(result, dict) and "status" not in result:
+                return {"status": "ok", **result}
+            return result
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+            detail = _json.loads(err_body).get("detail", err_body)
+            # UMRS structured errors nest message inside detail dict
+            if isinstance(detail, dict) and "message" in detail:
+                detail = detail["message"]
+        except Exception:
+            detail = e.reason
+        return {"status": "error", "message": f"HTTP {e.code}: {detail}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 def _try_read_r4_token(profile_name: str | None) -> str | None:
     """Read a JWT from r4's token store (stdlib only, no r4 import).
 
@@ -2846,15 +2959,34 @@ def _action_model(ctx):
     exit_code = 0
     try:
         if model_action == 'register':
-            parsed = api.register_model(
-                name=args.name,
-                path=args.path,
-                model_type=args.model_type,
-                scope=args.scope,
-                project_id=args.project_id,
-                description=args.description,
-                huggingface_id=args.huggingface_id,
-            )
+            if ctx.control_mq is None:
+                # ZMQ not available (gateway-only mode) — use HTTP fallback
+                gateway_url = _get_gateway_url_from_ctx(ctx)
+                if not gateway_url:
+                    print(api_json(status='error', action='model', message='model register requires either a ZMQ connection or a gateway_url in the connection profile', output_format=args.output))
+                    return 1
+                api_key = _get_api_key_from_profile(ctx)
+                parsed = _http_model_register(
+                    gateway_url,
+                    name=args.name,
+                    path=args.path,
+                    model_type=args.model_type,
+                    scope=args.scope,
+                    project_id=args.project_id,
+                    description=args.description,
+                    huggingface_id=args.huggingface_id,
+                    api_key=api_key,
+                )
+            else:
+                parsed = api.register_model(
+                    name=args.name,
+                    path=args.path,
+                    model_type=args.model_type,
+                    scope=args.scope,
+                    project_id=args.project_id,
+                    description=args.description,
+                    huggingface_id=args.huggingface_id,
+                )
         elif model_action == 'list':
             if ctx.control_mq is None:
                 # ZMQ not available (gateway-only mode) — use HTTP fallback
@@ -2909,6 +3041,29 @@ def _action_model(ctx):
                     huggingface_id=args.repo_id,
                     description=f'Downloaded from {args.repo_id}',
                 )
+        elif model_action == 'delete':
+            gateway_url = _get_gateway_url_from_ctx(ctx)
+            if not gateway_url:
+                print(api_json(status='error', action='model', message='model delete requires a gateway_url in the connection profile', output_format=args.output))
+                return 1
+            api_key = _get_api_key_from_profile(ctx)
+            is_model_id = args.name.startswith('mdl-')
+            if not args.force:
+                if is_model_id:
+                    prompt_msg = f"Delete model '{args.name}'? (y/N): "
+                else:
+                    prompt_msg = f"Delete model '{args.name}' from {args.scope} scope? (y/N): "
+                confirm = input(prompt_msg).strip().lower()
+                if confirm != 'y':
+                    print('Cancelled.')
+                    return 0
+            parsed = _http_model_delete(
+                gateway_url,
+                name=args.name,
+                scope=args.scope,
+                delete_files=args.delete_files,
+                api_key=api_key,
+            )
         elif model_action == 'upload':
             import shutil
             src_path = os.path.abspath(args.path)
@@ -4430,6 +4585,15 @@ def main():
     md_p.add_argument('--server-side', action='store_true', default=False,
                        help='Download on the server machine instead of locally (requires server internet access)')
 
+    # model delete
+    mdel_p = model_sub.add_parser('delete', help='Remove a registered model from the catalog')
+    mdel_p.add_argument('name', help='Model name or model ID (mdl-...) to delete')
+    mdel_p.add_argument('--scope', choices=MODEL_SCOPE_CHOICES, default='user', help='Scope of the model to delete')
+    mdel_p.add_argument('--delete-files', action='store_true', default=False,
+                         help='Also remove model files from disk')
+    mdel_p.add_argument('--force', '-f', action='store_true', default=False,
+                         help='Skip confirmation prompt')
+
     # model upload (copy local directory to staging root, then register)
     mu_p = model_sub.add_parser('upload', help='Copy a local model directory to the staging root and register with UMRS')
     mu_p.add_argument('path', help='Local directory containing model files')
@@ -4655,7 +4819,9 @@ def main():
     _gateway_http_actions = {"reload", "list_buckets"}
     gateway_url = getattr(connection, "gateway_url", None)
     _is_model_list = args.action == "model" and getattr(args, "model_action", None) == "list"
-    if gateway_url and (args.action in _gateway_http_actions or _is_model_list):
+    _is_model_register = args.action == "model" and getattr(args, "model_action", None) == "register"
+    _is_model_delete = args.action == "model" and getattr(args, "model_action", None) == "delete"
+    if gateway_url and (args.action in _gateway_http_actions or _is_model_list or _is_model_register or _is_model_delete):
         # Resolve admin token and config state without ZMQ
         admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
         config_state = resolve_loaded_config(
