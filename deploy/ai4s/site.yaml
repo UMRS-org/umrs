@@ -105,7 +105,7 @@ extra:
   ssh_command_timeout: 60                     # AI4S may be slower for large jobs
   ssh_server_alive_interval: 30
   ssh_server_alive_count_max: 3
-  ssh_control_path: ""                        # Auto: /tmp/umrs-ssh-134.160.189.24-%p
+  ssh_control_path: "/run/umrs-ssh/ai4s-%p"    # tmpfs inside container
   ssh_identity_file: ""                       # e.g., /home/mnagaso/.ssh/ai4s_ed25519
   # ProxyJump if umrs-front cannot directly reach AI4S (route via rccs-cloud):
   ssh_proxy_jump: ""                          # e.g., "masaru.nagaso@rccs-cloud"

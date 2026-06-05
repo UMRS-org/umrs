@@ -1,0 +1,199 @@
+# =============================================================================
+# docker-compose.yaml — umrs-front full stack
+# =============================================================================
+# Brings up all services for the dual-cluster UMRS deployment:
+#   - postgres (pgvector)
+#   - minio
+#   - umrs-server-rccs (RCCS Cloud UMRS server)
+#   - umrs-server-ai4s (AI4S UMRS server)
+#
+# Usage:
+#   podman compose up -d              # Start all services
+#   podman compose down               # Stop all (data preserved in volumes)
+#   podman compose down -v            # Stop and remove volumes (data lost!)
+#   podman compose logs -f umrs-server-rccs  # Follow RCCS server logs
+#   podman compose restart umrs-server-rccs  # Restart single cluster
+#
+# Prerequisites:
+#   - .env file with secrets (created by setup.sh)
+#   - Image built: podman compose build umrs-server-rccs
+#   - DB init run by start.sh before compose up
+# =============================================================================
+
+services:
+  # ─── PostgreSQL with pgvector ──────────────────────────────────────────────
+  postgres:
+    image: docker.io/pgvector/pgvector:pg15
+    container_name: umrs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-umrs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB_RCCS:-front_rccs}
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256"
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - umrs_pg_data:/var/lib/postgresql/data
+    command: postgres -c "listen_addresses=*" -c "unix_socket_directories="
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umrs}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── MinIO Object Storage ─────────────────────────────────────────────────
+  minio:
+    image: docker.io/minio/minio:latest
+    container_name: umrs-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+    ports:
+      - "${MINIO_BIND:-0.0.0.0}:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - umrs_minio_data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── UMRS Server — RCCS Cloud ─────────────────────────────────────────────
+  umrs-server-rccs:
+    build:
+      context: ../../../
+      dockerfile: umrs/docker/Dockerfile.server
+    image: localhost/umrs-server:latest
+    container_name: umrs-server-rccs
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      # Cluster-specific overrides
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CONTROL_PORT: ${UMRS_RCCS_ZMQ_PORT:-50090}
+      UMRS_DATA_PORT_RANGE: ${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}
+      UMRS_HTTP_PORT: ${UMRS_RCCS_PORT:-8000}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
+      UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+      UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
+      UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro
+      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:ro
+      - ./user_files:/etc/umrs/user_files:ro
+      - ./s3cfg:/etc/umrs/s3cfg:ro
+      # SSH keys for RemoteSlurmBackend
+      - ${HOME}/.ssh:/root/.ssh-host:ro
+      # CURVE session keys (when ZMQ auth enabled)
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro
+      # Writable s3cfg dir for per-user s3cfg generation
+      - umrs_config_rccs:/root/.config/umrs
+      # SSH ControlMaster sockets (tmpfs for ephemeral sockets)
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760  # 10MB
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        # Copy host SSH keys into writable location
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/* 2>/dev/null || true
+        # Copy s3cfg to config dir
+        cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
+        exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # ─── UMRS Server — AI4S ───────────────────────────────────────────────────
+  umrs-server-ai4s:
+    build:
+      context: ../../../
+      dockerfile: umrs/docker/Dockerfile.server
+    image: localhost/umrs-server:latest
+    container_name: umrs-server-ai4s
+    restart: unless-stopped
+    network_mode: host
+    env_file: .env
+    environment:
+      # Cluster-specific overrides
+      UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      UMRS_CONFIG: /etc/umrs
+      UMRS_CONTROL_PORT: ${UMRS_AI4S_ZMQ_PORT:-50100}
+      UMRS_DATA_PORT_RANGE: ${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}
+      UMRS_HTTP_PORT: ${UMRS_AI4S_PORT:-8002}
+      DB_HOST: "127.0.0.1"
+      DB_PORT: ${POSTGRES_PORT:-5432}
+      DB_SUPERUSER: ${POSTGRES_USER:-umrs}
+      DB_SUPERUSER_PASSWORD: ${POSTGRES_PASSWORD}
+      UMRS_REGISTRY_POSTGRES_DSN: "postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-front_ai4s}"
+      S3_ENDPOINT_URL: "http://127.0.0.1:${MINIO_PORT:-9000}"
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-r4-data}
+      S3_USE_SSL: ${S3_USE_SSL:-false}
+      S3_PRESIGN_ENDPOINT: ${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}
+      VISION_S3_PRESIGN_ENDPOINT: ${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}
+      UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
+      UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
+      UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro
+      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:ro
+      - ./user_files:/etc/umrs/user_files:ro
+      - ./s3cfg:/etc/umrs/s3cfg:ro
+      - ${HOME}/.ssh:/root/.ssh-host:ro
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro
+      - umrs_config_ai4s:/root/.config/umrs
+      - type: tmpfs
+        target: /run/umrs-ssh
+        tmpfs:
+          size: 10485760
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        cp -a /root/.ssh-host/* /root/.ssh/ 2>/dev/null || true
+        chmod 700 /root/.ssh
+        chmod 600 /root/.ssh/* 2>/dev/null || true
+        cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
+        exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  umrs_pg_data:
+    external: true
+  umrs_minio_data:
+    external: true
+  umrs_config_rccs:
+  umrs_config_ai4s:

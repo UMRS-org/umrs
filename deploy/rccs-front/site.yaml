@@ -99,7 +99,7 @@ extra:
   ssh_command_timeout: 30
   ssh_server_alive_interval: 30
   ssh_server_alive_count_max: 3
-  ssh_control_path: ""  # Auto-generated: /tmp/umrs-ssh-rccs-cloud-%p
+  ssh_control_path: "/run/umrs-ssh/rccs-cloud-%p"  # tmpfs inside container
   # Reverse tunnel: expose front-end MinIO (9000) on login node so
   # compute nodes' existing tunnel to login:9000 reaches front-end's MinIO.
   ssh_reverse_tunnels:

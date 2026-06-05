@@ -63,62 +63,24 @@ UMRS_ZMQ_AUTH_TYPE="${UMRS_ZMQ_AUTH_TYPE:-none}"
 
 # ─── Start infrastructure containers ─────────────────────────────────────────
 if [[ "$START_MODE" != "--server" ]]; then
-    echo "Starting infrastructure containers..."
+    echo "Starting infrastructure containers via podman compose..."
 
-    # Postgres — prefer podman container; detect port conflicts
+    # Check for port conflicts before starting
     _pg_port="${POSTGRES_PORT:-5432}"
-    _pg_container_exists=false
-    _pg_container_running=false
-    if podman inspect umrs-postgres >/dev/null 2>&1; then
-        _pg_container_exists=true
-        [[ "$(podman inspect -f '{{.State.Status}}' umrs-postgres)" == "running" ]] && _pg_container_running=true
-    fi
-
-    if $_pg_container_running; then
-        echo "  Postgres container already running."
-    elif $_pg_container_exists; then
-        # Container exists but is stopped — check if port is free
-        if ss -tlnp 2>/dev/null | grep -q ":${_pg_port}\b"; then
+    if ss -tlnp 2>/dev/null | grep -q ":${_pg_port}\b"; then
+        if ! podman inspect umrs-postgres >/dev/null 2>&1 || \
+           [[ "$(podman inspect -f '{{.State.Status}}' umrs-postgres 2>/dev/null)" != "running" ]]; then
             echo "  WARNING: Port ${_pg_port} is occupied by another process (native postgres?)."
             echo "           Attempting to use it — if UMRS fails to connect, stop the native"
             echo "           postgres and re-run:  sudo systemctl stop postgresql"
-        else
-            echo "  Starting existing postgres container..."
-            podman start umrs-postgres
         fi
-    elif ss -tlnp 2>/dev/null | grep -q ":${_pg_port}\b"; then
-        echo "  Postgres already listening on port ${_pg_port} (native/external)."
-    else
-        echo "  Creating postgres container..."
-        podman run -d --name umrs-postgres \
-            -e POSTGRES_USER="${POSTGRES_USER:-umrs}" \
-            -e POSTGRES_PASSWORD="${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}" \
-            -e POSTGRES_DB="${POSTGRES_DB_RCCS:-front_rccs}" \
-            -e POSTGRES_HOST_AUTH_METHOD=scram-sha-256 \
-            -e POSTGRES_INITDB_ARGS="--auth-host=scram-sha-256" \
-            -p 127.0.0.1:${_pg_port}:5432 \
-            -v umrs_pg_data:/var/lib/postgresql/data \
-            docker.io/pgvector/pgvector:pg15 \
-            postgres -c "listen_addresses=*" -c "unix_socket_directories="
     fi
 
-    # MinIO
-    if ! podman inspect umrs-minio >/dev/null 2>&1; then
-        echo "  Creating minio container..."
-        podman run -d --name umrs-minio \
-            -e MINIO_ROOT_USER="${MINIO_ROOT_USER:?Set MINIO_ROOT_USER}" \
-            -e MINIO_ROOT_PASSWORD="${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD}" \
-            -p "${MINIO_BIND}:${MINIO_PORT:-9000}:9000" \
-            -p 127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001 \
-            -v umrs_minio_data:/data \
-            docker.io/minio/minio:latest \
-            server /data --console-address ":9001"
-    elif [[ "$(podman inspect -f '{{.State.Status}}' umrs-minio)" != "running" ]]; then
-        echo "  Starting existing minio container..."
-        podman start umrs-minio
-    else
-        echo "  MinIO already running."
-    fi
+    # Ensure named volumes exist (compose uses external: true)
+    podman volume inspect umrs_pg_data >/dev/null 2>&1 || podman volume create umrs_pg_data
+    podman volume inspect umrs_minio_data >/dev/null 2>&1 || podman volume create umrs_minio_data
+
+    podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d postgres minio
 
     # Wait for postgres
     echo -n "  Waiting for postgres..."
@@ -402,12 +364,17 @@ if changed or conf.get("users") != existing_users:
     conf_path.write_text(json.dumps(conf, indent=2) + "\n")
 PY
 
-# ─── Stop existing servers ───────────────────────────────────────────────────
+# ─── Stop existing UMRS server containers (or legacy native processes) ────────
+# Stop compose-managed UMRS containers (idempotent if not running)
+echo "Stopping existing UMRS server containers..."
+podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" stop umrs-server-rccs umrs-server-ai4s 2>/dev/null || true
+
+# Also clean up any legacy native PID-managed servers from before containerization
 for pidfile in "${SCRIPT_DIR}"/server-*.pid; do
     [[ -f "$pidfile" ]] || continue
     pid=$(cat "$pidfile")
     if kill -0 "$pid" 2>/dev/null; then
-        echo "Stopping existing server (PID $pid)..."
+        echo "Stopping legacy native server (PID $pid)..."
         kill "$pid" 2>/dev/null || true
         sleep 2
         kill -0 "$pid" 2>/dev/null && kill -9 "$pid" 2>/dev/null || true
@@ -512,88 +479,73 @@ _stop_port_listener "${UMRS_AI4S_PORT:-8002}" "AI4S HTTP"
 _stop_port_listener "${UMRS_AI4S_ZMQ_PORT}" "AI4S ZMQ"
 [[ "${UMRS_AI4S_ZMQ_PORT}" == "5557" ]] || _stop_port_listener "5557" "legacy AI4S ZMQ"
 
-# ─── Start UMRS server for RCCS Cloud ────────────────────────────────────────
+# ─── Build and start UMRS server containers ──────────────────────────────────
 echo ""
-echo "Starting UMRS server (RCCS Cloud)..."
-echo "  Site config: ${SCRIPT_DIR}/../rccs-front/site.yaml"
-echo "  ZMQ port: ${UMRS_RCCS_ZMQ_PORT}"
-echo "  ZMQ data ports: ${UMRS_RCCS_DATA_PORT_RANGE}"
-echo "  HTTP port: ${UMRS_RCCS_PORT:-8000}"
+echo "Building/starting UMRS server containers via podman compose..."
+echo "  RCCS site config: ../rccs-front/site.yaml"
+echo "  AI4S site config: ../ai4s/site.yaml"
+echo "  RCCS ZMQ port: ${UMRS_RCCS_ZMQ_PORT}, HTTP port: ${UMRS_RCCS_PORT:-8000}"
+echo "  AI4S ZMQ port: ${UMRS_AI4S_ZMQ_PORT}, HTTP port: ${UMRS_AI4S_PORT:-8002}"
 echo "  Tunnel mode: ${UMRS_TUNNEL_MODE}"
 echo "  Server host: ${UMRS_SERVER_HOST}"
 
-export UMRS_SITE_CONFIG="${SCRIPT_DIR}/../rccs-front/site.yaml"
-export UMRS_CONFIG="${SCRIPT_DIR}"
-export UMRS_CONTROL_PORT="${UMRS_RCCS_ZMQ_PORT}"
-export UMRS_DATA_PORT_RANGE="${UMRS_RCCS_DATA_PORT_RANGE}"
-export UMRS_HTTP_PORT="${UMRS_RCCS_PORT:-8000}"
-export DB_HOST="127.0.0.1"
-export DB_PORT="${POSTGRES_PORT:-5432}"
-export DB_SUPERUSER="${POSTGRES_USER:-umrs}"
-export DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD}"
-export UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_RCCS:-front_rccs}"
-export LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY}"
-export UMRS_ADMIN_TOKEN="${UMRS_ADMIN_TOKEN:-}"
+# Export variables needed by docker-compose.yaml
 export UMRS_TUNNEL_MODE="${UMRS_TUNNEL_MODE:-false}"
 export UMRS_SERVER_HOST="${UMRS_SERVER_HOST:-0.0.0.0}"
 export S3_PRESIGN_ENDPOINT="${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT:-9000}}"
 export VISION_S3_PRESIGN_ENDPOINT="${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}"
-export S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-http://127.0.0.1:${MINIO_PORT:-9000}}"
-export S3_ACCESS_KEY="${S3_ACCESS_KEY:-${MINIO_ROOT_USER}}"
-export S3_SECRET_KEY="${S3_SECRET_KEY:-${MINIO_ROOT_PASSWORD}}"
-export S3_REGION="${S3_REGION:-us-east-1}"
-export S3_BUCKET="${S3_BUCKET:-r4-data}"
-export S3_USE_SSL="${S3_USE_SSL:-false}"
-export UMRS_RAG_DIRECT_URL="http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
-export UMRS_ADMIN_S3_CONFIGURATION_FILE="${UMRS_ADMIN_S3_CONFIGURATION_FILE:-$HOME/.config/umrs/s3cfg}"
+export UMRS_ADMIN_S3_CONFIGURATION_FILE="${UMRS_ADMIN_S3_CONFIGURATION_FILE:-/etc/umrs/s3cfg}"
 
-nohup python "${REPO_ROOT}/src/server_umrs.py" \
-    -c "${CONF_FILE}" \
-    >> "${LOG_DIR}/server-rccs.log" 2>&1 &
-RCCS_PID=$!
-echo "$RCCS_PID" > "${SCRIPT_DIR}/server-rccs.pid"
-echo "  PID: $RCCS_PID"
+# Build image if needed (or if code changed)
+if [[ "${UMRS_IMAGE_REBUILD:-false}" == "true" ]] || \
+   ! podman image exists localhost/umrs-server:latest 2>/dev/null; then
+    echo "  Building UMRS server image..."
+    podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" build umrs-server-rccs
+fi
 
+# Start UMRS server containers (infra containers are also in compose now)
+podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d \
+    umrs-server-rccs umrs-server-ai4s
+
+# Wait for RCCS server readiness
 echo -n "  Waiting for RCCS HTTP bootstrap..."
-for i in $(seq 1 60); do
+for i in $(seq 1 90); do
     if curl -sf "http://127.0.0.1:${UMRS_RCCS_PORT:-8000}/health" >/dev/null 2>&1; then
         echo " ready."
         break
     fi
-    if ! kill -0 "$RCCS_PID" 2>/dev/null; then
-        echo " failed."
-        echo "ERROR: RCCS server failed during bootstrap. Check ${LOG_DIR}/server-rccs.log"
-        tail -20 "${LOG_DIR}/server-rccs.log" 2>/dev/null || true
+    if [[ "$(podman inspect -f '{{.State.Status}}' umrs-server-rccs 2>/dev/null)" == "exited" ]]; then
+        echo " failed (container exited)."
+        echo "ERROR: RCCS server container exited. Check logs:"
+        echo "  podman compose -f docker-compose.yaml logs umrs-server-rccs"
+        podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" logs --tail=20 umrs-server-rccs 2>/dev/null || true
         exit 1
     fi
     echo -n "."
     sleep 1
-    [[ "$i" -eq 60 ]] && echo " WARNING: RCCS HTTP not ready after 60s"
+    [[ "$i" -eq 90 ]] && echo " WARNING: RCCS HTTP not ready after 90s"
 done
 
-# ─── Start UMRS server for AI4S ──────────────────────────────────────────────
-echo ""
-echo "Starting UMRS server (AI4S)..."
-echo "  Site config: ${SCRIPT_DIR}/../ai4s/site.yaml"
-echo "  ZMQ port: ${UMRS_AI4S_ZMQ_PORT}"
-echo "  ZMQ data ports: ${UMRS_AI4S_DATA_PORT_RANGE}"
-echo "  HTTP port: ${UMRS_AI4S_PORT:-8002}"
-echo "  Tunnel mode: ${UMRS_TUNNEL_MODE}"
+# Wait for AI4S server readiness
+echo -n "  Waiting for AI4S HTTP bootstrap..."
+for i in $(seq 1 90); do
+    if curl -sf "http://127.0.0.1:${UMRS_AI4S_PORT:-8002}/health" >/dev/null 2>&1; then
+        echo " ready."
+        break
+    fi
+    if [[ "$(podman inspect -f '{{.State.Status}}' umrs-server-ai4s 2>/dev/null)" == "exited" ]]; then
+        echo " failed (container exited)."
+        echo "ERROR: AI4S server container exited. Check logs:"
+        echo "  podman compose -f docker-compose.yaml logs umrs-server-ai4s"
+        podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" logs --tail=20 umrs-server-ai4s 2>/dev/null || true
+        exit 1
+    fi
+    echo -n "."
+    sleep 1
+    [[ "$i" -eq 90 ]] && echo " WARNING: AI4S HTTP not ready after 90s"
+done
 
-export UMRS_SITE_CONFIG="${SCRIPT_DIR}/../ai4s/site.yaml"
-export UMRS_CONTROL_PORT="${UMRS_AI4S_ZMQ_PORT}"
-export UMRS_DATA_PORT_RANGE="${UMRS_AI4S_DATA_PORT_RANGE}"
-export UMRS_HTTP_PORT="${UMRS_AI4S_PORT:-8002}"
-export UMRS_REGISTRY_POSTGRES_DSN="postgres://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@127.0.0.1:${POSTGRES_PORT:-5432}/${POSTGRES_DB_AI4S:-front_ai4s}"
-
-nohup python "${REPO_ROOT}/src/server_umrs.py" \
-    -c "${CONF_FILE}" \
-    >> "${LOG_DIR}/server-ai4s.log" 2>&1 &
-AI4S_PID=$!
-echo "$AI4S_PID" > "${SCRIPT_DIR}/server-ai4s.pid"
-echo "  PID: $AI4S_PID"
-
-# ─── Start RAG Service (standalone) ─────────────────────────────────────────
+# ─── Start RAG Service (standalone, host-native) ────────────────────────────
 RAG_ENABLED=false
 if [[ "${UMRS_RAG_ENABLE:-true}" == "true" || "${UMRS_RAG_ENABLE:-true}" == "1" ]]; then
     RAG_ENABLED=true
@@ -644,19 +596,23 @@ fi
 
 # ─── Verify servers started ──────────────────────────────────────────────────
 echo ""
-echo -n "Verifying servers..."
+echo -n "Verifying UMRS containers..."
 sleep 3
 FAIL=0
-if ! kill -0 "$RCCS_PID" 2>/dev/null; then
+
+RCCS_STATUS="$(podman inspect -f '{{.State.Status}}' umrs-server-rccs 2>/dev/null || echo 'missing')"
+if [[ "$RCCS_STATUS" != "running" ]]; then
     echo ""
-    echo "ERROR: RCCS server failed to start. Check ${LOG_DIR}/server-rccs.log"
-    tail -20 "${LOG_DIR}/server-rccs.log" 2>/dev/null || true
+    echo "ERROR: RCCS server container not running (status: ${RCCS_STATUS})"
+    podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" logs --tail=20 umrs-server-rccs 2>/dev/null || true
     FAIL=1
 fi
-if ! kill -0 "$AI4S_PID" 2>/dev/null; then
+
+AI4S_STATUS="$(podman inspect -f '{{.State.Status}}' umrs-server-ai4s 2>/dev/null || echo 'missing')"
+if [[ "$AI4S_STATUS" != "running" ]]; then
     echo ""
-    echo "ERROR: AI4S server failed to start. Check ${LOG_DIR}/server-ai4s.log"
-    tail -20 "${LOG_DIR}/server-ai4s.log" 2>/dev/null || true
+    echo "ERROR: AI4S server container not running (status: ${AI4S_STATUS})"
+    podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" logs --tail=20 umrs-server-ai4s 2>/dev/null || true
     FAIL=1
 fi
 
@@ -666,21 +622,21 @@ fi
 
 echo ""
 echo "╔══════════════════════════════════════════════════════════════╗"
-echo "║  UMRS Dual-Cluster Stack (umrs-front)                       ║"
+echo "║  UMRS Dual-Cluster Stack (umrs-front) — containerized       ║"
 echo "╠══════════════════════════════════════════════════════════════╣"
 echo "║  Tunnel mode:  ${UMRS_TUNNEL_MODE}                                       ║"
 echo "║  Server host:  ${UMRS_SERVER_HOST}                                   ║"
-echo "║  Postgres:     127.0.0.1:${POSTGRES_PORT:-5432}                         ║"
-echo "║  MinIO:        ${MINIO_BIND}:${MINIO_PORT:-9000}                            ║"
+echo "║  Postgres:     127.0.0.1:${POSTGRES_PORT:-5432}  (container)             ║"
+echo "║  MinIO:        ${MINIO_BIND}:${MINIO_PORT:-9000}  (container)                ║"
 echo "║  S3 Presign:   ${S3_PRESIGN_ENDPOINT}          ║"
 echo "║                                                              ║"
-echo "║  RCCS Cloud:                                                 ║"
-echo "║    UMRS HTTP:  0.0.0.0:${UMRS_RCCS_PORT:-8000}  (PID $RCCS_PID)           ║"
+echo "║  RCCS Cloud:   (container: umrs-server-rccs)                 ║"
+echo "║    UMRS HTTP:  0.0.0.0:${UMRS_RCCS_PORT:-8000}                            ║"
 echo "║    Site:       rccs-front/site.yaml                          ║"
 echo "║    Target:     ${RCCS_SSH_TARGET} (SSH)                              ║"
 echo "║                                                              ║"
-echo "║  AI4S:                                                       ║"
-echo "║    UMRS HTTP:  0.0.0.0:${UMRS_AI4S_PORT:-8002}  (PID $AI4S_PID)           ║"
+echo "║  AI4S:         (container: umrs-server-ai4s)                 ║"
+echo "║    UMRS HTTP:  0.0.0.0:${UMRS_AI4S_PORT:-8002}                            ║"
 echo "║    Site:       ai4s/site.yaml                                ║"
 echo "║    Target:     ${AI4S_SSH_TARGET} (SSH)                      ║"
 if [[ "$RAG_ENABLED" == "true" ]]; then
@@ -690,10 +646,11 @@ fi
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
 echo "Logs:"
-echo "  RCCS:  tail -f ${LOG_DIR}/server-rccs.log"
-echo "  AI4S:  tail -f ${LOG_DIR}/server-ai4s.log"
+echo "  RCCS:  podman compose -f docker-compose.yaml logs -f umrs-server-rccs"
+echo "  AI4S:  podman compose -f docker-compose.yaml logs -f umrs-server-ai4s"
 if [[ "$RAG_ENABLED" == "true" ]]; then
 echo "  RAG:   tail -f ${LOG_DIR}/rag-service.log"
 fi
 echo ""
 echo "Stop:    ./stop.sh"
+echo "Restart: ./stop.sh --server && ./start.sh --server"
