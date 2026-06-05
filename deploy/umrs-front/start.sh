@@ -629,7 +629,7 @@ if [[ "$RAG_ENABLED" == "true" ]]; then
     podman run -d --name umrs-rag \
         --network=host \
         -v "${SCRIPT_DIR}:/work:ro,z" \
-        -v "${HOME}/.config/umrs:/root/.config/umrs:z" \
+        -v umrs-front_umrs_config_rccs:/root/.config/umrs:z \
         -v "${SCRIPT_DIR}/s3cfg:/etc/umrs/s3cfg:ro,z" \
         -v "${SCRIPT_DIR}/user_files:/etc/umrs/user_files:ro,z" \
         -e UMRS_RAG_PORT="${UMRS_RAG_PORT:-8081}" \
