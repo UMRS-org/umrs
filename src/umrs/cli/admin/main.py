@@ -236,7 +236,15 @@ def _maybe_register_in_server_config(
         with open(tmp_path, "w", encoding="utf-8") as fh:
             json.dump(cfg, fh, indent=2)
             fh.write("\n")
-        os.replace(tmp_path, config_path)
+        try:
+            os.replace(tmp_path, config_path)
+        except OSError:
+            # Bind-mounted files block rename; fall back to in-place write.
+            with open(tmp_path, encoding="utf-8") as src:
+                content = src.read()
+            os.unlink(tmp_path)
+            with open(config_path, "w", encoding="utf-8") as dst:
+                dst.write(content)
         print(f"registered {entry} in {os.path.basename(config_path)}")
     except OSError as exc:
         print(
