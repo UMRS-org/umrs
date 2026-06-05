@@ -96,6 +96,8 @@ services:
       UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
       UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
       UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
+      UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -162,6 +164,8 @@ services:
       UMRS_RAG_DIRECT_URL: "http://127.0.0.1:${UMRS_RAG_PORT:-8081}"
       UMRS_ADMIN_S3_CONFIGURATION_FILE: /etc/umrs/s3cfg
       UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
+      UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
+      UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro,z
