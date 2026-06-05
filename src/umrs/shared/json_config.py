@@ -208,6 +208,18 @@ def load_server_cfg_file(json_filename):
     username_list = []
     content = load_server_cfg_json(json_filename)
 
+    # Deduplicate user entries that resolve to the same absolute path
+    # (e.g. "./user_files/x.json" and "/etc/umrs/user_files/x.json").
+    seen_paths: set[str] = set()
+    deduped_users: list[str] = []
+    for user_conf_file in content["users"]:
+        real = os.path.realpath(user_conf_file)
+        if real in seen_paths:
+            continue
+        seen_paths.add(real)
+        deduped_users.append(user_conf_file)
+    content["users"] = deduped_users
+
     try:
       admin_s3_configuration_file = content["admin_s3_configuration_file"]
       for user_conf_file in content["users"]:
