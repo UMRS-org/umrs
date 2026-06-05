@@ -259,11 +259,36 @@ fi
 mkdir -p "$HOME/.config/umrs"
 cp -f "$S3CFG" "$HOME/.config/umrs/s3cfg"
 
-# ─── Create conf_umrs.json ───────────────────────────────────────────────────
-CONF_FILE="${SCRIPT_DIR}/conf_umrs.json"
-if [[ ! -f "$CONF_FILE" ]]; then
-    mkdir -p "${SCRIPT_DIR}/user_files"
-    cat > "${SCRIPT_DIR}/user_files/user1.json" <<'EOF'
+# ─── Create per-cluster conf_umrs.json and user_files dirs ───────────────────
+# Each cluster has its own conf_umrs_<cluster>.json and user_files_<cluster>/
+# so RCCS and AI4S users can be managed independently.
+
+_init_cluster_conf() {
+    local cluster="$1"
+    local conf_file="${SCRIPT_DIR}/conf_umrs_${cluster}.json"
+    local ufiles_dir="${SCRIPT_DIR}/user_files_${cluster}"
+
+    # Migrate from old shared layout (one-time upgrade path)
+    if [[ ! -f "$conf_file" ]]; then
+        if [[ -f "${SCRIPT_DIR}/conf_umrs.json" && -d "${SCRIPT_DIR}/user_files" ]]; then
+            echo "  Migrating shared user_files -> user_files_${cluster}/ ..."
+            mkdir -p "$ufiles_dir"
+            cp -rn "${SCRIPT_DIR}/user_files/." "$ufiles_dir/" 2>/dev/null \
+                || cp -r "${SCRIPT_DIR}/user_files/." "$ufiles_dir/"
+            python3 -c "
+import json
+src = '${SCRIPT_DIR}/conf_umrs.json'
+dst = '${conf_file}'
+data = json.loads(open(src).read())
+data['user_files_dir'] = './user_files_${cluster}'
+data['users'] = [u.replace('./user_files/', './user_files_${cluster}/') for u in data.get('users', [])]
+open(dst, 'w').write(json.dumps(data, indent=2) + '\\n')
+print('  Created ' + dst + ' from shared conf')
+"
+        else
+            # Fresh first-time init
+            mkdir -p "$ufiles_dir"
+            cat > "${ufiles_dir}/user1.json" <<'USERJSON'
 {
   "username": "user1",
   "fullname": "Default User",
@@ -298,28 +323,29 @@ if [[ ! -f "$CONF_FILE" ]]; then
     }
   ]
 }
-EOF
-    cat > "$CONF_FILE" <<EOF
+USERJSON
+            cat > "$conf_file" <<CONFJSON
 {
   "admin_s3_configuration_file": "$HOME/.config/umrs/s3cfg",
-  "user_files_dir": "./user_files",
+  "user_files_dir": "./user_files_${cluster}",
   "users": [
-    "./user_files/user1.json"
+    "./user_files_${cluster}/user1.json"
   ]
 }
-EOF
-fi
+CONFJSON
+        fi
+    fi
+    mkdir -p "$ufiles_dir"  # ensure dir exists even if conf already present
+}
 
-CONF_FILE="${CONF_FILE}" SCRIPT_DIR="${SCRIPT_DIR}" _run_util "
+_init_cluster_conf rccs
+_init_cluster_conf ai4s
+
+_run_util "
 import json
-import os
 from pathlib import Path
 
-conf_path = Path('/work/conf_umrs.json')
 script_dir = Path('/work')
-user_files_dir = script_dir / 'user_files'
-if not conf_path.exists() or not user_files_dir.is_dir():
-    raise SystemExit(0)
 
 def _write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -349,55 +375,59 @@ def _needs_remote_s3cfg_rewrite(value):
         return True
     return not (raw.startswith('~/') or Path(raw).is_absolute())
 
-conf = json.loads(conf_path.read_text())
-existing_users = list(conf.get('users') or [])
-candidate_users = [str(user) for user in existing_users]
-
-for user_file in sorted(user_files_dir.glob('*.json')):
-    rel = f'./user_files/{user_file.name}'
-    if rel not in candidate_users:
-        candidate_users.append(rel)
-
-users = []
-seen = set()
-required_keys = {'username', 'fullname', 's3_configuration_file', 'experiences'}
-changed = False
-conf_updates = {
-    'admin_s3_configuration_file': '~/.config/umrs/s3cfg',
-    'user_files_dir': './user_files',
-}
-for key, value in conf_updates.items():
-    if conf.get(key) != value:
-        conf[key] = value
-        changed = True
-
-for user in candidate_users:
-    user_path = Path(user)
-    if not user_path.is_absolute():
-        user_path = script_dir / user_path
-    try:
-        payload = json.loads(user_path.read_text())
-    except Exception as exc:
-        print(f'WARNING: skipping unreadable user config {user}: {exc}')
-        continue
-    missing = sorted(required_keys - set(payload))
-    if missing:
-        print(f'WARNING: skipping invalid user config {user}: missing {chr(44).join(missing)}')
-        continue
-    if _needs_remote_s3cfg_rewrite(payload.get('s3_configuration_file')):
-        payload['s3_configuration_file'] = _default_s3cfg_for(payload, user_path.stem)
-        _write_json(user_path, payload)
-    key = str(user_path.resolve())
-    if key not in seen:
-        canonical_user = _canonical_config_ref(user_path.resolve())
-        users.append(canonical_user)
-        seen.add(key)
-        if canonical_user != user:
+def _migrate_conf(cluster):
+    conf_path = script_dir / f'conf_umrs_{cluster}.json'
+    user_files_dir = script_dir / f'user_files_{cluster}'
+    if not conf_path.exists() or not user_files_dir.is_dir():
+        return
+    conf = json.loads(conf_path.read_text())
+    existing_users = list(conf.get('users') or [])
+    candidate_users = [str(user) for user in existing_users]
+    for user_file in sorted(user_files_dir.glob('*.json')):
+        rel = f'./user_files_{cluster}/{user_file.name}'
+        if rel not in candidate_users:
+            candidate_users.append(rel)
+    users = []
+    seen = set()
+    required_keys = {'username', 'fullname', 's3_configuration_file', 'experiences'}
+    changed = False
+    conf_updates = {
+        'admin_s3_configuration_file': '~/.config/umrs/s3cfg',
+        'user_files_dir': f'./user_files_{cluster}',
+    }
+    for key, value in conf_updates.items():
+        if conf.get(key) != value:
+            conf[key] = value
             changed = True
+    for user in candidate_users:
+        user_path = Path(user)
+        if not user_path.is_absolute():
+            user_path = script_dir / user_path
+        try:
+            payload = json.loads(user_path.read_text())
+        except Exception as exc:
+            print(f'WARNING: skipping unreadable user config {user}: {exc}')
+            continue
+        missing = sorted(required_keys - set(payload))
+        if missing:
+            print(f'WARNING: skipping invalid user config {user}: missing {chr(44).join(missing)}')
+            continue
+        if _needs_remote_s3cfg_rewrite(payload.get('s3_configuration_file')):
+            payload['s3_configuration_file'] = _default_s3cfg_for(payload, user_path.stem)
+            _write_json(user_path, payload)
+        key = str(user_path.resolve())
+        if key not in seen:
+            canonical_user = _canonical_config_ref(user_path.resolve())
+            users.append(canonical_user)
+            seen.add(key)
+            if canonical_user != user:
+                changed = True
+    conf['users'] = users
+    if changed or conf.get('users') != existing_users:
+        conf_path.write_text(json.dumps(conf, indent=2) + '\n')
 
-conf['users'] = users
-if changed or conf.get('users') != existing_users:
-    conf_path.write_text(json.dumps(conf, indent=2) + '\n')
+for cluster in ['rccs', 'ai4s']:
+    _migrate_conf(cluster)
 "
 
 # ─── Stop existing UMRS server containers (or legacy native processes) ────────
@@ -631,7 +661,7 @@ if [[ "$RAG_ENABLED" == "true" ]]; then
         -v "${SCRIPT_DIR}:/work:ro,z" \
         -v umrs-front_umrs_config:/root/.config/umrs:z \
         -v "${SCRIPT_DIR}/s3cfg:/etc/umrs/s3cfg:ro,z" \
-        -v "${SCRIPT_DIR}/user_files:/etc/umrs/user_files:ro,z" \
+        -v "${SCRIPT_DIR}/user_files_rccs:/etc/umrs/user_files:ro,z" \
         -e UMRS_RAG_PORT="${UMRS_RAG_PORT:-8081}" \
         -e UMRS_RAG_BIND_HOST="127.0.0.1" \
         -e UMRS_CONFIG="/work" \
