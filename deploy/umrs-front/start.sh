@@ -93,6 +93,15 @@ if [[ "$START_MODE" != "--server" ]]; then
     podman volume inspect umrs_pg_data >/dev/null 2>&1 || podman volume create umrs_pg_data
     podman volume inspect umrs_minio_data >/dev/null 2>&1 || podman volume create umrs_minio_data
 
+    # Remove legacy containers that conflict with compose-managed names
+    for _ctr in umrs-postgres umrs-minio; do
+        if podman inspect "$_ctr" >/dev/null 2>&1; then
+            echo "  Removing legacy container $_ctr..."
+            podman stop "$_ctr" 2>/dev/null || true
+            podman rm -f "$_ctr" 2>/dev/null || true
+        fi
+    done
+
     podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d postgres minio
 
     # Wait for postgres
