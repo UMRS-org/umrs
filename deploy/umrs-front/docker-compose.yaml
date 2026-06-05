@@ -108,8 +108,9 @@ services:
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       # CURVE session keys (when ZMQ auth enabled)
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
-      # Writable s3cfg dir for per-user s3cfg generation
-      - umrs_config_rccs:/root/.config/umrs
+      # Writable s3cfg dir for per-user s3cfg generation (shared: both
+      # servers use the same MinIO, so credentials must be identical)
+      - umrs_config:/root/.config/umrs
       # SSH ControlMaster sockets (tmpfs for ephemeral sockets)
       - type: tmpfs
         target: /run/umrs-ssh
@@ -125,6 +126,12 @@ services:
         # Copy s3cfg to config dir
         cp -f /etc/umrs/s3cfg /root/.config/umrs/s3cfg 2>/dev/null || true
         exec python /app/umrs-src/server_umrs.py -c /etc/umrs/conf_umrs.json
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://127.0.0.1:${UMRS_HTTP_PORT:-8000}/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 30s
     depends_on:
       postgres:
         condition: service_healthy
@@ -174,7 +181,8 @@ services:
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
-      - umrs_config_ai4s:/root/.config/umrs
+      # Shared config volume (same MinIO → same credentials)
+      - umrs_config:/root/.config/umrs
       - type: tmpfs
         target: /run/umrs-ssh
         tmpfs:
@@ -193,11 +201,12 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
+      umrs-server-rccs:
+        condition: service_healthy
 
 volumes:
   umrs_pg_data:
     external: true
   umrs_minio_data:
     external: true
-  umrs_config_rccs:
-  umrs_config_ai4s:
+  umrs_config:
