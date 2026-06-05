@@ -126,7 +126,7 @@ class TunnelPool:
             # Return existing tunnel if already open.
             if key in self._tunnels:
                 existing = self._tunnels[key]
-                if existing.process and existing.process.returncode is None:
+                if self._spec_alive(existing):
                     return existing.local_port
                 # Process died, remove stale entry.
                 del self._tunnels[key]
@@ -163,18 +163,27 @@ class TunnelPool:
 
             # Wait briefly to ensure tunnel established.
             await asyncio.sleep(0.5)
-            if proc.returncode is not None:
+            rc = proc.returncode
+            if rc is not None and rc != 0:
                 stderr = await proc.stderr.read() if proc.stderr else b""
                 raise ConnectionError(
                     f"Tunnel to {remote_host}:{remote_port} failed: "
                     f"{stderr.decode().strip()}"
                 )
 
+            # When multiplexing over an existing ControlMaster, the slave
+            # ``ssh -N -L`` process delegates the forward to the master and
+            # exits cleanly (returncode 0); the master process owns the
+            # listening socket. Track such tunnels without a live slave
+            # process. Without multiplexing the slave stays alive
+            # (returncode None) and owns the listener itself.
+            tracked_proc = proc if rc is None else None
+
             spec = TunnelSpec(
                 remote_host=remote_host,
                 remote_port=remote_port,
                 local_port=port,
-                process=proc,
+                process=tracked_proc,
             )
             self._tunnels[key] = spec
 
@@ -190,22 +199,31 @@ class TunnelPool:
 
         async with self._lock:
             spec = self._tunnels.pop(key, None)
-            if spec and spec.process and spec.process.returncode is None:
-                spec.process.terminate()
-                try:
-                    await asyncio.wait_for(spec.process.wait(), timeout=5)
-                except asyncio.TimeoutError:
-                    spec.process.kill()
-                logger.info(
-                    "Tunnel closed: localhost:%d -> %s:%d",
-                    spec.local_port, remote_host, remote_port,
-                )
+            if spec is None:
+                return
+            await self._teardown_spec(spec)
+            logger.info(
+                "Tunnel closed: localhost:%d -> %s:%d",
+                spec.local_port, remote_host, remote_port,
+            )
+
+    @staticmethod
+    def _spec_alive(spec: TunnelSpec) -> bool:
+        """Return True if the tunnel is considered active.
+
+        Multiplexed tunnels (``process is None``) are owned by the
+        ControlMaster connection and are assumed alive until explicitly
+        closed. Standalone tunnels are alive while their slave process runs.
+        """
+        if spec.process is None:
+            return True
+        return spec.process.returncode is None
 
     def get_local_port(self, remote_host: str, remote_port: int) -> Optional[int]:
         """Get the local port for an active tunnel. Returns None if not open."""
         key = self._tunnel_key(remote_host, remote_port)
         spec = self._tunnels.get(key)
-        if spec and spec.process and spec.process.returncode is None:
+        if spec and self._spec_alive(spec):
             return spec.local_port
         return None
 
@@ -221,7 +239,7 @@ class TunnelPool:
         """List all active tunnels."""
         return [
             spec for spec in self._tunnels.values()
-            if spec.process and spec.process.returncode is None
+            if self._spec_alive(spec)
         ]
 
     async def cleanup_dead(self) -> int:
@@ -238,15 +256,53 @@ class TunnelPool:
             logger.warning("Cleaned up %d dead tunnels", len(dead_keys))
         return len(dead_keys)
 
+    async def _teardown_spec(self, spec: TunnelSpec) -> None:
+        """Tear down a single tunnel, handling both standalone and
+        ControlMaster-owned forwards."""
+        if spec.process is not None:
+            if spec.process.returncode is None:
+                spec.process.terminate()
+                try:
+                    await asyncio.wait_for(spec.process.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    spec.process.kill()
+            return
+        # Multiplexed forward owned by the ControlMaster; cancel it.
+        await self._cancel_master_forward(spec)
+
+    async def _cancel_master_forward(self, spec: TunnelSpec) -> None:
+        """Cancel a forward that is owned by the shared ControlMaster."""
+        if not self._config.control_path:
+            return
+        args = [
+            "ssh", "-O", "cancel",
+            "-o", f"ControlPath={self._config.control_path}",
+        ]
+        if self._config.ssh_port != 22:
+            args.extend(["-p", str(self._config.ssh_port)])
+        args.extend([
+            "-L",
+            f"{self._config.bind_address}:{spec.local_port}:"
+            f"{spec.remote_host}:{spec.remote_port}",
+            self._ssh_target(),
+        ])
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *args,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(proc.wait(), timeout=5)
+        except (asyncio.TimeoutError, OSError):
+            logger.warning(
+                "Failed to cancel multiplexed forward localhost:%d -> %s:%d",
+                spec.local_port, spec.remote_host, spec.remote_port,
+            )
+
     async def shutdown(self) -> None:
         """Close all tunnels and clean up."""
         async with self._lock:
             for key, spec in list(self._tunnels.items()):
-                if spec.process and spec.process.returncode is None:
-                    spec.process.terminate()
-                    try:
-                        await asyncio.wait_for(spec.process.wait(), timeout=5)
-                    except asyncio.TimeoutError:
-                        spec.process.kill()
+                await self._teardown_spec(spec)
             self._tunnels.clear()
             logger.info("Tunnel pool shut down, all tunnels closed")
