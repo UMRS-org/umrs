@@ -99,6 +99,13 @@ services:
       UMRS_ADVERTISE_HOST: ${UMRS_ADVERTISE_HOST:-}
       UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
       UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
+      # Endpoint readiness budget. Large frontier models (Kimi-K2.6, GLM-5.1,
+      # DeepSeek-V4-Pro) take >10 min to load weights and capture CUDA graphs;
+      # the orchestrator default of 600s scancels them prematurely.
+      RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
+      # Durable-path readiness poller budget (default 300s). Must also cover
+      # the multi-minute weight load + CUDA graph capture of large models.
+      RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
@@ -175,6 +182,13 @@ services:
       UMRS_ADVERTISE_HOST: ${UMRS_ADVERTISE_HOST:-}
       UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key
       UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE: /root/.config/umrs/curve-keys/server/server.key_secret
+      # Endpoint readiness budget. Large frontier models (Kimi-K2.6, GLM-5.1,
+      # DeepSeek-V4-Pro) take >10 min to load weights and capture CUDA graphs;
+      # the orchestrator default of 600s scancels them prematurely.
+      RIVAULT_STARTUP_TIMEOUT_SEC: ${RIVAULT_STARTUP_TIMEOUT_SEC:-2400}
+      # Durable-path readiness poller budget (default 300s). Must also cover
+      # the multi-minute weight load + CUDA graph capture of large models.
+      RIVAULT_READINESS_TIMEOUT_SEC: ${RIVAULT_READINESS_TIMEOUT_SEC:-2400}
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro,z
