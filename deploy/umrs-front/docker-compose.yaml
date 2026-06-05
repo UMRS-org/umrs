@@ -101,8 +101,8 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
-      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:ro,z
-      - ./user_files:/etc/umrs/user_files:ro,z
+      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:z
+      - ./user_files:/etc/umrs/user_files:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       # SSH keys for RemoteSlurmBackend
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
@@ -176,8 +176,8 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro,z
-      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:ro,z
-      - ./user_files:/etc/umrs/user_files:ro,z
+      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:z
+      - ./user_files:/etc/umrs/user_files:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z
       - ${HOME}/.ssh:/root/.ssh-host:ro,z
       - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
