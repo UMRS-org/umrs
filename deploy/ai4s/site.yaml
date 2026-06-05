@@ -35,7 +35,7 @@ scheduler:
   partition: 1n1gpu                           # Default partition; override per job
   account: ea                                 # Slurm account (NOT the username ea0022; sacctmgr assoc = "ea")
   qos: ""
-  time_limit: "04:00:00"                      # Max allowed: 96h (unlimited on 4n4gpu-p)
+  time_limit: "96:00:00"                      # Max allowed: 96h (unlimited on 4n4gpu-p); long-lived system-tier endpoints
   gpus: 1                                     # --gpus-per-node=1 for 1n1gpu
   cpus: 8
   memory: "64G"                              # AI4S rejects --mem=0; request a bounded smoke allocation
@@ -46,7 +46,7 @@ scheduler:
 
 runtime:
   kind: singularity                           # Apptainer on AI4S
-  rivault_dir: /work/hps0/home/ea0022/images/mini-rivault-aarch64.sif  # aarch64 vLLM+LiteLLM+NGINX SIF (built 2026-06-06)
+  rivault_dir: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v4.sif  # aarch64 vLLM+LiteLLM+NGINX+Ray SIF (v4, multi-node)
   repo_dir: ""
   vision_image: ""
   compose_file: ""
