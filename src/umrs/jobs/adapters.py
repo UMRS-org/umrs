@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -254,6 +255,16 @@ class EndpointProvisionBackend(OrchestratorBackend):
                     "MODEL_NAME": model_name,
                 }
             )
+            # Single-node tensor parallelism defaults to the requested GPU
+            # count (TP == GPUs on the node). Honor any explicit override the
+            # request already carried in env_vars.
+            submit_env.setdefault("VLLM_TENSOR_PARALLEL_SIZE", str(gpu_count))
+            # Forward the LiteLLM master key from the orchestrator process
+            # environment so the mini-RiVault wrapper can authenticate the
+            # in-job LiteLLM proxy. Never overwrite an explicit request value.
+            litellm_master_key = os.environ.get("LITELLM_MASTER_KEY")
+            if litellm_master_key:
+                submit_env.setdefault("LITELLM_MASTER_KEY", litellm_master_key)
             # When no registered model was found (model_path is None), forward
             # the requested model name as VLLM_MODEL so the slurm wrapper can
             # resolve it from the HF cache instead of falling back to the site
