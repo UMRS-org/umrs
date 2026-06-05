@@ -397,7 +397,13 @@ def _migrate_conf(cluster):
     for user in candidate_users:
         user_path = Path(user)
         if not user_path.is_absolute():
-            user_path = script_dir / user_path
+            # Conf refs use ./user_files/ (container mount point) but actual
+            # files live in user_files_{cluster}/ on the host (/work here).
+            rel = user_path.as_posix()
+            if rel.startswith('./user_files/'):
+                user_path = user_files_dir / user_path.name
+            else:
+                user_path = script_dir / user_path
         try:
             payload = json.loads(user_path.read_text())
         except Exception as exc:
