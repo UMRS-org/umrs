@@ -502,6 +502,16 @@ _stop_port_listener "${UMRS_AI4S_ZMQ_PORT}" "AI4S ZMQ"
 [[ "${UMRS_AI4S_ZMQ_PORT}" == "5557" ]] || _stop_port_listener "5557" "legacy AI4S ZMQ"
 
 # ─── Build and start UMRS server containers ──────────────────────────────────
+# Remove legacy containers that conflict with compose-managed names
+for _ctr in umrs-server umrs-server-rccs umrs-server-ai4s; do
+    if podman inspect "$_ctr" >/dev/null 2>&1 && \
+       [[ -z "$(podman inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$_ctr" 2>/dev/null)" ]]; then
+        echo "  Removing legacy container $_ctr..."
+        podman stop "$_ctr" 2>/dev/null || true
+        podman rm -f "$_ctr" 2>/dev/null || true
+    fi
+done
+
 echo ""
 echo "Building/starting UMRS server containers via podman compose..."
 echo "  RCCS site config: ../rccs-front/site.yaml"
