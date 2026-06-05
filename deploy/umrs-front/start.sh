@@ -653,10 +653,10 @@ if [[ "$RAG_ENABLED" == "true" ]]; then
 
     podman run -d --name umrs-rag \
         --network=host \
-        -v "${SCRIPT_DIR}:/work:ro,z" \
+        -v "${SCRIPT_DIR}/conf_umrs_rccs.json:/work/conf_umrs.json:ro,z" \
+        -v "${SCRIPT_DIR}/user_files_rccs:/work/user_files:ro,z" \
         -v umrs-front_umrs_config:/root/.config/umrs:z \
         -v "${SCRIPT_DIR}/s3cfg:/etc/umrs/s3cfg:ro,z" \
-        -v "${SCRIPT_DIR}/user_files_rccs:/etc/umrs/user_files:ro,z" \
         -e UMRS_RAG_PORT="${UMRS_RAG_PORT:-8081}" \
         -e UMRS_RAG_BIND_HOST="127.0.0.1" \
         -e UMRS_CONFIG="/work" \
