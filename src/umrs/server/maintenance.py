@@ -423,9 +423,7 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
 # ---------------------------------------------------------------------------
 
 def check_duplicated_database(users):
-    """Abort if two users share the same database name."""
-    import sys
-
+    """Raise if two users share the same database name."""
     databases_name_dict = {}
     for user in users:
         username = user["username"]
@@ -434,11 +432,10 @@ def check_duplicated_database(users):
             xp_name = xp["xp_name"]
             db_name = create_db_name(sql_username, xp_name)
             if db_name in databases_name_dict:
-                sys.exit(
-                    f"\t❌ Error: duplicated database '{db_name}' for users "
-                    f"'{username}' and '{databases_name_dict[db_name]}'\n"
-                    f"\tChange xp_name or sql_username in json file.\n"
-                    f"\tExiting..."
+                raise ValueError(
+                    f"duplicated database '{db_name}' for users "
+                    f"'{username}' and '{databases_name_dict[db_name]}' "
+                    f"— change xp_name or sql_username in json file"
                 )
             databases_name_dict[db_name] = username
 
