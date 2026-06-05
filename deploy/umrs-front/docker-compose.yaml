@@ -98,14 +98,14 @@ services:
       UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro
-      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:ro
-      - ./user_files:/etc/umrs/user_files:ro
-      - ./s3cfg:/etc/umrs/s3cfg:ro
+      - ../rccs-front/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:ro,z
+      - ./user_files:/etc/umrs/user_files:ro,z
+      - ./s3cfg:/etc/umrs/s3cfg:ro,z
       # SSH keys for RemoteSlurmBackend
-      - ${HOME}/.ssh:/root/.ssh-host:ro
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
       # CURVE session keys (when ZMQ auth enabled)
-      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
       # Writable s3cfg dir for per-user s3cfg generation
       - umrs_config_rccs:/root/.config/umrs
       # SSH ControlMaster sockets (tmpfs for ephemeral sockets)
@@ -164,12 +164,12 @@ services:
       UMRS_AUTH_MODE: ${UMRS_AUTH_MODE:-strict}
       PYTHONUNBUFFERED: "1"
     volumes:
-      - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro
-      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:ro
-      - ./user_files:/etc/umrs/user_files:ro
-      - ./s3cfg:/etc/umrs/s3cfg:ro
-      - ${HOME}/.ssh:/root/.ssh-host:ro
-      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro
+      - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ./conf_umrs.json:/etc/umrs/conf_umrs.json:ro,z
+      - ./user_files:/etc/umrs/user_files:ro,z
+      - ./s3cfg:/etc/umrs/s3cfg:ro,z
+      - ${HOME}/.ssh:/root/.ssh-host:ro,z
+      - ${HOME}/.config/umrs/curve-keys:/root/.config/umrs/curve-keys:ro,z
       - umrs_config_ai4s:/root/.config/umrs
       - type: tmpfs
         target: /run/umrs-ssh
