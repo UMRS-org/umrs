@@ -134,7 +134,10 @@ write_job_info starting
 # ── Launch the mini-RiVault container ────────────────────────────────────────
 # Model weights are bind-mounted read-only at /models; the container runs fully
 # offline (TRANSFORMERS_OFFLINE=1 / HF_HUB_OFFLINE=1 are baked into the image).
-"${CONTAINER_CMD}" exec --nv --cleanenv \
+# --writable-tmpfs gives an in-memory overlay so the container's start.sh can
+# render its runtime config (litellm-config.yaml, nginx site, supervisord logs)
+# into the otherwise read-only SIF filesystem.
+"${CONTAINER_CMD}" exec --nv --cleanenv --writable-tmpfs \
     --bind "${HOST_MODEL_PATH}:/models:ro" \
     --env VLLM_MODEL_PATH="/models" \
     --env VLLM_SERVED_MODEL="${MODEL_NAME}" \
