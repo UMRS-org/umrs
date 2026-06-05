@@ -38,7 +38,7 @@ services:
       - umrs_pg_data:/var/lib/postgresql/data
     command: postgres -c "listen_addresses=*" -c "unix_socket_directories="
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umrs}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-umrs} -h 127.0.0.1"]
       interval: 5s
       timeout: 3s
       retries: 10
