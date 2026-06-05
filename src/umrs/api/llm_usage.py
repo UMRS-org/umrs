@@ -63,9 +63,11 @@ def _parse_usage_dict(usage: dict) -> dict:
         "prompt_tokens": int(usage.get("prompt_tokens") or 0),
         "completion_tokens": int(usage.get("completion_tokens") or 0),
         "total_tokens": int(usage.get("total_tokens") or 0),
-        # Anthropic-style cache (zero when absent)
+        # Anthropic-style cache (zero when absent).
+        # ``prompt_tokens_details`` may be present but ``null`` (e.g. vLLM),
+        # so coerce to ``{}`` before indexing.
         "cached_read_tokens": int(
-            usage.get("prompt_tokens_details", {}).get("cached_tokens", 0)
+            (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
             or usage.get("cache_read_input_tokens", 0)
         ),
         "cached_write_tokens": int(
