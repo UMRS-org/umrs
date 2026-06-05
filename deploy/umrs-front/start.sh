@@ -399,8 +399,8 @@ def _migrate_conf(cluster):
         if not user_path.is_absolute():
             # Conf refs use ./user_files/ (container mount point) but actual
             # files live in user_files_{cluster}/ on the host (/work here).
-            rel = user_path.as_posix()
-            if rel.startswith('./user_files/'):
+            # Note: Path normalises ./ so check the string, not the posix form.
+            if str(user).lstrip('./').startswith('user_files/'):
                 user_path = user_files_dir / user_path.name
             else:
                 user_path = script_dir / user_path
