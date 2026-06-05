@@ -555,6 +555,19 @@ def _read_user_s3cfg(username: str) -> str | None:
         )
         candidates.append(os.path.join(cfg_dir, f"s3cfg_{username}"))
 
+    # UMRS_CONFIG directory (set by container env, may differ from configure_file)
+    umrs_config_dir = os.environ.get("UMRS_CONFIG", "")
+    if umrs_config_dir and umrs_config_dir != os.path.dirname(
+        os.path.expanduser(configure_file)
+    ) if configure_file else True:
+        umrs_config_dir = os.path.expanduser(umrs_config_dir)
+        candidates.append(
+            os.path.join(umrs_config_dir, "user_files", f"s3cfg_{username}"),
+        )
+        candidates.append(
+            os.path.join(umrs_config_dir, f"s3cfg_{username}"),
+        )
+
     # Standard path (may be stale if MinIO user was re-provisioned)
     candidates.append(os.path.expanduser(f"~/.config/umrs/s3cfg_{username}"))
 
