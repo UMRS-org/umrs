@@ -418,7 +418,9 @@ def _migrate_conf(cluster):
             _write_json(user_path, payload)
         key = str(user_path.resolve())
         if key not in seen:
-            canonical_user = _canonical_config_ref(user_path.resolve())
+            # Always write ./user_files/ refs — that's the container mount point
+            # regardless of where the file lives on the host (user_files_{cluster}/)
+            canonical_user = f'./user_files/{user_path.name}'
             users.append(canonical_user)
             seen.add(key)
             if canonical_user != user:
