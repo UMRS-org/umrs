@@ -33,6 +33,19 @@ START_MODE="${1:-}"
 [[ "$(uname -s)" == "Linux" ]] || { echo "ERROR: Must run on umrs-front (Linux)"; exit 1; }
 [[ -d "$VENV_DIR" ]] || { echo "ERROR: Venv not found. Run ./setup.sh first"; exit 1; }
 
+# ─── Ensure rootless Podman socket is available ──────────────────────────────
+# Non-interactive SSH sessions (Ansible) don't set XDG_RUNTIME_DIR and the
+# Podman user socket may not be running.  podman compose delegates to the
+# docker-compose plugin which requires the API socket.
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+fi
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
+if ! podman info --format '{{.Host.RemoteSocket.Path}}' >/dev/null 2>&1; then
+    echo "Starting rootless Podman socket..."
+    systemctl --user start podman.socket 2>/dev/null || true
+fi
+
 # ─── Load .env ───────────────────────────────────────────────────────────────
 if [[ ! -f .env ]]; then
     echo "ERROR: .env not found. Create from template in setup.sh"

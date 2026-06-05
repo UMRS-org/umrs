@@ -11,6 +11,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# ─── Ensure rootless Podman socket is available ──────────────────────────────
+if [[ -z "${XDG_RUNTIME_DIR:-}" ]]; then
+    export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+fi
+
 COMPOSE_FILE="$(pwd)/docker-compose.yaml"
 
 # ─── Stop UMRS server containers ────────────────────────────────────────────
