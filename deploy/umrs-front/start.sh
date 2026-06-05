@@ -275,16 +275,10 @@ _init_cluster_conf() {
             mkdir -p "$ufiles_dir"
             cp -rn "${SCRIPT_DIR}/user_files/." "$ufiles_dir/" 2>/dev/null \
                 || cp -r "${SCRIPT_DIR}/user_files/." "$ufiles_dir/"
-            python3 -c "
-import json
-src = '${SCRIPT_DIR}/conf_umrs.json'
-dst = '${conf_file}'
-data = json.loads(open(src).read())
-data['user_files_dir'] = './user_files_${cluster}'
-data['users'] = [u.replace('./user_files/', './user_files_${cluster}/') for u in data.get('users', [])]
-open(dst, 'w').write(json.dumps(data, indent=2) + '\\n')
-print('  Created ' + dst + ' from shared conf')
-"
+            # Copy verbatim — paths inside conf stay as ./user_files/ because
+            # from the container's perspective the mount is always /etc/umrs/user_files/
+            cp "${SCRIPT_DIR}/conf_umrs.json" "$conf_file"
+            echo "  Created $conf_file from shared conf"
         else
             # Fresh first-time init
             mkdir -p "$ufiles_dir"
@@ -324,12 +318,13 @@ print('  Created ' + dst + ' from shared conf')
   ]
 }
 USERJSON
+            # Paths inside conf always use ./user_files/ (container mount point)
             cat > "$conf_file" <<CONFJSON
 {
   "admin_s3_configuration_file": "$HOME/.config/umrs/s3cfg",
-  "user_files_dir": "./user_files_${cluster}",
+  "user_files_dir": "./user_files",
   "users": [
-    "./user_files_${cluster}/user1.json"
+    "./user_files/user1.json"
   ]
 }
 CONFJSON
@@ -384,7 +379,7 @@ def _migrate_conf(cluster):
     existing_users = list(conf.get('users') or [])
     candidate_users = [str(user) for user in existing_users]
     for user_file in sorted(user_files_dir.glob('*.json')):
-        rel = f'./user_files_{cluster}/{user_file.name}'
+        rel = f'./user_files/{user_file.name}'
         if rel not in candidate_users:
             candidate_users.append(rel)
     users = []
@@ -393,7 +388,7 @@ def _migrate_conf(cluster):
     changed = False
     conf_updates = {
         'admin_s3_configuration_file': '~/.config/umrs/s3cfg',
-        'user_files_dir': f'./user_files_{cluster}',
+        'user_files_dir': './user_files',
     }
     for key, value in conf_updates.items():
         if conf.get(key) != value:
