@@ -2791,8 +2791,16 @@ def _http_model_register(
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = _json.loads(resp.read().decode("utf-8"))
-            if isinstance(result, dict) and "status" not in result:
-                return {"status": "ok", **result}
+            if isinstance(result, dict):
+                # Preserve the model's own 'status' field (e.g. 'available')
+                # under a different key, and set the envelope status to 'ok'.
+                model_status = result.pop("status", None)
+                envelope = {"status": "ok", **result}
+                if model_status is not None:
+                    envelope["model_status"] = model_status
+                model_name = result.get("name", name)
+                envelope["message"] = f"Model '{model_name}' registered ({scope} scope)"
+                return envelope
             return result
     except urllib.error.HTTPError as e:
         try:
