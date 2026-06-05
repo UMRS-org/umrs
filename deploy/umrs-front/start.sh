@@ -377,8 +377,11 @@ def _migrate_conf(cluster):
         return
     conf = json.loads(conf_path.read_text())
     existing_users = list(conf.get('users') or [])
-    candidate_users = [str(user) for user in existing_users]
+    # Filter out .client.json — those are client templates, not user configs
+    candidate_users = [str(u) for u in existing_users if not str(u).endswith('.client.json')]
     for user_file in sorted(user_files_dir.glob('*.json')):
+        if user_file.name.endswith('.client.json'):
+            continue
         rel = f'./user_files/{user_file.name}'
         if rel not in candidate_users:
             candidate_users.append(rel)
