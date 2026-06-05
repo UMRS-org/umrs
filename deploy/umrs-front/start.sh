@@ -119,9 +119,9 @@ if [[ "$START_MODE" != "--server" ]]; then
         [[ "$i" -eq 30 ]] && echo " WARNING: postgres not ready after 30s"
     done
 
-    # Create AI4S database if it doesn't exist (works with native or container)
-    _pg_cmd() { psql -h 127.0.0.1 -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER:-umrs}" "$@" 2>/dev/null || \
-                podman exec umrs-postgres psql -U "${POSTGRES_USER:-umrs}" "$@" 2>/dev/null; }
+    # Create AI4S database if it doesn't exist (container-first)
+    _pg_cmd() { podman exec umrs-postgres psql -U "${POSTGRES_USER:-umrs}" "$@" 2>/dev/null || \
+                PGPASSWORD="${POSTGRES_PASSWORD}" psql -h 127.0.0.1 -p "${POSTGRES_PORT:-5432}" -U "${POSTGRES_USER:-umrs}" "$@" 2>/dev/null; }
     _pg_cmd -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='${POSTGRES_DB_AI4S:-umrs_ai4s}'" \
         | grep -q 1 || \
     _pg_cmd -d postgres -c "CREATE DATABASE ${POSTGRES_DB_AI4S:-umrs_ai4s};" || true
