@@ -9,7 +9,7 @@
 #   - UMRS server for AI4S (ZMQ:50100, HTTP:8002)
 #
 # Prerequisites:
-#   - Run ./setup.sh once (creates venv, installs deps)
+#   - Podman (rootless) with compose support
 #   - Edit .env
 #
 # Usage:
@@ -24,14 +24,15 @@ export GOMAXPROCS="${GOMAXPROCS:-4}"
 
 SCRIPT_DIR="$(pwd)"
 REPO_ROOT="$(cd ../.. && pwd)"
-VENV_DIR="${SCRIPT_DIR}/.venv"
 LOG_DIR="${SCRIPT_DIR}/logs"
+
+# Container image used for both UMRS servers and utility tasks (key gen, S3 bootstrap, etc.)
+UMRS_IMAGE="localhost/umrs-server:latest"
 
 START_MODE="${1:-}"
 
 # ─── Prerequisites ───────────────────────────────────────────────────────────
 [[ "$(uname -s)" == "Linux" ]] || { echo "ERROR: Must run on umrs-front (Linux)"; exit 1; }
-[[ -d "$VENV_DIR" ]] || { echo "ERROR: Venv not found. Run ./setup.sh first"; exit 1; }
 
 # ─── Ensure rootless Podman socket is available ──────────────────────────────
 # Non-interactive SSH sessions (Ansible) don't set XDG_RUNTIME_DIR and the
@@ -143,10 +144,30 @@ if [[ "$START_MODE" != "--server" ]]; then
     done
 fi
 
-# ─── Activate venv ───────────────────────────────────────────────────────────
-# shellcheck disable=SC1091
-source "${VENV_DIR}/bin/activate"
-export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
+# ─── Build UMRS server image (needed for utility tasks and servers) ──────────
+echo "Ensuring UMRS server image is available..."
+if [[ "${UMRS_IMAGE_REBUILD:-false}" == "true" ]] || \
+   ! podman image exists "$UMRS_IMAGE" 2>/dev/null; then
+    echo "  Building UMRS server image..."
+    podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" build umrs-server-rccs
+fi
+
+# Helper: run a one-shot Python snippet inside the UMRS server image.
+# Mounts current dir at /work and uses host networking for DB/S3 access.
+_run_util() {
+    podman run --rm --network=host \
+        -v "${SCRIPT_DIR}:/work:z" \
+        -v "${HOME}/.config/umrs:/root/.config/umrs:z" \
+        -w /work \
+        -e S3_ENDPOINT_URL -e S3_ACCESS_KEY -e S3_SECRET_KEY \
+        -e S3_REGION -e S3_BUCKET -e S3_USE_SSL \
+        -e MINIO_ROOT_USER -e MINIO_ROOT_PASSWORD \
+        -e MINIO_PORT -e POSTGRES_USER -e POSTGRES_PASSWORD \
+        -e POSTGRES_PORT -e POSTGRES_DB_RCCS -e POSTGRES_DB_AI4S \
+        "$UMRS_IMAGE" python -c "$1"
+}
+
+# ─── Set env vars for utility tasks ──────────────────────────────────────────
 export PYTHONUNBUFFERED=1
 export UMRS_AUTH_MODE="${UMRS_AUTH_MODE:-strict}"
 export S3_ENDPOINT_URL="${S3_ENDPOINT_URL:-http://127.0.0.1:${MINIO_PORT:-9000}}"
@@ -166,25 +187,23 @@ if [[ "$UMRS_ZMQ_AUTH_TYPE" == "curve" || "$UMRS_ZMQ_AUTH_TYPE" == "session" ]];
 
     if [[ -z "${UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY:-}" && -z "${UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE:-}" ]] || \
        [[ -z "${UMRS_ZMQ_CURVE_SERVER_SECRET_KEY:-}" && -z "${UMRS_ZMQ_CURVE_SERVER_SECRET_KEY_FILE:-}" ]]; then
-        KEY_DIR="$ZMQ_CURVE_SERVER_KEYS_DIR" python - <<'PY'
-import os
+        _run_util "
+import zmq
 from pathlib import Path
 
-import zmq
-
-key_dir = Path(os.environ["KEY_DIR"])
+key_dir = Path('/root/.config/umrs/curve-keys/server')
 key_dir.mkdir(parents=True, exist_ok=True)
-public_path = key_dir / "server.key"
-secret_path = key_dir / "server.key_secret"
+public_path = key_dir / 'server.key'
+secret_path = key_dir / 'server.key_secret'
 
 if not public_path.exists() or not secret_path.exists():
     public_key, secret_key = zmq.curve_keypair()
-    public_path.write_text(public_key.decode("ascii") + "\n", encoding="utf-8")
-    secret_path.write_text(secret_key.decode("ascii") + "\n", encoding="utf-8")
+    public_path.write_text(public_key.decode('ascii') + '\n', encoding='utf-8')
+    secret_path.write_text(secret_key.decode('ascii') + '\n', encoding='utf-8')
 
 public_path.chmod(0o600)
 secret_path.chmod(0o600)
-PY
+"
     fi
 
     if [[ -z "${UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY:-}" && -z "${UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY_FILE:-}" ]]; then
@@ -195,32 +214,31 @@ PY
     fi
 fi
 
-python - <<'PY'
+_run_util "
 import os
-
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
 
-bucket = os.environ["S3_BUCKET"]
+bucket = os.environ['S3_BUCKET']
 s3 = boto3.client(
-    "s3",
-    endpoint_url=os.environ["S3_ENDPOINT_URL"],
-    aws_access_key_id=os.environ["S3_ACCESS_KEY"],
-    aws_secret_access_key=os.environ["S3_SECRET_KEY"],
-    region_name=os.environ.get("S3_REGION", "us-east-1"),
-    config=BotoConfig(signature_version="s3v4", s3={"addressing_style": "path"}),
-    use_ssl=os.environ.get("S3_USE_SSL", "false").lower() == "true",
-    verify=os.environ.get("S3_USE_SSL", "false").lower() == "true",
+    's3',
+    endpoint_url=os.environ['S3_ENDPOINT_URL'],
+    aws_access_key_id=os.environ['S3_ACCESS_KEY'],
+    aws_secret_access_key=os.environ['S3_SECRET_KEY'],
+    region_name=os.environ.get('S3_REGION', 'us-east-1'),
+    config=BotoConfig(signature_version='s3v4', s3={'addressing_style': 'path'}),
+    use_ssl=os.environ.get('S3_USE_SSL', 'false').lower() == 'true',
+    verify=os.environ.get('S3_USE_SSL', 'false').lower() == 'true',
 )
 try:
     s3.head_bucket(Bucket=bucket)
 except ClientError as exc:
-    code = exc.response.get("Error", {}).get("Code")
-    if code not in {"404", "NoSuchBucket"}:
+    code = exc.response.get('Error', {}).get('Code')
+    if code not in {'404', 'NoSuchBucket'}:
         raise
     s3.create_bucket(Bucket=bucket)
-PY
+"
 
 # ─── Create s3cfg for admin ──────────────────────────────────────────────────
 S3CFG="${SCRIPT_DIR}/s3cfg"
@@ -292,65 +310,61 @@ EOF
 EOF
 fi
 
-CONF_FILE="${CONF_FILE}" SCRIPT_DIR="${SCRIPT_DIR}" python - <<'PY'
+CONF_FILE="${CONF_FILE}" SCRIPT_DIR="${SCRIPT_DIR}" _run_util "
 import json
 import os
 from pathlib import Path
 
-conf_path = Path(os.environ["CONF_FILE"])
-script_dir = Path(os.environ["SCRIPT_DIR"])
-user_files_dir = script_dir / "user_files"
+conf_path = Path('/work/conf_umrs.json')
+script_dir = Path('/work')
+user_files_dir = script_dir / 'user_files'
 if not conf_path.exists() or not user_files_dir.is_dir():
     raise SystemExit(0)
 
 def _write_json(path, payload):
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-
+    path.write_text(json.dumps(payload, indent=2) + '\n', encoding='utf-8')
 
 def _canonical_config_ref(path):
     try:
         rel = path.relative_to(script_dir)
     except ValueError:
         return str(path)
-    return f"./{rel.as_posix()}"
-
+    return f'./{rel.as_posix()}'
 
 def _default_s3cfg_for(payload, fallback_name):
     username = (
-        payload.get("s3_username")
-        or payload.get("username")
-        or payload.get("name")
+        payload.get('s3_username')
+        or payload.get('username')
+        or payload.get('name')
         or fallback_name
     )
-    return f"~/.config/umrs/s3cfg_{username}"
-
+    return f'~/.config/umrs/s3cfg_{username}'
 
 def _needs_remote_s3cfg_rewrite(value):
     if not isinstance(value, str) or not value.strip():
         return True
     raw = value.strip()
-    if raw.startswith(("/Users/", "/private/var/")):
+    if raw.startswith(('/Users/', '/private/var/')):
         return True
-    return not (raw.startswith("~/") or Path(raw).is_absolute())
-
+    return not (raw.startswith('~/') or Path(raw).is_absolute())
 
 conf = json.loads(conf_path.read_text())
-existing_users = list(conf.get("users") or [])
+existing_users = list(conf.get('users') or [])
 candidate_users = [str(user) for user in existing_users]
 
-for user_file in sorted(user_files_dir.glob("*.json")):
-    rel = f"./user_files/{user_file.name}"
+for user_file in sorted(user_files_dir.glob('*.json')):
+    rel = f'./user_files/{user_file.name}'
     if rel not in candidate_users:
         candidate_users.append(rel)
 
 users = []
 seen = set()
-required_keys = {"username", "fullname", "s3_configuration_file", "experiences"}
+required_keys = {'username', 'fullname', 's3_configuration_file', 'experiences'}
 changed = False
 conf_updates = {
-    "admin_s3_configuration_file": "~/.config/umrs/s3cfg",
-    "user_files_dir": "./user_files",
+    'admin_s3_configuration_file': '~/.config/umrs/s3cfg',
+    'user_files_dir': './user_files',
 }
 for key, value in conf_updates.items():
     if conf.get(key) != value:
@@ -364,14 +378,14 @@ for user in candidate_users:
     try:
         payload = json.loads(user_path.read_text())
     except Exception as exc:
-        print(f"WARNING: skipping unreadable user config {user}: {exc}")
+        print(f'WARNING: skipping unreadable user config {user}: {exc}')
         continue
     missing = sorted(required_keys - set(payload))
     if missing:
-        print(f"WARNING: skipping invalid user config {user}: missing {', '.join(missing)}")
+        print(f'WARNING: skipping invalid user config {user}: missing {chr(44).join(missing)}')
         continue
-    if _needs_remote_s3cfg_rewrite(payload.get("s3_configuration_file")):
-        payload["s3_configuration_file"] = _default_s3cfg_for(payload, user_path.stem)
+    if _needs_remote_s3cfg_rewrite(payload.get('s3_configuration_file')):
+        payload['s3_configuration_file'] = _default_s3cfg_for(payload, user_path.stem)
         _write_json(user_path, payload)
     key = str(user_path.resolve())
     if key not in seen:
@@ -381,10 +395,10 @@ for user in candidate_users:
         if canonical_user != user:
             changed = True
 
-conf["users"] = users
-if changed or conf.get("users") != existing_users:
-    conf_path.write_text(json.dumps(conf, indent=2) + "\n")
-PY
+conf['users'] = users
+if changed or conf.get('users') != existing_users:
+    conf_path.write_text(json.dumps(conf, indent=2) + '\n')
+"
 
 # ─── Stop existing UMRS server containers (or legacy native processes) ────────
 # Stop compose-managed UMRS containers (idempotent if not running)
@@ -531,7 +545,7 @@ for _ctr in umrs-server umrs-server-rccs umrs-server-ai4s; do
 done
 
 echo ""
-echo "Building/starting UMRS server containers via podman compose..."
+echo "Starting UMRS server containers via podman compose..."
 echo "  RCCS site config: ../rccs-front/site.yaml"
 echo "  AI4S site config: ../ai4s/site.yaml"
 echo "  RCCS ZMQ port: ${UMRS_RCCS_ZMQ_PORT}, HTTP port: ${UMRS_RCCS_PORT:-8000}"
@@ -546,14 +560,7 @@ export S3_PRESIGN_ENDPOINT="${S3_PRESIGN_ENDPOINT:-http://127.0.0.1:${MINIO_PORT
 export VISION_S3_PRESIGN_ENDPOINT="${VISION_S3_PRESIGN_ENDPOINT:-http://minio-host:19000}"
 export UMRS_ADMIN_S3_CONFIGURATION_FILE="${UMRS_ADMIN_S3_CONFIGURATION_FILE:-/etc/umrs/s3cfg}"
 
-# Build image if needed (or if code changed)
-if [[ "${UMRS_IMAGE_REBUILD:-false}" == "true" ]] || \
-   ! podman image exists localhost/umrs-server:latest 2>/dev/null; then
-    echo "  Building UMRS server image..."
-    podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" build umrs-server-rccs
-fi
-
-# Start UMRS server containers (infra containers are also in compose now)
+# Start UMRS server containers (image already built earlier)
 podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d \
     umrs-server-rccs umrs-server-ai4s
 
@@ -595,7 +602,7 @@ for i in $(seq 1 90); do
     [[ "$i" -eq 90 ]] && echo " WARNING: AI4S HTTP not ready after 90s"
 done
 
-# ─── Start RAG Service (standalone, host-native) ────────────────────────────
+# ─── Start RAG Service (containerized) ───────────────────────────────────────
 RAG_ENABLED=false
 if [[ "${UMRS_RAG_ENABLE:-true}" == "true" || "${UMRS_RAG_ENABLE:-true}" == "1" ]]; then
     RAG_ENABLED=true
@@ -603,38 +610,49 @@ fi
 
 if [[ "$RAG_ENABLED" == "true" ]]; then
     echo ""
-    echo "Starting RAG service (standalone)..."
+    echo "Starting RAG service (container)..."
     echo "  Port: ${UMRS_RAG_PORT:-8081}"
 
-    # Kill stale RAG process if any
+    # Stop existing RAG container if any
+    podman stop umrs-rag 2>/dev/null || true
+    podman rm -f umrs-rag 2>/dev/null || true
+
+    # Kill stale native RAG process if any (leftover from pre-container era)
     RAG_BLOCKING_PID=$(ss -tlnp "sport = :${UMRS_RAG_PORT:-8081}" 2>/dev/null \
         | awk -F'pid=' '/pid=/{print $2}' | awk -F',' '{print $1}' | head -1)
     if [[ -n "${RAG_BLOCKING_PID:-}" ]]; then
-        echo "  Stopping stale RAG on port ${UMRS_RAG_PORT:-8081} (PID ${RAG_BLOCKING_PID})..."
+        echo "  Stopping stale native RAG on port ${UMRS_RAG_PORT:-8081} (PID ${RAG_BLOCKING_PID})..."
         kill "$RAG_BLOCKING_PID" 2>/dev/null || true
         sleep 2
     fi
 
-    export UMRS_RAG_PORT="${UMRS_RAG_PORT:-8081}"
-    export UMRS_RAG_BIND_HOST="127.0.0.1"
-    export UMRS_CONFIG="${SCRIPT_DIR}"
-    export OPENBLAS_NUM_THREADS=1
-
-    nohup python -m umrs.api.rag_service \
-        >> "${LOG_DIR}/rag-service.log" 2>&1 &
-    RAG_PID=$!
-    echo "$RAG_PID" > "${SCRIPT_DIR}/rag-service.pid"
+    podman run -d --name umrs-rag \
+        --network=host \
+        -v "${SCRIPT_DIR}:/work:ro,z" \
+        -v "${HOME}/.config/umrs:/root/.config/umrs:z" \
+        -e UMRS_RAG_PORT="${UMRS_RAG_PORT:-8081}" \
+        -e UMRS_RAG_BIND_HOST="127.0.0.1" \
+        -e UMRS_CONFIG="/work" \
+        -e OPENBLAS_NUM_THREADS=1 \
+        -e S3_ENDPOINT_URL -e S3_ACCESS_KEY -e S3_SECRET_KEY \
+        -e S3_REGION -e S3_BUCKET -e S3_USE_SSL \
+        -e DB_HOST="127.0.0.1" \
+        -e DB_PORT="${POSTGRES_PORT:-5432}" \
+        -e DB_SUPERUSER="${POSTGRES_USER:-umrs}" \
+        -e DB_SUPERUSER_PASSWORD="${POSTGRES_PASSWORD}" \
+        -e PYTHONUNBUFFERED=1 \
+        "$UMRS_IMAGE" python -m umrs.api.rag_service
 
     echo -n "  Waiting for RAG readiness..."
     for i in $(seq 1 120); do
         if curl -sf "http://127.0.0.1:${UMRS_RAG_PORT:-8081}/docs" >/dev/null 2>&1; then
-            echo " ready (PID $RAG_PID)."
+            echo " ready."
             break
         fi
-        if ! kill -0 "$RAG_PID" 2>/dev/null; then
+        if [[ "$(podman inspect -f '{{.State.Status}}' umrs-rag 2>/dev/null)" == "exited" ]]; then
             echo " failed."
-            echo "  WARNING: RAG service exited. Check ${LOG_DIR}/rag-service.log"
-            tail -10 "${LOG_DIR}/rag-service.log" 2>/dev/null || true
+            echo "  WARNING: RAG container exited. Check logs:"
+            podman logs --tail=10 umrs-rag 2>/dev/null || true
             RAG_ENABLED=false
             break
         fi
@@ -691,7 +709,7 @@ echo "║    Site:       ai4s/site.yaml                                ║"
 echo "║    Target:     ${AI4S_SSH_TARGET} (SSH)                      ║"
 if [[ "$RAG_ENABLED" == "true" ]]; then
 echo "║                                                              ║"
-echo "║  RAG Service:  127.0.0.1:${UMRS_RAG_PORT:-8081}  (PID ${RAG_PID:-?})     ║"
+echo "║  RAG Service:  127.0.0.1:${UMRS_RAG_PORT:-8081}  (container: umrs-rag)   ║"
 fi
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo ""
@@ -699,7 +717,7 @@ echo "Logs:"
 echo "  RCCS:  podman compose -f docker-compose.yaml logs -f umrs-server-rccs"
 echo "  AI4S:  podman compose -f docker-compose.yaml logs -f umrs-server-ai4s"
 if [[ "$RAG_ENABLED" == "true" ]]; then
-echo "  RAG:   tail -f ${LOG_DIR}/rag-service.log"
+echo "  RAG:   podman logs -f umrs-rag"
 fi
 echo ""
 echo "Stop:    ./stop.sh"
