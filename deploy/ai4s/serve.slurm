@@ -249,6 +249,24 @@ case "$(printf '%s' "${VLLM_MAX_MODEL_LEN}" | tr '[:upper:]' '[:lower:]')" in
     *) VLLM_ARGS+=( --max-model-len "${VLLM_MAX_MODEL_LEN}" ) ;;
 esac
 
+# Concurrency cap. More concurrent sequences raise aggregate throughput under
+# load at the cost of KV-cache pressure. The orchestrator forwards
+# VLLM_MAX_NUM_SEQS (site.yaml vllm.max_num_seqs); when unset, leave vLLM's own
+# default in place rather than guessing.
+VLLM_MAX_NUM_SEQS="${VLLM_MAX_NUM_SEQS:-}"
+if [[ -n "${VLLM_MAX_NUM_SEQS}" ]]; then
+    VLLM_ARGS+=( --max-num-seqs "${VLLM_MAX_NUM_SEQS}" )
+fi
+
+# Automatic prefix caching. Reuses the KV cache for shared prompt prefixes
+# (system prompts, few-shot examples, multi-turn history), so repeated requests
+# skip prefill over the cached prefix -> much lower time-to-first-token. This is
+# also vLLM V1's default; keep it explicit so the behaviour is pinned across SIF
+# upgrades. Set VLLM_ENABLE_PREFIX_CACHING=0 to disable.
+if [[ "${VLLM_ENABLE_PREFIX_CACHING:-1}" == "1" ]]; then
+    VLLM_ARGS+=( --enable-prefix-caching )
+fi
+
 # Cap the prefill batch for very large context windows. vLLM's startup memory
 # profiler runs a dummy forward of max-num-batched-tokens tokens, which defaults
 # to the full context length. At native 1M context (DeepSeek-V4) that dummy
@@ -269,24 +287,16 @@ if [[ -n "${VLLM_MAX_NUM_BATCHED_TOKENS}" ]]; then
     VLLM_ARGS+=( --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS}" )
 fi
 
-# Skip CUDA graph capture for very large context windows. The startup memory
-# profiler captures PIECEWISE+FULL CUDA graphs (~100 graphs for DeepSeek-V4),
-# each pinning host RAM proportional to the graph batch metadata. At native 1M
-# context this pinned-host allocation exhausts node RAM during
-# determine_available_memory and the batch step is OOM-killed even after the
-# prefill batch is capped. --enforce-eager disables graph capture entirely,
-# trading some decode throughput for a startup that fits in host RAM. The full
-# max-model-len context window is unchanged.
-VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-}"
-if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
-    case "${VLLM_MAX_MODEL_LEN}" in
-        ''|*[!0-9]*) : ;;
-        *) if [[ "${VLLM_MAX_MODEL_LEN}" -gt 262144 ]]; then
-               VLLM_ENFORCE_EAGER=1
-           fi ;;
-    esac
-fi
-if [[ "${VLLM_ENFORCE_EAGER}" == "1" ]]; then
+# CUDA graph capture stays ON by default for fast decode. It was previously
+# auto-disabled above 262144 context because graph capture pins host RAM
+# proportional to the captured graph batch metadata and OOM-killed startup at
+# native 1M context (DeepSeek-V4). That host-RAM pressure is now mitigated by the
+# larger Slurm allocation (site.yaml scheduler.memory 1400G) and the capped
+# --max-num-batched-tokens prefill, so graphs are kept for decode throughput
+# instead of silently degrading every long-context model. Set
+# VLLM_ENFORCE_EAGER=1 to fall back to eager mode if a specific model still OOMs
+# during graph capture; the full max-model-len window is unchanged either way.
+if [[ "${VLLM_ENFORCE_EAGER:-}" == "1" ]]; then
     VLLM_ARGS+=( --enforce-eager )
 fi
 
