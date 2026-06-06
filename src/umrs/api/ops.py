@@ -748,6 +748,7 @@ async def audit_trace(
     since: float = Query(0.0, description="Unix timestamp lower bound"),
     until: float = Query(0.0, description="Unix timestamp upper bound"),
     limit: int = Query(50, ge=1, le=500, description="Maximum results"),
+    _auth: None = Depends(require_authenticated),
 ):
     """Query audit events for distributed trace reconstruction.
 
@@ -815,6 +816,7 @@ async def governance_ownership(
     owner_id: str = Query("", description="Filter by owner"),
     project_id: str = Query("", description="Filter by project"),
     resource_type: str = Query("", description="Filter by resource type"),
+    _auth: None = Depends(require_authenticated),
 ):
     """List resource ownership records."""
     from .governance import get_governance_store
@@ -889,6 +891,7 @@ async def governance_transfer(
 @router.get("/governance/quotas")
 async def governance_quotas(
     project_id: str = Query(..., description="Project ID"),
+    _auth: None = Depends(require_authenticated),
 ):
     """List quotas for a project."""
     from .governance import get_governance_store
@@ -1339,7 +1342,9 @@ async def governance_analytics(
 
 
 @router.get("/schema/versions")
-async def schema_versions():
+async def schema_versions(
+    _auth: None = Depends(require_authenticated),
+):
     """Report current schema versions for all persistent stores.
 
     Useful for deployment validation, migration audits, and
