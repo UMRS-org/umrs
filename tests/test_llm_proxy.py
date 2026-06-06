@@ -307,8 +307,24 @@ def test_list_models_empty():
     assert response.json() == {"object": "list", "data": []}
 
 
+def _mock_models_get(url: str, content: dict, status_code: int = 200):
+    """Create a mock httpx.Response for a GET /v1/models call.
+
+    A bound request is required so ``raise_for_status`` does not raise a
+    RuntimeError on the mock.
+    """
+    import httpx
+
+    return httpx.Response(
+        status_code=status_code,
+        json=content,
+        headers={"content-type": "application/json"},
+        request=httpx.Request("GET", url),
+    )
+
+
 def test_list_models_proxies_to_litellm():
-    """With an active endpoint, /v1/models should proxy to LiteLLM."""
+    """With an active endpoint, /v1/models should list that endpoint's models."""
     registry = _make_registry_with_endpoint()
     client = _create_client(registry)
 
@@ -317,20 +333,77 @@ def test_list_models_proxies_to_litellm():
         "data": [{"id": "Qwen/Qwen3-8B", "object": "model"}],
     }
 
-    async def fake_request(self, method, url, **kwargs):
+    async def fake_get(self, url, **kwargs):
         assert "v1/models" in str(url)
-        return _mock_litellm_response(models_response)
+        return _mock_models_get(str(url), models_response)
 
     import httpx
 
-    with patch.object(httpx.AsyncClient, "request", fake_request):
+    with patch.object(httpx.AsyncClient, "get", fake_get):
         response = client.get(
             "/umrs/llm/v1/models",
             headers={"x-user-id": "user-1", "x-project-id": "test-project"},
         )
 
     assert response.status_code == 200
-    assert len(response.json()["data"]) == 1
+    data = response.json()["data"]
+    assert [m["id"] for m in data] == ["Qwen/Qwen3-8B"]
+
+
+def test_list_models_aggregates_across_all_ready_endpoints():
+    """/v1/models should merge models from every ready endpoint, deduped by id."""
+    registry = _make_registry_with_endpoint(
+        model="qwen3-8b", job_id="job-1", host="compute-01",
+        served_model_name="Qwen/Qwen3-8B",
+    )
+    registry.register(
+        project_id="test-project", model="llama3-70b", job_id="job-2",
+        host="compute-02", port=11434, backend="slurm",
+        metadata={"served_model_name": "meta/Llama-3-70B"},
+    )
+    registry.mark_ready("job-2")
+    client = _create_client(registry)
+
+    by_host = {
+        "compute-01": {"object": "list", "data": [{"id": "Qwen/Qwen3-8B", "object": "model"}]},
+        "compute-02": {"object": "list", "data": [{"id": "meta/Llama-3-70B", "object": "model"}]},
+    }
+
+    async def fake_get(self, url, **kwargs):
+        host = next(h for h in by_host if h in str(url))
+        return _mock_models_get(str(url), by_host[host])
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "get", fake_get):
+        response = client.get(
+            "/umrs/llm/v1/models",
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    ids = sorted(m["id"] for m in response.json()["data"])
+    assert ids == ["Qwen/Qwen3-8B", "meta/Llama-3-70B"]
+
+
+def test_list_models_synthesizes_entry_when_endpoint_listing_fails():
+    """A model still appears when its endpoint's /v1/models fetch fails."""
+    registry = _make_registry_with_endpoint(served_model_name="Qwen/Qwen3-8B")
+    client = _create_client(registry)
+
+    import httpx
+
+    async def fake_get(self, url, **kwargs):
+        raise httpx.ConnectError("boom", request=httpx.Request("GET", str(url)))
+
+    with patch.object(httpx.AsyncClient, "get", fake_get):
+        response = client.get(
+            "/umrs/llm/v1/models",
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    assert [m["id"] for m in response.json()["data"]] == ["Qwen/Qwen3-8B"]
 
 
 def test_completions_endpoint():

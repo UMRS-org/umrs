@@ -13,6 +13,7 @@ Implements:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -471,6 +472,48 @@ async def completions(
     return response
 
 
+def _synth_model_entry(endpoint: RegisteredEndpoint) -> dict:
+    """Minimal OpenAI-compatible model object for a single endpoint.
+
+    Used as a fallback when the endpoint's own ``/v1/models`` listing
+    cannot be fetched, so the model still appears in the aggregate list.
+    """
+    model_id = _upstream_model_name(endpoint)
+    return {
+        "id": model_id,
+        "object": "model",
+        "created": 0,
+        "owned_by": str(endpoint.metadata.get("tier") or "rivault"),
+    }
+
+
+async def _fetch_endpoint_models(endpoint: RegisteredEndpoint) -> list[dict]:
+    """Fetch the ``/v1/models`` listing for a single endpoint.
+
+    Returns the list of model objects reported by the endpoint's LiteLLM.
+    Falls back to a synthesized single-model entry on any transport or
+    JSON error so a transiently unreachable endpoint never removes its
+    model from the aggregate list.
+    """
+    headers: dict[str, str] = {}
+    if _LITELLM_SERVICE_KEY:
+        headers["Authorization"] = f"Bearer {_LITELLM_SERVICE_KEY}"
+    url = f"{endpoint.litellm_url}/v1/models"
+    try:
+        async with httpx.AsyncClient(timeout=_PROXY_TIMEOUT) as client:
+            response = await client.get(url, headers=headers)
+            response.raise_for_status()
+            payload = response.json()
+    except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Failed to list models for endpoint %s: %s", endpoint.job_id, exc)
+        return [_synth_model_entry(endpoint)]
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+    if not isinstance(data, list) or not data:
+        return [_synth_model_entry(endpoint)]
+    return [entry for entry in data if isinstance(entry, dict) and entry.get("id")]
+
+
 @router.get("/v1/models")
 async def list_models(
     request: Request,
@@ -479,11 +522,12 @@ async def list_models(
     """
     List available models.
 
-    Returns models from all active endpoints for the project.
+    Aggregates models across all ready endpoints for the project so that
+    every served model is discoverable (not just the first endpoint's).
+    Entries are deduplicated by model id.
     """
-    user_id, project_id = _get_caller_identity(request)
+    _user_id, project_id = _get_caller_identity(request)
 
-    # Get any ready endpoint to query for models
     endpoints = registry.list_all(
         project_id=project_id,
         status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
@@ -492,9 +536,18 @@ async def list_models(
     if not endpoints:
         return {"object": "list", "data": []}
 
-    # Use the first available endpoint
-    endpoint = endpoints[0]
-    return await _proxy_to_litellm(request, endpoint, "v1/models", user_id, project_id)
+    results = await asyncio.gather(
+        *(_fetch_endpoint_models(ep) for ep in endpoints)
+    )
+
+    merged: dict[str, dict] = {}
+    for entries in results:
+        for entry in entries:
+            model_id = entry.get("id")
+            if model_id and model_id not in merged:
+                merged[model_id] = entry
+
+    return {"object": "list", "data": list(merged.values())}
 
 
 @router.post("/v1/embeddings")
