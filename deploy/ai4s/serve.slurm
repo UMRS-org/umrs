@@ -111,9 +111,39 @@ derive_tool_parser() {
 }
 VLLM_TOOL_CALL_PARSER="${VLLM_TOOL_CALL_PARSER:-$(derive_tool_parser)}"
 
+# Derive the vLLM reasoning parser from the model name when not explicitly set.
+# GLM-4.5/4.7/5.x emit <think>…</think> reasoning before any answer or tool call.
+# Served with --enable-auto-tool-choice but NO --reasoning-parser, vLLM does not
+# split the reasoning out, so the <think> block leaks into `content` and the
+# tool-call parser has to scan past it. The official GLM serving recipe pairs the
+# glm47 tool parser with the glm45 reasoning parser; setting it routes the
+# </think>-gated reasoning into the response `reasoning` field as intended.
+# (Note: this is correctness/recipe-alignment, NOT the tools "!!!!" garbage fix —
+# that was the FlashInfer-TRTLLM MoE kernel; see VLLM_USE_FLASHINFER_MOE_FP16=0
+# below.) "glm45" is the registered reasoning parser for the whole GLM-4.x/5.x
+# family in this SIF's vLLM (vllm/reasoning/__init__.py). Only set it for models
+# that actually need it; others keep vLLM's default (no reasoning parser).
+derive_reasoning_parser() {
+    local name_lc
+    name_lc="$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')"
+    case "${name_lc}" in
+        *glm*) echo "glm45" ;;
+        *)     echo "" ;;
+    esac
+}
+VLLM_REASONING_PARSER="${VLLM_REASONING_PARSER:-$(derive_reasoning_parser)}"
+
 # Some model families require a specific KV-cache dtype. DeepSeek-V4's FlashMLA
 # fp8 attention layout only supports an fp8 kv-cache (auto fails an assertion),
 # so default it to fp8 unless the orchestrator overrides VLLM_KV_CACHE_DTYPE.
+#
+# NOTE on GLM-5/5.1 (glm_moe_dsa): do NOT force fp8 here. GLM is served on the
+# default (auto -> bf16) kv-cache. The historical "wall of !" on tools-bearing
+# prompts was NOT a kv-cache issue — it was the FlashInfer-TRTLLM MoE kernel
+# producing NaN logits for GLM's expert routing (fixed via
+# VLLM_USE_FLASHINFER_MOE_FP16=0, see the GLM MoE block further below). Forcing
+# fp8 here was tried and did NOT help, and fp8 brings its own DSA decode-path
+# risks for GLM, so leave GLM on bf16.
 derive_kv_cache_dtype() {
     local parser_lc
     parser_lc="$(printf '%s' "${VLLM_TOOL_CALL_PARSER}" | tr '[:upper:]' '[:lower:]')"
@@ -199,7 +229,7 @@ echo "[serve] SLURM_JOB_ID=${SLURM_JOB_ID} node=${RIVAULT_NODE}"
 echo "[serve] model=${MODEL_NAME} path=${HOST_MODEL_PATH}"
 echo "[serve] sif=${SIF_IMAGE}"
 echo "[serve] external_port=${EXTERNAL_PORT} tp=${VLLM_TP} pp=${VLLM_PP} nodes=${NODE_COUNT} maxlen=${VLLM_MAX_MODEL_LEN:-native}"
-echo "[serve] tool_parser=${VLLM_TOOL_CALL_PARSER} runtime=${CONTAINER_CMD}"
+echo "[serve] tool_parser=${VLLM_TOOL_CALL_PARSER} reasoning_parser=${VLLM_REASONING_PARSER:-none} runtime=${CONTAINER_CMD}"
 
 write_job_info starting
 
@@ -259,6 +289,39 @@ if [[ -d "${FLASHINFER_CUBIN_HOST}" ]]; then
     SING_COMMON+=( --bind "${FLASHINFER_CUBIN_HOST}:${FLASHINFER_CUBIN_TARGET}" )
 fi
 
+# GLM-5.1 tool-calling garbage fix (wall of "!" / token id 0, finish_reason=
+# length) on the GB200 (sm100) build of this vLLM nightly.
+#
+# Symptom: any tools-bearing GLM request whose rendered prompt exceeds a small,
+# content-dependent threshold (as few as ~260 tokens with 3 tools, or a long
+# single-tool prompt) returns a wall of "!" instead of text or a tool_call.
+# Plain chat is unaffected at any length (verified to 6k+ tokens), and
+# DeepSeek-V4-Pro / Kimi-K2.6 serve the identical tools payload correctly.
+#
+# Root cause (bisected live): the FlashInfer TRTLLM *unquantized MoE* kernel
+# produces NaN logits for the expert routing induced by GLM-5.1's tools-rendered
+# prompt tokens. GLM-5.1 (GlmMoeDsa) reuses DeepSeek's DSA code path but has
+# distinct head dims (qk_nope=192, v=256, interleaved RoPE), and the TRTLLM MoE
+# kernel mis-handles its routing. The failure tracks tool-block *content*, not
+# prompt length: identical-length diverse non-tool prose works; the same tool
+# JSON pasted as plain system text works; only the `tools` array (which the GLM
+# chat template renders into a <tools> block) triggers it.
+#
+# Fix: VLLM_USE_FLASHINFER_MOE_FP16=0 makes the unquantized-MoE oracle drop
+# FLASHINFER_TRTLLM from its backend list (fused_moe/oracle/unquantized.py),
+# falling back to the numerically robust Triton MoE kernel. GLM-only; DeepSeek-V4
+# and Kimi keep FlashInfer TRTLLM. Applied to the engine head and every Ray
+# worker via SING_COMMON. Verified: full tool-count sweep (3..25 tools) and real
+# tool_calls now succeed with no "!" output. The attention backend is left at its
+# default (FLASHINFER_MLA_SPARSE, naturally selected at 16 heads/rank under tp4)
+# and is NOT implicated in this bug.
+case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
+    *glm*)
+        echo "[serve] GLM: forcing Triton MoE (VLLM_USE_FLASHINFER_MOE_FP16=0) to avoid FlashInfer-TRTLLM MoE NaN on tool prompts"
+        SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_FP16=0 )
+        ;;
+esac
+
 # vLLM server arguments shared across single/multi-node paths.
 VLLM_ARGS=(
     --model /models
@@ -273,6 +336,26 @@ VLLM_ARGS=(
     --tool-call-parser "${VLLM_TOOL_CALL_PARSER}"
     --api-key "${LITELLM_MASTER_KEY}"
 )
+# Reasoning parser (see derive_reasoning_parser): GLM-5/5.1 is a thinking model;
+# the glm45 reasoning parser splits the </think>-gated reasoning into the
+# response `reasoning` field and is part of the official GLM serving recipe.
+# Omitted when empty.
+if [[ -n "${VLLM_REASONING_PARSER}" ]]; then
+    VLLM_ARGS+=( --reasoning-parser "${VLLM_REASONING_PARSER}" )
+fi
+# Chat-template content format. The official vLLM GLM-5/5.1 recipe
+# (docs.vllm.ai/projects/recipes GLM5, recipes.vllm.ai/zai-org/GLM-5.1) passes
+# --chat-template-content-format=string on EVERY launch. Without it vLLM defaults
+# to "auto", which can render message content as OpenAI structured "parts" and
+# subtly change the rendered prompt shape. Forcing "string" matches the reference
+# deployment and renders content deterministically. GLM-only to avoid changing
+# the prompt shape for other families that already serve correctly. (Note: this
+# is NOT what fixed the tools "!!!!" garbage — that was the FlashInfer-TRTLLM MoE
+# kernel; see the VLLM_USE_FLASHINFER_MOE_FP16=0 block above. This flag is kept
+# only to match the upstream reference launch.)
+case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
+    *glm*) VLLM_ARGS+=( --chat-template-content-format string ) ;;
+esac
 # Pin context length only when explicitly requested; otherwise omit the flag so
 # vLLM serves the model's native maximum context ("full token size").
 case "$(printf '%s' "${VLLM_MAX_MODEL_LEN}" | tr '[:upper:]' '[:lower:]')" in
@@ -340,6 +423,19 @@ if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
                VLLM_ENFORCE_EAGER=1
            fi ;;
     esac
+    # GLM-5.1 (and the GLM MoE family): the primary tools "!!!!" garbage fix is
+    # forcing the Triton MoE backend (VLLM_USE_FLASHINFER_MOE_FP16=0, see the GLM
+    # MoE block earlier). Eager mode is retained as an additional numeric guard
+    # for the CUDA-graph capture path on this nightly vLLM + MoE build, since the
+    # tools/agent prompt shape exercises code paths plain chat never reaches. All
+    # tool-calling verification was performed with eager mode on. Set
+    # VLLM_ENFORCE_EAGER=0 to re-enable CUDA graphs once a SIF build is confirmed
+    # NaN-free on the tools path (would improve decode throughput).
+    if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
+        case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
+            *glm*) VLLM_ENFORCE_EAGER=1 ;;
+        esac
+    fi
 fi
 if [[ "${VLLM_ENFORCE_EAGER}" == "1" ]]; then
     VLLM_ARGS+=( --enforce-eager )
