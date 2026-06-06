@@ -318,16 +318,30 @@ if [[ -n "${VLLM_MAX_NUM_BATCHED_TOKENS}" ]]; then
     VLLM_ARGS+=( --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS}" )
 fi
 
-# CUDA graph capture stays ON by default for fast decode. It was previously
-# auto-disabled above 262144 context because graph capture pins host RAM
-# proportional to the captured graph batch metadata and OOM-killed startup at
-# native 1M context (DeepSeek-V4). That host-RAM pressure is now mitigated by the
-# larger Slurm allocation (site.yaml scheduler.memory 1400G) and the capped
-# --max-num-batched-tokens prefill, so graphs are kept for decode throughput
-# instead of silently degrading every long-context model. Set
-# VLLM_ENFORCE_EAGER=1 to fall back to eager mode if a specific model still OOMs
-# during graph capture; the full max-model-len window is unchanged either way.
-if [[ "${VLLM_ENFORCE_EAGER:-}" == "1" ]]; then
+# CUDA graph capture: ON by default for fast decode, but auto-disabled above
+# 262144 context. Two reasons converge at the very-large-context (DeepSeek-V4 1M)
+# tier:
+#   1. Correctness: with graphs ON at native 1M context this nightly vLLM +
+#      DeepSeek-V4 hybrid attention (CSA+HCA) produces garbled/incoherent output
+#      (observed on job 10074: 200 OK but non-language tokens), while GLM-5.1
+#      (202752) and Kimi-K2.6 (245760) — both below the threshold and graphs-ON —
+#      serve correctly. Eager mode restores coherent DeepSeek output.
+#   2. Host RAM: graph capture pins host RAM proportional to the captured graph
+#      batch metadata and historically OOM-killed startup at 1M context.
+# The >262144 threshold targets only DeepSeek (1048576); GLM and Kimi keep graphs
+# for decode throughput. Set VLLM_ENFORCE_EAGER=1 to force eager for any model,
+# or VLLM_ENFORCE_EAGER=0 to opt a >262144 model back into graph capture. The
+# full max-model-len window is unchanged either way.
+VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-}"
+if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
+    case "${VLLM_MAX_MODEL_LEN}" in
+        ''|*[!0-9]*) : ;;  # non-numeric (native/full/empty): leave graphs on
+        *) if [[ "${VLLM_MAX_MODEL_LEN}" -gt 262144 ]]; then
+               VLLM_ENFORCE_EAGER=1
+           fi ;;
+    esac
+fi
+if [[ "${VLLM_ENFORCE_EAGER}" == "1" ]]; then
     VLLM_ARGS+=( --enforce-eager )
 fi
 
