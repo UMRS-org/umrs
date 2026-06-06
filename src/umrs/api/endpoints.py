@@ -667,6 +667,15 @@ class ProvisionRequest(BaseModel):
     wait: bool = Field(True, description="Wait for readiness before responding")
     partition: str | None = Field(None, description="Override Slurm partition (must be in site candidates)")
     nodelist: str | None = Field(None, description="Slurm --nodelist hint (e.g. 'ai-h200-brc-00')")
+    parallel_strategy: str | None = Field(
+        None,
+        description=(
+            "Multi-node parallelism layout: 'tp_pp' (default; TP=GPUs/node, "
+            "PP=node count) or 'tep' (tensor+expert parallel: TP=world size, "
+            "PP=1, --enable-expert-parallel). Forwarded to serve.slurm via "
+            "VLLM_PARALLEL_STRATEGY."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_multi_model(self) -> "ProvisionRequest":
@@ -1852,6 +1861,17 @@ async def provision_endpoint(
     profile_pp = serving_profile.get("pipeline_parallel_size")
     if profile_pp and int(profile_pp) > 1:
         env_vars.setdefault("VLLM_PP", str(profile_pp))
+
+    # Multi-node parallelism strategy (tp_pp default | tep). API request field
+    # takes precedence; ServingProfile supplies a catalog default. Forwarded to
+    # serve.slurm via VLLM_PARALLEL_STRATEGY (opt-in; tp_pp is unchanged behaviour).
+    effective_parallel_strategy = request.parallel_strategy or serving_profile.get(
+        "parallel_strategy"
+    )
+    if effective_parallel_strategy:
+        env_vars.setdefault(
+            "VLLM_PARALLEL_STRATEGY", str(effective_parallel_strategy).lower()
+        )
 
     # Apply recommended_node_count from ServingProfile when the API request
     # uses the default value (1).
