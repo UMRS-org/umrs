@@ -35,25 +35,28 @@ endpoints:
     model: DeepSeek-V4-Pro
     tier: system
     gpu_count: 4           # GPUs per node
-    node_count: 4          # 4 nodes × 4 GPUs = 16× B200 (2770 GiB), Ray multi-node
-    partition: 4n4gpu-p
+    node_count: 4          # validated multi-node config (TP=4 × PP=4 = 16× B200, 2770 GiB) serving 1M KV today.
+    partition: 4n4gpu-p    # unlimited walltime (MinNodes=0/MaxNodes=unlimited → node_count drives allocation, not the name)
     max_model_len: 1048576 # native 1M context (full token size)
-    # 1.6T MoE (49B active), FP4+FP8 mixed; TP=4 (per node) × PP=4 (nodes)
+    # NEXT-CANARY: GB200 recipe = 2 nodes TP=8 + --enable-expert-parallel, PP=1 (~960 GiB FP4+FP8 fits 8 GPUs).
+    #   Halves GPU count + removes pipeline bubbles, BUT halves aggregate memory → 1M KV must be re-validated
+    #   before reducing node_count to 2 (current serve.slurm would give TP=4 PP=2; recipe TP=8 PP=1+EP needs serve.slurm rework).
 
   - name: glm-5.1
     model: GLM-5.1
     tier: system
     gpu_count: 4
-    node_count: 4          # 16× B200 across 4 nodes via Ray
-    partition: 4n4gpu-p
+    node_count: 4          # validated multi-node config (TP=4 × PP=4) serving native context today.
+    partition: 4n4gpu-p    # unlimited walltime; node_count drives allocation
     max_model_len: 202752  # native context (full token size)
-    # 754B MoE (glm_moe_dsa); TP=4 × PP=4
+    # NEXT-CANARY: GB200 recipe = 2 nodes TP=8, PP=1 (FP8 ~893 GiB fits 8 GPUs). Same memory-revalidation caveat as DeepSeek
+    #   before reducing node_count to 2. Also wire reasoning-parser glm45 (tool-parser glm47 already derived).
 
   - name: kimi-k2.6
     model: Kimi-K2.6
     tier: system
     gpu_count: 4
-    node_count: 4          # placed on 4n4gpu-p alongside the others
-    partition: 4n4gpu-p
-    max_model_len: 262144  # native 256K context (full token size)
-    # 1T MoE (32B active, 384 experts), native INT4; TP=4 × PP=4
+    node_count: 1          # vLLM GB200 recipe: INT4 ~714 GiB fits ONE tray (4 GPUs); single-node TP=4 over NVLink avoids cross-node pipeline bubbles + Ray overhead
+    partition: 4n4gpu-p    # unlimited walltime; node_count=1 → single-node allocation on this partition
+    max_model_len: 245760  # 240K. Canary 10064 showed INT4 weights leave only 16.68 GiB/GPU KV at gpu_mem_util=0.9 → hard ceiling 254816 tokens for native 262144. Trimmed to 245760 for fragmentation margin. (orchestrator does not thread per-model gpu_memory_utilization, so raising util is not available via pool.)
+    # 1T MoE (32B active, 384 experts), native INT4; TP=4 × PP=1 (single node)
