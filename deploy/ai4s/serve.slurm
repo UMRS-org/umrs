@@ -72,12 +72,26 @@ derive_tool_parser() {
     case "${name_lc}" in
         *deepseek*v4*|*deepseek-v4*) echo "deepseek_v4" ;;
         *deepseek*)                  echo "deepseek_v3" ;;
-        *glm*)                       echo "glm4_moe" ;;
+        *glm-4.5*|*glm4.5*|*glm45*)  echo "glm45" ;;
+        *glm*)                       echo "glm47" ;;
         *kimi*)                      echo "kimi_k2" ;;
         *)                           echo "hermes" ;;
     esac
 }
 VLLM_TOOL_CALL_PARSER="${VLLM_TOOL_CALL_PARSER:-$(derive_tool_parser)}"
+
+# Some model families require a specific KV-cache dtype. DeepSeek-V4's FlashMLA
+# fp8 attention layout only supports an fp8 kv-cache (auto fails an assertion),
+# so default it to fp8 unless the orchestrator overrides VLLM_KV_CACHE_DTYPE.
+derive_kv_cache_dtype() {
+    local parser_lc
+    parser_lc="$(printf '%s' "${VLLM_TOOL_CALL_PARSER}" | tr '[:upper:]' '[:lower:]')"
+    case "${parser_lc}" in
+        deepseek_v4) echo "fp8" ;;
+        *)           echo "" ;;
+    esac
+}
+VLLM_KV_CACHE_DTYPE="${VLLM_KV_CACHE_DTYPE:-$(derive_kv_cache_dtype)}"
 
 mkdir -p "${JOB_INFO_DIR}" "${RIVAULT_CONTROL_DIR}"
 
@@ -177,6 +191,16 @@ write_job_info starting
 RUNTIME_CACHE="${TMPDIR:-/tmp}/rivault-${SLURM_JOB_ID}"
 mkdir -p "${RUNTIME_CACHE}/home" "${RUNTIME_CACHE}/cache" "${RUNTIME_CACHE}/ray"
 
+# FlashInfer (used by DeepSeek-V4 / GLM attention) resolves its cubin directory
+# to the installed flashinfer_cubin package path and writes checksums / on-demand
+# cubins there at engine init. That path is read-only inside the SIF, so vLLM
+# crashes with "Read-only file system". Bind a writable host copy of the bundled
+# cubins over the package path. Seed it once with:
+#   singularity exec --cleanenv <sif> cp -a \
+#     /opt/venv/lib/python3.12/site-packages/flashinfer_cubin/cubins/. <host_dir>/
+FLASHINFER_CUBIN_HOST="${FLASHINFER_CUBIN_DIR_HOST:-/work/hps0/home/ea0022/images/flashinfer_cubins}"
+FLASHINFER_CUBIN_TARGET="/opt/venv/lib/python3.12/site-packages/flashinfer_cubin/cubins"
+
 # Shared singularity exec flags (env + binds) used by every launch path.
 SING_COMMON=(
     exec --nv --cleanenv
@@ -198,6 +222,12 @@ SING_COMMON=(
     --env LD_LIBRARY_PATH="/opt/venv/lib/python3.12/site-packages/nvidia/cu13/lib:/opt/venv/lib/python3.12/site-packages/torch/lib"
 )
 
+# Mount the writable FlashInfer cubin dir over the read-only package path when a
+# seeded host copy is available (required for DeepSeek-V4 / GLM attention).
+if [[ -d "${FLASHINFER_CUBIN_HOST}" ]]; then
+    SING_COMMON+=( --bind "${FLASHINFER_CUBIN_HOST}:${FLASHINFER_CUBIN_TARGET}" )
+fi
+
 # vLLM server arguments shared across single/multi-node paths.
 VLLM_ARGS=(
     --model /models
@@ -218,6 +248,52 @@ case "$(printf '%s' "${VLLM_MAX_MODEL_LEN}" | tr '[:upper:]' '[:lower:]')" in
     ""|0|full|native|max|auto) : ;;
     *) VLLM_ARGS+=( --max-model-len "${VLLM_MAX_MODEL_LEN}" ) ;;
 esac
+
+# Cap the prefill batch for very large context windows. vLLM's startup memory
+# profiler runs a dummy forward of max-num-batched-tokens tokens, which defaults
+# to the full context length. At native 1M context (DeepSeek-V4) that dummy
+# activation exhausts host RAM and the batch step is OOM-killed
+# ("Detected 1 oom_kill event ... determine_available_memory"). Chunked prefill
+# (always on in vLLM v1) still serves the full max-model-len window; only the
+# per-step prefill is chunked, so the served "full token size" is unchanged.
+VLLM_MAX_NUM_BATCHED_TOKENS="${VLLM_MAX_NUM_BATCHED_TOKENS:-}"
+if [[ -z "${VLLM_MAX_NUM_BATCHED_TOKENS}" ]]; then
+    case "${VLLM_MAX_MODEL_LEN}" in
+        ''|*[!0-9]*) : ;;  # non-numeric (native/full/empty): leave to vLLM default
+        *) if [[ "${VLLM_MAX_MODEL_LEN}" -gt 131072 ]]; then
+               VLLM_MAX_NUM_BATCHED_TOKENS=16384
+           fi ;;
+    esac
+fi
+if [[ -n "${VLLM_MAX_NUM_BATCHED_TOKENS}" ]]; then
+    VLLM_ARGS+=( --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS}" )
+fi
+
+# Skip CUDA graph capture for very large context windows. The startup memory
+# profiler captures PIECEWISE+FULL CUDA graphs (~100 graphs for DeepSeek-V4),
+# each pinning host RAM proportional to the graph batch metadata. At native 1M
+# context this pinned-host allocation exhausts node RAM during
+# determine_available_memory and the batch step is OOM-killed even after the
+# prefill batch is capped. --enforce-eager disables graph capture entirely,
+# trading some decode throughput for a startup that fits in host RAM. The full
+# max-model-len context window is unchanged.
+VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-}"
+if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
+    case "${VLLM_MAX_MODEL_LEN}" in
+        ''|*[!0-9]*) : ;;
+        *) if [[ "${VLLM_MAX_MODEL_LEN}" -gt 262144 ]]; then
+               VLLM_ENFORCE_EAGER=1
+           fi ;;
+    esac
+fi
+if [[ "${VLLM_ENFORCE_EAGER}" == "1" ]]; then
+    VLLM_ARGS+=( --enforce-eager )
+fi
+
+# Apply a model-specific KV-cache dtype when required (e.g. DeepSeek-V4 fp8).
+if [[ -n "${VLLM_KV_CACHE_DTYPE}" ]]; then
+    VLLM_ARGS+=( --kv-cache-dtype "${VLLM_KV_CACHE_DTYPE}" )
+fi
 
 if [[ "${NODE_COUNT}" -gt 1 ]]; then
     # ── Multi-node: bootstrap a Ray cluster across the allocation ─────────────
@@ -243,11 +319,15 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
 
     # Start the Ray head on this (head) node. --block keeps the head process
     # alive in the background while vLLM connects to the cluster separately.
+    # Unset the SIF-baked VLLM_PORT=8000 before launching Ray so the vLLM
+    # RayWorkerProc actors Ray later spawns do not inherit it and double-bind
+    # ZMQ on :8000 ("Address already in use").
     "${CONTAINER_CMD}" "${SING_COMMON[@]}" \
-        "${SIF_IMAGE}" /opt/venv/bin/ray start --head \
-            --node-ip-address="${HEAD_IP}" --port="${RAY_PORT}" \
-            --num-gpus="${VLLM_TP}" --temp-dir="${RUNTIME_CACHE}/ray" \
-            --include-dashboard=false --block &
+        "${SIF_IMAGE}" /bin/sh -c 'unset VLLM_PORT; exec /opt/venv/bin/ray start --head \
+            --node-ip-address="$1" --port="$2" \
+            --num-gpus="$3" --temp-dir="$4" \
+            --include-dashboard=false --block' _ \
+            "${HEAD_IP}" "${RAY_PORT}" "${VLLM_TP}" "${RUNTIME_CACHE}/ray" &
     RAY_HEAD_PID=$!
 
     # Wait for the head GCS to accept connections.
@@ -263,11 +343,15 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
     for ((i=1; i<${#RAY_NODES[@]}; i++)); do
         wnode="${RAY_NODES[$i]}"
         echo "[serve] starting ray worker on ${wnode}"
+        # Same VLLM_PORT unset as the head: worker-node Ray actors must not
+        # inherit the baked :8000 or they fail with ZMQError "Address already
+        # in use" during vLLM engine init.
         srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
             "${CONTAINER_CMD}" "${SING_COMMON[@]}" \
-                "${SIF_IMAGE}" /opt/venv/bin/ray start \
-                    --address="${RAY_ADDRESS}" --num-gpus="${VLLM_TP}" \
-                    --temp-dir="${RUNTIME_CACHE}/ray" --block &
+                "${SIF_IMAGE}" /bin/sh -c 'unset VLLM_PORT; exec /opt/venv/bin/ray start \
+                    --address="$1" --num-gpus="$2" \
+                    --temp-dir="$3" --block' _ \
+                    "${RAY_ADDRESS}" "${VLLM_TP}" "${RUNTIME_CACHE}/ray" &
         WORKER_PIDS+=($!)
     done
 

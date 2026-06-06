@@ -37,8 +37,8 @@ scheduler:
   qos: ""
   time_limit: "96:00:00"                      # Max allowed: 96h (unlimited on 4n4gpu-p); long-lived system-tier endpoints
   gpus: 1                                     # --gpus-per-node=1 for 1n1gpu
-  cpus: 8
-  memory: "64G"                              # AI4S rejects --mem=0; request a bounded smoke allocation
+  cpus: 32                                    # GB200 node has 144 cores; give model load + sparse-attn enough parallelism
+  memory: "1400G"                            # AI4S rejects --mem=0; node RealMemory=1562.5G. 64G OOM-killed DeepSeek-V4 at 1M context (host KV/sparse-attn structures). Request near-full node RAM.
   slurm_delegation: per_user_ssh
   service_pubkey_path: /work/hps0/home/ea0022/ai4s-platform/keys/umrs-service.pub
   slurm_proxy_path: /work/hps0/home/ea0022/ai4s-platform/bin/umrs-slurm-proxy

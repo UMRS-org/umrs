@@ -32,7 +32,7 @@ defaults:
 
 endpoints:
   - name: deepseek-v4-pro
-    model: deepseek-ai/DeepSeek-V4-Pro
+    model: DeepSeek-V4-Pro
     tier: system
     gpu_count: 4           # GPUs per node
     node_count: 4          # 4 nodes × 4 GPUs = 16× B200 (2770 GiB), Ray multi-node
@@ -41,7 +41,7 @@ endpoints:
     # 1.6T MoE (49B active), FP4+FP8 mixed; TP=4 (per node) × PP=4 (nodes)
 
   - name: glm-5.1
-    model: zai-org/GLM-5.1
+    model: GLM-5.1
     tier: system
     gpu_count: 4
     node_count: 4          # 16× B200 across 4 nodes via Ray
@@ -50,7 +50,7 @@ endpoints:
     # 754B MoE (glm_moe_dsa); TP=4 × PP=4
 
   - name: kimi-k2.6
-    model: moonshotai/Kimi-K2.6
+    model: Kimi-K2.6
     tier: system
     gpu_count: 4
     node_count: 4          # placed on 4n4gpu-p alongside the others
