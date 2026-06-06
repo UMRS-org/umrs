@@ -48,11 +48,42 @@ LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}"
 # count across the allocation (e.g. 4 GPUs/node × 4 nodes = 16 on 4n4gpu-p).
 VLLM_TP="${VLLM_TENSOR_PARALLEL_SIZE:-1}"
 VLLM_PP="${VLLM_PIPELINE_PARALLEL_SIZE:-${SLURM_NNODES:-1}}"
+NODE_COUNT="${SLURM_NNODES:-1}"
+
+# Parallelism strategy across a multi-node allocation. Two layouts are supported:
+#
+#   tp_pp  (default)  TP = GPUs/node, PP = node count. Pipeline parallel splits
+#                     the model by layer across nodes. Simple and memory-robust,
+#                     but introduces pipeline bubbles that hurt single-stream
+#                     decode latency at low concurrency.
+#   tep               Tensor + Expert Parallel: TP = full world size (GPUs/node ×
+#                     nodes), PP = 1, plus --enable-expert-parallel. This is the
+#                     vLLM GB200 recipe layout for the large MoE checkpoints
+#                     (DeepSeek-V4-Pro 2-node, GLM-5.1 2-node): it removes the PP
+#                     bubble at the cost of more cross-node tensor-parallel
+#                     traffic (NVLink within a tray + InfiniBand between trays).
+#                     Memory layout differs from tp_pp, so any tep deployment
+#                     must be canary-validated for KV fit before production use.
+#
+# Opt-in only: VLLM_PARALLEL_STRATEGY defaults to tp_pp so existing multi-node
+# behaviour is unchanged. VLLM_EXPERT_PARALLEL=1 can independently force
+# --enable-expert-parallel without changing the TP/PP split.
+VLLM_PARALLEL_STRATEGY="$(printf '%s' "${VLLM_PARALLEL_STRATEGY:-tp_pp}" | tr '[:upper:]' '[:lower:]')"
+VLLM_ENABLE_EXPERT_PARALLEL="${VLLM_EXPERT_PARALLEL:-0}"
+# GPUs physically present per allocated node. The Ray bootstrap below needs this
+# per-node count for `ray start --num-gpus` and the cluster GPU-ready check,
+# independent of the vLLM -tp value (which TEP widens to the full world size).
+VLLM_GPUS_PER_NODE="${VLLM_TP}"
+if [[ "${VLLM_PARALLEL_STRATEGY}" == "tep" && "${NODE_COUNT}" -gt 1 ]]; then
+    VLLM_TP=$(( VLLM_TP * NODE_COUNT ))   # full world size as tensor parallel
+    VLLM_PP=1                             # no pipeline parallel in TEP
+    VLLM_ENABLE_EXPERT_PARALLEL=1         # MoE expert parallelism on
+fi
+
 # Empty / 0 / "full" / "native" means: do not pin --max-model-len; let vLLM use
 # the model's native maximum context ("full token size").
 VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-}"
 VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
-NODE_COUNT="${SLURM_NNODES:-1}"
 
 # Resolve the SIF image. RIVAULT_DIR may be the .sif itself or its directory.
 # Default to the Ray-enabled v4 SIF: the wrapper backend does not inject
@@ -305,6 +336,14 @@ if [[ -n "${VLLM_KV_CACHE_DTYPE}" ]]; then
     VLLM_ARGS+=( --kv-cache-dtype "${VLLM_KV_CACHE_DTYPE}" )
 fi
 
+# Expert parallelism for MoE models. Shards experts across the parallel workers
+# instead of replicating them, which is the vLLM GB200 recipe for the large MoE
+# checkpoints (DeepSeek-V4-Pro / GLM-5.1 / Kimi-K2.6). Enabled automatically by
+# the tep parallel strategy; can also be forced via VLLM_EXPERT_PARALLEL=1.
+if [[ "${VLLM_ENABLE_EXPERT_PARALLEL:-0}" == "1" ]]; then
+    VLLM_ARGS+=( --enable-expert-parallel )
+fi
+
 if [[ "${NODE_COUNT}" -gt 1 ]]; then
     # ── Multi-node: bootstrap a Ray cluster across the allocation ─────────────
     VLLM_ARGS+=( --distributed-executor-backend ray )
@@ -317,8 +356,8 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
     fi
     RAY_PORT=6379
     RAY_ADDRESS="${HEAD_IP}:${RAY_PORT}"
-    WANT_GPUS=$(( VLLM_TP * NODE_COUNT ))
-    echo "[serve] multi-node: nodes=${NODE_COUNT} head=${HEAD_NODE} (${HEAD_IP}) want_gpus=${WANT_GPUS}"
+    WANT_GPUS=$(( VLLM_GPUS_PER_NODE * NODE_COUNT ))
+    echo "[serve] multi-node: nodes=${NODE_COUNT} head=${HEAD_NODE} (${HEAD_IP}) want_gpus=${WANT_GPUS} strategy=${VLLM_PARALLEL_STRATEGY} tp=${VLLM_TP} pp=${VLLM_PP}"
 
     # RUNTIME_CACHE lives on each node's local /tmp; the batch script only ran
     # mkdir on the head node. Create it on every allocated node so the worker
@@ -337,7 +376,7 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
             --node-ip-address="$1" --port="$2" \
             --num-gpus="$3" --temp-dir="$4" \
             --include-dashboard=false --block' _ \
-            "${HEAD_IP}" "${RAY_PORT}" "${VLLM_TP}" "${RUNTIME_CACHE}/ray" &
+            "${HEAD_IP}" "${RAY_PORT}" "${VLLM_GPUS_PER_NODE}" "${RUNTIME_CACHE}/ray" &
     RAY_HEAD_PID=$!
 
     # Wait for the head GCS to accept connections.
@@ -361,7 +400,7 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
                 "${SIF_IMAGE}" /bin/sh -c 'unset VLLM_PORT; exec /opt/venv/bin/ray start \
                     --address="$1" --num-gpus="$2" \
                     --temp-dir="$3" --block' _ \
-                    "${RAY_ADDRESS}" "${VLLM_TP}" "${RUNTIME_CACHE}/ray" &
+                    "${RAY_ADDRESS}" "${VLLM_GPUS_PER_NODE}" "${RUNTIME_CACHE}/ray" &
         WORKER_PIDS+=($!)
     done
 
