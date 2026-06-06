@@ -55,11 +55,14 @@ VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEMORY_UTILIZATION:-0.90}"
 NODE_COUNT="${SLURM_NNODES:-1}"
 
 # Resolve the SIF image. RIVAULT_DIR may be the .sif itself or its directory.
+# Default to the Ray-enabled v4 SIF: the wrapper backend does not inject
+# RIVAULT_DIR, so this basename is the effective source of truth for the image
+# (multi-node serving requires Ray, which only the v4 SIF bundles).
 RIVAULT_DIR="${RIVAULT_DIR:-/work/hps0/home/ea0022/images}"
 if [[ "${RIVAULT_DIR}" == *.sif ]]; then
     SIF_IMAGE="${RIVAULT_DIR}"
 else
-    SIF_IMAGE="${RIVAULT_SIF:-${RIVAULT_DIR%/}/mini-rivault-aarch64.sif}"
+    SIF_IMAGE="${RIVAULT_SIF:-${RIVAULT_DIR%/}/mini-rivault-aarch64-v4.sif}"
 fi
 
 # Derive the vLLM tool-call parser from the model name when not explicitly set.
@@ -231,6 +234,13 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
     WANT_GPUS=$(( VLLM_TP * NODE_COUNT ))
     echo "[serve] multi-node: nodes=${NODE_COUNT} head=${HEAD_NODE} (${HEAD_IP}) want_gpus=${WANT_GPUS}"
 
+    # RUNTIME_CACHE lives on each node's local /tmp; the batch script only ran
+    # mkdir on the head node. Create it on every allocated node so the worker
+    # containers can bind-mount it (otherwise singularity fails with
+    # "mount source ... doesn't exist").
+    srun --nodes="${NODE_COUNT}" --ntasks-per-node=1 \
+        mkdir -p "${RUNTIME_CACHE}/home" "${RUNTIME_CACHE}/cache" "${RUNTIME_CACHE}/ray" || true
+
     # Start the Ray head on this (head) node. --block keeps the head process
     # alive in the background while vLLM connects to the cluster separately.
     "${CONTAINER_CMD}" "${SING_COMMON[@]}" \
@@ -274,10 +284,17 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
     done
     echo "[serve] ray cluster GPUs ready: ${have}/${WANT_GPUS}"
 
+    # The mini-RiVault SIF bakes VLLM_PORT=8000 into its %environment (survives
+    # --cleanenv). vLLM's get_open_port() honours VLLM_PORT, so the fixed value
+    # is reused by multiple subsystems (engine-coordinator + the cross-node
+    # torch.distributed TCPStore), which double-bind the same port and fail with
+    # EADDRINUSE. Unset VLLM_PORT inside the container so vLLM allocates dynamic
+    # free ports per subsystem. Pin VLLM_HOST_IP to the head for rendezvous.
     write_job_info running
     "${CONTAINER_CMD}" "${SING_COMMON[@]}" \
         --env RAY_ADDRESS="${RAY_ADDRESS}" \
-        "${SIF_IMAGE}" /opt/venv/bin/python -m vllm.entrypoints.openai.api_server \
+        --env VLLM_HOST_IP="${HEAD_IP}" \
+        "${SIF_IMAGE}" /bin/sh -c 'unset VLLM_PORT; exec /opt/venv/bin/python -m vllm.entrypoints.openai.api_server "$@"' _ \
             "${VLLM_ARGS[@]}" &
     CONTAINER_PID=$!
 else
