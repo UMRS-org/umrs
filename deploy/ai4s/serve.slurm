@@ -110,6 +110,7 @@ derive_tool_parser() {
         *glm-4.5*|*glm4.5*|*glm45*)  echo "glm45" ;;
         *glm*)                       echo "glm47" ;;
         *kimi*)                      echo "kimi_k2" ;;
+        *gemma*4*)                   echo "gemma4" ;;
         *)                           echo "hermes" ;;
     esac
 }
@@ -132,6 +133,7 @@ derive_reasoning_parser() {
     name_lc="$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')"
     case "${name_lc}" in
         *glm*) echo "glm45" ;;
+        *gemma*4*) echo "gemma4" ;;
         *)     echo "" ;;
     esac
 }
@@ -359,6 +361,19 @@ fi
 # only to match the upstream reference launch.)
 case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
     *glm*) VLLM_ARGS+=( --chat-template-content-format string ) ;;
+esac
+# Gemma4: multimodal (text+image) with custom tool protocol. The vLLM recipe
+# (recipes.vllm.ai/Google/gemma-4-31B-it) passes --limit-mm-per-prompt for
+# image support and --chat-template for tool calling. When the gemma4 tool
+# parser is active, add the chat template and MM limit. The chat template
+# file lives inside the SIF at the vLLM examples path; the exact path is at
+# vllm's site-packages (installed wheel, NOT editable). We let vLLM discover
+# it via the tool parser's built-in default.
+case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
+    *gemma*4*)
+        # Multimodal: up to 4 images per prompt (recipe default).
+        VLLM_ARGS+=( --limit-mm-per-prompt '{"image": 4}' )
+        ;;
 esac
 # Pin context length only when explicitly requested; otherwise omit the flag so
 # vLLM serves the model's native maximum context ("full token size").
