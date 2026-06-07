@@ -163,7 +163,7 @@ class SingularityWrapper(RuntimeWrapper):
         for bind in self.bind_paths:
             cmd.extend(["--bind", bind])
 
-        cmd.append("--network=host")
+        cmd.extend(["--net", "--network", "none"])
         cmd.append(image)
 
         if spec.command:

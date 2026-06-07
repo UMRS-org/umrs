@@ -271,6 +271,7 @@ FLASHINFER_CUBIN_TARGET="/opt/venv/lib/python3.12/site-packages/flashinfer_cubin
 # Shared singularity exec flags (env + binds) used by every launch path.
 SING_COMMON=(
     exec --nv --cleanenv
+    --net --network none
     --bind "${HOST_MODEL_PATH}:/models:ro"
     --bind "${RUNTIME_CACHE}:${RUNTIME_CACHE}"
     --env HOME="${RUNTIME_CACHE}/home"
