@@ -270,9 +270,18 @@ FLASHINFER_CUBIN_HOST="${FLASHINFER_CUBIN_DIR_HOST:-/work/hps0/home/ea0022/image
 FLASHINFER_CUBIN_TARGET="/opt/venv/lib/python3.12/site-packages/flashinfer_cubin/cubins"
 
 # Shared singularity exec flags (env + binds) used by every launch path.
+#
+# NOTE: We intentionally do NOT use `--net --network none` here. The serving
+# container must expose vLLM/LiteLLM on ${EXTERNAL_PORT} over the host network
+# (the umrs-front Gateway reaches it via an SSH tunnel to the compute node),
+# and multi-node Ray (DeepSeek-V4-Pro, GLM-5.1) requires inter-node TCP for the
+# distributed executor. A private/empty network namespace breaks both. On AI4S,
+# unprivileged users may only use `--network none` (bridge/CNI is forbidden), so
+# there is no portmap workaround. Egress containment for inference is enforced
+# instead by TRANSFORMERS_OFFLINE=1 / HF_HUB_OFFLINE=1 (below) plus node-level
+# firewall policy — see docs/admin/security/sandbox-network-isolation.md.
 SING_COMMON=(
     exec --nv --cleanenv
-    --net --network none
     --bind "${HOST_MODEL_PATH}:/models:ro"
     --bind "${RUNTIME_CACHE}:${RUNTIME_CACHE}"
     --env HOME="${RUNTIME_CACHE}/home"
