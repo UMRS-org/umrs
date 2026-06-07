@@ -150,19 +150,28 @@ class Scheduler:
         METRICS.scheduler_jobs_claimed(len(job_ids))
         logger.debug(f"Claimed {len(job_ids)} jobs for scheduling")
 
+        # Batch-fetch job details to avoid N+1 queries.
+        jobs_by_id = self.job_store.get_jobs_batch(job_ids)
+
         # Process each job (sequential to respect advisory locks)
         for job_id in job_ids:
-            await self._schedule_job(job_id)
+            job = jobs_by_id.get(job_id)
+            if job is None:
+                logger.warning(f"Skipping claimed job {job_id}: not found in batch fetch")
+                continue
+            await self._schedule_job(job_id, job)
 
-    async def _schedule_job(self, job_id: str) -> None:
+    async def _schedule_job(self, job_id: str, job: "Job | None" = None) -> None:
         """
         Schedule a single job.
 
         Creates an attempt and submits to backend.
+        When ``job`` is provided the N+1 lookup to get_job() is skipped.
         """
         try:
-            # Get job details
-            job = self.job_store.get_job(job_id)
+            # Get job details (avoid N+1 when already provided by caller)
+            if job is None:
+                job = self.job_store.get_job(job_id)
 
             # Record scheduling delay (time from ready to actual schedule)
             if hasattr(job, "next_run_at") and job.next_run_at:

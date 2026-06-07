@@ -220,6 +220,20 @@ class JobStore:
                 raise JobNotFoundError(f"Job not found: {job_id}")
             return self._row_to_job(row)
 
+    def get_jobs_batch(self, job_ids: list[str]) -> dict[str, Job]:
+        """Get multiple jobs by ID in a single query.
+
+        Returns a dict mapping job_id -> Job. Missing IDs are silently omitted.
+        """
+        if not job_ids:
+            return {}
+        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM jobs WHERE job_id = ANY(%s)",
+                (job_ids,),
+            )
+            return {row["job_id"]: self._row_to_job(row) for row in cur.fetchall()}
+
     def get_job_by_idempotency_key(
         self, project_id: str, idempotency_key: str
     ) -> Job | None:
