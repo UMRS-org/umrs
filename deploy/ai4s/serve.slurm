@@ -134,6 +134,7 @@ derive_reasoning_parser() {
     case "${name_lc}" in
         *glm*) echo "glm45" ;;
         *gemma*4*) echo "gemma4" ;;
+        *kimi*) echo "kimi_k2" ;;
         *)     echo "" ;;
     esac
 }
