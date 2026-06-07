@@ -262,12 +262,17 @@ class SlurmBackend(OrchestratorBackend):
         jobs: list[JobInfo],
         status_filter: list[JobStatus] | None,
     ) -> None:
+        """Append active squeue jobs not already in the list.
+
+        Uses a single squeue call returning job ID + state (%i %T) to
+        avoid N per-job subprocess calls.
+        """
+        user = os.environ.get("USER", "")
         proc = await asyncio.create_subprocess_exec(
             "squeue",
-            "-u", os.environ.get("USER", ""),
-            "-n", "mini-rivault",
+            "-u", user,
             "-h",
-            "-o", "%i",
+            "-o", "%i|%T",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -275,48 +280,66 @@ class SlurmBackend(OrchestratorBackend):
 
         if not stdout:
             return
-        for job_id in stdout.decode().strip().split("\n"):
-            await self._append_squeue_job(job_id.strip(), jobs, status_filter)
 
-    async def _append_squeue_job(
-        self,
-        job_id: str,
-        jobs: list[JobInfo],
-        status_filter: list[JobStatus] | None,
-    ) -> None:
-        if not job_id or any(job.job_id == job_id for job in jobs):
-            return
-        job = await self.get_job_status(job_id)
-        if status_filter is None or job.status in status_filter:
-            jobs.append(job)
+        seen = {job.job_id for job in jobs}
+        for line in stdout.decode().strip().split("\n"):
+            if not line or "|" not in line:
+                continue
+            job_id, state = line.strip().split("|", 1)
+            if not job_id or job_id in seen:
+                continue
+            status = self._status_from_slurm_state(state)
+            if status_filter is None or status in status_filter:
+                jobs.append(JobInfo(
+                    job_id=job_id,
+                    status=status,
+                    backend=self.backend_name,
+                ))
+                seen.add(job_id)
 
     async def cleanup_orphans(self) -> int:
-        """Clean up orphaned job info files."""
+        """Clean up orphaned job info files whose Slurm jobs are gone.
+
+        Uses a single squeue call for all user jobs instead of N+1
+        per-file subprocess calls (O(N) → O(1) subprocesses).
+        """
         cleaned = 0
         info_dir = Path(self.config.slurm_job_info_dir)
 
         if not info_dir.exists():
             return 0
 
+        # Collect all known job IDs from info files.
+        known_ids: dict[str, Path] = {}
         for info_file in info_dir.glob("rivault-job-*.info"):
             match = re.search(r"rivault-job-(\d+)\.info", info_file.name)
-            if not match:
-                continue
+            if match:
+                known_ids[match.group(1)] = info_file
 
-            job_id = match.group(1)
+        if not known_ids:
+            return 0
 
-            # Check if job still exists in Slurm
-            proc = await asyncio.create_subprocess_exec(
-                "squeue",
-                "-j", job_id,
-                "-h",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await proc.communicate()
+        # Batch-query squeue for all user jobs to avoid N subprocess calls.
+        user = os.environ.get("USER", "")
+        active_ids: set[str] = set()
+        proc = await asyncio.create_subprocess_exec(
+            "squeue",
+            "-u", user,
+            "-h",
+            "-o", "%i",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        if stdout:
+            for line in stdout.decode().strip().split("\n"):
+                jid = line.strip()
+                if jid:
+                    active_ids.add(jid)
 
-            if not stdout.strip():
-                # Job no longer in queue, remove info file
+        # Cross-reference: remove info files for jobs not in squeue.
+        for job_id, info_file in known_ids.items():
+            if job_id not in active_ids:
                 info_file.unlink()
                 cleaned += 1
 
