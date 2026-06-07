@@ -163,7 +163,12 @@ class SingularityWrapper(RuntimeWrapper):
         for bind in self.bind_paths:
             cmd.extend(["--bind", bind])
 
-        cmd.extend(["--net", "--network", "none"])
+        # Serving containers must share the host network namespace so the
+        # vLLM/LiteLLM port is reachable by the Gateway tunnel and multi-node
+        # Ray can use inter-node TCP. A private/empty netns (`--net --network
+        # none`) breaks both. Egress containment is enforced via offline env
+        # flags and node-level firewall policy, not container netns.
+        cmd.append("--network=host")
         cmd.append(image)
 
         if spec.command:
