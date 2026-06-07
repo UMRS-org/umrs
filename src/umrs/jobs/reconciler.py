@@ -240,6 +240,9 @@ class Reconciler:
                     WHERE job_id = %s
                 """, (JobStatus.QUEUED.value, next_run, job_id))
                 conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             self.job_store.db_pool.putconn(conn)
 
@@ -260,6 +263,9 @@ class Reconciler:
                     WHERE job_id = %s
                 """, (JobStatus.FAILED.value, job_id))
                 conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
         finally:
             self.job_store.db_pool.putconn(conn)
 
