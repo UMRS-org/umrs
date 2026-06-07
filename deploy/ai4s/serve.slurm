@@ -27,7 +27,11 @@ set -euo pipefail
 # deploy/singularity/mini-rivault-aarch64-ray.def).
 # ─────────────────────────────────────────────────────────────────────────────
 
-JOB_INFO_DIR="${JOB_INFO_DIR:-/work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/jobs}"
+# JOB_INFO_DIR: derive from the script's location when not explicit.
+# Falls back to SLURM_SUBMIT_DIR/jobs so the orchestrator can discover
+# job-info files from any deployment root.
+_DEFAULT_JOB_INFO_DIR="${SLURM_SUBMIT_DIR:-$(cd "$(dirname "$0")" && pwd)}/jobs"
+JOB_INFO_DIR="${JOB_INFO_DIR:-${_DEFAULT_JOB_INFO_DIR}}"
 RIVAULT_CONTROL_DIR="${RIVAULT_CONTROL_DIR:-${JOB_INFO_DIR}/control}"
 
 # External port the Gateway connects to (NGINX inside the container listens here).
