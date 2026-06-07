@@ -239,33 +239,35 @@ class JobStore:
         Enqueue a job for scheduling.
 
         Transitions: PLANNED → QUEUED
+        Holds advisory lock to prevent races with create_attempt.
         """
         when = when or datetime.utcnow()
         now = datetime.utcnow()
 
-        with self._get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
-                    UPDATE jobs SET
-                        status = %s,
-                        next_run_at = %s,
-                        last_state_change_at = %s
-                    WHERE job_id = %s AND status = %s
-                    RETURNING job_id
-                """, (
-                JobStatus.QUEUED.value,
-                when,
-                now,
-                job_id,
-                JobStatus.PLANNED.value,
-            ))
+        with self._get_conn() as conn, self._advisory_lock(conn, job_id):
+            with conn.cursor() as cur:
+                cur.execute("""
+                        UPDATE jobs SET
+                            status = %s,
+                            next_run_at = %s,
+                            last_state_change_at = %s
+                        WHERE job_id = %s AND status = %s
+                        RETURNING job_id
+                    """, (
+                    JobStatus.QUEUED.value,
+                    when,
+                    now,
+                    job_id,
+                    JobStatus.PLANNED.value,
+                ))
 
-            if cur.fetchone() is None:
-                conn.rollback()
-                raise InvalidTransitionError(
-                    f"Cannot enqueue job {job_id} (not in PLANNED status)"
-                )
-            conn.commit()
-            logger.debug(f"Enqueued job {job_id} for {when}")
+                if cur.fetchone() is None:
+                    conn.rollback()
+                    raise InvalidTransitionError(
+                        f"Cannot enqueue job {job_id} (not in PLANNED status)"
+                    )
+                conn.commit()
+                logger.debug(f"Enqueued job {job_id} for {when}")
 
     def claim_next_jobs(self, limit: int = 10) -> list[str]:
         """
@@ -709,87 +711,91 @@ class JobStore:
         Cancel a job (stop scheduling further attempts).
 
         Does NOT kill running backend jobs.
+        Holds advisory lock to prevent races with create_attempt.
         """
         now = datetime.utcnow()
 
-        with self._get_conn() as conn, conn.cursor() as cur:
-            # Mark job as cancelled
-            cur.execute("""
-                    UPDATE jobs SET
-                        status = %s,
-                        active_attempt_id = NULL,
-                        last_state_change_at = %s
-                    WHERE job_id = %s AND status NOT IN (%s, %s, %s)
-                    RETURNING job_id
-                """, (
-                JobStatus.CANCELLED.value,
-                now,
-                job_id,
-                JobStatus.COMPLETED.value,
-                JobStatus.FAILED.value,
-                JobStatus.CANCELLED.value,
-            ))
+        with self._get_conn() as conn, self._advisory_lock(conn, job_id):
+            with conn.cursor() as cur:
+                # Mark job as cancelled
+                cur.execute("""
+                        UPDATE jobs SET
+                            status = %s,
+                            active_attempt_id = NULL,
+                            last_state_change_at = %s
+                        WHERE job_id = %s AND status NOT IN (%s, %s, %s)
+                        RETURNING job_id
+                    """, (
+                    JobStatus.CANCELLED.value,
+                    now,
+                    job_id,
+                    JobStatus.COMPLETED.value,
+                    JobStatus.FAILED.value,
+                    JobStatus.CANCELLED.value,
+                ))
 
-            if cur.fetchone() is None:
-                raise InvalidTransitionError(
-                    f"Cannot cancel job {job_id} (already terminal)"
-                )
+                if cur.fetchone() is None:
+                    raise InvalidTransitionError(
+                        f"Cannot cancel job {job_id} (already terminal)"
+                    )
 
-            # Mark any active attempts as failed
-            cur.execute("""
-                    UPDATE job_attempts SET
-                        status = %s,
-                        ended_at = %s,
-                        exit_reason = %s
-                    WHERE job_id = %s AND status IN (%s, %s, %s)
-                """, (
-                AttemptStatus.FAILED.value,
-                now,
-                f"cancelled: {reason}",
-                job_id,
-                AttemptStatus.CREATED.value,
-                AttemptStatus.SUBMITTED.value,
-                AttemptStatus.RUNNING.value,
-            ))
+                # Mark any active attempts as failed
+                cur.execute("""
+                        UPDATE job_attempts SET
+                            status = %s,
+                            ended_at = %s,
+                            exit_reason = %s
+                        WHERE job_id = %s AND status IN (%s, %s, %s)
+                    """, (
+                    AttemptStatus.FAILED.value,
+                    now,
+                    f"cancelled: {reason}",
+                    job_id,
+                    AttemptStatus.CREATED.value,
+                    AttemptStatus.SUBMITTED.value,
+                    AttemptStatus.RUNNING.value,
+                ))
 
-            conn.commit()
-            logger.info(f"Cancelled job {job_id}: {reason}")
-            METRICS.job_cancelled("durable")
+                conn.commit()
+                logger.info(f"Cancelled job {job_id}: {reason}")
+                METRICS.job_cancelled("durable")
 
     def retry_job(self, job_id: str) -> None:
         """
         Force requeue a job (admin operation).
 
         Resets retry count and requeues immediately.
+        Holds advisory lock to prevent races with create_attempt.
         """
         now = datetime.utcnow()
 
-        with self._get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
-                    UPDATE jobs SET
-                        status = %s,
-                        active_attempt_id = NULL,
-                        next_run_at = %s,
-                        last_state_change_at = %s
-                    WHERE job_id = %s AND status IN (%s, %s)
-                    RETURNING job_id
-                """, (
-                JobStatus.QUEUED.value,
-                now,
-                now,
-                job_id,
-                JobStatus.FAILED.value,
-                JobStatus.CANCELLED.value,
-            ))
+        with self._get_conn() as conn, self._advisory_lock(conn, job_id):
+            with conn.cursor() as cur:
+                cur.execute("""
+                        UPDATE jobs SET
+                            status = %s,
+                            active_attempt_id = NULL,
+                            next_run_at = %s,
+                            last_state_change_at = %s
+                        WHERE job_id = %s AND status IN (%s, %s)
+                        RETURNING job_id
+                    """, (
+                    JobStatus.QUEUED.value,
+                    now,
+                    now,
+                    job_id,
+                    JobStatus.FAILED.value,
+                    JobStatus.CANCELLED.value,
+                ))
 
-            if cur.fetchone() is None:
-                raise InvalidTransitionError(
-                    f"Cannot retry job {job_id} (not in terminal status)"
-                )
+                if cur.fetchone() is None:
+                    raise InvalidTransitionError(
+                        f"Cannot retry job {job_id} (not in terminal status)"
+                    )
 
-            conn.commit()
-            logger.info(f"Force-requeued job {job_id}")
-            METRICS.retry_attempt("admin_force")
+                conn.commit()
+                logger.info(f"Force-requeued job {job_id}")
+                METRICS.retry_attempt("admin_force")
 
     def update_heartbeat(self, job_id: str) -> None:
         """Update job heartbeat timestamp (for HA detection)."""
