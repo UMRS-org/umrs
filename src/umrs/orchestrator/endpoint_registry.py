@@ -255,8 +255,17 @@ class EndpointRegistry:
         idle_ttl_sec = _positive_int(metadata.get("idle_ttl_sec"))
         if idle_ttl_sec is not None:
             metadata["idle_ttl_sec"] = idle_ttl_sec
-        ttl = _positive_int(ttl_sec) or idle_ttl_sec or self._default_ttl_sec
-        expires_at = datetime.utcnow() + timedelta(seconds=ttl)
+        # ``ttl_sec == 0`` is an explicit request for a non-expiring endpoint
+        # (e.g. system-tier pool models on unlimited-walltime partitions that
+        # must never be auto-recycled). ``None`` falls back to the idle/default
+        # TTL; positive values are finite TTLs. A non-expiring endpoint stores
+        # ``expires_at = None``, which downstream TTL checks treat as "never
+        # expired" (see ``ttl_remaining_sec`` / ``get`` / ``list_expired``).
+        if ttl_sec is not None and ttl_sec <= 0:
+            expires_at = None
+        else:
+            ttl = _positive_int(ttl_sec) or idle_ttl_sec or self._default_ttl_sec
+            expires_at = datetime.utcnow() + timedelta(seconds=ttl)
 
         endpoint = RegisteredEndpoint(
             project_id=project_id,

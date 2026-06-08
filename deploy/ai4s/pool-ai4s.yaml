@@ -28,7 +28,10 @@
 pool: ai4s-research
 defaults:
   tier: system            # system tier → shared, visible to all users
-  timeout: 3600           # 60 min — 4-node Ray bootstrap + huge MoE load
+  ttl_sec: 0              # 0 = never expires. 4n4gpu-p has unlimited walltime;
+                          # system-tier pool models must persist until explicitly torn down.
+  timeout: 86400          # HTTP request timeout (seconds) for `pool up`, NOT endpoint TTL.
+                          # Endpoint lifetime is controlled by ttl_sec above.
 
 endpoints:
   - name: deepseek-v4-pro
