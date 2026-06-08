@@ -213,11 +213,16 @@ def minio_check_create_list_only_policy(target):
 
 
 def minio_check_create_user_list_policy(target, username):
-    """Create a per-user list policy that restricts bucket visibility.
+    """Create a per-user list policy.
 
-    Unlike the shared ``listonly`` policy (which exposes ALL bucket names),
-    this scopes ``ListAllMyBuckets`` to buckets matching ``{username}.*``
-    so users only see their own buckets.
+    Uses two statements because ``ListAllMyBuckets`` is a service-level
+    action (must apply to ``arn:aws:s3:::*``), while ``ListBucket``,
+    ``CreateBucket``, and ``GetBucketLocation`` are scoped to the user's
+    own bucket prefix.
+
+    Note: ``ListAllMyBuckets`` on ``*`` exposes all bucket *names*
+    (MinIO limitation). Per-bucket ``allow-*`` policies still protect
+    data access — users can only read/write their own buckets.
     """
     policy_name = f"list-{username}"
     policy = {
@@ -227,13 +232,22 @@ def minio_check_create_user_list_policy(target, username):
                 "Effect": "Allow",
                 "Action": [
                     "s3:ListAllMyBuckets",
+                ],
+                "Resource": [
+                    "arn:aws:s3:::*",
+                ],
+            },
+            {
+                "Effect": "Allow",
+                "Action": [
                     "s3:ListBucket",
+                    "s3:CreateBucket",
                     "s3:GetBucketLocation",
                 ],
                 "Resource": [
                     f"arn:aws:s3:::{username}.*",
                 ],
-            }
+            },
         ],
     }
 
@@ -432,8 +446,12 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         os.makedirs(os.path.dirname(expanded_path), exist_ok=True)
         with open(expanded_path, "w") as file:
             file.write(s3cfg_content)
-
         print(f"==> Configuration file written to: {user_s3_configuration_file}")
+
+        # Mirror to UMRS_CONFIG/user_files/ so _read_user_s3cfg's priority-1
+        # path stays in sync with the authoritative ~/.config/umrs copy.
+        _mirror_s3cfg_to_user_files(username, s3cfg_content)
+
     else:
         print(f"==> S3 configuration file '{user_s3_configuration_file}' allready exists for user '{username}' and alias '{alias}'.")
         print("==> Delete this file manually if you want to reconfigure the user.")
@@ -467,8 +485,59 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         with open(user_cfg_path, encoding="utf-8") as f:
             s3cfg_content = f.read()
 
+        # Mirror after reading to keep user_files in sync
+        _prune_stale_user_files_s3cfg(username, s3cfg_content)
+
 
     return alias, s3cfg_content
+
+
+def _umrs_user_files_dir() -> str | None:
+    """Return the ``UMRS_CONFIG/user_files`` directory path if it exists."""
+    umrs_config = os.environ.get("UMRS_CONFIG")
+    if not umrs_config:
+        return None
+    path = os.path.join(os.path.expanduser(umrs_config), "user_files")
+    return path if os.path.isdir(path) else None
+
+
+def _mirror_s3cfg_to_user_files(username: str, s3cfg_content: str) -> None:
+    """Write *s3cfg_content* to ``UMRS_CONFIG/user_files/s3cfg_{username}``.
+
+    This keeps the priority-1 path in ``_read_user_s3cfg`` in sync with the
+    authoritative ``~/.config/umrs/s3cfg_{username}`` copy, preventing stale
+    credentials from being served after a MinIO user is re-provisioned.
+    """
+    target_dir = _umrs_user_files_dir()
+    if not target_dir:
+        return
+    target_path = os.path.join(target_dir, f"s3cfg_{username}")
+    try:
+        with open(target_path, "w", encoding="utf-8") as f:
+            f.write(s3cfg_content)
+    except OSError:
+        pass
+
+
+def _prune_stale_user_files_s3cfg(username: str, s3cfg_content: str) -> None:
+    """Remove ``user_files/s3cfg_{username}`` if it differs from *s3cfg_content*.
+
+    When a user is re-provisioned, the stale copy in ``UMRS_CONFIG/user_files``
+    otherwise shadows the updated credentials in ``~/.config/umrs``.
+    """
+    target_dir = _umrs_user_files_dir()
+    if not target_dir:
+        return
+    target_path = os.path.join(target_dir, f"s3cfg_{username}")
+    if not os.path.isfile(target_path):
+        return
+    try:
+        with open(target_path, encoding="utf-8") as f:
+            existing = f.read()
+        if existing.strip() != s3cfg_content.strip():
+            os.remove(target_path)
+    except OSError:
+        pass
 
 
 def minio_delete_user(username, target):

@@ -536,30 +536,30 @@ def _read_user_s3cfg(username: str) -> str | None:
 
     Searches several locations in order (most authoritative first):
 
-    1. ``<configure_file_dir>/user_files/s3cfg_<username>``  (provisioning
-       fallback — written when the client path is unreachable on this server;
-       always reflects the most recent MinIO credentials)
-    2. ``<configure_file_dir>/s3cfg_<username>``  (next to server JSON config)
-    3. ``~/.config/umrs/s3cfg_<username>``  (standard user-config path)
+    1. ``~/.config/umrs/s3cfg_<username>``  (authoritative — written by
+       ``minio_s3_create_user``; always reflects the most recent MinIO
+       credentials)
+    2. ``<umrs_config_dir>/user_files/s3cfg_<username>``  (mirror copy —
+       kept in sync by ``_mirror_s3cfg_to_user_files``; pruned when stale
+       by ``_prune_stale_user_files_s3cfg``)
+    3. ``<configure_file_dir>/user_files/s3cfg_<username>``  (legacy
+       provisioning fallback)
+    4. ``<configure_file_dir>/s3cfg_<username>``
+    5. ``<umrs_config_dir>/s3cfg_<username>``
 
     Returns ``None`` if no file is found.
     """
     candidates: list[str] = []
 
-    # Provisioning fallback paths (most authoritative — written by reload)
-    configure_file = os.environ.get("UMRS_CONFIGURE_FILE", "")
-    if configure_file:
-        cfg_dir = os.path.dirname(os.path.expanduser(configure_file))
-        candidates.append(
-            os.path.join(cfg_dir, "user_files", f"s3cfg_{username}"),
-        )
-        candidates.append(os.path.join(cfg_dir, f"s3cfg_{username}"))
+    # Priority 1: Authoritative path (written by minio_s3_create_user on creation,
+    # updated on secret rotation).  Always trust this copy over mirrors.
+    candidates.append(
+        os.path.expanduser(f"~/.config/umrs/s3cfg_{username}"),
+    )
 
-    # UMRS_CONFIG directory (set by container env, may differ from configure_file)
+    # Priority 2-3: UMRS_CONFIG mirrors
     umrs_config_dir = os.environ.get("UMRS_CONFIG", "")
-    if umrs_config_dir and umrs_config_dir != os.path.dirname(
-        os.path.expanduser(configure_file)
-    ) if configure_file else True:
+    if umrs_config_dir:
         umrs_config_dir = os.path.expanduser(umrs_config_dir)
         candidates.append(
             os.path.join(umrs_config_dir, "user_files", f"s3cfg_{username}"),
@@ -568,8 +568,14 @@ def _read_user_s3cfg(username: str) -> str | None:
             os.path.join(umrs_config_dir, f"s3cfg_{username}"),
         )
 
-    # Standard path (may be stale if MinIO user was re-provisioned)
-    candidates.append(os.path.expanduser(f"~/.config/umrs/s3cfg_{username}"))
+    # Priority 4-5: Legacy provisioning fallback paths
+    configure_file = os.environ.get("UMRS_CONFIGURE_FILE", "")
+    if configure_file:
+        cfg_dir = os.path.dirname(os.path.expanduser(configure_file))
+        candidates.append(
+            os.path.join(cfg_dir, "user_files", f"s3cfg_{username}"),
+        )
+        candidates.append(os.path.join(cfg_dir, f"s3cfg_{username}"))
 
     for path in candidates:
         if os.path.isfile(path):
