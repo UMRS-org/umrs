@@ -12,6 +12,7 @@ import diskcache
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
+import traceback
 import contextlib
 
 import umrs.server.config as _server_config
@@ -192,6 +193,7 @@ def server_event_loop(
                 result = control_mq.server_control_queue_loop()
             except Exception as e:
                 print(f"ERROR in control queue loop: {e}", flush=True)
+                traceback.print_exc()
                 continue
             if not result:
                 continue

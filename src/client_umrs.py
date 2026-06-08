@@ -470,6 +470,8 @@ def _handle_admin_user_command(args):
             explicit_server_ip=args.server_ip,
             explicit_control_port=args.control_port,
         )
+
+        
         control_mq = MessageQueue(
             role="client",
             queue_type="control",
@@ -1325,7 +1327,6 @@ def main():
         explicit_control_port=args.control_port,
     )
 
-
     # Connect to message queue
     control_mq = MessageQueue(
         role = "client",
@@ -1395,11 +1396,15 @@ def main():
         if args.verbose or args.conf is None:
             print(f"Using config: {configure_file}")
         user = load_client_cfg_file(configure_file)
+        print(f"before override: {user=}")
         if config_state.s3.valid and config_state.s3.path:
+            print(f"{config_state.s3.path=}")
             user = apply_s3_config_override(user, config_state.s3.path)
+        print(user)
         buckets_cfg = build_buckets_cfg(user)
         if args.verbose:
             print("Configuration loaded successfully.")
+            print(f"{buckets_cfg._store=}")
     elif configure_file and config_state.user.valid:
         # Opportunistically load config for commands that benefit from
         # knowing the username (e.g. upload-workflow) but don't require it.
@@ -1422,6 +1427,7 @@ def main():
                 admin_token=admin_token,
             )
             ping_result = api.ping(timeout_ms=connection.health_check_timeout_ms)
+            print(f"{connection.profile_name=}")
             endpoint_info = {
                 "profile": connection.profile_name or "(none)",
                 "server_host": connection.server_host,
