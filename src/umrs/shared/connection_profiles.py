@@ -162,6 +162,7 @@ profile_schema: dict[str, Any] = {
                 },
                 "tunnel_mode": {"type": "boolean"},
                 "health_check_timeout_ms": {"type": "integer", "minimum": 1000},
+                "auth_type": {"type": "string", "minLength": 1},
             },
             "additionalProperties": False,
         },
@@ -173,6 +174,8 @@ profile_schema: dict[str, Any] = {
             },
             "additionalProperties": False,
         },
+        "gateway_url": {"type": "string", "minLength": 1},
+        "username": {"type": "string", "minLength": 1},
         "ssh": {
             "type": "object",
             "properties": {
@@ -268,8 +271,27 @@ def get_connections_dir() -> Path:
     return Path(get_resolved_umrs_cfg_dir()).expanduser() / get_connections_default_cfg_subdir()
 
 
-def get_current_profile_path() -> Path:
-    return Path(get_resolved_umrs_cfg_dir()).expanduser() / get_current_connection_profile_file()
+
+def get_current_profile_path() -> Path | None:
+    """Return the path to the current connection profile file.
+
+    Returns:
+        Path  — if get_current_connection_profile_file() returns a string.
+        None  — if get_current_connection_profile_file() returns None
+                (no profile selected yet).
+    Raises:
+        TypeError — if get_current_connection_profile_file() returns an
+                    unexpected type (neither str nor None).
+    """
+    profile_file = get_current_connection_profile_file()
+    if profile_file is None:
+        return Path() # not ans is_file!
+    if isinstance(profile_file, str):
+        return Path(get_resolved_umrs_cfg_dir()).expanduser() / profile_file
+    raise TypeError(
+        f"get_current_connection_profile_file() returned unexpected type "
+        f"{type(profile_file).__name__!r}: {profile_file!r}"
+    )
 
 
 def get_profile_path(name: str) -> Path:
