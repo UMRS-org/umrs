@@ -80,6 +80,41 @@ def test_endpoint_mark_used_extends_idle_ttl_expiry():
     assert 1700 <= (updated.expires_at - datetime.utcnow()).total_seconds() <= 1800
 
 
+def test_endpoint_register_ttl_sec_zero_means_no_expiry():
+    registry = EndpointRegistry(default_ttl_sec=60)
+    endpoint = registry.register(
+        project_id="ai4s-platform",
+        model="kimi-k2.6",
+        job_id="backend-pool-1",
+        host="node-1",
+        port=11434,
+        ttl_sec=0,
+    )
+
+    assert endpoint.expires_at is None
+    assert endpoint.ttl_remaining_sec is None
+    assert registry.list_expired() == []
+    # A non-expiring endpoint must never be rejected on TTL grounds.
+    assert (
+        registry.get("ai4s-platform", "kimi-k2.6", prefer_warm=False, min_ttl_sec=99999)
+        is endpoint
+    )
+
+
+def test_endpoint_register_negative_ttl_sec_means_no_expiry():
+    registry = EndpointRegistry(default_ttl_sec=60)
+    endpoint = registry.register(
+        project_id="ai4s-platform",
+        model="gemma-5-31b-it",
+        job_id="backend-pool-2",
+        host="node-2",
+        port=11434,
+        ttl_sec=-1,
+    )
+
+    assert endpoint.expires_at is None
+
+
 class _RecordingControlAPI(UMRSControlAPI):
     def __init__(self):
         super().__init__(control_mq=None, client_id="test-client")

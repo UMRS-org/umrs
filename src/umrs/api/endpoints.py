@@ -537,7 +537,11 @@ class EndpointRegisterRequest(BaseModel):
     host: str = Field(..., description="Hostname or IP address")
     port: int = Field(..., ge=1, le=65535, description="LiteLLM port")
     backend: str = Field("unknown", description="Backend type (slurm/kubernetes/compose)")
-    ttl_sec: int | None = Field(None, ge=60, description="TTL in seconds")
+    ttl_sec: int | None = Field(
+        None,
+        ge=0,
+        description="TTL in seconds (0 = no expiry; None = server default)",
+    )
     metadata: dict[str, Any] | None = Field(None, description="Additional metadata")
 
 
@@ -659,7 +663,11 @@ class ProvisionRequest(BaseModel):
         None,
         description="Optional path to model files. If omitted, resolve from the registered model catalog.",
     )
-    ttl_sec: int = Field(3600, ge=60, description="TTL in seconds")
+    ttl_sec: int = Field(
+        3600,
+        ge=0,
+        description="TTL in seconds (0 = no expiry / never auto-recycle)",
+    )
     gpu_count: int = Field(1, ge=1, description="Number of GPUs per node")
     node_count: int = Field(1, ge=1, description="Number of Slurm nodes (>1 for multi-node pipeline parallelism)")
     max_model_len: int = Field(4096, ge=512, description="Max context length")
