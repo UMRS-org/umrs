@@ -441,10 +441,15 @@ fi
 #      serve correctly. Eager mode restores coherent DeepSeek output.
 #   2. Host RAM: graph capture pins host RAM proportional to the captured graph
 #      batch metadata and historically OOM-killed startup at 1M context.
-# The >262144 threshold targets only DeepSeek (1048576); GLM and Kimi keep graphs
-# for decode throughput. Set VLLM_ENFORCE_EAGER=1 to force eager for any model,
-# or VLLM_ENFORCE_EAGER=0 to opt a >262144 model back into graph capture. The
-# full max-model-len window is unchanged either way.
+# The >262144 length threshold below is a secondary guard (host-RAM at 1M). The
+# DeepSeek-V4 correctness problem is NOT actually length-dependent: a 131072
+# launch (job 10986) below this threshold still produced multilingual gibberish
+# with graphs ON. DeepSeek-V4 is therefore pinned to eager by MODEL NAME in the
+# block further below (alongside GLM), so any max_model_len is safe. GLM and Kimi
+# keep graphs for decode throughput (GLM via its own name-based eager guard). Set
+# VLLM_ENFORCE_EAGER=1 to force eager for any model, or VLLM_ENFORCE_EAGER=0 to
+# opt a model back into graph capture. The full max-model-len window is unchanged
+# either way.
 VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-}"
 if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
     case "${VLLM_MAX_MODEL_LEN}" in
@@ -461,9 +466,16 @@ if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
     # tool-calling verification was performed with eager mode on. Set
     # VLLM_ENFORCE_EAGER=0 to re-enable CUDA graphs once a SIF build is confirmed
     # NaN-free on the tools path (would improve decode throughput).
+    #
+    # DeepSeek-V4: CUDA-graph capture produces NaN/garbage logits for DeepSeek-V4
+    # on this nightly vLLM build regardless of context length (observed as
+    # multilingual gibberish on even trivial prompts when launched below the
+    # 262144 length threshold above). The length heuristic only protected the
+    # native 1M launch; pin eager by model name so any max_model_len is safe.
     if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
         case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
             *glm*) VLLM_ENFORCE_EAGER=1 ;;
+            *deepseek*v4*|*deepseek-v4*) VLLM_ENFORCE_EAGER=1 ;;
         esac
     fi
 fi
