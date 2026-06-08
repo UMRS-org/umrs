@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 import configparser
 import copy
 from collections.abc import Callable
@@ -72,10 +73,16 @@ def get_current_server_config_path() -> Path:
 def get_current_user_config_path() -> Path:
     return Path(get_resolved_umrs_cfg_dir()).expanduser() / get_current_user_config_file()
 
-
 def get_current_s3_config_path() -> Path:
-    return Path(get_resolved_umrs_cfg_dir()).expanduser() / get_current_s3_config_file()
-
+    s3_config_file = get_current_s3_config_file()
+    if s3_config_file is None:
+        return Path()
+    if isinstance(s3_config_file, str):
+        return Path(get_resolved_umrs_cfg_dir()).expanduser() / s3_config_file
+    raise TypeError(
+        f"get_current_s3_config_file() returned unexpected type "
+        f"{type(s3_config_file).__name__!r}: {s3_config_file!r}"
+    )
 
 def get_user_config_search_locations() -> list[str]:
     cfg_dir = Path(get_resolved_umrs_cfg_dir()).expanduser()
@@ -325,11 +332,18 @@ def _auto_select(candidates: list[ConfigFileCandidate], kind: str) -> ConfigLaye
 
 def _resolve_selector(
     kind: str,
+    user_path: str | None,
     explicit_path: str | None,
     current_path: str | None,
     candidates: list[ConfigFileCandidate],
     pointer_path: Path,
 ) -> ConfigLayer:
+    
+    if user_path:
+        layer = _VALIDATORS[kind](Path(user_path).expanduser())
+        layer.source = _FLAG_SOURCES[kind]
+        return layer
+
     if explicit_path:
         layer = _VALIDATORS[kind](Path(explicit_path).expanduser())
         layer.source = _FLAG_SOURCES[kind]
@@ -355,6 +369,7 @@ def resolve_loaded_config(
 
     server = _resolve_selector(
         "server",
+        None,
         explicit_server_config_path,
         current_server,
         discovered["server"],
@@ -369,11 +384,14 @@ def resolve_loaded_config(
 
     user = _resolve_selector(
         "user",
+        None,
         explicit_user_config_path or derived_user_path,
         None if explicit_user_config_path or derived_user_path else current_user,
         discovered["user"],
         get_current_user_config_path(),
     )
+
+
     if derived_user_path and user.path == str(Path(derived_user_path).expanduser()):
         user.source = f"server:{server.path}"
 
@@ -381,13 +399,26 @@ def resolve_loaded_config(
     if user.valid:
         derived_s3_path = user.details.get("s3_configuration_file")
 
+    print(    "s3",
+        explicit_s3_config_path,
+        current_s3, "\n============\n",
+        discovered["s3"], "\n============\n",
+        get_current_s3_config_path(),
+    )
+    
+    user_s3_path = user.details.get("s3_configuration_file")
+
     s3 = _resolve_selector(
         "s3",
+        user_s3_path,
         explicit_s3_config_path,
         current_s3,
         discovered["s3"],
         get_current_s3_config_path(),
     )
+
+    print(f"\n\n***********\n{s3.path=}")
+
     if not s3.path and derived_s3_path:
         s3 = _VALIDATORS["s3"](Path(derived_s3_path).expanduser())
         s3.source = f"user:{user.path}"
@@ -411,9 +442,11 @@ def resolve_loaded_config(
         user_s3_path = user.details.get("s3_configuration_file")
         if user_s3_path and _normalize_path(user_s3_path) != _normalize_path(s3.path):
             warnings.append("An explicit S3 config override is active for this client session.")
+            sys.exit(f"this warning should never be raised: {warnings=}")
 
     if user.valid and not s3.valid and s3.path:
         warnings.append("The resolved S3 config is invalid; runtime operations may fail unless a fallback applies.")
+
 
     return ResolvedLoadedConfig(server=server, user=user, s3=s3, warnings=warnings)
 

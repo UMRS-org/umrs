@@ -6,6 +6,8 @@ import socket
 import tempfile
 import time
 
+import contextlib
+
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.auth import AuthContext, UserRole, create_auth_context_from_request
 from umrs.shared.connection_profiles import DataPortRange, parse_data_port_range

@@ -133,7 +133,7 @@ def connect_to_s3(config_file):
     protocol = "https" if use_https else "http"
     endpoint_url = f"{protocol}://{s3_host}"
 
-    print(f"--> Connecting to S3 service on: {endpoint_url}...")
+    print(f"--> Connecting to S3 service on: {endpoint_url} using {config_file}...")
 
     # Create the S3 client
     s3 = boto3.client(
@@ -148,7 +148,7 @@ def connect_to_s3(config_file):
     # Test connection
     try:
         s3.list_buckets()
-        print("--> Succesfully connected to S3 service.")
+        print(f"--> Succesfully connected to S3 service ({access_key}@{s3_host}).")
     except Exception as e:
         raise RuntimeError(f"S3 Connection Failed: {e}\nCheck that the S3 service is up and running.") from e
 
