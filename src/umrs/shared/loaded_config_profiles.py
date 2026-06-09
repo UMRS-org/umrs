@@ -447,28 +447,53 @@ def _resolve_s3_layer(
     discovered: dict[str, list[ConfigFileCandidate]],
     user: ConfigLayer,
 ) -> ConfigLayer:
+    """Resolve the active S3 config layer.
+
+    Precedence (highest first):
+      1. ``--s3cfg`` flag        — explicit, one-shot override
+      2. ``current:`` pointer    — explicit, persistent selection
+      3. user config's ``s3_configuration_file`` — the user's declared intent
+      4. auto-discovery          — ambient fallback (cwd/config-dir globs)
+
+    The user-declared path (3) deliberately outranks ambient auto-discovery (4)
+    so that an unrelated ``s3cfg*`` file lying in the cwd or config dir cannot
+    silently shadow the path a user explicitly set in their config. When the
+    declared path is missing or invalid, resolution falls through to
+    auto-discovery so a one-off ambient config can still act as a fallback.
+    """
     derived_s3_path = user.details.get("s3_configuration_file") if user.valid else None
-    s3 = _resolve_selector(
-        "s3",
-        explicit_s3_config_path,
-        current_s3,
-        discovered["s3"],
-        get_current_s3_config_path(),
-    )
-    if not s3.path and derived_s3_path:
-        s3 = _VALIDATORS["s3"](Path(derived_s3_path).expanduser())
-        s3.source = f"user:{user.path}"
-    elif _should_mark_user_s3_source(derived_s3_path, s3):
-        s3.source = f"user:{user.path}"
-    return s3
 
+    # 1. Explicit --s3cfg flag.
+    if explicit_s3_config_path:
+        layer = _VALIDATORS["s3"](Path(explicit_s3_config_path).expanduser())
+        layer.source = _FLAG_SOURCES["s3"]
+        return layer
 
-def _should_mark_user_s3_source(derived_s3_path: str | None, s3: ConfigLayer) -> bool:
-    return bool(
-        derived_s3_path
-        and s3.path == str(Path(derived_s3_path).expanduser())
-        and not (s3.source and (s3.source.startswith("current:") or s3.source.startswith("flag:")))
-    )
+    # 2. Current pointer selection (`config use --s3 ...`).
+    if current_s3:
+        layer = _VALIDATORS["s3"](Path(current_s3).expanduser())
+        layer.source = f"current:{get_current_s3_config_path()}"
+        return layer
+
+    # 3. User config's declared s3_configuration_file (explicit user intent).
+    #    Wins over ambient auto-discovery when valid.
+    user_layer: ConfigLayer | None = None
+    if derived_s3_path:
+        user_layer = _VALIDATORS["s3"](Path(derived_s3_path).expanduser())
+        user_layer.source = f"user:{user.path}"
+        if user_layer.valid:
+            return user_layer
+
+    # 4. Auto-discovery fallback.
+    auto = _auto_select(discovered["s3"], "s3")
+    if auto.path:
+        return auto
+
+    # Nothing discovered: surface the (invalid) user-declared layer so its
+    # path/error is still reported to callers, otherwise return the empty layer.
+    if user_layer is not None:
+        return user_layer
+    return auto
 
 
 def _loaded_config_warnings(

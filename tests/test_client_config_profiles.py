@@ -153,6 +153,24 @@ def test_resolve_loaded_config_prefers_current_s3_selection(config_workspace):
     assert overridden["s3_configuration_file"] == str(config_workspace["alt_s3cfg"])
 
 
+def test_resolve_loaded_config_prefers_user_config_s3_over_autodiscovery(config_workspace):
+    # User config (user1.json) declares user_s3cfg as its s3_configuration_file.
+    set_current_user_config(str(config_workspace["user_cfg"]))
+
+    # Drop an unrelated but valid ambient s3cfg in the cwd (project_dir) that
+    # auto-discovery would otherwise pick up first (cwd globs precede config-dir
+    # globs). The user's declared config must still win.
+    ambient = config_workspace["project_dir"] / "s3cfg-ambient"
+    _write_s3cfg(ambient, access_key="ambient")
+
+    resolved = resolve_loaded_config()
+
+    assert resolved.user.valid
+    assert resolved.s3.valid
+    assert resolved.s3.path == str(config_workspace["user_s3cfg"])
+    assert resolved.s3.source.startswith("user:")
+
+
 def test_discover_loaded_config_profiles_marks_current_selection(config_workspace):
     set_current_server_config(str(config_workspace["server_cfg"]))
     set_current_user_config(str(config_workspace["user_cfg"]))
