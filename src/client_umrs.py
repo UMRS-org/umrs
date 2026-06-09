@@ -4445,7 +4445,7 @@ def main():
         epilog=_CLIENT_EPILOG,
         formatter_class=_ClientHelpFormatter,
     )
-    subparsers = parser.add_subparsers(dest="action", help="API action", required=True)
+    subparsers = parser.add_subparsers(dest="action", help="API action", required=False)
 
     # Global / legacy flags
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
@@ -4763,6 +4763,12 @@ def main():
         return 0
 
     args = parser.parse_args()
+
+    if not args.action:
+        # Bare `umrs-client` with no subcommand: show full help including the
+        # onboarding/shell-completion hints instead of a terse argparse error.
+        parser.print_help()
+        return 0
 
     if args.action == 'completion':
         action = getattr(args, 'completion_action', None)
