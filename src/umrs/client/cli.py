@@ -10,13 +10,6 @@ ADMIN_DENIED_MESSAGE = (
     "operator tasks. Examples: 'umrs-server admin user add <username> ...' "
     "and 'umrs-server admin user list'."
 )
-HELP_CROSS_REFERENCE = (
-    "CLI map:\n"
-    "  Use r4 for Gateway-mediated research workflows.\n"
-    "  Use umrs-client for UMRS diagnostics, endpoint control, experience recovery, and migration helpers.\n"
-    "  Use umrs-server admin for offline operator administration.\n"
-    "  Enable completion with: eval \"$(umrs-client completion bash)\"\n"
-)
 
 _OPTION_WITH_VALUE = {
     "-c",
@@ -60,10 +53,6 @@ def _wants_json(argv: list[str]) -> bool:
     return False
 
 
-def _requested_help(argv: list[str]) -> bool:
-    return any(arg in {"-h", "--help"} for arg in argv[1:])
-
-
 def _deny_legacy_admin(argv: list[str]) -> int:
     if _wants_json(argv):
         print(json.dumps({"status": "error", "message": ADMIN_DENIED_MESSAGE}))
@@ -73,9 +62,6 @@ def _deny_legacy_admin(argv: list[str]) -> int:
 
 
 def main():
-    if _requested_help(sys.argv):
-        print(HELP_CROSS_REFERENCE)
-
     if _requested_action(sys.argv) == "admin":
         return _deny_legacy_admin(sys.argv)
 

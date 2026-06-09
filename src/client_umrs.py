@@ -40,7 +40,6 @@ from umrs.cli.completion import (
     uninstall_completion,
 )
 from umrs.client.metadata import check_and_build_metadata
-from umrs.core.MessageQueue import MessageQueue
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.auth import create_auth_context_from_request
 from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
@@ -67,17 +66,97 @@ from umrs.shared.loaded_config_profiles import (
 )
 from umrs.shared.modality import modality_category, resolve_modality_task
 from umrs.shared.sql_helpers import create_db_name, metadata_dict
-from umrs.shared.storage.s3 import (
-    check_bucket_name,
-    connect_to_s3,
-    decompose_bucket_alias_arg,
-    download_objects,
-    list_s3_bucket,
-    make_path_to_bucket_string,
-    s3_store_image,
-    s3_store_text_file,
-    s3_store_txt,
+
+
+# ---------------------------------------------------------------------------
+# Optional heavy transport dependencies (lazy)
+#
+# The ZMQ control/data transport (pyzmq) and the S3 storage helpers (boto3,
+# pillow) are only needed for direct-transport operations: the ZMQ control
+# channel and bucket upload/download. They are imported lazily so the CLI can be
+# installed in a lightweight client configuration (``pip install umrs[client]``)
+# that only needs httpx/pyyaml/rich for gateway-mediated operations. Commands
+# that genuinely require the heavy transport raise a friendly error pointing at
+# the ``umrs[client-full]`` extra instead of an opaque ImportError.
+#
+# The wrappers below preserve the original call signatures so the rest of this
+# module can keep calling ``MessageQueue(...)``, ``connect_to_s3(...)`` etc.
+# unchanged.
+# ---------------------------------------------------------------------------
+
+_CLIENT_FULL_HINT = (
+    "Install the full client transport stack with:\n"
+    "    pip install 'umrs[client-full]'"
 )
+
+
+def _require_client_full(feature, exc):
+    """Abort with a friendly message when a heavy optional dependency is missing."""
+    raise SystemExit(
+        f"Error: '{feature}' requires the full UMRS client transport stack "
+        f"(pyzmq/boto3), which is not installed in this lightweight client.\n"
+        f"{_CLIENT_FULL_HINT}\n"
+        f"(missing dependency: {exc})"
+    )
+
+
+def _message_queue_cls():
+    """Lazily import the ZMQ MessageQueue class (requires ``umrs[client-full]``)."""
+    try:
+        from umrs.core.MessageQueue import MessageQueue as _MessageQueue
+        return _MessageQueue
+    except ImportError as exc:  # pragma: no cover - depends on install extra
+        _require_client_full("ZMQ transport", exc)
+
+
+def MessageQueue(*args, **kwargs):
+    """Construct a ZMQ MessageQueue via the lazily-imported class."""
+    return _message_queue_cls()(*args, **kwargs)
+
+
+def _s3():
+    """Lazily import the S3 storage helpers (requires ``umrs[client-full]``)."""
+    try:
+        import umrs.shared.storage.s3 as _s3_mod
+        return _s3_mod
+    except ImportError as exc:  # pragma: no cover - depends on install extra
+        _require_client_full("S3 storage", exc)
+
+
+def check_bucket_name(*args, **kwargs):
+    return _s3().check_bucket_name(*args, **kwargs)
+
+
+def connect_to_s3(*args, **kwargs):
+    return _s3().connect_to_s3(*args, **kwargs)
+
+
+def decompose_bucket_alias_arg(*args, **kwargs):
+    return _s3().decompose_bucket_alias_arg(*args, **kwargs)
+
+
+def download_objects(*args, **kwargs):
+    return _s3().download_objects(*args, **kwargs)
+
+
+def list_s3_bucket(*args, **kwargs):
+    return _s3().list_s3_bucket(*args, **kwargs)
+
+
+def make_path_to_bucket_string(*args, **kwargs):
+    return _s3().make_path_to_bucket_string(*args, **kwargs)
+
+
+def s3_store_image(*args, **kwargs):
+    return _s3().s3_store_image(*args, **kwargs)
+
+
+def s3_store_text_file(*args, **kwargs):
+    return _s3().s3_store_text_file(*args, **kwargs)
+
+
+def s3_store_txt(*args, **kwargs):
+    return _s3().s3_store_txt(*args, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -2602,7 +2681,15 @@ _CLIENT_EPILOG = (
     "       umrs-client config show\n"
     "       umrs-client ping\n\n"
     "Shell completion:\n"
-    "  eval \"$(umrs-client completion bash)\"\n"
+    "  eval \"$(umrs-client completion bash)\"\n\n"
+    "Related CLIs:\n"
+    "  r4            Gateway-mediated research workflows (chat, RAG, endpoints).\n"
+    "  umrs-client   UMRS diagnostics, endpoint control, experience recovery, migration.\n"
+    "  umrs-server   Offline operator administration (user management, server runtime).\n\n"
+    "Install variants:\n"
+    "  pip install 'umrs[client]'        Lightweight gateway client (no pyzmq/boto3).\n"
+    "  pip install 'umrs[client-full]'   Full client with direct ZMQ + S3 transport.\n"
+    "  pip install 'umrs[server]'        Server runtime and ML stack.\n"
 )
 
 
