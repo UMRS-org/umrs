@@ -604,6 +604,12 @@ export UMRS_ADMIN_S3_CONFIGURATION_FILE="${UMRS_ADMIN_S3_CONFIGURATION_FILE:-/et
 podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d \
     umrs-server-rccs umrs-server-ai4s
 
+# Start optional MCP Apps (when enabled)
+if [[ "${UMRS_FRONT_ENABLE_MCP:-false}" == "true" ]]; then
+    echo "  Starting MCP Apps..."
+    podman compose -f "${SCRIPT_DIR}/docker-compose.yaml" up -d mcp-apps
+fi
+
 # Wait for RCCS server readiness
 echo -n "  Waiting for RCCS HTTP bootstrap..."
 for i in $(seq 1 90); do
