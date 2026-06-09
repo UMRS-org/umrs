@@ -120,6 +120,7 @@ class CapabilitiesRequest(BaseModel):
     supports_vision: bool = Field(False, description="Whether the model supports vision/image input")
     supports_structured_output: bool = Field(False, description="Whether the model supports structured (JSON) output")
     max_output_tokens: int | None = Field(None, description="Maximum output tokens")
+    max_position_embeddings: int | None = Field(None, description="Maximum context length (positions)")
     model_family: str | None = Field(None, description="Model family: qwen, llama, mistral, etc.")
 
 
@@ -489,6 +490,7 @@ def capabilities_from_request(
         supports_vision=req.supports_vision,
         supports_structured_output=req.supports_structured_output,
         max_output_tokens=req.max_output_tokens,
+        max_position_embeddings=req.max_position_embeddings,
         model_family=req.model_family,
     )
 

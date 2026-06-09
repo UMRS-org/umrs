@@ -231,6 +231,56 @@ def test_provision_endpoint_preserves_site_litellm_db_profile(monkeypatch):
     )
 
 
+def test_provision_endpoint_llm_without_profiles_excludes_vision_bentoml(monkeypatch):
+    """A bare LLM model (no explicit launch_profiles) must launch the vLLM
+    stack only — never the BentoML vision sidecar.
+
+    Regression: previously LLM models resolved to an empty profile list, so
+    RIVAULT_PROFILES was left unset and the Slurm wrapper fell back to a
+    site-wide default that also started ``vision-bentoml`` — launching the
+    wrong service stack for a text model and starving vLLM of GPU memory.
+    """
+    service = _StubOrchestrationService()
+    monkeypatch.setattr(
+        endpoints_api,
+        "_resolve_registered_model_entry",
+        lambda model_name: {
+            "storage_ref": "/shared/models/qwen3-30b-a3b",
+            "huggingface_id": "Qwen/Qwen3-30B-A3B",
+            "model_type": "llm",
+        },
+    )
+    monkeypatch.setattr(
+        endpoints_api,
+        "_active_site_profiles",
+        lambda: ["harness", "vllm", "vision-bentoml", "litellm-db"],
+    )
+    monkeypatch.setattr(
+        "umrs.orchestrator.service.get_orchestration_service",
+        lambda: service,
+    )
+
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_registry] = _new_registry
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/umrs/endpoints/provision",
+            json={"project_id": "project-a", "model": "Qwen3-30B-A3B"},
+        )
+
+    app.dependency_overrides.clear()
+
+    assert response.status_code == 202
+    request = service.requests[0]
+    assert request.metadata["model_type"] == "llm"
+    assert request.metadata["serving_backend"] == "vllm"
+    assert request.metadata["launch_profiles"] == ["harness", "vllm", "litellm-db"]
+    assert request.env_vars["RIVAULT_PROFILES"] == "harness vllm litellm-db"
+    assert "vision-bentoml" not in request.env_vars["RIVAULT_PROFILES"]
+
+
 def test_provision_endpoint_uses_gateway_project_header(monkeypatch):
     service = _StubOrchestrationService()
     monkeypatch.setattr(

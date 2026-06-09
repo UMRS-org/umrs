@@ -159,7 +159,11 @@ def _resolve_profiles_for_model(model_cfg):
 
     configured = _read_configured_profiles()
     if configured:
-        return configured
+        # LLM / embedding jobs are served by vLLM only and must never start the
+        # BentoML vision sidecar, even when the site-wide default profile list
+        # (used for co-located deployments) includes ``vision-bentoml``.
+        llm_profiles = tuple(p for p in configured if p != "vision-bentoml")
+        return llm_profiles or ("harness", "vllm")
     return ("harness", "vllm")
 
 
