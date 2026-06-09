@@ -51,6 +51,11 @@ services:
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?Set MINIO_ROOT_USER in .env}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?Set MINIO_ROOT_PASSWORD in .env}
+      # Expose Prometheus metrics on /minio/v2/metrics/* without a bearer
+      # token so the observability stack can scrape MinIO. Metrics are served
+      # on the same API port (9000) which is reachable only on trusted cluster
+      # paths; no object data is exposed by the metrics endpoints.
+      MINIO_PROMETHEUS_AUTH_TYPE: public
     ports:
       - "${MINIO_BIND:-0.0.0.0}:${MINIO_PORT:-9000}:9000"
       - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
