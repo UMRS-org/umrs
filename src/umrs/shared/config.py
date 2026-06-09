@@ -10,6 +10,14 @@ DEFAULT_SERVER_USER_FILES_SUBDIR = "user_files"
 OWNER_ONLY_DIRECTORY_MODE = stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR
 UMRS_CFG_ENV_VAR_NAME = "UMRS_CONFIG"
 UMRS_USER_FILES_ENV_VAR_NAME = "UMRS_USER_FILES_DIR"
+# Per-file config path overrides (highest-priority env tier, just below CLI flags).
+# Each points directly at a single file, unlike UMRS_CONFIG which points at the
+# config *directory*.  UMRS_CONF is accepted as a legacy alias for the server
+# config so existing demo scripts keep working.
+UMRS_SERVER_CONF_ENV_VAR_NAME = "UMRS_SERVER_CONF"
+UMRS_SERVER_CONF_LEGACY_ENV_VAR_NAME = "UMRS_CONF"
+UMRS_USER_CONF_ENV_VAR_NAME = "UMRS_USER_CONF"
+UMRS_S3CFG_ENV_VAR_NAME = "UMRS_S3CFG"
 DEFAULT_JSON_SERVER_FILE = "conf_umrs.json"
 DEFAULT_DOCKER_S3CFG = "/app/docker/s3cfg"
 DEFAULT_CURRENT_CONNECTION_PROFILE_FILE = "current_connection_profile"
@@ -118,6 +126,37 @@ def resolve_server_user_files_dir(config_file=None, server_cfg=None, user_config
 
 def get_umrs_cfg_env_var_name():
     return UMRS_CFG_ENV_VAR_NAME
+
+
+def _resolve_env_path(*env_var_names):
+    """Return the expanded path from the first set env var, else None.
+
+    Accepts multiple names so a primary var and its legacy alias can be checked
+    in priority order. Empty/whitespace-only values are treated as unset.
+    """
+    for name in env_var_names:
+        value = os.environ.get(name)
+        if value and value.strip():
+            return os.path.realpath(os.path.expanduser(value.strip()))
+    return None
+
+
+def get_env_server_conf_path():
+    """Server config path from ``UMRS_SERVER_CONF`` (or legacy ``UMRS_CONF``)."""
+    return _resolve_env_path(
+        UMRS_SERVER_CONF_ENV_VAR_NAME,
+        UMRS_SERVER_CONF_LEGACY_ENV_VAR_NAME,
+    )
+
+
+def get_env_user_conf_path():
+    """User config path from ``UMRS_USER_CONF``."""
+    return _resolve_env_path(UMRS_USER_CONF_ENV_VAR_NAME)
+
+
+def get_env_s3cfg_path():
+    """S3 config path from ``UMRS_S3CFG``."""
+    return _resolve_env_path(UMRS_S3CFG_ENV_VAR_NAME)
 
 
 def get_default_json_server_file():

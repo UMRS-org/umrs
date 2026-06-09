@@ -241,3 +241,85 @@ def test_resolve_control_client_id_falls_back_to_environment(monkeypatch):
     monkeypatch.setenv("UMRS_CLIENT_ID", "shell-user")
 
     assert _resolve_control_client_id(None) == "shell-user"
+
+
+def test_env_server_conf_overrides_autodiscovery(config_workspace, monkeypatch):
+    # cwd (project_dir) holds its own conf_umrs.json that auto-discovery would
+    # otherwise pick first; UMRS_SERVER_CONF must override it.
+    monkeypatch.setenv("UMRS_SERVER_CONF", str(config_workspace["server_cfg"]))
+
+    resolved = resolve_loaded_config()
+
+    assert resolved.server.path == str(config_workspace["server_cfg"])
+    assert resolved.server.source == "env:UMRS_SERVER_CONF"
+    # Derived user/s3 follow the env-selected server config.
+    assert resolved.user.path == str(config_workspace["user_cfg"])
+    assert resolved.s3.path == str(config_workspace["user_s3cfg"])
+
+
+def test_legacy_umrs_conf_alias_selects_server(config_workspace, monkeypatch):
+    monkeypatch.delenv("UMRS_SERVER_CONF", raising=False)
+    monkeypatch.setenv("UMRS_CONF", str(config_workspace["server_cfg"]))
+
+    resolved = resolve_loaded_config()
+
+    assert resolved.server.path == str(config_workspace["server_cfg"])
+    assert resolved.server.source == "env:UMRS_SERVER_CONF"
+
+
+def test_env_user_conf_overrides_server_derived(config_workspace, monkeypatch):
+    # Server auto-discovers project_dir/conf_umrs.json (-> alt_user_cfg); the
+    # UMRS_USER_CONF env var must win over that server-derived user path.
+    monkeypatch.setenv("UMRS_USER_CONF", str(config_workspace["user_cfg"]))
+
+    resolved = resolve_loaded_config()
+
+    assert resolved.user.path == str(config_workspace["user_cfg"])
+    assert resolved.user.source == "env:UMRS_USER_CONF"
+    assert resolved.s3.path == str(config_workspace["user_s3cfg"])
+
+
+def test_env_s3cfg_overrides_user_declared(config_workspace, monkeypatch):
+    monkeypatch.setenv("UMRS_S3CFG", str(config_workspace["admin_s3cfg"]))
+
+    resolved = resolve_loaded_config()
+
+    assert resolved.s3.path == str(config_workspace["admin_s3cfg"])
+    assert resolved.s3.source == "env:UMRS_S3CFG"
+
+
+def test_flag_outranks_env_s3cfg(config_workspace, monkeypatch):
+    monkeypatch.setenv("UMRS_S3CFG", str(config_workspace["admin_s3cfg"]))
+
+    resolved = resolve_loaded_config(
+        explicit_s3_config_path=str(config_workspace["user_s3cfg"]),
+    )
+
+    assert resolved.s3.path == str(config_workspace["user_s3cfg"])
+    assert resolved.s3.source == "flag:--s3cfg"
+
+
+def test_discovery_does_not_descend_into_nested_dirs(config_workspace):
+    # Regression guard: auto-discovery must not recurse into the cwd subtree
+    # (an unbounded walk could descend into slow mounts and pick up stale
+    # configs). A nested conf_umrs.json must never appear as a candidate.
+    nested_dir = config_workspace["project_dir"] / "old"
+    nested_dir.mkdir()
+    nested_conf = nested_dir / "conf_umrs.json"
+    nested_conf.write_text('{"users": []}\n', encoding="utf-8")
+    nested_user = nested_dir / "user_stale.json"
+    nested_user.write_text('{"username": "stale"}\n', encoding="utf-8")
+    nested_s3 = nested_dir / "s3cfg-stale"
+    _write_s3cfg(nested_s3, access_key="stale")
+
+    discovered = discover_loaded_config_profiles()
+
+    server_paths = [candidate.path for candidate in discovered["server"]]
+    user_paths = [candidate.path for candidate in discovered["user"]]
+    s3_paths = [candidate.path for candidate in discovered["s3"]]
+
+    assert str(nested_conf) not in server_paths
+    assert str(nested_user) not in user_paths
+    assert str(nested_s3) not in s3_paths
+    # Top-level cwd config is still discovered.
+    assert str(config_workspace["alt_server_cfg"]) in server_paths
