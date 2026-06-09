@@ -113,51 +113,76 @@ def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
 
 
 def _resolve_s3cfg_path(user_cfg):
-    """Resolve the s3cfg path, falling back to a server-local path if needed.
+    """Resolve the s3cfg path, falling back to a durable shared path if needed.
 
-    When a remote client (e.g. Mac) has an s3cfg path like /Users/... that
-    doesn't exist on the Linux server, fall back to a server-local path next
-    to the user config file.  For write operations (create_s3_sql_users) the
-    parent directory is created; for read operations (configure_user) an
-    existing fallback file is used.
+    When a remote client (e.g. Mac) has an s3cfg path like ``/Users/...`` that
+    doesn't exist on the Linux server, resolve to the durable, shared
+    ``~/.config/umrs/s3cfg_<username>`` location instead of the configured
+    client path.
+
+    Why this matters: a per-user MinIO secret must be created **once** and stay
+    identical across reloads, container restarts, and — on umrs-front — across
+    both cluster servers (rccs + ai4s) that share a single MinIO. The shared
+    location is the same path ``_read_user_s3cfg`` treats as authoritative
+    (priority 1) and is backed by the shared ``umrs_config`` volume in the
+    umrs-front compose stack.
+
+    The previous behaviour created the *client's* path (e.g. ``/Users/...``)
+    on the server when its parent could be made. That path is container-local
+    and ephemeral, so every reload/restart re-entered the "first run" branch in
+    :func:`minio_s3_create_user`, generated a fresh random secret, and reset the
+    shared MinIO user's password — silently invalidating credentials already
+    distributed to clients (``SignatureDoesNotMatch``).
     """
     username = user_cfg["username"]
     raw_path = user_cfg["s3_configuration_file"]
     expanded = os.path.expanduser(raw_path)
 
-    # Fast path: the configured path (or its parent) is reachable.
+    # Fast path: the configured path already exists on this server. This covers
+    # single-node deployments (e.g. rccs-cloud) where the server *is* the client
+    # and the configured path is a real, durable local file.
     if os.path.isfile(expanded):
         return expanded
 
-    # Compute fallback next to the server-side user config file.
+    # Durable, shared authoritative location. Matches `_read_user_s3cfg`
+    # priority-1 and the umrs-front shared `umrs_config` volume, so the secret
+    # is stable across reloads, restarts and both cluster servers.
+    shared = os.path.expanduser(f"~/.config/umrs/s3cfg_{username}")
+    if os.path.isfile(shared):
+        return shared
+
+    # Legacy server-local fallback next to the user config file. Kept only so
+    # that deployments that already provisioned a credential there keep using
+    # the same (stable) file instead of regenerating it.
     config_file_path = user_cfg.get("config_file_path", "")
     if config_file_path:
         server_dir = os.path.dirname(os.path.expanduser(config_file_path))
-    else:
-        server_dir = "."
-    fallback = os.path.join(server_dir, f"s3cfg_{username}")
-
-    # If the fallback already exists (written during a previous reload), use it.
-    if os.path.isfile(fallback):
-        print(
-            f"Note: using server-local s3cfg '{fallback}' "
-            f"(client path '{raw_path}' not found on this server)"
-        )
-        return fallback
-
-    # Try to create the parent of the original path; if that fails, use fallback.
-    s3cfg_parent = os.path.dirname(expanded) or "."
-    if not os.path.exists(s3cfg_parent):
-        try:
-            os.makedirs(s3cfg_parent, exist_ok=True)
-        except OSError:
+        legacy_fallback = os.path.join(server_dir, f"s3cfg_{username}")
+        if os.path.isfile(legacy_fallback):
             print(
-                f"Note: client s3cfg path '{raw_path}' is not writable on "
-                f"this server; using '{fallback}'"
+                f"Note: using server-local s3cfg '{legacy_fallback}' "
+                f"(client path '{raw_path}' not found on this server)"
             )
-            return fallback
+            return legacy_fallback
 
-    return expanded
+    # Nothing exists yet. If the configured path's parent already exists on this
+    # server, the server is acting as its own client — create the file there.
+    # Otherwise (remote client path unreachable) create the durable shared path.
+    # Never create the remote client's path on the server: it would be
+    # container-ephemeral and trigger secret regeneration on the next reload.
+    s3cfg_parent = os.path.dirname(expanded) or "."
+    if os.path.isdir(s3cfg_parent):
+        return expanded
+
+    try:
+        os.makedirs(os.path.dirname(shared), exist_ok=True)
+    except OSError:
+        pass
+    print(
+        f"Note: client s3cfg path '{raw_path}' not present on this server; "
+        f"using durable shared s3cfg '{shared}'"
+    )
+    return shared
 
 
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
