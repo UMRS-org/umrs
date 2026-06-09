@@ -156,13 +156,11 @@ def process_s3_objects(
                 for future in active_threads.thread_list
                 if not future.done() and future.ident != current_ident
             )
-        print(f"{still_running=}")
         if still_running == 0:
             from umrs.server.rivault_launcher import release_all_backend_jobs
 
             release_all_backend_jobs()
 
-    print(f"==> {exit_status}")
     if update_status_callback:
         update_status_callback(exit_status)
 
