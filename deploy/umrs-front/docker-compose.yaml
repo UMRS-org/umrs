@@ -220,6 +220,33 @@ services:
       umrs-server-rccs:
         condition: service_healthy
 
+  # ─── MCP Apps — Interactive UI server ────────────────────────────────────
+  mcp-apps:
+    build:
+      context: ../../../mcp-apps
+      dockerfile: Dockerfile
+    image: localhost/mcp-apps:latest
+    container_name: umrs-mcp-apps
+    restart: unless-stopped
+    # Expose SSE port (8085) for Gateway proxy; stdio clients do not need it
+    ports:
+      - "127.0.0.1:${MCP_APP_PORT:-8085}:8085"
+    environment:
+      NODE_ENV: production
+      MCP_TRANSPORT: ${MCP_TRANSPORT:-stdio}
+      MCP_PORT: 8085
+      SSE_ENDPOINT: /mcp
+      R4_GATEWAY_URL: http://127.0.0.1:${NGINX_PORT:-8080}
+      R4_GATEWAY_TOKEN: ${R4_GATEWAY_TOKEN:-}
+    healthcheck:
+      test: ["CMD-SHELL", "ps aux | grep -v grep | grep 'node' || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    depends_on:
+      - umrs-server-rccs
+      - umrs-server-ai4s
+
 volumes:
   umrs_pg_data:
     external: true

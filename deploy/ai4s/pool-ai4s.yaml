@@ -102,3 +102,20 @@ endpoints:
     partition: 4n4gpu-p    # unlimited walltime; node_count=1 → single-node allocation on this partition
     max_model_len: 245760  # 240K. Canary 10064 showed INT4 weights leave only 16.68 GiB/GPU KV at gpu_mem_util=0.9 → hard ceiling 254816 tokens for native 262144. Trimmed to 245760 for fragmentation margin. (orchestrator does not thread per-model gpu_memory_utilization, so raising util is not available via pool.)
     # 1T MoE (32B active, 384 experts), native INT4; TP=4 × PP=1 (single node)
+
+  # ── MCP-enabled example ───────────────────────────────────────────────────
+  # Users can mount custom MCP servers into mini-RiVaults via the Gateway.
+  # The endpoint provisioning API accepts mount specs under:
+  #   endpoint_provisioning.mounts.mcp_servers.  The provision request
+  #   containerizes the server directories and validates their config.json
+  #   manifest (see mcp-servers/src/r4_mcp/runners/custom_mcp.py).
+  #
+  # Example (not a persistent pool entry, shown as reference):
+  #   r4 endpoint up --tier user --model Kimi-K2.6 \
+  #     --mount-mcp /home/user/my-mcp:/mcp-servers/my-mcp
+  #
+  # Each mounted directory must contain a config.json declared per:
+  #   docs/user-manual/EXTENDING.md §11.4
+  #   example: {"name":"my-mcp","version":"1.0.0","entry_point":"python server.py",
+  #             "capabilities":{"tools":["search_db"],"sandbox":{"network":"egress_guard",
+  #             "filesystem":"read_only","max_memory_mb":512,"max_runtime_sec":30}}}
