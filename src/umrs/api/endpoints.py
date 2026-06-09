@@ -1061,7 +1061,12 @@ def _resolve_launch_profiles(
         if co_locate_vllm:
             profiles.insert(1, "vllm")
         return _with_site_support_profiles(profiles)
-    return []
+    # LLM / embedding models are served by vLLM only. Return an explicit vllm
+    # profile set (instead of an empty list) so the orchestrator always sets
+    # RIVAULT_PROFILES for the job. Otherwise the Slurm wrapper falls back to a
+    # site-wide default that also starts the BentoML vision sidecar, launching
+    # the wrong service stack for a text model and starving vLLM of GPU memory.
+    return _with_site_support_profiles(["harness", "vllm"])
 
 
 def _normalize_readiness_probe(value: Any) -> str | None:

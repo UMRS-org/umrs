@@ -165,12 +165,19 @@ export UMRS_S3_TUNNEL_PORT="${UMRS_S3_TUNNEL_PORT:-9000}"
 # These ${VAR:-default} values are fallback-only. The colocated site.yaml is
 # loaded first when available, so wrapper defaults are only a safety net when
 # site config or explicit env overrides are unavailable.
-# Use "harness vllm vision-bentoml litellm-db" to start all services:
+#
+# The fallback default is the LLM/text profile set (no vision sidecar). The
+# UMRS server passes RIVAULT_PROFILES explicitly per endpoint:
+#   - LLM / embedding  -> "harness vllm litellm-db"
+#   - vision (BentoML) -> "harness vision-bentoml litellm-db" (+ vllm if co-located)
+# Keeping vision-bentoml OUT of the fallback prevents a text-model job from
+# accidentally launching the BentoML vision stack and starving vLLM of GPU.
+# Available profiles:
 #   - harness: nginx, litellm, coredns, minio proxy
-#   - vllm: model server for text embeddings (e5-base-v2, clip, etc.)
+#   - vllm: model server for LLM / text embeddings (e5-base-v2, clip, etc.)
 #   - vision-bentoml: BentoML vision service (SAM3, HMAE)
 #   - litellm-db: PostgreSQL backend for LiteLLM (spend logs, schema)
-export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vllm vision-bentoml litellm-db}"
+export RIVAULT_PROFILES="${RIVAULT_PROFILES:-harness vllm litellm-db}"
 
 # ─── NGINX port for LiteLLM/BentoML proxy ────────────────────────────────────
 # Endpoint provisioning passes LITELLM_PORT per job. Mirror it into the compose
