@@ -498,22 +498,38 @@ _verify_tunnel() {
     local ssh_target="$2"
     local pidfile="$3"
     local logfile="$4"
+    local upper
+    upper="$(echo "$label" | tr '[:lower:]' '[:upper:]')"
 
-    if ! kill -0 "$(cat "$pidfile")" 2>/dev/null; then
+    if ! kill -0 "$(cat "$pidfile" 2>/dev/null)" 2>/dev/null; then
         echo "WARNING: ${label} MinIO reverse tunnel process exited. Checking existing login-node endpoint..."
         tail -20 "$logfile" 2>/dev/null || true
-        if ssh "$ssh_target" "curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null"; then
+        if ssh "$ssh_target" "curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null" 2>/dev/null; then
             echo "  ${label} login node already has a healthy MinIO endpoint on 127.0.0.1:9000."
             rm -f "$pidfile"
             return 0
         fi
-        echo "ERROR: ${label} MinIO reverse tunnel failed to start. Check ${logfile}"
-        exit 1
+        if [[ "${MINIO_TUNNEL_STRICT:-false}" == "true" ]]; then
+            echo "ERROR: ${label} MinIO reverse tunnel failed to start. Check ${logfile}"
+            exit 1
+        fi
+        echo "WARNING: ${label} MinIO reverse tunnel could not be established (login node unreachable?)."
+        echo "         Continuing without it — ${label} compute jobs cannot reach MinIO until the"
+        echo "         tunnel is restored. Verify SSH connectivity to '${ssh_target}' and re-run start.sh,"
+        echo "         or set ${upper}_MINIO_TUNNEL_ENABLED=false to skip it explicitly."
+        rm -f "$pidfile"
+        return 0
     fi
-    if ! ssh "$ssh_target" "curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null"; then
-        echo "ERROR: ${label} login node cannot reach MinIO through the reverse tunnel."
-        exit 1
+    if ! ssh "$ssh_target" "curl -sf http://127.0.0.1:9000/minio/health/live >/dev/null" 2>/dev/null; then
+        if [[ "${MINIO_TUNNEL_STRICT:-false}" == "true" ]]; then
+            echo "ERROR: ${label} login node cannot reach MinIO through the reverse tunnel."
+            exit 1
+        fi
+        echo "WARNING: ${label} login node cannot reach MinIO through the reverse tunnel yet."
+        echo "         Continuing — verify '${ssh_target}' connectivity if ${label} jobs fail S3 access."
+        return 0
     fi
+    echo "  ${label} MinIO reverse tunnel healthy."
 }
 
 RCCS_SSH_TARGET="${RCCS_SSH_TARGET:-masaru.nagaso@rccs-cloud}"
@@ -521,24 +537,47 @@ AI4S_SSH_TARGET="${AI4S_SSH_TARGET:-ea0022@AI4S}"
 RCCS_MINIO_REVERSE_SPEC="${RCCS_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
 AI4S_MINIO_REVERSE_SPEC="${AI4S_MINIO_REVERSE_SPEC:-127.0.0.1:9000:127.0.0.1:${MINIO_PORT:-9000}}"
 
+# Per-cluster tunnel toggles. When a cluster's login node is unreachable
+# (e.g. AI4S offline / "No route to host"), set the corresponding flag to
+# false (via .env or the Ansible role) so the dual-cluster deploy is not
+# aborted by one missing tunnel.
+RCCS_MINIO_TUNNEL_ENABLED="${RCCS_MINIO_TUNNEL_ENABLED:-true}"
+AI4S_MINIO_TUNNEL_ENABLED="${AI4S_MINIO_TUNNEL_ENABLED:-true}"
+# When strict, a tunnel that fails to establish aborts start.sh. Default is
+# non-strict: log a warning and continue (compute jobs on that cluster cannot
+# reach MinIO until the tunnel is restored).
+MINIO_TUNNEL_STRICT="${MINIO_TUNNEL_STRICT:-false}"
+
 # Stop existing tunnels
 _stop_existing_tunnel "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "RCCS"
 _stop_existing_tunnel "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "AI4S"
 
-# Launch both tunnels in parallel
-_launch_tunnel "RCCS" "$RCCS_SSH_TARGET" "$RCCS_MINIO_REVERSE_SPEC" \
-    "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
-_launch_tunnel "AI4S" "$AI4S_SSH_TARGET" "$AI4S_MINIO_REVERSE_SPEC" \
-    "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+# Launch enabled tunnels in parallel
+if [[ "$RCCS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+    _launch_tunnel "RCCS" "$RCCS_SSH_TARGET" "$RCCS_MINIO_REVERSE_SPEC" \
+        "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
+else
+    echo "Skipping RCCS MinIO reverse tunnel (RCCS_MINIO_TUNNEL_ENABLED=false)."
+fi
+if [[ "$AI4S_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+    _launch_tunnel "AI4S" "$AI4S_SSH_TARGET" "$AI4S_MINIO_REVERSE_SPEC" \
+        "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+else
+    echo "Skipping AI4S MinIO reverse tunnel (AI4S_MINIO_TUNNEL_ENABLED=false)."
+fi
 
 # Wait once for both SSH processes to establish
 sleep 3
 
-# Verify both tunnels
-_verify_tunnel "RCCS" "$RCCS_SSH_TARGET" \
-    "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
-_verify_tunnel "AI4S" "$AI4S_SSH_TARGET" \
-    "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+# Verify enabled tunnels (non-fatal unless MINIO_TUNNEL_STRICT=true)
+if [[ "$RCCS_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+    _verify_tunnel "RCCS" "$RCCS_SSH_TARGET" \
+        "${SCRIPT_DIR}/rccs-minio-reverse-tunnel.pid" "${LOG_DIR}/rccs-minio-reverse-tunnel.log"
+fi
+if [[ "$AI4S_MINIO_TUNNEL_ENABLED" == "true" ]]; then
+    _verify_tunnel "AI4S" "$AI4S_SSH_TARGET" \
+        "${SCRIPT_DIR}/ai4s-minio-reverse-tunnel.pid" "${LOG_DIR}/ai4s-minio-reverse-tunnel.log"
+fi
 
 _stop_port_listener() {
     local port="$1"
