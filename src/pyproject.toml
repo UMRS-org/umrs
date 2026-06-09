@@ -7,28 +7,39 @@ name = "umrs"
 version = "0.1.0"
 description = "UMRS — Unified Model Registry & Storage"
 requires-python = ">=3.10"
+# Base dependencies are intentionally minimal so the lightweight client install
+# (``umrs[client]``) stays small. Heavy transport/storage/server dependencies
+# live in the extras below. ``jsonschema`` is required at import time by the
+# shared config loaders used by both client and server.
 dependencies = [
-    "pyzmq",
-    "boto3",
-    "pillow",
-    "psycopg2-binary",
-    "tabulate",
-    "pandas",
     "jsonschema",
-    "charset-normalizer",
-    "requests",
-    "configparser",
 ]
 
 [project.optional-dependencies]
+# Lightweight client: gateway-mediated operations only (HTTP via httpx/urllib).
+# Pure-python deps only — no pyzmq/boto3/pillow. Install with: pip install umrs[client]
 client = [
     "httpx",
     "pyyaml",
     "rich>=13.0",
 ]
+# Full client: adds direct ZMQ transport (pyzmq) and S3 bucket upload/download
+# (boto3/pillow), plus the CURVE session bootstrap transport (requests).
+# Install with: pip install umrs[client-full]
+client-full = [
+    "umrs[client]",
+    "pyzmq",
+    "boto3",
+    "pillow",
+    "charset-normalizer",
+    "requests",
+]
+# Server: full client transport plus the server runtime and ML stack.
 server = [
-    "httpx",
-    "pyyaml",
+    "umrs[client-full]",
+    "psycopg2-binary",
+    "tabulate",
+    "pandas",
     "diskcache",
     "fastapi",
     "uvicorn[standard]",
@@ -49,7 +60,7 @@ server = [
     "sysv_ipc",
 ]
 all = [
-    "umrs[client,server]",
+    "umrs[server]",
 ]
 
 [project.scripts]
