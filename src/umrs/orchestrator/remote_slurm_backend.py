@@ -357,14 +357,17 @@ class RemoteSlurmBackend(SlurmBackend):
         if attribution_parts:
             sbatch_args.append(f"--comment={','.join(attribution_parts)}")
 
-        # Build --export arg: ALL plus per-job overrides
+        # Build --export arg: ALL plus per-job overrides. Values may contain
+        # spaces (e.g. RIVAULT_PROFILES="harness vllm"), so the whole argument
+        # must be shell-quoted — otherwise the remote shell word-splits the
+        # comma list and sbatch treats the tail as a stray filename.
         export_parts = ["ALL"]
         for k, v in env_overrides.items():
             export_parts.append(f"{k}={v}")
-        sbatch_args.append(f"--export={','.join(export_parts)}")
+        sbatch_args.append(shlex.quote(f"--export={','.join(export_parts)}"))
 
         # Append the wrapper script path
-        sbatch_args.append(wrapper_script)
+        sbatch_args.append(shlex.quote(wrapper_script))
 
         cmd = " ".join(sbatch_args)
         logger.info("Submitting wrapper job: %s", cmd)

@@ -284,6 +284,78 @@ class TestSlurmAttribution:
         assert "UMRS_PROJECT" in source
         assert "--comment=" in source or "comment" in source
 
+    def test_submit_wrapper_job_shell_quotes_export_with_spaces(self):
+        """sbatch --export values with spaces (e.g. RIVAULT_PROFILES="harness
+        vllm") must be shell-quoted so the remote shell does not word-split the
+        comma list. Regression: an unquoted space caused sbatch to treat the
+        tail of the export list as a stray filename ("Unable to open file
+        vllm,...") and the provision failed.
+        """
+        import asyncio
+        import shlex
+        from types import SimpleNamespace
+
+        from umrs.orchestrator.remote_slurm_backend import RemoteSlurmBackend
+
+        backend = RemoteSlurmBackend.__new__(RemoteSlurmBackend)
+        backend._delegation_mode = "service_account"
+        backend._job_info_dir = lambda: "/jobs"  # type: ignore[method-assign]
+        backend._control_dir = lambda: "/jobs/control"  # type: ignore[method-assign]
+
+        captured: dict[str, str] = {}
+
+        class _FakeSSH:
+            async def run_remote(self, cmd, timeout=None):
+                captured["cmd"] = cmd
+                return SimpleNamespace(ok=True, stdout="12345", stderr="")
+
+        async def _fake_get_ssh():
+            return _FakeSSH()
+
+        backend._get_ssh = _fake_get_ssh  # type: ignore[method-assign]
+
+        scheduler = SimpleNamespace(
+            time_limit="04:00:00",
+            gpus=1,
+            cpus=8,
+            memory=None,
+            account="cloud-users",
+            qos=None,
+            extra_sbatch=[],
+        )
+        site = SimpleNamespace(scheduler=scheduler, partition_profiles={})
+
+        with patch(
+            "umrs.orchestrator.site_config.load_site_config",
+            return_value=site,
+        ), patch.object(
+            RemoteSlurmBackend, "_select_partition", staticmethod(lambda *a, **k: "ng-dgx-m0")
+        ):
+            asyncio.run(
+                backend._submit_wrapper_job(
+                    model_path="/models/Qwen3-30B-A3B",
+                    wrapper_script="/deploy/serve-model.slurm",
+                    requesting_user="mnagaso",
+                    env={
+                        "RIVAULT_PROFILES": "harness vllm",
+                        "MODEL_NAME": "Qwen3-30B-A3B",
+                        "LITELLM_PORT": "12341",
+                    },
+                    project_id="default",
+                )
+            )
+
+        cmd = captured["cmd"]
+        # The command must survive POSIX shell tokenization without splitting
+        # the export value. Find the single token carrying the export list.
+        tokens = shlex.split(cmd)
+        export_tokens = [t for t in tokens if t.startswith("--export=")]
+        assert len(export_tokens) == 1, f"expected one --export token, got {export_tokens}"
+        export = export_tokens[0]
+        assert "RIVAULT_PROFILES=harness vllm" in export
+        # No stray bare 'vllm,...' positional argument leaked into the command.
+        assert not any(t.startswith("vllm,") for t in tokens)
+
 
 class TestSlurmTargetAttribution:
     def test_jobspec_has_attribution_fields(self):
