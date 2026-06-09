@@ -352,6 +352,20 @@ def _handle_info(args):
         )
         ready = mq.is_server_ready(timeout_ms=min(connection.health_check_timeout_ms, 3000))
         mq.close()
+        # Session-mode failures are often a stale session (server restarted and
+        # dropped its in-memory registry). Try a one-shot fresh registration so
+        # `info` self-heals and reports the true reachability.
+        if not ready and _is_session_mode(connection) and _force_refresh_curve_session(connection):
+            mq = MessageQueue(
+                role="client",
+                queue_type="control",
+                server_ip=zmq_host,
+                port=zmq_port,
+                tunnel_mode=tunnel,
+                prefer_env_server_host=False,
+            )
+            ready = mq.is_server_ready(timeout_ms=min(connection.health_check_timeout_ms, 3000))
+            mq.close()
         if ready:
             lines.append(_kv("server", f"{_green('● reachable')}  {_dim(f'{zmq_host}:{zmq_port}')}"))
         else:
@@ -2989,6 +3003,7 @@ def _action_ping(ctx):
             admin_token=ctx.admin_token,
         )
         zmq_ready = False
+        ping_result = {}
         try:
             timeout = getattr(args, "timeout_ms", None) or ctx.connection.health_check_timeout_ms
             ping_result = api.ping(timeout_ms=timeout)
@@ -2997,6 +3012,32 @@ def _action_ping(ctx):
             pass
         finally:
             ctx.control_mq.close()
+
+        # Session-mode CURVE failures are often a stale session (server restarted
+        # and dropped its in-memory registry). Force a fresh registration and
+        # retry once over a rebuilt ZMQ control socket before HTTP fallback.
+        if not zmq_ready and _force_refresh_curve_session(ctx.connection):
+            try:
+                refreshed_mq = MessageQueue(
+                    role="client",
+                    queue_type="control",
+                    server_ip=ctx.connection.server_host,
+                    port=ctx.connection.control_port,
+                    tunnel_mode=ctx.connection.tunnel_mode,
+                    prefer_env_server_host=False,
+                )
+                try:
+                    timeout = getattr(args, "timeout_ms", None) or ctx.connection.health_check_timeout_ms
+                    ping_result = UMRSControlAPI(
+                        refreshed_mq,
+                        _resolve_control_client_id(ctx.user),
+                        admin_token=ctx.admin_token,
+                    ).ping(timeout_ms=timeout)
+                    zmq_ready = ping_result.get("server_ready", False)
+                finally:
+                    refreshed_mq.close()
+            except Exception:
+                pass
 
         if zmq_ready:
             endpoint_info = {
@@ -4467,32 +4508,20 @@ def _maybe_load_saved_curve_session() -> bool:
         return False
 
 
-def _maybe_bootstrap_curve_session(connection) -> None:
-    """Bootstrap a CURVE session if the connection uses session-mode ZMQ auth.
-
-    First tries to reuse a saved session from ``~/.config/r4/curve-session.json``
-    (written by ``r4 login``).  Falls back to bootstrapping a new session via HTTP.
-
-    This is a no-op when:
-    - No gateway_url is configured (direct ZMQ or static CURVE)
-    - zmq.auth_type in profile (or UMRS_ZMQ_AUTH_TYPE env) is not 'session'
-    - No JWT token is available (env vars or profile .token file)
-    """
-    gateway_url = getattr(connection, "gateway_url", None)
-    if not gateway_url:
-        return
-
-    # Accept auth_type from profile field or env var
+def _is_session_mode(connection) -> bool:
+    """True when the connection uses session-mode CURVE ZMQ auth via a gateway."""
+    if not getattr(connection, "gateway_url", None):
+        return False
     profile_auth_type = getattr(connection, "zmq_auth_type", None) or ""
     auth_type = (profile_auth_type or os.environ.get("UMRS_ZMQ_AUTH_TYPE", "")).lower()
-    if auth_type != "session":
-        return
+    return auth_type == "session"
 
-    # Try to reuse a saved session from r4 login (avoids creating new sessions)
-    if _maybe_load_saved_curve_session():
-        return
 
-    # Get JWT from env vars first, then fall back to profile .token file, then r4 tokens
+def _resolve_session_jwt(connection) -> str | None:
+    """Resolve a JWT for CURVE session registration.
+
+    Order: env vars → profile ``.token`` file → r4 tokens store.
+    """
     jwt_token = os.environ.get("UMRS_JWT_TOKEN") or os.environ.get("UMRS_API_KEY")
     if not jwt_token:
         profile_path = getattr(connection, "profile_path", None)
@@ -4504,19 +4533,116 @@ def _maybe_bootstrap_curve_session(connection) -> None:
     if not jwt_token:
         profile_name = getattr(connection, "profile_name", None)
         jwt_token = _try_read_r4_token(profile_name)
+    return jwt_token or None
+
+
+def _persist_curve_session(info, gateway_url: str) -> None:
+    """Persist a freshly-bootstrapped CURVE session to ``~/.config/r4/curve-session.json``.
+
+    Matches the on-disk format written by ``r4 login`` so later client/r4
+    invocations reuse it.  Best-effort: failures are swallowed (the in-process
+    env vars set by ``bootstrap_curve_session`` already cover this invocation).
+    """
+    try:
+        from pathlib import Path as _Path
+        import json as _json
+
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        config_dir = _Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        session_path = config_dir / "curve-session.json"
+        payload = {
+            "session_id": info.session_id,
+            "server_public_key": info.server_public_key,
+            "client_public_key": info.client_public_key,
+            "client_secret_key": info.client_secret_key,
+            "expires_at": info.expires_at,
+            "umrs_base_url": gateway_url.rstrip("/"),
+        }
+        session_path.write_text(_json.dumps(payload, indent=2), encoding="utf-8")
+        try:
+            os.chmod(session_path, 0o600)
+        except OSError:
+            pass
+    except Exception:
+        pass
+
+
+def _force_refresh_curve_session(connection) -> bool:
+    """Force a fresh CURVE session registration, bypassing any cached session.
+
+    Used when a session-mode ZMQ readiness check fails — typically because the
+    server restarted and dropped its in-memory session registry, leaving the
+    locally-cached session valid by TTL but unknown to the server (the ZAP
+    authenticator rejects the handshake, which surfaces as a silent timeout).
+
+    Performs a fresh ``POST /umrs/zmq/session`` (always, ignoring the cached
+    file), sets the ZMQ env vars, and persists the new session to disk. Returns
+    True on success.
+    """
+    if not _is_session_mode(connection):
+        return False
+    gateway_url = getattr(connection, "gateway_url", None)
+    jwt_token = _resolve_session_jwt(connection)
+    if not gateway_url or not jwt_token:
+        return False
+    try:
+        from umrs.client.session_bootstrap import bootstrap_curve_session
+
+        info = bootstrap_curve_session(
+            gateway_url=gateway_url,
+            jwt_token=jwt_token,
+        )
+        _persist_curve_session(info, gateway_url)
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "Re-bootstrapped CURVE session %s after stale-session detection",
+            info.session_id,
+        )
+        return True
+    except Exception as exc:
+        import logging as _logging
+        _logging.getLogger(__name__).debug(
+            "Forced CURVE session refresh failed (non-fatal): %s", exc,
+        )
+        return False
+
+
+def _maybe_bootstrap_curve_session(connection) -> None:
+    """Bootstrap a CURVE session if the connection uses session-mode ZMQ auth.
+
+    First tries to reuse a saved session from ``~/.config/r4/curve-session.json``
+    (written by ``r4 login``).  Falls back to bootstrapping a new session via HTTP.
+
+    This is a no-op when:
+    - No gateway_url is configured (direct ZMQ or static CURVE)
+    - zmq.auth_type in profile (or UMRS_ZMQ_AUTH_TYPE env) is not 'session'
+    - No JWT token is available (env vars or profile .token file)
+    """
+    if not _is_session_mode(connection):
+        return
+
+    # Try to reuse a saved session from r4 login (avoids creating new sessions)
+    if _maybe_load_saved_curve_session():
+        return
+
+    gateway_url = getattr(connection, "gateway_url", None)
+    jwt_token = _resolve_session_jwt(connection)
     if not jwt_token:
         return
 
     try:
         from umrs.client.session_bootstrap import bootstrap_curve_session
 
-        bootstrap_curve_session(
+        info = bootstrap_curve_session(
             gateway_url=gateway_url,
             jwt_token=jwt_token,
         )
         # bootstrap_curve_session(set_env=True by default) injects correct
         # UMRS_ZMQ_AUTH_TYPE / UMRS_ZMQ_CURVE_* env vars so MessageQueue picks
-        # them up automatically on construction.
+        # them up automatically on construction. Persist so later invocations
+        # reuse this session instead of creating a new one each time.
+        _persist_curve_session(info, gateway_url)
     except Exception as exc:
         # Non-fatal: fall back to whatever auth the MessageQueue already supports
         import logging as _logging
@@ -4975,7 +5101,24 @@ def main():
         and args.action != 'ping'
         and not control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms)
     ):
-        sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
+        # In session-mode CURVE auth a readiness failure is often a stale session:
+        # the server restarted and dropped its in-memory session registry, so the
+        # locally-cached (TTL-valid) session is rejected by ZAP and the handshake
+        # times out silently. Force a fresh session registration and retry once.
+        recovered = False
+        if _force_refresh_curve_session(connection):
+            control_mq.close()
+            control_mq = MessageQueue(
+                role="client",
+                queue_type='control',
+                server_ip=connection.server_host,
+                port=connection.control_port,
+                tunnel_mode=connection.tunnel_mode,
+                prefer_env_server_host=False,
+            )
+            recovered = control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms)
+        if not recovered:
+            sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
 
     if args.action != 'ping':
         profile_name = getattr(connection, "profile_name", None)

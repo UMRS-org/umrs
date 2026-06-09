@@ -99,26 +99,29 @@ def bootstrap_curve_session(
     base = gateway_url.rstrip("/")
     headers = {"Authorization": f"Bearer {jwt_token}"}
 
-    # Step 1: Get server CURVE public key (unauthenticated, best-effort).
-    # In session mode the server may not expose a static key endpoint (404);
-    # the server public key is returned by POST /umrs/zmq/session instead.
+    # Step 1: Best-effort fetch of the server CURVE public key.
+    #
+    # In session mode the server may not expose a static key endpoint, and
+    # behind an authenticating gateway (e.g. SAML/OIDC edge) an unauthenticated
+    # GET is redirected to a login page rather than returning the key. Either
+    # way the authoritative server public key is returned by the authenticated
+    # POST /umrs/zmq/session below, so this step is purely opportunistic and
+    # MUST NOT abort the bootstrap on failure.
     server_pub = ""
     try:
         resp = requests.get(
             f"{base}/umrs/zmq/server-key",
+            headers=headers,
             timeout=timeout,
+            allow_redirects=False,
         )
-        if resp.status_code == 404:
-            raise SessionBootstrapError(
-                "ZMQ CURVE sessions not enabled on server (server-key returned 404)"
-            )
-        else:
-            resp.raise_for_status()
-            server_pub = resp.json().get("server_public_key", "")
-    except requests.RequestException as exc:
-        raise SessionBootstrapError(
-            f"Failed to fetch server CURVE key: {exc}"
-        ) from exc
+        if resp.status_code == 200:
+            try:
+                server_pub = resp.json().get("server_public_key", "")
+            except ValueError:
+                server_pub = ""  # non-JSON (e.g. login page) — rely on POST
+    except requests.RequestException:
+        server_pub = ""  # network hiccup — rely on POST response
 
     # Step 2: Generate ephemeral CURVE keypair
     try:
