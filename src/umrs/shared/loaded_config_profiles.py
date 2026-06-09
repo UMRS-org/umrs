@@ -13,6 +13,9 @@ from umrs.shared.config import (
     get_current_user_config_file,
     get_default_docker_s3cfg,
     get_default_json_server_file,
+    get_env_s3cfg_path,
+    get_env_server_conf_path,
+    get_env_user_conf_path,
     get_resolved_umrs_cfg_dir,
     get_users_default_cfg_subdir,
 )
@@ -119,21 +122,28 @@ def _write_pointer(pointer_path: Path, target_path: Path) -> Path:
 
 
 def _project_candidates(pattern: str) -> list[Path]:
+    """Top-level matches in the current working directory.
+
+    Deliberately a non-recursive ``glob`` (not ``rglob``): an unbounded walk of
+    the cwd subtree can descend into slow/large mounts (e.g. cloud-storage sync
+    folders) and silently pick up stale config files anywhere below the cwd,
+    making resolution position-dependent and prone to multi-second stalls.
+    The canonical cwd location is already covered by the direct entries in each
+    ``_candidate_paths_for_*`` helper.
+    """
     cwd = Path.cwd()
-    matches = []
-    for path in cwd.rglob(pattern):
-        if path.is_file():
-            matches.append(path)
-    return matches
+    return [path for path in cwd.glob(pattern) if path.is_file()]
 
 
 def _config_root_candidates(pattern: str) -> list[Path]:
+    """Top-level matches in the resolved UMRS config directory.
+
+    Non-recursive for the same reasons as :func:`_project_candidates`; the
+    canonical config-dir locations are covered by direct entries (and the
+    ``users`` subdir is globbed explicitly where relevant).
+    """
     cfg_dir = Path(get_resolved_umrs_cfg_dir()).expanduser()
-    matches = []
-    for path in cfg_dir.rglob(pattern):
-        if path.is_file():
-            matches.append(path)
-    return matches
+    return [path for path in cfg_dir.glob(pattern) if path.is_file()]
 
 
 def _candidate_paths_for_server() -> list[Path]:
@@ -297,6 +307,25 @@ _FLAG_SOURCES = {
     "s3": "flag:--s3cfg",
 }
 
+_ENV_SOURCES = {
+    "server": "env:UMRS_SERVER_CONF",
+    "user": "env:UMRS_USER_CONF",
+    "s3": "env:UMRS_S3CFG",
+}
+
+
+def _pick_explicit(pairs: list[tuple[str | None, str]]) -> tuple[str | None, str | None]:
+    """Return the first ``(path, source)`` whose path is set, else ``(None, None)``.
+
+    Used to collapse the ordered "explicit-like" tiers (CLI flag, env var,
+    config-file-derived) into the single high-priority slot of
+    :func:`_resolve_selector` while preserving an accurate ``source`` label.
+    """
+    for path, source in pairs:
+        if path:
+            return path, source
+    return None, None
+
 
 def _make_candidate(kind: str, path: Path, current_path: str | None) -> ConfigFileCandidate:
     layer = _VALIDATORS[kind](path)
@@ -362,13 +391,14 @@ def _auto_select(candidates: list[ConfigFileCandidate], kind: str) -> ConfigLaye
 def _resolve_selector(
     kind: str,
     explicit_path: str | None,
+    explicit_source: str | None,
     current_path: str | None,
     candidates: list[ConfigFileCandidate],
     pointer_path: Path,
 ) -> ConfigLayer:
     if explicit_path:
         layer = _VALIDATORS[kind](Path(explicit_path).expanduser())
-        layer.source = _FLAG_SOURCES[kind]
+        layer.source = explicit_source or _FLAG_SOURCES[kind]
         return layer
 
     if current_path:
@@ -402,9 +432,14 @@ def _resolve_server_layer(
     current_server: str | None,
     discovered: dict[str, list[ConfigFileCandidate]],
 ) -> ConfigLayer:
+    explicit, source = _pick_explicit([
+        (explicit_server_config_path, _FLAG_SOURCES["server"]),
+        (get_env_server_conf_path(), _ENV_SOURCES["server"]),
+    ])
     return _resolve_selector(
         "server",
-        explicit_server_config_path,
+        explicit,
+        source,
         current_server,
         discovered["server"],
         get_current_server_config_path(),
@@ -417,25 +452,37 @@ def _resolve_user_layer(
     discovered: dict[str, list[ConfigFileCandidate]],
     server: ConfigLayer,
 ) -> ConfigLayer:
-    derived_user_path = _derived_user_path(explicit_user_config_path, current_user, server)
-    user = _resolve_selector(
+    env_user = get_env_user_conf_path()
+    derived_user_path = _derived_user_path(
+        explicit_user_config_path, env_user, current_user, server,
+    )
+    explicit, source = _pick_explicit([
+        (explicit_user_config_path, _FLAG_SOURCES["user"]),
+        (env_user, _ENV_SOURCES["user"]),
+        (derived_user_path, f"server:{server.path}"),
+    ])
+    return _resolve_selector(
         "user",
-        explicit_user_config_path or derived_user_path,
-        None if explicit_user_config_path or derived_user_path else current_user,
+        explicit,
+        source,
+        None if explicit else current_user,
         discovered["user"],
         get_current_user_config_path(),
     )
-    if derived_user_path and user.path == str(Path(derived_user_path).expanduser()):
-        user.source = f"server:{server.path}"
-    return user
 
 
 def _derived_user_path(
     explicit_user_config_path: str | None,
+    env_user_config_path: str | None,
     current_user: str | None,
     server: ConfigLayer,
 ) -> str | None:
-    if explicit_user_config_path or current_user or not server.valid:
+    if (
+        explicit_user_config_path
+        or env_user_config_path
+        or current_user
+        or not server.valid
+    ):
         return None
     server_user_paths = server.details.get("user_config_paths") or []
     return server_user_paths[0] if len(server_user_paths) == 1 else None
@@ -451,11 +498,12 @@ def _resolve_s3_layer(
 
     Precedence (highest first):
       1. ``--s3cfg`` flag        — explicit, one-shot override
-      2. ``current:`` pointer    — explicit, persistent selection
-      3. user config's ``s3_configuration_file`` — the user's declared intent
-      4. auto-discovery          — ambient fallback (cwd/config-dir globs)
+      2. ``UMRS_S3CFG`` env var  — explicit, per-shell override
+      3. ``current:`` pointer    — explicit, persistent selection
+      4. user config's ``s3_configuration_file`` — the user's declared intent
+      5. auto-discovery          — ambient fallback (cwd/config-dir globs)
 
-    The user-declared path (3) deliberately outranks ambient auto-discovery (4)
+    The user-declared path (4) deliberately outranks ambient auto-discovery (5)
     so that an unrelated ``s3cfg*`` file lying in the cwd or config dir cannot
     silently shadow the path a user explicitly set in their config. When the
     declared path is missing or invalid, resolution falls through to
@@ -469,13 +517,20 @@ def _resolve_s3_layer(
         layer.source = _FLAG_SOURCES["s3"]
         return layer
 
-    # 2. Current pointer selection (`config use --s3 ...`).
+    # 2. UMRS_S3CFG environment variable (per-shell explicit override).
+    env_s3 = get_env_s3cfg_path()
+    if env_s3:
+        layer = _VALIDATORS["s3"](Path(env_s3).expanduser())
+        layer.source = _ENV_SOURCES["s3"]
+        return layer
+
+    # 3. Current pointer selection (`config use --s3 ...`).
     if current_s3:
         layer = _VALIDATORS["s3"](Path(current_s3).expanduser())
         layer.source = f"current:{get_current_s3_config_path()}"
         return layer
 
-    # 3. User config's declared s3_configuration_file (explicit user intent).
+    # 4. User config's declared s3_configuration_file (explicit user intent).
     #    Wins over ambient auto-discovery when valid.
     user_layer: ConfigLayer | None = None
     if derived_s3_path:
@@ -484,7 +539,7 @@ def _resolve_s3_layer(
         if user_layer.valid:
             return user_layer
 
-    # 4. Auto-discovery fallback.
+    # 5. Auto-discovery fallback.
     auto = _auto_select(discovered["s3"], "s3")
     if auto.path:
         return auto
