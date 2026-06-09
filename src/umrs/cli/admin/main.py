@@ -71,18 +71,49 @@ def _print_json(obj: Any) -> None:
     print(json.dumps(obj, indent=2, sort_keys=False, default=str))
 
 
-def _record_row(rec: UserRecord) -> dict[str, Any]:
+def _resolve_slurm_account_requirement() -> tuple[bool, str | None]:
+    """Return ``(require_user_slurm_account, site_master_account)``.
+
+    Best-effort: when the site config cannot be loaded (e.g. running offline
+    without ``UMRS_SITE_CONFIG``), assume per-user accounts are not required
+    and no master account is known.
+    """
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        site = load_site_config()
+        require = bool(getattr(site.scheduler, "require_user_slurm_account", False))
+        master = getattr(site.scheduler, "account", "") or None
+        return require, master
+    except Exception:
+        return False, None
+
+
+def _record_row(rec: UserRecord, *, require_acct: bool, master_account: str | None) -> dict[str, Any]:
+    account = rec.slurm_account or ""
+    if not account:
+        if require_acct:
+            account = "(REQUIRED — not set)"
+        elif master_account:
+            account = f"(not required → {master_account})"
+        else:
+            account = "(not required)"
     return {
         "username": rec.username,
         "role": rec.role,
-        "slurm_account": rec.slurm_account or "",
+        "slurm_account": account,
         "projects": ",".join(rec.projects),
         "disabled": rec.disabled,
         "email": rec.email,
     }
 
 
-def _print_table(rows: list[dict[str, Any]]) -> None:
+def _print_table(
+    rows: list[dict[str, Any]],
+    *,
+    require_acct: bool = False,
+    master_account: str | None = None,
+) -> None:
     if not rows:
         print("(no users)")
         print(
@@ -97,6 +128,25 @@ def _print_table(rows: list[dict[str, Any]]) -> None:
     print("  ".join("-" * widths[c] for c in columns))
     for row in rows:
         print("  ".join(str(row.get(c, "")).ljust(widths[c]) for c in columns))
+
+    if require_acct:
+        print(
+            "\nnote: per-user Slurm accounts are REQUIRED "
+            "(scheduler.require_user_slurm_account=true); "
+            "users without one cannot provision endpoints."
+        )
+    elif master_account:
+        print(
+            "\nnote: per-user Slurm accounts are optional "
+            "(scheduler.require_user_slurm_account=false); "
+            f"blank entries fall back to the site account '{master_account}'."
+        )
+    else:
+        print(
+            "\nnote: per-user Slurm accounts are optional "
+            "(scheduler.require_user_slurm_account=false); "
+            "blank entries fall back to the site master Slurm account."
+        )
 
 
 def _confirm(prompt: str, assume_yes: bool) -> bool:
@@ -306,14 +356,29 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
     # Auto-generate a client config template alongside the admin record.
     _maybe_emit_template(args, store, rec)
 
-    # Warn if Slurm account is not set (required for endpoint provisioning).
+    # Warn if Slurm account is not set (required for endpoint provisioning
+    # only when the site enforces per-user accounts).
     if not rec.slurm_account and not rec.slurm_accounts:
-        print(
-            f"warning: no Slurm account set for {rec.username}. "
-            f"Endpoint provisioning (r4 endpoint up) will fail until one is set.\n"
-            f"  hint: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>",
-            file=sys.stderr,
-        )
+        require_acct, master_account = _resolve_slurm_account_requirement()
+        if require_acct:
+            print(
+                f"warning: no Slurm account set for {rec.username}. "
+                f"This site requires per-user Slurm accounts "
+                f"(scheduler.require_user_slurm_account=true); endpoint "
+                f"provisioning (r4 endpoint up) will fail until one is set.\n"
+                f"  hint: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>",
+                file=sys.stderr,
+            )
+        else:
+            fallback = f" '{master_account}'" if master_account else ""
+            print(
+                f"note: no Slurm account set for {rec.username}. "
+                f"This site does not require per-user accounts "
+                f"(scheduler.require_user_slurm_account=false); jobs fall back "
+                f"to the site master Slurm account{fallback}.\n"
+                f"  to assign one anyway: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>",
+                file=sys.stderr,
+            )
 
     if args.json:
         out = rec.to_json()
@@ -407,8 +472,13 @@ def _maybe_emit_template(args, store, rec) -> None:
             print(f"     (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:")
             print(f"       umrs-client login --host <HOST> --api-key <TOKEN>")
         if not rec.slurm_account and not rec.slurm_accounts:
-            print(f"  NOTE: set a Slurm account before the user can provision endpoints:")
-            print(f"       umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>")
+            require_acct, _ = _resolve_slurm_account_requirement()
+            if require_acct:
+                print(f"  NOTE: set a Slurm account before the user can provision endpoints:")
+                print(f"       umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>")
+            else:
+                print(f"  NOTE: per-user Slurm account is optional on this site; jobs use the site master account.")
+                print(f"       to assign one anyway: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>")
 
 
 def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
@@ -417,11 +487,15 @@ def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
         records = [r for r in records if r.role == args.role]
     if args.disabled_only:
         records = [r for r in records if r.disabled]
-    rows = [_record_row(r) for r in records]
+    require_acct, master_account = _resolve_slurm_account_requirement()
+    rows = [
+        _record_row(r, require_acct=require_acct, master_account=master_account)
+        for r in records
+    ]
     if args.json:
         _print_json([r.to_json() for r in records])
     else:
-        _print_table(rows)
+        _print_table(rows, require_acct=require_acct, master_account=master_account)
     return 0
 
 
