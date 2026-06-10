@@ -629,6 +629,10 @@ async def list_models(
         offset=offset,
     )
 
+    # Apply deployment-scoped visibility (e.g. frontier-only on AI4S).
+    from .model_visibility import is_model_visible
+    models = [m for m in models if is_model_visible(getattr(m, "name", None))]
+
     return ModelListResponse(
         models=[ModelResponse.from_entry(m) for m in models],
         total=len(models),  # TODO: Add count query for accurate total

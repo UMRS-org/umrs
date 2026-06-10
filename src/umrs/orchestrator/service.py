@@ -39,6 +39,12 @@ from .site_config import load_site_config
 
 logger = logging.getLogger(__name__)
 
+# scancel/cleanup is asynchronous: the scheduler can still report a job as
+# active for a few seconds after the cancel signal is issued. Poll the backend
+# briefly before declaring a deprovision failed.
+_DEPROVISION_VERIFY_ATTEMPTS = 6
+_DEPROVISION_VERIFY_DELAY_SEC = 1.0
+
 
 def _friendly_probe_detail(error: str | None, state: str) -> str:
     """Translate raw readiness-probe errors into user-friendly messages.
@@ -754,28 +760,46 @@ class OrchestrationService:
             logger.error(f"Backend cleanup failed for {job_id}: {e}")
             return False
 
-        try:
-            backend_info = await self.backend.get_job_status(job_id)
-        except Exception as e:
-            logger.error(f"Backend cleanup verification failed for {job_id}: {e}")
-            return False
-
-        if backend_info.status in (
+        # Verify the backend job has actually left the active state. scancel is
+        # asynchronous, so poll briefly before declaring the cleanup complete.
+        # This absorbs the transient window where squeue still reports the job
+        # as RUNNING for a few seconds after the cancel signal is issued.
+        active_states = (
             JobStatus.PENDING,
             JobStatus.STARTING,
             JobStatus.READY,
             JobStatus.RUNNING,
-        ):
-            logger.error(
-                "Backend cleanup for %s returned while job is still active: %s",
+        )
+        backend_status: JobStatus | None = None
+        for attempt in range(_DEPROVISION_VERIFY_ATTEMPTS):
+            try:
+                backend_info = await self.backend.get_job_status(job_id)
+            except Exception as e:
+                logger.error(f"Backend cleanup verification failed for {job_id}: {e}")
+                return False
+            backend_status = backend_info.status
+            if backend_status not in active_states:
+                break
+            if attempt < _DEPROVISION_VERIFY_ATTEMPTS - 1:
+                await asyncio.sleep(_DEPROVISION_VERIFY_DELAY_SEC)
+
+        if backend_status in active_states:
+            # The cancel was issued but the scheduler still reports the job as
+            # active (e.g. stuck in COMPLETING). Preserve the registry entry so
+            # the allocation is not orphaned; the janitor finalizes removal once
+            # the backend job exits. Callers should treat this as "stopping in
+            # progress", not a hard failure.
+            logger.info(
+                "Backend cleanup for %s still settling (status=%s); deferring "
+                "registry removal to janitor",
                 job_id,
-                backend_info.status.value,
+                backend_status.value,
             )
             self.registry.update_metadata(
                 job_id,
                 {
                     "detail": "backend cleanup still pending",
-                    "cleanup_status": backend_info.status.value,
+                    "cleanup_status": backend_status.value,
                 },
             )
             return False

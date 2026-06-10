@@ -2163,6 +2163,28 @@ async def deprovision_endpoint(
 
     success = await service.deprovision(job_id, force=force)
     if not success:
+        # deprovision() returns False either because the backend cancel was
+        # issued but the job is still settling (e.g. Slurm COMPLETING), or
+        # because of an unexpected failure. A job that is still tearing down is
+        # not a server error — report it as "accepted, stopping" (202) so the
+        # client does not surface a spurious 500. The janitor finalizes the
+        # registry removal once the backend job actually exits.
+        from fastapi.responses import JSONResponse
+
+        still = registry.get_by_job_id(job_id)
+        cleanup_status = (still.metadata or {}).get("cleanup_status") if still else None
+        if still is not None and cleanup_status:
+            return JSONResponse(
+                status_code=status.HTTP_202_ACCEPTED,
+                content={
+                    "job_id": job_id,
+                    "status": "stopping",
+                    "detail": (
+                        "Deprovision initiated; backend job still stopping "
+                        f"({cleanup_status})."
+                    ),
+                },
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to deprovision endpoint: {job_id}",

@@ -547,7 +547,11 @@ async def list_models(
             if model_id and model_id not in merged:
                 merged[model_id] = entry
 
-    return {"object": "list", "data": list(merged.values())}
+    # Apply deployment-scoped visibility (e.g. frontier-only on AI4S).
+    from .model_visibility import is_model_visible
+    data = [entry for entry in merged.values() if is_model_visible(entry.get("id"))]
+
+    return {"object": "list", "data": data}
 
 
 @router.post("/v1/embeddings")
