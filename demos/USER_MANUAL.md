@@ -45,7 +45,7 @@ Workload demos usually ship an `experience.json` file. Add it to the active user
 config, then reload:
 
 ```bash
-cd umrs/demos_jens/11_sam3_direct
+cd umrs/demos/03_sam3_segmentation
 umrs-client config add-experience experience.json --update
 umrs-client reload
 umrs-client list_buckets
