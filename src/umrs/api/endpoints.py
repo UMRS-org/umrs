@@ -1940,6 +1940,50 @@ async def provision_endpoint(
     if effective_node_count > 1:
         env_vars.setdefault("SLURM_NODES", str(effective_node_count))
 
+    # Per-gateway pool-roster sizing defaults. When this deployment publishes a
+    # pool roster (UMRS_PROVISION_ROSTER), use it to size single-endpoint
+    # provisions for known large models. This is what routes models like
+    # DeepSeek-V4-Pro to the 4n4gpu-p partition with the right node/GPU/context
+    # and TTL even when provisioned individually (not via `r4 pool up`) — without
+    # it the request falls back to 1 node / 1 GPU and Slurm holds the job
+    # PD (MaxMemPerLimit) forever. Roster values fill ONLY fields the caller
+    # left at their defaults, so explicit API/CLI flags always win.
+    from ..orchestrator.provision_roster import resolve_model_provision_defaults
+
+    effective_partition = request.partition
+    effective_ttl_sec = request.ttl_sec
+    roster_defaults = resolve_model_provision_defaults(request.model)
+    if roster_defaults:
+        if effective_partition is None and roster_defaults.get("partition"):
+            effective_partition = str(roster_defaults["partition"])
+        roster_nodes = roster_defaults.get("node_count")
+        if effective_node_count == 1 and roster_nodes and int(roster_nodes) > 1:
+            effective_node_count = int(roster_nodes)
+            env_vars.setdefault("SLURM_NODES", str(effective_node_count))
+        roster_gpus = roster_defaults.get("gpu_count")
+        if effective_gpu_count == 1 and roster_gpus and int(roster_gpus) > 1:
+            effective_gpu_count = int(roster_gpus)
+        roster_mml = roster_defaults.get("max_model_len")
+        if effective_max_model_len == 4096 and roster_mml:
+            effective_max_model_len = int(roster_mml)
+            env_vars.setdefault("VLLM_MAX_MODEL_LEN", str(effective_max_model_len))
+        roster_strategy = roster_defaults.get("parallel_strategy")
+        if not effective_parallel_strategy and roster_strategy:
+            env_vars.setdefault(
+                "VLLM_PARALLEL_STRATEGY", str(roster_strategy).lower()
+            )
+        roster_ttl = roster_defaults.get("ttl_sec")
+        if request.ttl_sec == 3600 and roster_ttl is not None:
+            effective_ttl_sec = int(roster_ttl)
+        for _k, _v in (roster_defaults.get("env_vars") or {}).items():
+            env_vars.setdefault(str(_k), str(_v))
+        logger.info(
+            "Applied pool-roster sizing for '%s': partition=%s nodes=%d gpus=%d "
+            "max_model_len=%d ttl_sec=%s",
+            request.model, effective_partition, effective_node_count,
+            effective_gpu_count, effective_max_model_len, effective_ttl_sec,
+        )
+
     request_metadata: dict[str, Any] = {
         "model_type": model_type,
         "serving_backend": serving_backend,
@@ -1996,7 +2040,7 @@ async def provision_endpoint(
         project_id=effective_project_id,
         model=request.model,
         model_path=resolved_model_path,
-        ttl_sec=request.ttl_sec,
+        ttl_sec=effective_ttl_sec,
         gpu_count=effective_gpu_count,
         node_count=effective_node_count,
         max_model_len=effective_max_model_len,
@@ -2005,7 +2049,7 @@ async def provision_endpoint(
         egress_domains=list(request.egress_domains),
         prefer_warm=request.prefer_warm,
         wait_for_ready=request.wait,
-        partition_override=request.partition,
+        partition_override=effective_partition,
         nodelist_hint=request.nodelist,
         min_gpu_memory_gb=serving_profile.get("min_gpu_memory_gb"),
         env_vars=env_vars,
