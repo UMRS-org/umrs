@@ -139,6 +139,13 @@ derive_reasoning_parser() {
     esac
 }
 VLLM_REASONING_PARSER="${VLLM_REASONING_PARSER:-$(derive_reasoning_parser)}"
+# Explicit disable: the orchestrator sets VLLM_REASONING_PARSER=none (sentinel)
+# when a caller provisions with reasoning="off". Because the line above uses
+# ${VAR:-default}, an empty string would re-trigger derivation, so we use a
+# sentinel and normalise it (and a few friendly aliases) back to empty here.
+case "$(printf '%s' "${VLLM_REASONING_PARSER}" | tr '[:upper:]' '[:lower:]')" in
+    none|off|disabled|false|0) VLLM_REASONING_PARSER="" ;;
+esac
 
 # Some model families require a specific KV-cache dtype. DeepSeek-V4's FlashMLA
 # fp8 attention layout only supports an fp8 kv-cache (auto fails an assertion),

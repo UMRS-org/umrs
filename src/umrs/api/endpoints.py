@@ -252,6 +252,24 @@ def _enforce_provision_authorization(
             detail="Only admins may provision system-tier endpoints",
         )
 
+
+def _derive_reasoning_parser(model_name: str) -> str:
+    """Mirror serve.slurm's derive_reasoning_parser() for forced reasoning.
+
+    Used only when the caller requests ``reasoning="on"`` so the parser is
+    set explicitly even if a site disables the shell-side auto-derivation.
+    Returns an empty string when the model family has no reasoning parser.
+    """
+    name_lc = (model_name or "").lower()
+    if "glm" in name_lc:
+        return "glm45"
+    if "gemma" in name_lc and "4" in name_lc:
+        return "gemma4"
+    if "kimi" in name_lc:
+        return "kimi_k2"
+    return ""
+
+
 router = APIRouter(prefix="/umrs/endpoints", tags=["endpoints"])
 
 _DEFAULT_PROVISION_MODEL_PATH = "/models/rivault-gpt-oss"
@@ -684,6 +702,15 @@ class ProvisionRequest(BaseModel):
             "VLLM_PARALLEL_STRATEGY."
         ),
     )
+    reasoning: str | None = Field(
+        None,
+        description=(
+            "Reasoning-parser control for thinking models: 'auto' (default; "
+            "server derives the parser from the model name), 'on' (force the "
+            "model's native reasoning parser), or 'off' (disable reasoning "
+            "splitting). Forwarded to serve.slurm via VLLM_REASONING_PARSER."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_multi_model(self) -> "ProvisionRequest":
@@ -709,6 +736,8 @@ class ProvisionRequest(BaseModel):
             raise ValueError("readiness_probe must be one of: models, chat, http, bentoml")
         if self.tier not in ("system", "project", "user"):
             raise ValueError("tier must be one of: system, project, user")
+        if self.reasoning is not None and self.reasoning not in ("auto", "on", "off"):
+            raise ValueError("reasoning must be one of: auto, on, off")
         if self.serving_mode == "single" and len(self.models) != 1:
             raise ValueError("serving_mode=single requires exactly one model")
         if self.serving_mode == "co-located" and len(self.models) < 2:
@@ -1885,6 +1914,18 @@ async def provision_endpoint(
         env_vars.setdefault(
             "VLLM_PARALLEL_STRATEGY", str(effective_parallel_strategy).lower()
         )
+
+    # Reasoning-parser control (auto | on | off). 'auto' (default) lets
+    # serve.slurm derive the parser from the model name. 'off' disables it via
+    # the 'none' sentinel (serve.slurm clears VLLM_REASONING_PARSER). 'on'
+    # forces the model's native parser so a thinking model still splits its
+    # <think> block even if shell-side auto-derivation is disabled site-wide.
+    if request.reasoning == "off":
+        env_vars["VLLM_REASONING_PARSER"] = "none"
+    elif request.reasoning == "on":
+        _forced_parser = _derive_reasoning_parser(request.model)
+        if _forced_parser:
+            env_vars["VLLM_REASONING_PARSER"] = _forced_parser
 
     # Apply recommended_node_count from ServingProfile when the API request
     # uses the default value (1).
