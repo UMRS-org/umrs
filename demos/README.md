@@ -21,7 +21,7 @@ machine.
 
 ## Prerequisites
 
-All demos (except 08, 12, 13 which run locally) require:
+All demos (except 08, 12, 13, 15, 21 which run locally) require:
 
 1. **UMRS server running** on any supported deployment:
    - Docker Compose (local dev): `docker compose up` from `docker/`

@@ -15,8 +15,8 @@ tools inherit proxy settings so outbound traffic remains auditable.
 
 | Method | Path                          | Description                |
 |--------|-------------------------------|----------------------------|
-| GET    | `/umrs/egress_audit/audit`    | Query audit log entries    |
-| POST   | `/umrs/egress_audit/log`      | Log an egress event        |
+| GET    | `/umrs/egress/audit`          | Query audit log entries    |
+| POST   | `/umrs/egress/audit`          | Log an egress event        |
 
 ## Run
 
