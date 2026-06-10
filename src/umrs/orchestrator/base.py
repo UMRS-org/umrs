@@ -98,6 +98,10 @@ class JobInfo:
     stopped_at: datetime | None = None
     error_message: str | None = None
     backend: str = "unknown"  # "slurm", "kubernetes", "docker-compose"
+    # Scheduler-reported reason for the current state (e.g. Slurm squeue %R:
+    # "MaxMemPerLimit", "Resources", "Priority"). Surfaced to users so a job
+    # held PENDING for an unsatisfiable allocation is no longer invisible.
+    state_reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_active(self) -> bool:

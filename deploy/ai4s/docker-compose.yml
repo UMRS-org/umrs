@@ -54,6 +54,7 @@ services:
     container_name: umrs-server-ai4s
     environment:
       UMRS_SITE_CONFIG: /app/deploy/ai4s/site.yaml
+      UMRS_PROVISION_ROSTER: /app/deploy/ai4s/pool-ai4s.yaml
       UMRS_REGISTRY_POSTGRES_DSN: "postgresql://${POSTGRES_USER:-umrs}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-umrs_ai4s}"
       MINIO_ENDPOINT: http://minio:9000
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
@@ -67,6 +68,9 @@ services:
       - ${AI4S_SSH_KEY_PATH:-~/.ssh/ai4s}:/home/umrs/.ssh:ro
       # Site config
       - ./site.yaml:/app/deploy/ai4s/site.yaml:ro
+      # Pool roster — sizing defaults for single-endpoint provisions of large
+      # models (routes DeepSeek-V4-Pro/GLM-5.1/Kimi-K2.6 to 4n4gpu-p, etc.).
+      - ./pool-ai4s.yaml:/app/deploy/ai4s/pool-ai4s.yaml:ro
     depends_on:
       - postgres
       - minio

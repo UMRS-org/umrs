@@ -412,8 +412,13 @@ class RemoteSlurmBackend(SlurmBackend):
             )
 
         # Fallback to squeue/sacct.
-        status = await self._query_slurm_job_status(job_id)
-        return JobInfo(job_id=job_id, status=status, backend=self.backend_name)
+        status, reason = await self._query_slurm_job_status(job_id)
+        return JobInfo(
+            job_id=job_id,
+            status=status,
+            backend=self.backend_name,
+            state_reason=reason,
+        )
 
     async def _endpoint_via_tunnel(self, endpoint: EndpointInfo) -> EndpointInfo:
         """Return a front-end local endpoint backed by an SSH forward tunnel."""
@@ -469,21 +474,37 @@ class RemoteSlurmBackend(SlurmBackend):
                 info[key] = value
         return info
 
-    async def _query_slurm_job_status(self, job_id: str) -> JobStatus:
-        """Query Slurm job status via remote squeue/sacct."""
-        status = await self._query_squeue_status(job_id)
-        if status is not None:
-            return status
-        return await self._query_sacct_status(job_id)
+    async def _query_slurm_job_status(self, job_id: str) -> tuple[JobStatus, str | None]:
+        """Query Slurm job status via remote squeue/sacct.
 
-    async def _query_squeue_status(self, job_id: str) -> JobStatus | None:
-        """Query squeue for active job status via SSH."""
+        Returns ``(status, reason)`` where ``reason`` is the scheduler's
+        human-readable explanation for the current state (squeue ``%R`` — e.g.
+        ``MaxMemPerLimit``, ``Resources``, ``Priority``) when the job is still
+        queued, or ``None`` otherwise.
+        """
+        squeue_result = await self._query_squeue_status(job_id)
+        if squeue_result is not None:
+            return squeue_result
+        return await self._query_sacct_status(job_id), None
+
+    async def _query_squeue_status(self, job_id: str) -> tuple[JobStatus, str | None] | None:
+        """Query squeue for active job status + pending reason via SSH."""
         ssh = await self._get_ssh()
-        result = await ssh.run_remote(f"squeue -j {job_id} -h -o %T")
+        # %T = job state, %R = reason (for PENDING) or node list (for RUNNING).
+        result = await ssh.run_remote(f'squeue -j {job_id} -h -o "%T|%R"')
 
         if not result.ok or not result.stdout.strip():
             return None
-        return self._status_from_slurm_state(result.stdout.strip())
+        raw = result.stdout.strip().splitlines()[0]
+        state, _, reason = raw.partition("|")
+        state = state.strip()
+        reason = reason.strip() or None
+        status = self._status_from_slurm_state(state)
+        # Only surface the reason while the job is still queued/pending. For a
+        # RUNNING job, %R holds the node list, not a diagnostic.
+        if status != JobStatus.PENDING:
+            reason = None
+        return status, reason
 
     async def _query_sacct_status(self, job_id: str) -> JobStatus:
         """Query sacct for completed job status via SSH."""
@@ -550,7 +571,7 @@ class RemoteSlurmBackend(SlurmBackend):
     async def _wait_for_remote_job_exit(self, job_id: str, timeout_sec: int) -> bool:
         """Wait briefly for a remote Slurm job to leave the active queue."""
         for _ in range(max(timeout_sec, 0)):
-            status = await self._query_slurm_job_status(job_id)
+            status, _reason = await self._query_slurm_job_status(job_id)
             if status in (JobStatus.STOPPED, JobStatus.FAILED, JobStatus.UNKNOWN):
                 return True
             await asyncio.sleep(1)
