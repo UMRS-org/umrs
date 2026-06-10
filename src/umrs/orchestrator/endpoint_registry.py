@@ -295,9 +295,11 @@ class EndpointRegistry:
 
             self._endpoints[key] = endpoint
             self._by_job_id[job_id] = endpoint
-
-        # Persist to backend
-        self._persist(endpoint)
+            # Persist inside the lock so in-memory and backend states stay
+            # consistent when concurrent register() calls race for the same
+            # (project_id, model).  NOTE: this still does not protect against
+            # multi-process races; the caller serialises duplicates.
+            self._persist(endpoint)
 
         logger.info(f"Registered endpoint: {project_id}/{model} -> {host}:{port} (job={job_id})")
         return endpoint
