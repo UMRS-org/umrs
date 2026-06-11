@@ -120,6 +120,9 @@ class ProvisionRequest:
     requesting_user: str | None = (
         None  # Username for per-user Slurm delegation & accounting
     )
+    variant: str | None = (
+        None  # Deployment variant name (e.g. "128k", "tep-128k")
+    )
 
 
 @dataclass
@@ -418,6 +421,7 @@ class OrchestrationService:
                 request.model,
                 prefer_warm=True,
                 min_ttl_sec=request.min_ttl_for_reuse_sec,
+                variant=request.variant,
             )
             if existing and existing.is_usable:
                 # Verify the backend job is actually still alive before
@@ -572,6 +576,7 @@ class OrchestrationService:
                 backend=self.backend_type.value,
                 ttl_sec=request.ttl_sec,
                 metadata=endpoint_metadata,
+                variant=request.variant,
             )
             progress("registered", {"endpoint_id": job_id})
 

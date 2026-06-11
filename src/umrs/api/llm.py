@@ -118,6 +118,32 @@ def _model_needs_rewrite(req_model: str | None, endpoint: RegisteredEndpoint) ->
     ) and req_model != _upstream_model_name(endpoint)
 
 
+def _parse_variant_from_model(model: str) -> tuple[str, str | None]:
+    """Parse a variant hint from a model name suffix.
+
+    Convention: ``DeepSeek-V4-Pro-128k`` → model ``DeepSeek-V4-Pro``,
+    variant ``128k``. The suffix is the last ``-`` delimited token
+    that matches a known pattern (all-lowercase, or numeric-with-unit).
+
+    Returns:
+        (model, variant) tuple. variant is None if no suffix detected.
+    """
+    # Known variant suffixes: lowercase alphanumeric with optional unit suffix
+    # e.g. "128k", "1m", "tep", "tep-128k", "256k"
+    parts = model.rsplit("-", 1)
+    if len(parts) < 2:
+        return model, None
+    base, suffix = parts
+    # Heuristic: suffix is a variant if it's all lowercase and looks like
+    # a context-length hint or a strategy tag (not a model name component)
+    _VARIANT_PATTERN = __import__("re").compile(
+        r"^\d+[km]?$|^tep(?:-\d+[km]?)?$|^canary$"
+    )
+    if _VARIANT_PATTERN.match(suffix):
+        return base, suffix
+    return model, None
+
+
 def _discover_endpoint(
     registry: EndpointRegistry,
     project_id: str,
@@ -126,15 +152,29 @@ def _discover_endpoint(
     """
     Discover a ready endpoint for (project_id, model).
 
-    Uses registry.get() for O(1) lookup — no HTTP round-trip.
-    Falls back to scanning by served_model_name if direct lookup misses.
+    Uses least-connections selection when multiple endpoints exist for
+    the same model. Falls back to first-match if select_endpoint returns
+    None (e.g. no ready endpoints).
+
+    If the model name contains a variant suffix (e.g. "DeepSeek-V4-Pro-128k"),
+    the variant is extracted and used to filter candidates.
 
     Raises HTTPException if no endpoint is available.
     """
-    endpoint = registry.get(project_id, model, prefer_warm=True)
+    # Try variant-aware selection first
+    base_model, variant = _parse_variant_from_model(model)
+    endpoint = registry.select_endpoint(
+        project_id, base_model, variant=variant, strategy="least_connections"
+    )
 
     if not endpoint:
-        # Try matching by served_model_name in metadata
+        # Try exact model name (no variant parsing)
+        endpoint = registry.select_endpoint(
+            project_id, model, strategy="least_connections"
+        )
+
+    if not endpoint:
+        # Last resort: scan by served_model_name (R-15 fallback)
         all_eps = registry.list_all(
             project_id=project_id,
             status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
@@ -143,7 +183,7 @@ def _discover_endpoint(
             served = ep.metadata.get("served_model_name") or _resolve_served_model_name(
                 ep.model
             )
-            if served == model:
+            if served == model or served == base_model:
                 endpoint = ep
                 break
 
@@ -231,6 +271,8 @@ async def _proxy_streaming(
     body: bytes,
     usage_record: UsageRecord | None = None,
     timer: ProxyTimer | None = None,
+    registry: EndpointRegistry | None = None,
+    job_id: str | None = None,
 ) -> StreamingResponse:
     """Stream upstream response to the caller.
 
@@ -239,6 +281,10 @@ async def _proxy_streaming(
     When *usage_record* is provided, the last few SSE chunks are
     inspected for a ``usage`` block and the record is persisted
     fire-and-forget after the stream ends.
+
+    When *registry* and *job_id* are provided, ``decrement_requests``
+    is called in the generator's ``finally`` block to accurately track
+    load for the entire streaming duration.
     """
     client = httpx.AsyncClient(timeout=_PROXY_TIMEOUT)
     try:
@@ -280,6 +326,9 @@ async def _proxy_streaming(
         finally:
             await response.aclose()
             await client.aclose()
+            # Decrement active requests after stream is fully consumed
+            if registry and job_id:
+                registry.decrement_requests(job_id)
             # Fire-and-forget usage recording
             if usage_record is not None:
                 usage_record.status_code = response.status_code
@@ -350,12 +399,18 @@ async def _proxy_to_litellm(
     path: str,
     user_id: str,
     project_id: str,
+    registry: EndpointRegistry | None = None,
 ) -> Response:
     """
     Proxy a request to the upstream LiteLLM endpoint.
 
     Handles both streaming and non-streaming responses.
     Records token usage fire-and-forget when a DB pool is available.
+
+    When *registry* is provided, increments ``active_requests`` before
+    proxying and decrements after completion.  For streaming responses,
+    decrement is deferred until the async generator is fully consumed
+    (inside its ``finally`` block) so load tracking remains accurate.
     """
     upstream_url = f"{endpoint.litellm_url}/{path}"
     body = await request.body()
@@ -395,6 +450,9 @@ async def _proxy_to_litellm(
             is_streaming=is_streaming,
         )
 
+    if registry:
+        registry.increment_requests(endpoint.job_id)
+
     if is_streaming:
         return await _proxy_streaming(
             request,
@@ -403,15 +461,21 @@ async def _proxy_to_litellm(
             body,
             usage_record=usage_record,
             timer=timer,
+            registry=registry,
+            job_id=endpoint.job_id,
         )
-    return await _proxy_oneshot(
-        request,
-        upstream_url,
-        headers,
-        body,
-        usage_record=usage_record,
-        timer=timer,
-    )
+    try:
+        return await _proxy_oneshot(
+            request,
+            upstream_url,
+            headers,
+            body,
+            usage_record=usage_record,
+            timer=timer,
+        )
+    finally:
+        if registry:
+            registry.decrement_requests(endpoint.job_id)
 
 
 def _extract_model(body: dict) -> str:
@@ -474,7 +538,8 @@ async def chat_completions(
 
     endpoint = _discover_endpoint(registry, project_id, model)
     response = await _proxy_to_litellm(
-        request, endpoint, "v1/chat/completions", user_id, project_id
+        request, endpoint, "v1/chat/completions", user_id, project_id,
+        registry=registry,
     )
 
     # Mark used inline (direct registry call, no HTTP round-trip)
@@ -495,7 +560,8 @@ async def completions(
 
     endpoint = _discover_endpoint(registry, project_id, model)
     response = await _proxy_to_litellm(
-        request, endpoint, "v1/completions", user_id, project_id
+        request, endpoint, "v1/completions", user_id, project_id,
+        registry=registry,
     )
     registry.mark_used(endpoint.job_id)
 
@@ -597,7 +663,8 @@ async def embeddings(
 
     endpoint = _discover_endpoint(registry, project_id, model)
     response = await _proxy_to_litellm(
-        request, endpoint, "v1/embeddings", user_id, project_id
+        request, endpoint, "v1/embeddings", user_id, project_id,
+        registry=registry,
     )
     registry.mark_used(endpoint.job_id)
 

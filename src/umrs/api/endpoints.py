@@ -739,6 +739,15 @@ class ProvisionRequest(BaseModel):
     )
     max_model_len: int = Field(4096, ge=512, description="Max context length")
     prefer_warm: bool = Field(True, description="Prefer reusing existing endpoint")
+    variant: str | None = Field(
+        None,
+        description=(
+            "Deployment variant name (e.g. '128k', 'tep-128k'). "
+            "Differentiates multiple endpoints for the same model with "
+            "different parameters (ctx length, node count, etc.). "
+            "When set, warm-reuse only considers endpoints with the same variant."
+        ),
+    )
     wait: bool = Field(True, description="Wait for readiness before responding")
     partition: str | None = Field(
         None, description="Override Slurm partition (must be in site candidates)"
@@ -1843,6 +1852,7 @@ async def provision_endpoint(
             request.model,
             prefer_warm=True,
             min_ttl_sec=60,
+            variant=request.variant,
         )
         if existing and existing.is_usable:
             # Verify the backend job is actually still alive before
@@ -1860,25 +1870,29 @@ async def provision_endpoint(
                     endpoint=EndpointResponse(**existing.to_dict()),
                 )
             logger.warning(
-                "Stale warm endpoint detected for %s/%s (job_id=%s); "
+                "Stale warm endpoint detected for %s/%s (job_id=%s, variant=%s); "
                 "marking failed and provisioning fresh",
                 effective_project_id,
                 request.model,
                 existing.job_id,
+                request.variant,
             )
             registry.mark_failed(
                 existing.job_id,
                 "stale registry entry: backend job no longer alive",
             )
 
-    # Check if there's already a provisioning endpoint for this project/model
+    # Check if there's already a provisioning endpoint for this
+    # project/model/variant combination. Multiple endpoints for the
+    # same model are allowed when they have different variants, so
+    # we only block on exact (model, variant) match.
     provisioning = registry.list_all(
         project_id=effective_project_id,
-        status_filter=[EndpointStatus.PENDING],
+        status_filter=[EndpointStatus.PENDING, EndpointStatus.PROVISIONING],
     )
     for ep in provisioning:
-        if ep.model == request.model:
-            # Already provisioning - return 202 with Retry-After
+        if ep.model == request.model and ep.variant == request.variant:
+            # Already provisioning this exact variant - return 202 with Retry-After
             response = ProvisionResponse(
                 status="provisioning",
                 job_id=ep.job_id,
@@ -2042,7 +2056,9 @@ async def provision_endpoint(
 
     effective_partition = request.partition
     effective_ttl_sec = request.ttl_sec
-    roster_defaults = resolve_model_provision_defaults(request.model)
+    roster_defaults = resolve_model_provision_defaults(
+        request.model, variant=request.variant
+    )
     if roster_defaults:
         if effective_partition is None and roster_defaults.get("partition"):
             effective_partition = str(roster_defaults["partition"])
@@ -2147,6 +2163,7 @@ async def provision_endpoint(
         env_vars=env_vars,
         metadata=request_metadata,
         requesting_user=requesting_user,
+        variant=request.variant,
     )
 
     try:
