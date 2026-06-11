@@ -10,6 +10,7 @@ def build_metadata_types(metadata):
 
     return metadata_types
 
+
 def check_and_build_metadata(metadata, args):
     if not args:
         return {"Metadata": {}}
@@ -27,7 +28,9 @@ def check_and_build_metadata(metadata, args):
         name = parts[0].strip()
         dtype = metadata_types.get(name, None)
         if not dtype:
-            sys.exit(f"Error: unkonwn metadata name '{name}' in -k argument in the command line\nPossible names are: {', '.join(metadata_types.keys())}")
+            sys.exit(
+                f"Error: unkonwn metadata name '{name}' in -k argument in the command line\nPossible names are: {', '.join(metadata_types.keys())}"
+            )
         value = parts[1].strip()
 
         metadata_dict["Metadata"][name] = value  # Store metadata inside "Metadata"

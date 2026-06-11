@@ -211,9 +211,7 @@ class TestJobStoreAdvisoryLockKey:
                 timeout=30,
             )
             if result.returncode != 0:
-                pytest.skip(
-                    f"Subprocess failed (circular import?): {result.stderr.strip()}"
-                )
+                pytest.skip(f"Subprocess failed (circular import?): {result.stderr.strip()}")
             keys.append(result.stdout.strip())
 
         assert keys[0] == keys[1]

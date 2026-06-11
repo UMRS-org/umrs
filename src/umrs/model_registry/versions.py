@@ -27,10 +27,10 @@ from typing import Any
 class VersionStatus(Enum):
     """Status of a model version."""
 
-    DRAFT = "draft"          # Being prepared, not yet released
-    RELEASED = "released"    # Available for use
+    DRAFT = "draft"  # Being prepared, not yet released
+    RELEASED = "released"  # Available for use
     DEPRECATED = "deprecated"  # Marked for removal
-    ARCHIVED = "archived"    # No longer available
+    ARCHIVED = "archived"  # No longer available
 
 
 @dataclass
@@ -94,7 +94,9 @@ class ModelVersion:
             "status": self.status.value,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "released_at": self.released_at.isoformat() if self.released_at else None,
-            "deprecated_at": self.deprecated_at.isoformat() if self.deprecated_at else None,
+            "deprecated_at": self.deprecated_at.isoformat()
+            if self.deprecated_at
+            else None,
             "metrics": self.metrics,
         }
 

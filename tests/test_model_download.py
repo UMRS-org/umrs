@@ -321,7 +321,6 @@ class TestDownloadTaskRegistry:
         tasks = await download_registry.list_tasks()
         assert len(tasks) == 3
 
-
     @pytest.mark.asyncio
     async def test_submit_job_validates_path(
         self,

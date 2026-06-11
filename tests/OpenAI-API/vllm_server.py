@@ -16,6 +16,7 @@ from typing import Optional
 # Device detection
 # ---------------------------------------------------------------------------
 
+
 def detect_device() -> str:
     """Detect whether CUDA GPU is available or fallback to CPU."""
     return "cuda" if torch.cuda.is_available() else "cpu"
@@ -24,6 +25,7 @@ def detect_device() -> str:
 # ---------------------------------------------------------------------------
 # Automatic vLLM configuration
 # ---------------------------------------------------------------------------
+
 
 def auto_vllm_config(
     model_max_len: Optional[int] = None,
@@ -63,12 +65,13 @@ def auto_vllm_config(
 # Launch vLLM OpenAI server
 # ---------------------------------------------------------------------------
 
+
 def launch_vllm_server(
     model_name: str,
     host: str = "0.0.0.0",
     port: int = 8000,
-    convert: str="auto",
-    runner: str="auto",
+    convert: str = "auto",
+    runner: str = "auto",
     model_max_len: Optional[int] = None,
 ):
     """
@@ -78,8 +81,7 @@ def launch_vllm_server(
 
     # Safety check
     assert cfg["max_num_batched_tokens"] >= cfg["max_model_len"], (
-        "Invalid vLLM configuration: "
-        "max_num_batched_tokens must be >= max_model_len"
+        "Invalid vLLM configuration: max_num_batched_tokens must be >= max_model_len"
     )
 
     print("=== vLLM configuration ===")
@@ -91,16 +93,29 @@ def launch_vllm_server(
         sys.executable,
         "-m",
         "vllm.entrypoints.openai.api_server",
-        "--model", "/Users/ejeannot/.cache/huggingface/hub/models--intfloat--e5-base-v2/snapshots/f52bf8ec8c7124536f0efb74aca902b2995e5bcd",
-        "--runner", runner,
-        "--convert", convert,
-        "--host", host,
-        "--port", str(port),
-        "--distributed-executor-backend", "None", # désactiver TCPStore / multi-node
+        "--model",
+        "/Users/ejeannot/.cache/huggingface/hub/models--intfloat--e5-base-v2/snapshots/f52bf8ec8c7124536f0efb74aca902b2995e5bcd",
+        "--runner",
+        runner,
+        "--convert",
+        convert,
+        "--host",
+        host,
+        "--port",
+        str(port),
+        "--distributed-executor-backend",
+        "None",  # désactiver TCPStore / multi-node
     ]
 
-    cmd += ["--tensor-parallel-size", "1", "--pipeline-parallel-size", "1", "--data-parallel-size", "1"]
-    
+    cmd += [
+        "--tensor-parallel-size",
+        "1",
+        "--pipeline-parallel-size",
+        "1",
+        "--data-parallel-size",
+        "1",
+    ]
+
     # Pour le mode embedding / pooling, pas besoin de max-model-len ni max-num-batched-tokens
     is_embedding = (convert == "embed") or (runner == "pooling")
     if not is_embedding:
@@ -114,8 +129,6 @@ def launch_vllm_server(
     print("\nLaunching vLLM server:")
     print(" ".join(cmd))
     print()
-
-
 
     subprocess.run(cmd, check=True)
 
@@ -133,6 +146,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=8001,
         convert="embed",
-        runner="pooling", 
+        runner="pooling",
         model_max_len=None,  # Let auto config decide
     )

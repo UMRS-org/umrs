@@ -64,7 +64,9 @@ class DockerComposeBackend(OrchestratorBackend):
         cmd.extend(args)
         return cmd
 
-    async def _run_compose(self, *args: str, use_gpu: bool = True) -> tuple[int, str, str]:
+    async def _run_compose(
+        self, *args: str, use_gpu: bool = True
+    ) -> tuple[int, str, str]:
         """Run docker compose command."""
         cmd = self._compose_cmd(*args, use_gpu=use_gpu)
 
@@ -95,7 +97,9 @@ class DockerComposeBackend(OrchestratorBackend):
         env["VLLM_PORT"] = str(self.config.vllm_port)
         env["VLLM_MAX_MODEL_LEN"] = str(self.config.vllm_max_model_len)
         env["VLLM_MAX_NUM_SEQS"] = str(self.config.vllm_max_num_seqs)
-        env["VLLM_ENABLE_PREFIX_CACHING"] = "true" if self.config.vllm_enable_prefix_caching else "false"
+        env["VLLM_ENABLE_PREFIX_CACHING"] = (
+            "true" if self.config.vllm_enable_prefix_caching else "false"
+        )
 
         use_gpu = kwargs.get("gpu", True)
         detach = kwargs.get("detach", True)
@@ -175,7 +179,11 @@ class DockerComposeBackend(OrchestratorBackend):
                 litellm_port=self.config.litellm_port,
                 vllm_port=self.config.vllm_port,
             )
-            status = JobStatus.READY if await self.check_readiness(endpoint) else JobStatus.STARTING
+            status = (
+                JobStatus.READY
+                if await self.check_readiness(endpoint)
+                else JobStatus.STARTING
+            )
         else:
             status = JobStatus.STARTING
 
@@ -250,7 +258,8 @@ class DockerComposeBackend(OrchestratorBackend):
         """Check if Docker is accessible."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "info",
+                "docker",
+                "info",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

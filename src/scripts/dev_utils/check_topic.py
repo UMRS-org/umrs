@@ -38,7 +38,9 @@ def chunk_text_with_offsets(text: str, tokenizer, max_tokens: int, nlp) -> list[
             continue
 
         # Tokenize the sentence and get the mapping between tokens and character offsets
-        encoding = tokenizer(sentence_text, return_offsets_mapping=True, add_special_tokens=False)
+        encoding = tokenizer(
+            sentence_text, return_offsets_mapping=True, add_special_tokens=False
+        )
         input_ids = encoding["input_ids"]
         offsets = encoding["offset_mapping"]
 
@@ -46,18 +48,20 @@ def chunk_text_with_offsets(text: str, tokenizer, max_tokens: int, nlp) -> list[
             # If the sentence fits in the limit, use it directly
             start = sent.start_char
             end = sent.end_char
-            chunks.append({
-                "text": sentence_text,
-                "start": start,
-                "end": end,
-                "length": end - start,
-                "md5": compute_md5(sentence_text)
-            })
+            chunks.append(
+                {
+                    "text": sentence_text,
+                    "start": start,
+                    "end": end,
+                    "length": end - start,
+                    "md5": compute_md5(sentence_text),
+                }
+            )
         else:
             # Otherwise, split the sentence into subchunks of max_tokens
             for i in range(0, len(input_ids), max_tokens):
-                input_ids[i:i + max_tokens]
-                sub_offsets = offsets[i:i + max_tokens]
+                input_ids[i : i + max_tokens]
+                sub_offsets = offsets[i : i + max_tokens]
 
                 # Get the character range covered by the token span
                 sub_start = sub_offsets[0][0]
@@ -69,15 +73,18 @@ def chunk_text_with_offsets(text: str, tokenizer, max_tokens: int, nlp) -> list[
                 global_end = sent.start_char + sub_end
 
                 if sub_text:
-                    chunks.append({
-                        "text": sub_text,
-                        "start": global_start,
-                        "end": global_end,
-                        "length": global_end - global_start,
-                        "md5": compute_md5(sub_text)
-                    })
+                    chunks.append(
+                        {
+                            "text": sub_text,
+                            "start": global_start,
+                            "end": global_end,
+                            "length": global_end - global_start,
+                            "md5": compute_md5(sub_text),
+                        }
+                    )
 
     return chunks
+
 
 def chunk_text_by_max_tokens(doc, tokenizer, max_tokens: int) -> list[dict]:
     """
@@ -106,7 +113,9 @@ def chunk_text_by_max_tokens(doc, tokenizer, max_tokens: int) -> list[dict]:
             continue
 
         # Tokenize the sentence and get the mapping between tokens and character offsets
-        encoding = tokenizer(sentence_text, return_offsets_mapping=True, add_special_tokens=False)
+        encoding = tokenizer(
+            sentence_text, return_offsets_mapping=True, add_special_tokens=False
+        )
         input_ids = encoding["input_ids"]
         offsets = encoding["offset_mapping"]
 
@@ -114,19 +123,21 @@ def chunk_text_by_max_tokens(doc, tokenizer, max_tokens: int) -> list[dict]:
             # If the sentence fits in the limit, use it directly
             start = sent.start_char
             end = sent.end_char
-            chunks.append({
-                "text": sentence_text,
-                "start": start,
-                "end": end,
-                "length": end - start,
-                "md5": compute_md5(sentence_text)
-            })
+            chunks.append(
+                {
+                    "text": sentence_text,
+                    "start": start,
+                    "end": end,
+                    "length": end - start,
+                    "md5": compute_md5(sentence_text),
+                }
+            )
         else:
             # Otherwise, split the sentence into subchunks of max_tokens
             print("Splitings...")
             for i in range(0, len(input_ids), max_tokens):
-                input_ids[i:i + max_tokens]
-                sub_offsets = offsets[i:i + max_tokens]
+                input_ids[i : i + max_tokens]
+                sub_offsets = offsets[i : i + max_tokens]
 
                 # Get the character range covered by the token span
                 sub_start = sub_offsets[0][0]
@@ -138,16 +149,17 @@ def chunk_text_by_max_tokens(doc, tokenizer, max_tokens: int) -> list[dict]:
                 global_end = sent.start_char + sub_end
 
                 if sub_text:
-                    chunks.append({
-                        "text": sub_text,
-                        "start": global_start,
-                        "end": global_end,
-                        "length": global_end - global_start,
-                        "md5": compute_md5(sub_text)
-                    })
+                    chunks.append(
+                        {
+                            "text": sub_text,
+                            "start": global_start,
+                            "end": global_end,
+                            "length": global_end - global_start,
+                            "md5": compute_md5(sub_text),
+                        }
+                    )
 
     return chunks
-
 
 
 # Modèle utilisé
@@ -220,7 +232,7 @@ print(f"[Embedding Shape] {embeddings.shape}")
 
 nb_errors = 0
 for idx, chunk in enumerate(chunks):
-    extracted_text = text[chunk["start"]:chunk["end"]].strip()
+    extracted_text = text[chunk["start"] : chunk["end"]].strip()
     computed_md5 = compute_md5(extracted_text)
     if computed_md5 != chunk["md5"]:
         print(f"[Mismatch] Chunk {idx}: MD5 mismatch.")

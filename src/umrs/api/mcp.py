@@ -37,14 +37,14 @@ from ..mcp.store import (
 
 # Blocked IP ranges: RFC 1918, link-local, loopback, metadata endpoints
 _BLOCKED_NETWORKS = [
-    ipaddress.ip_network("127.0.0.0/8"),       # Loopback
-    ipaddress.ip_network("10.0.0.0/8"),        # RFC 1918
-    ipaddress.ip_network("172.16.0.0/12"),     # RFC 1918
-    ipaddress.ip_network("192.168.0.0/16"),    # RFC 1918
-    ipaddress.ip_network("169.254.0.0/16"),    # Link-local / cloud metadata
-    ipaddress.ip_network("::1/128"),           # IPv6 loopback
-    ipaddress.ip_network("fc00::/7"),          # IPv6 ULA
-    ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
+    ipaddress.ip_network("127.0.0.0/8"),  # Loopback
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC 1918
+    ipaddress.ip_network("169.254.0.0/16"),  # Link-local / cloud metadata
+    ipaddress.ip_network("::1/128"),  # IPv6 loopback
+    ipaddress.ip_network("fc00::/7"),  # IPv6 ULA
+    ipaddress.ip_network("fe80::/10"),  # IPv6 link-local
 ]
 
 # Blocked hostnames (cloud metadata endpoints)
@@ -124,6 +124,7 @@ def _validate_mcp_url(url: str) -> None:
         # Not an IP address — it's a hostname, check blocklist only
         pass
 
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/umrs/mcp", tags=["mcp"])
@@ -165,10 +166,18 @@ class ServerRegistrationRequest(BaseModel):
     version: str = Field(default="0.1.0", description="Server version")
     transport: str = Field(default="http", description="Transport protocol")
     description: str = Field(default="", description="Server description")
-    auth_type: str = Field(default="none", description="Auth type: none, api_key, oauth")
-    auth_config: dict[str, Any] = Field(default_factory=dict, description="Auth configuration")
-    metadata: dict[str, Any] = Field(default_factory=dict, description="Custom metadata")
-    tools: list[dict[str, Any]] = Field(default_factory=list, description="Tool definitions")
+    auth_type: str = Field(
+        default="none", description="Auth type: none, api_key, oauth"
+    )
+    auth_config: dict[str, Any] = Field(
+        default_factory=dict, description="Auth configuration"
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict, description="Custom metadata"
+    )
+    tools: list[dict[str, Any]] = Field(
+        default_factory=list, description="Tool definitions"
+    )
     project_id: str | None = Field(default=None, description="Owning project ID")
 
 
@@ -205,7 +214,9 @@ class ToolCallRequest(BaseModel):
     """Request to invoke an MCP tool."""
 
     tool: str = Field(..., description="Tool name to invoke")
-    arguments: dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+    arguments: dict[str, Any] = Field(
+        default_factory=dict, description="Tool arguments"
+    )
     metadata: dict[str, Any] = Field(default_factory=dict, alias="_meta")
 
 
@@ -230,7 +241,9 @@ _MCP_MAX_RETRIES = int(os.getenv("MCP_MAX_RETRIES", "3"))
 @router.get("/servers", response_model=list[ServerResponse])
 async def list_servers(
     project_id: str | None = Query(None, description="Filter by project"),
-    status_filter: str | None = Query(None, alias="status", description="Filter by status"),
+    status_filter: str | None = Query(
+        None, alias="status", description="Filter by status"
+    ),
 ) -> list[ServerResponse]:
     """List all registered MCP servers."""
     store = _get_store()
@@ -238,7 +251,9 @@ async def list_servers(
     return [_server_to_response(s) for s in servers]
 
 
-@router.post("/servers", status_code=status.HTTP_201_CREATED, response_model=ServerResponse)
+@router.post(
+    "/servers", status_code=status.HTTP_201_CREATED, response_model=ServerResponse
+)
 async def register_server(
     req: ServerRegistrationRequest,
 ) -> ServerResponse:
@@ -252,6 +267,7 @@ async def register_server(
 
     # Governance: quota check before registration
     from .governance import check_quota
+
     check_quota(req.project_id or "", "mcp_servers")
 
     store = _get_store()
@@ -270,14 +286,18 @@ async def register_server(
     logger.info("Registered MCP server: %s (id=%s)", server.name, server.server_id)
 
     from .audit_events import emit_audit
+
     emit_audit(
         "mcp.registered",
         project_id=req.project_id or "",
         details={"name": req.name, "url": req.url, "server_id": server.server_id},
     )
     from .governance import record_resource_created
+
     record_resource_created(
-        "mcp_servers", server.server_id, "",
+        "mcp_servers",
+        server.server_id,
+        "",
         project_id=req.project_id or "",
         metadata={"name": req.name, "url": req.url},
     )
@@ -318,8 +338,10 @@ async def unregister_server(server_id_or_name: str) -> dict[str, str]:
         )
 
     from .audit_events import emit_audit
+
     emit_audit("mcp.unregistered", details={"server": server_id_or_name})
     from .governance import record_resource_deleted
+
     record_resource_deleted("mcp_servers", server_id_or_name)
 
     return {"status": "unregistered", "server": server_id_or_name}
@@ -505,7 +527,9 @@ def _normalize_tool_def(tool: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-async def _parse_tool_response(response: aiohttp.ClientResponse, tool_name: str) -> dict[str, Any] | None:
+async def _parse_tool_response(
+    response: aiohttp.ClientResponse, tool_name: str
+) -> dict[str, Any] | None:
     """Parse the JSON-RPC response from a tool call. Returns None for retryable 5xx."""
     if response.status == 200:
         result = await response.json()
@@ -513,7 +537,12 @@ async def _parse_tool_response(response: aiohttp.ClientResponse, tool_name: str)
             return result["result"]
         if "error" in result:
             return {
-                "content": [{"type": "text", "text": result["error"].get("message", "Unknown error")}],
+                "content": [
+                    {
+                        "type": "text",
+                        "text": result["error"].get("message", "Unknown error"),
+                    }
+                ],
                 "isError": True,
             }
         return result
@@ -557,17 +586,21 @@ async def _proxy_tool_call(
             call_headers: dict[str, str] = {"Content-Type": "application/json"}
             try:
                 from umrs.server.correlation import get_request_id
+
                 rid = get_request_id()
                 if rid:
                     call_headers["X-Request-ID"] = rid
             except Exception:
                 pass
 
-            async with aiohttp.ClientSession(timeout=timeout) as session, session.post(
-                url,
-                json=payload,
-                headers=call_headers,
-            ) as response:
+            async with (
+                aiohttp.ClientSession(timeout=timeout) as session,
+                session.post(
+                    url,
+                    json=payload,
+                    headers=call_headers,
+                ) as response,
+            ):
                 result = await _parse_tool_response(response, tool_name)
                 if result is not None:
                     return result

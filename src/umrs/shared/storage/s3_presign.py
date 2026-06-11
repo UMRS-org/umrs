@@ -201,14 +201,20 @@ def generate_presigned_urls_for_keys(
     for key in keys:
         if operation == "put":
             result[key] = gen(
-                s3_client, bucket, key,
-                content_type=content_type, ttl=ttl,
+                s3_client,
+                bucket,
+                key,
+                content_type=content_type,
+                ttl=ttl,
                 use_external_endpoint=use_external_endpoint,
                 endpoint_override=endpoint_override,
             )
         else:
             result[key] = gen(
-                s3_client, bucket, key, ttl=ttl,
+                s3_client,
+                bucket,
+                key,
+                ttl=ttl,
                 use_external_endpoint=use_external_endpoint,
                 endpoint_override=endpoint_override,
             )

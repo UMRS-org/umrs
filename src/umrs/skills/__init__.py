@@ -67,7 +67,10 @@ class SkillRegistry:
             errors.append("name is required")
         if not manifest.version:
             errors.append("version is required")
-        if manifest.name and not manifest.name.replace("-", "").replace("_", "").isalnum():
+        if (
+            manifest.name
+            and not manifest.name.replace("-", "").replace("_", "").isalnum()
+        ):
             errors.append("name must be alphanumeric (hyphens/underscores allowed)")
         return errors
 

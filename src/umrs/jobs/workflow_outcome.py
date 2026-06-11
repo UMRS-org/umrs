@@ -78,7 +78,9 @@ class WorkflowOutcome:
 
     resource_usage: dict[str, Any] = field(default_factory=dict)
     failure_reason: str | None = None
-    failure_category: str | None = None  # timeout|oom|tool_error|llm_error|network|user_input
+    failure_category: str | None = (
+        None  # timeout|oom|tool_error|llm_error|network|user_input
+    )
 
     step_metrics: list[StepMetric] = field(default_factory=list)
 
@@ -144,7 +146,13 @@ class OutcomeSummary:
 
 VALID_STATUSES = {"succeeded", "failed", "cancelled"}
 VALID_FAILURE_CATEGORIES = {
-    "timeout", "oom", "tool_error", "llm_error", "network", "user_input", None,
+    "timeout",
+    "oom",
+    "tool_error",
+    "llm_error",
+    "network",
+    "user_input",
+    None,
 }
 
 
@@ -160,6 +168,7 @@ class WorkflowOutcomeStore:
         if db_url:
             try:
                 import psycopg2  # type: ignore
+
                 self._psycopg2 = psycopg2
             except ImportError:
                 logger.warning(
@@ -204,7 +213,9 @@ class WorkflowOutcomeStore:
     ) -> WorkflowOutcome:
         """Record a workflow execution outcome."""
         if status not in VALID_STATUSES:
-            raise ValueError(f"Invalid status: {status!r}; must be one of {VALID_STATUSES}")
+            raise ValueError(
+                f"Invalid status: {status!r}; must be one of {VALID_STATUSES}"
+            )
         if failure_category not in VALID_FAILURE_CATEGORIES:
             raise ValueError(
                 f"Invalid failure_category: {failure_category!r}; "
@@ -243,7 +254,10 @@ class WorkflowOutcomeStore:
 
         logger.info(
             "Workflow outcome recorded: %s (job=%s wf=%s status=%s)",
-            outcome.outcome_id, job_id, workflow_name, status,
+            outcome.outcome_id,
+            job_id,
+            workflow_name,
+            status,
         )
         return outcome
 
@@ -305,13 +319,19 @@ class WorkflowOutcomeStore:
         failed = sum(1 for o in outcomes if o.status == "failed")
         cancelled = sum(1 for o in outcomes if o.status == "cancelled")
 
-        durations = [o.execution_duration_sec for o in outcomes if o.execution_duration_sec is not None]
+        durations = [
+            o.execution_duration_sec
+            for o in outcomes
+            if o.execution_duration_sec is not None
+        ]
         tokens = [o.total_tokens for o in outcomes if o.total_tokens is not None]
 
         failure_cats: dict[str, int] = {}
         for o in outcomes:
             if o.status == "failed" and o.failure_category:
-                failure_cats[o.failure_category] = failure_cats.get(o.failure_category, 0) + 1
+                failure_cats[o.failure_category] = (
+                    failure_cats.get(o.failure_category, 0) + 1
+                )
 
         return OutcomeSummary(
             workflow_name=name,
@@ -342,15 +362,29 @@ class WorkflowOutcomeStore:
                        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                     """,
                     (
-                        o.outcome_id, o.job_id, o.workflow_name, o.workflow_version,
-                        o.user_id, o.project_id, o.status, o.execution_duration_sec,
-                        o.step_count, o.failed_step_name, o.model_used, o.model_version,
-                        o.embedding_model, o.total_tokens, o.tool_call_count,
+                        o.outcome_id,
+                        o.job_id,
+                        o.workflow_name,
+                        o.workflow_version,
+                        o.user_id,
+                        o.project_id,
+                        o.status,
+                        o.execution_duration_sec,
+                        o.step_count,
+                        o.failed_step_name,
+                        o.model_used,
+                        o.model_version,
+                        o.embedding_model,
+                        o.total_tokens,
+                        o.tool_call_count,
                         o.retrieval_doc_count,
                         json.dumps(o.resource_usage),
-                        o.failure_reason, o.failure_category,
+                        o.failure_reason,
+                        o.failure_category,
                         json.dumps([m.to_dict() for m in o.step_metrics]),
-                        o.started_at, o.completed_at, o.created_at,
+                        o.started_at,
+                        o.completed_at,
+                        o.created_at,
                     ),
                 )
 

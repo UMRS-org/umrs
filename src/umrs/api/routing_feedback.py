@@ -44,6 +44,7 @@ def get_store() -> RoutingFeedbackStore:
 # Request / Response models
 # ---------------------------------------------------------------------------
 
+
 class RecordFeedbackRequest(BaseModel):
     job_id: str
     step_name: str
@@ -101,6 +102,7 @@ class SummaryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @router.post("", response_model=FeedbackResponse, status_code=status.HTTP_201_CREATED)
 def record_feedback(req: RecordFeedbackRequest):

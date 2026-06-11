@@ -288,7 +288,9 @@ class ReadinessPoller:
                 return False, models, validation_error
 
             if normalized_probe == "chat":
-                return await self._check_chat_probe(client, host, port, headers, probe_model, models)
+                return await self._check_chat_probe(
+                    client, host, port, headers, probe_model, models
+                )
 
             return True, models, ""
 
@@ -320,7 +322,9 @@ class ReadinessPoller:
         probe_model: str | None,
         models: list[str],
     ) -> tuple[bool, list[str], str]:
-        target_model = _chat_probe_target(probe_model, self.config.expected_model, models)
+        target_model = _chat_probe_target(
+            probe_model, self.config.expected_model, models
+        )
         if not target_model:
             return False, models, "Chat probe requires a model name"
 
@@ -363,7 +367,9 @@ class ReadinessPoller:
             return None, f"Chat probe error: {e}"
         return probe_response, None
 
-    def _chat_probe_http_error(self, probe_response: httpx.Response | None) -> str | None:
+    def _chat_probe_http_error(
+        self, probe_response: httpx.Response | None
+    ) -> str | None:
         if probe_response is None or probe_response.status_code == 200:
             return None
         return (
@@ -397,7 +403,9 @@ class ReadinessPoller:
     ) -> ReadinessResult:
         """Wait for endpoint to become ready and return the final state."""
         poll = self._start_poll(
-            _ReadinessTarget(job_id, host, port, probe_model, probe_kind, probe_path, on_progress)
+            _ReadinessTarget(
+                job_id, host, port, probe_model, probe_kind, probe_path, on_progress
+            )
         )
 
         while True:
@@ -430,7 +438,12 @@ class ReadinessPoller:
         )
 
         ready_result = self._ready_result(
-            poll.result, poll.target.job_id, poll.attempt, models, is_ready, poll.start_time
+            poll.result,
+            poll.target.job_id,
+            poll.attempt,
+            models,
+            is_ready,
+            poll.start_time,
         )
         if ready_result is not None:
             return ready_result

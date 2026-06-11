@@ -21,10 +21,22 @@ from typing import Any
 import boto3
 from botocore.config import Config as BotoConfig
 from botocore.exceptions import ClientError
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 
-from umrs.shared.storage.s3_presign import generate_presigned_get, generate_presigned_put
+from umrs.shared.storage.s3_presign import (
+    generate_presigned_get,
+    generate_presigned_put,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +107,7 @@ class PresignRequest(BaseModel):
     operation: PresignedOperation = Field(
         ..., description="Operation type: upload or download"
     )
-    key: str = Field(
-        ..., description="S3 object key (path within bucket)"
-    )
+    key: str = Field(..., description="S3 object key (path within bucket)")
     bucket: str | None = Field(
         None, description="Bucket name (uses default if not specified)"
     )
@@ -195,7 +205,10 @@ def get_project_id(
     MVP/Testing: Accept X-Project-ID header.
     """
     verified_project_id = _header_str(x_verified_project_id)
-    if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict" and verified_project_id:
+    if (
+        os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+        and verified_project_id
+    ):
         return verified_project_id
     if os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
         raise HTTPException(
@@ -277,7 +290,9 @@ async def upload_file(
 ) -> UploadResponse:
     """Store an uploaded file under the caller's project namespace."""
     if not file.filename:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required"
+        )
 
     object_key = validate_key(key or _upload_key(file.filename, purpose), project_id)
     bucket = config.bucket
@@ -291,7 +306,10 @@ async def upload_file(
             Key=object_key,
             Body=content,
             ContentType=content_type,
-            Metadata={"project_id": project_id, "filename": _safe_filename(file.filename)},
+            Metadata={
+                "project_id": project_id,
+                "filename": _safe_filename(file.filename),
+            },
         )
     except ClientError as e:
         logger.error("S3 error uploading file: %s", e)
@@ -367,7 +385,9 @@ async def generate_presigned_url(
                 )
             else:
                 url = generate_presigned_put(
-                    s3_client, bucket, key,
+                    s3_client,
+                    bucket,
+                    key,
                     content_type=request.content_type or "application/octet-stream",
                     ttl=ttl_sec,
                     use_external_endpoint=False,
@@ -381,13 +401,15 @@ async def generate_presigned_url(
 
         else:
             # Generate presigned GET URL
-            url = generate_presigned_get(s3_client, bucket, key, ttl=ttl_sec, use_external_endpoint=False)
+            url = generate_presigned_get(
+                s3_client, bucket, key, ttl=ttl_sec, use_external_endpoint=False
+            )
             headers = None
             method = "GET"
 
-        expires_at = datetime.now(timezone.utc).replace(
-            microsecond=0
-        ) + __import__("datetime").timedelta(seconds=ttl_sec)
+        expires_at = datetime.now(timezone.utc).replace(microsecond=0) + __import__(
+            "datetime"
+        ).timedelta(seconds=ttl_sec)
 
         logger.info(
             f"Generated presigned {request.operation.value} URL",
@@ -443,17 +465,21 @@ async def generate_presigned_urls_batch(
             result = await generate_presigned_url(req, project_id, config)
             results.append(result)
         except HTTPException as e:
-            errors.append({
-                "index": idx,
-                "key": req.key,
-                "error": e.detail,
-            })
+            errors.append(
+                {
+                    "index": idx,
+                    "key": req.key,
+                    "error": e.detail,
+                }
+            )
         except Exception as e:
-            errors.append({
-                "index": idx,
-                "key": req.key,
-                "error": str(e),
-            })
+            errors.append(
+                {
+                    "index": idx,
+                    "key": req.key,
+                    "error": str(e),
+                }
+            )
 
     return PresignBatchResponse(results=results, errors=errors)
 
@@ -486,7 +512,10 @@ async def get_file_metadata(
             bucket=bucket_name,
             size=response.get("ContentLength", 0),
             content_type=response.get("ContentType"),
-            last_modified=response.get("LastModified", datetime.now(timezone.utc)).isoformat() + "Z",
+            last_modified=response.get(
+                "LastModified", datetime.now(timezone.utc)
+            ).isoformat()
+            + "Z",
             etag=response.get("ETag", "").strip('"'),
             metadata=response.get("Metadata", {}),
         )

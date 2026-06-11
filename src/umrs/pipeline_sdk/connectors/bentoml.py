@@ -50,9 +50,7 @@ async def async_submit_batch(
         while True:
             elapsed = time.monotonic() - start
             if elapsed > timeout:
-                raise TimeoutError(
-                    f"Task {task.id} did not complete within {timeout}s"
-                )
+                raise TimeoutError(f"Task {task.id} did not complete within {timeout}s")
             status = await task.get_status()
             if status.value in {"success", "completed"}:
                 raw = await task.get()
@@ -84,8 +82,11 @@ def submit_batch(
     async def _run() -> list[dict[str, Any]]:
         async with bentoml.AsyncHTTPClient(service_url, token=token) as client:
             return await async_submit_batch(
-                client, endpoint, items,
-                timeout=timeout, poll_interval=poll_interval,
+                client,
+                endpoint,
+                items,
+                timeout=timeout,
+                poll_interval=poll_interval,
             )
 
     return asyncio.run(_run())

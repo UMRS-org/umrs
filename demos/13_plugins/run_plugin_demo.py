@@ -48,7 +48,7 @@ def create_sample_spec(plugin_script: str) -> PluginSpec:
         source_type=PluginSourceType.LOCAL_PATH,
         source_uri=plugin_script,
         entrypoint="word_count_plugin:main",
-        requirements=[],           # No extra pip packages
+        requirements=[],  # No extra pip packages
         env_vars={},
         cpu_limit="1",
         memory_limit="512Mi",
@@ -108,18 +108,17 @@ def execute_locally(spec: PluginSpec, input_dir: str, work_dir: str) -> PluginRe
 
     result = subprocess.run(
         [sys.executable, spec.source_uri],
-        capture_output=True, text=True,
-        env=env, timeout=spec.timeout_seconds,
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=spec.timeout_seconds,
         cwd=work_dir,
     )
 
     ended_at = datetime.now(timezone.utc)
 
     # Collect output files
-    output_files = [
-        str(p.relative_to(workspace))
-        for p in output_dest.rglob("*") if p.is_file()
-    ]
+    output_files = [str(p.relative_to(workspace)) for p in output_dest.rglob("*") if p.is_file()]
 
     # Read metrics if available
     metrics = {}
@@ -170,20 +169,29 @@ def print_result(result: PluginResult) -> None:
 def print_audit_trail(spec: PluginSpec, result: PluginResult) -> None:
     """Show what the audit log would contain."""
     events = [
-        ("submitted", {"spec_hash": spec.spec_hash(),
-                        "source_type": spec.source_type.value}),
+        ("submitted", {"spec_hash": spec.spec_hash(), "source_type": spec.source_type.value}),
         ("started", {"workspace": "/workspace"}),
     ]
     if result.output_files:
-        events.append(("output_written", {
-            "files": result.output_files,
-            "destinations": spec.output_destinations,
-        }))
+        events.append(
+            (
+                "output_written",
+                {
+                    "files": result.output_files,
+                    "destinations": spec.output_destinations,
+                },
+            )
+        )
     final = "succeeded" if result.status == PluginStatus.SUCCEEDED else "failed"
-    events.append((final, {
-        "exit_code": result.exit_code,
-        "metrics": result.metrics,
-    }))
+    events.append(
+        (
+            final,
+            {
+                "exit_code": result.exit_code,
+                "metrics": result.metrics,
+            },
+        )
+    )
 
     print("\n── Audit Trail ──")
     for event_type, details in events:
@@ -195,8 +203,10 @@ def print_audit_trail(spec: PluginSpec, result: PluginResult) -> None:
             project_id=spec.project_id,
             details=details,
         )
-        print(f"  [{entry.event_type:>16}]  plugin={entry.plugin_id}  "
-              f"user={entry.user_id}  project={entry.project_id}")
+        print(
+            f"  [{entry.event_type:>16}]  plugin={entry.plugin_id}  "
+            f"user={entry.user_id}  project={entry.project_id}"
+        )
         for k, v in entry.details.items():
             print(f"                      {k}: {v}")
 
@@ -230,9 +240,9 @@ def main():
         description="Plugin System Demo — local execution workflow",
     )
     parser.add_argument(
-        "--input-dir", default=None,
-        help="Directory containing .txt files to process "
-             "(default: ../../data/file_of_texts/)",
+        "--input-dir",
+        default=None,
+        help="Directory containing .txt files to process (default: ../../data/file_of_texts/)",
     )
     args = parser.parse_args()
 

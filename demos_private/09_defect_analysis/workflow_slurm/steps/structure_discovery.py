@@ -96,16 +96,11 @@ class StructureDiscoveryStep(Step):
         if labels is not None:
             for c in range(self.n_clusters):
                 members = [p for p in per_patch if p["cluster"] == c]
-                anomalies_in_c = [
-                    p for p in members if p.get("is_anomaly", False)
-                ]
+                anomalies_in_c = [p for p in members if p.get("is_anomaly", False)]
                 cluster_summary[f"cluster_{c}"] = {
                     "count": len(members),
                     "anomaly_count": len(anomalies_in_c),
-                    "anomaly_rate": (
-                        len(anomalies_in_c) / len(members)
-                        if members else 0.0
-                    ),
+                    "anomaly_rate": (len(anomalies_in_c) / len(members) if members else 0.0),
                 }
 
         report = {
@@ -128,7 +123,8 @@ class StructureDiscoveryStep(Step):
 
         logger.info(
             "Report: %d patches, %d clusters, %s",
-            len(patch_names), self.n_clusters,
+            len(patch_names),
+            self.n_clusters,
             {k: v["count"] for k, v in cluster_summary.items()},
         )
 
@@ -149,6 +145,7 @@ class StructureDiscoveryStep(Step):
             return None
         try:
             from umap import UMAP  # type: ignore[import-untyped]
+
             reducer = UMAP(n_components=2, random_state=42, n_neighbors=min(15, X.shape[0]))
             return reducer.fit_transform(X).astype(np.float32)
         except ImportError:
@@ -156,6 +153,7 @@ class StructureDiscoveryStep(Step):
 
         try:
             from sklearn.decomposition import PCA  # type: ignore[import-untyped]
+
             pca = PCA(n_components=2)
             return pca.fit_transform(X).astype(np.float32)
         except ImportError:
@@ -169,11 +167,13 @@ class StructureDiscoveryStep(Step):
         if X.shape[0] < self.n_clusters:
             logger.warning(
                 "Fewer samples (%d) than clusters (%d) — skipping clustering",
-                X.shape[0], self.n_clusters,
+                X.shape[0],
+                self.n_clusters,
             )
             return None, None
         try:
             from sklearn.cluster import KMeans  # type: ignore[import-untyped]
+
             km = KMeans(n_clusters=self.n_clusters, random_state=42, n_init=10)
             labels = km.fit_predict(X)
             return labels, km.cluster_centers_
@@ -182,16 +182,16 @@ class StructureDiscoveryStep(Step):
             return None, None
 
     def _load_anomaly_scores(
-        self, ctx: StepContext, patch_names: List[str],
+        self,
+        ctx: StepContext,
+        patch_names: List[str],
     ) -> List[Dict[str, Any]]:
         """Try to load anomaly JSON files that correspond to the patches."""
         scores: List[Dict[str, Any]] = []
         for name in patch_names:
             # embeddings/img_patch_0001_emb.npy → anomaly/img_patch_0001_anomaly.json
-            anomaly_key = (
-                name
-                .replace("embeddings/", "anomaly/")
-                .replace("_emb.npy", "_anomaly.json")
+            anomaly_key = name.replace("embeddings/", "anomaly/").replace(
+                "_emb.npy", "_anomaly.json"
             )
             try:
                 data = ctx.download_bytes(anomaly_key)

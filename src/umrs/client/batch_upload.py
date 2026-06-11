@@ -23,6 +23,7 @@ from umrs.shared.progress import ProgressGroup
 
 class FileState(str, Enum):
     """Upload state for an individual file."""
+
     PENDING = "pending"
     UPLOADING = "uploading"
     UPLOADED = "uploaded"
@@ -33,6 +34,7 @@ class FileState(str, Enum):
 @dataclass
 class FileEntry:
     """Tracks upload state for a single file."""
+
     relative_path: str
     size_bytes: int
     md5: str = ""
@@ -59,6 +61,7 @@ class UploadManifest:
     Persisted to a `.umrs_upload_manifest.json` file alongside the source
     directory so uploads survive client restarts.
     """
+
     source_dir: str
     bucket_alias: str
     created_at: float = field(default_factory=time.time)
@@ -101,7 +104,11 @@ class UploadManifest:
 
     @property
     def pending_files(self) -> list[FileEntry]:
-        return [f for f in self.files.values() if f.state in (FileState.PENDING, FileState.FAILED)]
+        return [
+            f
+            for f in self.files.values()
+            if f.state in (FileState.PENDING, FileState.FAILED)
+        ]
 
     @property
     def uploaded_count(self) -> int:
@@ -191,7 +198,9 @@ class BatchUploadManager:
 
         # Setup progress tracking
         self._progress_group = ProgressGroup(f"upload-{bucket_alias}")
-        tracker = self._progress_group.create_tracker("overall", total=manifest.total_count)
+        tracker = self._progress_group.create_tracker(
+            "overall", total=manifest.total_count
+        )
         tracker.set_progress(manifest.uploaded_count, "Resuming...")
         tracker.start()
 
@@ -243,16 +252,19 @@ class BatchUploadManager:
             except Exception as exc:
                 entry.last_error = str(exc)
                 if attempt < self.max_retries:
-                    time.sleep(min(2 ** attempt, 30))
+                    time.sleep(min(2**attempt, 30))
 
         entry.state = FileState.FAILED
         manifest.save()
-        raise RuntimeError(f"Upload failed after {self.max_retries} retries: {entry.last_error}")
+        raise RuntimeError(
+            f"Upload failed after {self.max_retries} retries: {entry.last_error}"
+        )
 
 
 @dataclass
 class UploadReport:
     """Summary of a batch upload operation."""
+
     manifest: UploadManifest
     errors: list[str] = field(default_factory=list)
 
@@ -262,7 +274,9 @@ class UploadReport:
 
     @property
     def failed(self) -> int:
-        return sum(1 for f in self.manifest.files.values() if f.state == FileState.FAILED)
+        return sum(
+            1 for f in self.manifest.files.values() if f.state == FileState.FAILED
+        )
 
     @property
     def total(self) -> int:

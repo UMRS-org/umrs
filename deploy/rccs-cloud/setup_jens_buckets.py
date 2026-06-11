@@ -92,7 +92,9 @@ def main():
     print(f"  Output (PUT): http://localhost:9000/jens-output/<key>")
     print(f"\nExample:")
     print(f"  curl http://localhost:9000/jens/test/image.png -o image.png")
-    print(f"  curl -X PUT --upload-file result.png http://localhost:9000/jens-output/test/result.png")
+    print(
+        f"  curl -X PUT --upload-file result.png http://localhost:9000/jens-output/test/result.png"
+    )
 
     return 0 if all_ok else 1
 

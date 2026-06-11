@@ -6,7 +6,7 @@ from flask import Flask, request
 # socket = context.socket(zmq.PUB)
 # socket.connect("tcp://127.0.0.1:5555")
 
-            
+
 # ZeroMQ Context & Publisher
 # context = zmq.Context()
 # socket = context.socket(zmq.PUB)
@@ -16,7 +16,7 @@ from flask import Flask, request
 app = Flask(__name__)
 
 
-@app.route('/minio-events', methods=['POST'])
+@app.route("/minio-events", methods=["POST"])
 def minio_events():
     """Receive MinIO Webhook Event and Push to ZeroMQ"""
     data = request.json  # Get JSON data from MinIO
@@ -28,5 +28,6 @@ def minio_events():
             print(f"Received: {msg}")
     return "OK", 200
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     app.run(port=5000, debug=True)

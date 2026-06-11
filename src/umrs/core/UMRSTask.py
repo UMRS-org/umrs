@@ -13,9 +13,9 @@ from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 
 
 class UMRSTask:
-    def __init__(self, db_path: str = "tasks.db", max_attempts = 3):
+    def __init__(self, db_path: str = "tasks.db", max_attempts=3):
         self.db_path = db_path
-         # Ensure parent directory exists
+        # Ensure parent directory exists
         dir_path = os.path.dirname(self.db_path)
         if dir_path and not os.path.exists(dir_path):
             os.makedirs(dir_path, exist_ok=True)
@@ -57,7 +57,9 @@ class UMRSTask:
             traceback.print_stack()
         with self.conn_lock:
             cursor = self.conn.cursor()
-            cursor.execute("SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC")
+            cursor.execute(
+                "SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC"
+            )
             rows = cursor.fetchall()
 
         seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
@@ -71,21 +73,27 @@ class UMRSTask:
                 seen_tasks[key] = {
                     "id": task_id,
                     "status": status,
-                    "submitted_at": submitted_at
+                    "submitted_at": submitted_at,
                 }
             else:
                 # Task already seen
                 if mark_override:
                     # Only consider overriding earlier incomplete tasks
                     current_status = seen_tasks[key]["status"]
-                    if current_status == TaskStatus.COMPLETED and status != TaskStatus.COMPLETED:
+                    if (
+                        current_status == TaskStatus.COMPLETED
+                        and status != TaskStatus.COMPLETED
+                    ):
                         # Mark older incomplete task as OVERRIDDEN
                         with self.conn_lock, self.conn:
                             self.conn.execute(
                                 "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                                (TaskStatus.OVERRIDDEN, datetime.utcnow().isoformat(), task_id)
+                                (
+                                    TaskStatus.OVERRIDDEN,
+                                    datetime.utcnow().isoformat(),
+                                    task_id,
+                                ),
                             )
-
 
         # Return dict of unique tasks not completed
         result = {
@@ -106,10 +114,23 @@ class UMRSTask:
                     SET status = ?, updated_at = ?
                     WHERE status IS NULL OR status NOT IN (?,?,?)
                     """,
-                    (TaskStatus.ABORTED, now, TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN, TaskStatus.NO_SUCH_BUCKET)
+                    (
+                        TaskStatus.ABORTED,
+                        now,
+                        TaskStatus.COMPLETED,
+                        TaskStatus.OVERRIDDEN,
+                        TaskStatus.NO_SUCH_BUCKET,
+                    ),
                 )
 
-    def pretty_print_tasks(self, status_filter=None, client_id_filter=None, print_output=True, verbose=False, limit=None):
+    def pretty_print_tasks(
+        self,
+        status_filter=None,
+        client_id_filter=None,
+        print_output=True,
+        verbose=False,
+        limit=None,
+    ):
         """
         Pretty-print tasks from the database.
         Can filter by status or client_id.
@@ -161,18 +182,27 @@ class UMRSTask:
         for row in rows:
             row = list(row)
             if row[3] is not None:  # payload column
-                row[3] = "\n".join(
-                    textwrap.wrap(str(row[3]), width=70)
-                )
+                row[3] = "\n".join(textwrap.wrap(str(row[3]), width=70))
             wrapped_rows.append(row)
 
         if not rows:
             message = "No tasks found"
         else:
-            headers = ["ID", "Client ID", "Command", "Payload", "Status", "Submitted At", "Updated At"]
+            headers = [
+                "ID",
+                "Client ID",
+                "Command",
+                "Payload",
+                "Status",
+                "Submitted At",
+                "Updated At",
+            ]
             table = tabulate(wrapped_rows, headers, tablefmt="fancy_grid")
             if limit and total_count > limit:
-                message = f"Tasks in DB (showing {limit} of {total_count} most recent):\n" + table
+                message = (
+                    f"Tasks in DB (showing {limit} of {total_count} most recent):\n"
+                    + table
+                )
             else:
                 message = "Tasks in DB:\n" + table
 
@@ -199,16 +229,22 @@ class UMRSTask:
             str_payload = json.dumps("")
 
         elif cmd == TaskCmd.FILE:
-            client_id, files = full_payload if isinstance(full_payload, tuple) else ("", full_payload)
+            client_id, files = (
+                full_payload if isinstance(full_payload, tuple) else ("", full_payload)
+            )
             str_payload = json.dumps(files)
 
         elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
             client_id, export_args, _ = full_payload
             str_payload = json.dumps(export_args)
 
-        elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
-                     TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW) or cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL,
-                     TaskCmd.PURGE_BUCKETS):
+        elif cmd in (
+            TaskCmd.MODEL_REGISTER,
+            TaskCmd.MODEL_LIST,
+            TaskCmd.MODEL_DOWNLOAD,
+            TaskCmd.LIST_WORKFLOWS,
+            TaskCmd.RUN_WORKFLOW,
+        ) or cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.PURGE_BUCKETS):
             client_id, payload_str, _zmq_sender_id = full_payload
             str_payload = payload_str
 
@@ -216,8 +252,12 @@ class UMRSTask:
             client_id, files, workflow_name = full_payload
             str_payload = json.dumps({"files": files, "workflow_name": workflow_name})
 
-        elif cmd in (TaskCmd.HAND_CHECK, TaskCmd.CREATE_DATA_QUEUE, TaskCmd.STATUS,
-                     TaskCmd.JOB_LIST):
+        elif cmd in (
+            TaskCmd.HAND_CHECK,
+            TaskCmd.CREATE_DATA_QUEUE,
+            TaskCmd.STATUS,
+            TaskCmd.JOB_LIST,
+        ):
             print(f"We do not create task_id for {cmd=}")
             return None
 
@@ -226,7 +266,6 @@ class UMRSTask:
 
         # Returns the task ID as int
         return self.add_task(client_id, cmd, str_payload, TaskStatus.SUBMITTED)
-
 
     def add_task(self, client_id: str, cmd: str, payload: str, status: str) -> int:
         """Insert a task in the DB and return its integer ID.
@@ -245,7 +284,9 @@ class UMRSTask:
                     )
                     row = cur.fetchone()
                     if row is not None:
-                        print(f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})")
+                        print(
+                            f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})"
+                        )
                         return row[0]
 
                     now = datetime.utcnow().isoformat()
@@ -253,7 +294,7 @@ class UMRSTask:
                         cur = self.conn.execute(
                             "INSERT INTO tasks (client_id, cmd, payload, status, submitted_at, updated_at) "
                             "VALUES (?, ?, ?, ?, ?, ?)",
-                            (client_id, cmd, payload, status, now, now)
+                            (client_id, cmd, payload, status, now, now),
                         )
                 # Success -> leave the loop
                 break
@@ -281,7 +322,7 @@ class UMRSTask:
                     with self.conn:
                         self.conn.execute(
                             "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                            (new_status, now, task_id)
+                            (new_status, now, task_id),
                         )
                 # Success -> leave the loop
                 break
@@ -303,7 +344,7 @@ class UMRSTask:
         self,
         status: str | None = None,
         client_id: str | None = None,
-        verbose: bool = False
+        verbose: bool = False,
     ) -> list[dict]:
 
         query = """

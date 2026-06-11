@@ -34,7 +34,9 @@ def _env_flag(env: Mapping[str, str], name: str, default: bool = False) -> bool:
 
 def _validate_curve_key(name: str, value: str | None) -> bytes:
     if not value:
-        raise ValueError(f"{name} is required when UMRS_ZMQ_AUTH_TYPE is curve or session")
+        raise ValueError(
+            f"{name} is required when UMRS_ZMQ_AUTH_TYPE is curve or session"
+        )
     try:
         encoded = value.encode("ascii")
     except UnicodeEncodeError as exc:
@@ -100,7 +102,9 @@ class ZMQSecurityConfig:
         """True when using ephemeral session-scoped CURVE credentials."""
         return self.auth_type == "session"
 
-    def apply_to_socket(self, socket: Any, *, server: bool, context: Any = None) -> Any | None:
+    def apply_to_socket(
+        self, socket: Any, *, server: bool, context: Any = None
+    ) -> Any | None:
         """Apply configured security options before bind/connect.
 
         Returns a started authenticator when the server path needs one. Callers
@@ -149,7 +153,9 @@ class ZMQSecurityConfig:
 
     def _start_curve_authenticator(self, context: Any) -> Any:
         if context is None:
-            raise ValueError("A ZMQ context is required for CURVE server authentication")
+            raise ValueError(
+                "A ZMQ context is required for CURVE server authentication"
+            )
 
         if self.auth_type == "session":
             # Session mode: use custom authenticator that returns session_id
@@ -165,7 +171,9 @@ class ZMQSecurityConfig:
             authenticator.configure_curve_callback(
                 domain="*", credentials_provider=self.credentials_provider
             )
-            logger.info("ZMQ CURVE authentication enabled (session-scoped, ZAP identity propagation)")
+            logger.info(
+                "ZMQ CURVE authentication enabled (session-scoped, ZAP identity propagation)"
+            )
         else:
             from zmq.auth.thread import ThreadAuthenticator
 
@@ -180,11 +188,15 @@ class ZMQSecurityConfig:
                 )
             from zmq.auth import CURVE_ALLOW_ANY
 
-            location = CURVE_ALLOW_ANY if self.allow_any_client_key else self.client_keys_dir
+            location = (
+                CURVE_ALLOW_ANY if self.allow_any_client_key else self.client_keys_dir
+            )
             authenticator.configure_curve(domain="*", location=location)
             logger.info(
                 "ZMQ CURVE authentication enabled (%s)",
-                "allow-any development mode" if self.allow_any_client_key else self.client_keys_dir,
+                "allow-any development mode"
+                if self.allow_any_client_key
+                else self.client_keys_dir,
             )
         return authenticator
 
@@ -244,8 +256,12 @@ class _SessionThreadAuthenticator:
     def is_alive(self) -> bool:
         return self._inner.is_alive()
 
-    def configure_curve_callback(self, domain: str = "*", credentials_provider: Any = None) -> None:
-        self._inner.configure_curve_callback(domain=domain, credentials_provider=credentials_provider)
+    def configure_curve_callback(
+        self, domain: str = "*", credentials_provider: Any = None
+    ) -> None:
+        self._inner.configure_curve_callback(
+            domain=domain, credentials_provider=credentials_provider
+        )
 
     def configure_curve(self, domain: str = "*", location: Any = ".") -> None:
         self._inner.configure_curve(domain=domain, location=location)
@@ -299,9 +315,13 @@ class CurveKeyMap:
                 self._key_to_user[z85] = username
                 logger.debug("Loaded CURVE key for user %r from %s", username, key_file)
             except Exception:
-                logger.warning("Failed to load CURVE key from %s", key_file, exc_info=True)
+                logger.warning(
+                    "Failed to load CURVE key from %s", key_file, exc_info=True
+                )
         logger.info(
-            "CurveKeyMap loaded %d client key(s) from %s", len(self._key_to_user), self._dir
+            "CurveKeyMap loaded %d client key(s) from %s",
+            len(self._key_to_user),
+            self._dir,
         )
 
     def username_for_key(self, z85_public_key: str) -> str | None:

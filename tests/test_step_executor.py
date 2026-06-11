@@ -181,7 +181,7 @@ def step_module(tmp_path, monkeypatch):
     (pkg / "__init__.py").write_text("")
     (pkg / "steps.py").write_text(
         textwrap.dedent(
-            '''
+            """
             from umrs.pipeline_sdk.step import Step, StepContext, StepResult
 
 
@@ -197,7 +197,7 @@ def step_module(tmp_path, monkeypatch):
 
                 def run(self, ctx):
                     raise RuntimeError("subprocess boom")
-            '''
+            """
         ).strip()
         + "\n"
     )
@@ -254,7 +254,7 @@ def test_subprocess_executor_timeout(step_module, monkeypatch, tmp_path):
     (pkg / "__init__.py").write_text("")
     (pkg / "slow.py").write_text(
         textwrap.dedent(
-            '''
+            """
             import time
             from umrs.pipeline_sdk.step import Step, StepResult
 
@@ -265,7 +265,7 @@ def test_subprocess_executor_timeout(step_module, monkeypatch, tmp_path):
                 def run(self, ctx):
                     time.sleep(10)
                     return StepResult()
-            '''
+            """
         ).strip()
         + "\n"
     )

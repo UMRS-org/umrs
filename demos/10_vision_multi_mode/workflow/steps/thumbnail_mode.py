@@ -62,17 +62,22 @@ class ThumbnailModeStep(Step):
                     content_type=f"image/{ext}",
                 )
                 output_keys.append(out_key)
-                metadata_list.append({
-                    "source_key": key,
-                    "size": size,
-                    "original_size": [orig_w, orig_h],
-                    "thumb_size": list(thumb.size),
-                })
+                metadata_list.append(
+                    {
+                        "source_key": key,
+                        "size": size,
+                        "original_size": [orig_w, orig_h],
+                        "thumb_size": list(thumb.size),
+                    }
+                )
                 checksums.append("")
 
             logger.info(
                 "Generated %d thumbnails for %s (%dx%d)",
-                len(self.sizes), key, orig_w, orig_h,
+                len(self.sizes),
+                key,
+                orig_w,
+                orig_h,
             )
 
         return StepResult(

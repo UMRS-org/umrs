@@ -20,11 +20,13 @@ parser.add_argument("-d", "--data", required=True, help="Data")
 args = parser.parse_args()
 
 # Path to the configuration file
-configure_file = "/Users/ejeannot/recherche/DDN_RIKEN/Unified_Multimodal_Retriever_Service/umrs_conf.json"
+configure_file = (
+    "/Users/ejeannot/recherche/DDN_RIKEN/Unified_Multimodal_Retriever_Service/umrs_conf.json"
+)
 
 # Check if the file exists
 if not os.path.exists(configure_file):
-    sys.exit(f"Configuration file \"{configure_file}\" not found.")
+    sys.exit(f'Configuration file "{configure_file}" not found.')
 
 # Load JSON content from the file
 with open(configure_file, "r", encoding="utf-8") as file:
@@ -62,9 +64,9 @@ print(user["username"], xp["xp_name"], modality["modality_name"])
 bucket_name = modality["s3"]["bucket_name"]
 user_md5 = user["md5"]
 
-if(modality["modality_name"] == "text"):
-    if os.path.isfile(args.data): #if its a file store each line individually
-        with open(args.data,"r") as file:
+if modality["modality_name"] == "text":
+    if os.path.isfile(args.data):  # if its a file store each line individually
+        with open(args.data, "r") as file:
             for line in file.readlines():
                 line = line.strip()
                 s3_key = s3_store_txt(line, modality["s3"], user_md5)
@@ -73,15 +75,12 @@ if(modality["modality_name"] == "text"):
         s3_key = s3_store_txt(args.data, modality["s3"], user_md5)
         print(f"'{args.data}' saved as {s3_key} on: {bucket_name}")
 
-if(modality["modality_name"] == "image"):
-    if os.path.isfile(args.data): #if it is a file, store it
+if modality["modality_name"] == "image":
+    if os.path.isfile(args.data):  # if it is a file, store it
         s3_key = s3_store_image(args.data, modality["s3"], user_md5)
         print(f"'{s3_key}' saved on: {bucket_name}")
-    if os.path.isdir(args.data): #if it is a path, store each file in the corresponding directory
+    if os.path.isdir(args.data):  # if it is a path, store each file in the corresponding directory
         for file in glob(os.path.join(args.data, "*")):
             if os.path.isfile(file):
                 s3_key = s3_store_image(file, modality["s3"], user_md5)
                 print(f"'{s3_key}' saved on: {bucket_name}")
-
-
-

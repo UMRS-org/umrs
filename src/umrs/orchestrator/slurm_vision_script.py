@@ -39,7 +39,9 @@ class VisionJobConfig:
     # Model and adapter paths
     model_path: str = "/models"
     adapter_path: str = ""  # Custom adapter directory (optional)
-    model_type: str = ""  # Primary model type to load (e.g., "sam3", "hmae", "huggingface")
+    model_type: str = (
+        ""  # Primary model type to load (e.g., "sam3", "hmae", "huggingface")
+    )
 
     # Environment overrides
     max_vision_models: int = 3
@@ -208,9 +210,13 @@ fi"""
 def _vision_launch(cfg: VisionJobConfig) -> str:
     # Build environment variable flags
     env_flags = []
-    env_flags.append(_podman_env_flag("VISION_ADAPTERS_DIR", "/adapters/system:/adapters/user"))
+    env_flags.append(
+        _podman_env_flag("VISION_ADAPTERS_DIR", "/adapters/system:/adapters/user")
+    )
     env_flags.append(_podman_env_flag("MAX_VISION_MODELS", cfg.max_vision_models))
-    env_flags.append(_podman_env_flag("TRANSFORMERS_OFFLINE", 1 if cfg.hf_offline else 0))
+    env_flags.append(
+        _podman_env_flag("TRANSFORMERS_OFFLINE", 1 if cfg.hf_offline else 0)
+    )
     env_flags.append(_podman_env_flag("HF_HOME", "/models/.hf_cache"))
 
     if cfg.vision_require_presigned_urls:
@@ -218,7 +224,9 @@ def _vision_launch(cfg: VisionJobConfig) -> str:
     if cfg.s3_endpoint_url:
         env_flags.append(_podman_env_flag("S3_ENDPOINT_URL", cfg.s3_endpoint_url))
     if cfg.s3_presign_endpoint:
-        env_flags.append(_podman_env_flag("VISION_S3_PRESIGN_ENDPOINT", cfg.s3_presign_endpoint))
+        env_flags.append(
+            _podman_env_flag("VISION_S3_PRESIGN_ENDPOINT", cfg.s3_presign_endpoint)
+        )
 
     for k, v in cfg.extra_env.items():
         env_flags.append(_podman_env_flag(k, v))
@@ -229,14 +237,17 @@ def _vision_launch(cfg: VisionJobConfig) -> str:
     volume_flags = []
     volume_flags.append('-v "${MODEL_PATH}:/models:ro"')
     if cfg.adapter_path:
-        volume_flags.append(f"-v {_shell_quote(f'{cfg.adapter_path}:/adapters/user:ro')}")
+        volume_flags.append(
+            f"-v {_shell_quote(f'{cfg.adapter_path}:/adapters/user:ro')}"
+        )
 
     volume_str = " \\\n    ".join(volume_flags)
 
     modules_str = ""
     if cfg.slurm_modules:
         modules_str = "\n".join(
-            f"module load {_shell_quote(m)} 2>/dev/null || true" for m in cfg.slurm_modules
+            f"module load {_shell_quote(m)} 2>/dev/null || true"
+            for m in cfg.slurm_modules
         )
         modules_str = f"\n# Load site modules\n{modules_str}\n"
 

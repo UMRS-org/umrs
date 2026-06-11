@@ -20,6 +20,7 @@ import asyncio
 
 # Test imports
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 
@@ -94,6 +95,7 @@ class MockPool:
 # ============================================================================
 # Unit Tests for Models
 # ============================================================================
+
 
 class TestJobModels:
     """Tests for job models and utilities."""
@@ -220,12 +222,20 @@ class TestJobModels:
 # Unit Tests for Adapters
 # ============================================================================
 
+
 class TestAdapters:
     """Tests for backend adapters."""
 
     def test_index_build_backend_submit(self):
         """IndexBuildBackend should perform pgvector maintenance synchronously."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import IndexBuildBackend
 
         spec = {
@@ -278,7 +288,14 @@ class TestAdapters:
 
     def test_cleanup_backend_submit_endpoint(self):
         """CleanupBackend should teardown an endpoint target."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import CleanupBackend
 
         spec = {
@@ -324,7 +341,14 @@ class TestAdapters:
 
     def test_cleanup_backend_resolves_durable_endpoint_job_id(self):
         """CleanupBackend should resolve durable endpoint job IDs to backend refs."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import CleanupBackend
 
         spec = {
@@ -403,7 +427,14 @@ class TestAdapters:
 
     def test_cleanup_status_checker_succeeds_when_endpoint_is_absent(self):
         """Cleanup status should succeed once the target endpoint is gone."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import CleanupStatusChecker
 
         spec = {"target": "endpoint", "job_id": "slurm-123"}
@@ -445,7 +476,14 @@ class TestAdapters:
 
     def test_cleanup_status_checker_reports_requested_job_id(self):
         """Cleanup status should preserve the original durable endpoint job ID in metrics."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import CleanupStatusChecker
 
         spec = {"target": "endpoint", "job_id": "job-endpoint-123"}
@@ -471,8 +509,7 @@ class TestAdapters:
             attempt_no=1,
             backend="cleanup",
             backend_ref=(
-                "cleanup|target=endpoint|job_id=slurm-123"
-                "|requested_job_id=job-endpoint-123|force=0"
+                "cleanup|target=endpoint|job_id=slurm-123|requested_job_id=job-endpoint-123|force=0"
             ),
             status=AttemptStatus.SUBMITTED,
             created_at=datetime.utcnow(),
@@ -490,16 +527,25 @@ class TestAdapters:
 
     def test_endpoint_provision_backend_submit(self):
         """Test EndpointProvisionBackend submit_job."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import EndpointProvisionBackend
 
         # Mock orchestrator
         mock_orchestrator = AsyncMock()
         mock_orchestrator.backend_type = "compose"
-        mock_orchestrator.submit_job = AsyncMock(return_value=MagicMock(
-            job_id="container-123",
-            endpoint=MagicMock(node="localhost"),
-        ))
+        mock_orchestrator.submit_job = AsyncMock(
+            return_value=MagicMock(
+                job_id="container-123",
+                endpoint=MagicMock(node="localhost"),
+            )
+        )
 
         # Mock registry
         mock_registry = MagicMock()
@@ -555,7 +601,7 @@ class TestAdapters:
         )
 
         # Patch _determine_target_host to avoid module import issues
-        with patch.object(backend, '_determine_target_host', return_value="localhost"):
+        with patch.object(backend, "_determine_target_host", return_value="localhost"):
             # Submit
             backend_ref = asyncio.run(backend.submit_job(job, attempt))
 
@@ -566,15 +612,24 @@ class TestAdapters:
 
     def test_endpoint_provision_backend_merges_env_vars(self):
         """EndpointProvisionBackend should preserve caller env overrides."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import EndpointProvisionBackend
 
         mock_orchestrator = AsyncMock()
         mock_orchestrator.backend_type = "compose"
-        mock_orchestrator.submit_job = AsyncMock(return_value=MagicMock(
-            job_id="container-123",
-            endpoint=MagicMock(node="localhost"),
-        ))
+        mock_orchestrator.submit_job = AsyncMock(
+            return_value=MagicMock(
+                job_id="container-123",
+                endpoint=MagicMock(node="localhost"),
+            )
+        )
 
         backend = EndpointProvisionBackend(
             orchestrator=mock_orchestrator,
@@ -624,7 +679,7 @@ class TestAdapters:
             created_at=datetime.utcnow(),
         )
 
-        with patch.object(backend, '_determine_target_host', return_value="localhost"):
+        with patch.object(backend, "_determine_target_host", return_value="localhost"):
             asyncio.run(backend.submit_job(job, attempt))
 
         env = mock_orchestrator.submit_job.await_args.kwargs["env"]
@@ -635,15 +690,24 @@ class TestAdapters:
 
     def test_endpoint_provision_backend_translates_mounts(self):
         """Durable endpoint jobs should translate mount intent to launch env."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import EndpointProvisionBackend
 
         mock_orchestrator = AsyncMock()
         mock_orchestrator.backend_name = "slurm-podman"
-        mock_orchestrator.submit_job = AsyncMock(return_value=MagicMock(
-            job_id="slurm-123",
-            endpoint=MagicMock(node="pending"),
-        ))
+        mock_orchestrator.submit_job = AsyncMock(
+            return_value=MagicMock(
+                job_id="slurm-123",
+                endpoint=MagicMock(node="pending"),
+            )
+        )
 
         backend = EndpointProvisionBackend(
             orchestrator=mock_orchestrator,
@@ -656,9 +720,7 @@ class TestAdapters:
             "model_path": "/models/test",
             "tier": "project",
             "mounts": {
-                "mcp_servers": [
-                    {"source": "/home/alice/tools", "target": "/mcp-servers/tools"}
-                ],
+                "mcp_servers": [{"source": "/home/alice/tools", "target": "/mcp-servers/tools"}],
                 "project_data": {"source": "/project/data", "target": "/project"},
                 "rag_index": {"source": "/project/rag-index", "target": "/rag-index"},
             },
@@ -706,15 +768,24 @@ class TestAdapters:
 
     def test_endpoint_provision_backend_resolves_registered_model_path(self):
         """EndpointProvisionBackend should resolve catalog-backed models when only the name is provided."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import EndpointProvisionBackend
 
         mock_orchestrator = AsyncMock()
         mock_orchestrator.backend_type = "slurm-podman"
-        mock_orchestrator.submit_job = AsyncMock(return_value=MagicMock(
-            job_id="slurm-123",
-            endpoint=MagicMock(node="pending"),
-        ))
+        mock_orchestrator.submit_job = AsyncMock(
+            return_value=MagicMock(
+                job_id="slurm-123",
+                endpoint=MagicMock(node="pending"),
+            )
+        )
 
         backend = EndpointProvisionBackend(
             orchestrator=mock_orchestrator,
@@ -757,10 +828,16 @@ class TestAdapters:
             created_at=datetime.utcnow(),
         )
 
-        with patch("umrs.jobs.adapters._resolve_registered_model", return_value={
-            "storage_ref": "/models/qwen3-8b",
-            "huggingface_id": "Qwen/Qwen3-8B",
-        }), patch.object(backend, '_determine_target_host', return_value="pending"):
+        with (
+            patch(
+                "umrs.jobs.adapters._resolve_registered_model",
+                return_value={
+                    "storage_ref": "/models/qwen3-8b",
+                    "huggingface_id": "Qwen/Qwen3-8B",
+                },
+            ),
+            patch.object(backend, "_determine_target_host", return_value="pending"),
+        ):
             asyncio.run(backend.submit_job(job, attempt))
 
         kwargs = mock_orchestrator.submit_job.await_args.kwargs
@@ -786,7 +863,14 @@ class TestAdapters:
 
     def test_endpoint_status_checker_refreshes_slurm_endpoint_location(self):
         """Backend status should update pending Slurm endpoints before readiness checks."""
-        from umrs.jobs import Job, JobAttempt, JobType, JobStatus, AttemptStatus, compute_idempotency_key
+        from umrs.jobs import (
+            Job,
+            JobAttempt,
+            JobType,
+            JobStatus,
+            AttemptStatus,
+            compute_idempotency_key,
+        )
         from umrs.jobs.adapters import EndpointProvisionStatusChecker
         from umrs.orchestrator.base import EndpointInfo, JobInfo, JobStatus as OrchestratorJobStatus
         from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint
@@ -841,9 +925,7 @@ class TestAdapters:
         mock_registry.mark_failed.return_value = endpoint
 
         mock_readiness = MagicMock()
-        mock_readiness.check_ready_detail = AsyncMock(
-            return_value=(True, ["test-model"], None)
-        )
+        mock_readiness.check_ready_detail = AsyncMock(return_value=(True, ["test-model"], None))
 
         mock_orchestrator = MagicMock()
         mock_orchestrator.get_job_status = AsyncMock(
@@ -916,7 +998,9 @@ class TestScheduler:
         from umrs.jobs.scheduler import Scheduler
 
         job_store = MagicMock()
-        job_store.get_job.return_value = MagicMock(job_type=JobType.ENDPOINT_PROVISION, next_run_at=None)
+        job_store.get_job.return_value = MagicMock(
+            job_type=JobType.ENDPOINT_PROVISION, next_run_at=None
+        )
         job_store.create_attempt.return_value = "att-123"
         job_store.get_attempt.return_value = MagicMock(attempt_id="att-123")
 
@@ -948,9 +1032,13 @@ class TestOrchestrationServiceConfig:
         fake_site.scheduler.kind = "slurm-podman"
         fake_backend = MagicMock()
 
-        with patch("umrs.orchestrator.service.load_site_config", return_value=fake_site), \
-             patch("umrs.orchestrator.service.get_orchestrator", return_value=fake_backend) as mock_get_orchestrator, \
-             patch("umrs.orchestrator.service.detect_backend") as mock_detect_backend:
+        with (
+            patch("umrs.orchestrator.service.load_site_config", return_value=fake_site),
+            patch(
+                "umrs.orchestrator.service.get_orchestrator", return_value=fake_backend
+            ) as mock_get_orchestrator,
+            patch("umrs.orchestrator.service.detect_backend") as mock_detect_backend,
+        ):
             service = OrchestrationService()
             backend = service.backend
 
@@ -1084,13 +1172,17 @@ class TestOrchestrationServiceConfig:
 
         mock_readiness = MagicMock()
         mock_readiness.config.timeout_sec = 300
-        mock_readiness.wait_for_ready = AsyncMock(return_value=MagicMock(is_ready=True, models=["intfloat/e5-base-v2"]))
+        mock_readiness.wait_for_ready = AsyncMock(
+            return_value=MagicMock(is_ready=True, models=["intfloat/e5-base-v2"])
+        )
 
         mock_backend = MagicMock()
-        mock_backend.submit_job = AsyncMock(return_value=MagicMock(
-            job_id="slurm-321",
-            endpoint=MagicMock(node="node-1"),
-        ))
+        mock_backend.submit_job = AsyncMock(
+            return_value=MagicMock(
+                job_id="slurm-321",
+                endpoint=MagicMock(node="node-1"),
+            )
+        )
 
         service = OrchestrationService(
             registry=mock_registry,
@@ -1133,13 +1225,17 @@ class TestOrchestrationServiceConfig:
 
         mock_readiness = MagicMock()
         mock_readiness.config.timeout_sec = 300
-        mock_readiness.wait_for_ready = AsyncMock(return_value=MagicMock(is_ready=True, models=["qwen3-8b"]))
+        mock_readiness.wait_for_ready = AsyncMock(
+            return_value=MagicMock(is_ready=True, models=["qwen3-8b"])
+        )
 
         mock_backend = MagicMock()
-        mock_backend.submit_job = AsyncMock(return_value=MagicMock(
-            job_id="slurm-777",
-            endpoint=MagicMock(node="node-1"),
-        ))
+        mock_backend.submit_job = AsyncMock(
+            return_value=MagicMock(
+                job_id="slurm-777",
+                endpoint=MagicMock(node="node-1"),
+            )
+        )
 
         service = OrchestrationService(
             registry=mock_registry,
@@ -1330,6 +1426,7 @@ class TestOrchestrationServiceConfig:
 # Unit Tests for Reconciler
 # ============================================================================
 
+
 class TestReconciler:
     """Tests for boot reconciliation."""
 
@@ -1369,6 +1466,7 @@ class TestReconciler:
 # Integration Tests (require DB)
 # ============================================================================
 
+
 @pytest.fixture
 def db_pool():
     """Create a test database pool."""
@@ -1386,14 +1484,14 @@ class TestDurableOrchestrationIntegration:
         # Create with mocks
         mock_pool = MockPool()
 
-        with patch('umrs.orchestrator.durable.ensure_schema'):
-            with patch('umrs.orchestrator.durable.JobService') as MockJobService:
+        with patch("umrs.orchestrator.durable.ensure_schema"):
+            with patch("umrs.orchestrator.durable.JobService") as MockJobService:
                 mock_job_service = MagicMock()
                 mock_job_service.startup = AsyncMock(return_value=MagicMock())
                 mock_job_service.shutdown = AsyncMock()
                 MockJobService.return_value = mock_job_service
 
-                with patch('umrs.orchestrator.durable.OrchestrationService') as MockOrch:
+                with patch("umrs.orchestrator.durable.OrchestrationService") as MockOrch:
                     mock_orch = MagicMock()
                     mock_orch.backend = MagicMock()
                     mock_orch.registry = MagicMock()
@@ -1402,8 +1500,8 @@ class TestDurableOrchestrationIntegration:
                     mock_orch.close = AsyncMock()
                     MockOrch.return_value = mock_orch
 
-                    with patch('umrs.orchestrator.durable.create_backend_factory'):
-                        with patch('umrs.orchestrator.durable.create_status_checker'):
+                    with patch("umrs.orchestrator.durable.create_backend_factory"):
+                        with patch("umrs.orchestrator.durable.create_status_checker"):
                             service = DurableOrchestrationService(
                                 db_pool=mock_pool,
                             )
@@ -1418,6 +1516,7 @@ class TestDurableOrchestrationIntegration:
 # ============================================================================
 # State Machine Tests
 # ============================================================================
+
 
 class TestStateMachine:
     """Tests for job state machine transitions."""

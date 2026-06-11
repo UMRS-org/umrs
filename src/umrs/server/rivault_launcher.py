@@ -40,8 +40,10 @@ _FRONTEND_ONLY_PROFILES = {"services"}
 def _get_cached_job(model_type_key):
     """Return the Slurm job ID (int) cached for *model_type_key*, or None."""
     ep = get_registry().get(
-        _RIVAULT_PROJECT, model_type_key,
-        prefer_warm=False, min_ttl_sec=0,
+        _RIVAULT_PROJECT,
+        model_type_key,
+        prefer_warm=False,
+        min_ttl_sec=0,
     )
     if ep and ep.status not in (EndpointStatus.TERMINATED, EndpointStatus.FAILED):
         return int(ep.job_id)
@@ -52,8 +54,10 @@ def _cache_job(model_type_key, job_id, host="", port=0, metadata=None):
     """Register / update a job in the endpoint registry."""
     merged_metadata = {}
     existing = get_registry().get(
-        _RIVAULT_PROJECT, model_type_key,
-        prefer_warm=False, min_ttl_sec=0,
+        _RIVAULT_PROJECT,
+        model_type_key,
+        prefer_warm=False,
+        min_ttl_sec=0,
     )
     if existing and existing.metadata:
         merged_metadata.update(existing.metadata)
@@ -61,8 +65,12 @@ def _cache_job(model_type_key, job_id, host="", port=0, metadata=None):
         merged_metadata.update(metadata)
 
     get_registry().register(
-        _RIVAULT_PROJECT, model_type_key, str(job_id),
-        host=host, port=port, backend="slurm-podman",
+        _RIVAULT_PROJECT,
+        model_type_key,
+        str(job_id),
+        host=host,
+        port=port,
+        backend="slurm-podman",
         ttl_sec=14400,  # 4 hours (matches Slurm --time)
         metadata=merged_metadata,
     )
@@ -71,8 +79,10 @@ def _cache_job(model_type_key, job_id, host="", port=0, metadata=None):
 def _remove_cached_job(model_type_key):
     """Remove and return the job_id (int) for *model_type_key*, or None."""
     ep = get_registry().get(
-        _RIVAULT_PROJECT, model_type_key,
-        prefer_warm=False, min_ttl_sec=0,
+        _RIVAULT_PROJECT,
+        model_type_key,
+        prefer_warm=False,
+        min_ttl_sec=0,
     )
     if ep:
         get_registry().remove(ep.job_id)
@@ -187,7 +197,9 @@ def _endpoint_supports_bentoml(endpoint, default_profiles=()):
     if isinstance(cached_profiles, str):
         profiles = tuple(profile for profile in cached_profiles.split() if profile)
     elif isinstance(cached_profiles, (list, tuple)):
-        profiles = tuple(str(profile).strip() for profile in cached_profiles if str(profile).strip())
+        profiles = tuple(
+            str(profile).strip() for profile in cached_profiles if str(profile).strip()
+        )
     else:
         profiles = tuple(default_profiles)
 
@@ -211,18 +223,24 @@ def release_backend_job(model_type_key):
                 proc_tunnel.terminate()
                 proc_tunnel.wait(timeout=10)
             except Exception as e:
-                print(f"[lifecycle] Warning: failed to terminate SSH tunnel process for '{model_type_key}': {e}")
+                print(
+                    f"[lifecycle] Warning: failed to terminate SSH tunnel process for '{model_type_key}': {e}"
+                )
         if thread_tunnel is not None:
             try:
                 thread_tunnel.join(timeout=5)
             except Exception as e:
-                print(f"[lifecycle] Warning: failed to join SSH tunnel thread for '{model_type_key}': {e}")
+                print(
+                    f"[lifecycle] Warning: failed to join SSH tunnel thread for '{model_type_key}': {e}"
+                )
 
     if job_id is not None:
         try:
             site = _get_site_config_if_available()
             if _is_remote_slurm_site(site):
-                _run_remote_slurm_command(site, f"scancel {shlex.quote(str(job_id))}", timeout=10)
+                _run_remote_slurm_command(
+                    site, f"scancel {shlex.quote(str(job_id))}", timeout=10
+                )
             else:
                 subprocess.run(
                     ["scancel", str(job_id)],
@@ -232,9 +250,13 @@ def release_backend_job(model_type_key):
                 )
             print(f"[lifecycle] Cancelled Slurm job {job_id} for '{model_type_key}'")
         except FileNotFoundError:
-            print(f"[lifecycle] scancel not found — Slurm job {job_id} not cancelled (non-Slurm env?)")
+            print(
+                f"[lifecycle] scancel not found — Slurm job {job_id} not cancelled (non-Slurm env?)"
+            )
         except Exception as e:
-            print(f"[lifecycle] Warning: failed to cancel Slurm job {job_id} for '{model_type_key}': {e}")
+            print(
+                f"[lifecycle] Warning: failed to cancel Slurm job {job_id} for '{model_type_key}': {e}"
+            )
 
 
 def release_all_backend_jobs():
@@ -251,7 +273,9 @@ def release_all_backend_jobs():
         release_backend_job(key)
 
 
-def load_model_as_bentoml(model_name, return_type, vector_size, input_type, compute_func, modality):
+def load_model_as_bentoml(
+    model_name, return_type, vector_size, input_type, compute_func, modality
+):
     """Create an EmbeddingModel backed by a BentoML compute adapter."""
     em = EmbeddingModel(
         model_name=model_name,
@@ -267,6 +291,7 @@ def load_model_as_bentoml(model_name, return_type, vector_size, input_type, comp
         tokenizer=None,
     )
     return em
+
 
 def get_slurm_job_state(job_id):
     site = _get_site_config_if_available()
@@ -296,13 +321,16 @@ def get_slurm_job_state(job_id):
 def _get_site_config_if_available():
     try:
         from umrs.orchestrator.site_config import get_site_config
+
         return get_site_config()
     except Exception:
         return None
 
 
 def _is_remote_slurm_site(site):
-    return bool(site and getattr(getattr(site, "scheduler", None), "kind", "") == "slurm-remote")
+    return bool(
+        site and getattr(getattr(site, "scheduler", None), "kind", "") == "slurm-remote"
+    )
 
 
 def _remote_ssh_args(site):
@@ -352,7 +380,7 @@ def _remote_slurm_output_ref(path):
 
 def _remote_path_from_ref(path):
     if path.startswith(_REMOTE_OUTPUT_PREFIX):
-        return path[len(_REMOTE_OUTPUT_PREFIX):]
+        return path[len(_REMOTE_OUTPUT_PREFIX) :]
     return ""
 
 
@@ -361,6 +389,7 @@ def _read_remote_file(site, path):
     if result.returncode != 0:
         raise FileNotFoundError(path)
     return result.stdout
+
 
 def is_slurm_job_running(job_id):
     """Check if a Slurm job is currently in RUNNING state."""
@@ -410,9 +439,9 @@ def create_plafrim_slurm_script(slurm_script):
         os.makedirs(full_tmp_path, exist_ok=True)
 
     output_file = os.path.join(full_tmp_path, "slurm-%j.out")
-    error_file  = os.path.join(full_tmp_path, "slurm-%j.err")
+    error_file = os.path.join(full_tmp_path, "slurm-%j.err")
 
-    script_content=f'''#!/bin/bash
+    script_content = f"""#!/bin/bash
 #SBATCH -N 1
 #SBATCH -n 36
 #SBATCH -C bora
@@ -437,11 +466,12 @@ echo "Starting FastAPI model..."
 
 # Launch your model
 python /home/jeannot/umrs/tests/OpenAI-API/launch_fastapi.py
-'''
+"""
     with open(slurm_script, "w") as f:
         f.write(script_content)
 
     return output_file, error_file
+
 
 def _ensure_output_dir():
     """Create and return the tmp directory for Slurm output files."""
@@ -451,18 +481,27 @@ def _ensure_output_dir():
     os.makedirs(full_tmp_path, exist_ok=True)
     return full_tmp_path
 
-def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=None, job_metadata=None):
+
+def get_slurm_node(
+    slurm_script, model_type_key, job_id_to_use=None, sbatch_env=None, job_metadata=None
+):
     site = _get_site_config_if_available()
     if _is_remote_slurm_site(site):
-        return get_remote_slurm_node(site, model_type_key, job_id_to_use, sbatch_env, job_metadata)
+        return get_remote_slurm_node(
+            site, model_type_key, job_id_to_use, sbatch_env, job_metadata
+        )
 
     output_file = error_file = None
     if "plafrim" in slurm_script:
         create_plafrim_slurm_script(slurm_script)
 
     out_dir = _ensure_output_dir()
-    output_file = os.path.join(out_dir, "slurm-%j.out") # Will be insterted in the script if there is no --output line with %j placeholder
-    error_file = os.path.join(out_dir, "slurm-%j.err") # Will be insterted in the script if there is no --error line with %j placeholder
+    output_file = os.path.join(
+        out_dir, "slurm-%j.out"
+    )  # Will be insterted in the script if there is no --output line with %j placeholder
+    error_file = os.path.join(
+        out_dir, "slurm-%j.err"
+    )  # Will be insterted in the script if there is no --error line with %j placeholder
     # output_file, error_file = extract_files_from_slurm_script(slurm_script, default_output=default_output_file, default_error=default_error_file)
 
     sbatch_extra_args = [f"--output={output_file}", f"--error={error_file}"]
@@ -471,6 +510,7 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
     # #SBATCH --partition directive (avoids the "No partition specified" error).
     try:
         from umrs.orchestrator.site_config import get_site_config
+
         _site = get_site_config()
         _partition = getattr(_site.scheduler, "partition", "")
         if _partition:
@@ -492,7 +532,7 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
     # If we already have a job_id, we only need the output and error file paths. No need to call SLURM.
     if job_id_to_use is not None:
         job_id = job_id_to_use
-    else :
+    else:
         # Launch script
         sbatch_cmd = ["sbatch"] + sbatch_extra_args + [slurm_script]
         print(f"{sbatch_cmd}")
@@ -506,15 +546,18 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
         if proc.returncode != 0:
             raise RuntimeError(
                 f"sbatch failed with return code {proc.returncode}: "
-                f"{output.decode() if output else '(no output)'}")
+                f"{output.decode() if output else '(no output)'}"
+            )
         if output:
             text = output.decode()
             # sbatch returns "Submitted batch job 12345"
-            match = re.search(r'Submitted batch job (\d+)', text)
+            match = re.search(r"Submitted batch job (\d+)", text)
             if match:
                 job_id = int(match.group(1))
                 print("Job submitted with ID:", job_id)
-                _cache_job(model_type_key, job_id, metadata=job_metadata)  # persist immediately
+                _cache_job(
+                    model_type_key, job_id, metadata=job_metadata
+                )  # persist immediately
                 startup_timeout = get_rivault_startup_timeout_sec()
                 if not wait_for_running(job_id, timeout=startup_timeout):
                     raise ValueError(
@@ -524,7 +567,8 @@ def get_slurm_node(slurm_script, model_type_key, job_id_to_use=None, sbatch_env=
         if job_id is None:
             raise ValueError(
                 f"Could not parse job ID from sbatch output: "
-                f"{output.decode() if output else '(no output)'}")
+                f"{output.decode() if output else '(no output)'}"
+            )
 
     # Replace %j placeholder with actual JOB_ID
     if output_file:
@@ -546,7 +590,9 @@ def _remote_wrapper_script(site):
     extra = getattr(site, "extra", {}) or {}
     wrapper_script = str(extra.get("slurm_wrapper_script") or "").strip()
     if not wrapper_script:
-        raise RuntimeError("scheduler.kind=slurm-remote requires extra.slurm_wrapper_script")
+        raise RuntimeError(
+            "scheduler.kind=slurm-remote requires extra.slurm_wrapper_script"
+        )
     return wrapper_script
 
 
@@ -592,7 +638,9 @@ def _remote_sbatch_args(site, sbatch_env):
     env_overrides.setdefault("RIVAULT_CONTROL_DIR", f"{job_info_dir}/control")
 
     if env_overrides:
-        export_parts = ["ALL"] + [f"{key}={value}" for key, value in env_overrides.items()]
+        export_parts = ["ALL"] + [
+            f"{key}={value}" for key, value in env_overrides.items()
+        ]
         args.append(f"--export={','.join(export_parts)}")
 
     args.append(wrapper_script)
@@ -609,7 +657,9 @@ def _rivault_model_path_env():
     return {key: os.environ[key] for key in keys if os.environ.get(key)}
 
 
-def get_remote_slurm_node(site, model_type_key, job_id_to_use=None, sbatch_env=None, job_metadata=None):
+def get_remote_slurm_node(
+    site, model_type_key, job_id_to_use=None, sbatch_env=None, job_metadata=None
+):
     job_info_dir = _remote_job_info_dir(site)
     if job_id_to_use is not None:
         job_id = int(job_id_to_use)
@@ -619,11 +669,15 @@ def get_remote_slurm_node(site, model_type_key, job_id_to_use=None, sbatch_env=N
         print(f"[remote-slurm] {command}")
         result = _run_remote_slurm_command(site, command, timeout=60)
         if result.returncode != 0:
-            raise RuntimeError(f"remote sbatch failed: {result.stderr.strip() or result.stdout.strip()}")
+            raise RuntimeError(
+                f"remote sbatch failed: {result.stderr.strip() or result.stdout.strip()}"
+            )
 
         match = re.search(r"(?:Submitted batch job\s+)?(\d+)", result.stdout.strip())
         if not match:
-            raise ValueError(f"Could not parse remote job ID from sbatch output: {result.stdout!r}")
+            raise ValueError(
+                f"Could not parse remote job ID from sbatch output: {result.stdout!r}"
+            )
         job_id = int(match.group(1))
         print("Remote job submitted with ID:", job_id)
         _cache_job(model_type_key, job_id, metadata=job_metadata)
@@ -636,8 +690,11 @@ def get_remote_slurm_node(site, model_type_key, job_id_to_use=None, sbatch_env=N
 
     output_file = _remote_slurm_output_ref(f"{job_info_dir}/slurm-{job_id}.out")
     error_file = _remote_slurm_output_ref(f"{job_info_dir}/slurm-{job_id}.err")
-    print(f"Remote job {job_id} is running. Output will be in {output_file} and {error_file}")
+    print(
+        f"Remote job {job_id} is running. Output will be in {output_file} and {error_file}"
+    )
     return output_file, error_file, job_id
+
 
 def get_slurm_script_from_host():
     # Get the hostname
@@ -647,6 +704,7 @@ def get_slurm_script_from_host():
     fqdn = socket.getfqdn()
 
     return get_rivault_slurm_script(fqdn)
+
 
 def extract_node_address(slurm_output_file, timeout=300):
     """
@@ -681,9 +739,10 @@ def extract_node_address(slurm_output_file, timeout=300):
             print(f"{slurm_output_file=} not found, waiting...")
         i += 1
         if time.time() - start > timeout:
-            raise TimeoutError(f"Slurm output file {slurm_output_file} was not created within {timeout}s")
+            raise TimeoutError(
+                f"Slurm output file {slurm_output_file} was not created within {timeout}s"
+            )
         time.sleep(0.5)
-
 
     print(f"{slurm_output_file} ready")
     while True:
@@ -700,7 +759,9 @@ def extract_node_address(slurm_output_file, timeout=300):
                 # Split by ":" and remove spaces
                 return line.split(":", 1)[1].strip()
         if time.time() - start > timeout:
-            raise TimeoutError(f"Could not find 'Fully qualified name:' in {slurm_output_file} within {timeout}s")
+            raise TimeoutError(
+                f"Could not find 'Fully qualified name:' in {slurm_output_file} within {timeout}s"
+            )
         time.sleep(0.5)
 
 
@@ -716,7 +777,10 @@ def wait_for_local_port(port, host="127.0.0.1", timeout=5.0):
             except OSError:
                 time.sleep(0.1)
                 if time.time() - start > timeout:
-                    raise TimeoutError(f"Port {port} on {host} did not open in {timeout}s") from None
+                    raise TimeoutError(
+                        f"Port {port} on {host} did not open in {timeout}s"
+                    ) from None
+
 
 def ssh_tunnel_forward_to_remote(
     remote_host: str,
@@ -736,7 +800,7 @@ def ssh_tunnel_forward_to_remote(
     """
     # 1. Find a free local port
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.bind(('', 0))  # 0 means choose any free port
+    s.bind(("", 0))  # 0 means choose any free port
     local_port = s.getsockname()[1]
     s.close()
 
@@ -749,18 +813,19 @@ def ssh_tunnel_forward_to_remote(
         ssh_cmd.extend(["-p", str(ssh_port)])
     if ssh_user:
         ssh_cmd.extend(["-l", ssh_user])
-    ssh_cmd.extend([
-        "-L", f"{local_port}:{remote_host}:{remote_port}",
-        ssh_target,
-    ])
+    ssh_cmd.extend(
+        [
+            "-L",
+            f"{local_port}:{remote_host}:{remote_port}",
+            ssh_target,
+        ]
+    )
 
-     # 3. Function to run SSH as subprocess
+    # 3. Function to run SSH as subprocess
     def run_ssh():
         nonlocal ssh_proc
         ssh_proc = subprocess.Popen(
-            ssh_cmd,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
+            ssh_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
         )
         ssh_proc.wait()
 
@@ -782,7 +847,14 @@ def silent_requests_get(url, timeout=1.0, headers=None):
     except requests.RequestException:
         return None
 
-def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=300.0, interval=0.2, api_key=None):
+
+def wait_for_model(
+    openai_url,
+    model_name="intfloat/e5-base-v2",
+    timeout=300.0,
+    interval=0.2,
+    api_key=None,
+):
     """
     Wait until the OpenAI-compatible server is up and the specified model is available.
 
@@ -793,7 +865,7 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=300.0, 
     api_key: optional API key for authenticated endpoints (e.g. LiteLLM master key)
     """
     start = time.time()
-    model_url = openai_url[len("openai://"):] +  "/models"
+    model_url = openai_url[len("openai://") :] + "/models"
 
     print(f"Checking model on {model_url=}...")
     while True:
@@ -812,12 +884,16 @@ def wait_for_model(openai_url, model_name="intfloat/e5-base-v2", timeout=300.0, 
             pass
 
         if time.time() - start > timeout:
-            raise TimeoutError(f"Model {model_name} not available at {model_url} after {timeout}s")
+            raise TimeoutError(
+                f"Model {model_name} not available at {model_url} after {timeout}s"
+            )
 
         time.sleep(interval)
 
 
-def warmup_embedding_model(openai_url, model_name, api_key=None, timeout=120.0, interval=2.0):
+def warmup_embedding_model(
+    openai_url, model_name, api_key=None, timeout=120.0, interval=2.0
+):
     """
     Send a test embedding request to ensure the model is truly ready for inference.
 
@@ -825,7 +901,8 @@ def warmup_embedding_model(openai_url, model_name, api_key=None, timeout=120.0, 
     model can actually serve embedding requests (weights loaded, kernels compiled).
     """
     from openai import OpenAI, OpenAIError
-    base_url = openai_url[len("openai://"):]
+
+    base_url = openai_url[len("openai://") :]
     client = OpenAI(base_url=base_url, api_key=api_key or "EMPTY")
     start = time.time()
     last_err = None
@@ -878,8 +955,7 @@ def _check_bentoml_health(service_url: str, ready_timeout: int = 300):
         remaining = ready_timeout - (time.monotonic() - start_time)
         if remaining <= 0:
             raise TimeoutError(
-                f"BentoML service at {service_url} not ready "
-                f"after {ready_timeout}s"
+                f"BentoML service at {service_url} not ready after {ready_timeout}s"
             )
         try:
             resp = httpx.get(f"{service_url}/readyz", timeout=10)
@@ -911,15 +987,22 @@ def _build_bentoml_model(model_cfg, local_port):
 
     if _uses_jens_vision_stack():
         from umrs.vision_service.bentoml_adapter import make_jens_vision_compute
+
         compute_func = make_jens_vision_compute(
-            service_url, vision_model_type, vision_model_config,
+            service_url,
+            vision_model_type,
+            vision_model_config,
             task=task,
-            token=os.environ.get("JENS_VISION_TOKEN") or os.environ.get("LITELLM_MASTER_KEY"),
+            token=os.environ.get("JENS_VISION_TOKEN")
+            or os.environ.get("LITELLM_MASTER_KEY"),
         )
     else:
         from umrs.vision_service.bentoml_adapter import make_bentoml_vision_compute
+
         compute_func = make_bentoml_vision_compute(
-            service_url, vision_model_type, vision_model_config,
+            service_url,
+            vision_model_type,
+            vision_model_config,
             task=task,
         )
 
@@ -935,10 +1018,16 @@ def _build_bentoml_model(model_cfg, local_port):
 
 def _build_openai_model(model_cfg, local_port, nginx_port, master_key):
     """Build an EmbeddingModel backed by an OpenAI-compatible endpoint."""
-    model_cfg["model_type"] = model_cfg["model_type"].replace("{NGINX_PORT}", str(nginx_port))
-    model_cfg["model_type"] = model_cfg["model_type"].replace("{LOCAL_PORT}", str(local_port))
+    model_cfg["model_type"] = model_cfg["model_type"].replace(
+        "{NGINX_PORT}", str(nginx_port)
+    )
+    model_cfg["model_type"] = model_cfg["model_type"].replace(
+        "{LOCAL_PORT}", str(local_port)
+    )
     wait_for_model(model_cfg["model_type"], model_cfg["model_name"], api_key=master_key)
-    warmup_embedding_model(model_cfg["model_type"], model_cfg["model_name"], api_key=master_key)
+    warmup_embedding_model(
+        model_cfg["model_type"], model_cfg["model_name"], api_key=master_key
+    )
     print(f"Configuring: {model_cfg['model_type']}...")
     model_cfg["api_key"] = master_key
     return load_model(model_cfg, "")
@@ -955,17 +1044,25 @@ def _check_cache_or_reuse_job(model_type_key, model_cfg):
     default_profiles = _get_active_rivault_profiles()
 
     if job_id is not None:
-        print(f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running...")
+        print(
+            f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running..."
+        )
         if wait_for_running(job_id):
             if model_type_key in model_cache:
                 model, _, _ = model_cache[model_type_key]
-                print("===> Found a running job and a loaded model in cache. Reusing it.")
+                print(
+                    "===> Found a running job and a loaded model in cache. Reusing it."
+                )
                 return model, job_id
-            print("===> Found a running job in cache but no in memory model. "
-                  "This can happen if the server has restarted. Will try to load it again.")
+            print(
+                "===> Found a running job in cache but no in memory model. "
+                "This can happen if the server has restarted. Will try to load it again."
+            )
         else:
-            print("===> Found a job_id in cache but the job is not running. "
-                  "Cleaning up cache and launching a new job.")
+            print(
+                "===> Found a job_id in cache but the job is not running. "
+                "Cleaning up cache and launching a new job."
+            )
             _remove_cached_job(model_type_key)
             if model_type_key in model_cache:
                 _, thread_tunnel, proc_tunnel = model_cache.pop(model_type_key)
@@ -987,7 +1084,9 @@ def _check_cache_or_reuse_job(model_type_key, model_cfg):
                 continue
             if not is_slurm_job_running(cached_job_id):
                 continue
-            if not _endpoint_supports_bentoml(endpoint, default_profiles=default_profiles):
+            if not _endpoint_supports_bentoml(
+                endpoint, default_profiles=default_profiles
+            ):
                 continue
 
             print(
@@ -1006,6 +1105,7 @@ def launch_rivault_model(model_cfg):
     # to serve-model.slurm (which uses ${VAR:-default} patterns).
     try:
         from umrs.orchestrator.site_config import get_site_config
+
         get_site_config().inject_env(overwrite=False)
     except Exception as e:
         print(f"Warning: failed to inject site config: {e}")
@@ -1015,7 +1115,9 @@ def launch_rivault_model(model_cfg):
     vmc = model_cfg.get("vision_model_config", {})
     config_discriminator = vmc.get("task") or vmc.get("prompt")
     task_suffix = f":{config_discriminator}" if config_discriminator else ""
-    model_type_key = model_cfg["model_name"] + ":" + model_cfg["model_type"] + task_suffix
+    model_type_key = (
+        model_cfg["model_name"] + ":" + model_cfg["model_type"] + task_suffix
+    )
     job_profiles = _resolve_profiles_for_model(model_cfg)
     job_metadata = _job_capabilities_for_profiles(job_profiles)
     print(f"[rivault] resolved profiles for {model_cfg['model_type']}: {job_profiles}")
@@ -1031,7 +1133,9 @@ def launch_rivault_model(model_cfg):
 
     if _is_bentoml_model_type(model_cfg["model_type"]) and vision_stack == "jens":
         rivault_slurm_script = get_jens_rivault_slurm_script()
-        print(f"[VISION_STACK=jens] Using Jens's standalone stack: {rivault_slurm_script}")
+        print(
+            f"[VISION_STACK=jens] Using Jens's standalone stack: {rivault_slurm_script}"
+        )
     else:
         rivault_slurm_script = get_slurm_script_from_host()
 
@@ -1039,7 +1143,8 @@ def launch_rivault_model(model_cfg):
     sbatch_env.update(_rivault_model_path_env())
 
     output_file, error_file, job_id = get_slurm_node(
-        rivault_slurm_script, model_type_key,
+        rivault_slurm_script,
+        model_type_key,
         job_id_to_use=job_id,
         sbatch_env=sbatch_env,
         job_metadata=job_metadata,
@@ -1060,7 +1165,9 @@ def launch_rivault_model(model_cfg):
             ssh_port=int(extra.get("ssh_port") or 22),
         )
     else:
-        local_port, thread_tunnel, proc_tunnel = ssh_tunnel_forward_to_remote(server_address, remote_port)
+        local_port, thread_tunnel, proc_tunnel = ssh_tunnel_forward_to_remote(
+            server_address, remote_port
+        )
 
     NGINX_PORT = os.getenv("NGINX_LITELLM_DOCKER_PORT")
     MASTER_KEY = os.getenv("LITELLM_MASTER_KEY")
@@ -1075,5 +1182,11 @@ def launch_rivault_model(model_cfg):
 
     # --- 4. Cache the loaded model and job_id ---
     model_cache[model_type_key] = (model, thread_tunnel, proc_tunnel)
-    _cache_job(model_type_key, job_id, host=server_address, port=local_port, metadata=job_metadata)
+    _cache_job(
+        model_type_key,
+        job_id,
+        host=server_address,
+        port=local_port,
+        metadata=job_metadata,
+    )
     return model

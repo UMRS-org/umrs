@@ -88,7 +88,9 @@ class TestComputeSignature:
 class TestWebhookDelivery:
     def test_deliver_success(self):
         delivery = WebhookDelivery(max_retries=1, timeout_seconds=5)
-        event = WebhookEvent(event_id="evt-100", event_type=EventType.JOB_COMPLETED, payload={"id": "1"})
+        event = WebhookEvent(
+            event_id="evt-100", event_type=EventType.JOB_COMPLETED, payload={"id": "1"}
+        )
         sub = WebhookSubscription(subscription_id="s1", url="https://httpbin.org/post")
 
         with patch("umrs.shared.webhooks.urllib.request.urlopen") as mock_urlopen:

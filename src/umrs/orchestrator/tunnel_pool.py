@@ -145,14 +145,21 @@ class TunnelPool:
             if self._config.ssh_port != 22:
                 args.extend(["-p", str(self._config.ssh_port)])
 
-            args.extend([
-                "-L", f"{bind}:{port}:{remote_host}:{remote_port}",
-                self._ssh_target(),
-            ])
+            args.extend(
+                [
+                    "-L",
+                    f"{bind}:{port}:{remote_host}:{remote_port}",
+                    self._ssh_target(),
+                ]
+            )
 
             logger.info(
                 "Opening tunnel %s:%d -> %s:%d (via %s)",
-                bind, port, remote_host, remote_port, self._config.ssh_target,
+                bind,
+                port,
+                remote_host,
+                remote_port,
+                self._config.ssh_target,
             )
 
             proc = await asyncio.create_subprocess_exec(
@@ -189,7 +196,9 @@ class TunnelPool:
 
             logger.info(
                 "Tunnel established: localhost:%d -> %s:%d",
-                port, remote_host, remote_port,
+                port,
+                remote_host,
+                remote_port,
             )
             return port
 
@@ -204,7 +213,9 @@ class TunnelPool:
             await self._teardown_spec(spec)
             logger.info(
                 "Tunnel closed: localhost:%d -> %s:%d",
-                spec.local_port, remote_host, remote_port,
+                spec.local_port,
+                remote_host,
+                remote_port,
             )
 
     @staticmethod
@@ -237,10 +248,7 @@ class TunnelPool:
     @property
     def active_tunnels(self) -> list[TunnelSpec]:
         """List all active tunnels."""
-        return [
-            spec for spec in self._tunnels.values()
-            if self._spec_alive(spec)
-        ]
+        return [spec for spec in self._tunnels.values() if self._spec_alive(spec)]
 
     async def cleanup_dead(self) -> int:
         """Remove tunnels whose SSH processes have died."""
@@ -275,17 +283,22 @@ class TunnelPool:
         if not self._config.control_path:
             return
         args = [
-            "ssh", "-O", "cancel",
-            "-o", f"ControlPath={self._config.control_path}",
+            "ssh",
+            "-O",
+            "cancel",
+            "-o",
+            f"ControlPath={self._config.control_path}",
         ]
         if self._config.ssh_port != 22:
             args.extend(["-p", str(self._config.ssh_port)])
-        args.extend([
-            "-L",
-            f"{self._config.bind_address}:{spec.local_port}:"
-            f"{spec.remote_host}:{spec.remote_port}",
-            self._ssh_target(),
-        ])
+        args.extend(
+            [
+                "-L",
+                f"{self._config.bind_address}:{spec.local_port}:"
+                f"{spec.remote_host}:{spec.remote_port}",
+                self._ssh_target(),
+            ]
+        )
         try:
             proc = await asyncio.create_subprocess_exec(
                 *args,
@@ -296,7 +309,9 @@ class TunnelPool:
         except (asyncio.TimeoutError, OSError):
             logger.warning(
                 "Failed to cancel multiplexed forward localhost:%d -> %s:%d",
-                spec.local_port, spec.remote_host, spec.remote_port,
+                spec.local_port,
+                spec.remote_host,
+                spec.remote_port,
             )
 
     async def shutdown(self) -> None:

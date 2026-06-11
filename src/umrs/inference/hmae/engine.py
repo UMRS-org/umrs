@@ -19,7 +19,7 @@ class Rect:
     def contains(self, edge_map):
         if self.y1 >= self.y2 or self.x1 >= self.x2:
             return 0
-        patch = edge_map[self.y1:self.y2, self.x1:self.x2]
+        patch = edge_map[self.y1 : self.y2, self.x1 : self.x2]
         return int(np.sum(patch) / 255)
 
     def get_size(self):
@@ -76,8 +76,10 @@ class HierarchicalMaskedAutoEncoder:
             x1, x2, y1, y2 = bbox.get_coord()
             cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
             children = [
-                Rect(x1, cx, y1, cy), Rect(cx, x2, y1, cy),
-                Rect(x1, cx, cy, y2), Rect(cx, x2, cy, y2),
+                Rect(x1, cx, y1, cy),
+                Rect(cx, x2, y1, cy),
+                Rect(x1, cx, cy, y2),
+                Rect(cx, x2, cy, y2),
             ]
             for child in children:
                 active_nodes.append([child.contains(edge_np), child, depth + 1])
@@ -98,7 +100,9 @@ class HierarchicalMaskedAutoEncoder:
                 break
             x1, x2, y1, y2 = bbox.get_coord()
             clean_patch = img_np[y1:y2, x1:x2, :]
-            clean_patch_resized = cv2.resize(clean_patch, (self.patch_size, self.patch_size))
+            clean_patch_resized = cv2.resize(
+                clean_patch, (self.patch_size, self.patch_size)
+            )
             patches.append(to_tensor(clean_patch_resized))
             coords.append(torch.tensor([x1, x2, y1, y2], dtype=torch.float32))
             depths.append(float(depth_val))

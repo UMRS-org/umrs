@@ -61,6 +61,7 @@ class StructuredJSONFormatter(logging.Formatter):
         request_id = ""
         try:
             from umrs.server.correlation import get_request_id
+
             request_id = get_request_id() or ""
         except Exception:
             pass

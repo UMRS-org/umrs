@@ -18,8 +18,13 @@ class PgVectorConnector:
         password: Database password.
     """
 
-    def __init__(self, host: str = "localhost", port: int = 5432,
-                 user: str = "umrs", password: str = ""):
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 5432,
+        user: str = "umrs",
+        password: str = "",
+    ):
         self.host = host
         self.port = port
         self.user = user
@@ -27,9 +32,12 @@ class PgVectorConnector:
 
     def _connect(self, dbname: str = "postgres"):
         import psycopg2
+
         return psycopg2.connect(
-            host=self.host, port=self.port,
-            user=self.user, password=self.password,
+            host=self.host,
+            port=self.port,
+            user=self.user,
+            password=self.password,
             dbname=dbname,
         )
 
@@ -40,13 +48,11 @@ class PgVectorConnector:
         try:
             with conn.cursor() as cur:
                 cur.execute("SELECT datname FROM pg_database")
-                return [row[0] for row in cur.fetchall()
-                        if row[0] not in system_dbs]
+                return [row[0] for row in cur.fetchall() if row[0] not in system_dbs]
         finally:
             conn.close()
 
-    def count_embeddings(self, dbname: str,
-                         table: str | None = None) -> dict[str, Any]:
+    def count_embeddings(self, dbname: str, table: str | None = None) -> dict[str, Any]:
         """Count total rows and non-null embeddings in *table*.
 
         If *table* is ``None``, scans all tables with an ``embedding`` column.
@@ -65,18 +71,20 @@ class PgVectorConnector:
             for tbl in tables:
                 with conn.cursor() as cur:
                     cur.execute(
-                        f'SELECT count(*), '
-                        f'count(*) FILTER (WHERE embedding IS NOT NULL), '
-                        f'count(*) FILTER (WHERE embedding IS NULL) '
+                        f"SELECT count(*), "
+                        f"count(*) FILTER (WHERE embedding IS NOT NULL), "
+                        f"count(*) FILTER (WHERE embedding IS NULL) "
                         f'FROM "{tbl}"'
                     )
                     total, with_emb, nulls = cur.fetchone()
-                    result.append({
-                        "name": tbl,
-                        "total": total,
-                        "with_embedding": with_emb,
-                        "nulls": nulls,
-                    })
+                    result.append(
+                        {
+                            "name": tbl,
+                            "total": total,
+                            "with_embedding": with_emb,
+                            "nulls": nulls,
+                        }
+                    )
             return {"tables": result}
         finally:
             conn.close()

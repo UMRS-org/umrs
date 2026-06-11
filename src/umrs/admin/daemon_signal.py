@@ -150,11 +150,15 @@ def signal_reload(path: str | None = None) -> SignalResult:
     if pid is None:
         return SignalResult(False, None, f"no pid file at {target}")
     if not is_process_alive(pid):
-        return SignalResult(False, pid, f"stale pid file at {target} (pid {pid} not running)")
+        return SignalResult(
+            False, pid, f"stale pid file at {target} (pid {pid} not running)"
+        )
     try:
         os.kill(pid, signal.SIGHUP)
     except PermissionError:
-        return SignalResult(False, pid, f"permission denied sending SIGHUP to pid {pid}")
+        return SignalResult(
+            False, pid, f"permission denied sending SIGHUP to pid {pid}"
+        )
     except ProcessLookupError:
         return SignalResult(False, pid, f"pid {pid} disappeared before SIGHUP")
     except OSError as exc:

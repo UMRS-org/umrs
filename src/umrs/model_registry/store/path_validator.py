@@ -14,11 +14,11 @@ from .errors import PathNotAllowedError
 # Scope-aware placeholders let administrators opt in extra experimental roots
 # without giving every user access to every matching directory.
 DEFAULT_ALLOWED_PATHS = [
-    "/shared/models/system/*",                 # System models
-    "/shared/projects/{project_id}/models/*", # Project models
-    "/shared/users/{owner_id}/models/*",      # User models
-    "/models/*",                              # Development/Docker paths
-    "/home/{owner_id}/models/*",              # Home directory models (dev)
+    "/shared/models/system/*",  # System models
+    "/shared/projects/{project_id}/models/*",  # Project models
+    "/shared/users/{owner_id}/models/*",  # User models
+    "/models/*",  # Development/Docker paths
+    "/home/{owner_id}/models/*",  # Home directory models (dev)
 ]
 
 
@@ -86,7 +86,9 @@ class PathValidator:
     def is_allowed(self, path: str) -> bool:
         """Check if a path matches any allowed pattern."""
         path = os.path.normpath(path)
-        return any(self._match_pattern(path, pattern) for pattern in self.allowed_patterns)
+        return any(
+            self._match_pattern(path, pattern) for pattern in self.allowed_patterns
+        )
 
     def validate(self, path: str) -> None:
         """Validate a path, raising PathNotAllowedError if not allowed."""
@@ -156,7 +158,8 @@ class PathValidator:
 
     def _system_patterns(self) -> list[str]:
         return [
-            pattern for pattern in self.allowed_patterns
+            pattern
+            for pattern in self.allowed_patterns
             if "{owner_id}" not in pattern and "{project_id}" not in pattern
         ]
 

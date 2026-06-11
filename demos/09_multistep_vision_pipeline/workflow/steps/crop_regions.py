@@ -68,9 +68,9 @@ class CropRegionsStep(Step):
             base = source_key.rsplit(".", 1)[0] if "." in source_key else source_key
 
             # Sort by score and limit
-            scored_boxes = sorted(
-                zip(scores, boxes), key=lambda x: x[0], reverse=True
-            )[:self.max_patches]
+            scored_boxes = sorted(zip(scores, boxes), key=lambda x: x[0], reverse=True)[
+                : self.max_patches
+            ]
 
             for i, (score, box) in enumerate(scored_boxes):
                 x1, y1, x2, y2 = [int(v) for v in box]
@@ -100,19 +100,22 @@ class CropRegionsStep(Step):
                     },
                 )
                 output_keys.append(patch_key)
-                metadata_list.append({
-                    "source_image": source_key,
-                    "box": [x1, y1, x2, y2],
-                    "score": score,
-                    "patch_size": [pw, ph],
-                })
+                metadata_list.append(
+                    {
+                        "source_image": source_key,
+                        "box": [x1, y1, x2, y2],
+                        "score": score,
+                        "patch_size": [pw, ph],
+                    }
+                )
                 checksums.append("")
                 total_patches += 1
 
             logger.info(
                 "Extracted %d patches from %s (%d boxes)",
                 min(len(scored_boxes), self.max_patches),
-                source_key, len(boxes),
+                source_key,
+                len(boxes),
             )
 
         return StepResult(

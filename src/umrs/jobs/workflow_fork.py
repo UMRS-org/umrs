@@ -58,7 +58,9 @@ class WorkflowForkResult:
             "forked_spec": self.forked_spec,
             "param_overrides": self.param_overrides,
             "lineage_chain": self.lineage_chain,
-            "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else str(self.created_at),
+            "created_at": self.created_at.isoformat()
+            if isinstance(self.created_at, datetime)
+            else str(self.created_at),
         }
 
 
@@ -154,7 +156,9 @@ class WorkflowForker:
 
     def _validate_forkable(self, job: Any) -> None:
         """Check that the job can be forked."""
-        status_val = job.status.value if hasattr(job.status, "value") else str(job.status)
+        status_val = (
+            job.status.value if hasattr(job.status, "value") else str(job.status)
+        )
         if status_val not in FORKABLE_STATUSES:
             raise WorkflowForkError(
                 f"Job {job.job_id} has status '{status_val}'; "

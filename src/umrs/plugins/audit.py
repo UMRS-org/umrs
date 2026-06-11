@@ -122,9 +122,7 @@ class PluginAuditLog:
 
         # Log to stdout
         if self.log_to_stdout:
-            self._audit_logger.info(
-                json.dumps(entry.to_dict(), default=str)
-            )
+            self._audit_logger.info(json.dumps(entry.to_dict(), default=str))
 
         # Log to file
         if self.file_path:

@@ -49,6 +49,7 @@ def _notify_download_progress(
     if progress_callback:
         progress_callback(progress)
 
+
 __all__ = [
     "DownloadProgress",
     "DownloadSource",
@@ -182,18 +183,14 @@ class ModelDownloadBackend(OrchestratorBackend):
                     target_path=ctx.target_path,
                     token=ctx.hf_token,
                     revision=ctx.metadata.get("revision"),
-                    progress_callback=lambda p: asyncio.create_task(
-                        update_progress(p)
-                    ),
+                    progress_callback=lambda p: asyncio.create_task(update_progress(p)),
                 )
             elif ctx.source == DownloadSource.S3:
                 progress = await self._download_from_s3(ctx)
             elif ctx.source == DownloadSource.HTTP:
                 progress = await self._download_from_http(
                     ctx,
-                    progress_callback=lambda p: asyncio.create_task(
-                        update_progress(p)
-                    ),
+                    progress_callback=lambda p: asyncio.create_task(update_progress(p)),
                 )
             elif ctx.source == DownloadSource.LOCAL:
                 progress = await self._copy_from_local(ctx)
@@ -211,9 +208,7 @@ class ModelDownloadBackend(OrchestratorBackend):
                 await self._auto_register_model(ctx, progress)
 
         except Exception as e:
-            logger.exception(
-                f"Download failed for {ctx.attempt_id}: {e}"
-            )
+            logger.exception(f"Download failed for {ctx.attempt_id}: {e}")
             ctx.progress.status = "failed"
             ctx.progress.error_message = str(e)
             await self.download_registry.update_progress(
@@ -229,7 +224,12 @@ class ModelDownloadBackend(OrchestratorBackend):
         """
         Auto-register model in catalog after successful download (U-824).
         """
-        from umrs.model_registry.models import ModelScope, ModelStatus, ModelType, ServingProfile
+        from umrs.model_registry.models import (
+            ModelScope,
+            ModelStatus,
+            ModelType,
+            ServingProfile,
+        )
 
         try:
             metadata = ctx.metadata or {}
@@ -259,7 +259,9 @@ class ModelDownloadBackend(OrchestratorBackend):
                 storage_ref=ctx.target_path,
                 model_type=model_type,
                 owner_id=metadata.get("owner_id") if scope == ModelScope.USER else None,
-                project_id=metadata.get("project_id") if scope == ModelScope.PROJECT else None,
+                project_id=metadata.get("project_id")
+                if scope == ModelScope.PROJECT
+                else None,
                 huggingface_id=metadata.get("huggingface_id"),
                 description=metadata.get("description"),
                 serving_profile=serving_profile,
@@ -275,34 +277,33 @@ class ModelDownloadBackend(OrchestratorBackend):
             )
 
         except Exception as e:
-            logger.warning(
-                f"Failed to auto-register model {ctx.model_name}: {e}"
-            )
+            logger.warning(f"Failed to auto-register model {ctx.model_name}: {e}")
             # Don't fail the download - model can be registered manually
 
     def _detect_capabilities(self, model_path: str) -> ModelCapabilities | None:
         """Detect model capabilities from downloaded files."""
         try:
             from umrs.model_registry.detect import detect_capabilities
+
             return detect_capabilities(model_path)
         except Exception as e:
             logger.debug("Capability detection failed for %s: %s", model_path, e)
             return None
 
-    def _detect_and_update_capabilities(
-        self, model_id: str, model_path: str
-    ) -> None:
+    def _detect_and_update_capabilities(self, model_id: str, model_path: str) -> None:
         """Detect capabilities and update existing model entry."""
         caps = self._detect_capabilities(model_path)
         if caps is None:
             return
         try:
             model = self.model_store.get_model(model_id)
-            if model and not any([
-                model.capabilities.supports_tool_calling,
-                model.capabilities.supports_vision,
-                model.capabilities.model_family,
-            ]):
+            if model and not any(
+                [
+                    model.capabilities.supports_tool_calling,
+                    model.capabilities.supports_vision,
+                    model.capabilities.model_family,
+                ]
+            ):
                 # Only update if capabilities are empty
                 self.model_store.update_capabilities(model_id, caps)
                 logger.info(
@@ -341,6 +342,7 @@ class ModelDownloadBackend(OrchestratorBackend):
 
             # Use boto3 for S3 downloads
             import boto3
+
             s3 = boto3.client("s3")
 
             # List objects
@@ -355,7 +357,7 @@ class ModelDownloadBackend(OrchestratorBackend):
                     key = obj["Key"]
                     size = obj["Size"]
                     # Remove prefix to get relative path
-                    rel_path = key[len(prefix):].lstrip("/")
+                    rel_path = key[len(prefix) :].lstrip("/")
                     if rel_path:  # Skip the prefix itself
                         files_to_download.append((key, rel_path, size))
                         total_bytes += size
@@ -403,9 +405,7 @@ class ModelDownloadBackend(OrchestratorBackend):
             async with aiohttp.ClientSession() as session:
                 async with session.get(ctx.source_id) as resp:
                     if resp.status != 200:
-                        raise RuntimeError(
-                            f"HTTP {resp.status}: {resp.reason}"
-                        )
+                        raise RuntimeError(f"HTTP {resp.status}: {resp.reason}")
 
                     # Get content length if available
                     total_size = resp.content_length or 0

@@ -434,9 +434,7 @@ class TestModelStore:
         """Set up test fixtures with mocked connection."""
         self.mock_conn = MagicMock()
         self.mock_cursor = MagicMock()
-        self.mock_conn.cursor.return_value.__enter__ = MagicMock(
-            return_value=self.mock_cursor
-        )
+        self.mock_conn.cursor.return_value.__enter__ = MagicMock(return_value=self.mock_cursor)
         self.mock_conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
 
         # Use permissive path validator for tests
@@ -524,16 +522,38 @@ class TestModelStore:
         # Mock multiple rows - includes model_ref_json, execution_authority_default
         self.mock_cursor.fetchall.return_value = [
             (
-                "mdl-1", "system-model", "system", None, None,
-                "/models/sys", "llm", None, None, {}, "available",
-                None, "compose",  # model_ref_json, execution_authority_default
-                datetime.now(), datetime.now(),
+                "mdl-1",
+                "system-model",
+                "system",
+                None,
+                None,
+                "/models/sys",
+                "llm",
+                None,
+                None,
+                {},
+                "available",
+                None,
+                "compose",  # model_ref_json, execution_authority_default
+                datetime.now(),
+                datetime.now(),
             ),
             (
-                "mdl-2", "project-model", "project", None, "proj-123",
-                "/models/proj", "llm", None, None, {}, "available",
-                None, "compose",  # model_ref_json, execution_authority_default
-                datetime.now(), datetime.now(),
+                "mdl-2",
+                "project-model",
+                "project",
+                None,
+                "proj-123",
+                "/models/proj",
+                "llm",
+                None,
+                None,
+                {},
+                "available",
+                None,
+                "compose",  # model_ref_json, execution_authority_default
+                datetime.now(),
+                datetime.now(),
             ),
         ]
 
@@ -549,10 +569,21 @@ class TestModelStore:
         """Test delete_model removes the catalog entry."""
         # Mock get_model - includes model_ref_json, execution_authority_default
         self.mock_cursor.fetchone.return_value = (
-            "mdl-123", "test", "user", "user-123", None,
-            "/models/test", "llm", None, None, {}, "available",
-            None, "compose",  # model_ref_json, execution_authority_default
-            datetime.now(), datetime.now(),
+            "mdl-123",
+            "test",
+            "user",
+            "user-123",
+            None,
+            "/models/test",
+            "llm",
+            None,
+            None,
+            {},
+            "available",
+            None,
+            "compose",  # model_ref_json, execution_authority_default
+            datetime.now(),
+            datetime.now(),
         )
 
         ctx = AccessContext(user_id="user-123", is_admin=False)
@@ -560,8 +591,7 @@ class TestModelStore:
 
         # Check DELETE was executed
         delete_calls = [
-            call for call in self.mock_cursor.execute.call_args_list
-            if "DELETE" in str(call)
+            call for call in self.mock_cursor.execute.call_args_list if "DELETE" in str(call)
         ]
         assert len(delete_calls) == 1
         self.mock_conn.commit.assert_called()
@@ -570,10 +600,21 @@ class TestModelStore:
         """Test resolve_model_path returns validated path."""
         # Includes model_ref_json, execution_authority_default
         self.mock_cursor.fetchone.return_value = (
-            "mdl-123", "test", "system", None, None,
-            "/models/gpt-4", "llm", None, None, {}, "available",
-            None, "compose",  # model_ref_json, execution_authority_default
-            datetime.now(), datetime.now(),
+            "mdl-123",
+            "test",
+            "system",
+            None,
+            None,
+            "/models/gpt-4",
+            "llm",
+            None,
+            None,
+            {},
+            "available",
+            None,
+            "compose",  # model_ref_json, execution_authority_default
+            datetime.now(),
+            datetime.now(),
         )
 
         path = self.store.resolve_model_path("mdl-123", self.admin_ctx)
@@ -584,10 +625,21 @@ class TestModelStore:
         """Test resolve_model_path rejects models in staging status."""
         # Includes model_ref_json, execution_authority_default
         self.mock_cursor.fetchone.return_value = (
-            "mdl-123", "test", "system", None, None,
-            "/models/downloading", "llm", None, None, {}, "staging",
-            None, "compose",  # model_ref_json, execution_authority_default
-            datetime.now(), datetime.now(),
+            "mdl-123",
+            "test",
+            "system",
+            None,
+            None,
+            "/models/downloading",
+            "llm",
+            None,
+            None,
+            {},
+            "staging",
+            None,
+            "compose",  # model_ref_json, execution_authority_default
+            datetime.now(),
+            datetime.now(),
         )
 
         with pytest.raises(PermissionDeniedError, match="staging"):

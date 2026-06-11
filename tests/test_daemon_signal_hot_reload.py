@@ -122,16 +122,12 @@ class TestIsProcessAlive:
         mod = _import_daemon_signal(monkeypatch, tmp_path)
         assert mod.is_process_alive(os.getpid()) is True
 
-    def test_invalid_pid_is_dead(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_invalid_pid_is_dead(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         mod = _import_daemon_signal(monkeypatch, tmp_path)
         assert mod.is_process_alive(0) is False
         assert mod.is_process_alive(-1) is False
 
-    def test_reaped_pid_is_dead(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_reaped_pid_is_dead(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         mod = _import_daemon_signal(monkeypatch, tmp_path)
         # Start & immediately wait for a no-op process so its PID is reaped.
         proc = subprocess.Popen([sys.executable, "-c", "pass"])
@@ -148,18 +144,14 @@ class TestIsProcessAlive:
 
 
 class TestSignalReload:
-    def test_missing_pid_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_missing_pid_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         mod = _import_daemon_signal(monkeypatch, tmp_path)
         result = mod.signal_reload()
         assert result.sent is False
         assert result.pid is None
         assert "no pid file" in result.reason
 
-    def test_stale_pid_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_stale_pid_file(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         mod = _import_daemon_signal(monkeypatch, tmp_path)
         target = mod.resolve_pid_file_path()
         os.makedirs(os.path.dirname(target), exist_ok=True)
@@ -292,6 +284,7 @@ class TestAdminCliAutoReload:
             import importlib
 
             import umrs.admin.daemon_signal as ds
+
             importlib.reload(ds)
             pid_path = ds.resolve_pid_file_path()
             os.makedirs(os.path.dirname(pid_path), exist_ok=True)

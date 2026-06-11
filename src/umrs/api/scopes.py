@@ -274,7 +274,8 @@ def filter_by_visibility(
     and group fields. Field names are configurable via *_key parameters.
     """
     return [
-        r for r in resources
+        r
+        for r in resources
         if can_view_resource(
             resource_scope=r.get(scope_key, "user"),
             resource_owner_id=r.get(owner_key, ""),

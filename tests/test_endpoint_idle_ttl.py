@@ -96,8 +96,7 @@ def test_endpoint_register_ttl_sec_zero_means_no_expiry():
     assert registry.list_expired() == []
     # A non-expiring endpoint must never be rejected on TTL grounds.
     assert (
-        registry.get("ai4s-platform", "kimi-k2.6", prefer_warm=False, min_ttl_sec=99999)
-        is endpoint
+        registry.get("ai4s-platform", "kimi-k2.6", prefer_warm=False, min_ttl_sec=99999) is endpoint
     )
 
 

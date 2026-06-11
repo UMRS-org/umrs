@@ -91,7 +91,10 @@ _ALL_SUPPORTED_TASKS = (
 
 def _require_presigned_urls() -> bool:
     return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -99,8 +102,7 @@ def _default_device() -> str:
     return os.environ.get("HF_DEFAULT_DEVICE", "auto")
 
 
-def _upload_result(s3, dst_bucket, out_key, data, content_type,
-                   presigned_output_urls):
+def _upload_result(s3, dst_bucket, out_key, data, content_type, presigned_output_urls):
     """Upload result via presigned URL or direct S3."""
     presigned_url = (presigned_output_urls or {}).get(out_key)
     if presigned_url:
@@ -114,8 +116,9 @@ def _upload_result(s3, dst_bucket, out_key, data, content_type,
     else:
         if _require_presigned_urls() or s3 is None:
             raise RuntimeError(f"Missing presigned PUT URL for {out_key}")
-        s3.put_object(Bucket=dst_bucket, Key=out_key,
-                      Body=data, ContentType=content_type)
+        s3.put_object(
+            Bucket=dst_bucket, Key=out_key, Body=data, ContentType=content_type
+        )
 
 
 def _resolve_task(config: dict[str, Any]) -> str:
@@ -217,7 +220,10 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
 
         logger.info(
             "Loading HuggingFace model: %s (task=%s, device=%s, dtype=%s)",
-            model_id, task, device, torch_dtype,
+            model_id,
+            task,
+            device,
+            torch_dtype,
         )
 
         pipe_kwargs: dict[str, Any] = {
@@ -254,7 +260,11 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             # Create a tiny test image
             test_img = Image.new("RGB", (64, 64), color=(128, 128, 128))
 
-            if task in _CLASSIFICATION_TASKS or task in _FEATURE_TASKS or task in _DEPTH_TASKS:
+            if (
+                task in _CLASSIFICATION_TASKS
+                or task in _FEATURE_TASKS
+                or task in _DEPTH_TASKS
+            ):
                 pipe(test_img)
             # Skip warmup for detection/segmentation (may need valid prompts)
             else:
@@ -300,7 +310,10 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
 
         logger.info(
             "[HF] infer: model=%s task=%s bucket=%s key=%s",
-            model["model_id"], task, bucket, key,
+            model["model_id"],
+            task,
+            bucket,
+            key,
         )
 
         # Build pipeline kwargs based on task
@@ -308,7 +321,9 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         if task in {"zero-shot-image-classification", "zero-shot-object-detection"}:
             candidate_labels = config.get("candidate_labels", config.get("labels", []))
             if isinstance(candidate_labels, str):
-                candidate_labels = [label.strip() for label in candidate_labels.split(",")]
+                candidate_labels = [
+                    label.strip() for label in candidate_labels.split(",")
+                ]
             pipe_kwargs["candidate_labels"] = candidate_labels
 
         # Run inference
@@ -327,21 +342,27 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             response.update(self._handle_detection(result))
         elif task in _SEGMENTATION_TASKS:
             response.update(
-                self._handle_segmentation(result, image, dst_bucket,
-                                          described, s3, presigned_output_urls)
+                self._handle_segmentation(
+                    result, image, dst_bucket, described, s3, presigned_output_urls
+                )
             )
         elif task in _FEATURE_TASKS:
             response.update(
-                self._handle_features(result, dst_bucket, described, s3, presigned_output_urls)
+                self._handle_features(
+                    result, dst_bucket, described, s3, presigned_output_urls
+                )
             )
         elif task in _DEPTH_TASKS:
             response.update(
-                self._handle_depth(result, dst_bucket, described, s3, presigned_output_urls)
+                self._handle_depth(
+                    result, dst_bucket, described, s3, presigned_output_urls
+                )
             )
         elif task == "image-to-image":
             response.update(
-                self._handle_image_to_image(result, dst_bucket,
-                                            described, s3, presigned_output_urls)
+                self._handle_image_to_image(
+                    result, dst_bucket, described, s3, presigned_output_urls
+                )
             )
         else:
             # Generic fallback: pickle the raw result.
@@ -352,12 +373,17 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         if pkl_key:
             # Build a serializable result (strip non-picklable objects)
             pkl_payload = {
-                k: v for k, v in response.items()
-                if k not in ("raw_result",)
+                k: v for k, v in response.items() if k not in ("raw_result",)
             }
             pkl_data = pickle.dumps(pkl_payload, protocol=pickle.HIGHEST_PROTOCOL)
-            _upload_result(s3, dst_bucket, pkl_key, pkl_data,
-                           "application/octet-stream", presigned_output_urls)
+            _upload_result(
+                s3,
+                dst_bucket,
+                pkl_key,
+                pkl_data,
+                "application/octet-stream",
+                presigned_output_urls,
+            )
             response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
         return response
@@ -376,8 +402,15 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
     ) -> list[dict[str, Any]]:
         """Batch inference fallback that preserves per-object artifact uploads."""
         return super().infer_batch(
-            model, images, keys, bucket, config, s3, output_bucket,
-            presigned_output_urls_list, raw_image_bytes_list,
+            model,
+            images,
+            keys,
+            bucket,
+            config,
+            s3,
+            output_bucket,
+            presigned_output_urls_list,
+            raw_image_bytes_list,
         )
 
     # ------------------------------------------------------------------
@@ -404,20 +437,26 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         detections = []
         if isinstance(result, list):
             for det in result:
-                detections.append({
-                    "label": det.get("label", ""),
-                    "score": float(det.get("score", 0)),
-                    "box": det.get("box", {}),
-                })
+                detections.append(
+                    {
+                        "label": det.get("label", ""),
+                        "score": float(det.get("score", 0)),
+                        "box": det.get("box", {}),
+                    }
+                )
         return {
             "detections": detections,
             "num_detections": len(detections),
         }
 
     def _handle_segmentation(
-        self, result: Any, image: Image.Image,
-        dst_bucket: str, described: dict[str, str],
-        s3, presigned_output_urls: dict[str, str] | None,
+        self,
+        result: Any,
+        image: Image.Image,
+        dst_bucket: str,
+        described: dict[str, str],
+        s3,
+        presigned_output_urls: dict[str, str] | None,
     ) -> dict[str, Any]:
         """Process segmentation results and upload mask overlay."""
         response: dict[str, Any] = {}
@@ -428,9 +467,7 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
         if isinstance(result, list) and result:
             # Instance/panoptic segmentation: list of segments.
             segments = []
-            combined_mask = np.zeros(
-                (image.height, image.width), dtype=np.uint8
-            )
+            combined_mask = np.zeros((image.height, image.width), dtype=np.uint8)
             for i, seg in enumerate(result):
                 mask = seg.get("mask")
                 if mask is not None:
@@ -441,10 +478,12 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
                     else:
                         mask_np = np.array(mask)
                     combined_mask[mask_np > 0] = i + 1
-                segments.append({
-                    "label": seg.get("label", f"segment_{i}"),
-                    "score": float(seg.get("score", 0)),
-                })
+                segments.append(
+                    {
+                        "label": seg.get("label", f"segment_{i}"),
+                        "score": float(seg.get("score", 0)),
+                    }
+                )
             response["segments"] = segments
             response["num_segments"] = len(segments)
 
@@ -454,8 +493,14 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
                 buf = io.BytesIO()
                 overlay.save(buf, format="PNG")
                 png_data = buf.getvalue()
-                _upload_result(s3, dst_bucket, png_key, png_data,
-                               "image/png", presigned_output_urls)
+                _upload_result(
+                    s3,
+                    dst_bucket,
+                    png_key,
+                    png_data,
+                    "image/png",
+                    presigned_output_urls,
+                )
                 response["output_s3_key"] = f"s3://{dst_bucket}/{png_key}"
 
         elif isinstance(result, dict) and "mask" in result:
@@ -469,16 +514,25 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
                 buf = io.BytesIO()
                 overlay.save(buf, format="PNG")
                 png_data = buf.getvalue()
-                _upload_result(s3, dst_bucket, png_key, png_data,
-                               "image/png", presigned_output_urls)
+                _upload_result(
+                    s3,
+                    dst_bucket,
+                    png_key,
+                    png_data,
+                    "image/png",
+                    presigned_output_urls,
+                )
                 response["output_s3_key"] = f"s3://{dst_bucket}/{png_key}"
 
         return response
 
     def _handle_features(
-        self, result: Any, dst_bucket: str,
+        self,
+        result: Any,
+        dst_bucket: str,
         described: dict[str, str],
-        s3, presigned_output_urls: dict[str, str] | None,
+        s3,
+        presigned_output_urls: dict[str, str] | None,
     ) -> dict[str, Any]:
         """Process feature extraction results and upload tensor."""
         import torch
@@ -503,16 +557,25 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             buf = io.BytesIO()
             torch.save({"features": features}, buf)
             buf.seek(0)
-            _upload_result(s3, dst_bucket, pt_key, buf.getvalue(),
-                           "application/octet-stream", presigned_output_urls)
+            _upload_result(
+                s3,
+                dst_bucket,
+                pt_key,
+                buf.getvalue(),
+                "application/octet-stream",
+                presigned_output_urls,
+            )
             response["output_s3_key"] = f"s3://{dst_bucket}/{pt_key}"
 
         return response
 
     def _handle_depth(
-        self, result: Any, dst_bucket: str,
+        self,
+        result: Any,
+        dst_bucket: str,
         described: dict[str, str],
-        s3, presigned_output_urls: dict[str, str] | None,
+        s3,
+        presigned_output_urls: dict[str, str] | None,
     ) -> dict[str, Any]:
         """Process depth estimation results and upload depth map."""
         png_key = next((k for k in described if k.endswith(".png")), None)
@@ -543,16 +606,20 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             buf = io.BytesIO()
             depth_img.save(buf, format="PNG")
             png_data = buf.getvalue()
-            _upload_result(s3, dst_bucket, png_key, png_data,
-                           "image/png", presigned_output_urls)
+            _upload_result(
+                s3, dst_bucket, png_key, png_data, "image/png", presigned_output_urls
+            )
             response["output_s3_key"] = f"s3://{dst_bucket}/{png_key}"
 
         return response
 
     def _handle_image_to_image(
-        self, result: Any, dst_bucket: str,
+        self,
+        result: Any,
+        dst_bucket: str,
         described: dict[str, str],
-        s3, presigned_output_urls: dict[str, str] | None,
+        s3,
+        presigned_output_urls: dict[str, str] | None,
     ) -> dict[str, Any]:
         """Process image-to-image results."""
         png_key = next((k for k in described if k.endswith(".png")), None)
@@ -569,8 +636,9 @@ class HuggingFaceVisionAdapter(VisionModelAdapter):
             buf = io.BytesIO()
             output_img.save(buf, format="PNG")
             png_data = buf.getvalue()
-            _upload_result(s3, dst_bucket, png_key, png_data,
-                           "image/png", presigned_output_urls)
+            _upload_result(
+                s3, dst_bucket, png_key, png_data, "image/png", presigned_output_urls
+            )
             response["output_s3_key"] = f"s3://{dst_bucket}/{png_key}"
 
         return response

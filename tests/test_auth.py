@@ -277,7 +277,8 @@ class TestUUIDIdentification:
 
         # UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
         import re
-        uuid_pattern = r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+
+        uuid_pattern = r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
         assert re.match(uuid_pattern, user_uuid)
 
 
@@ -450,11 +451,14 @@ class TestXDGConfigDirectory:
 
     def test_ensure_dirs_creates_directories(self, tmp_path):
         """ensure_dirs creates all directories."""
-        with patch.dict(os.environ, {
-            "UMRS_CONFIG": str(tmp_path / "config"),
-            "XDG_DATA_HOME": str(tmp_path / "data"),
-            "XDG_CACHE_HOME": str(tmp_path / "cache"),
-        }):
+        with patch.dict(
+            os.environ,
+            {
+                "UMRS_CONFIG": str(tmp_path / "config"),
+                "XDG_DATA_HOME": str(tmp_path / "data"),
+                "XDG_CACHE_HOME": str(tmp_path / "cache"),
+            },
+        ):
             config = ConfigDirectory()
             config._config_dir = None
             config._data_dir = None
@@ -563,10 +567,7 @@ class TestAdminTokenManager:
         with caplog.at_level(logging.INFO, logger="umrs.audit.admin_token"):
             manager.generate_token("audit-test", "audit test token")
 
-        audit_records = [
-            r for r in caplog.records
-            if hasattr(r, "audit_event")
-        ]
+        audit_records = [r for r in caplog.records if hasattr(r, "audit_event")]
         assert len(audit_records) == 1
         event = audit_records[0].audit_event
         assert event["event_type"] == "token_generate"
@@ -586,9 +587,9 @@ class TestAdminTokenManager:
             manager.revoke_token("revoke-audit")
 
         audit_records = [
-            r for r in caplog.records
-            if hasattr(r, "audit_event")
-            and r.audit_event.get("event_type") == "token_revoke"
+            r
+            for r in caplog.records
+            if hasattr(r, "audit_event") and r.audit_event.get("event_type") == "token_revoke"
         ]
         assert len(audit_records) == 1
         assert audit_records[0].audit_event["resource_id"] == "revoke-audit"
@@ -605,9 +606,7 @@ class TestAdminTokenManager:
             manager.rotate_token("old-token", "new-token", "rotated")
 
         event_types = [
-            r.audit_event["event_type"]
-            for r in caplog.records
-            if hasattr(r, "audit_event")
+            r.audit_event["event_type"] for r in caplog.records if hasattr(r, "audit_event")
         ]
         assert "token_generate" in event_types
         assert "token_rotate" in event_types

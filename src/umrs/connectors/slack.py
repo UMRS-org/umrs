@@ -78,11 +78,7 @@ class SlackConnector(Connector):
             token,
             {"types": "public_channel,private_channel", "limit": "200"},
         )
-        return [
-            ch["id"]
-            for ch in data.get("channels", [])
-            if ch.get("is_member")
-        ]
+        return [ch["id"] for ch in data.get("channels", []) if ch.get("is_member")]
 
     def _fetch_channel(
         self,
@@ -101,9 +97,7 @@ class SlackConnector(Connector):
 
         fetched = 0
         while fetched < max_messages:
-            data = self._api_get(
-                f"{_SLACK_API}/conversations.history", token, params
-            )
+            data = self._api_get(f"{_SLACK_API}/conversations.history", token, params)
             messages = data.get("messages", [])
             if not messages:
                 break
@@ -137,9 +131,7 @@ class SlackConnector(Connector):
                 # Fetch thread replies
                 thread_ts = msg.get("thread_ts")
                 if include_threads and thread_ts and msg.get("reply_count", 0) > 0:
-                    yield from self._fetch_thread(
-                        token, channel_id, thread_ts
-                    )
+                    yield from self._fetch_thread(token, channel_id, thread_ts)
 
             if not data.get("has_more"):
                 break

@@ -24,15 +24,14 @@ logger = logging.getLogger(__name__)
 
 # Base container image for plugin execution
 DEFAULT_PLUGIN_IMAGE = os.environ.get(
-    "PLUGIN_RUNNER_IMAGE",
-    "ghcr.io/rivault/plugin-runner:latest"
+    "PLUGIN_RUNNER_IMAGE", "ghcr.io/rivault/plugin-runner:latest"
 )
 
 # Approved output destinations
 APPROVED_OUTPUT_PREFIXES = [
-    "s3://",      # S3/MinIO storage
-    "pgvector://", # Vector database
-    "umrs://",    # UMRS internal storage
+    "s3://",  # S3/MinIO storage
+    "pgvector://",  # Vector database
+    "umrs://",  # UMRS internal storage
 ]
 
 
@@ -153,7 +152,9 @@ class PluginRunner(abc.ABC):
             if self.audit_log:
                 await self.audit_log.log_event(
                     plugin_id=plugin_id,
-                    event_type="succeeded" if result.status == PluginStatus.SUCCEEDED else "failed",
+                    event_type="succeeded"
+                    if result.status == PluginStatus.SUCCEEDED
+                    else "failed",
                     user_id=spec.user_id,
                     project_id=spec.project_id,
                     details={

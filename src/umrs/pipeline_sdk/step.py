@@ -43,6 +43,7 @@ logger = logging.getLogger(__name__)
 
 # ── Step execution context ───────────────────────────────────────────────────
 
+
 @dataclass
 class StepContext:
     """Execution context passed to :meth:`Step.run`.
@@ -84,7 +85,9 @@ class StepContext:
         pct = max(0.0, min(100.0, percent))
         logger.info(
             "[run=%s] progress %.1f%% %s",
-            self.run_id, pct, message,
+            self.run_id,
+            pct,
+            message,
         )
 
     # ── S3 download helpers ──────────────────────────────────────────────
@@ -98,6 +101,7 @@ class StepContext:
     def download_numpy(self, key: str, bucket: str | None = None) -> np.ndarray:
         """Download a ``.npy`` file from S3 and return a NumPy array."""
         import numpy as np
+
         raw = self.download_bytes(key, bucket)
         return np.load(io.BytesIO(raw), allow_pickle=False)
 
@@ -127,10 +131,12 @@ class StepContext:
     ) -> str:
         """Save a NumPy array as ``.npy`` to S3."""
         import numpy as np
+
         buf = io.BytesIO()
         np.save(buf, arr, allow_pickle=False)
-        return self.upload_bytes(key, buf.getvalue(), bucket,
-                                content_type="application/x-npy")
+        return self.upload_bytes(
+            key, buf.getvalue(), bucket, content_type="application/x-npy"
+        )
 
     # ── S3 metadata helpers ──────────────────────────────────────────────
 
@@ -174,6 +180,7 @@ class StepResult:
 
 
 # ── Step abstract base class ────────────────────────────────────────────────
+
 
 class Step(ABC):
     """Abstract base class every user-defined step must inherit."""

@@ -104,7 +104,9 @@ class _InMemoryS3Client:
         self._lock = state_lock or threading.Lock()
         record.results.setdefault("blobs", {})
 
-    def put_object(self, *, Bucket: str, Key: str, Body: bytes, **_: Any) -> dict[str, Any]:
+    def put_object(
+        self, *, Bucket: str, Key: str, Body: bytes, **_: Any
+    ) -> dict[str, Any]:
         full_key = f"{Bucket}/{Key}"
         with self._lock:
             self._record.results["blobs"][full_key] = Body
@@ -298,9 +300,7 @@ def _execute_step(
         _load_step_class(spec["entrypoint"])
     except Exception as exc:  # noqa: BLE001
         msg = f"Failed to load step: {exc}"
-        record.set_step(
-            step_name, status="failed", error=msg, finished_at=time.time()
-        )
+        record.set_step(step_name, status="failed", error=msg, finished_at=time.time())
         return step_name, None, msg
 
     config = dict(spec.get("config") or {})
@@ -335,9 +335,7 @@ def _execute_step(
         )
     except StepRoutingError as exc:
         msg = str(exc)
-        record.set_step(
-            step_name, status="failed", error=msg, finished_at=time.time()
-        )
+        record.set_step(step_name, status="failed", error=msg, finished_at=time.time())
         # Record a routing entry so callers can see why this step failed.
         with state_lock:
             routing_log[step_name] = {
@@ -385,17 +383,13 @@ def _execute_step(
     # the *resolved* value — i.e. the hint when present, else the
     # deployment-wide default (``UMRS_STEP_GPU``).
     routing_hints = (
-        spec.get("routing_hints")
-        if isinstance(spec.get("routing_hints"), dict)
-        else {}
+        spec.get("routing_hints") if isinstance(spec.get("routing_hints"), dict) else {}
     )
     gpu_hint = routing_hints.get("gpu")
     if gpu_hint is not None:
         decision_dict["gpu"] = gpu_hint
     else:
-        decision_dict["gpu"] = (
-            os.environ.get("UMRS_STEP_GPU", "0").strip() == "1"
-        )
+        decision_dict["gpu"] = os.environ.get("UMRS_STEP_GPU", "0").strip() == "1"
 
     with state_lock:
         routing_log[step_name] = decision_dict
@@ -423,9 +417,7 @@ def _execute_step(
     if os.environ.get("UMRS_STEP_PAYLOAD_S3", "").strip() == "1":
         payload_bucket = os.environ.get("UMRS_S3_BUCKET", "").strip()
         if payload_bucket:
-            payload_s3_prefix = os.environ.get(
-                "UMRS_S3_PREFIX", "umrs"
-            ).strip()
+            payload_s3_prefix = os.environ.get("UMRS_S3_PREFIX", "umrs").strip()
             metadata[EXECUTOR_PAYLOAD_S3_METADATA_KEY] = {
                 "bucket": payload_bucket,
                 "prefix": payload_s3_prefix,
@@ -484,9 +476,7 @@ def _execute_step(
             # nothing useful about an endpoint's healthy throughput.
             if decision.endpoint_id:
                 get_feedback_store().record_failure(decision.endpoint_id)
-        record.set_step(
-            step_name, status="failed", error=msg, finished_at=time.time()
-        )
+        record.set_step(step_name, status="failed", error=msg, finished_at=time.time())
         return step_name, None, msg
     exec_time_ms = (time.monotonic() - run_started) * 1000.0
 
@@ -689,9 +679,7 @@ def run_workflow_record(
                         # _execute_step is supposed to capture all
                         # exceptions internally; this branch is purely
                         # defensive.
-                        logger.exception(
-                            "Unexpected exception escaping _execute_step"
-                        )
+                        logger.exception("Unexpected exception escaping _execute_step")
                         wave_errors.append(f"<unknown>: {exc}")
                         completed += 1
                         continue
@@ -722,8 +710,7 @@ def run_workflow_record(
         # Still persist whatever step results we have for debugging.
         with state_lock:
             record.results["steps"] = {
-                name: _serialise_step_extra(res)
-                for name, res in parent_results.items()
+                name: _serialise_step_extra(res) for name, res in parent_results.items()
             }
         _try_shutdown_executor(executor)
         return
@@ -731,8 +718,7 @@ def run_workflow_record(
     # ---- Success: persist final outputs ----------------------------------
     with state_lock:
         record.results["steps"] = {
-            name: _serialise_step_extra(res)
-            for name, res in parent_results.items()
+            name: _serialise_step_extra(res) for name, res in parent_results.items()
         }
         last_level = levels[-1] if levels else []
         if last_level:
@@ -785,7 +771,6 @@ def _mark_skipped(
             "resolved_via": "skipped",
             "wave_index": wave_index,
         }
-
 
 
 def _serialise_step_extra(result: StepResult) -> dict[str, Any]:

@@ -61,8 +61,8 @@ class K8sOnSlurmConfig:
 
     # Workload
     manifest_path: str | None = None  # YAML manifest to apply
-    helm_chart: str | None = None     # Helm chart to install
-    helm_values: str | None = None    # Values file for Helm
+    helm_chart: str | None = None  # Helm chart to install
+    helm_values: str | None = None  # Values file for Helm
 
     def to_env(self) -> dict[str, str]:
         """Convert to environment variables."""
@@ -112,7 +112,9 @@ class K8sOnSlurmJob:
             "kubeconfig_path": self.kubeconfig_path,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "completed_at": self.completed_at.isoformat()
+            if self.completed_at
+            else None,
         }
 
 
@@ -161,7 +163,9 @@ class K8sBootstrapWrapper:
             slurm_job_id = result.stdout.strip()
             job.slurm_job_id = slurm_job_id
             job.status = K8sOnSlurmStatus.STARTING
-            logger.info(f"Submitted K8s-on-Slurm job {job_id} as Slurm job {slurm_job_id}")
+            logger.info(
+                f"Submitted K8s-on-Slurm job {job_id} as Slurm job {slurm_job_id}"
+            )
 
         except subprocess.CalledProcessError as e:
             job.status = K8sOnSlurmStatus.FAILED
@@ -203,7 +207,9 @@ class K8sBootstrapWrapper:
                         job.status = K8sOnSlurmStatus.RUNNING
                         job.node_name = node_name
                         job.started_at = job.started_at or datetime.now()
-                        job.kubeconfig_path = f"/tmp/k3s-{job.slurm_job_id}/kubeconfig.yaml"
+                        job.kubeconfig_path = (
+                            f"/tmp/k3s-{job.slurm_job_id}/kubeconfig.yaml"
+                        )
                     elif slurm_state == "PENDING":
                         job.status = K8sOnSlurmStatus.PENDING
                     elif slurm_state in ["CANCELLED", "TIMEOUT", "PREEMPTED"]:
@@ -298,7 +304,11 @@ class K8sBootstrapWrapper:
         ]
 
         if config.gpus > 0:
-            gpu_spec = f"{config.gpu_type}:{config.gpus}" if config.gpu_type else str(config.gpus)
+            gpu_spec = (
+                f"{config.gpu_type}:{config.gpus}"
+                if config.gpu_type
+                else str(config.gpus)
+            )
             lines.append(f"#SBATCH --gres=gpu:{gpu_spec}")
 
         lines.append("")

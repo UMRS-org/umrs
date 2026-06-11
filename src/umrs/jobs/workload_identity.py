@@ -118,9 +118,7 @@ class WorkloadIdentityIssuer:
             ValueError: If scope is invalid or TTL exceeds maximum.
         """
         if scope not in VALID_SCOPES:
-            raise ValueError(
-                f"Invalid scope: {scope!r}; must be one of {VALID_SCOPES}"
-            )
+            raise ValueError(f"Invalid scope: {scope!r}; must be one of {VALID_SCOPES}")
         if ttl_seconds <= 0 or ttl_seconds > MAX_TTL_SECONDS:
             raise ValueError(
                 f"TTL must be 1-{MAX_TTL_SECONDS} seconds, got {ttl_seconds}"
@@ -149,7 +147,11 @@ class WorkloadIdentityIssuer:
 
         logger.info(
             "Workload identity issued: %s (job=%s step=%s scope=%s ttl=%ds)",
-            identity.identity_id, job_id, step_name, scope, ttl_seconds,
+            identity.identity_id,
+            job_id,
+            step_name,
+            scope,
+            ttl_seconds,
         )
         return identity, token
 
@@ -205,8 +207,7 @@ class WorkloadIdentityIssuer:
     def cleanup_expired(self) -> int:
         """Remove expired identities from memory. Returns count removed."""
         expired = [
-            iid for iid, identity in self._identities.items()
-            if identity.is_expired
+            iid for iid, identity in self._identities.items() if identity.is_expired
         ]
         for iid in expired:
             identity = self._identities.pop(iid)

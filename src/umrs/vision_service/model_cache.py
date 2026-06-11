@@ -67,7 +67,9 @@ class ModelCache:
             try:
                 ok = adapter.warmup(model, config)
                 if not ok:
-                    logger.warning("Warmup returned False for %s; model may be unhealthy", key)
+                    logger.warning(
+                        "Warmup returned False for %s; model may be unhealthy", key
+                    )
             except Exception as exc:
                 logger.warning("Warmup raised for %s: %s; continuing anyway", key, exc)
 
@@ -96,11 +98,13 @@ class ModelCache:
             return
         lru_key = min(self._entries, key=lambda k: self._entries[k][1])
         model, ts = self._entries.pop(lru_key)
-        logger.info("Evicting model %s (last used %.1fs ago)",
-                     lru_key, time.monotonic() - ts)
+        logger.info(
+            "Evicting model %s (last used %.1fs ago)", lru_key, time.monotonic() - ts
+        )
         del model
         try:
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         except ImportError:

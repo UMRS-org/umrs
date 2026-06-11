@@ -85,9 +85,7 @@ _PAYLOAD_THRESHOLD_BYTES = int(
 )
 # Hard cap: payloads above this size are rejected as a setup error to
 # protect the object store and network from accidental massive pickles.
-_PAYLOAD_MAX_BYTES = int(
-    os.environ.get("UMRS_STEP_PAYLOAD_MAX_BYTES", "52428800")
-)
+_PAYLOAD_MAX_BYTES = int(os.environ.get("UMRS_STEP_PAYLOAD_MAX_BYTES", "52428800"))
 
 
 # ----------------------------------------------------------------------
@@ -373,25 +371,20 @@ class SubprocessExecutor:
             ) from exc
 
         if not isinstance(reply, dict) or "status" not in reply:
-            raise StepExecutionError(
-                "worker", f"malformed worker reply: {reply!r}"
-            )
+            raise StepExecutionError("worker", f"malformed worker reply: {reply!r}")
         if reply["status"] == "ok":
             result = reply.get("result")
             if not isinstance(result, StepResult):
                 raise StepExecutionError(
                     "worker",
-                    f"worker returned {type(result).__name__!r}, "
-                    "expected StepResult",
+                    f"worker returned {type(result).__name__!r}, expected StepResult",
                 )
             return result
         if reply["status"] == "error":
             phase = str(reply.get("phase") or "run")
             message = str(reply.get("message") or "<no message>")
             raise StepExecutionError(phase, message)
-        raise StepExecutionError(
-            "worker", f"unknown reply status: {reply['status']!r}"
-        )
+        raise StepExecutionError("worker", f"unknown reply status: {reply['status']!r}")
 
 
 def _serialise_s3_client_config(s3: Any) -> dict[str, Any]:
@@ -495,9 +488,7 @@ class PodmanExecutor:
             EXECUTOR_GPU_METADATA_KEY,
         }
         sanitised_metadata = {
-            k: v
-            for k, v in ctx.metadata.items()
-            if k not in _INTERNAL_KEYS
+            k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
@@ -536,10 +527,7 @@ class PodmanExecutor:
         container_name = f"umrs-step-{uuid.uuid4().hex[:12]}"
 
         # Decide whether this invocation actually uses S3 transport.
-        use_s3 = (
-            payload_s3_cfg is not None
-            and payload_size >= _PAYLOAD_THRESHOLD_BYTES
-        )
+        use_s3 = payload_s3_cfg is not None and payload_size >= _PAYLOAD_THRESHOLD_BYTES
         input_s3_key: str | None = None
         output_s3_key: str | None = None
 
@@ -550,12 +538,8 @@ class PodmanExecutor:
                 prefix = payload_s3_cfg["prefix"]
                 step_name = config.get("step_name", "unknown")
                 run_id = ctx.run_id or "unknown"
-                input_s3_key = _payload_s3_key(
-                    prefix, run_id, step_name, "input.pkl"
-                )
-                output_s3_key = _payload_s3_key(
-                    prefix, run_id, step_name, "output.pkl"
-                )
+                input_s3_key = _payload_s3_key(prefix, run_id, step_name, "input.pkl")
+                output_s3_key = _payload_s3_key(prefix, run_id, step_name, "output.pkl")
                 try:
                     ctx.s3.put_object(
                         Bucket=bucket,
@@ -587,9 +571,7 @@ class PodmanExecutor:
                 gpu=gpu,
                 input_s3_key=input_s3_key,
                 output_s3_key=output_s3_key,
-                payload_s3_bucket=(
-                    payload_s3_cfg["bucket"] if use_s3 else None
-                ),
+                payload_s3_bucket=(payload_s3_cfg["bucket"] if use_s3 else None),
             )
             try:
                 completed = subprocess.run(
@@ -666,9 +648,7 @@ class PodmanExecutor:
             )
         return self.image
 
-    def _resolve_payload_s3(
-        self, ctx: StepContext
-    ) -> dict[str, str] | None:
+    def _resolve_payload_s3(self, ctx: StepContext) -> dict[str, str] | None:
         """Return S3 payload config if the runner enabled it, else None.
 
         Expected shape in ``ctx.metadata``::
@@ -681,9 +661,7 @@ class PodmanExecutor:
         if raw is None:
             return None
         if not isinstance(raw, dict) or "bucket" not in raw:
-            logger.debug(
-                "payload S3 hint ignored (bad shape): %r", raw
-            )
+            logger.debug("payload S3 hint ignored (bad shape): %r", raw)
             return None
         return {
             "bucket": str(raw["bucket"]),
@@ -707,17 +685,14 @@ class PodmanExecutor:
         if not isinstance(override, bool):
             raise StepExecutionError(
                 "setup",
-                f"per-step gpu override must be a bool, got "
-                f"{type(override).__name__}",
+                f"per-step gpu override must be a bool, got {type(override).__name__}",
             )
         return override
 
     # ---- Reply helpers (shared between local + S3 paths) ----
 
     @staticmethod
-    def _read_local_reply(
-        output_path: str, completed: Any
-    ) -> dict[str, Any]:
+    def _read_local_reply(output_path: str, completed: Any) -> dict[str, Any]:
         if not os.path.isfile(output_path):
             stderr = (completed.stderr or b"").decode(errors="replace")
             raise StepExecutionError(
@@ -807,22 +782,28 @@ class PodmanExecutor:
         # Payload transport env vars.
         if input_s3_key and output_s3_key and payload_s3_bucket:
             # S3 mode: worker reads/writes via S3 instead of local files.
-            cmd.extend([
-                "-e", f"UMRS_STEP_INPUT_S3={payload_s3_bucket}/{input_s3_key}",
-                "-e", f"UMRS_STEP_OUTPUT_S3={payload_s3_bucket}/{output_s3_key}",
-            ])
+            cmd.extend(
+                [
+                    "-e",
+                    f"UMRS_STEP_INPUT_S3={payload_s3_bucket}/{input_s3_key}",
+                    "-e",
+                    f"UMRS_STEP_OUTPUT_S3={payload_s3_bucket}/{output_s3_key}",
+                ]
+            )
         else:
             # Local file mode (Slice 9 original behaviour).
-            cmd.extend([
-                "-e", "UMRS_STEP_INPUT=/umrs-step/input.pkl",
-                "-e", "UMRS_STEP_OUTPUT=/umrs-step/output.pkl",
-            ])
+            cmd.extend(
+                [
+                    "-e",
+                    "UMRS_STEP_INPUT=/umrs-step/input.pkl",
+                    "-e",
+                    "UMRS_STEP_OUTPUT=/umrs-step/output.pkl",
+                ]
+            )
 
         # Forward S3 connection settings so the in-container worker can
         # rebuild a boto3 client matching the parent's MinIO endpoint.
-        endpoint = s3_config.get("endpoint_url") or os.environ.get(
-            "MINIO_ENDPOINT"
-        )
+        endpoint = s3_config.get("endpoint_url") or os.environ.get("MINIO_ENDPOINT")
         if endpoint:
             cmd.extend(["-e", f"MINIO_ENDPOINT={endpoint}"])
         region = s3_config.get("region_name") or os.environ.get("AWS_REGION")
@@ -866,9 +847,7 @@ class PodmanExecutor:
                 check=False,
             )
         except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "podman rm -f %s failed: %s", container_name, exc
-            )
+            logger.warning("podman rm -f %s failed: %s", container_name, exc)
 
 
 # ----------------------------------------------------------------------
@@ -908,16 +887,16 @@ class _PooledWorker:
     def is_alive(self) -> bool:
         return self.proc.poll() is None
 
-    def run_task(self, payload_blob: bytes, timeout: float | None = None) -> dict[str, Any]:
+    def run_task(
+        self, payload_blob: bytes, timeout: float | None = None
+    ) -> dict[str, Any]:
         """Send a task and block until the reply arrives.
 
         Raises :class:`StepExecutionError` on protocol or worker
         failure.
         """
         if not self.is_alive():
-            raise StepExecutionError(
-                "worker", "pool worker exited unexpectedly"
-            )
+            raise StepExecutionError("worker", "pool worker exited unexpectedly")
         stdin = self.proc.stdin
         stdout = self.proc.stdout
         assert stdin is not None
@@ -935,7 +914,7 @@ class _PooledWorker:
         try:
             header = stdout.read(4)
             if not header or len(header) < 4:
-                stderr_bytes = (self.proc.stderr or b"")
+                stderr_bytes = self.proc.stderr or b""
                 if hasattr(stderr_bytes, "read"):
                     stderr_bytes = stderr_bytes.read()
                 stderr_text = (stderr_bytes or b"").decode(errors="replace")
@@ -1064,9 +1043,7 @@ class WorkerPoolExecutor:
             EXECUTOR_GPU_METADATA_KEY,
         }
         sanitised_metadata = {
-            k: v
-            for k, v in ctx.metadata.items()
-            if k not in _INTERNAL_KEYS
+            k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
@@ -1200,9 +1177,7 @@ class WorkerPoolExecutor:
         while idle:
             w = idle.popleft()
             if not w.is_alive():
-                self._active_count[key] = max(
-                    self._active_count.get(key, 1) - 1, 0
-                )
+                self._active_count[key] = max(self._active_count.get(key, 1) - 1, 0)
                 logger.debug("discarding dead idle worker %s", w.container_name)
                 continue
             # Evict if past idle timeout, but keep at least one warm.
@@ -1211,58 +1186,44 @@ class WorkerPoolExecutor:
                 and (now - w.last_used_at) > self.idle_timeout
                 and (len(idle) + 1) > 1  # +1 because we already popped w
             ):
-                self._active_count[key] = max(
-                    self._active_count.get(key, 1) - 1, 0
-                )
+                self._active_count[key] = max(self._active_count.get(key, 1) - 1, 0)
                 logger.debug(
                     "evicting idle worker %s (idle %.0fs)",
                     w.container_name,
                     now - w.last_used_at,
                 )
                 # Stop in background to avoid blocking acquire.
-                threading.Thread(
-                    target=w.stop, daemon=True, name="pool-evict"
-                ).start()
+                threading.Thread(target=w.stop, daemon=True, name="pool-evict").start()
                 continue
             return w
         return None
 
-    def _release_worker(
-        self, key: tuple[str, bool], worker: _PooledWorker
-    ) -> None:
+    def _release_worker(self, key: tuple[str, bool], worker: _PooledWorker) -> None:
         cond = self._cond_for(key)
         with cond:
             if worker.is_alive():
                 worker.last_used_at = time.monotonic()
                 self._pool.setdefault(key, deque()).append(worker)
             else:
-                self._active_count[key] = max(
-                    self._active_count.get(key, 1) - 1, 0
-                )
+                self._active_count[key] = max(self._active_count.get(key, 1) - 1, 0)
                 logger.debug(
                     "pool worker %s died during task, discarding",
                     worker.container_name,
                 )
             cond.notify()
 
-    def _discard_worker(
-        self, key: tuple[str, bool], worker: _PooledWorker
-    ) -> None:
+    def _discard_worker(self, key: tuple[str, bool], worker: _PooledWorker) -> None:
         """Stop a failed worker without returning it to the pool."""
         cond = self._cond_for(key)
         with cond:
-            self._active_count[key] = max(
-                self._active_count.get(key, 1) - 1, 0
-            )
+            self._active_count[key] = max(self._active_count.get(key, 1) - 1, 0)
             cond.notify()
         try:
             worker.stop()
         except Exception:  # noqa: BLE001
             pass
 
-    def _prewarm_key(
-        self, key: tuple[str, bool], image: str, gpu: bool
-    ) -> None:
+    def _prewarm_key(self, key: tuple[str, bool], image: str, gpu: bool) -> None:
         """Spawn one extra idle worker for *key* if under cap."""
         cond = self._cond_for(key)
         with cond:
@@ -1275,9 +1236,7 @@ class WorkerPoolExecutor:
             w = self._start_worker(image, gpu)
         except Exception:
             with cond:
-                self._active_count[key] = max(
-                    self._active_count.get(key, 1) - 1, 0
-                )
+                self._active_count[key] = max(self._active_count.get(key, 1) - 1, 0)
             raise
         with cond:
             w.last_used_at = time.monotonic()
@@ -1289,7 +1248,7 @@ class WorkerPoolExecutor:
         cmd: list[str] = [
             self.podman_bin,
             "run",
-            "-i",          # keep stdin open
+            "-i",  # keep stdin open
             "--rm",
             "--name",
             container_name,
@@ -1318,12 +1277,16 @@ class WorkerPoolExecutor:
         if self.extra_args:
             cmd.extend(self.extra_args)
 
-        cmd.extend([
-            image,
-            "python", "-u",
-            "-m", "umrs.server.step_worker",
-            "--pool",
-        ])
+        cmd.extend(
+            [
+                image,
+                "python",
+                "-u",
+                "-m",
+                "umrs.server.step_worker",
+                "--pool",
+            ]
+        )
 
         try:
             proc = subprocess.Popen(
@@ -1401,8 +1364,7 @@ class WorkerPoolExecutor:
         if not isinstance(override, bool):
             raise StepExecutionError(
                 "setup",
-                f"per-step gpu override must be a bool, got "
-                f"{type(override).__name__}",
+                f"per-step gpu override must be a bool, got {type(override).__name__}",
             )
         return override
 
@@ -1435,13 +1397,9 @@ class WorkerPoolExecutor:
 # ----------------------------------------------------------------------
 
 
-_REMOTE_WORKER_COOLDOWN = float(
-    os.environ.get("UMRS_REMOTE_WORKER_COOLDOWN", "10")
-)
+_REMOTE_WORKER_COOLDOWN = float(os.environ.get("UMRS_REMOTE_WORKER_COOLDOWN", "10"))
 
-_WORKER_CAPABILITY_TTL = float(
-    os.environ.get("UMRS_WORKER_CAPABILITY_TTL", "30")
-)
+_WORKER_CAPABILITY_TTL = float(os.environ.get("UMRS_WORKER_CAPABILITY_TTL", "30"))
 
 
 class _RemoteWorker:
@@ -1571,7 +1529,9 @@ class _RemoteWorker:
             )
         self._prev_slots = self.capacity
 
-    def run_task(self, payload_blob: bytes, timeout: float | None = None) -> dict[str, Any]:
+    def run_task(
+        self, payload_blob: bytes, timeout: float | None = None
+    ) -> dict[str, Any]:
         """Send a task and block until the reply arrives.
 
         Raises :class:`StepExecutionError` on transport failure.
@@ -1654,9 +1614,7 @@ class RemotePoolExecutor:
     _pool: dict[str, deque[_RemoteWorker]] = field(
         default_factory=dict, init=False, repr=False
     )
-    _active_count: dict[str, int] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _active_count: dict[str, int] = field(default_factory=dict, init=False, repr=False)
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
@@ -1683,9 +1641,7 @@ class RemotePoolExecutor:
             EXECUTOR_GPU_METADATA_KEY,
         }
         sanitised_metadata = {
-            k: v
-            for k, v in ctx.metadata.items()
-            if k not in _INTERNAL_KEYS
+            k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
@@ -1719,7 +1675,8 @@ class RemotePoolExecutor:
         address = worker.address
         logger.debug(
             "remote execute worker=%s entrypoint=%s",
-            address, entrypoint,
+            address,
+            entrypoint,
         )
         try:
             reply = worker.run_task(payload_blob)
@@ -1822,9 +1779,7 @@ class RemotePoolExecutor:
 
     def _discard_worker(self, address: str, worker: _RemoteWorker) -> None:
         with self._lock:
-            self._active_count[address] = max(
-                self._active_count.get(address, 1) - 1, 0
-            )
+            self._active_count[address] = max(self._active_count.get(address, 1) - 1, 0)
             for cond in self._conds.values():
                 cond.notify()
         try:
@@ -1893,15 +1848,11 @@ class RouterPoolExecutor:
     # -- internal state --
     _zmq_ctx: Any = field(default=None, init=False, repr=False)
     _sock: Any = field(default=None, init=False, repr=False)
-    _pending: dict[str, Any] = field(
-        default_factory=dict, init=False, repr=False
-    )
+    _pending: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
     _lock: threading.Lock = field(
         default_factory=threading.Lock, init=False, repr=False
     )
-    _recv_thread: threading.Thread | None = field(
-        default=None, init=False, repr=False
-    )
+    _recv_thread: threading.Thread | None = field(default=None, init=False, repr=False)
     _shutdown_event: threading.Event = field(
         default_factory=threading.Event, init=False, repr=False
     )
@@ -1919,7 +1870,10 @@ class RouterPoolExecutor:
         if zmq_sec.is_session_mode and self.session_curve_provider is not None:
             if zmq_sec.credentials_provider is not self.session_curve_provider:
                 from dataclasses import replace as _dc_replace
-                zmq_sec = _dc_replace(zmq_sec, credentials_provider=self.session_curve_provider)
+
+                zmq_sec = _dc_replace(
+                    zmq_sec, credentials_provider=self.session_curve_provider
+                )
 
         self._zmq_authenticator = zmq_sec.apply_to_socket(
             self._sock,
@@ -1971,9 +1925,7 @@ class RouterPoolExecutor:
             EXECUTOR_GPU_METADATA_KEY,
         }
         sanitised_metadata = {
-            k: v
-            for k, v in ctx.metadata.items()
-            if k not in _INTERNAL_KEYS
+            k: v for k, v in ctx.metadata.items() if k not in _INTERNAL_KEYS
         }
 
         s3_config = _serialise_s3_client_config(ctx.s3)
@@ -2108,10 +2060,7 @@ def build_step_executor(
             network=os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host"),
             gpu=os.environ.get("UMRS_STEP_GPU", "0").strip() == "1",
             extra_args=extra_args,
-            keep_workdir=os.environ.get(
-                "UMRS_STEP_KEEP_WORKDIR", "0"
-            ).strip()
-            == "1",
+            keep_workdir=os.environ.get("UMRS_STEP_KEEP_WORKDIR", "0").strip() == "1",
         )
     if chosen == "pool":
         image = os.environ.get("UMRS_STEP_IMAGE", "").strip()
@@ -2128,15 +2077,9 @@ def build_step_executor(
             network=os.environ.get("UMRS_STEP_PODMAN_NETWORK", "host"),
             gpu=os.environ.get("UMRS_STEP_GPU", "0").strip() == "1",
             extra_args=extra_args,
-            max_workers_per_key=_parse_int_env(
-                "UMRS_WORKER_MAX_PER_KEY", 4
-            ),
-            acquire_timeout=_parse_float_env(
-                "UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0
-            ),
-            idle_timeout=_parse_float_env(
-                "UMRS_WORKER_IDLE_TIMEOUT", 300.0
-            ),
+            max_workers_per_key=_parse_int_env("UMRS_WORKER_MAX_PER_KEY", 4),
+            acquire_timeout=_parse_float_env("UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0),
+            idle_timeout=_parse_float_env("UMRS_WORKER_IDLE_TIMEOUT", 300.0),
             prewarm=os.environ.get("UMRS_WORKER_PREWARM", "0").strip() == "1",
         )
     if chosen == "remote":
@@ -2150,9 +2093,7 @@ def build_step_executor(
         return RemotePoolExecutor(
             workers=workers,
             timeout_seconds=_executor_timeout(),
-            acquire_timeout=_parse_float_env(
-                "UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0
-            ),
+            acquire_timeout=_parse_float_env("UMRS_WORKER_ACQUIRE_TIMEOUT", 30.0),
         )
     if chosen == "router":
         bind = os.environ.get("UMRS_ROUTER_BIND", "tcp://0.0.0.0:5560").strip()
@@ -2160,9 +2101,7 @@ def build_step_executor(
             bind_address=bind,
             timeout_seconds=_executor_timeout(),
         )
-    logger.warning(
-        "unknown UMRS_STEP_EXECUTOR=%r; falling back to inproc", chosen
-    )
+    logger.warning("unknown UMRS_STEP_EXECUTOR=%r; falling back to inproc", chosen)
     return InProcessExecutor()
 
 

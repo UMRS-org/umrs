@@ -245,9 +245,7 @@ class _ContextStore:
                 logger.warning("DB list_conversations failed: %s", exc)
 
         with self._lock:
-            items = [
-                v for v in self._conversations.values() if v["user_id"] == user_id
-            ]
+            items = [v for v in self._conversations.values() if v["user_id"] == user_id]
         items.sort(key=lambda x: x["updated_at"], reverse=True)
         return [ConversationResponse(**c) for c in items[:limit]]
 
@@ -311,6 +309,7 @@ class _ContextStore:
         conv = self.get_conversation(req.conversation_id)
         if conv is None:
             from fastapi import HTTPException
+
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         messages = self.get_messages(req.conversation_id, limit=req.max_tokens // 4)
@@ -456,7 +455,14 @@ class _ContextStore:
                     RETURNING conversation_id, user_id, project_id, title, model,
                               system_prompt, rev, created_at, updated_at
                     """,
-                    (conv_id, req.user_id, req.project_id, req.title, req.model, req.system_prompt),
+                    (
+                        conv_id,
+                        req.user_id,
+                        req.project_id,
+                        req.title,
+                        req.model,
+                        req.system_prompt,
+                    ),
                 )
                 row = cur.fetchone()
             conn.commit()
@@ -468,8 +474,12 @@ class _ContextStore:
             model=row[4],
             system_prompt=row[5],
             rev=row[6],
-            created_at=row[7].isoformat() if hasattr(row[7], "isoformat") else str(row[7]),
-            updated_at=row[8].isoformat() if hasattr(row[8], "isoformat") else str(row[8]),
+            created_at=row[7].isoformat()
+            if hasattr(row[7], "isoformat")
+            else str(row[7]),
+            updated_at=row[8].isoformat()
+            if hasattr(row[8], "isoformat")
+            else str(row[8]),
         )
 
     def _db_get_conversation(self, conversation_id: str) -> ConversationResponse | None:
@@ -495,8 +505,12 @@ class _ContextStore:
             model=row[4],
             system_prompt=row[5],
             rev=row[6],
-            created_at=row[7].isoformat() if hasattr(row[7], "isoformat") else str(row[7]),
-            updated_at=row[8].isoformat() if hasattr(row[8], "isoformat") else str(row[8]),
+            created_at=row[7].isoformat()
+            if hasattr(row[7], "isoformat")
+            else str(row[7]),
+            updated_at=row[8].isoformat()
+            if hasattr(row[8], "isoformat")
+            else str(row[8]),
         )
 
     def _db_list_conversations(
@@ -524,8 +538,12 @@ class _ContextStore:
                 model=r[4],
                 system_prompt=r[5],
                 rev=r[6],
-                created_at=r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
-                updated_at=r[8].isoformat() if hasattr(r[8], "isoformat") else str(r[8]),
+                created_at=r[7].isoformat()
+                if hasattr(r[7], "isoformat")
+                else str(r[7]),
+                updated_at=r[8].isoformat()
+                if hasattr(r[8], "isoformat")
+                else str(r[8]),
             )
             for r in rows
         ]
@@ -582,7 +600,9 @@ class _ContextStore:
                             model=row[6],
                             tool_calls=row[7],
                             metadata=row[8] if row[8] else {},
-                            created_at=row[9].isoformat() if hasattr(row[9], "isoformat") else str(row[9]),
+                            created_at=row[9].isoformat()
+                            if hasattr(row[9], "isoformat")
+                            else str(row[9]),
                         )
                     )
 
@@ -624,7 +644,9 @@ class _ContextStore:
                 model=r[6],
                 tool_calls=r[7],
                 metadata=r[8] if r[8] else {},
-                created_at=r[9].isoformat() if hasattr(r[9], "isoformat") else str(r[9]),
+                created_at=r[9].isoformat()
+                if hasattr(r[9], "isoformat")
+                else str(r[9]),
             )
             for r in rows
         ]
@@ -649,7 +671,9 @@ class _ContextStore:
                 "token_count": r[2],
                 "messages_start": r[3],
                 "messages_end": r[4],
-                "created_at": r[5].isoformat() if hasattr(r[5], "isoformat") else str(r[5]),
+                "created_at": r[5].isoformat()
+                if hasattr(r[5], "isoformat")
+                else str(r[5]),
             }
             for r in rows
         ]
@@ -690,7 +714,9 @@ class _ContextStore:
             source=row[4],
             importance=row[5],
             access_count=row[6],
-            created_at=row[7].isoformat() if hasattr(row[7], "isoformat") else str(row[7]),
+            created_at=row[7].isoformat()
+            if hasattr(row[7], "isoformat")
+            else str(row[7]),
         )
 
     def _db_search_memory(self, req: MemorySearchRequest) -> MemorySearchResponse:
@@ -729,7 +755,9 @@ class _ContextStore:
                 source=r[4],
                 importance=r[5],
                 access_count=r[6],
-                created_at=r[7].isoformat() if hasattr(r[7], "isoformat") else str(r[7]),
+                created_at=r[7].isoformat()
+                if hasattr(r[7], "isoformat")
+                else str(r[7]),
             )
             for r in rows
         ]
@@ -776,7 +804,9 @@ def get_conversation(conversation_id: str) -> ConversationResponse:
     return conv
 
 
-@router.post("/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/conversations/{conversation_id}/messages", status_code=status.HTTP_201_CREATED
+)
 def append_messages(
     conversation_id: str, messages: list[MessageCreate]
 ) -> list[MessageResponse]:

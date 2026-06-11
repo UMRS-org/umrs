@@ -11,9 +11,10 @@ import torch.nn.functional as F
 
 # --- 1. RoPE (Rotary Position Embedding) ---
 
+
 def rotate_half(x):
-    x1 = x[..., :x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2:]
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -25,7 +26,9 @@ class HMAERotaryEmbedding(nn.Module):
     def __init__(self, head_dim, theta=100000.0):
         super().__init__()
         self.head_dim = head_dim
-        inv_freq = 1.0 / (theta ** (torch.arange(0, head_dim // 2, 2).float() / (head_dim // 2)))
+        inv_freq = 1.0 / (
+            theta ** (torch.arange(0, head_dim // 2, 2).float() / (head_dim // 2))
+        )
         self.register_buffer("inv_freq", inv_freq)
 
     def forward(self, coords):
@@ -42,12 +45,13 @@ class HMAERotaryEmbedding(nn.Module):
 
 # --- 2. Attention with SDPA ---
 
+
 class HMAEAttention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=True, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, num_heads=8, qkv_bias=True, attn_drop=0.0, proj_drop=0.0):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
         self.qkv = nn.Linear(dim, dim * 3, bias=qkv_bias)
         self.attn_drop_prob = attn_drop
         self.proj = nn.Linear(dim, dim)
@@ -55,14 +59,20 @@ class HMAEAttention(nn.Module):
 
     def forward(self, x, rope_cos=None, rope_sin=None, attn_mask=None):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = (
+            self.qkv(x)
+            .reshape(B, N, 3, self.num_heads, self.head_dim)
+            .permute(2, 0, 3, 1, 4)
+        )
         q, k, v = qkv[0], qkv[1], qkv[2]
 
         if rope_cos is not None and rope_sin is not None:
             q, k = apply_rotary_pos_emb(q, k, rope_cos, rope_sin)
 
         x = F.scaled_dot_product_attention(
-            q, k, v,
+            q,
+            k,
+            v,
             attn_mask=attn_mask,
             dropout_p=self.attn_drop_prob if self.training else 0.0,
             scale=self.scale,
@@ -74,11 +84,18 @@ class HMAEAttention(nn.Module):
 
 
 class HMAEBlock(nn.Module):
-    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=True, drop=0., attn_drop=0.):
+    def __init__(
+        self, dim, num_heads, mlp_ratio=4.0, qkv_bias=True, drop=0.0, attn_drop=0.0
+    ):
         super().__init__()
         self.norm1 = nn.LayerNorm(dim)
-        self.attn = HMAEAttention(dim, num_heads=num_heads, qkv_bias=qkv_bias,
-                                   attn_drop=attn_drop, proj_drop=drop)
+        self.attn = HMAEAttention(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            attn_drop=attn_drop,
+            proj_drop=drop,
+        )
         self.norm2 = nn.LayerNorm(dim)
         self.mlp = nn.Sequential(
             nn.Linear(dim, int(dim * mlp_ratio)),
@@ -96,9 +113,17 @@ class HMAEBlock(nn.Module):
 
 # --- 3. Encoder & Decoder ---
 
+
 class HMAEEncoder(nn.Module):
-    def __init__(self, img_size=1024, patch_size=32, in_channels=1,
-                 embed_dim=768, depth=12, num_heads=12):
+    def __init__(
+        self,
+        img_size=1024,
+        patch_size=32,
+        in_channels=1,
+        embed_dim=768,
+        depth=12,
+        num_heads=12,
+    ):
         super().__init__()
         self.img_size = float(img_size)
         patch_dim = in_channels * patch_size * patch_size
@@ -110,9 +135,9 @@ class HMAEEncoder(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim // 4, embed_dim),
         )
-        self.blocks = nn.ModuleList([
-            HMAEBlock(dim=embed_dim, num_heads=num_heads) for _ in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [HMAEBlock(dim=embed_dim, num_heads=num_heads) for _ in range(depth)]
+        )
         self.norm = nn.LayerNorm(embed_dim)
 
     def forward(self, x, coords, depths, ids_keep):
@@ -129,9 +154,19 @@ class HMAEEncoder(nn.Module):
         c_feat = torch.stack([cx, cy], dim=-1)
         cos, sin = self.rope(c_feat)
 
-        x = torch.gather(x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
-        cos = torch.gather(cos, dim=2, index=ids_keep.unsqueeze(1).unsqueeze(-1).expand(-1, 1, -1, cos.shape[-1]))
-        sin = torch.gather(sin, dim=2, index=ids_keep.unsqueeze(1).unsqueeze(-1).expand(-1, 1, -1, sin.shape[-1]))
+        x = torch.gather(
+            x, dim=1, index=ids_keep.unsqueeze(-1).expand(-1, -1, x.shape[-1])
+        )
+        cos = torch.gather(
+            cos,
+            dim=2,
+            index=ids_keep.unsqueeze(1).unsqueeze(-1).expand(-1, 1, -1, cos.shape[-1]),
+        )
+        sin = torch.gather(
+            sin,
+            dim=2,
+            index=ids_keep.unsqueeze(1).unsqueeze(-1).expand(-1, 1, -1, sin.shape[-1]),
+        )
 
         cls_token = self.cls_token.expand(B, -1, -1)
         x = torch.cat((cls_token, x), dim=1)
@@ -146,8 +181,16 @@ class HMAEEncoder(nn.Module):
 
 
 class HMAEDecoder(nn.Module):
-    def __init__(self, img_size=1024, patch_size=32, in_channels=1,
-                 encoder_dim=768, decoder_dim=512, depth=8, num_heads=16):
+    def __init__(
+        self,
+        img_size=1024,
+        patch_size=32,
+        in_channels=1,
+        encoder_dim=768,
+        decoder_dim=512,
+        depth=8,
+        num_heads=16,
+    ):
         super().__init__()
         self.img_size = float(img_size)
         self.patch_dim = in_channels * patch_size * patch_size
@@ -159,9 +202,9 @@ class HMAEDecoder(nn.Module):
             nn.GELU(),
             nn.Linear(decoder_dim // 4, decoder_dim),
         )
-        self.blocks = nn.ModuleList([
-            HMAEBlock(dim=decoder_dim, num_heads=num_heads) for _ in range(depth)
-        ])
+        self.blocks = nn.ModuleList(
+            [HMAEBlock(dim=decoder_dim, num_heads=num_heads) for _ in range(depth)]
+        )
         self.norm = nn.LayerNorm(decoder_dim)
         self.head = nn.Linear(decoder_dim, self.patch_dim, bias=True)
 
@@ -170,8 +213,11 @@ class HMAEDecoder(nn.Module):
         B, N_full = ids_restore.shape[0], ids_restore.shape[1]
         mask_tokens = self.mask_token.repeat(B, N_full - (x.shape[1] - 1), 1)
         x_shuffled = torch.cat([x[:, 1:, :], mask_tokens], dim=1)
-        x_full = torch.gather(x_shuffled, dim=1,
-                              index=ids_restore.unsqueeze(-1).expand(-1, -1, x.shape[-1]))
+        x_full = torch.gather(
+            x_shuffled,
+            dim=1,
+            index=ids_restore.unsqueeze(-1).expand(-1, -1, x.shape[-1]),
+        )
 
         w = (coords[..., 1] - coords[..., 0]) / self.img_size
         h = (coords[..., 3] - coords[..., 2]) / self.img_size
@@ -191,18 +237,37 @@ class HMAEDecoder(nn.Module):
 
 # --- 4. HMAEVIT Wrapper ---
 
+
 class HMAEVIT(nn.Module):
-    def __init__(self, img_size=1024, patch_size=32, in_channels=1,
-                 encoder_dim=768, encoder_depth=12, encoder_heads=12,
-                 decoder_dim=512, decoder_depth=8, decoder_heads=16,
-                 mask_ratio=0.75, norm_pix_loss=True):
+    def __init__(
+        self,
+        img_size=1024,
+        patch_size=32,
+        in_channels=1,
+        encoder_dim=768,
+        encoder_depth=12,
+        encoder_heads=12,
+        decoder_dim=512,
+        decoder_depth=8,
+        decoder_heads=16,
+        mask_ratio=0.75,
+        norm_pix_loss=True,
+    ):
         super().__init__()
         self.mask_ratio = mask_ratio
         self.norm_pix_loss = norm_pix_loss
-        self.encoder = HMAEEncoder(img_size, patch_size, in_channels,
-                                    encoder_dim, encoder_depth, encoder_heads)
-        self.decoder = HMAEDecoder(img_size, patch_size, in_channels,
-                                    encoder_dim, decoder_dim, decoder_depth, decoder_heads)
+        self.encoder = HMAEEncoder(
+            img_size, patch_size, in_channels, encoder_dim, encoder_depth, encoder_heads
+        )
+        self.decoder = HMAEDecoder(
+            img_size,
+            patch_size,
+            in_channels,
+            encoder_dim,
+            decoder_dim,
+            decoder_depth,
+            decoder_heads,
+        )
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -217,7 +282,7 @@ class HMAEVIT(nn.Module):
     def random_masking(self, B, N, device, coords):
         len_keep = int(N * (1 - self.mask_ratio))
         noise = torch.rand(B, N, device=device)
-        pad_mask = (coords[..., 1] <= coords[..., 0])
+        pad_mask = coords[..., 1] <= coords[..., 0]
         noise.masked_fill_(pad_mask, 1e9)
         ids_shuffle = torch.argsort(noise, dim=1)
         ids_restore = torch.argsort(ids_shuffle, dim=1)
@@ -270,16 +335,38 @@ class HMAEVIT(nn.Module):
 
 # --- 5. Model Variants ---
 
+
 def hvit_b(**kwargs):
-    return HMAEVIT(encoder_dim=768, encoder_depth=12, encoder_heads=12,
-                   decoder_dim=512, decoder_depth=8, decoder_heads=16, **kwargs)
+    return HMAEVIT(
+        encoder_dim=768,
+        encoder_depth=12,
+        encoder_heads=12,
+        decoder_dim=512,
+        decoder_depth=8,
+        decoder_heads=16,
+        **kwargs,
+    )
 
 
 def hvit_l(**kwargs):
-    return HMAEVIT(encoder_dim=1024, encoder_depth=24, encoder_heads=16,
-                   decoder_dim=512, decoder_depth=8, decoder_heads=16, **kwargs)
+    return HMAEVIT(
+        encoder_dim=1024,
+        encoder_depth=24,
+        encoder_heads=16,
+        decoder_dim=512,
+        decoder_depth=8,
+        decoder_heads=16,
+        **kwargs,
+    )
 
 
 def hvit_xl(**kwargs):
-    return HMAEVIT(encoder_dim=1280, encoder_depth=32, encoder_heads=16,
-                   decoder_dim=512, decoder_depth=8, decoder_heads=16, **kwargs)
+    return HMAEVIT(
+        encoder_dim=1280,
+        encoder_depth=32,
+        encoder_heads=16,
+        decoder_dim=512,
+        decoder_depth=8,
+        decoder_heads=16,
+        **kwargs,
+    )

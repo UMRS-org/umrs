@@ -272,14 +272,15 @@ def ensure_schema(conn: psycopg2.extensions.connection) -> int:
         cur.execute(CREATE_SCHEMA_VERSION_TABLE)
 
         # Check current version
-        cur.execute(
-            "SELECT version FROM model_registry_schema_version WHERE id = 1"
-        )
+        cur.execute("SELECT version FROM model_registry_schema_version WHERE id = 1")
         row = cur.fetchone()
 
         if row is None:
             # Fresh install - create all tables
-            logger.info("Creating model registry schema (version %d)", MODEL_REGISTRY_SCHEMA_VERSION)
+            logger.info(
+                "Creating model registry schema (version %d)",
+                MODEL_REGISTRY_SCHEMA_VERSION,
+            )
             _create_tables(cur)
             cur.execute(
                 """
@@ -311,7 +312,9 @@ def ensure_schema(conn: psycopg2.extensions.connection) -> int:
             conn.commit()
             return MODEL_REGISTRY_SCHEMA_VERSION
 
-        logger.debug("Model registry schema is up to date (version %d)", current_version)
+        logger.debug(
+            "Model registry schema is up to date (version %d)", current_version
+        )
         return current_version
 
 

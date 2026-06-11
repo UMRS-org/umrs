@@ -49,6 +49,7 @@ def sample_documents_with_embeddings():
 def sample_search_results():
     """Sample SearchResult objects for testing."""
     from umrs.rag.search import SearchResult
+
     return [
         SearchResult(
             document_id="doc1",

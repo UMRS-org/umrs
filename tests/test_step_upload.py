@@ -18,6 +18,7 @@ import pytest
 
 # Ensure src/ is on sys.path
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
@@ -34,14 +35,13 @@ from umrs.pipeline_sdk.workflow import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _minimal_workflow_dict(source_type="local_path", source_path="/tmp/fake"):
     return {
         "name": "test-workflow",
         "version": "1.0",
         "source": {"type": source_type, "path": source_path},
-        "steps": [
-            {"name": "step1", "entrypoint": "my_module:MyStep", "config": {}}
-        ],
+        "steps": [{"name": "step1", "entrypoint": "my_module:MyStep", "config": {}}],
     }
 
 
@@ -62,6 +62,7 @@ def _create_workflow_zip(tmpdir, workflow_dict=None, extra_files=None):
 # TaskCmd constant
 # ---------------------------------------------------------------------------
 
+
 class TestTaskCmd:
     def test_upload_workflow_constant_exists(self):
         assert hasattr(TaskCmd, "UPLOAD_WORKFLOW")
@@ -74,6 +75,7 @@ class TestTaskCmd:
 # ---------------------------------------------------------------------------
 # SourceType.UPLOADED
 # ---------------------------------------------------------------------------
+
 
 class TestSourceTypeUploaded:
     def test_enum_value(self):
@@ -109,6 +111,7 @@ class TestSourceTypeUploaded:
 # ---------------------------------------------------------------------------
 # _handle_upload_workflow (server-side extraction)
 # ---------------------------------------------------------------------------
+
 
 class TestHandleUploadWorkflow:
     @pytest.fixture(autouse=True)
@@ -241,6 +244,7 @@ class TestHandleUploadWorkflow:
 # ---------------------------------------------------------------------------
 # WorkflowDefinition round-trip with UPLOADED source
 # ---------------------------------------------------------------------------
+
 
 class TestWorkflowDefinitionUploaded:
     def test_to_dict_from_dict_round_trip(self):

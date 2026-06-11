@@ -15,7 +15,7 @@ class AccessContext:
     user_id: str
     is_admin: bool = False
     project_memberships: set[str] = None  # Projects user belongs to
-    admin_project_ids: set[str] = None    # Projects where user is admin (U-815)
+    admin_project_ids: set[str] = None  # Projects where user is admin (U-815)
 
     def __post_init__(self):
         if self.project_memberships is None:

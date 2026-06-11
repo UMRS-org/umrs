@@ -1,5 +1,5 @@
 #!/usr/bin/python3
-#import psycopg2
+# import psycopg2
 import json
 import os
 
@@ -21,24 +21,28 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 # writing) rather than receiving pre-loaded tensors.
 # DEPRECATED: kept for backward compatibility; prefer task-based routing via
 # DIRECT_COMPUTE_TASKS.
-DIRECT_COMPUTE_MODALITIES = frozenset({
-    "tomography",
-    "tomography_embedding",
-    "tomography_reconstruction",
-    "tomography_mae_reconstruction",
-    "tomography_features_extraction",
-    "segmentation",
-})
+DIRECT_COMPUTE_MODALITIES = frozenset(
+    {
+        "tomography",
+        "tomography_embedding",
+        "tomography_reconstruction",
+        "tomography_mae_reconstruction",
+        "tomography_features_extraction",
+        "segmentation",
+    }
+)
 
 # Tasks that require direct-compute (model handles its own S3 I/O).
-DIRECT_COMPUTE_TASKS = frozenset({
-    "segmentation",
-    "reconstruction",
-    "mae_reconstruction",
-    "feature_extraction",
-    "detection",
-    "classification",
-})
+DIRECT_COMPUTE_TASKS = frozenset(
+    {
+        "segmentation",
+        "reconstruction",
+        "mae_reconstruction",
+        "feature_extraction",
+        "detection",
+        "classification",
+    }
+)
 
 # Model types that always do their own I/O regardless of modality name.
 DIRECT_COMPUTE_MODEL_TYPES = frozenset({"user_script", "bentoml"})
@@ -90,7 +94,10 @@ def compute_embeddings_core(
 
     if is_direct:
         embeddings, checksums, metadata, saved_s3_keys = model.compute_embeddings(
-            s3_connection, s3_keys, path_to_bucket, output_bucket,
+            s3_connection,
+            s3_keys,
+            path_to_bucket,
+            output_bucket,
             skip_existing=skip_existing,
         )
         return embeddings, checksums, metadata, saved_s3_keys
@@ -99,7 +106,10 @@ def compute_embeddings_core(
     saved_s3_keys = [None] * len(s3_keys)
 
     objects, metadata, checksums, sizes, has_zero = load_data_from_s3(
-        s3_connection, path_to_bucket, s3_keys, modality_name,
+        s3_connection,
+        path_to_bucket,
+        s3_keys,
+        modality_name,
     )
 
     embeddings = model.compute_embeddings(objects)
@@ -109,23 +119,45 @@ def compute_embeddings_core(
     return embeddings, checksums, metadata, saved_s3_keys
 
 
-def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, model, device,
-                                modality_name, s3_connection, output_bucket, task=None,
-                                skip_existing=True, store_fn=None,
-                                indexing_job_id=None, model_version=None,
-                                model_path=None):
+def compute_and_store_embedding(
+    path_to_bucket,
+    s3_keys,
+    data_base,
+    table_name,
+    model,
+    device,
+    modality_name,
+    s3_connection,
+    output_bucket,
+    task=None,
+    skip_existing=True,
+    store_fn=None,
+    indexing_job_id=None,
+    model_version=None,
+    model_path=None,
+):
     embeddings, checksums, metadata, saved_s3_keys = compute_embeddings_core(
-        model, modality_name, s3_connection, path_to_bucket, s3_keys,
-        output_bucket=output_bucket, task=task, skip_existing=skip_existing,
+        model,
+        modality_name,
+        s3_connection,
+        path_to_bucket,
+        s3_keys,
+        output_bucket=output_bucket,
+        task=task,
+        skip_existing=skip_existing,
     )
 
-    assert(len(embeddings) == len(checksums))
-    assert(len(embeddings) == len(metadata))
+    assert len(embeddings) == len(checksums)
+    assert len(embeddings) == len(metadata)
 
     # Inject RAG lineage metadata (MEM-C1) into each item's metadata dict
     # so store_one_embedding_in_db can persist them as column values.
     if indexing_job_id or model_version or model_path:
-        embedding_dim = len(embeddings[0]) if embeddings and hasattr(embeddings[0], '__len__') else None
+        embedding_dim = (
+            len(embeddings[0])
+            if embeddings and hasattr(embeddings[0], "__len__")
+            else None
+        )
         for md in metadata:
             if indexing_job_id:
                 md["indexing_job_id"] = indexing_job_id
@@ -138,11 +170,21 @@ def compute_and_store_embedding(path_to_bucket, s3_keys, data_base, table_name, 
 
     if store_fn is None:
         from umrs.server.sql import store_embeddings_in_db  # noqa: boundary
+
         store_fn = store_embeddings_in_db
 
-    store_fn(data_base, embeddings, table_name, path_to_bucket, s3_keys, saved_s3_keys, modality_name, checksums, model.model_name, metadata_list=metadata)
-
-
+    store_fn(
+        data_base,
+        embeddings,
+        table_name,
+        path_to_bucket,
+        s3_keys,
+        saved_s3_keys,
+        modality_name,
+        checksums,
+        model.model_name,
+        metadata_list=metadata,
+    )
 
 
 def load_embedding_model(model_name):
@@ -155,7 +197,6 @@ def load_embedding_model(model_name):
     print(f"\t\t\t--> Loading model '{model_name}'...")
     model = SentenceTransformer(model_name)
     return model
-
 
 
 def challenge_embeddings(model, conn, cur, query_texts):
@@ -181,16 +222,19 @@ def query_db_with_embeddings(model, conn, cur, query_text, top_k=5):
             - ids (list): List of retrieved row IDs.
             - texts (list): Corresponding text values.
     """
-     # Generate the embedding for the input text
+    # Generate the embedding for the input text
     query_embedding = model.encode(query_text).tolist()
 
     # Perform similarity search using L2 distance
-    cur.execute("""
+    cur.execute(
+        """
         SELECT id, text
         FROM text_embeddings
         ORDER BY embedding <-> %s::vector
         LIMIT %s;
-    """, (query_embedding, top_k))
+    """,
+        (query_embedding, top_k),
+    )
 
     # Fetch results
     results = cur.fetchall()
@@ -200,6 +244,7 @@ def query_db_with_embeddings(model, conn, cur, query_text, top_k=5):
     texts = [row[1] for row in results]
 
     return ids, texts
+
 
 def save_texts_in_db(model, conn, cur):
 
@@ -236,7 +281,10 @@ def save_texts_in_db(model, conn, cur):
         print(len(embedding))
 
         # Insert into database
-        cur.execute("INSERT INTO text_embeddings (text, embedding) VALUES (%s, %s)", (text, embedding.tolist()))
+        cur.execute(
+            "INSERT INTO text_embeddings (text, embedding) VALUES (%s, %s)",
+            (text, embedding.tolist()),
+        )
         conn.commit()
 
         print("Inserted embedding successfully.")
@@ -271,7 +319,9 @@ def cluster_from_embeddings(conn, cur, nb_clusters=4):
     for row in results:
         embedding_str = row[2]  # Extract the stored vector (string format)
         if isinstance(embedding_str, str):
-            embedding = np.array(ast.literal_eval(embedding_str))  # Convert string to list of floats
+            embedding = np.array(
+                ast.literal_eval(embedding_str)
+            )  # Convert string to list of floats
         else:
             embedding = np.array(embedding_str)  # Already a list
         embeddings.append(embedding)
@@ -293,12 +343,15 @@ def cluster_from_embeddings(conn, cur, nb_clusters=4):
 
         # Find the point closest to the cluster centroid
         centroid = kmeans.cluster_centers_[cluster_id]
-        closest_idx = min(cluster_indices, key=lambda i: np.linalg.norm(embeddings[i] - centroid))
+        closest_idx = min(
+            cluster_indices, key=lambda i: np.linalg.norm(embeddings[i] - centroid)
+        )
 
         # Store the closest text to the centroid
         centroid_texts.append(texts[closest_idx])
 
     return centroid_texts
+
 
 def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
     """
@@ -317,7 +370,9 @@ def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
     # Ensure pgvector's kmeans function is available
     cur.execute("SELECT count(*) FROM pg_extension WHERE extname = 'vector';")
     if cur.fetchone()[0] == 0:
-        print("Error: pgvector extension is not enabled. Run 'CREATE EXTENSION vector;' in PostgreSQL.")
+        print(
+            "Error: pgvector extension is not enabled. Run 'CREATE EXTENSION vector;' in PostgreSQL."
+        )
         return []
 
     # Perform K-Means clustering using PostgreSQL
@@ -342,33 +397,28 @@ def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
     centroid_texts = [row[0] for row in cur.fetchall()]
     return centroid_texts
 
+
 def main():
     import psycopg2
 
     models = ["all-MiniLM-L6-v2", "all-mpnet-base-v2"]
-    dbnames = ["embeddings_db","large_embeddings_db"] #correspinfing DB with same the correct dimensionnality
+    dbnames = [
+        "embeddings_db",
+        "large_embeddings_db",
+    ]  # correspinfing DB with same the correct dimensionnality
 
-    id = 1 # 0 or 1
+    id = 1  # 0 or 1
 
     model = SentenceTransformer(models[id])
     db_name = dbnames[id]
 
     # Connect to PostgreSQL
     conn = psycopg2.connect(
-        dbname=db_name,
-        user="ejeannot",
-        password="",
-        host="localhost",
-        port="5432"
+        dbname=db_name, user="ejeannot", password="", host="localhost", port="5432"
     )
     cur = conn.cursor()
 
     # save_texts_in_db(model, conn, cur)
-
-
-
-
-
 
     # challenge_embeddings(model, conn, cur, texts1);
 
@@ -379,10 +429,9 @@ def main():
 
     print("\n ------- 4 centroids texts ----------\n")
 
-    centroid_texts = cluster_from_embeddings(conn, cur, nb_clusters = 5)
+    centroid_texts = cluster_from_embeddings(conn, cur, nb_clusters=5)
     for text in centroid_texts:
         print(text)
-
 
         # Close connection
     cur.close()
@@ -403,7 +452,7 @@ def open_AI_tokenizer():
         # Get embeddings from OpenAI (NEW SYNTAX)
         response = openai.embeddings.create(
             input=text,
-            model="text-embedding-3-small"
+            model="text-embedding-3-small",
             # model="gpt-4o-mini-2024-07-18"
         )
 
@@ -411,7 +460,9 @@ def open_AI_tokenizer():
         embedding = response.data[0].embedding
 
         print("Embedding vector:", embedding)
-        print("Embedding size:", len(embedding))  # Should be 1536 for `text-embedding-ada-002`
+        print(
+            "Embedding size:", len(embedding)
+        )  # Should be 1536 for `text-embedding-ada-002`
 
     except openai.OpenAIError as e:
         # Pretty-print error as JSON if it's a dictionary

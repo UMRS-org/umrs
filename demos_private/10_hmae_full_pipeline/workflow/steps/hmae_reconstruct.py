@@ -61,7 +61,9 @@ class HMAEReconstructStep(Step):
             key = image.key
             logger.info(
                 "[%d/%d] HMAE reconstruct: %s",
-                idx + 1, len(input_images), key,
+                idx + 1,
+                len(input_images),
+                key,
             )
 
             result = self._submit_and_poll(image.s3_url)

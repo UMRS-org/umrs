@@ -23,6 +23,7 @@ from umrs.metrics import (
 # No-op fallback behaviour
 # ---------------------------------------------------------------------------
 
+
 class TestNoOpCounter:
     def test_inc_is_silent(self):
         c = _NoOpCounter()
@@ -69,6 +70,7 @@ class TestNoOpGauge:
 # UMRSMetrics API — every public method must be callable without error.
 # Uses the module-level singleton to avoid Prometheus registry conflicts.
 # ---------------------------------------------------------------------------
+
 
 class TestJobLifecycle:
     def test_submitted(self):

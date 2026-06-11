@@ -18,6 +18,7 @@ from typing import Any
 
 class DiffType(str, Enum):
     """Type of comparison performed."""
+
     NUMERIC = "numeric"
     TEXT = "text"
     IMAGE = "image"
@@ -27,6 +28,7 @@ class DiffType(str, Enum):
 @dataclass
 class DiffEntry:
     """A single difference between two values."""
+
     key: str
     diff_type: DiffType
     value_a: Any
@@ -45,6 +47,7 @@ class DiffEntry:
 @dataclass
 class DiffReport:
     """Structured comparison report."""
+
     label_a: str
     label_b: str
     entries: list[DiffEntry] = field(default_factory=list)
@@ -148,17 +151,27 @@ class NumericDiff:
             if k in a and k in b:
                 entries.append(NumericDiff.compare_scalars(full_key, a[k], b[k]))
             elif k in a:
-                entries.append(DiffEntry(
-                    key=full_key, diff_type=DiffType.NUMERIC,
-                    value_a=a[k], value_b=None, similarity=0.0,
-                    details={"status": "removed"},
-                ))
+                entries.append(
+                    DiffEntry(
+                        key=full_key,
+                        diff_type=DiffType.NUMERIC,
+                        value_a=a[k],
+                        value_b=None,
+                        similarity=0.0,
+                        details={"status": "removed"},
+                    )
+                )
             else:
-                entries.append(DiffEntry(
-                    key=full_key, diff_type=DiffType.NUMERIC,
-                    value_a=None, value_b=b[k], similarity=0.0,
-                    details={"status": "added"},
-                ))
+                entries.append(
+                    DiffEntry(
+                        key=full_key,
+                        diff_type=DiffType.NUMERIC,
+                        value_a=None,
+                        value_b=b[k],
+                        similarity=0.0,
+                        details={"status": "added"},
+                    )
+                )
         return entries
 
 
@@ -168,13 +181,15 @@ class TextDiff:
     @staticmethod
     def compare(key: str, a: str, b: str) -> DiffEntry:
         ratio = difflib.SequenceMatcher(None, a, b).ratio()
-        unified = list(difflib.unified_diff(
-            a.splitlines(keepends=True),
-            b.splitlines(keepends=True),
-            fromfile="a",
-            tofile="b",
-            lineterm="",
-        ))
+        unified = list(
+            difflib.unified_diff(
+                a.splitlines(keepends=True),
+                b.splitlines(keepends=True),
+                fromfile="a",
+                tofile="b",
+                lineterm="",
+            )
+        )
         return DiffEntry(
             key=key,
             diff_type=DiffType.TEXT,
@@ -220,7 +235,7 @@ class ImageDiff:
             psnr = float("inf")
             similarity = 1.0
         else:
-            psnr = 10.0 * math.log10((max_pixel_value ** 2) / mse)
+            psnr = 10.0 * math.log10((max_pixel_value**2) / mse)
             # Normalize PSNR to 0–1 range (60dB is effectively perfect)
             similarity = min(psnr / 60.0, 1.0)
 
@@ -267,14 +282,20 @@ class ResultComparator:
             val_b = results_b.get(key)
 
             if val_a is None or val_b is None:
-                report.entries.append(DiffEntry(
-                    key=key,
-                    diff_type=DiffType.STRUCTURAL,
-                    value_a=val_a,
-                    value_b=val_b,
-                    similarity=0.0,
-                    details={"status": "missing_in_a" if val_a is None else "missing_in_b"},
-                ))
+                report.entries.append(
+                    DiffEntry(
+                        key=key,
+                        diff_type=DiffType.STRUCTURAL,
+                        value_a=val_a,
+                        value_b=val_b,
+                        similarity=0.0,
+                        details={
+                            "status": "missing_in_a"
+                            if val_a is None
+                            else "missing_in_b"
+                        },
+                    )
+                )
                 continue
 
             entries = self._compare_values(key, val_a, val_b)
@@ -290,14 +311,20 @@ class ResultComparator:
             return [NumericDiff.compare_scalars(key, float(a), float(b))]
 
         if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
-            if a and b and isinstance(a[0], (int, float)) and isinstance(b[0], (int, float)):
+            if (
+                a
+                and b
+                and isinstance(a[0], (int, float))
+                and isinstance(b[0], (int, float))
+            ):
                 return [NumericDiff.compare_vectors(key, a, b)]
             # Compare as generic sequences
             return self._compare_sequences(key, a, b)
 
         if isinstance(a, dict) and isinstance(b, dict):
-            if all(isinstance(v, (int, float)) for v in a.values()) and \
-               all(isinstance(v, (int, float)) for v in b.values()):
+            if all(isinstance(v, (int, float)) for v in a.values()) and all(
+                isinstance(v, (int, float)) for v in b.values()
+            ):
                 return NumericDiff.compare_dicts(key, a, b)
             return self._compare_dicts(key, a, b)
 
@@ -312,13 +339,15 @@ class ResultComparator:
             if i < len(a) and i < len(b):
                 entries.extend(self._compare_values(elem_key, a[i], b[i]))
             else:
-                entries.append(DiffEntry(
-                    key=elem_key,
-                    diff_type=DiffType.STRUCTURAL,
-                    value_a=a[i] if i < len(a) else None,
-                    value_b=b[i] if i < len(b) else None,
-                    similarity=0.0,
-                ))
+                entries.append(
+                    DiffEntry(
+                        key=elem_key,
+                        diff_type=DiffType.STRUCTURAL,
+                        value_a=a[i] if i < len(a) else None,
+                        value_b=b[i] if i < len(b) else None,
+                        similarity=0.0,
+                    )
+                )
         return entries
 
     def _compare_dicts(self, key: str, a: dict, b: dict) -> list[DiffEntry]:
@@ -329,12 +358,16 @@ class ResultComparator:
             if k in a and k in b:
                 entries.extend(self._compare_values(full_key, a[k], b[k]))
             else:
-                entries.append(DiffEntry(
-                    key=full_key,
-                    diff_type=DiffType.STRUCTURAL,
-                    value_a=a.get(k),
-                    value_b=b.get(k),
-                    similarity=0.0,
-                    details={"status": "missing_in_a" if k not in a else "missing_in_b"},
-                ))
+                entries.append(
+                    DiffEntry(
+                        key=full_key,
+                        diff_type=DiffType.STRUCTURAL,
+                        value_a=a.get(k),
+                        value_b=b.get(k),
+                        similarity=0.0,
+                        details={
+                            "status": "missing_in_a" if k not in a else "missing_in_b"
+                        },
+                    )
+                )
         return entries

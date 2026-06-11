@@ -127,8 +127,12 @@ class RegisteredEndpoint:
             "status": self.status.value,
             "created_at": self.created_at.isoformat() + "Z",
             "ready_at": self.ready_at.isoformat() + "Z" if self.ready_at else None,
-            "last_used_at": self.last_used_at.isoformat() + "Z" if self.last_used_at else None,
-            "expires_at": self.expires_at.isoformat() + "Z" if self.expires_at else None,
+            "last_used_at": self.last_used_at.isoformat() + "Z"
+            if self.last_used_at
+            else None,
+            "expires_at": self.expires_at.isoformat() + "Z"
+            if self.expires_at
+            else None,
             "backend": self.backend,
             "error_message": self.error_message,
             "litellm_url": self.litellm_url,
@@ -301,7 +305,9 @@ class EndpointRegistry:
             # multi-process races; the caller serialises duplicates.
             self._persist(endpoint)
 
-        logger.info(f"Registered endpoint: {project_id}/{model} -> {host}:{port} (job={job_id})")
+        logger.info(
+            f"Registered endpoint: {project_id}/{model} -> {host}:{port} (job={job_id})"
+        )
         return endpoint
 
     def update_status(
@@ -334,7 +340,9 @@ class EndpointRegistry:
             # Persist status change
             self._persist(endpoint)
 
-            logger.info(f"Endpoint {job_id} status: {old_status.value} -> {status.value}")
+            logger.info(
+                f"Endpoint {job_id} status: {old_status.value} -> {status.value}"
+            )
             return endpoint
 
     def update_location(
@@ -402,7 +410,9 @@ class EndpointRegistry:
                 self._persist(endpoint)
             return endpoint
 
-    def extend_ttl(self, job_id: str, new_expires_at: datetime) -> RegisteredEndpoint | None:
+    def extend_ttl(
+        self, job_id: str, new_expires_at: datetime
+    ) -> RegisteredEndpoint | None:
         """Extend endpoint TTL to a new expiration time.
 
         Only extends (never shortens). Returns the updated endpoint or None
@@ -448,7 +458,9 @@ class EndpointRegistry:
         and sometimes under the vLLM-served name (a filesystem basename). Both
         callers should resolve to the same endpoint.
         """
-        min_ttl = min_ttl_sec if min_ttl_sec is not None else self._min_ttl_for_reuse_sec
+        min_ttl = (
+            min_ttl_sec if min_ttl_sec is not None else self._min_ttl_for_reuse_sec
+        )
         key = (project_id, model)
 
         with self._lock:
@@ -531,7 +543,8 @@ class EndpointRegistry:
         now = datetime.utcnow()
         with self._lock:
             return [
-                e for e in self._endpoints.values()
+                e
+                for e in self._endpoints.values()
                 if e.expires_at and e.expires_at < now
             ]
 
@@ -540,7 +553,8 @@ class EndpointRegistry:
         threshold = datetime.utcnow() - timedelta(seconds=idle_threshold_sec)
         with self._lock:
             return [
-                e for e in self._endpoints.values()
+                e
+                for e in self._endpoints.values()
                 if e.is_usable and e.last_used_at and e.last_used_at < threshold
             ]
 

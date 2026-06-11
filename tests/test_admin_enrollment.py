@@ -7,6 +7,7 @@ Covers:
 - ENROLL_USER is in ADMIN_ONLY_COMMANDS
 - admin user CLI argparse structure
 """
+
 from __future__ import annotations
 
 import json
@@ -115,12 +116,16 @@ class TestPersistUploadedUserConfig:
     def _write_user_json(self, tmp_path, username="alice"):
         """Write a minimal valid-looking user config JSON."""
         user_file = tmp_path / f"{username}_upload.json"
-        user_file.write_text(json.dumps({
-            "username": username,
-            "fullname": "Alice",
-            "s3_configuration_file": "/dev/null",
-            "experiences": [],
-        }))
+        user_file.write_text(
+            json.dumps(
+                {
+                    "username": username,
+                    "fullname": "Alice",
+                    "s3_configuration_file": "/dev/null",
+                    "experiences": [],
+                }
+            )
+        )
         return str(user_file)
 
     def test_allow_create_false_rejects_unknown_user(self, tmp_env, tmp_path):
@@ -131,7 +136,9 @@ class TestPersistUploadedUserConfig:
 
         upload = self._write_user_json(tmp_path, "newuser")
         ok, uname, dest = persist_uploaded_user_config(
-            upload, conf_file, user_config_map,
+            upload,
+            conf_file,
+            user_config_map,
             expected_username=None,
             allow_create=False,
         )
@@ -147,7 +154,9 @@ class TestPersistUploadedUserConfig:
 
         upload = self._write_user_json(tmp_path, "newuser")
         ok, uname, dest = persist_uploaded_user_config(
-            upload, conf_file, user_config_map,
+            upload,
+            conf_file,
+            user_config_map,
             expected_username=None,
             allow_create=True,
         )
@@ -171,7 +180,9 @@ class TestPersistUploadedUserConfig:
 
         upload = self._write_user_json(tmp_path, "alice")
         ok, uname, dest = persist_uploaded_user_config(
-            upload, conf_file, user_config_map,
+            upload,
+            conf_file,
+            user_config_map,
             expected_username="alice",
             allow_create=False,
         )
@@ -257,12 +268,16 @@ class TestUnsafeUsernameRejection:
 
     def _write_user_json(self, tmp_path, username):
         user_file = tmp_path / "upload.json"
-        user_file.write_text(json.dumps({
-            "username": username,
-            "fullname": "Test",
-            "s3_configuration_file": "/dev/null",
-            "experiences": [],
-        }))
+        user_file.write_text(
+            json.dumps(
+                {
+                    "username": username,
+                    "fullname": "Test",
+                    "s3_configuration_file": "/dev/null",
+                    "experiences": [],
+                }
+            )
+        )
         return str(user_file)
 
     def test_path_traversal_rejected(self, tmp_env, tmp_path):
@@ -271,7 +286,9 @@ class TestUnsafeUsernameRejection:
         conf_dir, conf_file = tmp_env
         upload = self._write_user_json(tmp_path, "../../etc/shadow")
         ok, uname, dest = persist_uploaded_user_config(
-            upload, conf_file, {},
+            upload,
+            conf_file,
+            {},
             expected_username=None,
             allow_create=True,
         )
@@ -284,7 +301,9 @@ class TestUnsafeUsernameRejection:
         conf_dir, conf_file = tmp_env
         upload = self._write_user_json(tmp_path, "user@evil.com")
         ok, uname, dest = persist_uploaded_user_config(
-            upload, conf_file, {},
+            upload,
+            conf_file,
+            {},
             expected_username=None,
             allow_create=True,
         )

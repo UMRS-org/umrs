@@ -91,7 +91,8 @@ class SitePolicy:
             max_gpus_per_job=int(os.getenv("UMRS_MAX_GPUS_PER_JOB", "8")),
             max_walltime_sec=int(os.getenv("UMRS_MAX_WALLTIME_SEC", "172800")),
             max_concurrent_jobs=int(os.getenv("UMRS_MAX_CONCURRENT_JOBS", "10")),
-            require_project=os.getenv("UMRS_REQUIRE_PROJECT", "").lower() in ("1", "true", "yes"),
+            require_project=os.getenv("UMRS_REQUIRE_PROJECT", "").lower()
+            in ("1", "true", "yes"),
             allowed_partitions=[
                 p.strip()
                 for p in os.getenv("UMRS_ALLOWED_PARTITIONS", "").split(",")
@@ -164,7 +165,8 @@ def authorize(
     if auth.is_admin or auth.is_service:
         logger.debug(
             "Authorization ALLOW (admin/service): user=%s op=%s",
-            auth.user_id, operation,
+            auth.user_id,
+            operation,
         )
         return
 
@@ -181,7 +183,9 @@ def authorize(
 
     logger.debug(
         "Authorization ALLOW: user=%s op=%s project=%s",
-        auth.user_id, operation, resource.project_id,
+        auth.user_id,
+        operation,
+        resource.project_id,
     )
 
 
@@ -253,7 +257,9 @@ def _check_resource_limits(
     # Walltime limit check
     if resource.walltime_sec > 0:
         # Session cap
-        if session_grants is not None and hasattr(session_grants, "effective_max_walltime"):
+        if session_grants is not None and hasattr(
+            session_grants, "effective_max_walltime"
+        ):
             session_max = session_grants.effective_max_walltime(policy.max_walltime_sec)
             if resource.walltime_sec > session_max:
                 raise AuthorizationDenied(

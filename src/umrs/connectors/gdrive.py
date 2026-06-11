@@ -67,9 +67,7 @@ class GoogleDriveConnector(Connector):
         if folder_id:
             query_parts.append(f"'{folder_id}' in parents")
         if mime_types:
-            mime_clauses = " or ".join(
-                f"mimeType='{m}'" for m in mime_types
-            )
+            mime_clauses = " or ".join(f"mimeType='{m}'" for m in mime_types)
             query_parts.append(f"({mime_clauses})")
 
         query = " and ".join(query_parts)

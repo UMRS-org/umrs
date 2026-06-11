@@ -49,7 +49,9 @@ class HMAEFeatureStep(Step):
         for idx, key in enumerate(ctx.input_keys):
             logger.info(
                 "[%d/%d] HMAE features: %s",
-                idx + 1, len(ctx.input_keys), key,
+                idx + 1,
+                len(ctx.input_keys),
+                key,
             )
 
             image_url = f"s3://{ctx.input_bucket}/{key}"
@@ -75,17 +77,17 @@ class HMAEFeatureStep(Step):
             ctx.upload_numpy(emb_key, emb)
             output_keys.append(emb_key)
             checksums.append("")
-            metadata_list.append({
-                "source_patch": key,
-                "embedding_dim": int(emb.shape[0]) if emb.ndim == 1 else list(emb.shape),
-            })
+            metadata_list.append(
+                {
+                    "source_patch": key,
+                    "embedding_dim": int(emb.shape[0]) if emb.ndim == 1 else list(emb.shape),
+                }
+            )
 
             logger.info("  → embedding shape=%s", emb.shape)
 
         # Stack all CLS embeddings into a single matrix
-        embeddings_matrix = (
-            np.stack(all_cls_embeddings) if all_cls_embeddings else None
-        )
+        embeddings_matrix = np.stack(all_cls_embeddings) if all_cls_embeddings else None
 
         return StepResult(
             output_keys=output_keys,
@@ -99,7 +101,9 @@ class HMAEFeatureStep(Step):
         )
 
     def _extract_cls_from_pt(
-        self, ctx: StepContext, feat_s3_url: str,
+        self,
+        ctx: StepContext,
+        feat_s3_url: str,
     ) -> np.ndarray:
         """Download a features.pt file from S3 and return the CLS vector."""
         # feat_s3_url is like "s3://bucket/key_features.pt"
@@ -113,6 +117,7 @@ class HMAEFeatureStep(Step):
 
         try:
             import torch
+
             data = ctx.download_bytes(key, bucket=bucket)
             obj = torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
             cls_token = obj["cls"]  # shape [1, 768]

@@ -91,9 +91,7 @@ async def test_checker_persists_readiness_warmup_detail():
     )
     readiness_poller = MagicMock()
     readiness_poller.config.auth_token = None
-    readiness_poller.check_ready_detail = AsyncMock(
-        return_value=(False, [], "Chat probe timeout")
-    )
+    readiness_poller.check_ready_detail = AsyncMock(return_value=(False, [], "Chat probe timeout"))
 
     checker = EndpointProvisionStatusChecker(
         readiness_poller,

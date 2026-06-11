@@ -178,7 +178,13 @@ class ChunkerRegistry:
                 description="Code-aware chunking respecting functions/classes",
                 default_chunk_size=100,  # Lines
                 default_overlap=10,
-                supports_languages=["python", "javascript", "typescript", "java", "cpp"],
+                supports_languages=[
+                    "python",
+                    "javascript",
+                    "typescript",
+                    "java",
+                    "cpp",
+                ],
             ),
         ]
 

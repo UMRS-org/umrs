@@ -103,9 +103,7 @@ class StepReplayEngine:
         """
         source = self._traces.get_trace(request.source_trace_id)
         if source is None:
-            raise ValueError(
-                f"Source trace not found: {request.source_trace_id}"
-            )
+            raise ValueError(f"Source trace not found: {request.source_trace_id}")
 
         # Ensure source has input data for replay
         has_inputs = (
@@ -155,8 +153,10 @@ class StepReplayEngine:
         self._replays[result.replay_id] = result
         logger.info(
             "Replay created: %s (source=%s → new=%s step=%s)",
-            result.replay_id, request.source_trace_id,
-            new_trace.trace_id, source.step_name,
+            result.replay_id,
+            request.source_trace_id,
+            new_trace.trace_id,
+            source.step_name,
         )
         return result
 
@@ -180,7 +180,4 @@ class StepReplayEngine:
 
     def find_by_inputs_hash(self, inputs_hash: str) -> list[ReplayResult]:
         """Find replays that share the same input hash (dedup)."""
-        return [
-            r for r in self._replays.values()
-            if r.inputs_hash == inputs_hash
-        ]
+        return [r for r in self._replays.values() if r.inputs_hash == inputs_hash]

@@ -49,5 +49,5 @@ def test_hpc_runner_defaults_to_slurm_podman() -> None:
     script = (Path(__file__).resolve().parents[2] / "tests/run_hpc_tests.sh").read_text()
 
     assert 'RIVAULT_ORCHESTRATOR="${RIVAULT_ORCHESTRATOR:-slurm-podman}"' in script
-    assert "check_prerequisite \"Podman\"" in script
+    assert 'check_prerequisite "Podman"' in script
     assert "RIVAULT_ENABLE_EXPERIMENTAL_HYBRID_SLURM" not in script

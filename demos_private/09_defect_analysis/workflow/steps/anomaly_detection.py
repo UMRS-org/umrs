@@ -53,7 +53,9 @@ class AnomalyDetectionStep(Step):
         for idx, key in enumerate(ctx.input_keys):
             logger.info(
                 "[%d/%d] HMAE MAE anomaly: %s",
-                idx + 1, len(ctx.input_keys), key,
+                idx + 1,
+                len(ctx.input_keys),
+                key,
             )
 
             image_url = f"s3://{ctx.input_bucket}/{key}"
@@ -89,7 +91,9 @@ class AnomalyDetectionStep(Step):
 
             status_str = "ANOMALY" if is_anomaly else "normal"
             logger.info(
-                "  → mae_loss=%.4f  [%s]", mae_loss, status_str,
+                "  → mae_loss=%.4f  [%s]",
+                mae_loss,
+                status_str,
             )
 
         return StepResult(
@@ -99,10 +103,7 @@ class AnomalyDetectionStep(Step):
             extra={
                 "total_patches": len(ctx.input_keys),
                 "anomaly_count": anomaly_count,
-                "anomaly_rate": (
-                    anomaly_count / len(ctx.input_keys)
-                    if ctx.input_keys else 0.0
-                ),
+                "anomaly_rate": (anomaly_count / len(ctx.input_keys) if ctx.input_keys else 0.0),
                 "threshold": self.anomaly_threshold,
             },
         )

@@ -53,10 +53,16 @@ class K8sJobWrapper(RuntimeWrapper):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "patch", "job", job_name,
-                "--namespace", self.namespace,
-                "--type", "strategic",
-                "-p", json.dumps(patch),
+                "kubectl",
+                "patch",
+                "job",
+                job_name,
+                "--namespace",
+                self.namespace,
+                "--type",
+                "strategic",
+                "-p",
+                json.dumps(patch),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -71,8 +77,12 @@ class K8sJobWrapper(RuntimeWrapper):
             service = self._build_service(service_name, job_name, host_port)
 
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "apply", "-f", "-",
-                "--namespace", self.namespace,
+                "kubectl",
+                "apply",
+                "-f",
+                "-",
+                "--namespace",
+                self.namespace,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -103,8 +113,12 @@ class K8sJobWrapper(RuntimeWrapper):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "delete", "service", service_name,
-                "--namespace", self.namespace,
+                "kubectl",
+                "delete",
+                "service",
+                service_name,
+                "--namespace",
+                self.namespace,
                 "--ignore-not-found",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -123,10 +137,15 @@ class K8sJobWrapper(RuntimeWrapper):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "get", "pods",
-                "--namespace", self.namespace,
-                "--selector", f"job-name={job_name}",
-                "-o", "jsonpath={.items[0].status.phase}",
+                "kubectl",
+                "get",
+                "pods",
+                "--namespace",
+                self.namespace,
+                "--selector",
+                f"job-name={job_name}",
+                "-o",
+                "jsonpath={.items[0].status.phase}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -140,14 +159,8 @@ class K8sJobWrapper(RuntimeWrapper):
         container_spec: dict[str, Any] = {
             "name": "rivault",
             "image": spec.image,
-            "env": [
-                {"name": k, "value": v}
-                for k, v in spec.env.items()
-            ],
-            "ports": [
-                {"containerPort": port}
-                for port in spec.ports
-            ],
+            "env": [{"name": k, "value": v} for k, v in spec.env.items()],
+            "ports": [{"containerPort": port} for port in spec.ports],
         }
 
         if spec.command:
@@ -158,11 +171,13 @@ class K8sJobWrapper(RuntimeWrapper):
         if spec.mounts:
             container_spec["volumeMounts"] = []
             for mount in spec.mounts:
-                container_spec["volumeMounts"].append({
-                    "name": mount.source.replace("/", "-").strip("-"),
-                    "mountPath": mount.target,
-                    "readOnly": mount.read_only,
-                })
+                container_spec["volumeMounts"].append(
+                    {
+                        "name": mount.source.replace("/", "-").strip("-"),
+                        "mountPath": mount.target,
+                        "readOnly": mount.read_only,
+                    }
+                )
 
         return {
             "spec": {
@@ -190,10 +205,12 @@ class K8sJobWrapper(RuntimeWrapper):
             },
             "spec": {
                 "selector": {"job-name": job_name},
-                "ports": [{
-                    "port": port,
-                    "targetPort": port,
-                }],
+                "ports": [
+                    {
+                        "port": port,
+                        "targetPort": port,
+                    }
+                ],
                 "type": "ClusterIP",
             },
         }
@@ -202,9 +219,14 @@ class K8sJobWrapper(RuntimeWrapper):
         """Get service cluster IP."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "get", "service", service_name,
-                "--namespace", self.namespace,
-                "-o", "jsonpath={.spec.clusterIP}",
+                "kubectl",
+                "get",
+                "service",
+                service_name,
+                "--namespace",
+                self.namespace,
+                "-o",
+                "jsonpath={.spec.clusterIP}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -277,9 +299,7 @@ class K8sBootstrapWrapper(RuntimeWrapper):
         node = allocation.node
         job_id = allocation.job_id
 
-        logger.info(
-            f"[K8sBootstrap] Starting k3s on node={node}, job={job_id}"
-        )
+        logger.info(f"[K8sBootstrap] Starting k3s on node={node}, job={job_id}")
 
         cluster_id = f"rivault-{job_id[:8]}"
 
@@ -330,9 +350,15 @@ class K8sBootstrapWrapper(RuntimeWrapper):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "--kubeconfig", kubeconfig,
-                "get", "pods", "-n", self.namespace,
-                "-o", "jsonpath={.items[0].status.phase}",
+                "kubectl",
+                "--kubeconfig",
+                kubeconfig,
+                "get",
+                "pods",
+                "-n",
+                self.namespace,
+                "-o",
+                "jsonpath={.items[0].status.phase}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -382,8 +408,13 @@ class K8sBootstrapWrapper(RuntimeWrapper):
         while asyncio.get_event_loop().time() < deadline:
             try:
                 proc = await asyncio.create_subprocess_exec(
-                    "kubectl", "--kubeconfig", kubeconfig,
-                    "get", "nodes", "-o", "name",
+                    "kubectl",
+                    "--kubeconfig",
+                    kubeconfig,
+                    "get",
+                    "nodes",
+                    "-o",
+                    "name",
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
@@ -460,31 +491,34 @@ class K8sBootstrapWrapper(RuntimeWrapper):
                         "labels": {"app": "rivault-inference"},
                     },
                     "spec": {
-                        "containers": [{
-                            "name": "vllm",
-                            "image": spec.image,
-                            "command": spec.command if spec.command else None,
-                            "args": spec.args if spec.args else None,
-                            "env": [
-                                {"name": k, "value": v}
-                                for k, v in spec.env.items()
-                            ],
-                            "ports": [{"containerPort": p} for p in spec.ports],
-                            "volumeMounts": [
-                                {
-                                    "name": f"mount-{i}",
-                                    "mountPath": m.target,
-                                    "readOnly": m.read_only,
-                                }
-                                for i, m in enumerate(spec.mounts)
-                            ] if spec.mounts else [],
-                            "resources": {
-                                "limits": {
-                                    "nvidia.com/gpu": str(spec.gpus),
-                                    "memory": f"{spec.memory_mb}Mi",
+                        "containers": [
+                            {
+                                "name": "vllm",
+                                "image": spec.image,
+                                "command": spec.command if spec.command else None,
+                                "args": spec.args if spec.args else None,
+                                "env": [
+                                    {"name": k, "value": v} for k, v in spec.env.items()
+                                ],
+                                "ports": [{"containerPort": p} for p in spec.ports],
+                                "volumeMounts": [
+                                    {
+                                        "name": f"mount-{i}",
+                                        "mountPath": m.target,
+                                        "readOnly": m.read_only,
+                                    }
+                                    for i, m in enumerate(spec.mounts)
+                                ]
+                                if spec.mounts
+                                else [],
+                                "resources": {
+                                    "limits": {
+                                        "nvidia.com/gpu": str(spec.gpus),
+                                        "memory": f"{spec.memory_mb}Mi",
+                                    },
                                 },
-                            },
-                        }],
+                            }
+                        ],
                         "volumes": [
                             {
                                 "name": f"mount-{i}",
@@ -492,7 +526,9 @@ class K8sBootstrapWrapper(RuntimeWrapper):
                             }
                             for i, m in enumerate(spec.mounts)
                             if m.mount_type == "bind"
-                        ] if spec.mounts else [],
+                        ]
+                        if spec.mounts
+                        else [],
                     },
                 },
             },
@@ -525,11 +561,13 @@ class K8sBootstrapWrapper(RuntimeWrapper):
             "spec": {
                 "type": "NodePort",
                 "selector": {"app": "rivault-inference"},
-                "ports": [{
-                    "port": port,
-                    "targetPort": port,
-                    "nodePort": port,
-                }],
+                "ports": [
+                    {
+                        "port": port,
+                        "targetPort": port,
+                        "nodePort": port,
+                    }
+                ],
             },
         }
 
@@ -558,16 +596,17 @@ class K8sBootstrapWrapper(RuntimeWrapper):
     ) -> str:
         """Execute kubectl command."""
         proc = await asyncio.create_subprocess_exec(
-            "kubectl", "--kubeconfig", kubeconfig, *args,
+            "kubectl",
+            "--kubeconfig",
+            kubeconfig,
+            *args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, stderr = await proc.communicate()
 
         if proc.returncode != 0:
-            raise RuntimeError(
-                f"kubectl {' '.join(args)} failed: {stderr.decode()}"
-            )
+            raise RuntimeError(f"kubectl {' '.join(args)} failed: {stderr.decode()}")
 
         return stdout.decode()
 
@@ -587,9 +626,13 @@ class K8sBootstrapWrapper(RuntimeWrapper):
             return stdout.decode()
 
         proc = await asyncio.create_subprocess_exec(
-            "ssh", "-o", "StrictHostKeyChecking=no",
-            "-o", "BatchMode=yes",
-            node, command,
+            "ssh",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "BatchMode=yes",
+            node,
+            command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

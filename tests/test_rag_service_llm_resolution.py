@@ -220,5 +220,8 @@ def test_invoke_llm_with_candidates_retries_and_marks_registry_usage(monkeypatch
     response, candidate = rag_service._invoke_llm_with_candidates(["payload"], candidates)
 
     assert candidate.job_id == "job-good"
-    assert rag_service._strip_reasoning_blocks(rag_service._response_text(response)) == "Recovered answer"
+    assert (
+        rag_service._strip_reasoning_blocks(rag_service._response_text(response))
+        == "Recovered answer"
+    )
     assert registry.used == ["job-good"]

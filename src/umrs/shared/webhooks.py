@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 class EventType(str, Enum):
     """Supported webhook event types."""
+
     JOB_COMPLETED = "job.completed"
     JOB_FAILED = "job.failed"
     PIPELINE_STARTED = "pipeline.started"
@@ -37,6 +38,7 @@ class EventType(str, Enum):
 
 class DeliveryStatus(str, Enum):
     """Delivery attempt status."""
+
     PENDING = "pending"
     DELIVERED = "delivered"
     FAILED = "failed"
@@ -46,6 +48,7 @@ class DeliveryStatus(str, Enum):
 @dataclass
 class WebhookEvent:
     """Typed event envelope."""
+
     event_id: str
     event_type: EventType
     timestamp: float = field(default_factory=time.time)
@@ -68,6 +71,7 @@ class WebhookEvent:
 @dataclass
 class WebhookSubscription:
     """A webhook endpoint subscription."""
+
     subscription_id: str
     url: str
     event_types: set[EventType] = field(default_factory=lambda: set(EventType))
@@ -84,6 +88,7 @@ class WebhookSubscription:
 @dataclass
 class DeliveryAttempt:
     """Record of a single delivery attempt."""
+
     event_id: str
     subscription_id: str
     url: str
@@ -98,6 +103,7 @@ class DeliveryAttempt:
 @dataclass
 class DeliveryRecord:
     """Full delivery record for an event-subscription pair."""
+
     event_id: str
     subscription_id: str
     attempts: list[DeliveryAttempt] = field(default_factory=list)
@@ -292,7 +298,9 @@ class WebhookManager:
                 return []
 
         with self._lock:
-            matching = [s for s in self._subscriptions.values() if s.matches(event.event_type)]
+            matching = [
+                s for s in self._subscriptions.values() if s.matches(event.event_type)
+            ]
 
         if not matching:
             return []

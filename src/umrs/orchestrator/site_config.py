@@ -52,6 +52,7 @@ def _expand_env_refs(value: Any) -> Any:
         return {key: _expand_env_refs(item) for key, item in value.items()}
     return value
 
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -61,21 +62,21 @@ def _expand_env_refs(value: Any) -> Any:
 class SchedulerConfig:
     """Cluster job scheduler settings."""
 
-    kind: str = "slurm"                         # slurm | slurm-remote | k8s | compose
-    partition: str = ""                         # Slurm partition or comma-separated candidates / K8s namespace
-    account: str = ""                           # Slurm account
-    qos: str = ""                               # Slurm QoS
-    time_limit: str = "04:00:00"                # Default wall-clock
+    kind: str = "slurm"  # slurm | slurm-remote | k8s | compose
+    partition: str = ""  # Slurm partition or comma-separated candidates / K8s namespace
+    account: str = ""  # Slurm account
+    qos: str = ""  # Slurm QoS
+    time_limit: str = "04:00:00"  # Default wall-clock
     gpus: int = 1
     cpus: int = 8
     memory: str = "64G"
-    nodes: int = 1                              # Number of Slurm nodes (>1 for multi-node PP)
+    nodes: int = 1  # Number of Slurm nodes (>1 for multi-node PP)
     extra_sbatch: list[str] = field(default_factory=list)  # e.g. ["--constraint=a100"]
 
     # Per-user SSH delegation for Slurm job submission.
     # - service_account: UMRS daemon submits all jobs as itself (default)
     # - per_user_ssh: UMRS SSH's as the requesting user to submit sbatch
-    slurm_delegation: str = "service_account"   # service_account | per_user_ssh
+    slurm_delegation: str = "service_account"  # service_account | per_user_ssh
     # Path to UMRS service ed25519 public key on shared filesystem.
     # Users enroll by appending this key to their ~/.ssh/authorized_keys.
     service_pubkey_path: str = ""
@@ -94,30 +95,32 @@ class SchedulerConfig:
 class RuntimeConfig:
     """Container runtime settings."""
 
-    kind: str = "podman-compose"                # podman-compose | singularity | docker-compose
-    compose_file: str = ""                      # Path to compose YAML
-    rivault_dir: str = ""                       # Path to mini-rivault-llm directory
-    repo_dir: str = ""                          # Path to UMRS repo root (for builds)
-    vision_image: str = "umrs-vision:latest"    # Vision container image name
-    profiles: list[str] = field(default_factory=lambda: ["harness", "vllm", "vision-bentoml"])
-    gpu_passthrough: str = "auto"               # auto | cdi | device
+    kind: str = "podman-compose"  # podman-compose | singularity | docker-compose
+    compose_file: str = ""  # Path to compose YAML
+    rivault_dir: str = ""  # Path to mini-rivault-llm directory
+    repo_dir: str = ""  # Path to UMRS repo root (for builds)
+    vision_image: str = "umrs-vision:latest"  # Vision container image name
+    profiles: list[str] = field(
+        default_factory=lambda: ["harness", "vllm", "vision-bentoml"]
+    )
+    gpu_passthrough: str = "auto"  # auto | cdi | device
     cdi_spec: str = "/var/run/cdi/nvidia.yaml"  # CDI spec path (if gpu_passthrough=cdi)
     cgroup_manager: str = "cgroupfs"
-    storage_root: str = ""                      # podman graphroot override
+    storage_root: str = ""  # podman graphroot override
 
 
 @dataclass
 class StorageConfig:
     """Filesystem / object-storage paths."""
 
-    model_cache_dir: str = ""                   # HuggingFace / vLLM model cache
+    model_cache_dir: str = ""  # HuggingFace / vLLM model cache
     sam3_model_path: str = ""
     hmae_model_path: str = ""
     hmae_config_path: str = ""
     hmae_checkpoint: str = ""
-    vision_tarball: str = ""                    # Pre-built vision image tarball
+    vision_tarball: str = ""  # Pre-built vision image tarball
     user_model_path: str = "/tmp"
-    s3_tunnel_host: str = ""                    # MinIO tunnel target host
+    s3_tunnel_host: str = ""  # MinIO tunnel target host
     s3_tunnel_port: int = 9000
 
 
@@ -125,13 +128,13 @@ class StorageConfig:
 class NetworkConfig:
     """Networking and port settings."""
 
-    litellm_port: int = 8001                    # nginx → LiteLLM port inside compose
+    litellm_port: int = 8001  # nginx → LiteLLM port inside compose
     litellm_master_key: str = ""
     port_range_min: int = 11434
     port_range_max: int = 11534
-    port_strategy: str = "static_range"         # static_range | registry_lock
-    egress_proxy_url: str = ""                  # Forward proxy URL for mini-rivault egress
-    egress_no_proxy: str = ""                   # Comma-separated internal hosts bypassing proxy
+    port_strategy: str = "static_range"  # static_range | registry_lock
+    egress_proxy_url: str = ""  # Forward proxy URL for mini-rivault egress
+    egress_no_proxy: str = ""  # Comma-separated internal hosts bypassing proxy
 
 
 @dataclass
@@ -156,15 +159,15 @@ class PartitionProfile:
     for the assigned Slurm partition and applies the values directly.
     """
 
-    arch: str = "x86_64"                        # x86_64 | aarch64
-    gpu_vendor: str = "nvidia"                  # nvidia | amd | none
-    gpu_memory_gb: float = 0                    # per-GPU VRAM in GiB (0 = unknown)
-    oci_runtime: str = "crun"                   # crun | runc
-    userns_mode: str = "keep-id:uid=0,gid=0"   # keep-id:uid=0,gid=0 | host
-    network_backend: str = "netavark"           # netavark | cni
-    vllm_docker_tag: str = ""                   # override per partition (empty → use site default)
-    gpus: int = 1                               # Slurm --gpus count
-    needs_netavark_switch: bool = True          # force netavark backend file on startup
+    arch: str = "x86_64"  # x86_64 | aarch64
+    gpu_vendor: str = "nvidia"  # nvidia | amd | none
+    gpu_memory_gb: float = 0  # per-GPU VRAM in GiB (0 = unknown)
+    oci_runtime: str = "crun"  # crun | runc
+    userns_mode: str = "keep-id:uid=0,gid=0"  # keep-id:uid=0,gid=0 | host
+    network_backend: str = "netavark"  # netavark | cni
+    vllm_docker_tag: str = ""  # override per partition (empty → use site default)
+    gpus: int = 1  # Slurm --gpus count
+    needs_netavark_switch: bool = True  # force netavark backend file on startup
 
 
 @dataclass
@@ -176,7 +179,7 @@ class DatabaseConfig:
     superuser: str = "postgres"
     superuser_password: str = "postgres"
     user_password: str = ""
-    registry_dsn: str = ""                      # UMRS_REGISTRY_POSTGRES_DSN
+    registry_dsn: str = ""  # UMRS_REGISTRY_POSTGRES_DSN
 
 
 @dataclass
@@ -224,7 +227,9 @@ class SiteConfig:
             "RIVAULT_USERNS_MODE": pp.userns_mode,
             "RIVAULT_PARTITION_NETWORK_BACKEND": pp.network_backend,
             "RIVAULT_PARTITION_GPUS": str(pp.gpus),
-            "RIVAULT_PARTITION_NEEDS_NETAVARK": "1" if pp.needs_netavark_switch else "0",
+            "RIVAULT_PARTITION_NEEDS_NETAVARK": "1"
+            if pp.needs_netavark_switch
+            else "0",
         }
         if pp.vllm_docker_tag:
             env["VLLM_DOCKER_TAG"] = pp.vllm_docker_tag
@@ -363,6 +368,7 @@ def _database_env(database: DatabaseConfig) -> dict[str, str]:
 # Loader
 # ---------------------------------------------------------------------------
 
+
 def _default_site_config_path() -> str:
     return get_resolved_umrs_subdir("site.yaml")
 
@@ -477,7 +483,9 @@ def default_site_config() -> SiteConfig:
 
     # Scheduler
     cfg.scheduler.kind = os.getenv("RIVAULT_ORCHESTRATOR", "slurm")
-    cfg.scheduler.partition = os.getenv("SLURM_PARTITIONS", os.getenv("SLURM_PARTITION", ""))
+    cfg.scheduler.partition = os.getenv(
+        "SLURM_PARTITIONS", os.getenv("SLURM_PARTITION", "")
+    )
     cfg.scheduler.time_limit = os.getenv("SLURM_TIME", "04:00:00")
     cfg.scheduler.gpus = int(os.getenv("SLURM_GPUS", "1"))
     cfg.scheduler.cpus = int(os.getenv("SLURM_CPUS", "8"))
@@ -501,8 +509,9 @@ def default_site_config() -> SiteConfig:
     cfg.storage.s3_tunnel_port = int(os.getenv("UMRS_S3_TUNNEL_PORT", "9000"))
 
     # Network
-    cfg.network.litellm_port = int(os.getenv("NGINX_LITELLM_DOCKER_PORT",
-                                              os.getenv("RIVAULT_REMOTE_PORT", "8001")))
+    cfg.network.litellm_port = int(
+        os.getenv("NGINX_LITELLM_DOCKER_PORT", os.getenv("RIVAULT_REMOTE_PORT", "8001"))
+    )
     cfg.network.litellm_master_key = os.getenv("LITELLM_MASTER_KEY", "")
     cfg.network.port_range_min = int(os.getenv("RIVAULT_PORT_MIN", "11434"))
     cfg.network.port_range_max = int(os.getenv("RIVAULT_PORT_MAX", "11534"))
@@ -522,10 +531,12 @@ def default_site_config() -> SiteConfig:
     # Database
     cfg.database.host = os.getenv("DB_HOST", "localhost")
     cfg.database.port = int(os.getenv("DB_PORT", "5432"))
-    cfg.database.superuser = os.getenv("DB_SUPERUSER",
-                                       os.getenv("POSTGRES_USER", "postgres"))
-    cfg.database.superuser_password = os.getenv("DB_SUPERUSER_PASSWORD",
-                                                os.getenv("POSTGRES_PASSWORD", "postgres"))
+    cfg.database.superuser = os.getenv(
+        "DB_SUPERUSER", os.getenv("POSTGRES_USER", "postgres")
+    )
+    cfg.database.superuser_password = os.getenv(
+        "DB_SUPERUSER_PASSWORD", os.getenv("POSTGRES_PASSWORD", "postgres")
+    )
     cfg.database.registry_dsn = os.getenv("UMRS_REGISTRY_POSTGRES_DSN", "")
 
     return cfg

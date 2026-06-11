@@ -120,7 +120,11 @@ def _configure_monitor_main_dependencies(monkeypatch, fake_control_mq, user_cfg)
         ),
     )
     monkeypatch.setattr(client_umrs, "load_client_cfg_file", lambda path: user_cfg)
-    monkeypatch.setattr(client_umrs, "create_auth_context_from_request", lambda client_id, token=None: _FakeAuthContext())
+    monkeypatch.setattr(
+        client_umrs,
+        "create_auth_context_from_request",
+        lambda client_id, token=None: _FakeAuthContext(),
+    )
 
 
 def _monitor_argv(tab="status"):

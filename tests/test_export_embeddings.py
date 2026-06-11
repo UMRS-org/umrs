@@ -18,7 +18,7 @@ from threading import RLock
 from typing import Any, Dict, Optional
 
 # Ensure src/ is importable
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 
@@ -26,6 +26,7 @@ from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 # ---------------------------------------------------------------------------
 # Lightweight stand-ins for DB / BucketsCfg (avoid heavy imports)
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class FakeServerBucketEntry:
@@ -68,6 +69,7 @@ class FakeBucketsCfg:
 
 class FakeDataBase:
     """Minimal stand-in for umrs.sql.DataBase."""
+
     def __init__(self, columns, rows):
         self._columns = columns
         self._rows = rows
@@ -102,9 +104,10 @@ class FakeDataBase:
 # Tests for TaskCmd
 # ---------------------------------------------------------------------------
 
+
 class TestExportEmbeddingsTaskCmd:
     def test_export_embeddings_constant_exists(self):
-        assert hasattr(TaskCmd, 'EXPORT_EMBEDDINGS')
+        assert hasattr(TaskCmd, "EXPORT_EMBEDDINGS")
         assert TaskCmd.EXPORT_EMBEDDINGS == "EXPORT_EMBEDDINGS"
 
     def test_export_embeddings_in_all_cmd(self):
@@ -116,6 +119,7 @@ class TestExportEmbeddingsTaskCmd:
 # Tests for _handle_export_embeddings (server-side handler)
 # ---------------------------------------------------------------------------
 
+
 class TestHandleExportEmbeddings:
     """Test the server-side handler function directly."""
 
@@ -124,6 +128,7 @@ class TestHandleExportEmbeddings:
         # We patch psycopg2.sql since the handler imports it
         try:
             from server_umrs import _handle_export_embeddings
+
             return _handle_export_embeddings
         except ImportError:
             pytest.skip("Cannot import server_umrs (missing deps)")
@@ -236,6 +241,7 @@ class TestHandleExportEmbeddings:
     def test_non_serialisable_values_converted_to_str(self):
         """datetime, date, Decimal etc. should be stringified."""
         import datetime
+
         handler = self._import_handler()
         columns = ["id", "embedding", "date"]
         rows = [(1, "[0.1]", datetime.date(2025, 1, 15))]
@@ -268,6 +274,7 @@ class TestHandleExportEmbeddings:
 # Tests for MessageQueue.request_export_embeddings wire format
 # ---------------------------------------------------------------------------
 
+
 class TestRequestExportEmbeddingsWireFormat:
     """Verify the client method builds the correct ZMQ message."""
 
@@ -280,8 +287,10 @@ class TestRequestExportEmbeddingsWireFormat:
 
         # Capture what send_string is called with
         sent = []
+
         def capture_send(msg):
             sent.append(msg)
+
         mq.send_string = capture_send
 
         # Mock recv_string to return a valid response
@@ -289,8 +298,11 @@ class TestRequestExportEmbeddingsWireFormat:
 
         # Call the real method on a mock — we just need the wire format logic
         from umrs.core.MessageQueue import MessageQueue
+
         # Bind the unbound method to our mock
-        MessageQueue.request_export_embeddings(mq, "alice", "alice.xp1.mybucket", "jsonl", "minimal")
+        MessageQueue.request_export_embeddings(
+            mq, "alice", "alice.xp1.mybucket", "jsonl", "minimal"
+        )
 
         assert len(sent) == 1
         assert sent[0] == "EXPORT_EMBEDDINGS:alice:alice.xp1.mybucket;jsonl;minimal"
@@ -310,6 +322,7 @@ class TestRequestExportEmbeddingsWireFormat:
         mq.recv_string = MagicMock(return_value=(None, '{"status":"ok","columns":[],"rows":[]}'))
 
         from umrs.core.MessageQueue import MessageQueue
+
         MessageQueue.request_export_embeddings(mq, "alice", "alice.xp1.mybucket", "csv")
 
         assert sent[0] == "EXPORT_EMBEDDINGS:alice:alice.xp1.mybucket;csv;minimal"
@@ -319,5 +332,6 @@ class TestRequestExportEmbeddingsWireFormat:
         mq = MagicMock()
         mq.role = "server"
         from umrs.core.MessageQueue import MessageQueue
+
         with pytest.raises(PermissionError):
             MessageQueue.request_export_embeddings(mq, "alice", "path", "csv")

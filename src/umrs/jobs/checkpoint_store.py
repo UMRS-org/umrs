@@ -82,6 +82,7 @@ class CheckpointStore:
         if db_url:
             try:
                 import psycopg2  # type: ignore
+
                 self._psycopg2 = psycopg2
             except ImportError:
                 logger.warning(
@@ -133,7 +134,12 @@ class CheckpointStore:
             self._mem[ckpt.checkpoint_id] = ckpt
         logger.info(
             "Checkpoint saved: %s (job=%s attempt=%s step=%s seq=%d iter=%d)",
-            ckpt.checkpoint_id, job_id, attempt_id, step_name, seq, iteration,
+            ckpt.checkpoint_id,
+            job_id,
+            attempt_id,
+            step_name,
+            seq,
+            iteration,
         )
         return ckpt
 
@@ -146,14 +152,19 @@ class CheckpointStore:
         return self._mem.get(checkpoint_id)
 
     def latest_checkpoint(
-        self, job_id: str, attempt_id: str, step_name: str | None = None,
+        self,
+        job_id: str,
+        attempt_id: str,
+        step_name: str | None = None,
     ) -> Checkpoint | None:
         """Return the most recent checkpoint for the given attempt (and optionally step)."""
         if self.db_enabled:
             return self._db_latest(job_id, attempt_id, step_name)
         candidates = [
-            c for c in self._mem.values()
-            if c.job_id == job_id and c.attempt_id == attempt_id
+            c
+            for c in self._mem.values()
+            if c.job_id == job_id
+            and c.attempt_id == attempt_id
             and (step_name is None or c.step_name == step_name)
         ]
         if not candidates:
@@ -161,14 +172,17 @@ class CheckpointStore:
         return max(candidates, key=lambda c: c.sequence_no)
 
     def list_checkpoints(
-        self, job_id: str, attempt_id: str | None = None,
+        self,
+        job_id: str,
+        attempt_id: str | None = None,
     ) -> list[Checkpoint]:
         """List checkpoints for a job, optionally filtered by attempt."""
         if self.db_enabled:
             return self._db_list(job_id, attempt_id)
         return sorted(
             [
-                c for c in self._mem.values()
+                c
+                for c in self._mem.values()
                 if c.job_id == job_id
                 and (attempt_id is None or c.attempt_id == attempt_id)
             ],
@@ -194,8 +208,12 @@ class CheckpointStore:
             return self._db_delete(job_id, attempt_id)
         before = len(self._mem)
         self._mem = {
-            k: v for k, v in self._mem.items()
-            if not (v.job_id == job_id and (attempt_id is None or v.attempt_id == attempt_id))
+            k: v
+            for k, v in self._mem.items()
+            if not (
+                v.job_id == job_id
+                and (attempt_id is None or v.attempt_id == attempt_id)
+            )
         }
         return before - len(self._mem)
 
@@ -219,11 +237,16 @@ class CheckpointStore:
                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        ckpt.checkpoint_id, ckpt.job_id, ckpt.attempt_id,
-                        ckpt.step_name, ckpt.sequence_no, ckpt.state_uri,
+                        ckpt.checkpoint_id,
+                        ckpt.job_id,
+                        ckpt.attempt_id,
+                        ckpt.step_name,
+                        ckpt.sequence_no,
+                        ckpt.state_uri,
                         ckpt.state_size_bytes,
                         json.dumps(ckpt.state_inline) if ckpt.state_inline else None,
-                        ckpt.iteration, ckpt.progress,
+                        ckpt.iteration,
+                        ckpt.progress,
                         json.dumps(ckpt.metadata),
                         ckpt.created_at,
                     ),
@@ -240,7 +263,10 @@ class CheckpointStore:
                 return self._row_to_checkpoint(row, cur) if row else None
 
     def _db_latest(
-        self, job_id: str, attempt_id: str, step_name: str | None,
+        self,
+        job_id: str,
+        attempt_id: str,
+        step_name: str | None,
     ) -> Checkpoint | None:
         with self._conn() as conn:
             with conn.cursor() as cur:

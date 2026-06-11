@@ -11,7 +11,14 @@ MODEL_TYPE_CHOICES = ("llm", "embedding", "vision")
 MODEL_SCOPE_CHOICES = ("system", "project", "user")
 WORKFLOW_SCOPE_CHOICES = ("system", "user")
 JOB_TYPE_CHOICES = ("endpoint_provision", "index_build", "cleanup")
-JOB_STATUS_FILTER_CHOICES = ("planned", "queued", "running", "completed", "failed", "cancelled")
+JOB_STATUS_FILTER_CHOICES = (
+    "planned",
+    "queued",
+    "running",
+    "completed",
+    "failed",
+    "cancelled",
+)
 STATUS_CHOICES = tuple(TaskCmd.status_cmd())
 
 MODEL_REGISTER_SCOPE_DEFAULT = "user"
@@ -112,7 +119,9 @@ def configure_model_download_parser(parser: argparse.ArgumentParser) -> None:
         "repo_id",
         help="HuggingFace repository ID (e.g., intfloat/e5-base-v2)",
     )
-    parser.add_argument("--name", default=None, help="Local name (defaults to repo basename)")
+    parser.add_argument(
+        "--name", default=None, help="Local name (defaults to repo basename)"
+    )
     parser.add_argument(
         "--scope",
         choices=MODEL_SCOPE_CHOICES,
@@ -128,7 +137,9 @@ def configure_model_download_parser(parser: argparse.ArgumentParser) -> None:
 
 def configure_job_submit_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("job_type", choices=JOB_TYPE_CHOICES, help="Job type")
-    parser.add_argument("--spec", default=JOB_SPEC_DEFAULT, help="Job spec as JSON string")
+    parser.add_argument(
+        "--spec", default=JOB_SPEC_DEFAULT, help="Job spec as JSON string"
+    )
     parser.add_argument("--project", default=JOB_PROJECT_DEFAULT, help="Project ID")
     parser.add_argument(
         "--max-attempts",
@@ -181,14 +192,20 @@ def configure_job_list_parser(parser: argparse.ArgumentParser) -> None:
         help="Filter by job type",
     )
     parser.add_argument("--limit", type=int, default=200, help="Maximum jobs to return")
-    parser.add_argument("--offset", type=int, default=0, help="Offset into the result set")
+    parser.add_argument(
+        "--offset", type=int, default=0, help="Offset into the result set"
+    )
 
 
 def configure_endpoint_up_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--model", required=True, help="Model name to provision")
-    parser.add_argument("--model-path", default=None, help="Explicit server-side model path")
+    parser.add_argument(
+        "--model-path", default=None, help="Explicit server-side model path"
+    )
     parser.add_argument("--project", default=JOB_PROJECT_DEFAULT, help="Project ID")
-    parser.add_argument("--experience", default=None, help="Experience name used for endpoint defaults")
+    parser.add_argument(
+        "--experience", default=None, help="Experience name used for endpoint defaults"
+    )
     parser.add_argument(
         "--idle-ttl",
         default=None,
@@ -197,13 +214,33 @@ def configure_endpoint_up_parser(parser: argparse.ArgumentParser) -> None:
             f"(default: {ENDPOINT_IDLE_TTL_DEFAULT}, overridable in experience JSON)"
         ),
     )
-    parser.add_argument("--tier", default="user", choices=("user", "project", "system"), help="Endpoint tier")
+    parser.add_argument(
+        "--tier",
+        default="user",
+        choices=("user", "project", "system"),
+        help="Endpoint tier",
+    )
     parser.add_argument("--gpu-count", type=int, default=1, help="GPU count")
-    parser.add_argument("--max-model-len", type=int, default=4096, help="vLLM max model length")
-    parser.add_argument("--max-attempts", type=int, default=JOB_MAX_ATTEMPTS_DEFAULT, help="Max retry attempts")
-    parser.add_argument("--spec", default=JOB_SPEC_DEFAULT, help="Additional endpoint spec as JSON string")
-    parser.add_argument("--partition", default=None, help="Override Slurm partition for this endpoint")
-    parser.add_argument("--node", default=None, help='Slurm nodelist hint (e.g. "ai-h200-brc-00")')
+    parser.add_argument(
+        "--max-model-len", type=int, default=4096, help="vLLM max model length"
+    )
+    parser.add_argument(
+        "--max-attempts",
+        type=int,
+        default=JOB_MAX_ATTEMPTS_DEFAULT,
+        help="Max retry attempts",
+    )
+    parser.add_argument(
+        "--spec",
+        default=JOB_SPEC_DEFAULT,
+        help="Additional endpoint spec as JSON string",
+    )
+    parser.add_argument(
+        "--partition", default=None, help="Override Slurm partition for this endpoint"
+    )
+    parser.add_argument(
+        "--node", default=None, help='Slurm nodelist hint (e.g. "ai-h200-brc-00")'
+    )
 
 
 def configure_endpoint_list_parser(parser: argparse.ArgumentParser) -> None:
@@ -214,8 +251,12 @@ def configure_endpoint_list_parser(parser: argparse.ArgumentParser) -> None:
         choices=JOB_STATUS_FILTER_CHOICES,
         help="Filter by durable job status",
     )
-    parser.add_argument("--limit", type=int, default=200, help="Maximum endpoints to return")
-    parser.add_argument("--offset", type=int, default=0, help="Offset into the result set")
+    parser.add_argument(
+        "--limit", type=int, default=200, help="Maximum endpoints to return"
+    )
+    parser.add_argument(
+        "--offset", type=int, default=0, help="Offset into the result set"
+    )
 
 
 def configure_endpoint_status_parser(parser: argparse.ArgumentParser) -> None:
@@ -263,8 +304,12 @@ def parse_duration_seconds(raw: object, *, field_name: str = "duration") -> int:
 
 
 def configure_workflow_run_parser(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("workflow_name", help="Name of the registered workflow to execute")
-    parser.add_argument("--bucket", default=None, help="Bucket alias to use as input data source")
+    parser.add_argument(
+        "workflow_name", help="Name of the registered workflow to execute"
+    )
+    parser.add_argument(
+        "--bucket", default=None, help="Bucket alias to use as input data source"
+    )
     parser.add_argument(
         "--params",
         default=WORKFLOW_PARAMS_DEFAULT,
@@ -280,7 +325,9 @@ def configure_workflow_list_parser(parser: argparse.ArgumentParser) -> None:
         help="Filter by scope",
     )
     parser.add_argument("--user", default=None, help="Filter by owner user ID")
-    parser.add_argument("--name", default=None, help="Filter by workflow name (substring match)")
+    parser.add_argument(
+        "--name", default=None, help="Filter by workflow name (substring match)"
+    )
 
 
 def build_control_command_parser(
@@ -407,16 +454,17 @@ def configure_admin_token_parser(
     """Add ``admin token {generate,list,revoke}`` subparsers."""
     token_sub = parser.add_subparsers(dest="token_action", required=True)
 
-    gen_p = token_sub.add_parser("generate", add_help=add_help,
-                                  help="Generate a new admin token")
+    gen_p = token_sub.add_parser(
+        "generate", add_help=add_help, help="Generate a new admin token"
+    )
     gen_p.add_argument("name", help="Token name (for identification)")
     gen_p.add_argument("--description", default="", help="Optional description")
 
-    token_sub.add_parser("list", add_help=add_help,
-                          help="List existing admin tokens")
+    token_sub.add_parser("list", add_help=add_help, help="List existing admin tokens")
 
-    rev_p = token_sub.add_parser("revoke", add_help=add_help,
-                                  help="Revoke an admin token by name")
+    rev_p = token_sub.add_parser(
+        "revoke", add_help=add_help, help="Revoke an admin token by name"
+    )
     rev_p.add_argument("name", help="Token name to revoke")
 
 
@@ -428,16 +476,20 @@ def configure_admin_user_parser(
     """Add ``admin user {add,list,remove}`` subparsers."""
     user_sub = parser.add_subparsers(dest="user_action", required=True)
 
-    add_p = user_sub.add_parser("add", add_help=add_help,
-                                 help="Enroll a new user on the server")
-    add_p.add_argument("config_path",
-                        help="Path to the user config JSON file")
+    add_p = user_sub.add_parser(
+        "add", add_help=add_help, help="Enroll a new user on the server"
+    )
+    add_p.add_argument("config_path", help="Path to the user config JSON file")
 
-    user_sub.add_parser("list", add_help=add_help,
-                         help="List enrolled users on the server")
+    user_sub.add_parser(
+        "list", add_help=add_help, help="List enrolled users on the server"
+    )
 
-    rm_p = user_sub.add_parser("remove", add_help=add_help,
-                                help="Remove an enrolled user (not yet implemented)")
+    rm_p = user_sub.add_parser(
+        "remove",
+        add_help=add_help,
+        help="Remove an enrolled user (not yet implemented)",
+    )
     rm_p.add_argument("username", help="Username to remove")
 
 

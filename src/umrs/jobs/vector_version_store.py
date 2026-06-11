@@ -239,10 +239,9 @@ class VectorVersionStore:
                 active_version = f"{v.model_name}:{v.model_version}"
                 break
 
-        pending_reembeds = len([
-            r for r in self._list_reembed_jobs()
-            if r.status in ("pending", "running")
-        ])
+        pending_reembeds = len(
+            [r for r in self._list_reembed_jobs() if r.status in ("pending", "running")]
+        )
 
         return VersionSummary(
             total_vectors=total_vectors,
@@ -251,9 +250,7 @@ class VectorVersionStore:
             pending_reembeds=pending_reembeds,
         )
 
-    def count_vectors_by_version(
-        self, model_name: str, model_version: str
-    ) -> int:
+    def count_vectors_by_version(self, model_name: str, model_version: str) -> int:
         """Count vectors produced by a specific model version."""
         if self.db_enabled:
             try:
@@ -321,7 +318,9 @@ class VectorVersionStore:
 
         if self.db_enabled:
             try:
-                return self._db_update_reembed(reembed_id, processed, failed, status, error)
+                return self._db_update_reembed(
+                    reembed_id, processed, failed, status, error
+                )
             except Exception as exc:
                 logger.warning("DB update_reembed failed: %s", exc)
 
@@ -349,9 +348,7 @@ class VectorVersionStore:
                 logger.warning("DB get_reembed failed: %s", exc)
         return self._reembed_jobs.get(reembed_id)
 
-    def list_reembed_jobs(
-        self, status: str | None = None
-    ) -> list[ReembedJob]:
+    def list_reembed_jobs(self, status: str | None = None) -> list[ReembedJob]:
         """List re-embedding jobs, optionally filtered by status."""
         jobs = self._list_reembed_jobs()
         if status:
@@ -366,9 +363,7 @@ class VectorVersionStore:
                 logger.warning("DB list_reembeds failed: %s", exc)
         return list(self._reembed_jobs.values())
 
-    def cleanup_old_vectors(
-        self, model_name: str, model_version: str
-    ) -> int:
+    def cleanup_old_vectors(self, model_name: str, model_version: str) -> int:
         """Remove vectors from a specific model version after migration.
 
         Only call this after confirming the re-embedding is complete
@@ -506,8 +501,12 @@ class VectorVersionStore:
             conn.commit()
 
     def _db_update_reembed(
-        self, reembed_id: str, processed: int, failed: int,
-        status: str | None, error: str | None,
+        self,
+        reembed_id: str,
+        processed: int,
+        failed: int,
+        status: str | None,
+        error: str | None,
     ) -> ReembedJob | None:
         with self._get_conn() as conn:
             with conn.cursor() as cur:

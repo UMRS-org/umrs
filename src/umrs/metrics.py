@@ -338,7 +338,9 @@ class UMRSMetrics:
 
     def transport_bytes(self, transport: str, direction: str, nbytes: int) -> None:
         """Record bytes transferred."""
-        self._transport_bytes.labels(transport=transport, direction=direction).inc(nbytes)
+        self._transport_bytes.labels(transport=transport, direction=direction).inc(
+            nbytes
+        )
 
     # -- Phase 5D: Scheduler pressure ----------------------------------
 
