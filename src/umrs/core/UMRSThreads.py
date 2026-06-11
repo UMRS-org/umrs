@@ -131,6 +131,8 @@ class UMRSThreads:
             raise RuntimeError(f"Pool worker did not start within 60 s for '{key}'")
 
         thread_ident = ident_holder["ident"]
+        future.ident = thread_ident  # mirror Thread.ident on the Future so thread_list items
+                                    # and ident-based lookups share the same key
 
         # Keep a reference so waitall / clean_finished_threads still works.
         with self.lock:
