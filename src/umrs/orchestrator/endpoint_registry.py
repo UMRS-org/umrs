@@ -215,7 +215,7 @@ class EndpointRegistry:
             endpoints = self._backend.list_all()
             with self._lock:
                 for ep in endpoints:
-                    key = (ep.project_id, ep.model)
+                    key = (ep.project_id, ep.job_id)
                     self._endpoints[key] = ep
                     self._by_job_id[ep.job_id] = ep
             logger.info(f"Loaded {len(endpoints)} endpoints from backend")
@@ -283,17 +283,16 @@ class EndpointRegistry:
             metadata=metadata,
         )
 
-        key = (project_id, model)
+        key = (project_id, job_id)
 
         with self._lock:
-            # Check if there's an existing endpoint to replace
+            # Check by job_id — allow multiple deployments of same model
             old = self._endpoints.get(key)
             if old:
                 logger.info(
                     f"Replacing endpoint for ({project_id}, {model}): "
                     f"{old.job_id} -> {job_id}"
                 )
-                # Remove old from both in-memory index and backend
                 self._by_job_id.pop(old.job_id, None)
                 self._delete_from_backend(old.job_id)
 
@@ -433,6 +432,24 @@ class EndpointRegistry:
                 )
             return endpoint
 
+    def _find_candidate(
+        self, project_id: str, model: str
+    ) -> RegisteredEndpoint | None:
+        """Find an endpoint by (project_id, model) or served_model_name fallback."""
+        for candidate in self._endpoints.values():
+            if candidate.project_id != project_id:
+                continue
+            if candidate.model == model:
+                return candidate
+        # R-15: fall back to served_model_name index.
+        for candidate in self._endpoints.values():
+            if candidate.project_id != project_id:
+                continue
+            served = candidate.metadata.get("served_model_name")
+            if served and served == model:
+                return candidate
+        return None
+
     def get(
         self,
         project_id: str,
@@ -440,52 +457,23 @@ class EndpointRegistry:
         prefer_warm: bool = True,
         min_ttl_sec: int | None = None,
     ) -> RegisteredEndpoint | None:
-        """
-        Get an endpoint for (project_id, model).
+        """Get an endpoint for (project_id, model).
 
-        Args:
-            project_id: Project/tenant identifier.
-            model: Model name.
-            prefer_warm: If True, only return ready endpoints.
-            min_ttl_sec: Minimum TTL required (default: min_ttl_for_reuse_sec).
-
-        Returns:
-            RegisteredEndpoint if found and usable, None otherwise.
-
-        R-15 (Phase 2k): Falls back to a `served_model_name` lookup when the
-        primary `(project_id, model)` key misses. The mini-rivault stack
-        sometimes registers under the user-facing model name (``Qwen/Qwen3-8B``)
-        and sometimes under the vLLM-served name (a filesystem basename). Both
-        callers should resolve to the same endpoint.
+        Supports multiple deployments of the same model within a project.
+        Returns the first ready, usable match.
         """
         min_ttl = (
             min_ttl_sec if min_ttl_sec is not None else self._min_ttl_for_reuse_sec
         )
-        key = (project_id, model)
-
         with self._lock:
-            endpoint = self._endpoints.get(key)
-            if endpoint is None:
-                # R-15: fall back to served_model_name index.
-                for candidate in self._endpoints.values():
-                    if candidate.project_id != project_id:
-                        continue
-                    served = candidate.metadata.get("served_model_name")
-                    if served and served == model:
-                        endpoint = candidate
-                        break
+            endpoint = self._find_candidate(project_id, model)
             if not endpoint:
                 return None
-
-            # Check if usable
             if prefer_warm and not endpoint.is_usable:
                 return None
-
-            # Check TTL
             ttl_remaining = endpoint.ttl_remaining_sec
             if ttl_remaining is not None and ttl_remaining < min_ttl:
                 return None
-
             return endpoint
 
     def get_by_job_id(self, job_id: str) -> RegisteredEndpoint | None:
@@ -503,7 +491,7 @@ class EndpointRegistry:
         with self._lock:
             endpoint = self._by_job_id.pop(job_id, None)
             if endpoint:
-                key = (endpoint.project_id, endpoint.model)
+                key = (endpoint.project_id, endpoint.job_id)
                 # Only remove from main index if it's the current endpoint
                 if self._endpoints.get(key) is endpoint:
                     del self._endpoints[key]
