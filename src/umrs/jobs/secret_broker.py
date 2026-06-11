@@ -156,9 +156,7 @@ class SecretBroker:
             ValueError: If scope is invalid or lease exceeds maximum.
         """
         if scope not in VALID_SCOPES:
-            raise ValueError(
-                f"Invalid scope: {scope!r}; must be one of {VALID_SCOPES}"
-            )
+            raise ValueError(f"Invalid scope: {scope!r}; must be one of {VALID_SCOPES}")
         if lease_seconds <= 0 or lease_seconds > MAX_LEASE_SECONDS:
             raise ValueError(
                 f"Lease must be 1-{MAX_LEASE_SECONDS} seconds, got {lease_seconds}"
@@ -183,12 +181,20 @@ class SecretBroker:
 
         self._leases[lease.lease_id] = lease
         self._secret_index[secret_hash] = lease.lease_id
-        self._audit_log(lease.lease_id, "issue", owner_id,
-                        f"scope={scope} ttl={lease_seconds}s name={secret_name}")
+        self._audit_log(
+            lease.lease_id,
+            "issue",
+            owner_id,
+            f"scope={scope} ttl={lease_seconds}s name={secret_name}",
+        )
 
         logger.info(
             "Secret lease issued: %s (job=%s name=%s scope=%s ttl=%ds)",
-            lease.lease_id, job_id, secret_name, scope, lease_seconds,
+            lease.lease_id,
+            job_id,
+            secret_name,
+            scope,
+            lease_seconds,
         )
         return lease, secret_value
 
@@ -234,7 +240,9 @@ class SecretBroker:
                 lease.is_revoked = True
                 lease.revoked_at = _now()
                 self._audit_log(
-                    lease.lease_id, "revoke", actor,
+                    lease.lease_id,
+                    "revoke",
+                    actor,
                     f"job completion: {job_id}",
                 )
                 count += 1
@@ -262,8 +270,7 @@ class SecretBroker:
             return False
 
         lease.expires_at = new_expiry
-        self._audit_log(lease_id, "renew", actor,
-                        f"extended by {extend_seconds}s")
+        self._audit_log(lease_id, "renew", actor, f"extended by {extend_seconds}s")
         return True
 
     def get_lease(self, lease_id: str) -> SecretLease | None:
@@ -304,10 +311,7 @@ class SecretBroker:
 
     def cleanup_expired(self) -> int:
         """Remove expired leases from memory. Returns count removed."""
-        expired = [
-            lid for lid, lease in self._leases.items()
-            if lease.is_expired
-        ]
+        expired = [lid for lid, lease in self._leases.items() if lease.is_expired]
         for lid in expired:
             lease = self._leases.pop(lid)
             self._secret_index.pop(lease.secret_hash, None)
@@ -326,10 +330,12 @@ class SecretBroker:
         detail: str,
     ) -> None:
         self._counter += 1
-        self._audit.append(AuditEntry(
-            entry_id=f"aud-{self._counter:06d}",
-            lease_id=lease_id,
-            operation=operation,
-            actor=actor,
-            detail=detail,
-        ))
+        self._audit.append(
+            AuditEntry(
+                entry_id=f"aud-{self._counter:06d}",
+                lease_id=lease_id,
+                operation=operation,
+                actor=actor,
+                detail=detail,
+            )
+        )

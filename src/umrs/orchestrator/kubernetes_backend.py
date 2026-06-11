@@ -80,7 +80,11 @@ def _dns_egress_rule() -> dict[str, Any]:
 def _egress_guard_rule(proxy_port: int) -> dict[str, Any]:
     return {
         "to": [
-            {"podSelector": {"matchLabels": {"app.kubernetes.io/name": "egress-guard"}}},
+            {
+                "podSelector": {
+                    "matchLabels": {"app.kubernetes.io/name": "egress-guard"}
+                }
+            },
             {"podSelector": {"matchLabels": {"app": "egress-guard"}}},
         ],
         "ports": [{"protocol": "TCP", "port": proxy_port}],
@@ -164,12 +168,11 @@ class KubernetesBackend(OrchestratorBackend):
     def _job_name(self, suffix: str = "") -> str:
         """Generate a unique job name."""
         import uuid
+
         uid = uuid.uuid4().hex[:8]
         return f"mini-rivault-{uid}{'-' + suffix if suffix else ''}"
 
-    def _build_network_policy(
-        self, job_name: str, namespace: str
-    ) -> dict[str, Any]:
+    def _build_network_policy(self, job_name: str, namespace: str) -> dict[str, Any]:
         """Build a NetworkPolicy that denies egress except to allowed CIDRs.
 
         R-8 (Phase 2k): enforces the offline-inference invariant by allowing
@@ -225,12 +228,19 @@ class KubernetesBackend(OrchestratorBackend):
         memory_request = kwargs.get("memory_request", "32Gi")
         memory_limit = kwargs.get("memory_limit", "64Gi")
         cpu_request = kwargs.get("cpu_request", "4")
-        cpu_limit = kwargs.get("cpu_limit", str(int(cpu_request) * 2) if str(cpu_request).isdigit() else cpu_request)
+        cpu_limit = kwargs.get(
+            "cpu_limit",
+            str(int(cpu_request) * 2) if str(cpu_request).isdigit() else cpu_request,
+        )
         # R-10 (Phase 2k): caller-supplied model_path drives an explicit volume
         # subPath, so different requests on the same PVC pick different
         # snapshots. Empty model_path falls back to the legacy whole-PVC mount.
         model_subpath = kwargs.get("model_subpath")
-        if model_subpath is None and model_path and not model_path.startswith("/models"):
+        if (
+            model_subpath is None
+            and model_path
+            and not model_path.startswith("/models")
+        ):
             # Heuristic: if model_path looks like a relative key (e.g.
             # "Qwen/Qwen3-8B"), use it as a subPath inside the model PVC.
             model_subpath = model_path.lstrip("/")
@@ -244,9 +254,18 @@ class KubernetesBackend(OrchestratorBackend):
             {"name": "LITELLM_PORT", "value": str(cfg.litellm_port)},
             {"name": "VLLM_MAX_MODEL_LEN", "value": str(cfg.vllm_max_model_len)},
             {"name": "VLLM_MAX_NUM_SEQS", "value": str(cfg.vllm_max_num_seqs)},
-            {"name": "VLLM_TENSOR_PARALLEL_SIZE", "value": str(cfg.vllm_tensor_parallel_size)},
-            {"name": "VLLM_GPU_MEMORY_UTILIZATION", "value": str(cfg.vllm_gpu_memory_utilization)},
-            {"name": "VLLM_ENABLE_PREFIX_CACHING", "value": "true" if cfg.vllm_enable_prefix_caching else "false"},
+            {
+                "name": "VLLM_TENSOR_PARALLEL_SIZE",
+                "value": str(cfg.vllm_tensor_parallel_size),
+            },
+            {
+                "name": "VLLM_GPU_MEMORY_UTILIZATION",
+                "value": str(cfg.vllm_gpu_memory_utilization),
+            },
+            {
+                "name": "VLLM_ENABLE_PREFIX_CACHING",
+                "value": "true" if cfg.vllm_enable_prefix_caching else "false",
+            },
             {"name": "TRANSFORMERS_OFFLINE", "value": "1"},
             {"name": "HF_HUB_OFFLINE", "value": "1"},
             {"name": "VLLM_NO_USAGE_STATS", "value": "1"},
@@ -267,16 +286,18 @@ class KubernetesBackend(OrchestratorBackend):
 
         # Add LiteLLM master key from secret or direct value
         if cfg.litellm_master_key:
-            env_vars.append({
-                "name": "LITELLM_MASTER_KEY",
-                "valueFrom": {
-                    "secretKeyRef": {
-                        "name": "mini-rivault-secrets",
-                        "key": "litellm-master-key",
-                        "optional": True,
-                    }
+            env_vars.append(
+                {
+                    "name": "LITELLM_MASTER_KEY",
+                    "valueFrom": {
+                        "secretKeyRef": {
+                            "name": "mini-rivault-secrets",
+                            "key": "litellm-master-key",
+                            "optional": True,
+                        }
+                    },
                 }
-            })
+            )
 
         manifest = {
             "apiVersion": "batch/v1",
@@ -309,7 +330,10 @@ class KubernetesBackend(OrchestratorBackend):
                                 "imagePullPolicy": "IfNotPresent",
                                 "env": env_vars,
                                 "ports": [
-                                    {"containerPort": cfg.litellm_port, "name": "litellm"},
+                                    {
+                                        "containerPort": cfg.litellm_port,
+                                        "name": "litellm",
+                                    },
                                     {"containerPort": cfg.vllm_port, "name": "vllm"},
                                 ],
                                 "resources": {
@@ -334,7 +358,9 @@ class KubernetesBackend(OrchestratorBackend):
                                                 "name": "Authorization",
                                                 "value": f"Bearer {cfg.litellm_master_key}",
                                             }
-                                        ] if cfg.litellm_master_key else [],
+                                        ]
+                                        if cfg.litellm_master_key
+                                        else [],
                                     },
                                     "initialDelaySeconds": 30,
                                     "periodSeconds": 10,
@@ -436,7 +462,8 @@ class KubernetesBackend(OrchestratorBackend):
         except self._k8s_client["ApiException"] as exc:
             logger.error(
                 "Failed to create Kubernetes Job for %s: %s; removing NetworkPolicy",
-                job_name, exc,
+                job_name,
+                exc,
             )
             try:
                 self._k8s_client["networking"].delete_namespaced_network_policy(
@@ -465,7 +492,10 @@ class KubernetesBackend(OrchestratorBackend):
             model_path=model,
             created_at=datetime.now(),
             backend=self.backend_name,
-            metadata={"namespace": namespace, "network_policy": netpol_manifest["metadata"]["name"]},
+            metadata={
+                "namespace": namespace,
+                "network_policy": netpol_manifest["metadata"]["name"],
+            },
         )
 
     # R-12: K8s 1.27 renamed the auto-generated job pod label. Ship both so
@@ -488,7 +518,9 @@ class KubernetesBackend(OrchestratorBackend):
                 label_selector=self._JOB_NAME_SELECTOR_LEGACY.format(job=job_id),
             )
 
-    def _capture_pod_logs(self, namespace: str, job_id: str, tail: int = 200) -> str | None:
+    def _capture_pod_logs(
+        self, namespace: str, job_id: str, tail: int = 200
+    ) -> str | None:
         """R-11: pull last N lines of pod logs into the JobInfo error_message."""
         try:
             pods = self._select_job_pods(namespace, job_id)
@@ -679,8 +711,9 @@ class KubernetesBackend(OrchestratorBackend):
 
         for job in jobs.items:
             # Check if job is completed/failed
-            if (job.status.succeeded and job.status.succeeded > 0) or \
-               (job.status.failed and job.status.failed > 0):
+            if (job.status.succeeded and job.status.succeeded > 0) or (
+                job.status.failed and job.status.failed > 0
+            ):
                 try:
                     await self.cleanup(job.metadata.name, force=True)
                     cleaned += 1

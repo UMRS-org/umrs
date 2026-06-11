@@ -79,7 +79,9 @@ async def my_usage(
     pool = _get_pool(request)
     user_id = _caller_user_id(request)
 
-    rows = _query_summary(pool, user_id=user_id, since=since, until=until, group_by=group_by)
+    rows = _query_summary(
+        pool, user_id=user_id, since=since, until=until, group_by=group_by
+    )
     return {"user_id": user_id, "group_by": group_by, "rows": rows}
 
 
@@ -96,7 +98,9 @@ async def usage_summary(
     model: str | None = Query(None),
     since: date | None = Query(None, description="Start date (inclusive)"),
     until: date | None = Query(None, description="End date (exclusive)"),
-    group_by: str = Query("model", description="Group by: model | day | user | user_model | project"),
+    group_by: str = Query(
+        "model", description="Group by: model | day | user | user_model | project"
+    ),
 ):
     """Return token usage summary (admin-level, filterable)."""
     pool = _get_pool(request)
@@ -107,8 +111,13 @@ async def usage_summary(
         user_id = caller
 
     rows = _query_summary(
-        pool, user_id=user_id, project_id=project_id,
-        model=model, since=since, until=until, group_by=group_by,
+        pool,
+        user_id=user_id,
+        project_id=project_id,
+        model=model,
+        since=since,
+        until=until,
+        group_by=group_by,
     )
     return {"group_by": group_by, "rows": rows}
 
@@ -137,9 +146,14 @@ async def usage_records(
         user_id = caller
 
     rows = _query_records(
-        pool, user_id=user_id, project_id=project_id,
-        model=model, since=since, until=until,
-        limit=limit, offset=offset,
+        pool,
+        user_id=user_id,
+        project_id=project_id,
+        model=model,
+        since=since,
+        until=until,
+        limit=limit,
+        offset=offset,
     )
     return {"records": rows, "limit": limit, "offset": offset}
 

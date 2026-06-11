@@ -96,8 +96,12 @@ class TestImageDiff:
 class TestDiffReport:
     def test_report_properties(self):
         entries = [
-            DiffEntry(key="a", diff_type=DiffType.NUMERIC, value_a=1, value_b=1, delta=0, similarity=1.0),
-            DiffEntry(key="b", diff_type=DiffType.NUMERIC, value_a=1, value_b=2, delta=1, similarity=0.5),
+            DiffEntry(
+                key="a", diff_type=DiffType.NUMERIC, value_a=1, value_b=1, delta=0, similarity=1.0
+            ),
+            DiffEntry(
+                key="b", diff_type=DiffType.NUMERIC, value_a=1, value_b=2, delta=1, similarity=0.5
+            ),
         ]
         report = DiffReport(label_a="A", label_b="B", entries=entries)
         assert report.total_comparisons == 2

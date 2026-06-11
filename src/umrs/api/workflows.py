@@ -18,7 +18,16 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, File, Form, Header, HTTPException, Query, UploadFile, status
+from fastapi import (
+    APIRouter,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel, Field
 
 from ..core.TaskCmdStatus import TaskCmd
@@ -26,7 +35,10 @@ from ..jobs.models import JobStatus, JobType
 from ..jobs.store import InvalidTransitionError, JobNotFoundError, JobStore
 from ..server.file_handling import handle_upload_workflow
 from ..server.job_tracking_handler import DurableJobCommandBackend
-from ..server.workflow_registry_handler import handle_workflow_command, register_workflow
+from ..server.workflow_registry_handler import (
+    handle_workflow_command,
+    register_workflow,
+)
 from .jobs import get_optional_job_store
 
 logger = logging.getLogger(__name__)
@@ -125,7 +137,9 @@ def _verified_workflow_user(user_id: str | None, x_user_id: str | None) -> str:
             detail="Missing Gateway-verified user identity",
         )
     if not user_id or not user_id.strip():
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="user_id is required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="user_id is required"
+        )
     return user_id.strip()
 
 
@@ -205,12 +219,16 @@ def _execution_payload(record, job=None) -> dict[str, Any]:
         execution["durable_job_id"] = job.job_id
         execution["durable_job"] = _workflow_job_payload(job)
         durable_status = _workflow_job_status(job.status)
-        if job.status in {
-            JobStatus.PLANNED,
-            JobStatus.QUEUED,
-            JobStatus.CANCELLED,
-            JobStatus.FAILED,
-        } or execution.get("status") == "submitted":
+        if (
+            job.status
+            in {
+                JobStatus.PLANNED,
+                JobStatus.QUEUED,
+                JobStatus.CANCELLED,
+                JobStatus.FAILED,
+            }
+            or execution.get("status") == "submitted"
+        ):
             execution["status"] = durable_status
     return execution
 
@@ -226,7 +244,8 @@ def _execution_payload_from_job(job) -> dict[str, Any]:
         "started_at": None,
         "finished_at": (
             job.last_state_change_at.timestamp()
-            if job.status in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
+            if job.status
+            in {JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED}
             and job.last_state_change_at
             else None
         ),
@@ -253,7 +272,11 @@ async def list_workflows(
     resolved_user_id = _header_str(x_user_id) or user_id
     payload = {
         key: value
-        for key, value in (("scope", scope), ("name", name), ("user_id", resolved_user_id))
+        for key, value in (
+            ("scope", scope),
+            ("name", name),
+            ("user_id", resolved_user_id),
+        )
         if value is not None
     }
     raw = handle_workflow_command(
@@ -284,6 +307,7 @@ async def upload_workflow(
     project_id = x_verified_project_id or ""
     try:
         from .governance import check_quota
+
         check_quota(project_id, "workflows")
     except Exception as exc:
         if hasattr(exc, "status_code"):
@@ -291,17 +315,23 @@ async def upload_workflow(
         pass  # governance not active
 
     if not file.filename:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="Filename required"
+        )
 
     resolved_workflow_name = workflow_name or Path(file.filename).stem
     if not resolved_workflow_name:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="workflow_name is required")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="workflow_name is required"
+        )
 
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as temp_file:
         temp_path = temp_file.name
         temp_file.write(await file.read())
 
-    ok, dest, err = handle_upload_workflow(resolved_user_id, temp_path, resolved_workflow_name)
+    ok, dest, err = handle_upload_workflow(
+        resolved_user_id, temp_path, resolved_workflow_name
+    )
     if not ok:
         _raise_upload_error(err or "Workflow upload failed")
 
@@ -333,9 +363,13 @@ async def upload_workflow(
 
     # Governance tracking
     from .governance import record_resource_created
+
     record_resource_created(
-        "workflows", resolved_workflow_name, resolved_user_id,
-        project_id=project_id, tier=scope,
+        "workflows",
+        resolved_workflow_name,
+        resolved_user_id,
+        project_id=project_id,
+        tier=scope,
     )
 
     return WorkflowUploadResponse(
@@ -445,8 +479,7 @@ async def get_execution_results(
     execution = _execution_payload(record, job)
 
     artifacts = [
-        {"key": key, "size_bytes": size}
-        for key, size in list_artifacts(record)
+        {"key": key, "size_bytes": size} for key, size in list_artifacts(record)
     ]
     return {
         "status": "ok",

@@ -405,7 +405,7 @@ class TestOrchestratorBackend:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session_instance)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(aiohttp, 'ClientSession', return_value=mock_session):
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
             result = await backend.check_readiness(endpoint_info)
             assert result is True
 
@@ -428,7 +428,7 @@ class TestOrchestratorBackend:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session_instance)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(aiohttp, 'ClientSession', return_value=mock_session):
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
             result = await backend.check_readiness(endpoint_info)
             assert result is False
 
@@ -444,7 +444,7 @@ class TestOrchestratorBackend:
         mock_session.__aenter__ = AsyncMock(return_value=mock_session_instance)
         mock_session.__aexit__ = AsyncMock(return_value=None)
 
-        with patch.object(aiohttp, 'ClientSession', return_value=mock_session):
+        with patch.object(aiohttp, "ClientSession", return_value=mock_session):
             result = await backend.check_readiness(endpoint_info)
             assert result is False
 
@@ -514,9 +514,7 @@ class TestJobLifecycle:
         for job in jobs:
             await backend.cleanup(job.job_id)
 
-        active_jobs = await backend.list_jobs(
-            status_filter=[JobStatus.READY, JobStatus.PENDING]
-        )
+        active_jobs = await backend.list_jobs(status_filter=[JobStatus.READY, JobStatus.PENDING])
         assert len(active_jobs) == 0
 
 
@@ -610,11 +608,12 @@ class TestKubernetesBackendMocked:
         except ImportError:
             pytest.skip("KubernetesBackend not available")
 
-        with patch("kubernetes.client.BatchV1Api") as mock_batch, \
-             patch("kubernetes.client.CoreV1Api"), \
-             patch("kubernetes.client.NetworkingV1Api") as mock_networking, \
-             patch("kubernetes.config.load_incluster_config"):
-
+        with (
+            patch("kubernetes.client.BatchV1Api") as mock_batch,
+            patch("kubernetes.client.CoreV1Api"),
+            patch("kubernetes.client.NetworkingV1Api") as mock_networking,
+            patch("kubernetes.config.load_incluster_config"),
+        ):
             mock_job_result = MagicMock()
             mock_job_result.metadata.name = "rivault-test-123"
             creation_order = []
@@ -626,7 +625,9 @@ class TestKubernetesBackendMocked:
                 creation_order.append("job")
                 return mock_job_result
 
-            mock_networking.return_value.create_namespaced_network_policy.side_effect = create_network_policy
+            mock_networking.return_value.create_namespaced_network_policy.side_effect = (
+                create_network_policy
+            )
             mock_batch.return_value.create_namespaced_job.side_effect = create_job
 
             backend = KubernetesBackend(k8s_config)
@@ -730,12 +731,13 @@ class TestComposeBackendMocked:
 
         # JSONL format - one JSON object per line
         compose_output = (
-            '{"Name": "vllm", "State": "running"}\n'
-            '{"Name": "litellm", "State": "running"}'
+            '{"Name": "vllm", "State": "running"}\n{"Name": "litellm", "State": "running"}'
         )
 
-        with patch("asyncio.create_subprocess_exec") as mock_exec, \
-             patch.object(DockerComposeBackend, "check_readiness", return_value=True):
+        with (
+            patch("asyncio.create_subprocess_exec") as mock_exec,
+            patch.object(DockerComposeBackend, "check_readiness", return_value=True),
+        ):
             mock_process = AsyncMock()
             mock_process.communicate.return_value = (compose_output.encode(), b"")
             mock_process.returncode = 0
@@ -797,11 +799,12 @@ class TestKubernetesBackendExtended:
         except ImportError:
             pytest.skip("KubernetesBackend not available")
 
-        with patch("kubernetes.client.BatchV1Api") as mock_batch, \
-             patch("kubernetes.client.CoreV1Api"), \
-             patch("kubernetes.client.NetworkingV1Api"), \
-             patch("kubernetes.config.load_incluster_config"):
-
+        with (
+            patch("kubernetes.client.BatchV1Api") as mock_batch,
+            patch("kubernetes.client.CoreV1Api"),
+            patch("kubernetes.client.NetworkingV1Api"),
+            patch("kubernetes.config.load_incluster_config"),
+        ):
             backend = KubernetesBackend(k8s_config)
             await backend.cleanup("mini-rivault-test-123")
 
@@ -816,10 +819,11 @@ class TestKubernetesBackendExtended:
         except ImportError:
             pytest.skip("KubernetesBackend not available")
 
-        with patch("kubernetes.client.BatchV1Api") as mock_batch, \
-             patch("kubernetes.client.CoreV1Api") as mock_core, \
-             patch("kubernetes.config.load_incluster_config"):
-
+        with (
+            patch("kubernetes.client.BatchV1Api") as mock_batch,
+            patch("kubernetes.client.CoreV1Api") as mock_core,
+            patch("kubernetes.config.load_incluster_config"),
+        ):
             mock_job = MagicMock()
             mock_job.status.active = 1
             mock_job.status.succeeded = None
@@ -851,10 +855,11 @@ class TestKubernetesBackendExtended:
         except ImportError:
             pytest.skip("KubernetesBackend not available")
 
-        with patch("kubernetes.client.BatchV1Api") as mock_batch, \
-             patch("kubernetes.client.CoreV1Api"), \
-             patch("kubernetes.config.load_incluster_config"):
-
+        with (
+            patch("kubernetes.client.BatchV1Api") as mock_batch,
+            patch("kubernetes.client.CoreV1Api"),
+            patch("kubernetes.config.load_incluster_config"),
+        ):
             mock_job = MagicMock()
             mock_job.status.active = None
             mock_job.status.succeeded = None
@@ -874,10 +879,11 @@ class TestKubernetesBackendExtended:
         except ImportError:
             pytest.skip("KubernetesBackend not available")
 
-        with patch("kubernetes.client.BatchV1Api") as mock_batch, \
-             patch("kubernetes.client.CoreV1Api"), \
-             patch("kubernetes.config.load_incluster_config"):
-
+        with (
+            patch("kubernetes.client.BatchV1Api") as mock_batch,
+            patch("kubernetes.client.CoreV1Api"),
+            patch("kubernetes.config.load_incluster_config"),
+        ):
             # Jobs for list_namespaced_job
             mock_job1 = MagicMock()
             mock_job1.metadata.name = "mini-rivault-job-1"

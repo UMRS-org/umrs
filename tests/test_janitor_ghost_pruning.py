@@ -75,7 +75,6 @@ def _register_ready(registry: EndpointRegistry, job_id: str, model: str = "test-
 
 
 class TestJanitorGhostPruning:
-
     async def test_dead_ready_endpoint_is_pruned(self):
         """A READY endpoint whose backend job is COMPLETED is removed."""
         registry = EndpointRegistry()
@@ -139,10 +138,12 @@ class TestJanitorGhostPruning:
         _register_ready(registry, "job-alive", model="m1")
         _register_ready(registry, "job-dead", model="m2")
 
-        backend = FakeBackend({
-            "job-alive": "RUNNING",
-            "job-dead": "FAILED",
-        })
+        backend = FakeBackend(
+            {
+                "job-alive": "RUNNING",
+                "job-dead": "FAILED",
+            }
+        )
         config = JanitorConfig(
             enable_ttl_cleanup=False,
             enable_orphan_cleanup=False,

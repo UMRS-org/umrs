@@ -118,9 +118,7 @@ class _FakePodman:
 
         if output_s3_ref and self.fake_s3 and self.write_output:
             bucket, _, key = output_s3_ref.partition("/")
-            self.fake_s3.put_object(
-                Bucket=bucket, Key=key, Body=pickle.dumps(self.reply)
-            )
+            self.fake_s3.put_object(Bucket=bucket, Key=key, Body=pickle.dumps(self.reply))
         elif self.write_output:
             # Local file mode: find the workdir bind and write output.pkl.
             workdir = None
@@ -154,9 +152,7 @@ def test_payload_s3_key_custom_attempt():
 def test_payload_exceeds_max_bytes_raises_setup_error(monkeypatch):
     """A payload larger than the hard cap triggers a setup error."""
     # Set the cap very low so we can trigger it easily.
-    monkeypatch.setattr(
-        "umrs.server.step_executor._PAYLOAD_MAX_BYTES", 100
-    )
+    monkeypatch.setattr("umrs.server.step_executor._PAYLOAD_MAX_BYTES", 100)
     fake = _FakePodman({"status": "ok", "result": StepResult()})
     monkeypatch.setattr(subprocess, "run", fake)
 
@@ -169,7 +165,9 @@ def test_payload_exceeds_max_bytes_raises_setup_error(monkeypatch):
             ctx=ctx,
         )
     assert exc_info.value.phase == "setup"
-    assert "hard cap" in exc_info.value.message.lower() or "exceeds" in exc_info.value.message.lower()
+    assert (
+        "hard cap" in exc_info.value.message.lower() or "exceeds" in exc_info.value.message.lower()
+    )
     # Podman was never invoked.
     assert fake.calls == []
 
@@ -180,9 +178,7 @@ def test_payload_exceeds_max_bytes_raises_setup_error(monkeypatch):
 def test_podman_s3_payload_upload_and_download(monkeypatch):
     """When S3 config is present and payload exceeds threshold, the executor
     uploads to S3 and reads the reply from S3."""
-    monkeypatch.setattr(
-        "umrs.server.step_executor._PAYLOAD_THRESHOLD_BYTES", 10
-    )
+    monkeypatch.setattr("umrs.server.step_executor._PAYLOAD_THRESHOLD_BYTES", 10)
     fake_s3 = _FakeS3()
     fake = _FakePodman(
         {"status": "ok", "result": StepResult(extra={"s3": True})},
@@ -230,9 +226,7 @@ def test_podman_s3_payload_upload_and_download(monkeypatch):
 def test_podman_small_payload_stays_local_even_with_s3_enabled(monkeypatch):
     """Below-threshold payloads stay on local file even with S3 config."""
     # Set threshold very high so the payload stays local.
-    monkeypatch.setattr(
-        "umrs.server.step_executor._PAYLOAD_THRESHOLD_BYTES", 10_000_000
-    )
+    monkeypatch.setattr("umrs.server.step_executor._PAYLOAD_THRESHOLD_BYTES", 10_000_000)
     fake_s3 = _FakeS3()
     fake = _FakePodman(
         {"status": "ok", "result": StepResult()},
@@ -265,9 +259,7 @@ def test_podman_small_payload_stays_local_even_with_s3_enabled(monkeypatch):
 
 def test_podman_s3_upload_failure_is_setup_error(monkeypatch):
     """If the S3 upload fails, it's a setup-phase error."""
-    monkeypatch.setattr(
-        "umrs.server.step_executor._PAYLOAD_THRESHOLD_BYTES", 10
-    )
+    monkeypatch.setattr("umrs.server.step_executor._PAYLOAD_THRESHOLD_BYTES", 10)
 
     class _FailS3:
         def put_object(self, **kwargs):
@@ -464,13 +456,19 @@ def test_worker_reads_from_s3_when_env_set(monkeypatch, tmp_path):
     from umrs.server import step_worker
 
     fake_s3 = _FakeS3()
-    payload = {"entrypoint": "pkg:Cls", "config": {}, "ctx": {
-        "input_bucket": "b", "input_keys": [], "output_bucket": "b",
-        "config": {}, "run_id": "r",
-    }, "s3_config": {}}
-    fake_s3.put_object(
-        Bucket="bkt", Key="pfx/input.pkl", Body=pickle.dumps(payload)
-    )
+    payload = {
+        "entrypoint": "pkg:Cls",
+        "config": {},
+        "ctx": {
+            "input_bucket": "b",
+            "input_keys": [],
+            "output_bucket": "b",
+            "config": {},
+            "run_id": "r",
+        },
+        "s3_config": {},
+    }
+    fake_s3.put_object(Bucket="bkt", Key="pfx/input.pkl", Body=pickle.dumps(payload))
 
     monkeypatch.setenv("UMRS_STEP_INPUT_S3", "bkt/pfx/input.pkl")
     monkeypatch.setattr(step_worker, "_build_s3_client", lambda _: fake_s3)

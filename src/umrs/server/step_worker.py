@@ -81,7 +81,9 @@ def _emit(reply: dict[str, Any]) -> None:
             if s3 is not None:
                 try:
                     s3.put_object(Bucket=bucket, Key=key, Body=blob)
-                    logger.info("wrote %d-byte reply to s3://%s/%s", len(blob), bucket, key)
+                    logger.info(
+                        "wrote %d-byte reply to s3://%s/%s", len(blob), bucket, key
+                    )
                     return
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("S3 reply upload failed, falling back: %s", exc)
@@ -114,7 +116,9 @@ def _read_payload() -> bytes:
                 try:
                     obj = s3.get_object(Bucket=bucket, Key=key)
                     data = obj["Body"].read()
-                    logger.info("read %d-byte payload from s3://%s/%s", len(data), bucket, key)
+                    logger.info(
+                        "read %d-byte payload from s3://%s/%s", len(data), bucket, key
+                    )
                     return data
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("S3 payload download failed: %s", exc)
@@ -181,6 +185,7 @@ def _process_task(payload: dict[str, Any]) -> dict[str, Any]:
 
 # -- Length-prefixed framing helpers (pool mode) ---------------------------
 
+
 def _read_framed(stream) -> bytes:
     """Read a ``[4-byte length][payload]`` message from *stream*.
 
@@ -241,6 +246,7 @@ def pool_main() -> int:
 # Capability introspection (Slice 17 / 19)
 # ------------------------------------------------------------------
 
+
 def _gpu_mem_info() -> dict[str, int]:
     """Return GPU memory info via pynvml, or empty dict on failure."""
     try:
@@ -290,9 +296,7 @@ def _get_capabilities() -> dict[str, Any]:
         caps["gpu_mem_total"] = gpu_info["total"]
         caps["gpu_mem_free"] = gpu_info["free"]
         caps["mem_per_task"] = mem_per_task_mb
-        caps["slots"] = _compute_slots(
-            gpu_info["free"], mem_per_task_mb, safety
-        )
+        caps["slots"] = _compute_slots(gpu_info["free"], mem_per_task_mb, safety)
 
     return caps
 
@@ -331,9 +335,7 @@ def zmq_pool_main(bind_address: str) -> int:
     sock.bind(bind_address)
     logger.info("zmq_pool_main listening on %s", bind_address)
 
-    max_payload_bytes = int(
-        os.environ.get("UMRS_ZMQ_MAX_PAYLOAD_BYTES", "52428800")
-    )
+    max_payload_bytes = int(os.environ.get("UMRS_ZMQ_MAX_PAYLOAD_BYTES", "52428800"))
 
     _shutdown = False
 
@@ -423,9 +425,7 @@ def zmq_dealer_main(connect_address: str) -> int:
         worker_id or "<auto>",
     )
 
-    max_payload_bytes = int(
-        os.environ.get("UMRS_ZMQ_MAX_PAYLOAD_BYTES", "52428800")
-    )
+    max_payload_bytes = int(os.environ.get("UMRS_ZMQ_MAX_PAYLOAD_BYTES", "52428800"))
 
     _shutdown = False
 
@@ -503,11 +503,13 @@ def main() -> int:
     try:
         payload = pickle.loads(raw)
     except Exception as exc:  # noqa: BLE001
-        _emit({
-            "status": "error",
-            "phase": "worker",
-            "message": f"could not decode payload: {exc}",
-        })
+        _emit(
+            {
+                "status": "error",
+                "phase": "worker",
+                "message": f"could not decode payload: {exc}",
+            }
+        )
         return 1
 
     reply = _process_task(payload)

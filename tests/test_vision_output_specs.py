@@ -27,13 +27,17 @@ def test_hmae_mode_aliases_resolve_to_expected_outputs():
 
 
 def test_huggingface_classification_outputs():
-    result = describe_output_artifacts("huggingface", "img/test.jpg", {"task": "image-classification"})
+    result = describe_output_artifacts(
+        "huggingface", "img/test.jpg", {"task": "image-classification"}
+    )
     assert "img/test_hf_results.pkl" in result
     assert result["img/test_hf_results.pkl"] == "application/octet-stream"
 
 
 def test_huggingface_segmentation_outputs():
-    result = describe_output_artifacts("huggingface", "img/test.jpg", {"task": "image-segmentation"})
+    result = describe_output_artifacts(
+        "huggingface", "img/test.jpg", {"task": "image-segmentation"}
+    )
     assert "img/test_seg.png" in result
     assert result["img/test_seg.png"] == "image/png"
     assert "img/test_hf_results.pkl" in result
@@ -46,7 +50,9 @@ def test_huggingface_depth_outputs():
 
 
 def test_huggingface_feature_outputs():
-    result = describe_output_artifacts("huggingface", "img/photo.jpg", {"task": "image-feature-extraction"})
+    result = describe_output_artifacts(
+        "huggingface", "img/photo.jpg", {"task": "image-feature-extraction"}
+    )
     assert "img/photo_features.pt" in result
     assert result["img/photo_features.pt"] == "application/octet-stream"
 

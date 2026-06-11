@@ -107,8 +107,13 @@ class TestBuildLineageGraphLinear:
     def test_two_step_chain(self):
         traces = [
             _trace("t1", step_name="fetch", started_at=_ts(0), finished_at=_ts(3)),
-            _trace("t2", step_name="process", parent_trace_id="t1",
-                   started_at=_ts(3), finished_at=_ts(8)),
+            _trace(
+                "t2",
+                step_name="process",
+                parent_trace_id="t1",
+                started_at=_ts(3),
+                finished_at=_ts(8),
+            ),
         ]
         graph = build_lineage_graph("job-123", traces)
 
@@ -124,10 +129,16 @@ class TestBuildLineageGraphLinear:
     def test_three_step_chain(self):
         traces = [
             _trace("t1", step_name="load", started_at=_ts(0), finished_at=_ts(2)),
-            _trace("t2", step_name="transform", parent_trace_id="t1",
-                   started_at=_ts(2), finished_at=_ts(5)),
-            _trace("t3", step_name="store", parent_trace_id="t2",
-                   started_at=_ts(5), finished_at=_ts(7)),
+            _trace(
+                "t2",
+                step_name="transform",
+                parent_trace_id="t1",
+                started_at=_ts(2),
+                finished_at=_ts(5),
+            ),
+            _trace(
+                "t3", step_name="store", parent_trace_id="t2", started_at=_ts(5), finished_at=_ts(7)
+            ),
         ]
         graph = build_lineage_graph("job-123", traces)
 
@@ -144,10 +155,20 @@ class TestBuildLineageGraphBranching:
         """One root with two children."""
         traces = [
             _trace("t1", step_name="split", started_at=_ts(0), finished_at=_ts(2)),
-            _trace("t2", step_name="branch_a", parent_trace_id="t1",
-                   started_at=_ts(2), finished_at=_ts(5)),
-            _trace("t3", step_name="branch_b", parent_trace_id="t1",
-                   started_at=_ts(2), finished_at=_ts(7)),
+            _trace(
+                "t2",
+                step_name="branch_a",
+                parent_trace_id="t1",
+                started_at=_ts(2),
+                finished_at=_ts(5),
+            ),
+            _trace(
+                "t3",
+                step_name="branch_b",
+                parent_trace_id="t1",
+                started_at=_ts(2),
+                finished_at=_ts(7),
+            ),
         ]
         graph = build_lineage_graph("job-123", traces)
 
@@ -164,12 +185,15 @@ class TestBuildLineageGraphBranching:
         """Diamond shape: root -> A,B -> merge."""
         traces = [
             _trace("t1", step_name="start", started_at=_ts(0), finished_at=_ts(1)),
-            _trace("t2", step_name="left", parent_trace_id="t1",
-                   started_at=_ts(1), finished_at=_ts(4)),
-            _trace("t3", step_name="right", parent_trace_id="t1",
-                   started_at=_ts(1), finished_at=_ts(3)),
-            _trace("t4", step_name="merge", parent_trace_id="t2",
-                   started_at=_ts(4), finished_at=_ts(6)),
+            _trace(
+                "t2", step_name="left", parent_trace_id="t1", started_at=_ts(1), finished_at=_ts(4)
+            ),
+            _trace(
+                "t3", step_name="right", parent_trace_id="t1", started_at=_ts(1), finished_at=_ts(3)
+            ),
+            _trace(
+                "t4", step_name="merge", parent_trace_id="t2", started_at=_ts(4), finished_at=_ts(6)
+            ),
         ]
         graph = build_lineage_graph("job-123", traces)
 
@@ -205,17 +229,14 @@ class TestBuildLineageGraphMetadata:
     def test_model_ref_in_node(self):
         model = {"name": "e5-base-v2", "path": "/models/e5", "version": "1.0"}
         traces = [
-            _trace("t1", step_name="embed", model_ref=model,
-                   started_at=_ts(0), finished_at=_ts(3)),
+            _trace("t1", step_name="embed", model_ref=model, started_at=_ts(0), finished_at=_ts(3)),
         ]
         graph = build_lineage_graph("job-123", traces)
 
         assert graph.nodes[0].model_ref == model
 
     def test_artifact_refs_in_node(self):
-        artifacts = [
-            {"uri": "s3://bucket/out.csv", "media_type": "text/csv", "size_bytes": 1024}
-        ]
+        artifacts = [{"uri": "s3://bucket/out.csv", "media_type": "text/csv", "size_bytes": 1024}]
         traces = [
             _trace("t1", step_name="export", artifact_refs=artifacts),
         ]
@@ -279,8 +300,9 @@ class TestLineageGraphSerialization:
     def test_full_graph_to_dict(self):
         traces = [
             _trace("t1", step_name="a", started_at=_ts(0), finished_at=_ts(2)),
-            _trace("t2", step_name="b", parent_trace_id="t1",
-                   started_at=_ts(2), finished_at=_ts(5)),
+            _trace(
+                "t2", step_name="b", parent_trace_id="t1", started_at=_ts(2), finished_at=_ts(5)
+            ),
         ]
         graph = build_lineage_graph("job-123", traces)
         d = graph.to_dict()

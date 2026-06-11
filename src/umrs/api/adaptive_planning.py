@@ -47,6 +47,7 @@ def get_engine() -> AdaptivePlanningEngine:
 # Request / Response models
 # ---------------------------------------------------------------------------
 
+
 class RecommendationResponse(BaseModel):
     recommendation_id: str
     category: str
@@ -91,6 +92,7 @@ class HeuristicResponse(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
+
 @router.get("/suggest/{workflow_name}", response_model=SuggestionResponse)
 def suggest(workflow_name: str):
     engine = get_engine()
@@ -98,7 +100,9 @@ def suggest(workflow_name: str):
     return SuggestionResponse(**result.to_dict())
 
 
-@router.post("/heuristics", response_model=HeuristicResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/heuristics", response_model=HeuristicResponse, status_code=status.HTTP_201_CREATED
+)
 def store_heuristic(req: StoreHeuristicRequest):
     engine = get_engine()
     h = engine.store_heuristic(

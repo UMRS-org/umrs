@@ -169,9 +169,7 @@ class BackendDetector:
             return True
 
         # Check kubeconfig
-        kubeconfig = os.getenv("KUBECONFIG") or str(
-            Path.home() / ".kube" / "config"
-        )
+        kubeconfig = os.getenv("KUBECONFIG") or str(Path.home() / ".kube" / "config")
         if os.path.exists(kubeconfig):
             return True
 

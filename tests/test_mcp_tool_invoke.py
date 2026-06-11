@@ -60,12 +60,14 @@ class MockMCPStore:
         tools = []
         for s in self._servers:
             for t in s.tools:
-                tools.append({
-                    "name": t.name,
-                    "description": t.description,
-                    "inputSchema": t.input_schema,
-                    "server": s.name,
-                })
+                tools.append(
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "inputSchema": t.input_schema,
+                        "server": s.name,
+                    }
+                )
         return tools
 
     def get_stats(self):
@@ -114,7 +116,9 @@ def test_call_tool_forwards_chain_metadata():
         "isError": False,
     }
 
-    with patch("umrs.api.mcp._proxy_tool_call", new_callable=AsyncMock, return_value=mock_result) as proxy_tool_call:
+    with patch(
+        "umrs.api.mcp._proxy_tool_call", new_callable=AsyncMock, return_value=mock_result
+    ) as proxy_tool_call:
         response = client.post(
             "/umrs/mcp/call",
             json={

@@ -14,6 +14,7 @@ from urllib.parse import urljoin
 
 try:
     import httpx
+
     HTTPX_AVAILABLE = True
 except ImportError:
     HTTPX_AVAILABLE = False
@@ -26,7 +27,9 @@ logger = logging.getLogger(__name__)
 class UMRSError(Exception):
     """Base exception for UMRS client errors."""
 
-    def __init__(self, message: str, status_code: int | None = None, detail: str | None = None):
+    def __init__(
+        self, message: str, status_code: int | None = None, detail: str | None = None
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.detail = detail
@@ -34,16 +37,19 @@ class UMRSError(Exception):
 
 class UMRSNotFoundError(UMRSError):
     """Resource not found."""
+
     pass
 
 
 class UMRSAccessDeniedError(UMRSError):
     """Access denied to resource."""
+
     pass
 
 
 class UMRSRateLimitError(UMRSError):
     """Rate limit exceeded."""
+
     pass
 
 
@@ -223,6 +229,7 @@ class UMRSClient:
         # Build URL with params
         if params:
             from urllib.parse import urlencode
+
             url = f"{url}?{urlencode(params)}"
 
         # Prepare request
@@ -246,13 +253,21 @@ class UMRSClient:
             body = e.read().decode("utf-8") if e.fp else ""
 
             if e.code == 404:
-                raise UMRSNotFoundError("Resource not found", status_code=404, detail=body) from e
+                raise UMRSNotFoundError(
+                    "Resource not found", status_code=404, detail=body
+                ) from e
             elif e.code == 403:
-                raise UMRSAccessDeniedError("Access denied", status_code=403, detail=body) from e
+                raise UMRSAccessDeniedError(
+                    "Access denied", status_code=403, detail=body
+                ) from e
             elif e.code == 429:
-                raise UMRSRateLimitError("Rate limit exceeded", status_code=429, detail=body) from e
+                raise UMRSRateLimitError(
+                    "Rate limit exceeded", status_code=429, detail=body
+                ) from e
             else:
-                raise UMRSError(f"API error: {e.code}", status_code=e.code, detail=body) from e
+                raise UMRSError(
+                    f"API error: {e.code}", status_code=e.code, detail=body
+                ) from e
 
         except urllib.error.URLError as e:
             raise UMRSError(f"Request failed: {e.reason}") from e

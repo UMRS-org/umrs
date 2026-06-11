@@ -128,7 +128,9 @@ class HMAEFeaturesStep(Step):
     ) -> tuple[str, Dict[str, Any], np.ndarray]:
         logger.info(
             "[%d/%d] HMAE features: %s",
-            index + 1, total, source_key,
+            index + 1,
+            total,
+            source_key,
         )
 
         image_url = f"s3://{source_bucket}/{source_key}"
@@ -167,7 +169,8 @@ class HMAEFeaturesStep(Step):
             return np.zeros(768, dtype=np.float32)
 
         return self._extract_cls(
-            ctx, result.get("output_s3_key", ""),
+            ctx,
+            result.get("output_s3_key", ""),
         )
 
     # ------------------------------------------------------------------
@@ -194,7 +197,9 @@ class HMAEFeaturesStep(Step):
 
             data = download_s3_bytes(feat_s3_url)
             obj = torch.load(
-                io.BytesIO(data), map_location="cpu", weights_only=False,
+                io.BytesIO(data),
+                map_location="cpu",
+                weights_only=False,
             )
             cls_token = obj["cls"]  # shape [1, 768]
             return cls_token.squeeze(0).numpy().astype(np.float32)

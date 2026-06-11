@@ -70,7 +70,15 @@ TAB_WORKFLOWS = "workflows"
 TAB_CONNECTION = "connection"
 TAB_LOGS = "logs"
 
-TAB_ORDER = [TAB_JOBS, TAB_ENDPOINTS, TAB_STATUS, TAB_MODELS, TAB_WORKFLOWS, TAB_CONNECTION, TAB_LOGS]
+TAB_ORDER = [
+    TAB_JOBS,
+    TAB_ENDPOINTS,
+    TAB_STATUS,
+    TAB_MODELS,
+    TAB_WORKFLOWS,
+    TAB_CONNECTION,
+    TAB_LOGS,
+]
 TAB_LABELS = {
     TAB_JOBS: "Jobs",
     TAB_ENDPOINTS: "Endpoints",
@@ -109,10 +117,13 @@ PIPE_ART = r"""
   █░▒   ░▒  ▒▒▒░█
 """
 
-LOGO_HEIGHT = max(
+LOGO_HEIGHT = (
+    max(
         len(UMRS_ART.strip("\n").split("\n")),
         len(PIPE_ART.strip("\n").split("\n")),
-) + 2
+    )
+    + 2
+)
 
 # ── Status colour mapping ────────────────────────────────────────────
 STATUS_STYLES: dict[str, str] = {
@@ -124,8 +135,23 @@ STATUS_STYLES: dict[str, str] = {
     "cancelled": "dim",
 }
 
-FILTER_CYCLE = [None, "running", "failed", "completed", "queued", "planned", "cancelled"]
-STATUS_TASK_ORDER = ["process_objects", "wait_output", "recompute", "update", "check", "reload"]
+FILTER_CYCLE = [
+    None,
+    "running",
+    "failed",
+    "completed",
+    "queued",
+    "planned",
+    "cancelled",
+]
+STATUS_TASK_ORDER = [
+    "process_objects",
+    "wait_output",
+    "recompute",
+    "update",
+    "check",
+    "reload",
+]
 JOB_TYPE_CHOICES = ["endpoint_provision", "index_build", "cleanup"]
 MODEL_TYPE_CHOICES = ["llm", "embedding", "vision"]
 MODEL_SCOPE_CHOICES = ["user", "project", "system"]
@@ -151,7 +177,9 @@ def _ago(iso_str: str | None) -> str:
         return "—"
     try:
         dt = datetime.fromisoformat(iso_str)
-        delta = datetime.now(timezone.utc).replace(tzinfo=None) - dt.replace(tzinfo=None)
+        delta = datetime.now(timezone.utc).replace(tzinfo=None) - dt.replace(
+            tzinfo=None
+        )
         secs = int(delta.total_seconds())
         if secs < 0:
             return "just now"
@@ -187,7 +215,9 @@ def _iso_label(iso_str: str | None) -> str:
     if not iso_str:
         return "—"
     try:
-        return datetime.fromisoformat(iso_str.replace("Z", "+00:00")).strftime("%Y-%m-%d %H:%M:%S")
+        return datetime.fromisoformat(iso_str.replace("Z", "+00:00")).strftime(
+            "%Y-%m-%d %H:%M:%S"
+        )
     except (ValueError, TypeError):
         return str(iso_str)
 
@@ -220,14 +250,24 @@ def _status_entry_rank(entry: dict[str, Any]) -> tuple[int, int, int, tuple[int,
     return (1 if data else 0, len(data), len(summary), _iso_sort_value(timestamp))
 
 
-def _merge_status_entries(existing: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    preferred = candidate if _status_entry_rank(candidate) >= _status_entry_rank(existing) else existing
+def _merge_status_entries(
+    existing: dict[str, Any], candidate: dict[str, Any]
+) -> dict[str, Any]:
+    preferred = (
+        candidate
+        if _status_entry_rank(candidate) >= _status_entry_rank(existing)
+        else existing
+    )
     fallback = existing if preferred is candidate else candidate
     merged = dict(fallback)
     merged.update(preferred)
     merged["data"] = preferred.get("data") or fallback.get("data") or []
-    merged["summary"] = preferred.get("summary") or fallback.get("summary") or "(no summary)"
-    merged["generated_at"] = _latest_iso(existing.get("generated_at"), candidate.get("generated_at"))
+    merged["summary"] = (
+        preferred.get("summary") or fallback.get("summary") or "(no summary)"
+    )
+    merged["generated_at"] = _latest_iso(
+        existing.get("generated_at"), candidate.get("generated_at")
+    )
     merged["last_updated_at"] = _latest_iso(
         existing.get("last_updated_at") or existing.get("generated_at"),
         candidate.get("last_updated_at") or candidate.get("generated_at"),
@@ -410,7 +450,9 @@ class Dashboard:
             self._last_error = str(e)
         if self._jobs:
             self._jobs_cursor = max(0, min(self._jobs_cursor, len(self._jobs) - 1))
-            self._jobs_scroll_offset = min(self._jobs_scroll_offset, max(len(self._jobs) - 1, 0))
+            self._jobs_scroll_offset = min(
+                self._jobs_scroll_offset, max(len(self._jobs) - 1, 0)
+            )
         else:
             self._jobs_cursor = 0
             self._jobs_scroll_offset = 0
@@ -427,8 +469,12 @@ class Dashboard:
         except Exception as e:
             self._last_error = str(e)
         if self._endpoints:
-            self._endpoints_cursor = max(0, min(self._endpoints_cursor, len(self._endpoints) - 1))
-            self._endpoints_scroll_offset = min(self._endpoints_scroll_offset, max(len(self._endpoints) - 1, 0))
+            self._endpoints_cursor = max(
+                0, min(self._endpoints_cursor, len(self._endpoints) - 1)
+            )
+            self._endpoints_scroll_offset = min(
+                self._endpoints_scroll_offset, max(len(self._endpoints) - 1, 0)
+            )
         else:
             self._endpoints_cursor = 0
             self._endpoints_scroll_offset = 0
@@ -440,8 +486,12 @@ class Dashboard:
                 self._status_data = parsed
                 self._status_items = self._build_status_items(parsed)
                 if self._status_items:
-                    self._status_cursor = max(0, min(self._status_cursor, len(self._status_items) - 1))
-                    self._status_scroll_offset = min(self._status_scroll_offset, max(len(self._status_items) - 1, 0))
+                    self._status_cursor = max(
+                        0, min(self._status_cursor, len(self._status_items) - 1)
+                    )
+                    self._status_scroll_offset = min(
+                        self._status_scroll_offset, max(len(self._status_items) - 1, 0)
+                    )
                 else:
                     self._status_cursor = 0
                     self._status_scroll_offset = 0
@@ -455,12 +505,18 @@ class Dashboard:
         try:
             parsed = self._api.list_models(scope=self._model_scope_filter)
             self._models = parsed.get("models", [])
-            self._last_error = parsed.get("message") if parsed.get("status") == "error" else None
+            self._last_error = (
+                parsed.get("message") if parsed.get("status") == "error" else None
+            )
         except Exception as e:
             self._last_error = str(e)
         if self._models:
-            self._models_cursor = max(0, min(self._models_cursor, len(self._models) - 1))
-            self._models_scroll_offset = min(self._models_scroll_offset, max(len(self._models) - 1, 0))
+            self._models_cursor = max(
+                0, min(self._models_cursor, len(self._models) - 1)
+            )
+            self._models_scroll_offset = min(
+                self._models_scroll_offset, max(len(self._models) - 1, 0)
+            )
         else:
             self._models_cursor = 0
             self._models_scroll_offset = 0
@@ -473,12 +529,16 @@ class Dashboard:
                 name=self._workflow_name_filter,
             )
             self._workflows = parsed.get("workflows", [])
-            self._last_error = parsed.get("message") if parsed.get("status") == "error" else None
+            self._last_error = (
+                parsed.get("message") if parsed.get("status") == "error" else None
+            )
         except Exception as e:
             self._last_error = str(e)
         if self._workflows:
             self._wf_cursor = max(0, min(self._wf_cursor, len(self._workflows) - 1))
-            self._wf_scroll_offset = min(self._wf_scroll_offset, max(len(self._workflows) - 1, 0))
+            self._wf_scroll_offset = min(
+                self._wf_scroll_offset, max(len(self._workflows) - 1, 0)
+            )
         else:
             self._wf_cursor = 0
             self._wf_scroll_offset = 0
@@ -562,7 +622,9 @@ class Dashboard:
                 self._set_flash(f"{action.title()} triggered")
                 self._log("INFO", f"Triggered {action}")
             else:
-                self._set_flash(f"{action.title()} failed: {parsed.get('message', '?')}")
+                self._set_flash(
+                    f"{action.title()} failed: {parsed.get('message', '?')}"
+                )
                 self._log("WARN", f"{action} failed: {parsed.get('message', '?')}")
         except Exception as e:
             self._set_flash(f"{action.title()} error: {e}")
@@ -604,7 +666,10 @@ class Dashboard:
 
     def _build_status_items(self, parsed: dict[str, Any]) -> list[dict[str, Any]]:
         summaries = parsed.get("summaries") or {}
-        pending = {_canonical_status_key(item) for item in (parsed.get("uncompleted_key_list") or [])}
+        pending = {
+            _canonical_status_key(item)
+            for item in (parsed.get("uncompleted_key_list") or [])
+        }
         normalized: dict[str, dict[str, Any]] = {}
         for task_key, entry in summaries.items():
             if not isinstance(entry, dict):
@@ -613,7 +678,9 @@ class Dashboard:
             if not canonical_key:
                 continue
             existing = normalized.get(canonical_key)
-            normalized[canonical_key] = _merge_status_entries(existing, entry) if existing else dict(entry)
+            normalized[canonical_key] = (
+                _merge_status_entries(existing, entry) if existing else dict(entry)
+            )
 
         items: list[dict[str, Any]] = []
         seen = set()
@@ -630,7 +697,9 @@ class Dashboard:
                 items.append(self._make_status_item(task_key, entry, pending))
         return items
 
-    def _make_status_item(self, task_key: str, entry: dict[str, Any], pending: set[str]) -> dict[str, Any]:
+    def _make_status_item(
+        self, task_key: str, entry: dict[str, Any], pending: set[str]
+    ) -> dict[str, Any]:
         generated_at = entry.get("generated_at")
         last_updated_at = entry.get("last_updated_at") or generated_at
         process_data = entry.get("data") or []
@@ -659,12 +728,20 @@ class Dashboard:
                     object_count += int(work.get("nb_objects", 0))
 
         if process_rows:
-            preview_parts = [f"{process_count} process" + ("es" if process_count != 1 else "")]
+            preview_parts = [
+                f"{process_count} process" + ("es" if process_count != 1 else "")
+            ]
             if work_count:
-                preview_parts.append(f"{work_count} work item" + ("s" if work_count != 1 else ""))
-            preview_parts.append(f"{object_count} object" + ("s" if object_count != 1 else ""))
+                preview_parts.append(
+                    f"{work_count} work item" + ("s" if work_count != 1 else "")
+                )
+            preview_parts.append(
+                f"{object_count} object" + ("s" if object_count != 1 else "")
+            )
             if buckets:
-                preview_parts.append(f"{len(buckets)} bucket" + ("s" if len(buckets) != 1 else ""))
+                preview_parts.append(
+                    f"{len(buckets)} bucket" + ("s" if len(buckets) != 1 else "")
+                )
             preview = " • ".join(preview_parts)
         else:
             preview = _one_line(summary)
@@ -744,7 +821,10 @@ class Dashboard:
             self._log("INFO", f"Command ok: {command_text}")
         else:
             self._set_flash(f"Command failed: {parsed.get('message', '?')}")
-            self._log("WARN", f"Command failed: {command_text} -> {parsed.get('message', '?')}")
+            self._log(
+                "WARN",
+                f"Command failed: {command_text} -> {parsed.get('message', '?')}",
+            )
 
         if "server_ready" in parsed:
             self._ping_ok = bool(parsed.get("server_ready"))
@@ -758,20 +838,26 @@ class Dashboard:
             self._switch_tab(TAB_STATUS)
         if "models" in parsed:
             self._models = parsed.get("models", [])
-            self._models_cursor = min(self._models_cursor, max(len(self._models) - 1, 0))
+            self._models_cursor = min(
+                self._models_cursor, max(len(self._models) - 1, 0)
+            )
             self._switch_tab(TAB_MODELS)
         if "workflows" in parsed:
             self._workflows = parsed.get("workflows", [])
             self._wf_cursor = min(self._wf_cursor, max(len(self._workflows) - 1, 0))
             self._switch_tab(TAB_WORKFLOWS)
-        if normalized.startswith(("maintenance ", "job ", "workflow run", "model register", "model download")):
+        if normalized.startswith(
+            ("maintenance ", "job ", "workflow run", "model register", "model download")
+        ):
             self._force_refresh.set()
 
     def _start_command_prompt(self, default: str = "") -> None:
         self._command_active = True
         self._command_query = default
 
-    def _start_form(self, title: str, submit_action: str, fields: list[dict[str, Any]]) -> None:
+    def _start_form(
+        self, title: str, submit_action: str, fields: list[dict[str, Any]]
+    ) -> None:
         self._form_active = True
         self._form_title = title
         self._form_submit_action = submit_action
@@ -838,7 +924,9 @@ class Dashboard:
                 self._switch_tab(TAB_MODELS)
                 self._force_refresh.set()
                 self._set_flash("Updated model filters")
-                self._log("INFO", f"Model filter scope={self._model_scope_filter or 'all'}")
+                self._log(
+                    "INFO", f"Model filter scope={self._model_scope_filter or 'all'}"
+                )
             elif self._form_submit_action == "workflow_filter_form":
                 scope = values.get("scope") or "all"
                 self._workflow_scope_filter = None if scope == "all" else scope
@@ -864,14 +952,18 @@ class Dashboard:
                     params=params,
                     bucket=values.get("bucket") or None,
                 )
-                self._apply_control_result(f"workflow run {values['workflow_name']}", parsed)
+                self._apply_control_result(
+                    f"workflow run {values['workflow_name']}", parsed
+                )
             elif self._form_submit_action == "model_download_form":
                 parsed = self._api.download_model_server_side(
                     repo_id=values["repo_id"],
                     name=values.get("name") or None,
                     scope=values.get("scope") or "user",
                 )
-                self._apply_control_result(f"model download {values['repo_id']}", parsed)
+                self._apply_control_result(
+                    f"model download {values['repo_id']}", parsed
+                )
             elif self._form_submit_action == "model_register_form":
                 parsed = self._api.register_model(
                     name=values["name"],
@@ -894,12 +986,39 @@ class Dashboard:
             "Submit Job",
             "submit_job_form",
             [
-                {"name": "job_type", "label": "Job Type", "value": "endpoint_provision", "required": True, "choices": JOB_TYPE_CHOICES},
-                {"name": "spec", "label": "Spec JSON", "value": "{}", "required": False},
+                {
+                    "name": "job_type",
+                    "label": "Job Type",
+                    "value": "endpoint_provision",
+                    "required": True,
+                    "choices": JOB_TYPE_CHOICES,
+                },
+                {
+                    "name": "spec",
+                    "label": "Spec JSON",
+                    "value": "{}",
+                    "required": False,
+                },
                 {"name": "project", "label": "Project", "value": "", "required": False},
-                {"name": "max_attempts", "label": "Max Attempts", "value": "3", "required": False},
-                {"name": "keep_alive", "label": "Keep Alive", "value": "false", "required": False, "choices": BOOL_CHOICES},
-                {"name": "partition", "label": "Partition", "value": "", "required": False},
+                {
+                    "name": "max_attempts",
+                    "label": "Max Attempts",
+                    "value": "3",
+                    "required": False,
+                },
+                {
+                    "name": "keep_alive",
+                    "label": "Keep Alive",
+                    "value": "false",
+                    "required": False,
+                    "choices": BOOL_CHOICES,
+                },
+                {
+                    "name": "partition",
+                    "label": "Partition",
+                    "value": "",
+                    "required": False,
+                },
                 {"name": "node", "label": "Node", "value": "", "required": False},
             ],
         )
@@ -913,9 +1032,25 @@ class Dashboard:
             "Run Workflow",
             "run_workflow_form",
             [
-                {"name": "workflow_name", "label": "Workflow", "value": workflow_name, "required": True},
-                {"name": "params", "label": "Params JSON", "value": "{}", "required": False},
-                {"name": "bucket", "label": "Bucket", "value": "", "required": False, "choices": bucket_choices},
+                {
+                    "name": "workflow_name",
+                    "label": "Workflow",
+                    "value": workflow_name,
+                    "required": True,
+                },
+                {
+                    "name": "params",
+                    "label": "Params JSON",
+                    "value": "{}",
+                    "required": False,
+                },
+                {
+                    "name": "bucket",
+                    "label": "Bucket",
+                    "value": "",
+                    "required": False,
+                    "choices": bucket_choices,
+                },
             ],
         )
 
@@ -926,7 +1061,13 @@ class Dashboard:
             [
                 {"name": "repo_id", "label": "Repo ID", "value": "", "required": True},
                 {"name": "name", "label": "Name", "value": "", "required": False},
-                {"name": "scope", "label": "Scope", "value": "user", "required": False, "choices": MODEL_SCOPE_CHOICES},
+                {
+                    "name": "scope",
+                    "label": "Scope",
+                    "value": "user",
+                    "required": False,
+                    "choices": MODEL_SCOPE_CHOICES,
+                },
             ],
         )
 
@@ -938,12 +1079,39 @@ class Dashboard:
             "Register Model",
             "model_register_form",
             [
-                {"name": "name", "label": "Name", "value": default_name, "required": True},
+                {
+                    "name": "name",
+                    "label": "Name",
+                    "value": default_name,
+                    "required": True,
+                },
                 {"name": "path", "label": "Path", "value": "", "required": True},
-                {"name": "model_type", "label": "Type", "value": "embedding", "required": False, "choices": MODEL_TYPE_CHOICES},
-                {"name": "scope", "label": "Scope", "value": "user", "required": False, "choices": MODEL_SCOPE_CHOICES},
-                {"name": "description", "label": "Description", "value": "", "required": False},
-                {"name": "huggingface_id", "label": "HF ID", "value": "", "required": False},
+                {
+                    "name": "model_type",
+                    "label": "Type",
+                    "value": "embedding",
+                    "required": False,
+                    "choices": MODEL_TYPE_CHOICES,
+                },
+                {
+                    "name": "scope",
+                    "label": "Scope",
+                    "value": "user",
+                    "required": False,
+                    "choices": MODEL_SCOPE_CHOICES,
+                },
+                {
+                    "name": "description",
+                    "label": "Description",
+                    "value": "",
+                    "required": False,
+                },
+                {
+                    "name": "huggingface_id",
+                    "label": "HF ID",
+                    "value": "",
+                    "required": False,
+                },
             ],
         )
 
@@ -974,8 +1142,18 @@ class Dashboard:
                     "required": False,
                     "choices": WORKFLOW_FILTER_SCOPE_CHOICES,
                 },
-                {"name": "user", "label": "User", "value": self._workflow_user_filter or "", "required": False},
-                {"name": "name", "label": "Name", "value": self._workflow_name_filter or "", "required": False},
+                {
+                    "name": "user",
+                    "label": "User",
+                    "value": self._workflow_user_filter or "",
+                    "required": False,
+                },
+                {
+                    "name": "name",
+                    "label": "Name",
+                    "value": self._workflow_name_filter or "",
+                    "required": False,
+                },
             ],
         )
 
@@ -1068,45 +1246,77 @@ class Dashboard:
         page = self._current_page_size()
         if self._tab == TAB_JOBS:
             self._jobs_cursor = min(self._jobs_cursor + 1, max(len(self._jobs) - 1, 0))
-            self._jobs_scroll_offset = self._adjust_scroll_offset(self._jobs_cursor, self._jobs_scroll_offset, page)
+            self._jobs_scroll_offset = self._adjust_scroll_offset(
+                self._jobs_cursor, self._jobs_scroll_offset, page
+            )
         elif self._tab == TAB_ENDPOINTS:
-            self._endpoints_cursor = min(self._endpoints_cursor + 1, max(len(self._endpoints) - 1, 0))
-            self._endpoints_scroll_offset = self._adjust_scroll_offset(self._endpoints_cursor, self._endpoints_scroll_offset, page)
+            self._endpoints_cursor = min(
+                self._endpoints_cursor + 1, max(len(self._endpoints) - 1, 0)
+            )
+            self._endpoints_scroll_offset = self._adjust_scroll_offset(
+                self._endpoints_cursor, self._endpoints_scroll_offset, page
+            )
         elif self._tab == TAB_STATUS:
-            self._status_cursor = min(self._status_cursor + 1, max(len(self._status_items) - 1, 0))
-            self._status_scroll_offset = self._adjust_scroll_offset(self._status_cursor, self._status_scroll_offset, page)
+            self._status_cursor = min(
+                self._status_cursor + 1, max(len(self._status_items) - 1, 0)
+            )
+            self._status_scroll_offset = self._adjust_scroll_offset(
+                self._status_cursor, self._status_scroll_offset, page
+            )
         elif self._tab == TAB_MODELS:
-            self._models_cursor = min(self._models_cursor + 1, max(len(self._models) - 1, 0))
-            self._models_scroll_offset = self._adjust_scroll_offset(self._models_cursor, self._models_scroll_offset, page)
+            self._models_cursor = min(
+                self._models_cursor + 1, max(len(self._models) - 1, 0)
+            )
+            self._models_scroll_offset = self._adjust_scroll_offset(
+                self._models_cursor, self._models_scroll_offset, page
+            )
         elif self._tab == TAB_WORKFLOWS:
             self._wf_cursor = min(self._wf_cursor + 1, max(len(self._workflows) - 1, 0))
-            self._wf_scroll_offset = self._adjust_scroll_offset(self._wf_cursor, self._wf_scroll_offset, page)
+            self._wf_scroll_offset = self._adjust_scroll_offset(
+                self._wf_cursor, self._wf_scroll_offset, page
+            )
         elif self._tab == TAB_LOGS:
             self._log_auto_scroll = False
-            self._log_cursor = min(self._log_cursor + 1, max(len(self._log_entries) - 1, 0))
-            self._log_scroll_offset = self._adjust_scroll_offset(self._log_cursor, self._log_scroll_offset, page)
+            self._log_cursor = min(
+                self._log_cursor + 1, max(len(self._log_entries) - 1, 0)
+            )
+            self._log_scroll_offset = self._adjust_scroll_offset(
+                self._log_cursor, self._log_scroll_offset, page
+            )
 
     def _move_up(self) -> None:
         page = self._current_page_size()
         if self._tab == TAB_JOBS:
             self._jobs_cursor = max(self._jobs_cursor - 1, 0)
-            self._jobs_scroll_offset = self._adjust_scroll_offset(self._jobs_cursor, self._jobs_scroll_offset, page)
+            self._jobs_scroll_offset = self._adjust_scroll_offset(
+                self._jobs_cursor, self._jobs_scroll_offset, page
+            )
         elif self._tab == TAB_ENDPOINTS:
             self._endpoints_cursor = max(self._endpoints_cursor - 1, 0)
-            self._endpoints_scroll_offset = self._adjust_scroll_offset(self._endpoints_cursor, self._endpoints_scroll_offset, page)
+            self._endpoints_scroll_offset = self._adjust_scroll_offset(
+                self._endpoints_cursor, self._endpoints_scroll_offset, page
+            )
         elif self._tab == TAB_STATUS:
             self._status_cursor = max(self._status_cursor - 1, 0)
-            self._status_scroll_offset = self._adjust_scroll_offset(self._status_cursor, self._status_scroll_offset, page)
+            self._status_scroll_offset = self._adjust_scroll_offset(
+                self._status_cursor, self._status_scroll_offset, page
+            )
         elif self._tab == TAB_MODELS:
             self._models_cursor = max(self._models_cursor - 1, 0)
-            self._models_scroll_offset = self._adjust_scroll_offset(self._models_cursor, self._models_scroll_offset, page)
+            self._models_scroll_offset = self._adjust_scroll_offset(
+                self._models_cursor, self._models_scroll_offset, page
+            )
         elif self._tab == TAB_WORKFLOWS:
             self._wf_cursor = max(self._wf_cursor - 1, 0)
-            self._wf_scroll_offset = self._adjust_scroll_offset(self._wf_cursor, self._wf_scroll_offset, page)
+            self._wf_scroll_offset = self._adjust_scroll_offset(
+                self._wf_cursor, self._wf_scroll_offset, page
+            )
         elif self._tab == TAB_LOGS:
             self._log_auto_scroll = False
             self._log_cursor = max(self._log_cursor - 1, 0)
-            self._log_scroll_offset = self._adjust_scroll_offset(self._log_cursor, self._log_scroll_offset, page)
+            self._log_scroll_offset = self._adjust_scroll_offset(
+                self._log_cursor, self._log_scroll_offset, page
+            )
 
     def _toggle_detail(self) -> None:
         if self._tab == TAB_JOBS and self._jobs:
@@ -1123,7 +1333,11 @@ class Dashboard:
             self._wf_detail_name = None if self._wf_detail_name == name else name
 
     def _cycle_filter(self) -> None:
-        idx = FILTER_CYCLE.index(self._status_filter) if self._status_filter in FILTER_CYCLE else 0
+        idx = (
+            FILTER_CYCLE.index(self._status_filter)
+            if self._status_filter in FILTER_CYCLE
+            else 0
+        )
         self._status_filter = FILTER_CYCLE[(idx + 1) % len(FILTER_CYCLE)]
         self._force_refresh.set()
 
@@ -1153,14 +1367,18 @@ class Dashboard:
             elif key in ("h", "left", "["):
                 self._cycle_form_choice(-1)
             elif key in ("j", "down", "\t"):
-                self._form_cursor = min(self._form_cursor + 1, len(self._form_fields) - 1)
+                self._form_cursor = min(
+                    self._form_cursor + 1, len(self._form_fields) - 1
+                )
             elif key in ("k", "up"):
                 self._form_cursor = max(self._form_cursor - 1, 0)
             elif key in ("\r", "\n"):
                 if self._form_cursor == len(self._form_fields) - 1:
                     self._execute_form()
                 else:
-                    self._form_cursor = min(self._form_cursor + 1, len(self._form_fields) - 1)
+                    self._form_cursor = min(
+                        self._form_cursor + 1, len(self._form_fields) - 1
+                    )
             elif key == "\x7f":
                 if self._form_fields:
                     value = str(self._form_fields[self._form_cursor].get("value", ""))
@@ -1180,7 +1398,9 @@ class Dashboard:
             if key in ("\x1b", "esc", "a", "q"):
                 self._show_actions = False
             elif key in ("j", "down"):
-                self._action_cursor = min(self._action_cursor + 1, len(self._get_actions()) - 1)
+                self._action_cursor = min(
+                    self._action_cursor + 1, len(self._get_actions()) - 1
+                )
             elif key in ("k", "up"):
                 self._action_cursor = max(self._action_cursor - 1, 0)
             elif key in ("\r", "\n"):
@@ -1190,8 +1410,13 @@ class Dashboard:
 
         # Tab switching via number keys
         tab_keys = {
-            "1": TAB_JOBS, "2": TAB_ENDPOINTS, "3": TAB_STATUS, "4": TAB_MODELS,
-            "5": TAB_WORKFLOWS, "6": TAB_CONNECTION, "7": TAB_LOGS,
+            "1": TAB_JOBS,
+            "2": TAB_ENDPOINTS,
+            "3": TAB_STATUS,
+            "4": TAB_MODELS,
+            "5": TAB_WORKFLOWS,
+            "6": TAB_CONNECTION,
+            "7": TAB_LOGS,
         }
         if key in tab_keys:
             self._switch_tab(tab_keys[key])
@@ -1305,34 +1530,80 @@ class Dashboard:
                 if allowed_actions.get(action, True):
                     actions.append({"label": label, "key": "", "action": action})
         if self._config_path:
-            actions.append({"label": "Reload Server Config", "key": "R", "action": "reload"})
+            actions.append(
+                {"label": "Reload Server Config", "key": "R", "action": "reload"}
+            )
         if self._tab == TAB_STATUS and self._status_items:
-            actions.append({"label": f"Refresh Status {self._status_items[self._status_cursor]['key']}", "key": "Enter", "action": "refresh_status"})
+            actions.append(
+                {
+                    "label": f"Refresh Status {self._status_items[self._status_cursor]['key']}",
+                    "key": "Enter",
+                    "action": "refresh_status",
+                }
+            )
         if self._tab == TAB_JOBS and self._jobs:
             job = self._jobs[self._jobs_cursor]
             if job.get("status") in ("running", "queued", "planned"):
-                actions.append({"label": f"Cancel Job {_short_id(job.get('job_id', ''))}", "key": "c", "action": "cancel_job"})
+                actions.append(
+                    {
+                        "label": f"Cancel Job {_short_id(job.get('job_id', ''))}",
+                        "key": "c",
+                        "action": "cancel_job",
+                    }
+                )
         if self._tab == TAB_ENDPOINTS and self._endpoints:
             ep = self._endpoints[self._endpoints_cursor]
             if ep.get("status") in ("running", "queued", "planned"):
-                actions.append({"label": f"Stop Endpoint {_short_id(ep.get('job_id', ''))}", "key": "c", "action": "stop_endpoint"})
+                actions.append(
+                    {
+                        "label": f"Stop Endpoint {_short_id(ep.get('job_id', ''))}",
+                        "key": "c",
+                        "action": "stop_endpoint",
+                    }
+                )
         if self._tab == TAB_WORKFLOWS and self._workflows:
             workflow_name = self._workflows[self._wf_cursor].get("name", "selected")
-            actions.append({"label": f"Run Workflow {workflow_name}", "key": "", "action": "run_selected_workflow"})
-            actions.append({"label": f"Run Workflow {workflow_name} With Params...", "key": "", "action": "run_workflow_form"})
+            actions.append(
+                {
+                    "label": f"Run Workflow {workflow_name}",
+                    "key": "",
+                    "action": "run_selected_workflow",
+                }
+            )
+            actions.append(
+                {
+                    "label": f"Run Workflow {workflow_name} With Params...",
+                    "key": "",
+                    "action": "run_workflow_form",
+                }
+            )
         if self._tab == TAB_MODELS:
-            actions.append({"label": "Filter Models...", "key": "", "action": "model_filter_form"})
+            actions.append(
+                {"label": "Filter Models...", "key": "", "action": "model_filter_form"}
+            )
         if self._tab == TAB_WORKFLOWS:
-            actions.append({"label": "Filter Workflows...", "key": "", "action": "workflow_filter_form"})
-        actions.extend([
-            {"label": "Show Jobs Tab", "key": "1", "action": "show_jobs"},
-            {"label": "Show Endpoints Tab", "key": "2", "action": "show_endpoints"},
-            {"label": "Show Status Tab", "key": "3", "action": "show_status"},
-            {"label": "Show Models Tab", "key": "4", "action": "show_models"},
-            {"label": "Show Workflows Tab", "key": "5", "action": "show_workflows"},
-            {"label": "Show Connection Tab", "key": "6", "action": "show_connection"},
-            {"label": "Show Logs Tab", "key": "7", "action": "show_logs"},
-        ])
+            actions.append(
+                {
+                    "label": "Filter Workflows...",
+                    "key": "",
+                    "action": "workflow_filter_form",
+                }
+            )
+        actions.extend(
+            [
+                {"label": "Show Jobs Tab", "key": "1", "action": "show_jobs"},
+                {"label": "Show Endpoints Tab", "key": "2", "action": "show_endpoints"},
+                {"label": "Show Status Tab", "key": "3", "action": "show_status"},
+                {"label": "Show Models Tab", "key": "4", "action": "show_models"},
+                {"label": "Show Workflows Tab", "key": "5", "action": "show_workflows"},
+                {
+                    "label": "Show Connection Tab",
+                    "key": "6",
+                    "action": "show_connection",
+                },
+                {"label": "Show Logs Tab", "key": "7", "action": "show_logs"},
+            ]
+        )
         actions.append({"label": "Clear Log", "key": "", "action": "clear_log"})
         return actions
 
@@ -1462,9 +1733,17 @@ class Dashboard:
             )
 
         if self._form_active:
-            field = self._form_fields[self._form_cursor] if self._form_fields else {"label": "field"}
+            field = (
+                self._form_fields[self._form_cursor]
+                if self._form_fields
+                else {"label": "field"}
+            )
             choices = field.get("choices") or []
-            choice_hint = f"  [dim]choices[/dim]={','.join(choices)}  [dim]h/l[/dim] cycle" if choices else ""
+            choice_hint = (
+                f"  [dim]choices[/dim]={','.join(choices)}  [dim]h/l[/dim] cycle"
+                if choices
+                else ""
+            )
             return Text.from_markup(
                 f"[bold magenta]Form:[/bold magenta] {self._form_title}  "
                 f"[dim]field[/dim]={field.get('label', '?')}  "
@@ -1480,7 +1759,11 @@ class Dashboard:
                 f"[dim]c[/dim] cancel  {common}"
             )
         elif self._tab == TAB_STATUS:
-            reload_hint = "[dim]R[/dim] reload" if self._config_path else "[dim strikethrough]R reload (no --conf)[/dim strikethrough]"
+            reload_hint = (
+                "[dim]R[/dim] reload"
+                if self._config_path
+                else "[dim strikethrough]R reload (no --conf)[/dim strikethrough]"
+            )
             return Text.from_markup(
                 f"[dim]q[/dim] quit  [dim]r[/dim] refresh  [dim]j/k[/dim] navigate  [dim]Enter[/dim] refresh item  {reload_hint}  [dim]a[/dim] actions  [dim]?[/dim] help"
             )
@@ -1503,7 +1786,13 @@ class Dashboard:
     # Rendering — Help overlay
     # ==================================================================
     def _build_help_panel(self) -> Panel:
-        t = Table(show_header=True, header_style="bold", expand=True, show_lines=False, padding=(0, 2))
+        t = Table(
+            show_header=True,
+            header_style="bold",
+            expand=True,
+            show_lines=False,
+            padding=(0, 2),
+        )
         t.add_column("Key", style="bold cyan", width=12)
         t.add_column("Action")
         t.add_column("Tab", style="dim")
@@ -1517,8 +1806,16 @@ class Dashboard:
         t.add_row("h / l", "Cycle form choices", "Forms")
         t.add_row("?", "Toggle this help", "Global")
         t.add_row("", "", "")
-        t.add_row("j / ↓", "Move selection down", "Jobs, Endpoints, Status, Models, Workflows, Logs")
-        t.add_row("k / ↑", "Move selection up", "Jobs, Endpoints, Status, Models, Workflows, Logs")
+        t.add_row(
+            "j / ↓",
+            "Move selection down",
+            "Jobs, Endpoints, Status, Models, Workflows, Logs",
+        )
+        t.add_row(
+            "k / ↑",
+            "Move selection up",
+            "Jobs, Endpoints, Status, Models, Workflows, Logs",
+        )
         t.add_row("Enter", "Toggle detail view", "Jobs, Endpoints, Models, Workflows")
         t.add_row("Enter", "Refresh selected status", "Status")
         t.add_row("f", "Cycle status filter", "Jobs")
@@ -1527,7 +1824,12 @@ class Dashboard:
         t.add_row("R", "Trigger server reload", "Status (requires --conf)")
         t.add_row("g / G", "Scroll to top / bottom", "Logs")
 
-        return Panel(t, title="[bold]Keyboard Shortcuts[/bold]", border_style="bright_cyan", padding=(1, 2))
+        return Panel(
+            t,
+            title="[bold]Keyboard Shortcuts[/bold]",
+            border_style="bright_cyan",
+            padding=(1, 2),
+        )
 
     # ==================================================================
     # Rendering — Jobs tab
@@ -1552,7 +1854,9 @@ class Dashboard:
         table.add_column("Updated", min_width=8)
 
         page = self._visible_page_size(with_detail=bool(self._detail_job_id))
-        self._jobs_scroll_offset = self._adjust_scroll_offset(self._jobs_cursor, self._jobs_scroll_offset, page)
+        self._jobs_scroll_offset = self._adjust_scroll_offset(
+            self._jobs_cursor, self._jobs_scroll_offset, page
+        )
         start = self._jobs_scroll_offset
         end = min(start + page, len(self._jobs))
 
@@ -1571,11 +1875,13 @@ class Dashboard:
             ]
             if not self._compact:
                 cols.append(job.get("project_id", "?"))
-            cols.extend([
-                str(n_attempts),
-                _ago(job.get("created_at")),
-                _ago(job.get("updated_at")),
-            ])
+            cols.extend(
+                [
+                    str(n_attempts),
+                    _ago(job.get("created_at")),
+                    _ago(job.get("updated_at")),
+                ]
+            )
             table.add_row(*cols, style=row_style)
 
         return table
@@ -1583,11 +1889,15 @@ class Dashboard:
     def _build_job_detail_panel(self) -> Panel | None:
         if not self._detail_job_id or not self._jobs:
             return None
-        job = next((j for j in self._jobs if j.get("job_id") == self._detail_job_id), None)
+        job = next(
+            (j for j in self._jobs if j.get("job_id") == self._detail_job_id), None
+        )
         if not job:
             return None
 
-        att_table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold")
+        att_table = Table(
+            expand=True, show_lines=False, padding=(0, 1), header_style="bold"
+        )
         att_table.add_column("#", width=3, justify="right")
         att_table.add_column("Attempt ID", min_width=12)
         att_table.add_column("Status", min_width=10)
@@ -1640,7 +1950,10 @@ class Dashboard:
 
         if not self._jobs:
             empty = Panel(
-                Text("No jobs found. Submit jobs with: umrs-client job submit <type>", style="dim"),
+                Text(
+                    "No jobs found. Submit jobs with: umrs-client job submit <type>",
+                    style="dim",
+                ),
                 border_style="dim",
             )
             layout.split_column(
@@ -1678,7 +1991,12 @@ class Dashboard:
     def _build_endpoints_tab(self) -> Layout:
         layout = Layout()
 
-        table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+        table = Table(
+            expand=True,
+            show_lines=False,
+            padding=(0, 1),
+            header_style="bold bright_white",
+        )
         table.add_column("#", width=3, justify="right")
         table.add_column("Job ID", min_width=10)
         table.add_column("Status", min_width=10)
@@ -1688,7 +2006,9 @@ class Dashboard:
         table.add_column("Created", min_width=10)
 
         page = self._visible_page_size(with_detail=bool(self._endpoint_detail_id))
-        self._endpoints_scroll_offset = self._adjust_scroll_offset(self._endpoints_cursor, self._endpoints_scroll_offset, page)
+        self._endpoints_scroll_offset = self._adjust_scroll_offset(
+            self._endpoints_cursor, self._endpoints_scroll_offset, page
+        )
         start = self._endpoints_scroll_offset
         end = min(start + page, len(self._endpoints))
 
@@ -1720,13 +2040,18 @@ class Dashboard:
         if running:
             summary.append_text(Text.from_markup(f"  [green]{running} running[/green]"))
         if total:
-            summary.append_text(Text.from_markup(f"  [dim]{self._endpoints_cursor + 1}/{total}[/dim]"))
+            summary.append_text(
+                Text.from_markup(f"  [dim]{self._endpoints_cursor + 1}/{total}[/dim]")
+            )
 
         detail = self._build_endpoint_detail_panel()
 
         if not self._endpoints:
             empty = Panel(
-                Text("No endpoint jobs found. Use: umrs-client endpoint up ...", style="dim"),
+                Text(
+                    "No endpoint jobs found. Use: umrs-client endpoint up ...",
+                    style="dim",
+                ),
                 border_style="dim",
             )
             layout.split_column(
@@ -1749,7 +2074,10 @@ class Dashboard:
     def _build_endpoint_detail_panel(self) -> Panel | None:
         if not self._endpoint_detail_id or not self._endpoints:
             return None
-        ep = next((e for e in self._endpoints if e.get("job_id") == self._endpoint_detail_id), None)
+        ep = next(
+            (e for e in self._endpoints if e.get("job_id") == self._endpoint_detail_id),
+            None,
+        )
         if not ep:
             return None
 
@@ -1763,7 +2091,9 @@ class Dashboard:
         detail_table.add_row("project_id", ep.get("project_id", ""))
         detail_table.add_row("model", spec.get("model", "—"))
         detail_table.add_row("model_path", spec.get("model_path", "—"))
-        detail_table.add_row("idle_ttl", self._format_idle_ttl(spec.get("idle_ttl_sec")) or "—")
+        detail_table.add_row(
+            "idle_ttl", self._format_idle_ttl(spec.get("idle_ttl_sec")) or "—"
+        )
         detail_table.add_row("tier", spec.get("tier", "—"))
         detail_table.add_row("gpu_count", str(spec.get("gpu_count", "—")))
         detail_table.add_row("max_model_len", str(spec.get("max_model_len", "—")))
@@ -1773,7 +2103,9 @@ class Dashboard:
         if attempts:
             latest = attempts[-1]
             detail_table.add_row("", "")
-            detail_table.add_row("attempt #", str(latest.get("attempt_number", len(attempts))))
+            detail_table.add_row(
+                "attempt #", str(latest.get("attempt_number", len(attempts)))
+            )
             detail_table.add_row("attempt_status", latest.get("status", "—"))
             detail_table.add_row("backend_ref", latest.get("backend_ref") or "—")
             detail_table.add_row("started_at", _iso_label(latest.get("started_at")))
@@ -1792,10 +2124,13 @@ class Dashboard:
 
         if not self._status_data:
             layout.split_column(
-                Layout(Panel(
-                    Text("Loading server status...", style="dim"),
-                    border_style="dim",
-                ), ratio=1),
+                Layout(
+                    Panel(
+                        Text("Loading server status...", style="dim"),
+                        border_style="dim",
+                    ),
+                    ratio=1,
+                ),
             )
             return layout
 
@@ -1820,13 +2155,24 @@ class Dashboard:
         if not self._status_items:
             layout.split_column(
                 Layout(header, size=1),
-                Layout(Panel(Text("No status entries available.", style="dim"), border_style="dim"), ratio=1),
+                Layout(
+                    Panel(
+                        Text("No status entries available.", style="dim"),
+                        border_style="dim",
+                    ),
+                    ratio=1,
+                ),
             )
             return layout
 
         selected = self._status_items[self._status_cursor]
 
-        list_table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+        list_table = Table(
+            expand=True,
+            show_lines=False,
+            padding=(0, 1),
+            header_style="bold bright_white",
+        )
         list_table.add_column("#", width=3, justify="right")
         list_table.add_column("Task", min_width=14, style="bold")
         list_table.add_column("Last Update", min_width=19)
@@ -1836,7 +2182,9 @@ class Dashboard:
 
         # Status tab always shows a detail panel beside the list (split_row 2:3)
         page = self._visible_page_size()
-        self._status_scroll_offset = self._adjust_scroll_offset(self._status_cursor, self._status_scroll_offset, page)
+        self._status_scroll_offset = self._adjust_scroll_offset(
+            self._status_cursor, self._status_scroll_offset, page
+        )
         start = self._status_scroll_offset
         end = min(start + page, len(self._status_items))
 
@@ -1879,7 +2227,12 @@ class Dashboard:
         detail_group = [meta_table]
         process_rows = selected["process_rows"]
         if process_rows:
-            process_table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+            process_table = Table(
+                expand=True,
+                show_lines=False,
+                padding=(0, 1),
+                header_style="bold bright_white",
+            )
             process_table.add_column("Thread", min_width=8)
             process_table.add_column("Work", min_width=12)
             process_table.add_column("User", min_width=8)
@@ -1894,15 +2247,34 @@ class Dashboard:
         elif selected["summary"]:
             detail_group.extend([Text(""), Text(selected["summary"])])
         if uncompleted:
-            detail_group.extend([
-                Text(""),
-                Text(f"Pending tasks: {', '.join(map(str, uncompleted))}", style="yellow"),
-            ])
+            detail_group.extend(
+                [
+                    Text(""),
+                    Text(
+                        f"Pending tasks: {', '.join(map(str, uncompleted))}",
+                        style="yellow",
+                    ),
+                ]
+            )
 
         body = Layout()
         body.split_row(
-            Layout(Panel(list_table, title="[bold]Status Tasks[/bold]", border_style="bright_white"), ratio=2),
-            Layout(Panel(Group(*detail_group), title=f"[bold]Details: {selected['key']}[/bold]", border_style="bright_blue"), ratio=3),
+            Layout(
+                Panel(
+                    list_table,
+                    title="[bold]Status Tasks[/bold]",
+                    border_style="bright_white",
+                ),
+                ratio=2,
+            ),
+            Layout(
+                Panel(
+                    Group(*detail_group),
+                    title=f"[bold]Details: {selected['key']}[/bold]",
+                    border_style="bright_blue",
+                ),
+                ratio=3,
+            ),
         )
 
         layout.split_column(
@@ -1917,7 +2289,11 @@ class Dashboard:
     @staticmethod
     def _colorize_model_type(model_type: str) -> str:
         """Return Rich-markup colored model type string."""
-        colors = {"llm": "bright_green", "embedding": "bright_cyan", "vision": "bright_magenta"}
+        colors = {
+            "llm": "bright_green",
+            "embedding": "bright_cyan",
+            "vision": "bright_magenta",
+        }
         color = colors.get(model_type, "white")
         return f"[{color}]{model_type}[/{color}]"
 
@@ -1927,7 +2303,12 @@ class Dashboard:
     def _build_models_tab(self) -> Layout:
         layout = Layout()
 
-        table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+        table = Table(
+            expand=True,
+            show_lines=False,
+            padding=(0, 1),
+            header_style="bold bright_white",
+        )
         table.add_column("#", width=3, justify="right")
         table.add_column("Name", min_width=14, style="bold")
         table.add_column("Type", min_width=10)
@@ -1937,7 +2318,9 @@ class Dashboard:
         table.add_column("Registered At", min_width=10)
 
         page = self._visible_page_size(with_detail=bool(self._model_detail_name))
-        self._models_scroll_offset = self._adjust_scroll_offset(self._models_cursor, self._models_scroll_offset, page)
+        self._models_scroll_offset = self._adjust_scroll_offset(
+            self._models_cursor, self._models_scroll_offset, page
+        )
         start = self._models_scroll_offset
         end = min(start + page, len(self._models))
 
@@ -1959,14 +2342,19 @@ class Dashboard:
         total = len(self._models)
         summary = Text.from_markup(f"  total=[yellow]{total}[/yellow]")
         if total:
-            summary.append_text(Text.from_markup(f"  [dim]{self._models_cursor + 1}/{total}[/dim]"))
+            summary.append_text(
+                Text.from_markup(f"  [dim]{self._models_cursor + 1}/{total}[/dim]")
+            )
         if self._model_scope_filter:
             summary.append(f"  scope={self._model_scope_filter}")
         detail = self._build_model_detail_panel()
 
         if not self._models:
             empty = Panel(
-                Text("No models registered. Use: umrs-client model register ...", style="dim"),
+                Text(
+                    "No models registered. Use: umrs-client model register ...",
+                    style="dim",
+                ),
                 border_style="dim",
             )
             layout.split_column(
@@ -1989,7 +2377,9 @@ class Dashboard:
     def _build_model_detail_panel(self) -> Panel | None:
         if not self._model_detail_name or not self._models:
             return None
-        model = next((m for m in self._models if m.get("name") == self._model_detail_name), None)
+        model = next(
+            (m for m in self._models if m.get("name") == self._model_detail_name), None
+        )
         if not model:
             return None
 
@@ -1997,14 +2387,31 @@ class Dashboard:
         detail_table.add_column("Field", style="bold", width=18)
         detail_table.add_column("Value", ratio=1)
 
-        for key in ["name", "model_type", "scope", "storage_ref", "huggingface_id",
-                     "description", "registered_by", "registered_at"]:
+        for key in [
+            "name",
+            "model_type",
+            "scope",
+            "storage_ref",
+            "huggingface_id",
+            "description",
+            "registered_by",
+            "registered_at",
+        ]:
             val = model.get(key)
             if val is not None:
                 detail_table.add_row(key, str(val))
 
-        shown = {"name", "model_type", "type", "scope", "storage_ref", "huggingface_id",
-                 "description", "registered_by", "registered_at"}
+        shown = {
+            "name",
+            "model_type",
+            "type",
+            "scope",
+            "storage_ref",
+            "huggingface_id",
+            "description",
+            "registered_by",
+            "registered_at",
+        }
         for k, v in model.items():
             if k not in shown:
                 detail_table.add_row(k, str(v))
@@ -2021,7 +2428,12 @@ class Dashboard:
     def _build_workflows_tab(self) -> Layout:
         layout = Layout()
 
-        table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+        table = Table(
+            expand=True,
+            show_lines=False,
+            padding=(0, 1),
+            header_style="bold bright_white",
+        )
         table.add_column("#", width=3, justify="right")
         table.add_column("Name", min_width=14, style="bold")
         table.add_column("Version", min_width=8)
@@ -2031,7 +2443,9 @@ class Dashboard:
         table.add_column("Registered At", min_width=10)
 
         page = self._visible_page_size(with_detail=bool(self._wf_detail_name))
-        self._wf_scroll_offset = self._adjust_scroll_offset(self._wf_cursor, self._wf_scroll_offset, page)
+        self._wf_scroll_offset = self._adjust_scroll_offset(
+            self._wf_cursor, self._wf_scroll_offset, page
+        )
         start = self._wf_scroll_offset
         end = min(start + page, len(self._workflows))
 
@@ -2054,7 +2468,9 @@ class Dashboard:
         total = len(self._workflows)
         summary = Text.from_markup(f"  total=[yellow]{total}[/yellow]")
         if total:
-            summary.append_text(Text.from_markup(f"  [dim]{self._wf_cursor + 1}/{total}[/dim]"))
+            summary.append_text(
+                Text.from_markup(f"  [dim]{self._wf_cursor + 1}/{total}[/dim]")
+            )
         if self._workflow_scope_filter:
             summary.append(f"  scope={self._workflow_scope_filter}")
         if self._workflow_user_filter:
@@ -2065,7 +2481,10 @@ class Dashboard:
 
         if not self._workflows:
             empty = Panel(
-                Text("No workflows registered. Use: umrs-client upload-workflow <path>", style="dim"),
+                Text(
+                    "No workflows registered. Use: umrs-client upload-workflow <path>",
+                    style="dim",
+                ),
                 border_style="dim",
             )
             layout.split_column(
@@ -2088,7 +2507,9 @@ class Dashboard:
     def _build_workflow_detail_panel(self) -> Panel | None:
         if not self._wf_detail_name or not self._workflows:
             return None
-        wf = next((w for w in self._workflows if w.get("name") == self._wf_detail_name), None)
+        wf = next(
+            (w for w in self._workflows if w.get("name") == self._wf_detail_name), None
+        )
         if not wf:
             return None
 
@@ -2097,7 +2518,15 @@ class Dashboard:
         meta_table = Table(show_header=False, expand=True, padding=(0, 2))
         meta_table.add_column("Field", style="bold", width=14)
         meta_table.add_column("Value", ratio=1)
-        for key in ["name", "version", "scope", "user_id", "source_path", "description", "registered_at"]:
+        for key in [
+            "name",
+            "version",
+            "scope",
+            "user_id",
+            "source_path",
+            "description",
+            "registered_at",
+        ]:
             val = wf.get(key)
             if val is not None:
                 meta_table.add_row(key, str(val))
@@ -2105,7 +2534,9 @@ class Dashboard:
 
         steps = wf.get("steps", [])
         if steps:
-            steps_table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold")
+            steps_table = Table(
+                expand=True, show_lines=False, padding=(0, 1), header_style="bold"
+            )
             steps_table.add_column("#", width=3, justify="right")
             steps_table.add_column("Step Name", min_width=14)
             steps_table.add_column("Entrypoint", min_width=14)
@@ -2135,7 +2566,9 @@ class Dashboard:
         layout = Layout()
         info = self._connection_info
 
-        conn_table = Table(show_header=False, expand=True, padding=(0, 2), show_lines=False)
+        conn_table = Table(
+            show_header=False, expand=True, padding=(0, 2), show_lines=False
+        )
         conn_table.add_column("Property", style="bold", width=22)
         conn_table.add_column("Value", ratio=1)
         conn_table.add_column("Source", style="dim", width=24)
@@ -2143,13 +2576,37 @@ class Dashboard:
         sources = info.get("sources", {})
 
         rows = [
-            ("Profile", info.get("profile_name") or "—", info.get("profile_source") or "—"),
+            (
+                "Profile",
+                info.get("profile_name") or "—",
+                info.get("profile_source") or "—",
+            ),
             ("Mode", info.get("mode") or "—", ""),
-            ("Server Host", info.get("server_host") or "127.0.0.1", sources.get("server_host", "")),
-            ("Control Port", str(info.get("control_port", 5555)), sources.get("control_port", "")),
-            ("Data Base Port", str(info.get("data_base_port", 5556)), sources.get("data_base_port", "")),
-            ("Tunnel Mode", str(info.get("tunnel_mode", False)), sources.get("tunnel_mode", "")),
-            ("Health Timeout (ms)", str(info.get("health_check_timeout_ms", 5000)), sources.get("health_check_timeout_ms", "")),
+            (
+                "Server Host",
+                info.get("server_host") or "127.0.0.1",
+                sources.get("server_host", ""),
+            ),
+            (
+                "Control Port",
+                str(info.get("control_port", 5555)),
+                sources.get("control_port", ""),
+            ),
+            (
+                "Data Base Port",
+                str(info.get("data_base_port", 5556)),
+                sources.get("data_base_port", ""),
+            ),
+            (
+                "Tunnel Mode",
+                str(info.get("tunnel_mode", False)),
+                sources.get("tunnel_mode", ""),
+            ),
+            (
+                "Health Timeout (ms)",
+                str(info.get("health_check_timeout_ms", 5000)),
+                sources.get("health_check_timeout_ms", ""),
+            ),
             ("MinIO URL", info.get("minio_url") or "—", ""),
             ("RAG URL", info.get("rag_url") or "—", ""),
         ]
@@ -2168,13 +2625,17 @@ class Dashboard:
         if self._ping_ok is True:
             health_parts.append(Text("● Server is READY", style="bold green"))
             if self._ping_ms is not None:
-                health_parts.append(Text(f"  Ping latency: {self._ping_ms:.0f} ms", style="green"))
+                health_parts.append(
+                    Text(f"  Ping latency: {self._ping_ms:.0f} ms", style="green")
+                )
         elif self._ping_ok is False:
             health_parts.append(Text("● Server is UNREACHABLE", style="bold red"))
             if self._last_error:
                 health_parts.append(Text(f"  Error: {self._last_error}", style="red"))
         else:
-            health_parts.append(Text("● Server health unknown (press r to check)", style="dim"))
+            health_parts.append(
+                Text("● Server health unknown (press r to check)", style="dim")
+            )
 
         health_parts.append(Text(f"\n  Client ID: {self._client_id}", style="dim"))
         if self._config_path:
@@ -2182,7 +2643,9 @@ class Dashboard:
 
         forwards = info.get("local_forwards", [])
         if forwards:
-            fwd_table = Table(show_header=True, expand=True, padding=(0, 1), header_style="bold")
+            fwd_table = Table(
+                show_header=True, expand=True, padding=(0, 1), header_style="bold"
+            )
             fwd_table.add_column("Local Port", width=12, justify="right")
             fwd_table.add_column("Remote Host", min_width=14)
             fwd_table.add_column("Remote Port", width=12, justify="right")
@@ -2193,19 +2656,49 @@ class Dashboard:
                     str(fwd.get("remote_port", "?")),
                 )
             layout.split_column(
-                Layout(Panel(Group(*health_parts), title="[bold]Server Health[/bold]",
-                             border_style="green" if self._ping_ok else "red"), size=6),
-                Layout(Panel(conn_table, title="[bold]Connection Profile[/bold]",
-                             border_style="bright_white"), ratio=2),
-                Layout(Panel(fwd_table, title="[bold]SSH Port Forwards[/bold]",
-                             border_style="bright_white"), ratio=1),
+                Layout(
+                    Panel(
+                        Group(*health_parts),
+                        title="[bold]Server Health[/bold]",
+                        border_style="green" if self._ping_ok else "red",
+                    ),
+                    size=6,
+                ),
+                Layout(
+                    Panel(
+                        conn_table,
+                        title="[bold]Connection Profile[/bold]",
+                        border_style="bright_white",
+                    ),
+                    ratio=2,
+                ),
+                Layout(
+                    Panel(
+                        fwd_table,
+                        title="[bold]SSH Port Forwards[/bold]",
+                        border_style="bright_white",
+                    ),
+                    ratio=1,
+                ),
             )
         else:
             layout.split_column(
-                Layout(Panel(Group(*health_parts), title="[bold]Server Health[/bold]",
-                             border_style="green" if self._ping_ok else "red"), size=6),
-                Layout(Panel(conn_table, title="[bold]Connection Profile[/bold]",
-                             border_style="bright_white"), ratio=1),
+                Layout(
+                    Panel(
+                        Group(*health_parts),
+                        title="[bold]Server Health[/bold]",
+                        border_style="green" if self._ping_ok else "red",
+                    ),
+                    size=6,
+                ),
+                Layout(
+                    Panel(
+                        conn_table,
+                        title="[bold]Connection Profile[/bold]",
+                        border_style="bright_white",
+                    ),
+                    ratio=1,
+                ),
             )
         return layout
 
@@ -2215,9 +2708,19 @@ class Dashboard:
     def _build_logs_tab(self) -> Layout:
         layout = Layout()
 
-        LOG_LEVEL_STYLES = {"INFO": "green", "WARN": "yellow", "ERROR": "bold red", "DEBUG": "dim"}
+        LOG_LEVEL_STYLES = {
+            "INFO": "green",
+            "WARN": "yellow",
+            "ERROR": "bold red",
+            "DEBUG": "dim",
+        }
 
-        table = Table(expand=True, show_lines=False, padding=(0, 1), header_style="bold bright_white")
+        table = Table(
+            expand=True,
+            show_lines=False,
+            padding=(0, 1),
+            header_style="bold bright_white",
+        )
         table.add_column("Time", width=10, style="dim")
         table.add_column("Level", width=7)
         table.add_column("Message", ratio=1)
@@ -2240,7 +2743,9 @@ class Dashboard:
             self._log_cursor = len(entries) - 1
             self._log_scroll_offset = max(len(entries) - page, 0)
         else:
-            self._log_scroll_offset = self._adjust_scroll_offset(self._log_cursor, self._log_scroll_offset, page)
+            self._log_scroll_offset = self._adjust_scroll_offset(
+                self._log_cursor, self._log_scroll_offset, page
+            )
         start = self._log_scroll_offset
         end = min(start + page, len(entries))
 
@@ -2258,12 +2763,19 @@ class Dashboard:
             )
 
         count = len(entries)
-        scroll_hint = "[dim]auto-scroll[/dim]" if self._log_auto_scroll else f"[dim]{self._log_cursor + 1}/{count}[/dim]"
+        scroll_hint = (
+            "[dim]auto-scroll[/dim]"
+            if self._log_auto_scroll
+            else f"[dim]{self._log_cursor + 1}/{count}[/dim]"
+        )
         summary = Text.from_markup(f"  entries=[yellow]{count}[/yellow]  {scroll_hint}")
 
         if not entries:
             empty = Panel(
-                Text("No activity logged yet. Events will appear here as you interact.", style="dim"),
+                Text(
+                    "No activity logged yet. Events will appear here as you interact.",
+                    style="dim",
+                ),
                 border_style="dim",
             )
             layout.split_column(
@@ -2312,7 +2824,12 @@ class Dashboard:
             value = str(field.get("value", ""))
             if idx == self._form_cursor:
                 value = value + "_"
-            form_table.add_row(marker, f"{field.get('label', field['name'])}{suffix}", value, style=style)
+            form_table.add_row(
+                marker,
+                f"{field.get('label', field['name'])}{suffix}",
+                value,
+                style=style,
+            )
 
         return Panel(
             form_table,

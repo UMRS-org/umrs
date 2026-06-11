@@ -7,15 +7,14 @@ config = {
     "mcpServers": {
         "time": {
             "url": "http://llm.ai.r-ccs.riken.jp:11434/time/mcp",
-            "headers": {
-                "x-litellm-api-key": "Bearer sk-ll-324kmjh8"
-            }
+            "headers": {"x-litellm-api-key": "Bearer sk-ll-324kmjh8"},
         }
     }
 }
 
 # Create a client that connects to the server
 client = Client(config)
+
 
 async def main():
     async with client:
@@ -26,6 +25,7 @@ async def main():
         # Example: Get a pet by ID (from Petstore API)
         response = await client.call_tool(name="current_time")
         print(f"Response:\n{response}\n")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

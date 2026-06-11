@@ -31,6 +31,7 @@ from umrs.pipeline_sdk.workflow import (
 # Fixtures
 # =========================================================================
 
+
 @pytest.fixture(autouse=True)
 def _clear_import_cache():
     """Clear the step import cache before each test."""
@@ -41,8 +42,7 @@ def _clear_import_cache():
         _step_class_cache.clear()
 
 
-def _write_step_module(tmp_path: Path, module_name: str, class_name: str,
-                       extra: str = "") -> Path:
+def _write_step_module(tmp_path: Path, module_name: str, class_name: str, extra: str = "") -> Path:
     """Write a minimal Step subclass into tmp_path/<module_name>.py."""
     code = textwrap.dedent(f"""\
         from umrs.pipeline_sdk.step import Step, StepContext, StepResult
@@ -63,8 +63,8 @@ def _write_step_module(tmp_path: Path, module_name: str, class_name: str,
 # importlib-based loading
 # =========================================================================
 
-class TestImportlibLoading:
 
+class TestImportlibLoading:
     def test_loads_step_from_file(self, tmp_path: Path):
         _write_step_module(tmp_path, "my_mod", "MyStep")
         spec = StepSpec(name="s1", entrypoint="my_mod:MyStep", config={})
@@ -74,6 +74,7 @@ class TestImportlibLoading:
 
     def test_no_sys_path_mutation(self, tmp_path: Path):
         import sys
+
         _write_step_module(tmp_path, "no_path_mod", "NoPath")
         spec = StepSpec(name="s1", entrypoint="no_path_mod:NoPath", config={})
         before = list(sys.path)
@@ -113,8 +114,8 @@ class TestImportlibLoading:
 # Import cache
 # =========================================================================
 
-class TestImportCache:
 
+class TestImportCache:
     def test_cached_after_first_import(self, tmp_path: Path):
         _write_step_module(tmp_path, "cache_mod", "CacheStep")
         spec = StepSpec(name="s1", entrypoint="cache_mod:CacheStep", config={})
@@ -143,8 +144,7 @@ class TestImportCache:
         spec = StepSpec(name="s1", entrypoint="pop_mod:PopStep", config={})
         _import_step_class(spec, tmp_path)
         assert any(
-            key[0] == "pop_mod:PopStep" and key[1] == str(tmp_path)
-            for key in _step_class_cache
+            key[0] == "pop_mod:PopStep" and key[1] == str(tmp_path) for key in _step_class_cache
         )
 
 
@@ -152,8 +152,8 @@ class TestImportCache:
 # load_steps with new importer
 # =========================================================================
 
-class TestLoadStepsIntegration:
 
+class TestLoadStepsIntegration:
     def test_load_steps_from_file(self, tmp_path: Path):
         _write_step_module(tmp_path, "ls_mod", "LsStep")
         wf_dict = {

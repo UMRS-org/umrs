@@ -23,9 +23,11 @@ class S3Connector:
         bucket: Default bucket name.
     """
 
-    def __init__(self, endpoint_url: str, access_key: str, secret_key: str,
-                 bucket: str):
+    def __init__(
+        self, endpoint_url: str, access_key: str, secret_key: str, bucket: str
+    ):
         import boto3
+
         self.endpoint_url = endpoint_url
         self.bucket = bucket
         self._client = boto3.client(
@@ -38,8 +40,9 @@ class S3Connector:
 
     # ── public API ───────────────────────────────────────────────────────
 
-    def upload_file(self, local_path: str, key: str | None = None,
-                    bucket: str | None = None) -> str:
+    def upload_file(
+        self, local_path: str, key: str | None = None, bucket: str | None = None
+    ) -> str:
         """Upload a single file.  Returns the S3 key."""
         bucket = bucket or self.bucket
         key = key or os.path.basename(local_path)
@@ -47,8 +50,9 @@ class S3Connector:
         logger.info("Uploaded %s → s3://%s/%s", local_path, bucket, key)
         return key
 
-    def upload_dir(self, local_dir: str, extensions: set | None = None,
-                   bucket: str | None = None) -> list[str]:
+    def upload_dir(
+        self, local_dir: str, extensions: set | None = None, bucket: str | None = None
+    ) -> list[str]:
         """Upload all matching files from a directory.  Returns list of keys."""
         bucket = bucket or self.bucket
         keys = []
@@ -63,8 +67,9 @@ class S3Connector:
         logger.info("Uploaded %d file(s) from %s", len(keys), local_dir)
         return keys
 
-    def download_file(self, key: str, local_path: str,
-                      bucket: str | None = None) -> str:
+    def download_file(
+        self, key: str, local_path: str, bucket: str | None = None
+    ) -> str:
         """Download an object to a local path.  Returns the local path."""
         bucket = bucket or self.bucket
         os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
@@ -72,8 +77,7 @@ class S3Connector:
         logger.info("Downloaded s3://%s/%s → %s", bucket, key, local_path)
         return local_path
 
-    def list_objects(self, prefix: str = "",
-                     bucket: str | None = None) -> list[str]:
+    def list_objects(self, prefix: str = "", bucket: str | None = None) -> list[str]:
         """List object keys under a prefix."""
         bucket = bucket or self.bucket
         paginator = self._client.get_paginator("list_objects_v2")

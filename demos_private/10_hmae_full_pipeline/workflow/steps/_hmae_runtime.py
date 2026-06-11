@@ -41,10 +41,7 @@ def _configured_bentoml_url(config: Dict[str, Any]) -> str:
 def _configured_api_base(config: Dict[str, Any]) -> str:
     routed = config.get("_routing") if isinstance(config.get("_routing"), dict) else {}
     return str(
-        config.get("api_base")
-        or routed.get("api_base")
-        or os.environ.get("BENTOML_URL")
-        or ""
+        config.get("api_base") or routed.get("api_base") or os.environ.get("BENTOML_URL") or ""
     ).strip()
 
 

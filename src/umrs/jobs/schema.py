@@ -259,11 +259,14 @@ def ensure_schema(conn) -> bool:
             cur.execute(CREATE_UPDATE_TRIGGER)
 
             # Update schema version
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO schema_versions (component, version)
                 VALUES ('jobs', %s)
                 ON CONFLICT (component) DO UPDATE SET version = %s, applied_at = NOW()
-            """, (SCHEMA_VERSION, SCHEMA_VERSION))
+            """,
+                (SCHEMA_VERSION, SCHEMA_VERSION),
+            )
 
             conn.commit()
             logger.info(f"Job schema updated to version {SCHEMA_VERSION}")

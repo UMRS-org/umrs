@@ -1,4 +1,4 @@
-#!/usr/bin/python3 
+#!/usr/bin/python3
 import psycopg2
 import numpy as np
 import json
@@ -34,28 +34,32 @@ def query_db_with_embeddings(model, conn, cur, query_text, top_k=5):
             - ids (list): List of retrieved row IDs.
             - texts (list): Corresponding text values.
     """
-     # Generate the embedding for the input text
+    # Generate the embedding for the input text
     query_embedding = model.encode(query_text).tolist()
 
     # Perform similarity search using L2 distance
-    cur.execute("""
+    cur.execute(
+        """
         SELECT id, text
         FROM text_embeddings
         ORDER BY embedding <-> %s::vector
         LIMIT %s;
-    """, (query_embedding, top_k))
+    """,
+        (query_embedding, top_k),
+    )
 
     # Fetch results
     results = cur.fetchall()
-    
+
     # Extract IDs and texts
     ids = [row[0] for row in results]
     texts = [row[1] for row in results]
 
     return ids, texts
-        
+
+
 def save_texts_in_db(model, conn, cur):
-    
+
     texts = [
         "I love eating a fresh apple every morning.",  # 🍏 Apple as a fruit
         "Apple Inc. is one of the biggest tech companies in the world.",  # 💻 Apple as a company
@@ -87,9 +91,12 @@ def save_texts_in_db(model, conn, cur):
         embedding = model.encode(text)
 
         print(len(embedding))
-        
+
         # Insert into database
-        cur.execute("INSERT INTO text_embeddings (text, embedding) VALUES (%s, %s)", (text, embedding.tolist()))
+        cur.execute(
+            "INSERT INTO text_embeddings (text, embedding) VALUES (%s, %s)",
+            (text, embedding.tolist()),
+        )
         conn.commit()
 
         print("Inserted embedding successfully.")
@@ -97,7 +104,7 @@ def save_texts_in_db(model, conn, cur):
 
 def cluster_from_embeddings(conn, cur, nb_clusters=4):
     """
-    Performs K-Means clustering on text embeddings retrieved from PostgreSQL 
+    Performs K-Means clustering on text embeddings retrieved from PostgreSQL
     and returns one representative text per cluster.
 
     Args:
@@ -124,7 +131,9 @@ def cluster_from_embeddings(conn, cur, nb_clusters=4):
     for row in results:
         embedding_str = row[2]  # Extract the stored vector (string format)
         if isinstance(embedding_str, str):
-            embedding = np.array(ast.literal_eval(embedding_str))  # Convert string to list of floats
+            embedding = np.array(
+                ast.literal_eval(embedding_str)
+            )  # Convert string to list of floats
         else:
             embedding = np.array(embedding_str)  # Already a list
         embeddings.append(embedding)
@@ -153,6 +162,7 @@ def cluster_from_embeddings(conn, cur, nb_clusters=4):
 
     return centroid_texts
 
+
 def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
     """
     Performs K-Means clustering directly in PostgreSQL on stored embeddings
@@ -170,7 +180,9 @@ def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
     # Ensure pgvector's kmeans function is available
     cur.execute("SELECT count(*) FROM pg_extension WHERE extname = 'vector';")
     if cur.fetchone()[0] == 0:
-        print("Error: pgvector extension is not enabled. Run 'CREATE EXTENSION vector;' in PostgreSQL.")
+        print(
+            "Error: pgvector extension is not enabled. Run 'CREATE EXTENSION vector;' in PostgreSQL."
+        )
         return []
 
     # Perform K-Means clustering using PostgreSQL
@@ -196,32 +208,26 @@ def cluster_from_embeddings_wrong(conn, cur, nb_clusters=4):
     return centroid_texts
 
 
-models = ["all-MiniLM-L6-v2", "all-mpnet-base-v2"] 
-dbnames = ["embeddings_db","large_embeddings_db"] #correspinfing DB with same the correct dimensionnality
+models = ["all-MiniLM-L6-v2", "all-mpnet-base-v2"]
+dbnames = [
+    "embeddings_db",
+    "large_embeddings_db",
+]  # correspinfing DB with same the correct dimensionnality
 
-id = 1 # 0 or 1
+id = 1  # 0 or 1
 
 model_name = models[id]
 db_name = dbnames[id]
 
 # Load the sentence-transformers model
-print(f"Loading model {model_name}...");
-
+print(f"Loading model {model_name}...")
 model = SentenceTransformer(model_name)
 
 # Connect to PostgreSQL
-conn = psycopg2.connect(
-    dbname=db_name,
-    user="ejeannot",
-    password="",
-    host="localhost",
-    port="5432"
-)
+conn = psycopg2.connect(dbname=db_name, user="ejeannot", password="", host="localhost", port="5432")
 cur = conn.cursor()
 
 # save_texts_in_db(model, conn, cur)
-
-
 
 
 texts1 = [
@@ -275,15 +281,14 @@ texts2 = [
 # print("\n ------- More difficult ----------\n")
 
 # challenge_embeddings(model, conn, cur, texts2);
-challenge_embeddings(model, conn, cur, ["Adam and Eve, the lost paradize"]);
-
+challenge_embeddings(model, conn, cur, ["Adam and Eve, the lost paradize"])
 print("\n ------- 4 centroids texts ----------\n")
 
-centroid_texts = cluster_from_embeddings(conn, cur, nb_clusters = 5)
+centroid_texts = cluster_from_embeddings(conn, cur, nb_clusters=5)
 for text in centroid_texts:
     print(text)
-                         
-                         
+
+
 # Close connection
 cur.close()
 conn.close()
@@ -300,7 +305,7 @@ def open_AI_tokenizer():
         # Get embeddings from OpenAI (NEW SYNTAX)
         response = openai.embeddings.create(
             input=text,
-            model="text-embedding-3-small"
+            model="text-embedding-3-small",
             # model="gpt-4o-mini-2024-07-18"
         )
 

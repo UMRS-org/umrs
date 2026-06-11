@@ -40,11 +40,7 @@ class TestStepBuilder:
 
 class TestPipelineBuilder:
     def test_minimal_build(self):
-        wf = (
-            PipelineBuilder("simple")
-            .add_step("step1", "mod:Step1")
-            .build()
-        )
+        wf = PipelineBuilder("simple").add_step("step1", "mod:Step1").build()
         assert wf["name"] == "simple"
         assert len(wf["steps"]) == 1
         assert wf["steps"][0]["name"] == "step1"
@@ -62,12 +58,7 @@ class TestPipelineBuilder:
         assert "load" in proc_step["depends_on"]
 
     def test_set_execution_mode(self):
-        wf = (
-            PipelineBuilder("p1")
-            .add_step("s1", "m:S")
-            .set_execution_mode("SLURM")
-            .build()
-        )
+        wf = PipelineBuilder("p1").add_step("s1", "m:S").set_execution_mode("SLURM").build()
         assert wf["execution_mode"] == "SLURM"
 
     def test_set_source(self):
@@ -107,19 +98,12 @@ class TestPipelineBuilder:
             builder.build()
 
     def test_validate_duplicate_step_names(self):
-        builder = (
-            PipelineBuilder("dup")
-            .add_step("s1", "m:S")
-            .add_step("s1", "m:S2")
-        )
+        builder = PipelineBuilder("dup").add_step("s1", "m:S").add_step("s1", "m:S2")
         with pytest.raises(PipelineBuilderError, match="Duplicate"):
             builder.build()
 
     def test_validate_invalid_dependency(self):
-        builder = (
-            PipelineBuilder("bad-dep")
-            .add_step("s1", "m:S", depends_on=["nonexistent"])
-        )
+        builder = PipelineBuilder("bad-dep").add_step("s1", "m:S", depends_on=["nonexistent"])
         with pytest.raises(PipelineBuilderError, match="nonexistent"):
             builder.build()
 
@@ -133,10 +117,7 @@ class TestPipelineBuilder:
             builder.build()
 
     def test_to_json(self):
-        builder = (
-            PipelineBuilder("json-test")
-            .add_step("s1", "m:S")
-        )
+        builder = PipelineBuilder("json-test").add_step("s1", "m:S")
         j = builder.to_json()
         parsed = json.loads(j)
         assert parsed["name"] == "json-test"

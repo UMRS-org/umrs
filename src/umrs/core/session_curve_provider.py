@@ -310,7 +310,9 @@ class SessionCredentialsProvider:
                 grants=old.grants,
             )
             self._by_key[pubkey] = updated
-        logger.debug("CURVE session refreshed: session=%s new_ttl=%ds", session_id, effective_ttl)
+        logger.debug(
+            "CURVE session refreshed: session=%s new_ttl=%ds", session_id, effective_ttl
+        )
         return updated
 
     def get_session(self, session_id: str) -> Optional[SessionCurveEntry]:
@@ -351,7 +353,8 @@ class SessionCredentialsProvider:
             if user_id is None:
                 return sum(1 for e in self._by_key.values() if not e.is_expired)
             return sum(
-                1 for e in self._by_key.values()
+                1
+                for e in self._by_key.values()
                 if e.user_id == user_id and not e.is_expired
             )
 

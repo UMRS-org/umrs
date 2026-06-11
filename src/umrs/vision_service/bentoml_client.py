@@ -41,13 +41,14 @@ def _bentoml_trusted() -> bool:
 
 def _backoff_sleep_seconds(attempt: int, base: float, cap: float) -> float:
     """Exponential backoff with full jitter, bounded by ``cap``."""
-    raw = min(cap, base * (2 ** attempt))
+    raw = min(cap, base * (2**attempt))
     return random.uniform(0, raw)
 
 
 # ---------------------------------------------------------------------------
 # Async core
 # ---------------------------------------------------------------------------
+
 
 async def async_submit_and_wait(
     client: bentoml.AsyncHTTPClient,
@@ -78,13 +79,12 @@ async def async_submit_and_wait(
     while True:
         elapsed = time.monotonic() - start
         if elapsed > timeout:
-            raise TimeoutError(
-                f"Task {task_id} did not complete within {timeout}s"
-            )
+            raise TimeoutError(f"Task {task_id} did not complete within {timeout}s")
 
         status = await task.get_status()
-        logger.debug("Task %s status: %s (%.1fs elapsed)",
-                     task_id, status.value, elapsed)
+        logger.debug(
+            "Task %s status: %s (%.1fs elapsed)", task_id, status.value, elapsed
+        )
 
         if status.value in {"success", "completed"}:
             raw = await task.get()
@@ -103,7 +103,11 @@ async def async_submit_and_wait(
                 getter = getattr(task, attr, None)
                 if callable(getter):
                     try:
-                        value = await getter() if asyncio.iscoroutinefunction(getter) else getter()
+                        value = (
+                            await getter()
+                            if asyncio.iscoroutinefunction(getter)
+                            else getter()
+                        )
                         if value:
                             detail = str(value)
                             break
@@ -151,6 +155,7 @@ async def async_submit_vision(
 # Sync convenience wrappers  (create a per-call AsyncHTTPClient)
 # ---------------------------------------------------------------------------
 
+
 def submit_and_wait(
     service_url: str,
     endpoint_name: str,
@@ -180,8 +185,11 @@ def submit_and_wait(
     async def _run() -> dict:
         async with bentoml.AsyncHTTPClient(service_url, token=token) as client:
             return await async_submit_and_wait(
-                client, endpoint_name,
-                poll_interval=poll_interval, timeout=timeout, **kwargs,
+                client,
+                endpoint_name,
+                poll_interval=poll_interval,
+                timeout=timeout,
+                **kwargs,
             )
 
     return asyncio.run(_run())
@@ -207,9 +215,12 @@ def submit_vision_and_wait(
     async def _run() -> dict:
         async with bentoml.AsyncHTTPClient(service_url, token=token) as client:
             return await async_submit_vision(
-                client, model_type, image_url,
+                client,
+                model_type,
+                image_url,
                 inference_config=inference_config,
-                poll_interval=poll_interval, timeout=timeout,
+                poll_interval=poll_interval,
+                timeout=timeout,
             )
 
     return asyncio.run(_run())

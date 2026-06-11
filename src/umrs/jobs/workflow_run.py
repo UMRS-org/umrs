@@ -74,7 +74,10 @@ class WorkflowRunStatusChecker:
 
 
 def _execution_id_from_attempt_or_job(attempt: JobAttempt, job: Job) -> str:
-    if isinstance(job.spec.get("execution_id"), str) and job.spec["execution_id"].strip():
+    if (
+        isinstance(job.spec.get("execution_id"), str)
+        and job.spec["execution_id"].strip()
+    ):
         return job.spec["execution_id"].strip()
     if attempt.backend_ref and "execution_id=" in attempt.backend_ref:
         return attempt.backend_ref.rsplit("execution_id=", 1)[1]

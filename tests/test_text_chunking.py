@@ -47,10 +47,14 @@ def test_flatten_text_chunks_keeps_empty_text_without_nlp():
     )
 
     assert flat_chunks == [""]
-    assert chunks_by_text == [[{
-        "text": "",
-        "start": 0,
-        "end": 0,
-        "num_tokens": 0,
-        "md5": "d41d8cd98f00b204e9800998ecf8427e",
-    }]]
+    assert chunks_by_text == [
+        [
+            {
+                "text": "",
+                "start": 0,
+                "end": 0,
+                "num_tokens": 0,
+                "md5": "d41d8cd98f00b204e9800998ecf8427e",
+            }
+        ]
+    ]

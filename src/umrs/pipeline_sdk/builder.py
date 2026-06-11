@@ -19,6 +19,7 @@ class PipelineBuilderError(Exception):
 @dataclass
 class StepBuilder:
     """Per-step configuration builder."""
+
     name: str
     entrypoint: str
     depends_on: list[str] = field(default_factory=list)
@@ -232,7 +233,9 @@ class PipelineBuilder:
         """Build the workflow definition dict. Validates DAG integrity."""
         errors = self.validate()
         if errors:
-            raise PipelineBuilderError(f"Pipeline validation failed: {'; '.join(errors)}")
+            raise PipelineBuilderError(
+                f"Pipeline validation failed: {'; '.join(errors)}"
+            )
 
         workflow: dict[str, Any] = {
             "name": self._name,

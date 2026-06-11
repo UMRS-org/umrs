@@ -62,9 +62,7 @@ def _parse_roster(path: str) -> list[dict[str, Any]]:
     try:
         import yaml  # type: ignore
     except ImportError:
-        logger.warning(
-            "PyYAML not installed; ignoring provision roster %s", path
-        )
+        logger.warning("PyYAML not installed; ignoring provision roster %s", path)
         return []
     try:
         with open(path, encoding="utf-8") as fh:
@@ -106,9 +104,7 @@ def _build_index(paths: list[str]) -> dict[str, dict[str, Any]]:
                     defaults[field] = entry[field]
             env_vars = entry.get("env_vars")
             if isinstance(env_vars, dict) and env_vars:
-                defaults["env_vars"] = {
-                    str(k): str(v) for k, v in env_vars.items()
-                }
+                defaults["env_vars"] = {str(k): str(v) for k, v in env_vars.items()}
             index[model] = defaults
     return index
 
@@ -119,9 +115,7 @@ def _load_index() -> dict[str, dict[str, Any]]:
         return {}
     key = tuple(paths)
     try:
-        mtimes = tuple(
-            os.path.getmtime(p) if os.path.exists(p) else 0.0 for p in paths
-        )
+        mtimes = tuple(os.path.getmtime(p) if os.path.exists(p) else 0.0 for p in paths)
     except OSError:
         mtimes = tuple(0.0 for _ in paths)
     cached = _cache.get(key)

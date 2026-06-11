@@ -45,7 +45,9 @@ class SingularityWrapper(RuntimeWrapper):
     ) -> ContainerEndpoint:
         """Launch Singularity container."""
         if not allocation.is_allocated:
-            raise LaunchError(f"Cannot launch: allocation not ready ({allocation.status})")
+            raise LaunchError(
+                f"Cannot launch: allocation not ready ({allocation.status})"
+            )
 
         image = spec.image or self.default_image
         if not image:

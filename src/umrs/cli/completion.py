@@ -27,7 +27,9 @@ def _action_takes_value(action: argparse.Action) -> bool:
     return action.nargs != 0
 
 
-def _subparser_action(parser: argparse.ArgumentParser) -> argparse._SubParsersAction | None:
+def _subparser_action(
+    parser: argparse.ArgumentParser,
+) -> argparse._SubParsersAction | None:
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
             return action
@@ -68,7 +70,9 @@ def _walk_parser(
 def _choice_candidates(action: argparse.Action, prefix: str) -> list[str]:
     if not action.choices:
         return []
-    return sorted(str(choice) for choice in action.choices if str(choice).startswith(prefix))
+    return sorted(
+        str(choice) for choice in action.choices if str(choice).startswith(prefix)
+    )
 
 
 def _option_candidates(parser: argparse.ArgumentParser, prefix: str) -> list[str]:
@@ -91,7 +95,9 @@ def _subcommand_candidates(parser: argparse.ArgumentParser, prefix: str) -> list
     return sorted(name for name in subparsers.choices if name.startswith(prefix))
 
 
-def _positional_choice_candidates(parser: argparse.ArgumentParser, prefix: str) -> list[str]:
+def _positional_choice_candidates(
+    parser: argparse.ArgumentParser, prefix: str
+) -> list[str]:
     for action in parser._actions:
         if action.option_strings or isinstance(action, argparse._SubParsersAction):
             continue
@@ -167,7 +173,9 @@ def emit_completion_if_requested(
         cword = int(os.environ.get("COMP_CWORD", "0"))
     except ValueError:
         cword = 0
-    words, adjusted_cword = normalize_completion_words(sys.argv[1:], cword, command_name)
+    words, adjusted_cword = normalize_completion_words(
+        sys.argv[1:], cword, command_name
+    )
     print_completion_candidates(parser, words, adjusted_cword)
     return True
 
@@ -179,12 +187,12 @@ def completion_script(command_name: str, env_var: str, shell: str) -> str:
         zsh_setup = "autoload -Uz bashcompinit\nbashcompinit\n\n"
     return (
         f"# {command_name} {shell} completion\n"
-        f"# Install with: eval \"$({command_name} completion {shell})\"\n"
+        f'# Install with: eval "$({command_name} completion {shell})"\n'
         f"{zsh_setup}"
         f"{function_name}() {{\n"
         "    local IFS=$'\\n'\n"
-        f"    COMPREPLY=( $( {env_var}=1 COMP_CWORD=\"$COMP_CWORD\" "
-        f"{command_name} \"${{COMP_WORDS[@]}}\" ) )\n"
+        f'    COMPREPLY=( $( {env_var}=1 COMP_CWORD="$COMP_CWORD" '
+        f'{command_name} "${{COMP_WORDS[@]}}" ) )\n'
         "}\n"
         f"complete -o default -o bashdefault -F {function_name} {command_name}\n"
     )

@@ -53,7 +53,7 @@ class FakeJobStore:
             jobs = [job for job in jobs if job.status == status]
         if job_type is not None:
             jobs = [job for job in jobs if job.job_type == job_type]
-        return jobs[offset: offset + limit]
+        return jobs[offset : offset + limit]
 
     def cancel_job(self, job_id, reason="user_cancelled"):
         self.cancelled = True
@@ -109,9 +109,7 @@ def test_executions_results_includes_artifacts(client):
     record.add_artifact("wf-runner/foo.json")
     record.update(status="succeeded", progress=1.0)
 
-    response = client.get(
-        f"/umrs/workflows/executions/{record.execution_id}/results"
-    )
+    response = client.get(f"/umrs/workflows/executions/{record.execution_id}/results")
     assert response.status_code == 200
     body = response.json()
     assert body["execution_status"] == "succeeded"
@@ -122,9 +120,7 @@ def test_executions_results_includes_artifacts(client):
 def test_cancel_marks_submitted_record_as_cancelled(client):
     registry = get_execution_registry()
     record = registry.create(workflow_name="wf", user_id="alice")
-    response = client.post(
-        f"/umrs/workflows/executions/{record.execution_id}/cancel"
-    )
+    response = client.post(f"/umrs/workflows/executions/{record.execution_id}/cancel")
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"

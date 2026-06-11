@@ -73,7 +73,10 @@ class SegmentStep(Step):
         for idx, key in enumerate(ctx.input_keys):
             logger.info(
                 "[%d/%d] Segmenting: %s (prompt=%r)",
-                idx + 1, len(ctx.input_keys), key, self.prompt,
+                idx + 1,
+                len(ctx.input_keys),
+                key,
+                self.prompt,
             )
 
             result, checksum = self._run_inference(ctx, key)
@@ -126,9 +129,7 @@ class SegmentStep(Step):
             metadata=metadata_list,
             extra={
                 "total_images": len(ctx.input_keys),
-                "total_objects": sum(
-                    m.get("num_objects", 0) for m in metadata_list
-                ),
+                "total_objects": sum(m.get("num_objects", 0) for m in metadata_list),
             },
         )
 

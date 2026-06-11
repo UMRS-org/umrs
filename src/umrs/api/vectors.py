@@ -22,7 +22,9 @@ def set_store(store) -> None:
 
 def _get_store():
     if _store is None:
-        raise HTTPException(status_code=503, detail="Vector version store not initialized")
+        raise HTTPException(
+            status_code=503, detail="Vector version store not initialized"
+        )
     return _store
 
 

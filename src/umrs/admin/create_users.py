@@ -16,7 +16,9 @@ from umrs.shared.storage.s3 import (
 def create_s3_user(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
-    print(f"######################\nCreating {fullname} ({username})\n######################")
+    print(
+        f"######################\nCreating {fullname} ({username})\n######################"
+    )
 
     user_s3_configuration_file = user_cfg["s3_configuration_file"]
 
@@ -47,7 +49,9 @@ def create_s3_user(user_cfg, admin_s3_configuration_file):
 def create_sql_users(user_cfg, sql_admin):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
-    print(f"######################\nCreating {fullname} ({username})\n######################")
+    print(
+        f"######################\nCreating {fullname} ({username})\n######################"
+    )
 
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
@@ -61,7 +65,9 @@ def build_parser():
         description="UMRS create user utility",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("-c", "--conf", default="./conf_umrs.json", help="Config file path")
+    parser.add_argument(
+        "-c", "--conf", default="./conf_umrs.json", help="Config file path"
+    )
     return parser
 
 

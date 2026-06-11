@@ -47,6 +47,7 @@ from umrs.jobs.reconciler import ReconcileResult, Reconciler
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 async def _start_interrupting_server(total_bytes: int, serve_bytes: int):
     """Loopback HTTP server that advertises *total_bytes* but closes after
     writing *serve_bytes*.  This simulates a network interruption during a
@@ -95,10 +96,7 @@ class InMemoryJobStore:
     def list_jobs(self, **kwargs) -> list[Job]:
         status = kwargs.get("status")
         job_type = kwargs.get("job_type")
-        return [
-            j for j in self.jobs
-            if j.status == status and j.job_type == job_type
-        ]
+        return [j for j in self.jobs if j.status == status and j.job_type == job_type]
 
     def get_attempt(self, attempt_id: str) -> JobAttempt:
         return self.attempts[attempt_id]
@@ -130,7 +128,7 @@ async def test_interrupted_download_leaves_partial_on_shared_storage(tmp_path):
     download writes to a directory that is visible across restarts.
     """
     total_bytes = 1024 * 1024  # 1 MiB advertised
-    serve_bytes = 256 * 1024   # only 256 KiB delivered
+    serve_bytes = 256 * 1024  # only 256 KiB delivered
 
     # -- Phase 1: interrupted download ----------------------------------------
     validator = MagicMock()

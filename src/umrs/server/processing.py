@@ -94,14 +94,10 @@ def process_s3_objects(
         with reentrant_lock:
             should_process = (
                 store_embeddings_flag
+                or (model is not None and getattr(model, "return_type", None) == "file")
                 or (
                     model is not None
-                    and getattr(model, "return_type", None) == "file"
-                )
-                or (
-                    model is not None
-                    and getattr(model, "type", None)
-                    in ("user_script", "user_workflow")
+                    and getattr(model, "type", None) in ("user_script", "user_workflow")
                 )
             )
             if should_process:
@@ -134,7 +130,7 @@ def process_s3_objects(
                         exit_status = TaskStatus.ERROR
             else:
                 print(
-                    f'Error: We do not compute embeddings for this bucket '
+                    f"Error: We do not compute embeddings for this bucket "
                     f'"{path_to_bucket}" (modality = "{modality_name}")\n'
                     f"\tUser is probably not configured"
                 )

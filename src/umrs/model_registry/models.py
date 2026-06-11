@@ -90,9 +90,9 @@ class ModelRefType(Enum):
     """
 
     FILESYSTEM_PATH = "filesystem_path"  # Local filesystem path
-    PVC_REF = "pvc_ref"                  # Kubernetes PersistentVolumeClaim
-    S3_REF = "s3_ref"                    # S3-compatible object storage
-    HF_REPO_REF = "hf_repo_ref"          # HuggingFace repository
+    PVC_REF = "pvc_ref"  # Kubernetes PersistentVolumeClaim
+    S3_REF = "s3_ref"  # S3-compatible object storage
+    HF_REPO_REF = "hf_repo_ref"  # HuggingFace repository
 
 
 @dataclass
@@ -363,7 +363,11 @@ class ServingProfile:
     def from_dict(cls, data: dict[str, Any]) -> ServingProfile:
         """Create from dictionary."""
         raw_profiles = data.get("launch_profiles") or data.get("runtime_profiles") or []
-        launch_profiles = list(raw_profiles) if isinstance(raw_profiles, list) else str(raw_profiles).split()
+        launch_profiles = (
+            list(raw_profiles)
+            if isinstance(raw_profiles, list)
+            else str(raw_profiles).split()
+        )
         return cls(
             serving_backend=data.get("serving_backend"),
             service_kind=data.get("service_kind"),
@@ -450,7 +454,9 @@ class ModelEntry:
         if isinstance(self.capabilities, dict):
             self.capabilities = ModelCapabilities.from_dict(self.capabilities)
         if isinstance(self.execution_authority_default, str):
-            self.execution_authority_default = ExecutionAuthority(self.execution_authority_default)
+            self.execution_authority_default = ExecutionAuthority(
+                self.execution_authority_default
+            )
         if isinstance(self.model_ref, dict):
             self.model_ref = ModelRef.from_dict(self.model_ref)
 
@@ -510,12 +516,8 @@ class ModelEntry:
             model_type=ModelType(data.get("model_type", "llm")),
             huggingface_id=data.get("huggingface_id"),
             description=data.get("description"),
-            serving_profile=ServingProfile.from_dict(
-                data.get("serving_profile", {})
-            ),
-            capabilities=ModelCapabilities.from_dict(
-                data.get("capabilities", {})
-            ),
+            serving_profile=ServingProfile.from_dict(data.get("serving_profile", {})),
+            capabilities=ModelCapabilities.from_dict(data.get("capabilities", {})),
             execution_authority_default=ExecutionAuthority(
                 data.get("execution_authority_default", "compose")
             ),
@@ -585,7 +587,7 @@ class ModelPolicy:
 
     # Access control
     allowed_projects: list[str] = field(default_factory=list)  # Empty = all allowed
-    denied_projects: list[str] = field(default_factory=list)   # Takes precedence
+    denied_projects: list[str] = field(default_factory=list)  # Takes precedence
 
     # Quota management
     max_concurrent_endpoints: int | None = None
@@ -609,7 +611,9 @@ class ModelPolicy:
     def __post_init__(self) -> None:
         """Convert types after initialization."""
         if isinstance(self.default_serving_profile, dict):
-            self.default_serving_profile = ServingProfile.from_dict(self.default_serving_profile)
+            self.default_serving_profile = ServingProfile.from_dict(
+                self.default_serving_profile
+            )
 
     def is_project_allowed(self, project_id: str) -> bool:
         """

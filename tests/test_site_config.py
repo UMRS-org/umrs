@@ -221,14 +221,16 @@ class TestLoadSiteConfig:
         monkeypatch.setenv("UMRS_TEST_ROOT", "/shared/alice")
         monkeypatch.setenv("USER", "alice")
         p = tmp_path / "site.yaml"
-        p.write_text(textwrap.dedent("""\
+        p.write_text(
+            textwrap.dedent("""\
             name: env-site
             runtime:
               rivault_dir: $UMRS_TEST_ROOT/rivault
               repo_dir: /lvs0/dne1/rccs-dmp/${USER}/ai4s-platform/umrs
             storage:
               model_cache_dir: ~/umrs_models/hf
-        """))
+        """)
+        )
 
         cfg = load_site_config(str(p))
 
@@ -239,12 +241,14 @@ class TestLoadSiteConfig:
     def test_blank_litellm_key_uses_environment_fallback(self, tmp_path, monkeypatch):
         monkeypatch.setenv("LITELLM_MASTER_KEY", "sk-from-env")
         p = tmp_path / "site.yaml"
-        p.write_text(textwrap.dedent("""\
+        p.write_text(
+            textwrap.dedent("""\
             name: env-key-site
             network:
               litellm_port: 8001
               litellm_master_key: ""
-        """))
+        """)
+        )
 
         cfg = load_site_config(str(p))
 
@@ -341,15 +345,12 @@ class TestToEnv:
 
     def test_to_env_enables_postgres_registry_when_dsn_present(self):
         cfg = SiteConfig(
-            database=DatabaseConfig(
-                registry_dsn="postgres://umrs:umrs_rccs@localhost:5432/umrs_db"
-            )
+            database=DatabaseConfig(registry_dsn="postgres://umrs:umrs_rccs@localhost:5432/umrs_db")
         )
         env = cfg.to_env()
         assert env["UMRS_REGISTRY_BACKEND"] == "postgres"
         assert (
-            env["UMRS_REGISTRY_POSTGRES_DSN"]
-            == "postgres://umrs:umrs_rccs@localhost:5432/umrs_db"
+            env["UMRS_REGISTRY_POSTGRES_DSN"] == "postgres://umrs:umrs_rccs@localhost:5432/umrs_db"
         )
 
     def test_to_env_omits_empty_values(self):

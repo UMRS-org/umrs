@@ -136,8 +136,9 @@ def _mask_to_box(mask):
     return [int(x1), int(y1), int(x2), int(y2)]
 
 
-def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
-                       points_per_side=8, max_dim=1024):
+def _segment_sam2_auto(
+    model, processor, image, device, mask_threshold=0.5, points_per_side=8, max_dim=1024
+):
     """Automatic mask generation with SAM2 using a grid of point prompts.
 
     Generates a grid of points across the image, runs SAM2 for each point,
@@ -153,11 +154,16 @@ def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
         scale = max_dim / max(orig_w, orig_h)
         new_w, new_h = int(orig_w * scale), int(orig_h * scale)
         image = image.resize((new_w, new_h), Image.LANCZOS)
-        logger.info("Resized image from %dx%d to %dx%d for inference",
-                     orig_w, orig_h, new_w, new_h)
+        logger.info(
+            "Resized image from %dx%d to %dx%d for inference",
+            orig_w,
+            orig_h,
+            new_w,
+            new_h,
+        )
 
     w, h = image.size
-    need_upscale = (w != orig_w or h != orig_h)
+    need_upscale = w != orig_w or h != orig_h
 
     # Generate sparse point grid
     xs = np.linspace(0, w - 1, points_per_side, dtype=np.float32)
@@ -171,7 +177,7 @@ def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
 
     batch_size = 16
     for i in range(0, len(points), batch_size):
-        batch_pts = points[i:i + batch_size]
+        batch_pts = points[i : i + batch_size]
         # Sam2 expects: input_points shape [batch, num_objects, num_points, 2]
         # For single image: we pass each point as a separate object
         input_points = [[[pt.tolist()] for pt in batch_pts]]
@@ -217,9 +223,16 @@ def _segment_sam2_auto(model, processor, image, device, mask_threshold=0.5,
         masks_out = []
         for m in masks_kept:
             m_t = torch.from_numpy(m).unsqueeze(0).unsqueeze(0).float()
-            m_up = torch.nn.functional.interpolate(
-                m_t, size=(orig_h, orig_w), mode="nearest",
-            ).squeeze().numpy().astype(np.uint8)
+            m_up = (
+                torch.nn.functional.interpolate(
+                    m_t,
+                    size=(orig_h, orig_w),
+                    mode="nearest",
+                )
+                .squeeze()
+                .numpy()
+                .astype(np.uint8)
+            )
             masks_out.append(m_up)
     else:
         masks_out = masks_kept
@@ -253,8 +266,15 @@ def _nms_masks(masks, scores, iou_threshold=0.5):
     return keep
 
 
-def segment_image_with_text(model, processor, image, text_prompt, device="cuda",
-                             threshold=0.5, mask_threshold=0.5):
+def segment_image_with_text(
+    model,
+    processor,
+    image,
+    text_prompt,
+    device="cuda",
+    threshold=0.5,
+    mask_threshold=0.5,
+):
     """Run segmentation with a text prompt.
 
     For SAM3: uses text-prompted instance segmentation.
@@ -267,10 +287,14 @@ def segment_image_with_text(model, processor, image, text_prompt, device="cuda",
     from transformers import Sam2Model
 
     if isinstance(model, Sam2Model):
-        logger.info("SAM2 detected — using automatic mask generation "
-                     "(text prompt '%s' ignored)", text_prompt)
-        return _segment_sam2_auto(model, processor, image, device,
-                                  mask_threshold=mask_threshold)
+        logger.info(
+            "SAM2 detected — using automatic mask generation "
+            "(text prompt '%s' ignored)",
+            text_prompt,
+        )
+        return _segment_sam2_auto(
+            model, processor, image, device, mask_threshold=mask_threshold
+        )
 
     if _is_official_sam3_processor(processor):
         processor.set_confidence_threshold(threshold)
@@ -300,14 +324,10 @@ def segment_image_with_text(model, processor, image, text_prompt, device="cuda",
             for mask in mask_tensor
         ]
         boxes_list = (
-            boxes_tensor.detach().cpu().tolist()
-            if boxes_tensor is not None
-            else []
+            boxes_tensor.detach().cpu().tolist() if boxes_tensor is not None else []
         )
         scores_list = (
-            scores_tensor.detach().cpu().tolist()
-            if scores_tensor is not None
-            else []
+            scores_tensor.detach().cpu().tolist() if scores_tensor is not None else []
         )
 
         return {
@@ -336,7 +356,9 @@ def segment_image_with_text(model, processor, image, text_prompt, device="cuda",
         target_sizes=target_sizes,
     )[0]
 
-    masks_np = [m.cpu().numpy() for m in results["masks"]] if len(results["masks"]) > 0 else []
+    masks_np = (
+        [m.cpu().numpy() for m in results["masks"]] if len(results["masks"]) > 0 else []
+    )
     boxes_list = results["boxes"].cpu().tolist() if len(results["boxes"]) > 0 else []
     scores_list = results["scores"].cpu().tolist() if len(results["scores"]) > 0 else []
 
@@ -348,8 +370,16 @@ def segment_image_with_text(model, processor, image, text_prompt, device="cuda",
     }
 
 
-def segment_image_with_boxes(model, processor, image, boxes, labels, device="cuda",
-                              threshold=0.5, mask_threshold=0.5):
+def segment_image_with_boxes(
+    model,
+    processor,
+    image,
+    boxes,
+    labels,
+    device="cuda",
+    threshold=0.5,
+    mask_threshold=0.5,
+):
     """Run segmentation with bounding box prompts.
 
     Works with both SAM2 and SAM3 (both support box prompts).
@@ -357,8 +387,9 @@ def segment_image_with_boxes(model, processor, image, boxes, labels, device="cud
     from transformers import Sam2Model
 
     if isinstance(model, Sam2Model):
-        return _segment_sam2_boxes(model, processor, image, boxes, labels,
-                                   device, mask_threshold)
+        return _segment_sam2_boxes(
+            model, processor, image, boxes, labels, device, mask_threshold
+        )
 
     # Sam3 path
     input_boxes = [boxes]
@@ -387,7 +418,9 @@ def segment_image_with_boxes(model, processor, image, boxes, labels, device="cud
         target_sizes=target_sizes,
     )[0]
 
-    masks_np = [m.cpu().numpy() for m in results["masks"]] if len(results["masks"]) > 0 else []
+    masks_np = (
+        [m.cpu().numpy() for m in results["masks"]] if len(results["masks"]) > 0 else []
+    )
     boxes_list = results["boxes"].cpu().tolist() if len(results["boxes"]) > 0 else []
     scores_list = results["scores"].cpu().tolist() if len(results["scores"]) > 0 else []
 
@@ -421,8 +454,10 @@ def _segment_sam2_boxes(model, processor, image, boxes, labels, device, mask_thr
     boxes_list = []
     for j in range(masks.shape[0]):
         mask_t = torch.nn.functional.interpolate(
-            masks[j:j+1].unsqueeze(0).float(),
-            size=(h, w), mode="bilinear", align_corners=False,
+            masks[j : j + 1].unsqueeze(0).float(),
+            size=(h, w),
+            mode="bilinear",
+            align_corners=False,
         ).squeeze()
         mask_np = (mask_t.cpu().numpy() > mask_threshold).astype(np.uint8)
         masks_np.append(mask_np)
@@ -459,7 +494,7 @@ def overlay_masks_on_image(image, masks, alpha=0.5):
     colors = [tuple(int(c * 255) for c in cmap(i)[:3]) for i in range(n_masks)]
 
     for mask, color in zip(masks, colors, strict=False):
-        mask_uint8 = (255 * mask.astype(np.uint8))
+        mask_uint8 = 255 * mask.astype(np.uint8)
         mask_img = Image.fromarray(mask_uint8)
         if mask_img.size != image.size:
             mask_img = mask_img.resize(image.size, Image.NEAREST)
@@ -478,8 +513,15 @@ def image_from_s3(s3, bucket, key):
     return Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
 
-def compute_sam3_segmentation(self, s3, s3_keys, path_to_bucket, output_bucket,
-                               text_prompt="object", skip_existing=True):
+def compute_sam3_segmentation(
+    self,
+    s3,
+    s3_keys,
+    path_to_bucket,
+    output_bucket,
+    text_prompt="object",
+    skip_existing=True,
+):
     """UMRS pipeline: download images from S3, segment with SAM3, upload results.
 
     Returns:
@@ -492,8 +534,13 @@ def compute_sam3_segmentation(self, s3, s3_keys, path_to_bucket, output_bucket,
     metadata_list = []
 
     for idx, s3_key in enumerate(s3_keys):
-        logger.info("[%d/%d] SAM3 segmenting: %s (prompt='%s')",
-                     idx + 1, len(s3_keys), s3_key, text_prompt)
+        logger.info(
+            "[%d/%d] SAM3 segmenting: %s (prompt='%s')",
+            idx + 1,
+            len(s3_keys),
+            s3_key,
+            text_prompt,
+        )
 
         # Skip if output already exists in the output bucket
         base = s3_key.rsplit(".", 1)[0] if "." in s3_key else s3_key
@@ -501,8 +548,13 @@ def compute_sam3_segmentation(self, s3, s3_keys, path_to_bucket, output_bucket,
         if skip_existing and output_bucket:
             try:
                 s3.head_object(Bucket=output_bucket, Key=expected_out_key)
-                logger.info("[%d/%d] Skipping %s — output already exists in %s",
-                            idx + 1, len(s3_keys), s3_key, output_bucket)
+                logger.info(
+                    "[%d/%d] Skipping %s — output already exists in %s",
+                    idx + 1,
+                    len(s3_keys),
+                    s3_key,
+                    output_bucket,
+                )
                 head = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
                 checksums.append(head["ETag"].strip('"'))
                 metadata_list.append(head.get("Metadata", {}))
@@ -532,8 +584,12 @@ def compute_sam3_segmentation(self, s3, s3_keys, path_to_bucket, output_bucket,
             buf = io.BytesIO()
             overlay.save(buf, format="PNG")
             buf.seek(0)
-            s3.put_object(Bucket=output_bucket, Key=saved_key, Body=buf.getvalue(),
-                          ContentType="image/png")
+            s3.put_object(
+                Bucket=output_bucket,
+                Key=saved_key,
+                Body=buf.getvalue(),
+                ContentType="image/png",
+            )
             saved_keys.append(f"{output_bucket}/{saved_key}")
         else:
             saved_keys.append(None)

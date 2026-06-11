@@ -73,13 +73,22 @@ class JanitorConfig:
             ttl_grace_sec=int(os.getenv("JANITOR_TTL_GRACE_SEC", "30")),
             stuck_timeout_sec=int(os.getenv("JANITOR_STUCK_TIMEOUT_SEC", "600")),
             batch_size=int(os.getenv("JANITOR_BATCH_SIZE", "10")),
-            enable_ttl_cleanup=os.getenv("JANITOR_ENABLE_TTL", "true").lower() == "true",
-            enable_orphan_cleanup=os.getenv("JANITOR_ENABLE_ORPHAN", "true").lower() == "true",
-            enable_stuck_cleanup=os.getenv("JANITOR_ENABLE_STUCK", "true").lower() == "true",
-            enable_liveness_cleanup=os.getenv("JANITOR_ENABLE_LIVENESS", "true").lower() == "true",
-            enable_ttl_auto_extend=os.getenv("JANITOR_ENABLE_TTL_AUTO_EXTEND", "true").lower() == "true",
+            enable_ttl_cleanup=os.getenv("JANITOR_ENABLE_TTL", "true").lower()
+            == "true",
+            enable_orphan_cleanup=os.getenv("JANITOR_ENABLE_ORPHAN", "true").lower()
+            == "true",
+            enable_stuck_cleanup=os.getenv("JANITOR_ENABLE_STUCK", "true").lower()
+            == "true",
+            enable_liveness_cleanup=os.getenv("JANITOR_ENABLE_LIVENESS", "true").lower()
+            == "true",
+            enable_ttl_auto_extend=os.getenv(
+                "JANITOR_ENABLE_TTL_AUTO_EXTEND", "true"
+            ).lower()
+            == "true",
             ttl_auto_extend_sec=int(os.getenv("JANITOR_TTL_AUTO_EXTEND_SEC", "600")),
-            ttl_auto_extend_threshold_sec=int(os.getenv("JANITOR_TTL_AUTO_EXTEND_THRESHOLD_SEC", "120")),
+            ttl_auto_extend_threshold_sec=int(
+                os.getenv("JANITOR_TTL_AUTO_EXTEND_THRESHOLD_SEC", "120")
+            ),
         )
 
 
@@ -101,7 +110,12 @@ class CleanupResult:
     @property
     def total_cleaned(self) -> int:
         """Total endpoints cleaned."""
-        return self.ttl_expired + self.stuck_cleaned + self.orphans_cleaned + self.ghosts_pruned
+        return (
+            self.ttl_expired
+            + self.stuck_cleaned
+            + self.orphans_cleaned
+            + self.ghosts_pruned
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -406,7 +420,10 @@ class Janitor:
 
         endpoints = self.registry.list_all()
         for endpoint in endpoints:
-            if endpoint.status not in (EndpointStatus.PROVISIONING, EndpointStatus.STARTING):
+            if endpoint.status not in (
+                EndpointStatus.PROVISIONING,
+                EndpointStatus.STARTING,
+            ):
                 continue
 
             # Best-effort: query the backend for the live state + reason so we
@@ -420,7 +437,8 @@ class Janitor:
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "Stuck-check for %s skipped (backend error): %s",
-                    endpoint.job_id, exc,
+                    endpoint.job_id,
+                    exc,
                 )
                 continue  # Inconclusive — preserve the endpoint
 
@@ -443,14 +461,18 @@ class Janitor:
             ):
                 logger.info(
                     "Endpoint %s still queued after %ds (reason=%s); preserving",
-                    endpoint.job_id, int(age.total_seconds()), reason,
+                    endpoint.job_id,
+                    int(age.total_seconds()),
+                    reason,
                 )
                 continue
 
             logger.warning(
                 "Endpoint %s stuck in %s for >%ds (reason=%s), cleaning up",
-                endpoint.job_id, endpoint.status.value,
-                self.config.stuck_timeout_sec, reason or "unknown",
+                endpoint.job_id,
+                endpoint.status.value,
+                self.config.stuck_timeout_sec,
+                reason or "unknown",
             )
             success = await self._cleanup_endpoint(endpoint.job_id)
             if success:

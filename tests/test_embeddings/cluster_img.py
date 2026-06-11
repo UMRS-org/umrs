@@ -1,4 +1,4 @@
-#!/usr/bin/python3 
+#!/usr/bin/python3
 import psycopg2
 from psycopg2 import sql, pool
 import numpy as np
@@ -8,9 +8,10 @@ from PIL import Image
 from sentence_transformers import SentenceTransformer
 import os
 
+
 def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
     """
-    Performs K-Means clustering on text embeddings retrieved from PostgreSQL 
+    Performs K-Means clustering on text embeddings retrieved from PostgreSQL
     and returns one representative text per cluster.
 
     Args:
@@ -23,9 +24,9 @@ def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
     """
 
     print(f"Clustering data from table '{table}' using kmeans...")
-    
+
     # Fetch all embeddings and their corresponding texts from the database
-    #select s3_object, embedding from image;
+    # select s3_object, embedding from image;
     cur.execute(f"SELECT s3_object, embedding FROM {table};")
     results = cur.fetchall()
 
@@ -40,7 +41,9 @@ def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
     for row in results:
         embedding_str = row[1]  # Extract the stored vector (string format)
         if isinstance(embedding_str, str):
-            embedding = np.array(ast.literal_eval(embedding_str))  # Convert string to list of floats
+            embedding = np.array(
+                ast.literal_eval(embedding_str)
+            )  # Convert string to list of floats
         else:
             embedding = np.array(embedding_str)  # Already a list
         embeddings.append(embedding)
@@ -69,44 +72,50 @@ def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
 
     return centroid_texts
 
+
 def query_db_with_embeddings_image(model, conn, cur, image_file, top_k=5):
     print(f"Searching table '{table}' for {image_file}...")
-    
+
     image = Image.open(image_file)
     query_embedding = model.encode(image, convert_to_tensor=False).tolist()
 
     # Perform similarity search using L2 distance
-    cur.execute("""
+    cur.execute(
+        """
         SELECT s3_object
         FROM image
         ORDER BY embedding <=> %s::vector
         LIMIT %s;
-    """, (query_embedding, top_k))
+    """,
+        (query_embedding, top_k),
+    )
 
     # Fetch results
     results = cur.fetchall()
-    
+
     # Extract IDs and texts
     texts = [row[0] for row in results]
 
     print(f"For {image_file}:")
     for text in texts:
         print(f"\t{os.path.basename(text)}")
-    
+
     return texts
+
 
 #  Sentence Transformer Loader
 def load_sentence_transformers_model(model_name):
     from sentence_transformers import SentenceTransformer
-    try :
+
+    try:
         model = SentenceTransformer(model_name, local_files_only=True)
     except Exception:
         model = SentenceTransformer(model_name)
-    return model;
+    return model
 
 
 sql_username = "usr1_2"
-db_name =  "text_and_images_usr1_2"
+db_name = "text_and_images_usr1_2"
 table = "image"
 
 DB_HOST = "localhost"
@@ -118,17 +127,18 @@ DB_USER_PASSWORD = "ejeannot"
 
 print("Connecting to DB")
 # Connect to PostgreSQL default database (`postgres`)
-conn = psycopg2.connect(dbname=DB_NAME, user=sql_username, host=DB_HOST, port=DB_PORT, password=DB_USER_PASSWORD)
+conn = psycopg2.connect(
+    dbname=DB_NAME, user=sql_username, host=DB_HOST, port=DB_PORT, password=DB_USER_PASSWORD
+)
 cur = conn.cursor()
 
-centroid_texts = cluster_from_embeddings(conn, cur, table, nb_clusters = 3)
+centroid_texts = cluster_from_embeddings(conn, cur, table, nb_clusters=3)
 for text in centroid_texts:
-        print(f"\t{os.path.basename(text)}")
+    print(f"\t{os.path.basename(text)}")
 
 print("Loading model...")
 model = load_sentence_transformers_model("clip-ViT-B-32")
-    
+
 query_db_with_embeddings_image(model, conn, cur, "../data/img_test/cat.jpeg", top_k=12)
 query_db_with_embeddings_image(model, conn, cur, "../data/img_test/dog.jpeg", top_k=11)
 query_db_with_embeddings_image(model, conn, cur, "../data/img_test/eagle.jpeg", top_k=11)
-

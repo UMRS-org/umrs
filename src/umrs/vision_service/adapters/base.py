@@ -158,17 +158,17 @@ class VisionModelAdapter(abc.ABC):
         results = []
         for i, (image, key) in enumerate(zip(images, keys, strict=True)):
             presigned = (
-                presigned_output_urls_list[i]
-                if presigned_output_urls_list
-                else None
+                presigned_output_urls_list[i] if presigned_output_urls_list else None
             )
-            raw_bytes = (
-                raw_image_bytes_list[i]
-                if raw_image_bytes_list
-                else None
-            )
+            raw_bytes = raw_image_bytes_list[i] if raw_image_bytes_list else None
             result = self.infer(
-                model, image, bucket, key, config, s3, output_bucket,
+                model,
+                image,
+                bucket,
+                key,
+                config,
+                s3,
+                output_bucket,
                 presigned_output_urls=presigned,
                 raw_image_bytes=raw_bytes,
             )

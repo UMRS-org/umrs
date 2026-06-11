@@ -123,18 +123,19 @@ class TestSessionGrantsInProvider:
 class TestAuthorizationEngine:
     def setup_method(self):
         from umrs.shared.authorization import reset_site_policy
+
         reset_site_policy()
 
     def test_admin_bypass(self):
         from umrs.shared.auth import AuthContext, UserRole
         from umrs.shared.authorization import ResourceRequest, authorize
 
-        ctx = AuthContext(
-            user_id="admin-user", username="admin-user", role=UserRole.ADMIN
-        )
+        ctx = AuthContext(user_id="admin-user", username="admin-user", role=UserRole.ADMIN)
 
         resource = ResourceRequest(
-            project_id="secret-project", gpus=99, walltime_sec=999999,
+            project_id="secret-project",
+            gpus=99,
+            walltime_sec=999999,
             target_user="other-user",
         )
 
@@ -146,7 +147,9 @@ class TestAuthorizationEngine:
         from umrs.shared.authorization import AuthorizationDenied, ResourceRequest, authorize
 
         ctx = AuthContext(
-            user_id="alice", username="alice", role=UserRole.USER,
+            user_id="alice",
+            username="alice",
+            role=UserRole.USER,
             project_id="proj-a",
         )
 
@@ -160,7 +163,9 @@ class TestAuthorizationEngine:
         from umrs.shared.authorization import ResourceRequest, authorize
 
         ctx = AuthContext(
-            user_id="alice", username="alice", role=UserRole.USER,
+            user_id="alice",
+            username="alice",
+            role=UserRole.USER,
             project_id="proj-a",
         )
 
@@ -171,10 +176,17 @@ class TestAuthorizationEngine:
 
     def test_gpu_limit_exceeded(self):
         from umrs.shared.auth import AuthContext, UserRole
-        from umrs.shared.authorization import AuthorizationDenied, ResourceRequest, authorize, reset_site_policy
+        from umrs.shared.authorization import (
+            AuthorizationDenied,
+            ResourceRequest,
+            authorize,
+            reset_site_policy,
+        )
 
         ctx = AuthContext(
-            user_id="bob", username="bob", role=UserRole.USER,
+            user_id="bob",
+            username="bob",
+            role=UserRole.USER,
             project_id="proj-x",
         )
 
@@ -187,10 +199,17 @@ class TestAuthorizationEngine:
 
     def test_walltime_limit_exceeded(self):
         from umrs.shared.auth import AuthContext, UserRole
-        from umrs.shared.authorization import AuthorizationDenied, ResourceRequest, authorize, reset_site_policy
+        from umrs.shared.authorization import (
+            AuthorizationDenied,
+            ResourceRequest,
+            authorize,
+            reset_site_policy,
+        )
 
         ctx = AuthContext(
-            user_id="carol", username="carol", role=UserRole.USER,
+            user_id="carol",
+            username="carol",
+            role=UserRole.USER,
             project_id="proj-y",
         )
 
@@ -206,7 +225,9 @@ class TestAuthorizationEngine:
         from umrs.shared.authorization import authorize
 
         ctx = AuthContext(
-            user_id="dave", username="dave", role=UserRole.USER,
+            user_id="dave",
+            username="dave",
+            role=UserRole.USER,
         )
 
         # No resource → no policy check → should not raise
@@ -227,8 +248,11 @@ class TestSessionThreadAuthenticator:
         key = _fake_z85("Z")
         grants = SessionGrants(projects=("test",))
         entry = provider.register(
-            key, user_id="alice", ttl_seconds=3600,
-            session_id="my-session-abc", grants=grants,
+            key,
+            user_id="alice",
+            ttl_seconds=3600,
+            session_id="my-session-abc",
+            grants=grants,
         )
 
         # Create the authenticator (we just need the _curve_user_id method)
@@ -240,6 +264,7 @@ class TestSessionThreadAuthenticator:
         # In real ZMQ, curve_user_id receives the raw binary key (not Z85)
         # but our implementation Z85-encodes it to look up in the provider
         import zmq.utils.z85 as z85
+
         raw_key = z85.decode(key.encode("ascii"))
         result = auth._curve_user_id(raw_key)
         assert result == "my-session-abc"
@@ -254,6 +279,7 @@ class TestSessionThreadAuthenticator:
         auth._credentials_provider = provider
 
         import zmq.utils.z85 as z85
+
         unknown_key = _fake_z85("X")
         raw_key = z85.decode(unknown_key.encode("ascii"))
         result = auth._curve_user_id(raw_key)
@@ -279,6 +305,7 @@ class TestSlurmAttribution:
 
         # Verify the source file contains the attribution logic
         import inspect
+
         source = inspect.getsource(RemoteSlurmBackend)
         assert "UMRS_USER" in source
         assert "UMRS_PROJECT" in source
@@ -325,11 +352,14 @@ class TestSlurmAttribution:
         )
         site = SimpleNamespace(scheduler=scheduler, partition_profiles={})
 
-        with patch(
-            "umrs.orchestrator.site_config.load_site_config",
-            return_value=site,
-        ), patch.object(
-            RemoteSlurmBackend, "_select_partition", staticmethod(lambda *a, **k: "ng-dgx-m0")
+        with (
+            patch(
+                "umrs.orchestrator.site_config.load_site_config",
+                return_value=site,
+            ),
+            patch.object(
+                RemoteSlurmBackend, "_select_partition", staticmethod(lambda *a, **k: "ng-dgx-m0")
+            ),
         ):
             asyncio.run(
                 backend._submit_wrapper_job(
@@ -365,6 +395,7 @@ class TestSlurmTargetAttribution:
         spec = JobSpec.__new__(JobSpec)
         # Verify the class has the fields
         import dataclasses
+
         if dataclasses.is_dataclass(JobSpec):
             field_names = [f.name for f in dataclasses.fields(JobSpec)]
             assert "requesting_user" in field_names
@@ -400,9 +431,10 @@ class TestClientSessionBootstrap:
         }
         mock_register_resp.raise_for_status = MagicMock()
 
-        with patch("requests.get", return_value=mock_server_key_resp), \
-             patch("requests.post", return_value=mock_register_resp):
-
+        with (
+            patch("requests.get", return_value=mock_server_key_resp),
+            patch("requests.post", return_value=mock_register_resp),
+        ):
             info = bootstrap_curve_session(
                 gateway_url="http://localhost:8000",
                 jwt_token="fake-jwt",
@@ -442,8 +474,10 @@ class TestClientSessionBootstrap:
         mock_register_resp = MagicMock()
         mock_register_resp.status_code = 401
 
-        with patch("requests.get", return_value=mock_server_key_resp), \
-             patch("requests.post", return_value=mock_register_resp):
+        with (
+            patch("requests.get", return_value=mock_server_key_resp),
+            patch("requests.post", return_value=mock_register_resp),
+        ):
             with pytest.raises(SessionBootstrapError, match="401"):
                 bootstrap_curve_session(
                     gateway_url="http://localhost:8000",

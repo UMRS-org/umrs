@@ -17,6 +17,7 @@ from typing import Any
 
 class ResourceType(str, Enum):
     """Types of tracked resources."""
+
     CPU = "cpu"
     MEMORY = "memory"
     GPU = "gpu"
@@ -26,6 +27,7 @@ class ResourceType(str, Enum):
 
 class QuotaAction(str, Enum):
     """Action when quota is exceeded."""
+
     WARN = "warn"
     THROTTLE = "throttle"
     BLOCK = "block"
@@ -34,6 +36,7 @@ class QuotaAction(str, Enum):
 @dataclass
 class ResourceSnapshot:
     """Point-in-time resource readings."""
+
     timestamp: float = field(default_factory=time.time)
     cpu_percent: float = 0.0
     memory_bytes: int = 0
@@ -62,6 +65,7 @@ class ResourceSnapshot:
 @dataclass
 class QuotaPolicy:
     """Configurable per-user resource limits."""
+
     user_id: str
     max_cpu_percent: float = 100.0
     max_memory_bytes: int = 0  # 0 = unlimited
@@ -70,35 +74,47 @@ class QuotaPolicy:
     max_concurrent_jobs: int = 10
     action: QuotaAction = QuotaAction.WARN
 
-    def check(self, snapshot: ResourceSnapshot, active_jobs: int = 0) -> list[QuotaViolation]:
+    def check(
+        self, snapshot: ResourceSnapshot, active_jobs: int = 0
+    ) -> list[QuotaViolation]:
         violations = []
         if self.max_cpu_percent > 0 and snapshot.cpu_percent > self.max_cpu_percent:
-            violations.append(QuotaViolation(
-                resource=ResourceType.CPU,
-                limit=self.max_cpu_percent,
-                actual=snapshot.cpu_percent,
-                action=self.action,
-            ))
+            violations.append(
+                QuotaViolation(
+                    resource=ResourceType.CPU,
+                    limit=self.max_cpu_percent,
+                    actual=snapshot.cpu_percent,
+                    action=self.action,
+                )
+            )
         if self.max_memory_bytes > 0 and snapshot.memory_bytes > self.max_memory_bytes:
-            violations.append(QuotaViolation(
-                resource=ResourceType.MEMORY,
-                limit=float(self.max_memory_bytes),
-                actual=float(snapshot.memory_bytes),
-                action=self.action,
-            ))
-        if self.max_storage_bytes > 0 and snapshot.storage_bytes > self.max_storage_bytes:
-            violations.append(QuotaViolation(
-                resource=ResourceType.STORAGE,
-                limit=float(self.max_storage_bytes),
-                actual=float(snapshot.storage_bytes),
-                action=self.action,
-            ))
+            violations.append(
+                QuotaViolation(
+                    resource=ResourceType.MEMORY,
+                    limit=float(self.max_memory_bytes),
+                    actual=float(snapshot.memory_bytes),
+                    action=self.action,
+                )
+            )
+        if (
+            self.max_storage_bytes > 0
+            and snapshot.storage_bytes > self.max_storage_bytes
+        ):
+            violations.append(
+                QuotaViolation(
+                    resource=ResourceType.STORAGE,
+                    limit=float(self.max_storage_bytes),
+                    actual=float(snapshot.storage_bytes),
+                    action=self.action,
+                )
+            )
         return violations
 
 
 @dataclass
 class QuotaViolation:
     """A detected quota violation."""
+
     resource: ResourceType
     limit: float
     actual: float
@@ -122,6 +138,7 @@ class QuotaViolation:
 @dataclass
 class UsageReport:
     """Per-user/project resource usage summary."""
+
     user_id: str
     project_id: str = ""
     period_start: float = 0.0
@@ -137,7 +154,8 @@ class UsageReport:
 
     def summary(self) -> str:
         lines = [
-            f"Usage Report for {self.user_id}" + (f" ({self.project_id})" if self.project_id else ""),
+            f"Usage Report for {self.user_id}"
+            + (f" ({self.project_id})" if self.project_id else ""),
             f"  Period: {self.period_start:.0f} – {self.period_end:.0f}",
             f"  Snapshots: {self.snapshot_count}",
             f"  CPU:  avg={self.avg_cpu_percent:.1f}% max={self.max_cpu_percent:.1f}%",
@@ -187,11 +205,13 @@ class ResourceTracker:
             history = self._history[user_id]
             history.append(snapshot)
             if len(history) > self._max_history:
-                self._history[user_id] = history[-self._max_history:]
+                self._history[user_id] = history[-self._max_history :]
 
     def take_snapshot(self, user_id: str, project_id: str = "") -> ResourceSnapshot:
         """Take a snapshot of current system resources (basic /proc-based)."""
-        snapshot = ResourceSnapshot(metadata={"user_id": user_id, "project_id": project_id})
+        snapshot = ResourceSnapshot(
+            metadata={"user_id": user_id, "project_id": project_id}
+        )
 
         try:
             load = os.getloadavg()
@@ -212,7 +232,9 @@ class ResourceTracker:
                 total = meminfo.get("MemTotal", 1)
                 available = meminfo.get("MemAvailable", 0)
                 snapshot.memory_bytes = total - available
-                snapshot.memory_percent = ((total - available) / total) * 100.0 if total > 0 else 0.0
+                snapshot.memory_percent = (
+                    ((total - available) / total) * 100.0 if total > 0 else 0.0
+                )
         except (OSError, KeyError, ValueError):
             pass
 
@@ -269,7 +291,9 @@ class ResourceTracker:
             avg_memory_bytes=sum(s.memory_bytes for s in history) / len(history),
             max_memory_bytes=max(s.memory_bytes for s in history),
             total_storage_bytes=history[-1].storage_bytes,
-            total_network_bytes=sum(s.network_bytes_sent + s.network_bytes_recv for s in history),
+            total_network_bytes=sum(
+                s.network_bytes_sent + s.network_bytes_recv for s in history
+            ),
         )
 
         # Check violations across all snapshots

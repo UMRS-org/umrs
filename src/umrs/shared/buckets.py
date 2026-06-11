@@ -109,8 +109,7 @@ class BucketsCfg:
 
         if type(self) is not type(other):
             raise TypeError(
-                f"Cannot replace {type(self).__name__} "
-                f"with {type(other).__name__}"
+                f"Cannot replace {type(self).__name__} with {type(other).__name__}"
             )
         self._store = other._store.copy()
 

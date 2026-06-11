@@ -59,8 +59,11 @@ def get_usage_db_pool():
     """Return the DB pool for usage recording (may be None)."""
     return _usage_db_pool
 
+
 def _resolve_litellm_service_key() -> str | None:
-    return os.environ.get("GATEWAY_LITELLM_SERVICE_KEY") or os.environ.get("LITELLM_MASTER_KEY")
+    return os.environ.get("GATEWAY_LITELLM_SERVICE_KEY") or os.environ.get(
+        "LITELLM_MASTER_KEY"
+    )
 
 
 # LiteLLM service key — injected as Authorization header when proxying.
@@ -110,7 +113,9 @@ def _json_body(body: bytes) -> dict | None:
 def _model_needs_rewrite(req_model: str | None, endpoint: RegisteredEndpoint) -> bool:
     if not req_model:
         return False
-    return req_model in _recognized_model_names(endpoint) and req_model != _upstream_model_name(endpoint)
+    return req_model in _recognized_model_names(
+        endpoint
+    ) and req_model != _upstream_model_name(endpoint)
 
 
 def _discover_endpoint(
@@ -135,7 +140,9 @@ def _discover_endpoint(
             status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
         )
         for ep in all_eps:
-            served = ep.metadata.get("served_model_name") or _resolve_served_model_name(ep.model)
+            served = ep.metadata.get("served_model_name") or _resolve_served_model_name(
+                ep.model
+            )
             if served == model:
                 endpoint = ep
                 break
@@ -162,7 +169,9 @@ def _rewrite_model_name(body: bytes, endpoint: RegisteredEndpoint) -> bytes:
     if _model_needs_rewrite(req_model, endpoint):
         upstream_model = _upstream_model_name(endpoint)
         body_json["model"] = upstream_model
-        logger.debug("Rewriting model for upstream: %s -> %s", req_model, upstream_model)
+        logger.debug(
+            "Rewriting model for upstream: %s -> %s", req_model, upstream_model
+        )
         return json.dumps(body_json).encode()
 
     return body
@@ -177,11 +186,19 @@ def _build_upstream_headers(
     headers: dict[str, str] = {}
 
     # Forward safe headers
-    hop_by_hop = frozenset({
-        "host", "connection", "keep-alive", "transfer-encoding",
-        "upgrade", "authorization", "x-project-id", "x-user-id",
-        "content-length",
-    })
+    hop_by_hop = frozenset(
+        {
+            "host",
+            "connection",
+            "keep-alive",
+            "transfer-encoding",
+            "upgrade",
+            "authorization",
+            "x-project-id",
+            "x-user-id",
+            "content-length",
+        }
+    )
     for key, value in request.headers.items():
         if key.lower() not in hop_by_hop:
             headers[key] = value
@@ -360,9 +377,7 @@ async def _proxy_to_litellm(
     if _usage_db_pool is not None:
         # Resolve endpoint tier from metadata
         ep_tier = (
-            endpoint.metadata.get("tier")
-            or endpoint.metadata.get("owner_type")
-            or ""
+            endpoint.metadata.get("tier") or endpoint.metadata.get("owner_type") or ""
         )
         # Requested model name (before rewrite)
         req_model = ""
@@ -382,12 +397,20 @@ async def _proxy_to_litellm(
 
     if is_streaming:
         return await _proxy_streaming(
-            request, upstream_url, headers, body,
-            usage_record=usage_record, timer=timer,
+            request,
+            upstream_url,
+            headers,
+            body,
+            usage_record=usage_record,
+            timer=timer,
         )
     return await _proxy_oneshot(
-        request, upstream_url, headers, body,
-        usage_record=usage_record, timer=timer,
+        request,
+        upstream_url,
+        headers,
+        body,
+        usage_record=usage_record,
+        timer=timer,
     )
 
 
@@ -411,7 +434,10 @@ def _get_caller_identity(request: Request) -> tuple[str, str]:
     user_id = request.headers.get("x-user-id", "")
     verified_project_id = request.headers.get("x-verified-project-id", "").strip()
     project_id = verified_project_id or request.headers.get("x-project-id", "").strip()
-    if not verified_project_id and os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
+    if (
+        not verified_project_id
+        and os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing X-Verified-Project-ID header (Gateway must set this)",
@@ -447,7 +473,9 @@ async def chat_completions(
     logger.info("Chat completion: project=%s, model=%s", project_id, model)
 
     endpoint = _discover_endpoint(registry, project_id, model)
-    response = await _proxy_to_litellm(request, endpoint, "v1/chat/completions", user_id, project_id)
+    response = await _proxy_to_litellm(
+        request, endpoint, "v1/chat/completions", user_id, project_id
+    )
 
     # Mark used inline (direct registry call, no HTTP round-trip)
     registry.mark_used(endpoint.job_id)
@@ -466,7 +494,9 @@ async def completions(
     model = _extract_model(body)
 
     endpoint = _discover_endpoint(registry, project_id, model)
-    response = await _proxy_to_litellm(request, endpoint, "v1/completions", user_id, project_id)
+    response = await _proxy_to_litellm(
+        request, endpoint, "v1/completions", user_id, project_id
+    )
     registry.mark_used(endpoint.job_id)
 
     return response
@@ -505,7 +535,9 @@ async def _fetch_endpoint_models(endpoint: RegisteredEndpoint) -> list[dict]:
             response.raise_for_status()
             payload = response.json()
     except (httpx.HTTPError, ValueError, json.JSONDecodeError) as exc:
-        logger.warning("Failed to list models for endpoint %s: %s", endpoint.job_id, exc)
+        logger.warning(
+            "Failed to list models for endpoint %s: %s", endpoint.job_id, exc
+        )
         return [_synth_model_entry(endpoint)]
 
     data = payload.get("data") if isinstance(payload, dict) else None
@@ -536,9 +568,7 @@ async def list_models(
     if not endpoints:
         return {"object": "list", "data": []}
 
-    results = await asyncio.gather(
-        *(_fetch_endpoint_models(ep) for ep in endpoints)
-    )
+    results = await asyncio.gather(*(_fetch_endpoint_models(ep) for ep in endpoints))
 
     merged: dict[str, dict] = {}
     for entries in results:
@@ -549,6 +579,7 @@ async def list_models(
 
     # Apply deployment-scoped visibility (e.g. frontier-only on AI4S).
     from .model_visibility import is_model_visible
+
     data = [entry for entry in merged.values() if is_model_visible(entry.get("id"))]
 
     return {"object": "list", "data": data}
@@ -565,7 +596,9 @@ async def embeddings(
     model = _extract_model(body)
 
     endpoint = _discover_endpoint(registry, project_id, model)
-    response = await _proxy_to_litellm(request, endpoint, "v1/embeddings", user_id, project_id)
+    response = await _proxy_to_litellm(
+        request, endpoint, "v1/embeddings", user_id, project_id
+    )
     registry.mark_used(endpoint.job_id)
 
     return response

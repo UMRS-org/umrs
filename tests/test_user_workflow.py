@@ -31,6 +31,7 @@ from umrs.plugins.user_workflow import UserWorkflow, UserWorkflowRunner
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+
 def _source_spec(path: str = "/tmp/test_scripts") -> SourceSpec:
     return SourceSpec(type=SourceType.LOCAL_PATH, path=path)
 
@@ -76,8 +77,8 @@ class DummyStep(Step):
 # 1. ExecutionMode serialization
 # =========================================================================
 
-class TestExecutionMode:
 
+class TestExecutionMode:
     def test_enum_values(self):
         assert ExecutionMode.IN_PROCESS.value == "in_process"
         assert ExecutionMode.SLURM.value == "slurm"
@@ -119,8 +120,8 @@ class TestExecutionMode:
 # 2. UserWorkflow dataclass
 # =========================================================================
 
-class TestUserWorkflow:
 
+class TestUserWorkflow:
     def test_from_workflow_definition_defaults(self):
         wf = _make_wf_def()
         uw = UserWorkflow.from_workflow_definition(wf)
@@ -158,7 +159,9 @@ class TestUserWorkflow:
     def test_to_dict_round_trip(self):
         wf = _make_wf_def(execution_mode=ExecutionMode.SLURM)
         uw = UserWorkflow.from_workflow_definition(
-            wf, env_vars={"A": "1"}, user_id="carol",
+            wf,
+            env_vars={"A": "1"},
+            user_id="carol",
         )
         d = uw.to_dict()
         assert d["execution_mode"] == "slurm"
@@ -183,6 +186,7 @@ class TestUserWorkflow:
 # =========================================================================
 # 3. UserWorkflowRunner — in-process mode
 # =========================================================================
+
 
 class TestUserWorkflowRunnerInProcess:
     """Test in-process execution with mock S3 and dummy steps."""
@@ -216,7 +220,10 @@ class TestUserWorkflowRunnerInProcess:
 
     def test_run_embeddings(self, runner, mock_s3):
         embeddings, checksums, metadata, saved_keys = runner.run(
-            mock_s3, ["key1.npy", "key2.npy"], "input-bkt", "output-bkt",
+            mock_s3,
+            ["key1.npy", "key2.npy"],
+            "input-bkt",
+            "output-bkt",
         )
         assert len(embeddings) == 2
         assert embeddings[0] == [0.1, 0.2]
@@ -244,8 +251,8 @@ class TestUserWorkflowRunnerInProcess:
 # 4. step_to_plugin_spec adapter
 # =========================================================================
 
-class TestStepToPluginSpec:
 
+class TestStepToPluginSpec:
     def test_basic_fields(self):
         spec = step_to_plugin_spec(
             step_name="embed",
@@ -307,6 +314,7 @@ class TestStepToPluginSpec:
 # 5. WorkflowPipeline delegation
 # =========================================================================
 
+
 class TestWorkflowPipelineDelegation:
     """Verify that non-IN_PROCESS modes delegate to UserWorkflowRunner."""
 
@@ -329,7 +337,10 @@ class TestWorkflowPipelineDelegation:
             return_value=([1], ["cs"], [{}], [None]),
         ) as mock_run:
             result = pipeline.run_as_embeddings(
-                pipeline._s3, ["k1"], "in", "out",
+                pipeline._s3,
+                ["k1"],
+                "in",
+                "out",
             )
             mock_run.assert_called_once()
             assert result == ([1], ["cs"], [{}], [None])
@@ -350,14 +361,18 @@ class TestWorkflowPipelineDelegation:
 
         # Mock S3 helpers
         pipeline._s3.head_object.return_value = {
-            "ETag": '"x"', "Metadata": {},
+            "ETag": '"x"',
+            "Metadata": {},
         }
         paginator = MagicMock()
         paginator.paginate.return_value = []
         pipeline._s3.get_paginator.return_value = paginator
 
         result = pipeline.run_as_embeddings(
-            pipeline._s3, ["k1"], "in", "out",
+            pipeline._s3,
+            ["k1"],
+            "in",
+            "out",
         )
         assert len(result) == 4
         assert result[0] == [[0.1, 0.2]]
@@ -366,6 +381,7 @@ class TestWorkflowPipelineDelegation:
 # =========================================================================
 # 6. Backward compatibility
 # =========================================================================
+
 
 class TestBackwardCompat:
     """Existing workflow.json without execution_mode should still work."""

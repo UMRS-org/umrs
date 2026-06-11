@@ -149,7 +149,9 @@ class EmbedderSpec:
     def from_dict(cls, data: dict[str, Any]) -> EmbedderSpec:
         """Create from dictionary."""
         return cls(
-            embedder_type=EmbedderType(data.get("embedder_type", "sentence_transformer")),
+            embedder_type=EmbedderType(
+                data.get("embedder_type", "sentence_transformer")
+            ),
             model_name=data.get("model_name", "all-MiniLM-L6-v2"),
             model_path=data.get("model_path"),
             dimension=data.get("dimension", 384),

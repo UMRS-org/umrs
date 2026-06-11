@@ -112,11 +112,20 @@ class EntityExtractor:
         # Software/tool names (CamelCase, known patterns)
         (r"\b([A-Z][a-z]+(?:[A-Z][a-z]+)+)\b", EntityType.SOFTWARE),
         # Method names with known suffixes
-        (r"\b(\w+(?:Net|GAN|BERT|GPT|LLM|CNN|RNN|LSTM|VAE|ViT|SAM|MAE))\b", EntityType.METHOD),
+        (
+            r"\b(\w+(?:Net|GAN|BERT|GPT|LLM|CNN|RNN|LSTM|VAE|ViT|SAM|MAE))\b",
+            EntityType.METHOD,
+        ),
         # Datasets (common naming patterns)
-        (r"\b(ImageNet|COCO|CIFAR-?\d+|MNIST|WikiText|SQuAD|GLUE|SuperGLUE)\b", EntityType.DATASET),
+        (
+            r"\b(ImageNet|COCO|CIFAR-?\d+|MNIST|WikiText|SQuAD|GLUE|SuperGLUE)\b",
+            EntityType.DATASET,
+        ),
         # Metrics
-        (r"\b(accuracy|precision|recall|F1[-\s]?score|BLEU|ROUGE|perplexity|AUC|mAP)\b", EntityType.METRIC),
+        (
+            r"\b(accuracy|precision|recall|F1[-\s]?score|BLEU|ROUGE|perplexity|AUC|mAP)\b",
+            EntityType.METRIC,
+        ),
     ]
 
     def extract(self, text: str, doc_id: str = "") -> List[Entity]:

@@ -119,9 +119,11 @@ class TestRegisterWorkflow:
         assert parsed["count"] == 2
 
     def test_steps_metadata_extracted(self):
-        wf = _sample_workflow_json(steps=[
-            {"name": "step_a", "entrypoint": "mod:A", "config": {"x": 1}},
-        ])
+        wf = _sample_workflow_json(
+            steps=[
+                {"name": "step_a", "entrypoint": "mod:A", "config": {"x": 1}},
+            ]
+        )
         result = register_workflow("wf1", "1.0", "alice", "/tmp/wf1", wf)
         steps = result["workflow"]["steps"]
         assert len(steps) == 1

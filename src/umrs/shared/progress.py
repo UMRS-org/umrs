@@ -19,6 +19,7 @@ from typing import Any, Protocol
 
 class ProgressState(str, Enum):
     """Progress lifecycle states."""
+
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
@@ -29,6 +30,7 @@ class ProgressState(str, Enum):
 @dataclass
 class ProgressEvent:
     """A single progress update event."""
+
     tracker_id: str
     state: ProgressState
     current: int
@@ -50,6 +52,7 @@ class ProgressEvent:
 
 class ProgressCallback(Protocol):
     """Protocol for progress consumers."""
+
     def on_progress(self, event: ProgressEvent) -> None: ...
 
 
@@ -141,7 +144,11 @@ class ProgressTracker:
 
     def advance(self, delta: int = 1, message: str = "") -> ProgressEvent:
         with self._lock:
-            self._current = min(self._current + delta, self._total) if self._total > 0 else self._current + delta
+            self._current = (
+                min(self._current + delta, self._total)
+                if self._total > 0
+                else self._current + delta
+            )
             if message:
                 self._message = message
             return self._emit()
@@ -278,7 +285,9 @@ class ProgressGroup:
     @property
     def all_completed(self) -> bool:
         with self._lock:
-            return all(t.state == ProgressState.COMPLETED for t in self._trackers.values())
+            return all(
+                t.state == ProgressState.COMPLETED for t in self._trackers.values()
+            )
 
     @property
     def any_failed(self) -> bool:

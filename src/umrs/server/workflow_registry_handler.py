@@ -84,10 +84,12 @@ def register_workflow(
     # Extract step metadata from workflow_json
     steps_meta: list[dict[str, str]] = []
     for step in workflow_json.get("steps", []):
-        steps_meta.append({
-            "name": step.get("name", ""),
-            "entrypoint": step.get("entrypoint", ""),
-        })
+        steps_meta.append(
+            {
+                "name": step.get("name", ""),
+                "entrypoint": step.get("entrypoint", ""),
+            }
+        )
 
     entry = {
         "name": workflow_name,
@@ -116,7 +118,10 @@ def register_workflow(
                 _save_catalog(catalog)
                 logger.info(
                     "Updated workflow registration: %s v%s (user=%s, scope=%s)",
-                    workflow_name, version, user_id, scope,
+                    workflow_name,
+                    version,
+                    user_id,
+                    scope,
                 )
                 return {
                     "status": "ok",
@@ -128,7 +133,11 @@ def register_workflow(
 
     logger.info(
         "Registered workflow: %s v%s (user=%s, scope=%s, %d steps)",
-        workflow_name, version, user_id, scope, len(steps_meta),
+        workflow_name,
+        version,
+        user_id,
+        scope,
+        len(steps_meta),
     )
     return {
         "status": "ok",
@@ -164,13 +173,18 @@ def _handle_list_workflows(client_id: str, payload_str: str) -> str:
     if user_filter:
         workflows = [w for w in workflows if w.get("user_id") == user_filter]
     if name_filter:
-        workflows = [w for w in workflows if name_filter.lower() in w.get("name", "").lower()]
+        workflows = [
+            w for w in workflows if name_filter.lower() in w.get("name", "").lower()
+        ]
 
-    return json.dumps({
-        "status": "ok",
-        "count": len(workflows),
-        "workflows": workflows,
-    }, default=str)
+    return json.dumps(
+        {
+            "status": "ok",
+            "count": len(workflows),
+            "workflows": workflows,
+        },
+        default=str,
+    )
 
 
 def _workflow_project_id(params: Any) -> str:
@@ -303,7 +317,9 @@ def _submit_durable_workflow_run(
     try:
         data = json.loads(raw)
     except json.JSONDecodeError as exc:
-        return json.dumps({"status": "error", "message": f"Invalid durable job response: {exc}"})
+        return json.dumps(
+            {"status": "error", "message": f"Invalid durable job response: {exc}"}
+        )
 
     if data.get("status") == "error":
         return raw
@@ -352,7 +368,9 @@ def _handle_run_workflow(
     if not workflow_name:
         return json.dumps({"status": "error", "message": "workflow_name is required"})
     if not isinstance(params, dict):
-        return json.dumps({"status": "error", "message": "workflow params must be an object"})
+        return json.dumps(
+            {"status": "error", "message": "workflow params must be an object"}
+        )
 
     try:
         source_path, _, step_count = _workflow_run_context(workflow_name, client_id)
@@ -378,17 +396,20 @@ def _handle_run_workflow(
         source_path=source_path,
     )
 
-    return json.dumps({
-        "status": "ok",
-        "action": "run-workflow",
-        "workflow_name": workflow_name,
-        "source_path": source_path,
-        "steps": step_count,
-        "params": params,
-        "execution_id": record.execution_id,
-        "durable_job_id": record.durable_job_id,
-        "message": f"Workflow '{workflow_name}' execution accepted ({step_count} steps)",
-    }, default=str)
+    return json.dumps(
+        {
+            "status": "ok",
+            "action": "run-workflow",
+            "workflow_name": workflow_name,
+            "source_path": source_path,
+            "steps": step_count,
+            "params": params,
+            "execution_id": record.execution_id,
+            "durable_job_id": record.durable_job_id,
+            "message": f"Workflow '{workflow_name}' execution accepted ({step_count} steps)",
+        },
+        default=str,
+    )
 
 
 def handle_workflow_command(
@@ -409,10 +430,12 @@ def handle_workflow_command(
         elif cmd == TaskCmd.RUN_WORKFLOW:
             return _handle_run_workflow(client_id, payload_str, job_backend=job_backend)
         else:
-            return json.dumps({
-                "status": "error",
-                "message": f"Unknown workflow command: {cmd}",
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Unknown workflow command: {cmd}",
+                }
+            )
     except Exception as e:
         logger.exception("Workflow command '%s' failed", cmd)
         return json.dumps({"status": "error", "message": str(e)})

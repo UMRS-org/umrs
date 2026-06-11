@@ -20,6 +20,7 @@ from typing import Any
 @dataclass
 class ObjectRecord:
     """Record of a single S3 object in a version snapshot."""
+
     key: str
     etag: str = ""
     size_bytes: int = 0
@@ -37,6 +38,7 @@ class ObjectRecord:
 @dataclass
 class VersionManifest:
     """Mapping of object keys to their ETags/checksums at a point in time."""
+
     objects: dict[str, ObjectRecord] = field(default_factory=dict)
 
     @property
@@ -73,13 +75,16 @@ class VersionManifest:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> VersionManifest:
-        objects = {k: ObjectRecord.from_dict(v) for k, v in d.get("objects", {}).items()}
+        objects = {
+            k: ObjectRecord.from_dict(v) for k, v in d.get("objects", {}).items()
+        }
         return cls(objects=objects)
 
 
 @dataclass
 class ManifestDiff:
     """Diff between two version manifests."""
+
     added: list[str] = field(default_factory=list)
     removed: list[str] = field(default_factory=list)
     modified: list[str] = field(default_factory=list)
@@ -99,6 +104,7 @@ class ManifestDiff:
 @dataclass
 class DataVersion:
     """Immutable snapshot of a dataset version."""
+
     version_id: str
     bucket: str
     manifest: VersionManifest

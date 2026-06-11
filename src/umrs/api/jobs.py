@@ -80,6 +80,7 @@ class CallerIdentity:
     In production this will come from JWT claims via Gateway.
     For now, accept as query params (matching the models API MVP pattern).
     """
+
     user_id: str
     project_id: str
     is_admin: bool = False
@@ -88,16 +89,15 @@ class CallerIdentity:
         """Check if caller can access a job (owner or admin)."""
         if self.is_admin:
             return True
-        return (
-            job.project_id == self.project_id
-            and job.user_id == self.user_id
-        )
+        return job.project_id == self.project_id and job.user_id == self.user_id
 
 
 def get_caller_identity(
     caller_user_id: str | None = Query(None, description="Caller's user ID"),
     caller_project_id: str | None = Query(None, description="Caller's project ID"),
-    is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
+    is_admin: bool = Query(
+        False, description="Admin flag (legacy, ignored in strict mode)"
+    ),
     x_user_id: str | None = Header(None),
     x_verified_project_id: str | None = Header(None),
     x_verified_is_admin: str | None = Header(None),
@@ -188,7 +188,7 @@ class JobCreateRequest(BaseModel):
     user_id: str = Field(..., description="User who created the job")
     job_type: str = Field(
         ...,
-        description="Job type: index_build, embedding_batch, pipeline_run, endpoint_provision, cleanup"
+        description="Job type: index_build, embedding_batch, pipeline_run, endpoint_provision, cleanup",
     )
     spec: JobSpec = Field(..., description="Job specification")
 
@@ -333,7 +333,9 @@ def _job_to_response(job: Job, include_attempts: bool = False) -> JobResponse:
         commit_attempt_id=job.commit_attempt_id,
         created_at=job.created_at.isoformat(),
         updated_at=job.updated_at.isoformat(),
-        last_state_change_at=job.last_state_change_at.isoformat() if job.last_state_change_at else None,
+        last_state_change_at=job.last_state_change_at.isoformat()
+        if job.last_state_change_at
+        else None,
         attempts=None,  # Set separately if needed
     )
 
@@ -358,14 +360,20 @@ def _attempt_to_response(attempt: JobAttempt) -> AttemptResponse:
 
 
 def _enforce_job_access(
-    caller: CallerIdentity, job: Job, action: str = "access",
+    caller: CallerIdentity,
+    job: Job,
+    action: str = "access",
 ) -> None:
     """Raise 403 if caller does not own the job and is not admin."""
     if not caller.can_access_job(job):
         logger.warning(
             "User %s/%s denied %s on job %s (owner: %s/%s)",
-            caller.project_id, caller.user_id, action,
-            job.job_id, job.project_id, job.user_id,
+            caller.project_id,
+            caller.user_id,
+            action,
+            job.job_id,
+            job.project_id,
+            job.user_id,
         )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -404,7 +412,7 @@ async def create_job(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid job_type: {request.job_type}. "
-                       f"Valid types: {[t.value for t in JobType]}",
+                f"Valid types: {[t.value for t in JobType]}",
             ) from None
 
         # Parse restart policy
@@ -414,7 +422,7 @@ async def create_job(
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid restart_policy: {request.restart_policy}. "
-                       f"Valid policies: {[p.value for p in RestartPolicy]}",
+                f"Valid policies: {[p.value for p in RestartPolicy]}",
             ) from None
 
         # Build spec dict

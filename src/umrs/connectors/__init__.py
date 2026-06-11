@@ -177,9 +177,7 @@ class ConnectorRegistry:
     def register(self, connector: Connector) -> None:
         key = connector.connector_type.value
         if key in self._connectors:
-            logger.warning(
-                "Overwriting connector registration for %s", key
-            )
+            logger.warning("Overwriting connector registration for %s", key)
         self._connectors[key] = connector
 
     def get(self, connector_type: str) -> Optional[Connector]:

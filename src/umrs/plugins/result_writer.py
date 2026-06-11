@@ -190,7 +190,9 @@ class PgVectorOutputWriter(OutputWriter):
 
                 self._pool = await asyncpg.create_pool(self.connection_string)
             except ImportError:
-                raise RuntimeError("asyncpg required for pgvector output writer") from None
+                raise RuntimeError(
+                    "asyncpg required for pgvector output writer"
+                ) from None
         return self._pool
 
     async def write(

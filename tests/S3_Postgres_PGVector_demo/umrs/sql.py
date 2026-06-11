@@ -7,8 +7,8 @@ from datetime import datetime
 
 
 def create_db_and_get_pool(sql_username, xp_name):
-    db_name = xp_name+"_"+sql_username
-    db_name = db_name.replace(" ","_").lower()
+    db_name = xp_name + "_" + sql_username
+    db_name = db_name.replace(" ", "_").lower()
     print(f"\t-->  Configuring database '{db_name}'...")
     # Database credentials
     DB_HOST = "localhost"
@@ -30,9 +30,11 @@ def create_db_and_get_pool(sql_username, xp_name):
         print(f"\t-->  Database '{db_name}' already exists.")
     else:
         # Create the database if it does not exist
-        cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
-            sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
-        ))
+        cur.execute(
+            sql.SQL("CREATE DATABASE {} OWNER {};").format(
+                sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
+            )
+        )
         print(f"\t-->  Database '{db_name}' created successfully.")
 
         # Clean up
@@ -40,11 +42,12 @@ def create_db_and_get_pool(sql_username, xp_name):
     conn.close()
     # Return a new connection to the created database
     db_pool = psycopg2.pool.SimpleConnectionPool(
-        minconn=1, maxconn=5,  # Adjust based on your needs
+        minconn=1,
+        maxconn=5,  # Adjust based on your needs
         dbname=db_name,
         user=sql_username,
         host=DB_HOST,
-        port=DB_PORT
+        port=DB_PORT,
     )
     return db_pool
 
@@ -52,7 +55,8 @@ def create_db_and_get_pool(sql_username, xp_name):
 import psycopg2
 from datetime import datetime
 
-def store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text = None):
+
+def store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, text=None):
     """
     Stores embeddings into the PostgreSQL table safely. Updates if `s3_object` exists.
 
@@ -63,9 +67,9 @@ def store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, 
         bucket_name: Name of the S3 bucket
         s3_key: S3 object key
     """
-    date = datetime.today().strftime('%Y-%m-%d')
-    time = datetime.now().strftime('%H:%M:%S')
-    
+    date = datetime.today().strftime("%Y-%m-%d")
+    time = datetime.now().strftime("%H:%M:%S")
+
     conn = db_pool.getconn()
     try:
         cur = conn.cursor()
@@ -103,17 +107,18 @@ def store_embeddings_in_db(db_pool, embedding, table_name, bucket_name, s3_key, 
         cur.close()
         db_pool.putconn(conn)
 
-        
+
 def ensure_pgvector_enabled(conn):
     """Ensure pgvector extension is installed."""
     with conn.cursor() as cur:
         cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
         conn.commit()
 
+
 def get_vector_size(cursor, table_name):
     """
     Get the size (dimension) of the 'embedding' vector column in a PostgreSQL table.
-    
+
     Args:
         cursor: psycopg2 cursor object
         table_name: Name of the table to check
@@ -131,11 +136,12 @@ def get_vector_size(cursor, table_name):
     result = cursor.fetchone()
 
     return result[0] if result else None  # Return vector size or None
-        
-def configure_sql(db_pool, sql_cfg,  modality_name):
-    table_name = modality_name.replace(" ","_").lower()
+
+
+def configure_sql(db_pool, sql_cfg, modality_name):
+    table_name = modality_name.replace(" ", "_").lower()
     print(f"\t\t\t--> Configuring table '{table_name}'...")
-    table_fields = [];
+    table_fields = []
     field = {"name": "id", "type": "SERIAL PRIMARY KEY"}
     table_fields.append(field)
     field = {"name": "s3_object", "type": "TEXT UNIQUE"}
@@ -153,13 +159,15 @@ def configure_sql(db_pool, sql_cfg,  modality_name):
     for field in sql_cfg["meta_data"]:
         table_fields.append(field)
 
-        
     conn = db_pool.getconn()
     ensure_pgvector_enabled(conn)
     cur = conn.cursor()
 
     # Check if table exists
-    cur.execute("SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s);", (table_name,))
+    cur.execute(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = %s);",
+        (table_name,),
+    )
     table_exists = cur.fetchone()[0]
 
     if not table_exists:
@@ -174,18 +182,24 @@ def configure_sql(db_pool, sql_cfg,  modality_name):
 
     else:
         # Validate existing table schema
-        cur.execute("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s;", (table_name,))
+        cur.execute(
+            "SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s;",
+            (table_name,),
+        )
         existing_fields = {row[0]: row[1] for row in cur.fetchall()}
 
         for field in table_fields:
             if field["name"] not in existing_fields:
                 sys.exit(f" Missing field: {field['name']} ({field['type']}) in '{table_name}'.")
 
-
         table_vector_size = get_vector_size(cur, table_name)
         if table_vector_size != vector_size:
-            sys.exit(f"Error: SQL configuration mispatch!\nThe vector size to store embeddings is {vector_size} in the json config file and {table_vector_size} in the sql database.")
-        print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_fields)} fields. Embedding vector size: {vector_size}")
+            sys.exit(
+                f"Error: SQL configuration mispatch!\nThe vector size to store embeddings is {vector_size} in the json config file and {table_vector_size} in the sql database."
+            )
+        print(
+            f"\t\t\t--> Table '{table_name}' already exists with {len(existing_fields)} fields. Embedding vector size: {vector_size}"
+        )
 
     # 🧹 Cleanup
     cur.close()

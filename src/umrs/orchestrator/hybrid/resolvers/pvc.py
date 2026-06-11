@@ -46,9 +46,7 @@ class PVCResolver(ModelRefResolver):
     ) -> ResolvedModel:
         """Resolve PVC reference to volume mount."""
         if ref.type != ModelRefType.PVC_REF:
-            raise ResolutionError(
-                f"PVCResolver cannot handle ref type '{ref.type}'"
-            )
+            raise ResolutionError(f"PVCResolver cannot handle ref type '{ref.type}'")
 
         if authority != ExecutionAuthority.K8S:
             raise IncompatibleAuthorityError(
@@ -92,9 +90,14 @@ class PVCResolver(ModelRefResolver):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "get", "pvc", pvc_name,
-                "--namespace", self.namespace,
-                "-o", "name",
+                "kubectl",
+                "get",
+                "pvc",
+                pvc_name,
+                "--namespace",
+                self.namespace,
+                "-o",
+                "name",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

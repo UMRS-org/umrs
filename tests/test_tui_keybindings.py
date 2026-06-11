@@ -64,7 +64,9 @@ def test_key_reader_reads_single_key_without_enter(monkeypatch) -> None:
     monkeypatch.setitem(sys.modules, "termios", fake_termios)
     monkeypatch.setitem(sys.modules, "tty", fake_tty)
     monkeypatch.setattr(keybindings.sys, "stdin", fake_stdin)
-    monkeypatch.setattr(keybindings.select, "select", lambda readers, _writers, _errors, _timeout: (readers, [], []))
+    monkeypatch.setattr(
+        keybindings.select, "select", lambda readers, _writers, _errors, _timeout: (readers, [], [])
+    )
 
     reader: KeyReader
 

@@ -124,9 +124,7 @@ class ConfluenceConnector(Connector):
         if not base_url or not email or not api_token:
             return False
         try:
-            self._api_get(
-                f"{base_url}/rest/api/space?limit=1", email, api_token
-            )
+            self._api_get(f"{base_url}/rest/api/space?limit=1", email, api_token)
             return True
         except Exception:
             return False

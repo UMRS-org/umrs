@@ -85,8 +85,7 @@ from umrs.shared.sql_helpers import create_db_name, metadata_dict
 # ---------------------------------------------------------------------------
 
 _CLIENT_FULL_HINT = (
-    "Install the full client transport stack with:\n"
-    "    pip install 'umrs[client-full]'"
+    "Install the full client transport stack with:\n    pip install 'umrs[client-full]'"
 )
 
 
@@ -104,6 +103,7 @@ def _message_queue_cls():
     """Lazily import the ZMQ MessageQueue class (requires ``umrs[client-full]``)."""
     try:
         from umrs.core.MessageQueue import MessageQueue as _MessageQueue
+
         return _MessageQueue
     except ImportError as exc:  # pragma: no cover - depends on install extra
         _require_client_full("ZMQ transport", exc)
@@ -118,6 +118,7 @@ def _s3():
     """Lazily import the S3 storage helpers (requires ``umrs[client-full]``)."""
     try:
         import umrs.shared.storage.s3 as _s3_mod
+
         return _s3_mod
     except ImportError as exc:  # pragma: no cover - depends on install extra
         _require_client_full("S3 storage", exc)
@@ -163,7 +164,7 @@ def s3_store_txt(*args, **kwargs):
 # ANSI helpers — auto-disabled when stdout is not a terminal
 # ---------------------------------------------------------------------------
 def _use_color():
-    return hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+    return hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
 
 
 def _c(code, text):
@@ -173,14 +174,36 @@ def _c(code, text):
     return f"\033[{code}m{text}\033[0m"
 
 
-def _bold(t):     return _c("1", t)
-def _dim(t):      return _c("2", t)
-def _green(t):    return _c("32", t)
-def _red(t):      return _c("31", t)
-def _yellow(t):   return _c("33", t)
-def _cyan(t):     return _c("36", t)
-def _blue(t):     return _c("34", t)
-def _magenta(t):  return _c("35", t)
+def _bold(t):
+    return _c("1", t)
+
+
+def _dim(t):
+    return _c("2", t)
+
+
+def _green(t):
+    return _c("32", t)
+
+
+def _red(t):
+    return _c("31", t)
+
+
+def _yellow(t):
+    return _c("33", t)
+
+
+def _cyan(t):
+    return _c("36", t)
+
+
+def _blue(t):
+    return _c("34", t)
+
+
+def _magenta(t):
+    return _c("35", t)
 
 
 def _fmt_cell(text, width=None, *, align="<", style=None):
@@ -198,6 +221,7 @@ def _fmt_cell(text, width=None, *, align="<", style=None):
 def _fmt_cell_raw(styled_text, width):
     """Pad a string that may contain ANSI codes to a visual width."""
     import re as _re_mod
+
     visible = _re_mod.sub(r"\x1b\[[0-9;]*m", "", styled_text)
     pad = max(0, width - len(visible))
     return styled_text + " " * pad
@@ -221,7 +245,7 @@ def _status_dot(ok):
 def _is_dev_mode():
     """Server config is a server-side concern.  Expose it on the client only
     when ``UMRS_DEV_MODE=1`` or ``--server-conf`` was passed explicitly."""
-    return os.environ.get('UMRS_DEV_MODE', '') == '1'
+    return os.environ.get("UMRS_DEV_MODE", "") == "1"
 
 
 # ---------------------------------------------------------------------------
@@ -253,19 +277,23 @@ def _format_profile_text(connection, selected_profile, errors):
             lines.append(_kv("ssh_host", connection.ssh_host))
         if connection.local_forwards:
             for fwd in connection.local_forwards:
-                lines.append(_kv("local_forward", f"{fwd.get('local_port')}:{fwd.get('remote_host', 'localhost')}:{fwd.get('remote_port')}"))
+                lines.append(
+                    _kv(
+                        "local_forward",
+                        f"{fwd.get('local_port')}:{fwd.get('remote_host', 'localhost')}:{fwd.get('remote_port')}",
+                    )
+                )
         if connection.command_hint:
             lines.append(_kv("command_hint", _dim(connection.command_hint)))
     if errors:
         lines.append("")
         for err in errors:
             lines.append(f"  {_red('!')} {err}")
-    if hasattr(connection, 'sources') and connection.sources:
+    if hasattr(connection, "sources") and connection.sources:
         # Only show non-profile sources (env overrides, defaults) to reduce noise
-        profile_name = getattr(connection, 'profile_name', None)
+        profile_name = getattr(connection, "profile_name", None)
         profile_tag = f"profile:{profile_name}" if profile_name else None
-        overrides = {k: v for k, v in connection.sources.items()
-                     if v != profile_tag}
+        overrides = {k: v for k, v in connection.sources.items() if v != profile_tag}
         if overrides:
             lines.append("")
             lines.append(_section("Overrides"))
@@ -329,12 +357,31 @@ def _handle_info(args):
 
     # Which actions use which transport?
     gateway_actions = {"reload", "list_buckets", "model list"} if gateway_url else set()
-    zmq_actions = {"ping", "status", "upload_file", "upload_dir", "download_results",
-                   "recompute", "update", "check", "export_embeddings",
-                   "job *", "endpoint *", "workflow *", "monitor"}
+    zmq_actions = {
+        "ping",
+        "status",
+        "upload_file",
+        "upload_dir",
+        "download_results",
+        "recompute",
+        "update",
+        "check",
+        "export_embeddings",
+        "job *",
+        "endpoint *",
+        "workflow *",
+        "monitor",
+    }
     lines.append("")
-    lines.append(_kv("gateway_actions", ", ".join(sorted(gateway_actions)) if gateway_actions else _dim("none")))
-    lines.append(_kv("zmq_actions", _dim("all others (ping, upload, jobs, endpoints, ...)")))
+    lines.append(
+        _kv(
+            "gateway_actions",
+            ", ".join(sorted(gateway_actions)) if gateway_actions else _dim("none"),
+        )
+    )
+    lines.append(
+        _kv("zmq_actions", _dim("all others (ping, upload, jobs, endpoints, ...)"))
+    )
 
     # --- ZMQ reachability ---
     lines.append("")
@@ -350,12 +397,18 @@ def _handle_info(args):
             tunnel_mode=tunnel,
             prefer_env_server_host=False,
         )
-        ready = mq.is_server_ready(timeout_ms=min(connection.health_check_timeout_ms, 3000))
+        ready = mq.is_server_ready(
+            timeout_ms=min(connection.health_check_timeout_ms, 3000)
+        )
         mq.close()
         # Session-mode failures are often a stale session (server restarted and
         # dropped its in-memory registry). Try a one-shot fresh registration so
         # `info` self-heals and reports the true reachability.
-        if not ready and _is_session_mode(connection) and _force_refresh_curve_session(connection):
+        if (
+            not ready
+            and _is_session_mode(connection)
+            and _force_refresh_curve_session(connection)
+        ):
             mq = MessageQueue(
                 role="client",
                 queue_type="control",
@@ -364,12 +417,24 @@ def _handle_info(args):
                 tunnel_mode=tunnel,
                 prefer_env_server_host=False,
             )
-            ready = mq.is_server_ready(timeout_ms=min(connection.health_check_timeout_ms, 3000))
+            ready = mq.is_server_ready(
+                timeout_ms=min(connection.health_check_timeout_ms, 3000)
+            )
             mq.close()
         if ready:
-            lines.append(_kv("server", f"{_green('● reachable')}  {_dim(f'{zmq_host}:{zmq_port}')}"))
+            lines.append(
+                _kv(
+                    "server",
+                    f"{_green('● reachable')}  {_dim(f'{zmq_host}:{zmq_port}')}",
+                )
+            )
         else:
-            lines.append(_kv("server", f"{_red('● not responding')}  {_dim(f'{zmq_host}:{zmq_port}')}"))
+            lines.append(
+                _kv(
+                    "server",
+                    f"{_red('● not responding')}  {_dim(f'{zmq_host}:{zmq_port}')}",
+                )
+            )
     except Exception as exc:
         lines.append(_kv("server", f"{_red('● error')}  {_dim(str(exc)[:80])}"))
 
@@ -381,14 +446,21 @@ def _handle_info(args):
         import time as _time
 
         xdg = os.environ.get("XDG_CONFIG_HOME")
-        curve_path = (_Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4") / "curve-session.json"
+        curve_path = (
+            _Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4"
+        ) / "curve-session.json"
         if curve_path.is_file():
             data = _json.loads(curve_path.read_text(encoding="utf-8"))
             expires_at = data.get("expires_at", 0)
             ttl = expires_at - _time.time()
             if ttl > 60:
                 lines.append(_kv("status", _green("active")))
-                lines.append(_kv("ttl", f"{int(ttl)}s ({int(ttl / 3600)}h {int((ttl % 3600) / 60)}m)"))
+                lines.append(
+                    _kv(
+                        "ttl",
+                        f"{int(ttl)}s ({int(ttl / 3600)}h {int((ttl % 3600) / 60)}m)",
+                    )
+                )
             elif ttl > 0:
                 lines.append(_kv("status", _yellow("expiring soon")))
                 lines.append(_kv("ttl", f"{int(ttl)}s"))
@@ -412,10 +484,14 @@ def _handle_info(args):
             lines.append(_kv("status", f"{_green('● reachable')}  {_dim(gateway_url)}"))
         else:
             msg = ping_result.get("message", "")
-            lines.append(_kv("status", f"{_red('● not reachable')}  {_dim(gateway_url)}"))
+            lines.append(
+                _kv("status", f"{_red('● not reachable')}  {_dim(gateway_url)}")
+            )
             if msg:
                 lines.append(_kv("error", _dim(msg[:80])))
-        lines.append(_kv("auth_token", _green("present") if api_key else _red("missing")))
+        lines.append(
+            _kv("auth_token", _green("present") if api_key else _red("missing"))
+        )
     else:
         lines.append(_kv("status", _dim("(no gateway_url configured)")))
 
@@ -438,8 +514,11 @@ def _handle_info(args):
     if not jwt:
         try:
             from pathlib import Path as _Path
+
             xdg = os.environ.get("XDG_CONFIG_HOME")
-            sources_path = (_Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4") / "sources.json"
+            sources_path = (
+                _Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4"
+            ) / "sources.json"
             if sources_path.is_file():
                 src_data = _json.loads(sources_path.read_text(encoding="utf-8"))
                 active = src_data.get("active")
@@ -459,6 +538,7 @@ def _handle_info(args):
     profile_path = getattr(connection, "profile_path", None)
     if profile_path:
         from pathlib import Path as _Path
+
         token_path = _Path(profile_path).with_suffix(".token")
         if token_path.is_file():
             profile_token = token_path.read_text(encoding="utf-8").strip()
@@ -477,6 +557,7 @@ def _handle_info(args):
     if jwt:
         try:
             import base64
+
             payload_b64 = jwt.split(".")[1]
             padding = 4 - len(payload_b64) % 4
             payload_b64 += "=" * padding
@@ -485,6 +566,7 @@ def _handle_info(args):
             exp = claims.get("exp")
             if exp:
                 import time as _time
+
                 ttl = exp - _time.time()
                 exp_str = f"{int(ttl)}s remaining" if ttl > 0 else _red("expired")
             else:
@@ -499,7 +581,9 @@ def _handle_info(args):
 
     # List all token files found
     if profile_token_path:
-        lines.append(_kv("profile_token", _green("found") + f"  {_dim(profile_token_path)}"))
+        lines.append(
+            _kv("profile_token", _green("found") + f"  {_dim(profile_token_path)}")
+        )
     elif profile_path:
         lines.append(_kv("profile_token", _dim("(not found)")))
 
@@ -533,7 +617,7 @@ def _handle_info(args):
             lines.append(_kv("s3cfg", _green("found") + f"  {_dim(expanded)}"))
             # Try to read and test connection
             try:
-                cfg = _cp.ConfigParser(inline_comment_prefixes=('#', ';'))
+                cfg = _cp.ConfigParser(inline_comment_prefixes=("#", ";"))
                 cfg.read(expanded)
                 host_base = cfg.get("default", "host_base", fallback="?")
                 access_key = cfg.get("default", "access_key", fallback="?")
@@ -547,6 +631,7 @@ def _handle_info(args):
                 secret_key = cfg.get("default", "secret_key", fallback="")
                 import boto3
                 from botocore.config import Config as BotoConfig
+
                 s3_client = boto3.client(
                     "s3",
                     endpoint_url=f"{protocol}://{host_base}",
@@ -558,20 +643,41 @@ def _handle_info(args):
                         read_timeout=5,
                         retries={"max_attempts": 1},
                     ),
-                    region_name=cfg.get("default", "bucket_location", fallback="us-east-1"),
-                    verify=cfg.getboolean("default", "check_ssl_certificate", fallback=True),
+                    region_name=cfg.get(
+                        "default", "bucket_location", fallback="us-east-1"
+                    ),
+                    verify=cfg.getboolean(
+                        "default", "check_ssl_certificate", fallback=True
+                    ),
                 )
                 buckets = s3_client.list_buckets()
                 count = len(buckets.get("Buckets", []))
-                lines.append(_kv("connectivity", f"{_green('● ok')}  {_dim(f'{count} bucket(s)')}"))
+                lines.append(
+                    _kv(
+                        "connectivity",
+                        f"{_green('● ok')}  {_dim(f'{count} bucket(s)')}",
+                    )
+                )
             except Exception as exc:
                 err_msg = str(exc)
                 if "SignatureDoesNotMatch" in err_msg:
-                    lines.append(_kv("connectivity", f"{_red('● auth failed')}  {_dim('SignatureDoesNotMatch — secret_key may be stale')}"))
+                    lines.append(
+                        _kv(
+                            "connectivity",
+                            f"{_red('● auth failed')}  {_dim('SignatureDoesNotMatch — secret_key may be stale')}",
+                        )
+                    )
                 elif "ConnectTimeoutError" in err_msg or "timed out" in err_msg.lower():
-                    lines.append(_kv("connectivity", f"{_red('● timeout')}  {_dim(f'{protocol}://{host_base}')}"))
+                    lines.append(
+                        _kv(
+                            "connectivity",
+                            f"{_red('● timeout')}  {_dim(f'{protocol}://{host_base}')}",
+                        )
+                    )
                 else:
-                    lines.append(_kv("connectivity", f"{_red('● error')}  {_dim(err_msg[:80])}"))
+                    lines.append(
+                        _kv("connectivity", f"{_red('● error')}  {_dim(err_msg[:80])}")
+                    )
         else:
             lines.append(_kv("s3cfg", f"{_red('missing')}  {_dim(expanded)}"))
     else:
@@ -589,7 +695,7 @@ def _handle_info(args):
     else:
         lines.append(_kv("user_config", _dim("(not found)")))
 
-    if args.output == 'json':
+    if args.output == "json":
         # Structured JSON output
         info = {
             "profile": prof,
@@ -605,7 +711,7 @@ def _handle_info(args):
             "minio_url": connection.minio_url,
             "s3cfg": s3cfg_path,
         }
-        print(api_json(**info, output_format='json'))
+        print(api_json(**info, output_format="json"))
     else:
         print("\n".join(lines))
     return 0
@@ -616,6 +722,7 @@ def _get_api_key_from_profile_static(connection) -> str | None:
     profile_path = getattr(connection, "profile_path", None)
     if profile_path:
         from pathlib import Path as _Path
+
         token_path = _Path(profile_path).with_suffix(".token")
         if token_path.is_file():
             return token_path.read_text(encoding="utf-8").strip()
@@ -630,7 +737,10 @@ def _resolve_control_client_id(user_cfg=None):
             return username
     # Try connection profile username (set by r4 auth login)
     try:
-        from umrs.shared.connection_profiles import get_current_profile_name, load_connection_profile
+        from umrs.shared.connection_profiles import (
+            get_current_profile_name,
+            load_connection_profile,
+        )
 
         profile_name = get_current_profile_name()
         if profile_name:
@@ -639,7 +749,7 @@ def _resolve_control_client_id(user_cfg=None):
                 return profile.username
     except Exception:
         pass
-    return os.environ.get('UMRS_CLIENT_ID', os.environ.get('USER', '_'))
+    return os.environ.get("UMRS_CLIENT_ID", os.environ.get("USER", "_"))
 
 
 def _build_monitor_capabilities(client_id, admin_token=None, user_cfg=None):
@@ -651,10 +761,18 @@ def _build_monitor_capabilities(client_id, admin_token=None, user_cfg=None):
         "has_user_config": isinstance(user_cfg, dict),
         "bucket_aliases": _extract_bucket_aliases(user_cfg),
         "allowed_actions": {
-            "recompute": auth_ctx.can_execute_command(TaskCmd.RECOMPUTE, target_user=target_user, log_denial=False),
-            "update": auth_ctx.can_execute_command(TaskCmd.UPDATE, target_user=target_user, log_denial=False),
-            "check": auth_ctx.can_execute_command(TaskCmd.CHECK, target_user=target_user, log_denial=False),
-            "reload": auth_ctx.can_execute_command(TaskCmd.RELOAD, target_user=target_user, log_denial=False),
+            "recompute": auth_ctx.can_execute_command(
+                TaskCmd.RECOMPUTE, target_user=target_user, log_denial=False
+            ),
+            "update": auth_ctx.can_execute_command(
+                TaskCmd.UPDATE, target_user=target_user, log_denial=False
+            ),
+            "check": auth_ctx.can_execute_command(
+                TaskCmd.CHECK, target_user=target_user, log_denial=False
+            ),
+            "reload": auth_ctx.can_execute_command(
+                TaskCmd.RELOAD, target_user=target_user, log_denial=False
+            ),
         },
     }
 
@@ -662,7 +780,9 @@ def _build_monitor_capabilities(client_id, admin_token=None, user_cfg=None):
 def _select_experience(user_cfg, experience_name=None):
     if not isinstance(user_cfg, dict):
         if experience_name:
-            raise ValueError("--experience requires a loaded user config (-c/--conf or selected config)")
+            raise ValueError(
+                "--experience requires a loaded user config (-c/--conf or selected config)"
+            )
         return None
     experiences = user_cfg.get("experiences") or []
     if experience_name:
@@ -785,7 +905,8 @@ def _print_config_candidates_text(discovered, *, show_server=False):
         active_path = resolved_paths.get(key)
         for candidate in candidates:
             is_active = candidate.current or (
-                active_path and os.path.realpath(candidate.path) == os.path.realpath(active_path)
+                active_path
+                and os.path.realpath(candidate.path) == os.path.realpath(active_path)
             )
             marker = _green("▸") if is_active else " "
             dot = _status_dot(candidate.valid)
@@ -863,8 +984,15 @@ def _handle_config_init(args):
     if args.output_path:
         out_path = Path(args.output_path).expanduser()
     else:
-        from umrs.shared.config import get_resolved_umrs_cfg_dir, get_users_default_cfg_subdir
-        users_dir = Path(get_resolved_umrs_cfg_dir()).expanduser() / get_users_default_cfg_subdir()
+        from umrs.shared.config import (
+            get_resolved_umrs_cfg_dir,
+            get_users_default_cfg_subdir,
+        )
+
+        users_dir = (
+            Path(get_resolved_umrs_cfg_dir()).expanduser()
+            / get_users_default_cfg_subdir()
+        )
         out_path = users_dir / f"{username}.json"
 
     if out_path.exists() and not args.force:
@@ -879,6 +1007,7 @@ def _handle_config_init(args):
         if not template_path.is_file():
             raise FileNotFoundError(f"Template not found: {template_path}")
         import json as _json_mod
+
         with open(template_path, encoding="utf-8") as f:
             cfg = _json_mod.load(f)
         cfg["username"] = username
@@ -891,6 +1020,7 @@ def _handle_config_init(args):
             site_template_path = Path(site_template).expanduser()
             if site_template_path.is_file():
                 import json as _json_mod
+
                 with open(site_template_path, encoding="utf-8") as f:
                     cfg = _json_mod.load(f)
                 cfg["username"] = username
@@ -904,6 +1034,7 @@ def _handle_config_init(args):
     # Write the file.
     out_path.parent.mkdir(parents=True, exist_ok=True)
     import json as _json_mod
+
     with open(out_path, "w", encoding="utf-8") as f:
         _json_mod.dump(cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
@@ -911,24 +1042,28 @@ def _handle_config_init(args):
     # Register as current user config.
     saved = set_current_user_config(str(out_path))
 
-    if args.output == 'json':
-        print(api_json(
-            message="User config created and set as current",
-            path=str(out_path),
-            current=str(saved),
-            output_format=args.output,
-        ))
+    if args.output == "json":
+        print(
+            api_json(
+                message="User config created and set as current",
+                path=str(out_path),
+                current=str(saved),
+                output_format=args.output,
+            )
+        )
     else:
         print(f"{_green('✓')} Created {_bold(str(out_path))}")
         print(f"  Set as current user config: {_dim(str(saved))}")
-        print("  Open the JSON file in an editor to customise experiences and modalities.")
+        print(
+            "  Open the JSON file in an editor to customise experiences and modalities."
+        )
         print(f"  {_dim('Do not run the .json path directly in the shell.')}")
         print("  Then run:")
         print(f"  {_cyan('umrs-client reload')}")
 
     # Auto-install shell tab completion
-    comp_msg = install_completion('umrs-client')
-    if args.output != 'json':
+    comp_msg = install_completion("umrs-client")
+    if args.output != "json":
         print(f"  {comp_msg}")
 
     return 0
@@ -957,14 +1092,16 @@ def _handle_config_add_experience(args):
     )
     _write_json_file(target, user_cfg)
 
-    if args.output == 'json':
-        print(api_json(
-            message="Experience fragment merged",
-            added=added,
-            skipped=skipped,
-            target=str(target),
-            output_format=args.output,
-        ))
+    if args.output == "json":
+        print(
+            api_json(
+                message="Experience fragment merged",
+                added=added,
+                skipped=skipped,
+                target=str(target),
+                output_format=args.output,
+            )
+        )
     else:
         if added:
             print(f"{_green('✓')} Added experience(s): {', '.join(added)}")
@@ -989,23 +1126,29 @@ def _handle_config_remove_experience(args):
     names_to_remove = set(args.xp_names)
     original_count = len(experiences)
 
-    removed = [xp["xp_name"] for xp in experiences if xp.get("xp_name") in names_to_remove]
-    user_cfg["experiences"] = [xp for xp in experiences if xp.get("xp_name") not in names_to_remove]
+    removed = [
+        xp["xp_name"] for xp in experiences if xp.get("xp_name") in names_to_remove
+    ]
+    user_cfg["experiences"] = [
+        xp for xp in experiences if xp.get("xp_name") not in names_to_remove
+    ]
 
     not_found = names_to_remove - set(removed)
 
     _write_json_file(target, user_cfg)
 
-    if args.output == 'json':
-        print(api_json(
-            message="Experiences removed",
-            removed=removed,
-            not_found=sorted(not_found),
-            remaining=len(user_cfg["experiences"]),
-            resources_retained=bool(removed),
-            target=str(target),
-            output_format=args.output,
-        ))
+    if args.output == "json":
+        print(
+            api_json(
+                message="Experiences removed",
+                removed=removed,
+                not_found=sorted(not_found),
+                remaining=len(user_cfg["experiences"]),
+                resources_retained=bool(removed),
+                target=str(target),
+                output_format=args.output,
+            )
+        )
     else:
         if removed:
             print(f"{_green('✓')} Removed experience(s): {', '.join(removed)}")
@@ -1014,13 +1157,15 @@ def _handle_config_remove_experience(args):
         print(f"  Remaining experiences: {len(user_cfg['experiences'])}")
         print(f"  Config: {target}")
         if removed:
-            print(f"  {_dim('MinIO buckets and Postgres/pgvector data are retained until explicit purge.')}")
+            print(
+                f"  {_dim('MinIO buckets and Postgres/pgvector data are retained until explicit purge.')}"
+            )
 
     return 0
 
 
 def _resolve_target_user_config_path(args) -> Path:
-    conf_path = getattr(args, 'conf', None)
+    conf_path = getattr(args, "conf", None)
     if conf_path:
         target = Path(conf_path).expanduser()
     else:
@@ -1046,7 +1191,9 @@ def _coerce_experience_fragments(fragment) -> list[dict]:
     elif isinstance(fragment, list):
         fragment_list = fragment
     else:
-        raise ValueError("Fragment must be a JSON object (single experience) or array of experiences.")
+        raise ValueError(
+            "Fragment must be a JSON object (single experience) or array of experiences."
+        )
     for xp in fragment_list:
         if not isinstance(xp, dict):
             raise ValueError("Each experience fragment must be a JSON object.")
@@ -1055,7 +1202,9 @@ def _coerce_experience_fragments(fragment) -> list[dict]:
     return fragment_list
 
 
-def _merge_experience_fragments(user_cfg: dict, fragment_list: list[dict], *, update: bool) -> tuple[list[str], list[str]]:
+def _merge_experience_fragments(
+    user_cfg: dict, fragment_list: list[dict], *, update: bool
+) -> tuple[list[str], list[str]]:
     experiences = user_cfg.setdefault("experiences", [])
     existing_names = {xp["xp_name"] for xp in experiences if "xp_name" in xp}
 
@@ -1132,13 +1281,15 @@ def _normalise_recovery_part(value: str) -> str:
     return str(value).strip().lower().replace(" ", "-").replace("_", "-")
 
 
-def _parse_recoverable_bucket_name(bucket_name: str, username: str) -> _RecoveredBucket | None:
+def _parse_recoverable_bucket_name(
+    bucket_name: str, username: str
+) -> _RecoveredBucket | None:
     username_part = _normalise_recovery_part(username)
     name = str(bucket_name).strip().lower()
     prefix = f"{username_part}."
     if not name.startswith(prefix):
         return None
-    rest = name[len(prefix):]
+    rest = name[len(prefix) :]
     if "." not in rest:
         return None
     xp_name, bucket_alias = rest.split(".", 1)
@@ -1174,7 +1325,12 @@ def _s3_endpoint_from_cfg(cfg: dict[str, str]) -> tuple[str, bool]:
     if not host:
         raise ValueError("S3 config must define host_base or host_bucket")
     use_https = str(cfg.get("use_https", "false")).lower() in ("1", "true", "yes", "on")
-    verify_ssl = str(cfg.get("check_ssl_certificate", "true")).lower() in ("1", "true", "yes", "on")
+    verify_ssl = str(cfg.get("check_ssl_certificate", "true")).lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
     protocol = "https" if use_https else "http"
     return f"{protocol}://{host}", verify_ssl
 
@@ -1225,14 +1381,21 @@ def _list_recovery_buckets_from_s3(
         parsed = _parse_recoverable_bucket_name(item.get("Name", ""), username)
         if parsed is None:
             continue
-        if normalised_xp_names and _normalise_recovery_part(parsed.xp_name) not in normalised_xp_names:
+        if (
+            normalised_xp_names
+            and _normalise_recovery_part(parsed.xp_name) not in normalised_xp_names
+        ):
             continue
         if include_object_counts:
             try:
-                parsed.object_count, parsed.total_size_bytes = _bucket_object_stats(s3, parsed.bucket)
+                parsed.object_count, parsed.total_size_bytes = _bucket_object_stats(
+                    s3, parsed.bucket
+                )
             except Exception as exc:
                 parsed.error = str(exc)
-                warnings.append(f"could not count objects in bucket {parsed.bucket}: {exc}")
+                warnings.append(
+                    f"could not count objects in bucket {parsed.bucket}: {exc}"
+                )
         recovered.append(parsed)
     return recovered, warnings
 
@@ -1241,8 +1404,12 @@ def _postgres_recovery_params() -> dict[str, object]:
     return {
         "host": os.environ.get("DB_HOST", "localhost"),
         "port": int(os.environ.get("DB_PORT", "5432")),
-        "user": os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres")),
-        "password": os.environ.get("DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres")),
+        "user": os.environ.get(
+            "DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres")
+        ),
+        "password": os.environ.get(
+            "DB_SUPERUSER_PASSWORD", os.environ.get("POSTGRES_PASSWORD", "postgres")
+        ),
         "connect_timeout": 3,
     }
 
@@ -1254,18 +1421,22 @@ def _pg_database_match(db_name: str, xp_name: str) -> tuple[str, str] | None:
         if db_name == candidate:
             return candidate, ""
         if db_name.startswith(prefix):
-            return candidate, db_name[len(prefix):]
+            return candidate, db_name[len(prefix) :]
     return None
 
 
 def _parse_vector_size(type_name: str | None) -> int | None:
     if not type_name:
         return None
-    match = __import__("re").fullmatch(r"vector\((\d+)\)", str(type_name).strip().lower())
+    match = __import__("re").fullmatch(
+        r"vector\((\d+)\)", str(type_name).strip().lower()
+    )
     return int(match.group(1)) if match else None
 
 
-def _inspect_recovery_pg_tables(db_name: str, xp_name: str, sql_username: str, params: dict[str, object]) -> list[_RecoveredTable]:
+def _inspect_recovery_pg_tables(
+    db_name: str, xp_name: str, sql_username: str, params: dict[str, object]
+) -> list[_RecoveredTable]:
     import psycopg2
     from psycopg2 import sql as psql
 
@@ -1295,14 +1466,18 @@ def _inspect_recovery_pg_tables(db_name: str, xp_name: str, sql_username: str, p
                 row_count = None
                 distinct_s3_objects = None
                 with contextlib.suppress(Exception):
-                    cur.execute(psql.SQL("SELECT COUNT(*) FROM {}").format(psql.Identifier(table_name)))
+                    cur.execute(
+                        psql.SQL("SELECT COUNT(*) FROM {}").format(
+                            psql.Identifier(table_name)
+                        )
+                    )
                     row_count = int(cur.fetchone()[0])
                 if "s3_object" in column_names:
                     with contextlib.suppress(Exception):
                         cur.execute(
-                            psql.SQL("SELECT COUNT(DISTINCT s3_object) FROM {} WHERE s3_object IS NOT NULL").format(
-                                psql.Identifier(table_name)
-                            )
+                            psql.SQL(
+                                "SELECT COUNT(DISTINCT s3_object) FROM {} WHERE s3_object IS NOT NULL"
+                            ).format(psql.Identifier(table_name))
                         )
                         distinct_s3_objects = int(cur.fetchone()[0])
                 vector_size = None
@@ -1327,7 +1502,9 @@ def _inspect_recovery_pg_tables(db_name: str, xp_name: str, sql_username: str, p
         conn.close()
 
 
-def _list_recovery_postgres_status(xp_names: set[str]) -> tuple[list[_RecoveredTable], list[str]]:
+def _list_recovery_postgres_status(
+    xp_names: set[str],
+) -> tuple[list[_RecoveredTable], list[str]]:
     warnings = []
     if not xp_names:
         return [], warnings
@@ -1361,7 +1538,11 @@ def _list_recovery_postgres_status(xp_names: set[str]) -> tuple[list[_RecoveredT
                 continue
             recovered_xp_name, sql_username = match
             try:
-                tables.extend(_inspect_recovery_pg_tables(db_name, recovered_xp_name, sql_username, params))
+                tables.extend(
+                    _inspect_recovery_pg_tables(
+                        db_name, recovered_xp_name, sql_username, params
+                    )
+                )
             except Exception as exc:
                 warnings.append(f"could not inspect Postgres database {db_name}: {exc}")
     return tables, warnings
@@ -1426,7 +1607,9 @@ def _build_recovered_experience_fragments(
     for bucket in buckets:
         group = groups.setdefault(bucket.xp_name, {"buckets": {}, "tables": []})
         bucket_map = group["buckets"]
-        item = bucket_map.setdefault(bucket.bucket_alias, {"input": None, "output": None})
+        item = bucket_map.setdefault(
+            bucket.bucket_alias, {"input": None, "output": None}
+        )
         item["output" if bucket.output else "input"] = bucket
 
     for table in tables:
@@ -1445,12 +1628,18 @@ def _build_recovered_experience_fragments(
         used_tables: set[tuple[str, str]] = set()
         modalities = []
         bucket_map = group.get("buckets") or {}
-        aliases = sorted(bucket_map.keys()) or [table.table_name for table in group_tables]
+        aliases = sorted(bucket_map.keys()) or [
+            table.table_name for table in group_tables
+        ]
         for alias in aliases:
             pair = bucket_map.get(alias, {}) if isinstance(bucket_map, dict) else {}
             output_bucket = pair.get("output") if isinstance(pair, dict) else None
             table = _match_recovered_table(group_tables, alias, used_tables)
-            vector_size = str(table.vector_size) if table and table.vector_size else str(fallback_vector_size)
+            vector_size = (
+                str(table.vector_size)
+                if table and table.vector_size
+                else str(fallback_vector_size)
+            )
             recovered_return_type = None
             if return_type == "auto":
                 recovered_return_type = "file" if output_bucket else None
@@ -1533,7 +1722,9 @@ def _recovered_table_to_dict(table: _RecoveredTable) -> dict:
 def _resolve_recovery_username(args, user_cfg: dict | None) -> str:
     username = getattr(args, "username", None) or (user_cfg or {}).get("username")
     if not username:
-        raise ValueError("Recovering experiences requires --username or a loaded user config.")
+        raise ValueError(
+            "Recovering experiences requires --username or a loaded user config."
+        )
     return username
 
 
@@ -1549,7 +1740,11 @@ def _handle_experience_recover(args):
 
     username = _resolve_recovery_username(args, user_cfg)
     xp_names = set(getattr(args, "xp_names", None) or [])
-    s3cfg_path = Path(getattr(args, "s3cfg", None) or (user_cfg or {}).get("s3_configuration_file") or default_s3cfg_path(username)).expanduser()
+    s3cfg_path = Path(
+        getattr(args, "s3cfg", None)
+        or (user_cfg or {}).get("s3_configuration_file")
+        or default_s3cfg_path(username)
+    ).expanduser()
     buckets, warnings = _list_recovery_buckets_from_s3(
         s3cfg_path=s3cfg_path,
         username=username,
@@ -1563,9 +1758,13 @@ def _handle_experience_recover(args):
         tables, pg_warnings = _list_recovery_postgres_status(inferred_xp_names)
         warnings.extend(pg_warnings)
     else:
-        warnings.append("Postgres inspection skipped; recovered SQL/model fields may use defaults.")
+        warnings.append(
+            "Postgres inspection skipped; recovered SQL/model fields may use defaults."
+        )
     if not tables:
-        warnings.append("No Postgres/pgvector table status recovered; review model, vector_size, and table_name before reload.")
+        warnings.append(
+            "No Postgres/pgvector table status recovered; review model, vector_size, and table_name before reload."
+        )
 
     experiences = _build_recovered_experience_fragments(
         username=username,
@@ -1576,7 +1775,11 @@ def _handle_experience_recover(args):
         fallback_vector_size=str(args.vector_size),
         return_type=args.return_type,
     )
-    output_path = Path(args.output_path).expanduser() if getattr(args, "output_path", None) else None
+    output_path = (
+        Path(args.output_path).expanduser()
+        if getattr(args, "output_path", None)
+        else None
+    )
     if output_path:
         output_payload = experiences[0] if len(experiences) == 1 else experiences
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1613,16 +1816,22 @@ def _handle_experience_recover(args):
         print(api_json(**payload, output_format=args.output))
     else:
         if output_path:
-            print(f"{_green('✓')} Wrote recovered experience JSON: {_bold(str(output_path))}")
+            print(
+                f"{_green('✓')} Wrote recovered experience JSON: {_bold(str(output_path))}"
+            )
         if merge_result:
-            print(f"{_green('✓')} Merged recovered experience(s) into: {_bold(merge_result['target'])}")
+            print(
+                f"{_green('✓')} Merged recovered experience(s) into: {_bold(merge_result['target'])}"
+            )
         print(_section("Recovered Experiences"))
         print(_json_mod.dumps(experiences, indent=2, ensure_ascii=False))
         if warnings:
             print(_section("Warnings"))
             for warning in warnings:
                 print(f"  {_yellow(warning)}")
-        print(f"  {_dim('Review model fields before reload if recovery used S3/Postgres status only.')}")
+        print(
+            f"  {_dim('Review model fields before reload if recovery used S3/Postgres status only.')}"
+        )
     return 0
 
 
@@ -1640,17 +1849,64 @@ def _configure_experience_recover_parser(parser):
         nargs="*",
         help="Optional xp_name values to recover; defaults to all accessible user buckets",
     )
-    parser.add_argument("--username", default=None, help="UMRS username whose resources should be recovered")
-    parser.add_argument("-c", "--conf", default=None, help="User config JSON path used for username/s3cfg defaults")
-    parser.add_argument("--s3cfg", default=None, help="S3 config used to inspect MinIO buckets")
-    parser.add_argument("--output-path", default=None, help="Write recovered experience JSON to this path")
-    parser.add_argument("--merge", action="store_true", default=False, help="Merge recovered experiences into the user config")
-    parser.add_argument("--update", action="store_true", default=False, help="Replace existing xp_name entries when merging")
-    parser.add_argument("--no-postgres", action="store_true", default=False, help="Skip optional Postgres/pgvector inspection")
-    parser.add_argument("--no-object-count", action="store_true", default=False, help="Skip MinIO object counts for faster recovery")
-    parser.add_argument("--model-name", default="intfloat/e5-base-v2", help="Model name to place in recovered JSON")
-    parser.add_argument("--model-type", default="TransformerEncoder", help="Model type to place in recovered JSON")
-    parser.add_argument("--vector-size", default="768", help="Fallback vector size when Postgres cannot infer it")
+    parser.add_argument(
+        "--username",
+        default=None,
+        help="UMRS username whose resources should be recovered",
+    )
+    parser.add_argument(
+        "-c",
+        "--conf",
+        default=None,
+        help="User config JSON path used for username/s3cfg defaults",
+    )
+    parser.add_argument(
+        "--s3cfg", default=None, help="S3 config used to inspect MinIO buckets"
+    )
+    parser.add_argument(
+        "--output-path",
+        default=None,
+        help="Write recovered experience JSON to this path",
+    )
+    parser.add_argument(
+        "--merge",
+        action="store_true",
+        default=False,
+        help="Merge recovered experiences into the user config",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        default=False,
+        help="Replace existing xp_name entries when merging",
+    )
+    parser.add_argument(
+        "--no-postgres",
+        action="store_true",
+        default=False,
+        help="Skip optional Postgres/pgvector inspection",
+    )
+    parser.add_argument(
+        "--no-object-count",
+        action="store_true",
+        default=False,
+        help="Skip MinIO object counts for faster recovery",
+    )
+    parser.add_argument(
+        "--model-name",
+        default="intfloat/e5-base-v2",
+        help="Model name to place in recovered JSON",
+    )
+    parser.add_argument(
+        "--model-type",
+        default="TransformerEncoder",
+        help="Model type to place in recovered JSON",
+    )
+    parser.add_argument(
+        "--vector-size",
+        default="768",
+        help="Fallback vector size when Postgres cannot infer it",
+    )
     parser.add_argument(
         "--return-type",
         default="auto",
@@ -1660,13 +1916,20 @@ def _configure_experience_recover_parser(parser):
 
 
 def _configure_experience_remove_parser(parser):
-    parser.add_argument("xp_names", nargs="+", help="One or more xp_name values to remove from the user JSON; MinIO/Postgres data is retained")
-    parser.add_argument("-c", "--conf", default=None, help="User config JSON path to edit")
+    parser.add_argument(
+        "xp_names",
+        nargs="+",
+        help="One or more xp_name values to remove from the user JSON; MinIO/Postgres data is retained",
+    )
+    parser.add_argument(
+        "-c", "--conf", default=None, help="User config JSON path to edit"
+    )
 
 
 def _resolve_current_user_config_path():
     """Return the Path to the currently selected user config, or None."""
     from umrs.shared.loaded_config_profiles import resolve_loaded_config
+
     resolved = resolve_loaded_config()
     if resolved.user and resolved.user.valid and resolved.user.path:
         return Path(resolved.user.path)
@@ -1674,36 +1937,36 @@ def _resolve_current_user_config_path():
 
 
 def _handle_config_command(args):
-    if args.config_action == 'init':
+    if args.config_action == "init":
         return _handle_config_init(args)
 
-    if args.config_action == 'add-experience':
+    if args.config_action == "add-experience":
         return _handle_config_add_experience(args)
 
-    if args.config_action == 'import':
+    if args.config_action == "import":
         return _handle_config_add_experience(args)
 
-    if args.config_action == 'remove-experience':
+    if args.config_action == "remove-experience":
         return _handle_config_remove_experience(args)
 
-    if args.config_action == 'recover-experience':
+    if args.config_action == "recover-experience":
         return _handle_experience_recover(args)
 
-    if args.config_action == 'list':
+    if args.config_action == "list":
         discovered = discover_loaded_config_profiles()
         show_srv = _is_dev_mode() or bool(args.server_conf)
         payload = {
             key: [candidate.to_dict() for candidate in value]
             for key, value in discovered.items()
-            if show_srv or key != 'server'
+            if show_srv or key != "server"
         }
-        if args.output == 'json':
+        if args.output == "json":
             print(api_json(configs=payload, output_format=args.output))
         else:
             _print_config_candidates_text(discovered, show_server=show_srv)
         return 0
 
-    if args.config_action == 'use':
+    if args.config_action == "use":
         if not any((args.server, args.user, args.s3)):
             raise ValueError("Provide at least one of --server, --user, or --s3.")
 
@@ -1715,14 +1978,20 @@ def _handle_config_command(args):
                     "(set UMRS_DEV_MODE=1). "
                     "Server config is managed on the server side."
                 )
-            updates['server'] = str(set_current_server_config(args.server))
+            updates["server"] = str(set_current_server_config(args.server))
         if args.user:
-            updates['user'] = str(set_current_user_config(args.user))
+            updates["user"] = str(set_current_user_config(args.user))
         if args.s3:
-            updates['s3'] = str(set_current_s3_config(args.s3))
+            updates["s3"] = str(set_current_s3_config(args.s3))
 
-        if args.output == 'json':
-            print(api_json(message="Current config selections updated", updates=updates, output_format=args.output))
+        if args.output == "json":
+            print(
+                api_json(
+                    message="Current config selections updated",
+                    updates=updates,
+                    output_format=args.output,
+                )
+            )
         else:
             print(f"{_green('✓')} Current config selections updated")
             for key, value in updates.items():
@@ -1737,13 +2006,12 @@ def _handle_config_command(args):
     show_srv = _is_dev_mode() or bool(args.server_conf)
     if not show_srv:
         resolved.warnings = [
-            w for w in resolved.warnings
-            if "server config" not in w.lower()
+            w for w in resolved.warnings if "server config" not in w.lower()
         ]
-    if args.output == 'json':
+    if args.output == "json":
         payload = resolved.to_dict()
         if not show_srv:
-            payload.pop('server', None)
+            payload.pop("server", None)
         print(api_json(config=payload, output_format=args.output))
     else:
         print(_format_config_text(resolved, show_server=show_srv))
@@ -1754,7 +2022,7 @@ def _handle_admin_user_command(args):
     """Handle ``admin user {add,list,remove}``."""
     import json as _json_mod
 
-    if args.user_action == 'add':
+    if args.user_action == "add":
         config_path = args.config_path
         if not os.path.isfile(config_path):
             print(f"{_red('✗')} File not found: {config_path}")
@@ -1768,9 +2036,13 @@ def _handle_admin_user_command(args):
         except Exception:
             username = "<unknown>"
 
-        admin_token = getattr(args, 'admin_token', None) or os.environ.get('UMRS_ADMIN_TOKEN')
+        admin_token = getattr(args, "admin_token", None) or os.environ.get(
+            "UMRS_ADMIN_TOKEN"
+        )
         if not admin_token:
-            print(f"{_red('✗')} Admin token required. Set UMRS_ADMIN_TOKEN or pass --admin-token.")
+            print(
+                f"{_red('✗')} Admin token required. Set UMRS_ADMIN_TOKEN or pass --admin-token."
+            )
             return 1
 
         connection = resolve_connection(
@@ -1791,8 +2063,15 @@ def _handle_admin_user_command(args):
             api = UMRSControlAPI(control_mq, client_id, admin_token=admin_token)
             result = api.enroll_user(config_path)
         except Exception as e:
-            if args.output == 'json':
-                print(api_json(action='user_add', status='error', message=str(e), output_format=args.output))
+            if args.output == "json":
+                print(
+                    api_json(
+                        action="user_add",
+                        status="error",
+                        message=str(e),
+                        output_format=args.output,
+                    )
+                )
             else:
                 print(f"{_red('✗')} Failed to enroll user: {e}")
             return 1
@@ -1800,18 +2079,24 @@ def _handle_admin_user_command(args):
             with contextlib.suppress(Exception):
                 control_mq.close()
 
-        if args.output == 'json':
-            print(api_json(action='user_add', **result, output_format=args.output))
+        if args.output == "json":
+            print(api_json(action="user_add", **result, output_format=args.output))
         else:
             if result.get("status") == "ok":
                 print(f"{_green('✓')} User {_bold(username)} enrolled on the server.")
-                print(f"  {_dim('The server has auto-reloaded to provision MinIO/Postgres resources.')}")
+                print(
+                    f"  {_dim('The server has auto-reloaded to provision MinIO/Postgres resources.')}"
+                )
             else:
-                print(f"{_red('✗')} Enrollment failed: {result.get('message', 'unknown error')}")
+                print(
+                    f"{_red('✗')} Enrollment failed: {result.get('message', 'unknown error')}"
+                )
         return 0 if result.get("status") == "ok" else 1
 
-    if args.user_action == 'list':
-        admin_token = getattr(args, 'admin_token', None) or os.environ.get('UMRS_ADMIN_TOKEN')
+    if args.user_action == "list":
+        admin_token = getattr(args, "admin_token", None) or os.environ.get(
+            "UMRS_ADMIN_TOKEN"
+        )
         connection = resolve_connection(
             explicit_profile_name=args.profile,
             explicit_server_ip=args.server_ip,
@@ -1830,8 +2115,15 @@ def _handle_admin_user_command(args):
             api = UMRSControlAPI(control_mq, client_id, admin_token=admin_token)
             status = api.request_status("all")
         except Exception as e:
-            if args.output == 'json':
-                print(api_json(action='user_list', status='error', message=str(e), output_format=args.output))
+            if args.output == "json":
+                print(
+                    api_json(
+                        action="user_list",
+                        status="error",
+                        message=str(e),
+                        output_format=args.output,
+                    )
+                )
             else:
                 print(f"{_red('✗')} Failed to query server: {e}")
             return 1
@@ -1849,8 +2141,12 @@ def _handle_admin_user_command(args):
                         if u:
                             users.add(u)
 
-        if args.output == 'json':
-            print(api_json(action='user_list', users=sorted(users), output_format=args.output))
+        if args.output == "json":
+            print(
+                api_json(
+                    action="user_list", users=sorted(users), output_format=args.output
+                )
+            )
         else:
             print(_section("Enrolled Users"))
             if users:
@@ -1858,15 +2154,26 @@ def _handle_admin_user_command(args):
                     print(f"  {_status_dot('green')} {u}")
             else:
                 print(f"  {_dim('No users found in server status.')}")
-                print(f"  {_dim('(Users appear here after at least one processing job has run.)')}")
+                print(
+                    f"  {_dim('(Users appear here after at least one processing job has run.)')}"
+                )
         return 0
 
-    if args.user_action == 'remove':
-        if args.output == 'json':
-            print(api_json(action='user_remove', status='error', message='Not yet implemented', output_format=args.output))
+    if args.user_action == "remove":
+        if args.output == "json":
+            print(
+                api_json(
+                    action="user_remove",
+                    status="error",
+                    message="Not yet implemented",
+                    output_format=args.output,
+                )
+            )
         else:
             print(f"{_yellow('⚠')} User removal is not yet implemented.")
-            print(f"  {_dim('De-provisioning (MinIO IAM cleanup, Postgres role removal) will be added in a future release.')}")
+            print(
+                f"  {_dim('De-provisioning (MinIO IAM cleanup, Postgres role removal) will be added in a future release.')}"
+            )
         return 1
 
     raise ValueError(f"Unknown user action: {args.user_action}")
@@ -1876,34 +2183,48 @@ def _handle_admin_command(args):
     """Handle ``admin token {generate,list,revoke}`` and ``admin user {add,list,remove}``."""
     from umrs.shared.auth import AdminTokenManager
 
-    if args.admin_action == 'user':
+    if args.admin_action == "user":
         return _handle_admin_user_command(args)
 
-    if args.admin_action != 'token':
+    if args.admin_action != "token":
         raise ValueError(f"Unknown admin action: {args.admin_action}")
 
     mgr = AdminTokenManager()
 
-    if args.token_action == 'generate':
-        existing = {t['name'] for t in mgr.list_tokens()}
+    if args.token_action == "generate":
+        existing = {t["name"] for t in mgr.list_tokens()}
         overwrite = args.name in existing
         token = mgr.generate_token(args.name, description=args.description)
-        if args.output == 'json':
-            print(api_json(action='token_generate', name=args.name, token=token, overwritten=overwrite, output_format=args.output))
+        if args.output == "json":
+            print(
+                api_json(
+                    action="token_generate",
+                    name=args.name,
+                    token=token,
+                    overwritten=overwrite,
+                    output_format=args.output,
+                )
+            )
         else:
             action = "Regenerated" if overwrite else "Generated"
-            print(f"{_green('✓')} {action} admin token for {_bold(args.name)} (for umrs-client --admin-token / $UMRS_ADMIN_TOKEN):")
+            print(
+                f"{_green('✓')} {action} admin token for {_bold(args.name)} (for umrs-client --admin-token / $UMRS_ADMIN_TOKEN):"
+            )
             print(f"  {_yellow(token)}")
             print("")
             print(f"  {_dim('Save this token — it cannot be retrieved later.')}")
             print(f"  {_dim('Use with: umrs-client --admin-token <token> <command>')}")
-            print(f"  {_dim('NOTE: this is NOT a Gateway/r4 JWT — use umrs-server admin token generate-jwt for that.')}")
+            print(
+                f"  {_dim('NOTE: this is NOT a Gateway/r4 JWT — use umrs-server admin token generate-jwt for that.')}"
+            )
         return 0
 
-    if args.token_action == 'list':
+    if args.token_action == "list":
         tokens = mgr.list_tokens()
-        if args.output == 'json':
-            print(api_json(action='token_list', tokens=tokens, output_format=args.output))
+        if args.output == "json":
+            print(
+                api_json(action="token_list", tokens=tokens, output_format=args.output)
+            )
         else:
             print(_section("Admin Tokens"))
             if tokens:
@@ -1923,9 +2244,9 @@ def _handle_admin_command(args):
                         "  "
                         + " ".join(
                             [
-                                _fmt_cell(t['name'], 20),
-                                _fmt_cell(t.get('description', ''), 30),
-                                _fmt_cell(t.get('created_at', ''), 25, style=_dim),
+                                _fmt_cell(t["name"], 20),
+                                _fmt_cell(t.get("description", ""), 30),
+                                _fmt_cell(t.get("created_at", ""), 25, style=_dim),
                             ]
                         )
                     )
@@ -1933,10 +2254,17 @@ def _handle_admin_command(args):
                 print(f"  {_dim('No admin tokens configured.')}")
         return 0
 
-    if args.token_action == 'revoke':
+    if args.token_action == "revoke":
         ok = mgr.revoke_token(args.name)
-        if args.output == 'json':
-            print(api_json(action='token_revoke', name=args.name, revoked=ok, output_format=args.output))
+        if args.output == "json":
+            print(
+                api_json(
+                    action="token_revoke",
+                    name=args.name,
+                    revoked=ok,
+                    output_format=args.output,
+                )
+            )
         else:
             if ok:
                 print(f"{_green('✓')} Token {_bold(args.name)} revoked.")
@@ -1962,7 +2290,7 @@ def _handle_profile_init(args):
 
     # Prompt for host and mode when not provided via CLI flags.
     host = args.host
-    if host == '127.0.0.1' and '--host' not in sys.argv:
+    if host == "127.0.0.1" and "--host" not in sys.argv:
         try:
             entered = input(f"Server host [{host}]: ").strip()
             if entered:
@@ -1972,10 +2300,10 @@ def _handle_profile_init(args):
             return 1
 
     mode = args.mode
-    if mode == 'direct' and '--mode' not in sys.argv:
+    if mode == "direct" and "--mode" not in sys.argv:
         try:
             entered = input(f"Connection mode (direct/ssh_tunnel) [{mode}]: ").strip()
-            if entered in ('direct', 'ssh_tunnel'):
+            if entered in ("direct", "ssh_tunnel"):
                 mode = entered
             elif entered:
                 print(f"Invalid mode '{entered}', using '{mode}'")
@@ -2010,8 +2338,16 @@ def _handle_profile_init(args):
             "host": ssh_host,
             "command_hint": f"ssh -L {args.control_port}:localhost:{args.control_port} {ssh_host}",
             "local_forwards": [
-                {"local_port": args.control_port, "remote_host": "localhost", "remote_port": args.control_port},
-                {"local_port": args.data_port_start, "remote_host": "localhost", "remote_port": args.data_port_start},
+                {
+                    "local_port": args.control_port,
+                    "remote_host": "localhost",
+                    "remote_port": args.control_port,
+                },
+                {
+                    "local_port": args.data_port_start,
+                    "remote_host": "localhost",
+                    "remote_port": args.data_port_start,
+                },
             ],
         }
 
@@ -2030,13 +2366,15 @@ def _handle_profile_init(args):
 
     set_current_profile_name(name)
 
-    if args.output == 'json':
-        print(api_json(
-            message="Connection profile created and set as current",
-            name=name,
-            path=str(out_path),
-            output_format=args.output,
-        ))
+    if args.output == "json":
+        print(
+            api_json(
+                message="Connection profile created and set as current",
+                name=name,
+                path=str(out_path),
+                output_format=args.output,
+            )
+        )
     else:
         print(f"{_green('✓')} Created {_bold(str(out_path))}")
         print(f"  Set as current profile: {_bold(name)}")
@@ -2050,16 +2388,23 @@ def _handle_profile_init(args):
 
 def _ensure_user_config_after_login(username: str, args) -> int:
     """Create a default user config after login if none exists, or ask to overwrite."""
-    from umrs.shared.config import get_resolved_umrs_cfg_dir, get_users_default_cfg_subdir
+    from umrs.shared.config import (
+        get_resolved_umrs_cfg_dir,
+        get_users_default_cfg_subdir,
+    )
 
-    users_dir = Path(get_resolved_umrs_cfg_dir()).expanduser() / get_users_default_cfg_subdir()
+    users_dir = (
+        Path(get_resolved_umrs_cfg_dir()).expanduser() / get_users_default_cfg_subdir()
+    )
     cfg_path = users_dir / f"{username}.json"
 
     if cfg_path.exists():
         # Ask whether to overwrite.
         print(f"\n  User config already exists: {_dim(str(cfg_path))}")
         try:
-            answer = input("  Overwrite with a fresh default config? [y/N] ").strip().lower()
+            answer = (
+                input("  Overwrite with a fresh default config? [y/N] ").strip().lower()
+            )
         except (EOFError, KeyboardInterrupt):
             print("")
             return 0
@@ -2079,7 +2424,9 @@ def _ensure_user_config_after_login(username: str, args) -> int:
 
     set_current_user_config(str(cfg_path))
     print(f"\n  {_green('✓')} User config created → {_bold(str(cfg_path))}")
-    print(f"  Add experiences via: {_cyan('umrs-client config import <experience.json>')}")
+    print(
+        f"  Add experiences via: {_cyan('umrs-client config import <experience.json>')}"
+    )
     print(f"  Then reload:        {_cyan('umrs-client reload')}")
     return 0
 
@@ -2090,7 +2437,7 @@ def _handle_login(args):
 
     host = args.host
     port = args.port
-    gateway_url = getattr(args, 'gateway_url', None)
+    gateway_url = getattr(args, "gateway_url", None)
 
     # If stdin is a TTY and no gateway URL was given, prompt for it so a bare
     # ``umrs-client login`` is sufficient for the shared umrs-front deployment.
@@ -2102,8 +2449,8 @@ def _handle_login(args):
             gateway_url = entered
 
     # --gateway-url implies --mode gateway
-    if gateway_url and args.mode == 'direct':
-        args.mode = 'gateway'
+    if gateway_url and args.mode == "direct":
+        args.mode = "gateway"
     mode = args.mode
     api_key = args.api_key
     username = args.username
@@ -2183,6 +2530,7 @@ def _handle_login(args):
         }
 
     import json as _json_mod
+
     with open(profile_path, "w", encoding="utf-8") as f:
         _json_mod.dump(profile_data, f, indent=2, ensure_ascii=False)
         f.write("\n")
@@ -2242,10 +2590,10 @@ def _handle_login(args):
 
 
 def _handle_profile_command(args):
-    if args.profile_action == 'init':
+    if args.profile_action == "init":
         return _handle_profile_init(args)
 
-    if args.profile_action == 'list':
+    if args.profile_action == "list":
         profiles, errors = discover_connection_profiles()
         current = None
         try:
@@ -2266,7 +2614,7 @@ def _handle_profile_command(args):
             ],
             "errors": errors,
         }
-        if args.output == 'json':
+        if args.output == "json":
             print(api_json(**payload, output_format=args.output))
         else:
             print(_section("Connection Profiles"))
@@ -2278,37 +2626,49 @@ def _handle_profile_command(args):
                     else:
                         marker = " "
                         name_str = _fmt_cell(profile.name, 20)
-                    print(f"  {marker} {name_str} {_fmt_cell(profile.mode, 10, style=_dim)} {_dim(profile.path)}")
+                    print(
+                        f"  {marker} {name_str} {_fmt_cell(profile.mode, 10, style=_dim)} {_dim(profile.path)}"
+                    )
             else:
                 print(f"  {_dim('No connection profiles found.')}")
             for entry in errors:
                 print(f"  {_red('!')} {entry['name']}: {entry['error']}")
         return 0
 
-    if args.profile_action == 'use':
+    if args.profile_action == "use":
         path = set_current_profile_name(args.name)
-        if args.output == 'json':
-            print(api_json(message=f"Current connection profile set to '{args.name}'", path=str(path), output_format=args.output))
+        if args.output == "json":
+            print(
+                api_json(
+                    message=f"Current connection profile set to '{args.name}'",
+                    path=str(path),
+                    output_format=args.output,
+                )
+            )
         else:
             print(f"{_green('✓')} Current connection profile set to {_bold(args.name)}")
             print(_kv("path", _dim(str(path))))
         return 0
 
-    if args.profile_action == 'import':
+    if args.profile_action == "import":
         profile = import_connection_profile(args.file, overwrite=args.force)
         payload = {
             "message": f"Imported connection profile '{profile.name}'",
             "name": profile.name,
             "path": profile.path,
         }
-        if args.output == 'json':
+        if args.output == "json":
             print(api_json(**payload, output_format=args.output))
         else:
             print(f"{_green('✓')} Imported connection profile {_bold(profile.name)}")
-            print(_kv("path", _dim(payload['path'])))
+            print(_kv("path", _dim(payload["path"])))
         return 0
 
-    connection = resolve_connection(explicit_profile_name=args.profile, explicit_server_ip=args.server_ip, explicit_control_port=args.control_port)
+    connection = resolve_connection(
+        explicit_profile_name=args.profile,
+        explicit_server_ip=args.server_ip,
+        explicit_control_port=args.control_port,
+    )
     conn_dict = connection.to_dict()
     # Hide internal sources dict from JSON output (available in text via [sources] section)
     conn_dict.pop("sources", None)
@@ -2316,7 +2676,7 @@ def _handle_profile_command(args):
         "connection": conn_dict,
         "selected_profile": connection.profile_name,
     }
-    if args.output == 'json':
+    if args.output == "json":
         print(api_json(**payload, output_format=args.output))
     else:
         print(_format_profile_text(connection, connection.profile_name, []))
@@ -2328,18 +2688,22 @@ def configure_buckets(user_cfg, buckets_cfg):
     username = user_cfg["username"]
     s3_configuration_file = user_cfg["s3_configuration_file"]
     for xp in user_cfg["experiences"]:
-        sql_username  = xp["sql_username"]
+        sql_username = xp["sql_username"]
         xp_name = xp["xp_name"]
         db_name = create_db_name(sql_username, xp_name)
         for modality in xp["modalities"]:
             # Support both old (modality_name) and new (modality + task) config
-            raw_modality_name = modality.get("modality_name") or modality.get("modality")
+            raw_modality_name = modality.get("modality_name") or modality.get(
+                "modality"
+            )
             raw_task = modality.get("task")
             modality_name, task = resolve_modality_task(raw_modality_name, raw_task)
-            bucket_alias =  modality["s3"]["bucket_alias"]
+            bucket_alias = modality["s3"]["bucket_alias"]
             path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
             if modality["s3"].get("need_output_bucket", False):
-                output_path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
+                output_path_to_bucket = make_path_to_bucket_string(
+                    xp_name, bucket_alias, username, output=True
+                )
             else:
                 output_path_to_bucket = None
             # print(bucket_alias, username, xp_name, modality_name)
@@ -2354,24 +2718,26 @@ def configure_buckets(user_cfg, buckets_cfg):
                 metadata,
                 sql_username,
                 db_name,
-                output_path_to_bucket
+                output_path_to_bucket,
             )
             buckets_cfg.store(bucket_alias, entry)
+
 
 def build_buckets_cfg(user_cfg):
     buckets_cfg = BucketsCfg()
     configure_buckets(user_cfg, buckets_cfg)
     return buckets_cfg
 
-def api_json(status="ok", output_format='json', **payload):
+
+def api_json(status="ok", output_format="json", **payload):
     out = {"status": status}
     out.update(payload)
-    if output_format == 'json':
+    if output_format == "json":
         return _json.dumps(out, ensure_ascii=False)
     lines = []
     for k, v in out.items():
         if isinstance(v, (list, tuple)):
-            lines.append(f"{k}=[{', '.join(map(str,v))}]")
+            lines.append(f"{k}=[{', '.join(map(str, v))}]")
         else:
             lines.append(f"{k}={v}")
     return "\n".join(lines)
@@ -2385,32 +2751,33 @@ def _resolve_status_target(args):
         return "all"
     return target
 
+
 def parse_metadata_kv(pairs_list):
     meta = {}
     if not pairs_list:
         return meta
     for p in pairs_list:
-        if ':' not in p:
+        if ":" not in p:
             raise ValueError(f"Metadata must be key:value got '{p}'")
-        k, v = p.split(':', 1)
+        k, v = p.split(":", 1)
         meta[k.strip()] = v.strip()
     return meta
+
 
 def merge_metadata(base_metadata, override_meta_dict):
     # base_metadata is the structure produced by metadata_dict(sql_conf).
     # For now we only inject overrides into a flat list under Metadata (matching existing code paths)
     # Existing code path expects metadata_args = { 'Metadata': {...}}
     merged = dict(base_metadata.items()) if base_metadata else {}
-    md = merged.get('Metadata', {})
+    md = merged.get("Metadata", {})
     md.update(override_meta_dict)
-    merged['Metadata'] = md
+    merged["Metadata"] = md
     return merged
 
 
-
 def format_status_text(response_payload, default_key):
-    if response_payload.get('status') != 'ok':
-        message = response_payload.get('message', 'status unavailable')
+    if response_payload.get("status") != "ok":
+        message = response_payload.get("message", "status unavailable")
         if message == "No status for 'reload'":
             message = (
                 "No status for 'reload'. Reload is synchronous; use "
@@ -2419,7 +2786,7 @@ def format_status_text(response_payload, default_key):
             )
         return f"{_red('✗')} {message}"
 
-    client_label = response_payload.get('client')
+    client_label = response_payload.get("client")
     lines = []
 
     def append_entry(name, entry):
@@ -2428,30 +2795,34 @@ def format_status_text(response_payload, default_key):
             header_parts.append(client_label)
         if name:
             header_parts.append(name)
-        generated_at = entry.get('generated_at')
-        last_updated_at = entry.get('last_updated_at')
+        generated_at = entry.get("generated_at")
+        last_updated_at = entry.get("last_updated_at")
         if header_parts or generated_at or last_updated_at:
-            header = ' - '.join(header_parts)
+            header = " - ".join(header_parts)
             time_parts = []
             if generated_at:
                 time_parts.append(f"generated {generated_at}")
             if last_updated_at:
                 time_parts.append(f"last update {last_updated_at}")
             if time_parts:
-                time_text = '; '.join(time_parts)
-                header = f"{header} {_dim('(' + time_text + ')')}" if header else _dim(time_text)
+                time_text = "; ".join(time_parts)
+                header = (
+                    f"{header} {_dim('(' + time_text + ')')}"
+                    if header
+                    else _dim(time_text)
+                )
             if header:
                 lines.append(_section(header))
-        summary_body = entry.get('summary')
+        summary_body = entry.get("summary")
         if summary_body:
             lines.append(f"  {summary_body}")
         else:
             lines.append(f"  {_dim('(no summary)')}")
 
-    if 'summary' in response_payload:
-        append_entry(default_key, response_payload['summary'])
-    elif 'summaries' in response_payload:
-        summaries = response_payload['summaries'] or {}
+    if "summary" in response_payload:
+        append_entry(default_key, response_payload["summary"])
+    elif "summaries" in response_payload:
+        summaries = response_payload["summaries"] or {}
         for key in sorted(summaries.keys()):
             append_entry(key, summaries[key])
             lines.append("")
@@ -2461,6 +2832,7 @@ def format_status_text(response_payload, default_key):
         return f"{_red('✗')} Unexpected status payload"
 
     return "\n".join(lines)
+
 
 def action_ping(control_mq, output_format, timeout_ms=2000, connection=None):
     ready = control_mq.is_server_ready(timeout_ms=timeout_ms)
@@ -2480,7 +2852,9 @@ def _probe_remote_buckets(username: str, user_cfg: dict | None) -> dict:
       - warning: optional error string if S3 probe failed
     """
     result: dict = {"remote_names": {}}
-    s3cfg_path_str = (user_cfg or {}).get("s3_configuration_file") or default_s3cfg_path(username)
+    s3cfg_path_str = (user_cfg or {}).get(
+        "s3_configuration_file"
+    ) or default_s3cfg_path(username)
     s3cfg_path = Path(s3cfg_path_str).expanduser()
     if not s3cfg_path.is_file():
         result["warning"] = f"S3 config not found: {s3cfg_path} — cannot check remote"
@@ -2517,13 +2891,18 @@ def _probe_remote_buckets(username: str, user_cfg: dict | None) -> dict:
     return result
 
 
-def _build_remote_info(remote_names: dict[str, int], configured_paths: set[str], username: str) -> dict:
+def _build_remote_info(
+    remote_names: dict[str, int], configured_paths: set[str], username: str
+) -> dict:
     """Build the remote_info dict from raw remote bucket names and configured paths."""
     result: dict = {"buckets": {}, "extra_buckets": []}
     username_prefix = _normalise_recovery_part(username) + "."
     for path in configured_paths:
         if path in remote_names:
-            result["buckets"][path] = {"status": "synced", "object_count": remote_names[path]}
+            result["buckets"][path] = {
+                "status": "synced",
+                "object_count": remote_names[path],
+            }
         else:
             result["buckets"][path] = {"status": "missing"}
     for bname, count in sorted(remote_names.items()):
@@ -2544,7 +2923,7 @@ def _xp_name_from_bucket_path(bucket_path: str, username: str) -> str:
     prefix = _normalise_recovery_part(username) + "."
     if not bucket_path.startswith(prefix):
         return "?"
-    rest = bucket_path[len(prefix):]
+    rest = bucket_path[len(prefix) :]
     parts = rest.split(".", 1)
     return parts[0] if len(parts) >= 2 else "?"
 
@@ -2552,25 +2931,29 @@ def _xp_name_from_bucket_path(bucket_path: str, username: str) -> str:
 def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None):
     buckets = []
     for alias, entry in bucket_cfg.items():
-        if entry.username == username :
-            buckets.append({
-                'bucket_alias': alias,
-                'experience': entry.xp_name,
-                'modality': entry.modality_name,
-                'task': entry.task,
-                'path_to_bucket': entry.path_to_bucket
-            })
-    if output_format == 'json':
+        if entry.username == username:
+            buckets.append(
+                {
+                    "bucket_alias": alias,
+                    "experience": entry.xp_name,
+                    "modality": entry.modality_name,
+                    "task": entry.task,
+                    "path_to_bucket": entry.path_to_bucket,
+                }
+            )
+    if output_format == "json":
         if remote_info is not None:
             for b in buckets:
-                path = b['path_to_bucket']
+                path = b["path_to_bucket"]
                 ri = remote_info.get("buckets", {}).get(path)
-                b['remote_status'] = ri["status"] if ri else "missing"
-                b['object_count'] = ri.get("object_count") if ri else None
+                b["remote_status"] = ri["status"] if ri else "missing"
+                b["object_count"] = ri.get("object_count") if ri else None
             extra = remote_info.get("extra_buckets", [])
             for eb in extra:
                 eb["experience"] = _xp_name_from_bucket_path(eb["name"], username)
-            return api_json(buckets=buckets, extra_remote_buckets=extra, output_format=output_format)
+            return api_json(
+                buckets=buckets, extra_remote_buckets=extra, output_format=output_format
+            )
         return api_json(buckets=buckets, output_format=output_format)
 
     # Text mode: formatted table with dynamic column widths
@@ -2579,10 +2962,10 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
         lines.append(f"  {_dim('No buckets found.')}")
     else:
         show_remote = remote_info is not None
-        w_xp = max(len("Experience"), *(len(b['experience']) for b in buckets))
-        w_alias = max(len("Alias"), *(len(b['bucket_alias']) for b in buckets))
-        w_mod = max(len("Modality"), *(len(b['modality']) for b in buckets))
-        w_task = max(len("Task"), *(len(b.get('task', '')) for b in buckets))
+        w_xp = max(len("Experience"), *(len(b["experience"]) for b in buckets))
+        w_alias = max(len("Alias"), *(len(b["bucket_alias"]) for b in buckets))
+        w_mod = max(len("Modality"), *(len(b["modality"]) for b in buckets))
+        w_task = max(len("Task"), *(len(b.get("task", "")) for b in buckets))
         header_cells = [
             _fmt_cell("Experience", w_xp, style=_bold),
             _fmt_cell("Alias", w_alias, style=_bold),
@@ -2602,13 +2985,13 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
         lines.append(f"  {_dim('-' * sep_width)}")
         for b in buckets:
             row_cells = [
-                _fmt_cell(b['experience'], w_xp),
-                _fmt_cell(b['bucket_alias'], w_alias),
-                _fmt_cell(b['modality'], w_mod),
-                _fmt_cell(b.get('task', ''), w_task),
+                _fmt_cell(b["experience"], w_xp),
+                _fmt_cell(b["bucket_alias"], w_alias),
+                _fmt_cell(b["modality"], w_mod),
+                _fmt_cell(b.get("task", ""), w_task),
             ]
             if show_remote:
-                path = b['path_to_bucket']
+                path = b["path_to_bucket"]
                 ri = (remote_info or {}).get("buckets", {}).get(path)
                 if ri and ri["status"] == "synced":
                     status_str = _green("synced")
@@ -2618,38 +3001,54 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
                     obj_str = _dim("-")
                 row_cells.append(_fmt_cell_raw(status_str, w_status))
                 row_cells.append(_fmt_cell_raw(obj_str, w_objects))
-            row_cells.append(_dim(b['path_to_bucket']))
+            row_cells.append(_dim(b["path_to_bucket"]))
             lines.append("  " + "  ".join(row_cells))
 
         if show_remote:
             extra = (remote_info or {}).get("extra_buckets", [])
             if extra:
                 lines.append("")
-                lines.append(_section(f"Extra remote buckets {_dim('(not in config)')}"))
+                lines.append(
+                    _section(f"Extra remote buckets {_dim('(not in config)')}")
+                )
                 for eb in extra:
-                    xp = _xp_name_from_bucket_path(eb['name'], username)
-                    xp_label = f"  {_dim('experience=')}{ xp}"
-                    lines.append(f"  {eb['name']}  {_dim(str(eb.get('object_count', '')) + ' objects')}{xp_label}")
+                    xp = _xp_name_from_bucket_path(eb["name"], username)
+                    xp_label = f"  {_dim('experience=')}{xp}"
+                    lines.append(
+                        f"  {eb['name']}  {_dim(str(eb.get('object_count', '')) + ' objects')}{xp_label}"
+                    )
                 lines.append("")
                 lines.append(f"  {_dim('Hints:')}")
-                lines.append(f"  {_dim('  Remove extra buckets:')}  umrs-client purge_remote_buckets")
-                lines.append(f"  {_dim('  Add experience back:')}   umrs-client experience import <experience.json>")
-                lines.append(f"  {_dim('  Edit user config:')}      umrs-client config edit --user")
+                lines.append(
+                    f"  {_dim('  Remove extra buckets:')}  umrs-client purge_remote_buckets"
+                )
+                lines.append(
+                    f"  {_dim('  Add experience back:')}   umrs-client experience import <experience.json>"
+                )
+                lines.append(
+                    f"  {_dim('  Edit user config:')}      umrs-client config edit --user"
+                )
             warn = (remote_info or {}).get("warning")
             if warn:
                 lines.append(f"  {_yellow(warn)}")
 
     return "\n".join(lines)
 
+
 def perform_upload_text(s3, full_bucket_name, text, data_mq, metadata_args):
     s3_key = s3_store_txt(s3, full_bucket_name, "", text, data_mq, metadata_args)
     return s3_key
 
+
 def perform_upload_image(s3, full_bucket_name, file_path, data_mq, metadata_args):
     return s3_store_image(s3, full_bucket_name, "", file_path, data_mq, metadata_args)
 
+
 def perform_upload_textfile(s3, full_bucket_name, file_path, data_mq, metadata_args):
-    return s3_store_text_file(s3, full_bucket_name, "", file_path, data_mq, metadata_args)
+    return s3_store_text_file(
+        s3, full_bucket_name, "", file_path, data_mq, metadata_args
+    )
+
 
 def resolve_bucket(bucket_store, bucket_alias):
     entry = bucket_store.get(
@@ -2688,14 +3087,14 @@ class _ClientHelpFormatter(
 _CLIENT_EPILOG = (
     "Onboarding:\n"
     "  1. Ask the operator to register you on the server:\n"
-    "       umrs-server admin user add <username> --fullname \"Your Name\" --role user\n"
+    '       umrs-server admin user add <username> --fullname "Your Name" --role user\n'
     "  2. Create or select your local client config:\n"
     "       umrs-client config init --username <username>\n"
     "  3. Check the resolved config and server connectivity:\n"
     "       umrs-client config show\n"
     "       umrs-client ping\n\n"
     "Shell completion:\n"
-    "  eval \"$(umrs-client completion bash)\"\n\n"
+    '  eval "$(umrs-client completion bash)"\n\n'
     "Related CLIs:\n"
     "  r4            Gateway-mediated research workflows (chat, RAG, endpoints).\n"
     "  umrs-client   UMRS diagnostics, endpoint control, experience recovery, migration.\n"
@@ -2720,6 +3119,7 @@ def _disabled_admin_message():
 # HTTP transport helpers — used when gateway_url is configured
 # ---------------------------------------------------------------------------
 
+
 def _http_ping(gateway_url: str, api_key: str | None = None) -> dict:
     """Ping the UMRS server via the HTTP gateway."""
     import urllib.request
@@ -2734,7 +3134,11 @@ def _http_ping(gateway_url: str, api_key: str | None = None) -> dict:
             body = _json.loads(resp.read().decode("utf-8"))
             return body
     except urllib.error.HTTPError as e:
-        return {"status": "error", "server_ready": False, "message": f"HTTP {e.code}: {e.reason}"}
+        return {
+            "status": "error",
+            "server_ready": False,
+            "message": f"HTTP {e.code}: {e.reason}",
+        }
     except Exception as e:
         return {"status": "error", "server_ready": False, "message": str(e)}
 
@@ -2771,7 +3175,9 @@ def _http_reload(
         return {"status": "error", "message": str(e)}
 
 
-def _http_model_list(gateway_url: str, api_key: str | None = None, scope: str | None = None) -> dict:
+def _http_model_list(
+    gateway_url: str, api_key: str | None = None, scope: str | None = None
+) -> dict:
     """List models via the HTTP gateway endpoint."""
     import urllib.request
     import urllib.error
@@ -2818,14 +3224,21 @@ def _http_model_delete(
     if list_result.get("status") != "ok":
         return list_result
     matches = [
-        m for m in list_result.get("models", [])
+        m
+        for m in list_result.get("models", [])
         if m.get("name") == name and m.get("scope") == scope
     ]
     if not matches:
-        return {"status": "error", "message": f"Model '{name}' not found in {scope} scope"}
+        return {
+            "status": "error",
+            "message": f"Model '{name}' not found in {scope} scope",
+        }
     model_id = matches[0].get("model_id") or matches[0].get("id")
     if not model_id:
-        return {"status": "error", "message": f"Model '{name}' has no model_id — cannot delete via HTTP"}
+        return {
+            "status": "error",
+            "message": f"Model '{name}' has no model_id — cannot delete via HTTP",
+        }
 
     url = f"{gateway_url.rstrip('/')}/gw/models/{model_id}"
     if delete_files:
@@ -2934,6 +3347,7 @@ def _try_read_r4_token(profile_name: str | None) -> str | None:
         if not tokens_path.is_file():
             return None
         import json as _json
+
         data = _json.loads(tokens_path.read_text(encoding="utf-8"))
         entry = data.get(profile_name, {})
         token = entry.get("access_token")
@@ -2941,6 +3355,7 @@ def _try_read_r4_token(profile_name: str | None) -> str | None:
             return None
         # Check expiry if present (with 60s buffer)
         import time as _time
+
         expires_at = entry.get("expires_at")
         if expires_at and _time.time() > (expires_at - 60):
             return None
@@ -2961,6 +3376,7 @@ def _get_api_key_from_profile(ctx) -> str | None:
     profile_path = getattr(conn, "profile_path", None)
     if profile_path:
         from pathlib import Path as _Path
+
         token_path = _Path(profile_path).with_suffix(".token")
         if token_path.is_file():
             return token_path.read_text(encoding="utf-8").strip()
@@ -2990,6 +3406,7 @@ class _ClientContext:
 # Per-action handlers — each returns an int exit code
 # ---------------------------------------------------------------------------
 
+
 def _action_ping(ctx):
     args = ctx.args
 
@@ -3005,7 +3422,10 @@ def _action_ping(ctx):
         zmq_ready = False
         ping_result = {}
         try:
-            timeout = getattr(args, "timeout_ms", None) or ctx.connection.health_check_timeout_ms
+            timeout = (
+                getattr(args, "timeout_ms", None)
+                or ctx.connection.health_check_timeout_ms
+            )
             ping_result = api.ping(timeout_ms=timeout)
             zmq_ready = ping_result.get("server_ready", False)
         except Exception:
@@ -3027,7 +3447,10 @@ def _action_ping(ctx):
                     prefer_env_server_host=False,
                 )
                 try:
-                    timeout = getattr(args, "timeout_ms", None) or ctx.connection.health_check_timeout_ms
+                    timeout = (
+                        getattr(args, "timeout_ms", None)
+                        or ctx.connection.health_check_timeout_ms
+                    )
                     ping_result = UMRSControlAPI(
                         refreshed_mq,
                         _resolve_control_client_id(ctx.user),
@@ -3045,12 +3468,18 @@ def _action_ping(ctx):
                 "server_host": ctx.connection.server_host,
                 "control_port": ctx.connection.control_port,
             }
-            if args.output == 'json':
-                print(api_json(output_format='json', **ping_result, **endpoint_info))
+            if args.output == "json":
+                print(api_json(output_format="json", **ping_result, **endpoint_info))
             else:
                 dot = _status_dot(True)
-                profile_label = _bold(ctx.connection.profile_name) if ctx.connection.profile_name else _dim("(none)")
-                print(f"  {dot} Server {_green('ready')}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {ctx.connection.server_host}:{ctx.connection.control_port} (zmq)")
+                profile_label = (
+                    _bold(ctx.connection.profile_name)
+                    if ctx.connection.profile_name
+                    else _dim("(none)")
+                )
+                print(
+                    f"  {dot} Server {_green('ready')}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {ctx.connection.server_host}:{ctx.connection.control_port} (zmq)"
+                )
             return 0
         # ZMQ not ready — fall through to HTTP gateway fallback
 
@@ -3063,27 +3492,41 @@ def _action_ping(ctx):
             "profile": ctx.connection.profile_name or "(none)",
             "gateway_url": gateway_url,
         }
-        if args.output == 'json':
-            print(api_json(output_format='json', **ping_result, **endpoint_info))
+        if args.output == "json":
+            print(api_json(output_format="json", **ping_result, **endpoint_info))
         else:
             ready = ping_result.get("server_ready", False)
             dot = _status_dot(ready)
             status_word = _green("ready") if ready else _red("not ready")
-            profile_label = _bold(ctx.connection.profile_name) if ctx.connection.profile_name else _dim("(none)")
-            print(f"  {dot} Server {status_word}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {gateway_url}")
+            profile_label = (
+                _bold(ctx.connection.profile_name)
+                if ctx.connection.profile_name
+                else _dim("(none)")
+            )
+            print(
+                f"  {dot} Server {status_word}  {_dim('|')}  profile={profile_label}  {_dim('|')}  {gateway_url}"
+            )
             if not ready and ping_result.get("message"):
                 print(f"    {_dim(ping_result['message'])}")
         return 0
 
     # Both ZMQ and HTTP failed — print diagnostic
-    profile_label = _bold(ctx.connection.profile_name) if ctx.connection and ctx.connection.profile_name else _dim("(none)")
+    profile_label = (
+        _bold(ctx.connection.profile_name)
+        if ctx.connection and ctx.connection.profile_name
+        else _dim("(none)")
+    )
     host = getattr(ctx.connection, "server_host", "?") if ctx.connection else "?"
     port = getattr(ctx.connection, "control_port", "?") if ctx.connection else "?"
-    print(f"  {_status_dot(False)} Server {_red('unreachable')}  {_dim('|')}  profile={profile_label}")
+    print(
+        f"  {_status_dot(False)} Server {_red('unreachable')}  {_dim('|')}  profile={profile_label}"
+    )
     print(f"    ZMQ: {host}:{port} — not responding")
     print(f"    HTTP: no gateway_url in connection profile")
     print(f"    hint: switch profile with `umrs-client config use --profile <name>`")
-    print(f"          or add gateway_url to ~/.config/umrs/connections/{getattr(ctx.connection, 'profile_name', '?')}.json")
+    print(
+        f"          or add gateway_url to ~/.config/umrs/connections/{getattr(ctx.connection, 'profile_name', '?')}.json"
+    )
     return 1
 
 
@@ -3094,12 +3537,19 @@ def _action_model(ctx):
     model_action = args.model_action
     exit_code = 0
     try:
-        if model_action == 'register':
+        if model_action == "register":
             if ctx.control_mq is None:
                 # ZMQ not available (gateway-only mode) — use HTTP fallback
                 gateway_url = _get_gateway_url_from_ctx(ctx)
                 if not gateway_url:
-                    print(api_json(status='error', action='model', message='model register requires either a ZMQ connection or a gateway_url in the connection profile', output_format=args.output))
+                    print(
+                        api_json(
+                            status="error",
+                            action="model",
+                            message="model register requires either a ZMQ connection or a gateway_url in the connection profile",
+                            output_format=args.output,
+                        )
+                    )
                     return 1
                 api_key = _get_api_key_from_profile(ctx)
                 parsed = _http_model_register(
@@ -3123,19 +3573,26 @@ def _action_model(ctx):
                     description=args.description,
                     huggingface_id=args.huggingface_id,
                 )
-        elif model_action == 'list':
+        elif model_action == "list":
             if ctx.control_mq is None:
                 # ZMQ not available (gateway-only mode) — use HTTP fallback
                 gateway_url = _get_gateway_url_from_ctx(ctx)
                 if not gateway_url:
-                    print(api_json(status='error', action='model', message='model list requires either a ZMQ connection or a gateway_url in the connection profile', output_format=args.output))
+                    print(
+                        api_json(
+                            status="error",
+                            action="model",
+                            message="model list requires either a ZMQ connection or a gateway_url in the connection profile",
+                            output_format=args.output,
+                        )
+                    )
                     return 1
                 api_key = _get_api_key_from_profile(ctx)
                 parsed = _http_model_list(gateway_url, api_key, scope=args.scope)
             else:
                 parsed = api.list_models(scope=args.scope)
-        elif model_action == 'download':
-            target_name = args.name or args.repo_id.split('/')[-1]
+        elif model_action == "download":
+            target_name = args.name or args.repo_id.split("/")[-1]
             if args.server_side:
                 parsed = api.download_model_server_side(
                     repo_id=args.repo_id,
@@ -3145,53 +3602,71 @@ def _action_model(ctx):
                     staging_dir=args.staging_dir,
                 )
             else:
-                staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
+                staging_root = args.staging_dir or os.environ.get(
+                    "UMRS_MODEL_STAGING_ROOT"
+                )
                 if not staging_root:
                     from umrs.shared.config import get_default_umrs_cfg_dir
-                    staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
+
+                    staging_root = os.path.join(get_default_umrs_cfg_dir(), "models")
                 target_path = os.path.join(staging_root, target_name)
 
                 if os.path.exists(target_path) and os.listdir(target_path):
-                    print(f'Model already exists at {target_path}, skipping download.')
+                    print(f"Model already exists at {target_path}, skipping download.")
                 else:
                     try:
                         from huggingface_hub import snapshot_download
                     except ImportError:
-                        print(api_json(status='error', message='huggingface_hub not installed. Run: pip install huggingface_hub', output_format=args.output))
+                        print(
+                            api_json(
+                                status="error",
+                                message="huggingface_hub not installed. Run: pip install huggingface_hub",
+                                output_format=args.output,
+                            )
+                        )
                         return 1
-                    print(f'Downloading {args.repo_id} to {target_path} ...')
+                    print(f"Downloading {args.repo_id} to {target_path} ...")
                     os.makedirs(target_path, exist_ok=True)
                     snapshot_download(
                         repo_id=args.repo_id,
                         local_dir=target_path,
-                        token=os.environ.get('HF_TOKEN'),
+                        token=os.environ.get("HF_TOKEN"),
                     )
-                    print(f'Download complete: {target_path}')
+                    print(f"Download complete: {target_path}")
 
                 parsed = api.register_model(
                     name=target_name,
                     path=target_path,
-                    model_type='embedding',
+                    model_type="embedding",
                     scope=args.scope,
                     project_id=args.project_id,
                     huggingface_id=args.repo_id,
-                    description=f'Downloaded from {args.repo_id}',
+                    description=f"Downloaded from {args.repo_id}",
                 )
-        elif model_action == 'delete':
+        elif model_action == "delete":
             gateway_url = _get_gateway_url_from_ctx(ctx)
             if not gateway_url:
-                print(api_json(status='error', action='model', message='model delete requires a gateway_url in the connection profile', output_format=args.output))
+                print(
+                    api_json(
+                        status="error",
+                        action="model",
+                        message="model delete requires a gateway_url in the connection profile",
+                        output_format=args.output,
+                    )
+                )
                 return 1
             api_key = _get_api_key_from_profile(ctx)
-            is_model_id = args.name.startswith('mdl-')
+            is_model_id = args.name.startswith("mdl-")
             if not args.force:
                 if is_model_id:
                     prompt_msg = f"Delete model '{args.name}'? (y/N): "
                 else:
-                    prompt_msg = f"Delete model '{args.name}' from {args.scope} scope? (y/N): "
+                    prompt_msg = (
+                        f"Delete model '{args.name}' from {args.scope} scope? (y/N): "
+                    )
                 confirm = input(prompt_msg).strip().lower()
-                if confirm != 'y':
-                    print('Cancelled.')
+                if confirm != "y":
+                    print("Cancelled.")
                     return 0
             parsed = _http_model_delete(
                 gateway_url,
@@ -3200,27 +3675,37 @@ def _action_model(ctx):
                 delete_files=args.delete_files,
                 api_key=api_key,
             )
-        elif model_action == 'upload':
+        elif model_action == "upload":
             import shutil
+
             src_path = os.path.abspath(args.path)
             if not os.path.isdir(src_path):
-                print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
+                print(
+                    api_json(
+                        status="error",
+                        message=f"Source path is not a directory: {src_path}",
+                        output_format=args.output,
+                    )
+                )
                 return 1
-            staging_root = args.staging_dir or os.environ.get('UMRS_MODEL_STAGING_ROOT')
+            staging_root = args.staging_dir or os.environ.get("UMRS_MODEL_STAGING_ROOT")
             if not staging_root:
                 from umrs.shared.config import get_default_umrs_cfg_dir
-                staging_root = os.path.join(get_default_umrs_cfg_dir(), 'models')
+
+                staging_root = os.path.join(get_default_umrs_cfg_dir(), "models")
             target_path = os.path.join(staging_root, args.name)
             if os.path.exists(target_path):
                 if args.force:
                     shutil.rmtree(target_path)
                 else:
-                    print(f'Model already exists at {target_path}. Use --force to overwrite.')
+                    print(
+                        f"Model already exists at {target_path}. Use --force to overwrite."
+                    )
                     return 1
             os.makedirs(staging_root, exist_ok=True)
-            print(f'Copying {src_path} → {target_path} ...')
+            print(f"Copying {src_path} → {target_path} ...")
             shutil.copytree(src_path, target_path)
-            print('Copy complete. Registering model ...')
+            print("Copy complete. Registering model ...")
             register_path = args.register_path or os.path.abspath(target_path)
             parsed = api.register_model(
                 name=args.name,
@@ -3231,17 +3716,23 @@ def _action_model(ctx):
                 description=args.description,
             )
         else:
-            print(api_json(status='error', message=f'Unknown model action: {model_action}', output_format=args.output))
+            print(
+                api_json(
+                    status="error",
+                    message=f"Unknown model action: {model_action}",
+                    output_format=args.output,
+                )
+            )
             return 1
 
-        if args.output == 'json':
+        if args.output == "json":
             print(_json.dumps(parsed, ensure_ascii=False))
-            if parsed.get('status') != 'ok':
+            if parsed.get("status") != "ok":
                 exit_code = 1
         else:
-            if parsed.get('status') == 'ok':
-                if model_action == 'list':
-                    models = parsed.get('models', [])
+            if parsed.get("status") == "ok":
+                if model_action == "list":
+                    models = parsed.get("models", [])
                     if not models:
                         print(f"  {_dim('No models registered.')}")
                     else:
@@ -3259,15 +3750,15 @@ def _action_model(ctx):
                         )
                         print(f"  {_dim('-' * 80)}")
                         for m in models:
-                            scope_str = m.get('scope', '')
+                            scope_str = m.get("scope", "")
                             print(
                                 "  "
                                 + "  ".join(
                                     [
-                                        _fmt_cell(m['name'], 30),
-                                        _fmt_cell(m.get('model_type', ''), 10),
+                                        _fmt_cell(m["name"], 30),
+                                        _fmt_cell(m.get("model_type", ""), 10),
                                         _fmt_cell(scope_str, 8),
-                                        _dim(m.get('storage_ref', '')),
+                                        _dim(m.get("storage_ref", "")),
                                     ]
                                 )
                             )
@@ -3278,7 +3769,14 @@ def _action_model(ctx):
                 exit_code = 1
     except Exception as e:
         exit_code = 1
-        print(api_json(status='error', action='model', message=str(e), output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                action="model",
+                message=str(e),
+                output_format=args.output,
+            )
+        )
         if args.verbose:
             traceback.print_exc()
     finally:
@@ -3294,41 +3792,49 @@ def _action_job(ctx):
     job_action = args.job_action
     exit_code = 0
     try:
-        if job_action == 'submit':
-            spec = parse_json_object_arg(args.spec, field_name='spec') if args.spec else {}
+        if job_action == "submit":
+            spec = (
+                parse_json_object_arg(args.spec, field_name="spec") if args.spec else {}
+            )
             parsed = api.submit_job(
                 job_type=args.job_type,
                 spec=spec,
                 project=args.project,
                 max_attempts=args.max_attempts,
                 keep_alive=args.keep_alive,
-                partition=getattr(args, 'partition', None),
-                node=getattr(args, 'node', None),
+                partition=getattr(args, "partition", None),
+                node=getattr(args, "node", None),
             )
-        elif job_action == 'cancel':
+        elif job_action == "cancel":
             parsed = api.cancel_job(args.job_id)
-        elif job_action == 'status':
+        elif job_action == "status":
             parsed = api.get_job(args.job_id)
-        elif job_action == 'list':
+        elif job_action == "list":
             parsed = api.list_jobs(
-                project=getattr(args, 'project', None),
-                status=getattr(args, 'status', None),
-                job_type=getattr(args, 'job_type', None),
-                limit=getattr(args, 'limit', 200),
-                offset=getattr(args, 'offset', 0),
+                project=getattr(args, "project", None),
+                status=getattr(args, "status", None),
+                job_type=getattr(args, "job_type", None),
+                limit=getattr(args, "limit", 200),
+                offset=getattr(args, "offset", 0),
             )
         else:
-            print(api_json(status='error', message=f'Unknown job action: {job_action}', output_format=args.output))
+            print(
+                api_json(
+                    status="error",
+                    message=f"Unknown job action: {job_action}",
+                    output_format=args.output,
+                )
+            )
             return 1
 
-        if args.output == 'json':
+        if args.output == "json":
             print(_json.dumps(parsed, ensure_ascii=False))
-            if parsed.get('status') != 'ok':
+            if parsed.get("status") != "ok":
                 exit_code = 1
         else:
-            if parsed.get('status') == 'ok':
-                if job_action == 'list':
-                    jobs = parsed.get('jobs', [])
+            if parsed.get("status") == "ok":
+                if job_action == "list":
+                    jobs = parsed.get("jobs", [])
                     if not jobs:
                         print(f"  {_dim('No jobs found.')}")
                     else:
@@ -3346,37 +3852,37 @@ def _action_job(ctx):
                         )
                         print(f"  {_dim('-' * 70)}")
                         for job in jobs:
-                            st = job.get('status', '')
-                            if st in ('completed', 'done'):
+                            st = job.get("status", "")
+                            if st in ("completed", "done"):
                                 st_str = _green(st)
-                            elif st in ('failed', 'cancelled'):
+                            elif st in ("failed", "cancelled"):
                                 st_str = _red(st)
-                            elif st in ('running',):
+                            elif st in ("running",):
                                 st_str = _cyan(st)
                             else:
                                 st_str = _yellow(st)
                             print(
-                                f"  {job.get('job_id',''):18s}  "
+                                f"  {job.get('job_id', ''):18s}  "
                                 f"{st_str}  "
-                                f"{job.get('job_type',''):18s}  "
-                                f"{_dim(job.get('project_id',''))}"
+                                f"{job.get('job_type', ''):18s}  "
+                                f"{_dim(job.get('project_id', ''))}"
                             )
-                elif job_action == 'status':
-                    job = parsed.get('job', {})
-                    st = job.get('status', '')
-                    if st in ('completed', 'done'):
+                elif job_action == "status":
+                    job = parsed.get("job", {})
+                    st = job.get("status", "")
+                    if st in ("completed", "done"):
                         st_str = _green(st)
-                    elif st in ('failed', 'cancelled'):
+                    elif st in ("failed", "cancelled"):
                         st_str = _red(st)
-                    elif st in ('running',):
+                    elif st in ("running",):
                         st_str = _cyan(st)
                     else:
                         st_str = _yellow(st)
                     print(_section("Job Details"))
-                    print(_kv("job_id", _bold(job.get('job_id', ''))))
+                    print(_kv("job_id", _bold(job.get("job_id", ""))))
                     print(_kv("status", st_str))
-                    print(_kv("job_type", job.get('job_type', '')))
-                    print(_kv("project_id", job.get('project_id', '')))
+                    print(_kv("job_type", job.get("job_type", "")))
+                    print(_kv("project_id", job.get("project_id", "")))
                 else:
                     print(f"{_green('✓')} {parsed.get('message', 'OK')}")
             else:
@@ -3384,7 +3890,11 @@ def _action_job(ctx):
                 exit_code = 1
     except Exception as e:
         exit_code = 1
-        print(api_json(status='error', action='job', message=str(e), output_format=args.output))
+        print(
+            api_json(
+                status="error", action="job", message=str(e), output_format=args.output
+            )
+        )
         if args.verbose:
             traceback.print_exc()
     finally:
@@ -3399,8 +3909,10 @@ def _action_endpoint(ctx):
     endpoint_action = args.endpoint_action
     exit_code = 0
     try:
-        if endpoint_action == 'up':
-            spec = parse_json_object_arg(args.spec, field_name='spec') if args.spec else {}
+        if endpoint_action == "up":
+            spec = (
+                parse_json_object_arg(args.spec, field_name="spec") if args.spec else {}
+            )
             idle_ttl_sec = _resolve_endpoint_idle_ttl_sec(args, ctx.user)
             parsed = api.endpoint_up(
                 model=args.model,
@@ -3412,32 +3924,38 @@ def _action_endpoint(ctx):
                 max_model_len=args.max_model_len,
                 max_attempts=args.max_attempts,
                 spec=spec,
-                partition=getattr(args, 'partition', None),
-                node=getattr(args, 'node', None),
+                partition=getattr(args, "partition", None),
+                node=getattr(args, "node", None),
             )
-        elif endpoint_action == 'list':
+        elif endpoint_action == "list":
             parsed = api.list_endpoints(
-                project=getattr(args, 'project', None),
-                status=getattr(args, 'status', None),
-                limit=getattr(args, 'limit', 200),
-                offset=getattr(args, 'offset', 0),
+                project=getattr(args, "project", None),
+                status=getattr(args, "status", None),
+                limit=getattr(args, "limit", 200),
+                offset=getattr(args, "offset", 0),
             )
-        elif endpoint_action == 'status':
+        elif endpoint_action == "status":
             parsed = api.get_endpoint(args.job_id)
-        elif endpoint_action == 'stop':
+        elif endpoint_action == "stop":
             parsed = api.stop_endpoint(args.job_id)
         else:
-            print(api_json(status='error', message=f'Unknown endpoint action: {endpoint_action}', output_format=args.output))
+            print(
+                api_json(
+                    status="error",
+                    message=f"Unknown endpoint action: {endpoint_action}",
+                    output_format=args.output,
+                )
+            )
             return 1
 
-        if args.output == 'json':
+        if args.output == "json":
             print(_json.dumps(parsed, ensure_ascii=False))
-            if parsed.get('status') != 'ok':
+            if parsed.get("status") != "ok":
                 exit_code = 1
         else:
-            if parsed.get('status') == 'ok':
-                if endpoint_action == 'list':
-                    endpoints = parsed.get('endpoints') or parsed.get('jobs', [])
+            if parsed.get("status") == "ok":
+                if endpoint_action == "list":
+                    endpoints = parsed.get("endpoints") or parsed.get("jobs", [])
                     if not endpoints:
                         print(f"  {_dim('No endpoint jobs found.')}")
                     else:
@@ -3456,13 +3974,13 @@ def _action_endpoint(ctx):
                         )
                         print(f"  {_dim('-' * 92)}")
                         for job in endpoints:
-                            spec = job.get('spec') or {}
-                            status = job.get('status', '')
-                            if status in ('failed', 'cancelled'):
+                            spec = job.get("spec") or {}
+                            status = job.get("status", "")
+                            if status in ("failed", "cancelled"):
                                 status_str = _red(status)
-                            elif status == 'running':
+                            elif status == "running":
                                 status_str = _cyan(status)
-                            elif status == 'completed':
+                            elif status == "completed":
                                 status_str = _green(status)
                             else:
                                 status_str = _yellow(status)
@@ -3470,31 +3988,54 @@ def _action_endpoint(ctx):
                                 "  "
                                 + "  ".join(
                                     [
-                                        _fmt_cell(job.get('job_id', ''), 18),
+                                        _fmt_cell(job.get("job_id", ""), 18),
                                         _fmt_cell(status_str, 10),
-                                        _fmt_cell(spec.get('model', ''), 24),
-                                        _fmt_cell(_format_duration_label(spec.get('idle_ttl_sec')), 8),
-                                        _dim(_endpoint_backend_ref(job) or '-'),
+                                        _fmt_cell(spec.get("model", ""), 24),
+                                        _fmt_cell(
+                                            _format_duration_label(
+                                                spec.get("idle_ttl_sec")
+                                            ),
+                                            8,
+                                        ),
+                                        _dim(_endpoint_backend_ref(job) or "-"),
                                     ]
                                 )
                             )
-                elif endpoint_action == 'status':
-                    job = parsed.get('endpoint') or parsed.get('job', {})
-                    spec = job.get('spec') or {}
+                elif endpoint_action == "status":
+                    job = parsed.get("endpoint") or parsed.get("job", {})
+                    spec = job.get("spec") or {}
                     latest = _latest_attempt(job)
                     print(_section("Endpoint Details"))
-                    print(_kv("job_id", _bold(job.get('job_id', ''))))
-                    print(_kv("status", job.get('status', '')))
-                    print(_kv("project_id", job.get('project_id', '')))
-                    print(_kv("model", spec.get('model', '')))
-                    print(_kv("idle_ttl", _format_duration_label(spec.get('idle_ttl_sec')) or '-'))
-                    print(_kv("backend_ref", latest.get('backend_ref') or '-'))
-                elif endpoint_action == 'up':
-                    endpoint = parsed.get('endpoint') or {}
+                    print(_kv("job_id", _bold(job.get("job_id", ""))))
+                    print(_kv("status", job.get("status", "")))
+                    print(_kv("project_id", job.get("project_id", "")))
+                    print(_kv("model", spec.get("model", "")))
+                    print(
+                        _kv(
+                            "idle_ttl",
+                            _format_duration_label(spec.get("idle_ttl_sec")) or "-",
+                        )
+                    )
+                    print(_kv("backend_ref", latest.get("backend_ref") or "-"))
+                elif endpoint_action == "up":
+                    endpoint = parsed.get("endpoint") or {}
                     print(f"{_green('✓')} Endpoint provisioning submitted")
-                    print(_kv("job_id", _bold(endpoint.get('job_id') or (parsed.get('job') or {}).get('job_id', ''))))
-                    print(_kv("model", endpoint.get('model') or args.model))
-                    print(_kv("idle_ttl", _format_duration_label(endpoint.get('idle_ttl_sec'))))
+                    print(
+                        _kv(
+                            "job_id",
+                            _bold(
+                                endpoint.get("job_id")
+                                or (parsed.get("job") or {}).get("job_id", "")
+                            ),
+                        )
+                    )
+                    print(_kv("model", endpoint.get("model") or args.model))
+                    print(
+                        _kv(
+                            "idle_ttl",
+                            _format_duration_label(endpoint.get("idle_ttl_sec")),
+                        )
+                    )
                 else:
                     print(f"{_green('✓')} {parsed.get('message', 'OK')}")
             else:
@@ -3502,7 +4043,14 @@ def _action_endpoint(ctx):
                 exit_code = 1
     except Exception as e:
         exit_code = 1
-        print(api_json(status='error', action='endpoint', message=str(e), output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                action="endpoint",
+                message=str(e),
+                output_format=args.output,
+            )
+        )
         if args.verbose:
             traceback.print_exc()
     finally:
@@ -3517,8 +4065,10 @@ def _action_monitor(ctx):
         from umrs.tui.dashboard import Dashboard
     except ImportError:
         ctx.control_mq.close()
-        print("The 'rich' library is required for the monitor dashboard.\n"
-              "Install it with: pip install 'rich>=13.0'")
+        print(
+            "The 'rich' library is required for the monitor dashboard.\n"
+            "Install it with: pip install 'rich>=13.0'"
+        )
         return 1
     try:
         conn_info = ctx.connection.to_dict() if ctx.connection else {}
@@ -3538,7 +4088,9 @@ def _action_monitor(ctx):
             project_filter=args.project,
             initial_tab=args.tab,
             job_type_filter=None,
-            config_path=ctx.configure_file if ctx.configure_file and ctx.config_state.user.valid else None,
+            config_path=ctx.configure_file
+            if ctx.configure_file and ctx.config_state.user.valid
+            else None,
             user_cfg=ctx.user if isinstance(ctx.user, dict) else None,
             connection_info=conn_info,
             capabilities=capabilities,
@@ -3561,25 +4113,39 @@ def _action_workflow(ctx):
     wf_action = args.workflow_action
     exit_code = 0
     try:
-        if wf_action == 'list':
-            parsed = api.list_workflows(scope=args.scope, user=args.user, name=args.name)
-        elif wf_action == 'run':
-            params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
-            parsed = api.run_workflow(workflow_name=args.workflow_name, params=params, bucket=args.bucket)
+        if wf_action == "list":
+            parsed = api.list_workflows(
+                scope=args.scope, user=args.user, name=args.name
+            )
+        elif wf_action == "run":
+            params = (
+                parse_json_object_arg(args.params, field_name="params")
+                if args.params
+                else {}
+            )
+            parsed = api.run_workflow(
+                workflow_name=args.workflow_name, params=params, bucket=args.bucket
+            )
         else:
-            print(api_json(status='error', message=f'Unknown workflow action: {wf_action}', output_format=args.output))
+            print(
+                api_json(
+                    status="error",
+                    message=f"Unknown workflow action: {wf_action}",
+                    output_format=args.output,
+                )
+            )
             return 1
 
-        if args.output == 'json':
+        if args.output == "json":
             print(_json.dumps(parsed, ensure_ascii=False))
-            if parsed.get('status') != 'ok':
+            if parsed.get("status") != "ok":
                 exit_code = 1
         else:
-            if parsed.get('status') == 'ok':
-                if wf_action == 'run':
+            if parsed.get("status") == "ok":
+                if wf_action == "run":
                     print(f"{_green('✓')} {parsed.get('message', 'OK')}")
                 else:
-                    workflows = parsed.get('workflows', [])
+                    workflows = parsed.get("workflows", [])
                     if not workflows:
                         print(f"  {_dim('No workflows registered.')}")
                     else:
@@ -3599,14 +4165,23 @@ def _action_workflow(ctx):
                         )
                         print(f"  {_dim('-' * 100)}")
                         for w in workflows:
-                            n_steps = len(w.get('steps', []))
-                            print(f"  {w['name']:30s}  v{w.get('version','?'):8s}  {w.get('scope',''):6s}  {w.get('user_id',''):12s}  {n_steps:5d}     {_dim(w.get('description',''))}")
+                            n_steps = len(w.get("steps", []))
+                            print(
+                                f"  {w['name']:30s}  v{w.get('version', '?'):8s}  {w.get('scope', ''):6s}  {w.get('user_id', ''):12s}  {n_steps:5d}     {_dim(w.get('description', ''))}"
+                            )
             else:
                 print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                 exit_code = 1
     except Exception as e:
         exit_code = 1
-        print(api_json(status='error', action='workflow', message=str(e), output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                action="workflow",
+                message=str(e),
+                output_format=args.output,
+            )
+        )
         if args.verbose:
             traceback.print_exc()
     finally:
@@ -3617,25 +4192,38 @@ def _action_workflow(ctx):
 def _action_upload_workflow(ctx):
     import tempfile
     import zipfile
+
     args = ctx.args
     exit_code = 0
     client_id = _resolve_control_client_id(ctx.user)
     src_path = os.path.abspath(args.path)
     if not os.path.isdir(src_path):
-        print(api_json(status='error', message=f'Source path is not a directory: {src_path}', output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                message=f"Source path is not a directory: {src_path}",
+                output_format=args.output,
+            )
+        )
         ctx.control_mq.close()
         return 1
-    wf_json = os.path.join(src_path, 'workflow.json')
+    wf_json = os.path.join(src_path, "workflow.json")
     if not os.path.isfile(wf_json):
-        print(api_json(status='error', message=f'No workflow.json found in {src_path}', output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                message=f"No workflow.json found in {src_path}",
+                output_format=args.output,
+            )
+        )
         ctx.control_mq.close()
         return 1
     workflow_name = args.name or os.path.basename(src_path)
     tmp_zip_path = None
     try:
-        with tempfile.NamedTemporaryFile(suffix='.zip', delete=False) as tmp_zip:
+        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
             tmp_zip_path = tmp_zip.name
-        with zipfile.ZipFile(tmp_zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+        with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for root, _dirs, files in os.walk(src_path):
                 for f in files:
                     abs_path = os.path.join(root, f)
@@ -3644,22 +4232,42 @@ def _action_upload_workflow(ctx):
         data_mq = ctx.control_mq.get_data_queue(client_id, admin_token=ctx.admin_token)
         try:
             ctx.control_mq.set_timeouts(120_000, 120_000)
-            ctx.control_mq.send_string(f"{TaskCmd.UPLOAD_WORKFLOW}:{client_id}:{workflow_name}")
+            ctx.control_mq.send_string(
+                f"{TaskCmd.UPLOAD_WORKFLOW}:{client_id}:{workflow_name}"
+            )
             data_mq.send_file(tmp_zip_path)
             _, reply = ctx.control_mq.recv_string()
             if reply != "ACKNOWLEDGE":
-                raise RuntimeError(f"Unexpected reply from server during workflow upload: {reply}")
-            if args.output == 'json':
-                print(api_json(action='upload-workflow', workflow_name=workflow_name, accepted=True, output_format='json'))
+                raise RuntimeError(
+                    f"Unexpected reply from server during workflow upload: {reply}"
+                )
+            if args.output == "json":
+                print(
+                    api_json(
+                        action="upload-workflow",
+                        workflow_name=workflow_name,
+                        accepted=True,
+                        output_format="json",
+                    )
+                )
             else:
-                print(f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully")
+                print(
+                    f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully"
+                )
         finally:
             ctx.control_mq.set_timeouts(ctx.control_mq.timeout, ctx.control_mq.timeout)
             with contextlib.suppress(Exception):
                 data_mq.close()
     except Exception as e:
         exit_code = 1
-        print(api_json(status='error', action='upload-workflow', message=str(e), output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                action="upload-workflow",
+                message=str(e),
+                output_format=args.output,
+            )
+        )
         if args.verbose:
             traceback.print_exc()
     finally:
@@ -3676,21 +4284,34 @@ def _action_run_workflow(ctx):
     api = UMRSControlAPI(ctx.control_mq, client_id)
     exit_code = 0
     try:
-        params = parse_json_object_arg(args.params, field_name='params') if args.params else {}
-        parsed = api.run_workflow(workflow_name=args.workflow_name, params=params, bucket=args.bucket)
-        if args.output == 'json':
+        params = (
+            parse_json_object_arg(args.params, field_name="params")
+            if args.params
+            else {}
+        )
+        parsed = api.run_workflow(
+            workflow_name=args.workflow_name, params=params, bucket=args.bucket
+        )
+        if args.output == "json":
             print(_json.dumps(parsed, ensure_ascii=False))
-            if parsed.get('status') != 'ok':
+            if parsed.get("status") != "ok":
                 exit_code = 1
         else:
-            if parsed.get('status') == 'ok':
+            if parsed.get("status") == "ok":
                 print(f"{_green('✓')} {parsed.get('message', 'OK')}")
             else:
                 print(f"{_red('✗')} {parsed.get('message', 'unknown error')}")
                 exit_code = 1
     except Exception as e:
         exit_code = 1
-        print(api_json(status='error', action='run-workflow', message=str(e), output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                action="run-workflow",
+                message=str(e),
+                output_format=args.output,
+            )
+        )
         if args.verbose:
             traceback.print_exc()
     finally:
@@ -3700,14 +4321,22 @@ def _action_run_workflow(ctx):
 
 def _action_list_buckets(ctx):
     args = ctx.args
-    effective_username = args.username or (ctx.user.get('username') if isinstance(ctx.user, dict) else None)
+    effective_username = args.username or (
+        ctx.user.get("username") if isinstance(ctx.user, dict) else None
+    )
     if not effective_username:
-        print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                message="No username provided and none found in config",
+                output_format=args.output,
+            )
+        )
         if ctx.control_mq is not None:
             ctx.control_mq.close()
         return 1
     remote_info = None
-    if not getattr(args, 'no_check_remote', False):
+    if not getattr(args, "no_check_remote", False):
         probe = _probe_remote_buckets(effective_username, ctx.user)
         # Collect configured bucket paths so we can compare
         configured_paths: set[str] = set()
@@ -3718,10 +4347,20 @@ def _action_list_buckets(ctx):
                     if entry.output_path_to_bucket:
                         configured_paths.add(entry.output_path_to_bucket)
         if "warning" in probe:
-            remote_info = {"buckets": {}, "extra_buckets": [], "warning": probe["warning"]}
+            remote_info = {
+                "buckets": {},
+                "extra_buckets": [],
+                "warning": probe["warning"],
+            }
         else:
-            remote_info = _build_remote_info(probe["remote_names"], configured_paths, effective_username)
-    print(action_list_buckets(ctx.buckets_cfg, effective_username, args.output, remote_info=remote_info))
+            remote_info = _build_remote_info(
+                probe["remote_names"], configured_paths, effective_username
+            )
+    print(
+        action_list_buckets(
+            ctx.buckets_cfg, effective_username, args.output, remote_info=remote_info
+        )
+    )
     if ctx.control_mq is not None:
         ctx.control_mq.close()
     return 0
@@ -3730,17 +4369,30 @@ def _action_list_buckets(ctx):
 def _action_purge_remote_buckets(ctx):
     """Delete extra remote S3 buckets that are not in the user config."""
     args = ctx.args
-    effective_username = args.username or (ctx.user.get('username') if isinstance(ctx.user, dict) else None)
+    effective_username = args.username or (
+        ctx.user.get("username") if isinstance(ctx.user, dict) else None
+    )
     if not effective_username:
-        print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                message="No username provided and none found in config",
+                output_format=args.output,
+            )
+        )
         ctx.control_mq.close()
         return 1
 
     # Probe remote buckets
     probe = _probe_remote_buckets(effective_username, ctx.user)
     if "warning" in probe:
-        print(api_json(status='error', message=probe["warning"], output_format=args.output) if args.output == 'json'
-              else f"  {_red('✗')} {probe['warning']}")
+        print(
+            api_json(
+                status="error", message=probe["warning"], output_format=args.output
+            )
+            if args.output == "json"
+            else f"  {_red('✗')} {probe['warning']}"
+        )
         ctx.control_mq.close()
         return 1
 
@@ -3753,11 +4405,13 @@ def _action_purge_remote_buckets(ctx):
                 if entry.output_path_to_bucket:
                     configured_paths.add(entry.output_path_to_bucket)
 
-    remote_info = _build_remote_info(probe["remote_names"], configured_paths, effective_username)
+    remote_info = _build_remote_info(
+        probe["remote_names"], configured_paths, effective_username
+    )
     extra = remote_info.get("extra_buckets", [])
 
     # Filter by --bucket if specified
-    bucket_filter = getattr(args, 'buckets', None)
+    bucket_filter = getattr(args, "buckets", None)
     if bucket_filter:
         filter_set = set(bucket_filter)
         extra = [eb for eb in extra if eb["name"] in filter_set]
@@ -3766,30 +4420,39 @@ def _action_purge_remote_buckets(ctx):
         for f in bucket_filter:
             if f not in found_names:
                 if f in configured_paths:
-                    if args.output != 'json':
+                    if args.output != "json":
                         print(f"  {_yellow('⚠')} {f} is a configured bucket — skipping")
                 elif f not in probe["remote_names"]:
-                    if args.output != 'json':
+                    if args.output != "json":
                         print(f"  {_yellow('⚠')} {f} not found on remote — skipping")
 
     if not extra:
         msg = "No extra remote buckets to purge."
-        print(api_json(status='ok', message=msg, output_format=args.output) if args.output == 'json'
-              else f"  {_green('✓')} {msg}")
+        print(
+            api_json(status="ok", message=msg, output_format=args.output)
+            if args.output == "json"
+            else f"  {_green('✓')} {msg}"
+        )
         ctx.control_mq.close()
         return 0
 
     # Show what will be deleted
-    if args.output != 'json':
+    if args.output != "json":
         print(_section("Extra remote buckets to purge"))
         for eb in extra:
-            print(f"  {eb['name']}  {_dim(str(eb.get('object_count', 0)) + ' objects')}")
+            print(
+                f"  {eb['name']}  {_dim(str(eb.get('object_count', 0)) + ' objects')}"
+            )
         print()
 
     # Confirmation
-    if not getattr(args, 'yes', False):
+    if not getattr(args, "yes", False):
         try:
-            answer = input(f"Delete {len(extra)} bucket(s) and all their objects? [y/N] ").strip().lower()
+            answer = (
+                input(f"Delete {len(extra)} bucket(s) and all their objects? [y/N] ")
+                .strip()
+                .lower()
+            )
         except (EOFError, KeyboardInterrupt):
             answer = ""
         if answer not in ("y", "yes"):
@@ -3801,12 +4464,19 @@ def _action_purge_remote_buckets(ctx):
     try:
         import boto3
     except ImportError:
-        print(api_json(status='error', message='boto3 not installed', output_format=args.output) if args.output == 'json'
-              else f"  {_red('✗')} boto3 not installed")
+        print(
+            api_json(
+                status="error", message="boto3 not installed", output_format=args.output
+            )
+            if args.output == "json"
+            else f"  {_red('✗')} boto3 not installed"
+        )
         ctx.control_mq.close()
         return 1
 
-    s3cfg_path_str = (ctx.user or {}).get("s3_configuration_file") or default_s3cfg_path(effective_username)
+    s3cfg_path_str = (ctx.user or {}).get(
+        "s3_configuration_file"
+    ) or default_s3cfg_path(effective_username)
     s3cfg_path = Path(s3cfg_path_str).expanduser()
     cfg = _read_s3cfg(s3cfg_path)
     endpoint_url, verify_ssl = _s3_endpoint_from_cfg(cfg)
@@ -3846,20 +4516,24 @@ def _action_purge_remote_buckets(ctx):
             try:
                 s3.delete_bucket(Bucket=bname)
                 deleted.append(bname)
-                if args.output != 'json':
-                    print(f"  {_green('✓')} Deleted {bname} ({obj_deleted} objects removed)")
+                if args.output != "json":
+                    print(
+                        f"  {_green('✓')} Deleted {bname} ({obj_deleted} objects removed)"
+                    )
             except Exception:
                 # Local deletion denied — queue for server-side purge
                 emptied.append(bname)
         except Exception as exc:
             errors.append({"bucket": bname, "error": str(exc)})
-            if args.output != 'json':
+            if args.output != "json":
                 print(f"  {_red('✗')} Failed on {bname}: {exc}")
 
     # Server-side purge for buckets that couldn't be deleted locally
     if emptied:
-        if args.output != 'json':
-            print(f"  {_dim('Requesting server-side deletion for')} {len(emptied)} {_dim('bucket(s)...')}")
+        if args.output != "json":
+            print(
+                f"  {_dim('Requesting server-side deletion for')} {len(emptied)} {_dim('bucket(s)...')}"
+            )
         try:
             api = UMRSControlAPI(ctx.control_mq, effective_username)
             result = api.purge_buckets(emptied)
@@ -3867,16 +4541,18 @@ def _action_purge_remote_buckets(ctx):
             srv_errors = result.get("errors", [])
             deleted.extend(srv_deleted)
             for sd in srv_deleted:
-                if args.output != 'json':
+                if args.output != "json":
                     print(f"  {_green('✓')} Deleted {sd} (via server)")
             for se in srv_errors:
                 errors.append(se)
-                if args.output != 'json':
-                    print(f"  {_red('✗')} Server failed on {se.get('bucket', '?')}: {se.get('error', '?')}")
+                if args.output != "json":
+                    print(
+                        f"  {_red('✗')} Server failed on {se.get('bucket', '?')}: {se.get('error', '?')}"
+                    )
             # Remove successfully deleted from emptied list
             emptied = [b for b in emptied if b not in set(srv_deleted)]
         except Exception as exc:
-            if args.output != 'json':
+            if args.output != "json":
                 print(f"  {_yellow('⚠')} Server-side purge failed: {exc}")
             for b in emptied:
                 errors.append({"bucket": b, "error": f"server purge failed: {exc}"})
@@ -3884,9 +4560,14 @@ def _action_purge_remote_buckets(ctx):
 
     ctx.control_mq.close()
 
-    if args.output == 'json':
-        return api_json(status='ok' if not errors else 'partial',
-                        deleted=deleted, emptied=emptied, errors=errors, output_format=args.output)
+    if args.output == "json":
+        return api_json(
+            status="ok" if not errors else "partial",
+            deleted=deleted,
+            emptied=emptied,
+            errors=errors,
+            output_format=args.output,
+        )
 
     if deleted and not errors and not emptied:
         print(f"\n  {_green('✓')} Purged {len(deleted)} bucket(s).")
@@ -3922,15 +4603,21 @@ def _action_purge_remote_buckets(ctx):
                     user_cfg["experiences"] = kept
                     _write_json_file(user_cfg_path, user_cfg)
                     for rn in removed_names:
-                        print(f"  {_green('✓')} Removed experience '{rn}' from local config")
-                    print(f"  {_dim('Run')} umrs-client reload {_dim('to sync with server.')}")
+                        print(
+                            f"  {_green('✓')} Removed experience '{rn}' from local config"
+                        )
+                    print(
+                        f"  {_dim('Run')} umrs-client reload {_dim('to sync with server.')}"
+                    )
             except Exception as exc:
                 print(f"  {_yellow('⚠')} Could not update local config: {exc}")
 
     return 1 if errors else 0
 
 
-def _maybe_write_s3cfg_from_status(parsed, user_cfg, configure_file=None, connection=None):
+def _maybe_write_s3cfg_from_status(
+    parsed, user_cfg, configure_file=None, connection=None
+):
     """Auto-write local s3cfg if the server delivered credentials in a reload status.
 
     When *connection* carries a ``minio_url`` that differs from the
@@ -3977,18 +4664,24 @@ def _maybe_write_s3cfg_from_status(parsed, user_cfg, configure_file=None, connec
     if profile_minio:
         try:
             from urllib.parse import urlparse
+
             parsed_url = urlparse(profile_minio)
             profile_host = parsed_url.hostname
             profile_port = parsed_url.port
             if profile_host:
-                target_host = f"{profile_host}:{profile_port}" if profile_port else profile_host
+                target_host = (
+                    f"{profile_host}:{profile_port}" if profile_port else profile_host
+                )
                 import configparser as _cp
-                cfg = _cp.ConfigParser(inline_comment_prefixes=('#', ';'))
+
+                cfg = _cp.ConfigParser(inline_comment_prefixes=("#", ";"))
                 cfg.read_string(s3cfg_content)
                 if cfg.has_option("default", "host_base"):
                     existing_host = cfg.get("default", "host_base").strip()
                     if existing_host != target_host:
-                        s3cfg_content = s3cfg_content.replace(existing_host, target_host)
+                        s3cfg_content = s3cfg_content.replace(
+                            existing_host, target_host
+                        )
         except Exception:
             pass  # best-effort; write the original content
 
@@ -4005,24 +4698,42 @@ def _action_status(ctx):
     args = ctx.args
     effective_username = args.username
     if not effective_username and isinstance(ctx.user, dict):
-        effective_username = ctx.user.get('username')
+        effective_username = ctx.user.get("username")
     if not effective_username:
-        print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                message="No username provided and none found in config",
+                output_format=args.output,
+            )
+        )
         ctx.control_mq.close()
         return 1
     api = UMRSControlAPI(ctx.control_mq, effective_username)
     try:
         status_target = _resolve_status_target(args)
         parsed = api.request_status(status_target)
-        if args.output == 'json':
+        if args.output == "json":
             print(_json.dumps(parsed, ensure_ascii=False))
         else:
             print(format_status_text(parsed, status_target))
 
         # Auto-write local s3cfg if the server delivered credentials
-        _maybe_write_s3cfg_from_status(parsed, ctx.user, configure_file=ctx.configure_file, connection=ctx.connection)
+        _maybe_write_s3cfg_from_status(
+            parsed,
+            ctx.user,
+            configure_file=ctx.configure_file,
+            connection=ctx.connection,
+        )
     except Exception as e:
-        print(api_json(status='error', action=args.action, message=str(e), output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                action=args.action,
+                message=str(e),
+                output_format=args.output,
+            )
+        )
     finally:
         ctx.control_mq.close()
     return 0
@@ -4047,13 +4758,14 @@ def _action_maintenance(ctx):
             except Exception:
                 pass  # best-effort; reload still proceeds without config upload
         parsed = _http_reload(
-            gateway_url, api_key,
+            gateway_url,
+            api_key,
             user_config=user_config_json,
-            user_id=ctx.user.get('username') if isinstance(ctx.user, dict) else None,
+            user_id=ctx.user.get("username") if isinstance(ctx.user, dict) else None,
         )
         if parsed.get("status") == "ok":
-            if args.output == 'json':
-                print(api_json(action=args.action, accepted=True, output_format='json'))
+            if args.output == "json":
+                print(api_json(action=args.action, accepted=True, output_format="json"))
             else:
                 print(f"{_green('✓')} {_bold(args.action)} accepted")
                 summary = parsed.get("summary", "")
@@ -4062,34 +4774,51 @@ def _action_maintenance(ctx):
             # After HTTP reload, try to fetch s3cfg via ZMQ status
             if isinstance(ctx.user, dict) and ctx.control_mq is not None:
                 try:
-                    effective_username = ctx.user.get('username', '')
+                    effective_username = ctx.user.get("username", "")
                     if effective_username:
                         status_api = UMRSControlAPI(ctx.control_mq, effective_username)
                         status_parsed = status_api.request_status("all")
-                        _maybe_write_s3cfg_from_status(status_parsed, ctx.user, configure_file=ctx.configure_file, connection=ctx.connection)
+                        _maybe_write_s3cfg_from_status(
+                            status_parsed,
+                            ctx.user,
+                            configure_file=ctx.configure_file,
+                            connection=ctx.connection,
+                        )
                 except Exception:
                     pass  # s3cfg delivery is best-effort
         else:
-            if args.output == 'json':
-                print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
+            if args.output == "json":
+                print(
+                    api_json(
+                        status="error",
+                        action=args.action,
+                        accepted=False,
+                        message=parsed.get("message", "rejected"),
+                        output_format="json",
+                    )
+                )
             else:
                 msg = parsed.get("message") or parsed.get("error") or "rejected"
                 print(f"{_red('✗')} {_bold(args.action)} rejected: {msg}")
         return 0
 
     # --- ZMQ path (original) ---
-    client_id = (ctx.user.get('username') if isinstance(ctx.user, dict) else None) or os.environ.get('UMRS_CLIENT_ID', '_')
+    client_id = (
+        ctx.user.get("username") if isinstance(ctx.user, dict) else None
+    ) or os.environ.get("UMRS_CLIENT_ID", "_")
     api = UMRSControlAPI(
         ctx.control_mq,
         client_id,
-        ctx.configure_file if ctx.configure_file and ctx.config_state.user.valid else None,
+        ctx.configure_file
+        if ctx.configure_file and ctx.config_state.user.valid
+        else None,
         admin_token=ctx.admin_token,
     )
     try:
         parsed = api.maintenance(args.action)
-        if parsed.get('status') == 'ok':
-            if args.output == 'json':
-                print(api_json(action=args.action, accepted=True, output_format='json'))
+        if parsed.get("status") == "ok":
+            if args.output == "json":
+                print(api_json(action=args.action, accepted=True, output_format="json"))
             else:
                 print(f"{_green('✓')} {_bold(args.action)} accepted")
                 summary = parsed.get("summary", "")
@@ -4097,15 +4826,37 @@ def _action_maintenance(ctx):
                     print(summary)
             # After successful reload, auto-write s3cfg if delivered
             if args.action == "reload" and isinstance(ctx.user, dict):
-                _maybe_write_s3cfg_from_status(parsed, ctx.user, configure_file=ctx.configure_file, connection=ctx.connection)
+                _maybe_write_s3cfg_from_status(
+                    parsed,
+                    ctx.user,
+                    configure_file=ctx.configure_file,
+                    connection=ctx.connection,
+                )
         else:
-            if args.output == 'json':
-                print(api_json(status='error', action=args.action, accepted=False, message=parsed.get('message', 'rejected'), output_format='json'))
+            if args.output == "json":
+                print(
+                    api_json(
+                        status="error",
+                        action=args.action,
+                        accepted=False,
+                        message=parsed.get("message", "rejected"),
+                        output_format="json",
+                    )
+                )
             else:
-                print(f"{_red('✗')} {_bold(args.action)} rejected: {parsed.get('message', '')}")
+                print(
+                    f"{_red('✗')} {_bold(args.action)} rejected: {parsed.get('message', '')}"
+                )
     except Exception as e:
-        if args.output == 'json':
-            print(api_json(status='error', action=args.action, message=str(e), output_format='json'))
+        if args.output == "json":
+            print(
+                api_json(
+                    status="error",
+                    action=args.action,
+                    message=str(e),
+                    output_format="json",
+                )
+            )
         else:
             print(f"{_red('✗')} {_bold(args.action)} error: {e}")
     finally:
@@ -4116,64 +4867,92 @@ def _action_maintenance(ctx):
 def _action_export_embeddings(ctx):
     args = ctx.args
     try:
-        bucket_alias_arg = getattr(args, 'bucket_alias')
+        bucket_alias_arg = getattr(args, "bucket_alias")
         bucket_alias, _ = decompose_bucket_alias_arg(bucket_alias_arg)
         entry = ctx.buckets_cfg.get(bucket_alias)
         if entry is None:
-            print(api_json(status='error', message=f'Bucket alias not found: {bucket_alias}', output_format=args.output))
+            print(
+                api_json(
+                    status="error",
+                    message=f"Bucket alias not found: {bucket_alias}",
+                    output_format=args.output,
+                )
+            )
             ctx.control_mq.close()
             return 1
         path_to_bucket = entry.path_to_bucket
-        effective_username = getattr(args, 'username', None) or (
-            ctx.user.get('username') if isinstance(ctx.user, dict) else None
+        effective_username = getattr(args, "username", None) or (
+            ctx.user.get("username") if isinstance(ctx.user, dict) else None
         )
         if not effective_username:
-            print(api_json(status='error', message='No username provided and none found in config', output_format=args.output))
+            print(
+                api_json(
+                    status="error",
+                    message="No username provided and none found in config",
+                    output_format=args.output,
+                )
+            )
             ctx.control_mq.close()
             return 1
         raw_response = ctx.control_mq.request_export_embeddings(
-            effective_username, path_to_bucket, args.export_format, args.export_profile,
+            effective_username,
+            path_to_bucket,
+            args.export_format,
+            args.export_profile,
         )
         response = _json.loads(raw_response)
-        if response.get('status') != 'ok':
-            print(api_json(status='error', action='export_embeddings',
-                           message=response.get('message', 'Server returned an error'),
-                           output_format=args.output))
+        if response.get("status") != "ok":
+            print(
+                api_json(
+                    status="error",
+                    action="export_embeddings",
+                    message=response.get("message", "Server returned an error"),
+                    output_format=args.output,
+                )
+            )
             ctx.control_mq.close()
             return 1
-        columns = response['columns']
-        rows = response['rows']
+        columns = response["columns"]
+        rows = response["rows"]
         local_path = args.local_path
-        os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
-        if args.export_format == 'csv':
+        os.makedirs(os.path.dirname(local_path) or ".", exist_ok=True)
+        if args.export_format == "csv":
             import csv
-            with open(local_path, 'w', newline='', encoding='utf-8') as f:
+
+            with open(local_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow(columns)
                 for row in rows:
-                    writer.writerow([
-                        str(v) if v is not None else '' for v in row
-                    ])
+                    writer.writerow([str(v) if v is not None else "" for v in row])
         else:  # jsonl
-            with open(local_path, 'w', encoding='utf-8') as f:
+            with open(local_path, "w", encoding="utf-8") as f:
                 for row in rows:
                     record = {}
                     for col, val in zip(columns, row, strict=False):
                         record[col] = val
-                    f.write(_json.dumps(record, ensure_ascii=False) + '\n')
-        print(api_json(
-            action='export_embeddings',
-            database=response.get('database', ''),
-            table=response.get('table', ''),
-            rows_exported=response.get('rows_exported', len(rows)),
-            columns=columns,
-            local_path=local_path,
-            format=args.export_format,
-            profile=response.get('profile', args.export_profile),
-            output_format=args.output
-        ))
+                    f.write(_json.dumps(record, ensure_ascii=False) + "\n")
+        print(
+            api_json(
+                action="export_embeddings",
+                database=response.get("database", ""),
+                table=response.get("table", ""),
+                rows_exported=response.get("rows_exported", len(rows)),
+                columns=columns,
+                local_path=local_path,
+                format=args.export_format,
+                profile=response.get("profile", args.export_profile),
+                output_format=args.output,
+            )
+        )
     except Exception as e:
-        print(api_json(status='error', action='export_embeddings', message=str(e), output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                action="export_embeddings",
+                message=str(e),
+                output_format=args.output,
+            )
+        )
         if args.verbose:
             traceback.print_exc()
     finally:
@@ -4184,10 +4963,16 @@ def _action_export_embeddings(ctx):
 def _action_s3_transfer(ctx):
     """Handle upload_file, upload_dir, and download_results actions."""
     args = ctx.args
-    bucket_alias_arg = getattr(args, 'bucket_alias')
+    bucket_alias_arg = getattr(args, "bucket_alias")
     bucket_alias, subdir = decompose_bucket_alias_arg(bucket_alias_arg)
 
-    selected_fields = ["username", "xp_name", "modality_name", "s3_configuration_file", "metadata"]
+    selected_fields = [
+        "username",
+        "xp_name",
+        "modality_name",
+        "s3_configuration_file",
+        "metadata",
+    ]
     if args.action == "download_results":
         selected_fields.append("output_path_to_bucket")
     else:
@@ -4198,9 +4983,11 @@ def _action_s3_transfer(ctx):
             f"Bucket alias '{bucket_alias}' not found in configuration. "
             f"Check your config file or use one of the configured aliases."
         )
-    username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = _bucket_result
+    username, xp_name, modality, s3_configuration_file, metadata, path_to_bucket = (
+        _bucket_result
+    )
 
-    username_arg = getattr(args, 'username', None)
+    username_arg = getattr(args, "username", None)
     username = username_arg or username
 
     try:
@@ -4221,15 +5008,19 @@ def _action_s3_transfer(ctx):
     # client is connecting remotely (the server-generated s3cfg may contain a
     # localhost address that is unreachable from the client machine).
     endpoint_override = None
-    if hasattr(ctx, 'connection') and ctx.connection is not None:
-        profile_minio = getattr(ctx.connection, 'minio_url', None)
+    if hasattr(ctx, "connection") and ctx.connection is not None:
+        profile_minio = getattr(ctx.connection, "minio_url", None)
         if profile_minio:
             endpoint_override = profile_minio
 
-    s3, bucket_location = connect_to_s3(expanded_cfg, endpoint_url_override=endpoint_override)
+    s3, bucket_location = connect_to_s3(
+        expanded_cfg, endpoint_url_override=endpoint_override
+    )
 
     if args.action == "download_results":
-        full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, output=True, indent=False)
+        full_bucket_name, success = check_bucket_name(
+            s3, xp_name, bucket_alias, username, output=True, indent=False
+        )
         if full_bucket_name != path_to_bucket:
             ctx.control_mq.close()
             data_mq.close()
@@ -4240,49 +5031,91 @@ def _action_s3_transfer(ctx):
             return 1
         if not success:
             if args.verbose:
-                print(f"Note: Output bucket '{full_bucket_name}' does not exist yet on S3 — will wait for server.")
+                print(
+                    f"Note: Output bucket '{full_bucket_name}' does not exist yet on S3 — will wait for server."
+                )
     else:
-        full_bucket_name, success = check_bucket_name(s3, xp_name, bucket_alias, username, indent=False)
+        full_bucket_name, success = check_bucket_name(
+            s3, xp_name, bucket_alias, username, indent=False
+        )
         if not success or full_bucket_name != path_to_bucket:
             ctx.control_mq.close()
             data_mq.close()
-            print(f"Error:\tNo bucket {bucket_alias} for modality {modality} and for user {username}")
+            print(
+                f"Error:\tNo bucket {bucket_alias} for modality {modality} and for user {username}"
+            )
             return 1
 
     if args.verbose:
-        print(f"Bucket '{bucket_alias}' for modality '{modality}' and for user '{username}': OK!")
+        print(
+            f"Bucket '{bucket_alias}' for modality '{modality}' and for user '{username}': OK!"
+        )
 
     try:
         metadata_args = check_and_build_metadata(metadata, args.k)
     except Exception as e:
-        print(api_json(status="error", message=f"Metadata error: {e}", output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                message=f"Metadata error: {e}",
+                output_format=args.output,
+            )
+        )
         ctx.control_mq.close()
         data_mq.close()
         return 1
 
     if args.verbose:
         action_label = "Retreiving" if args.action == "download_results" else "Storing"
-        print(f"{action_label} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'")
+        print(
+            f"{action_label} data for:\n\tUser: '{username}'\n\tXP: '{xp_name}'\n\tModality: '{modality}'"
+        )
 
-    def process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=True):
+    def process_file(
+        s3,
+        full_bucket_name,
+        subdir,
+        file_path,
+        modality,
+        data_mq,
+        metadata_args,
+        username,
+        notify_server=True,
+    ):
         if not os.path.isfile(file_path):
             print(f"Error: file {file_path} is not a valid.")
             return None, 0
 
         category = modality_category(modality)
-        print(f"Processing file '{file_path}' for modality '{modality}' (category: {category})")
+        print(
+            f"Processing file '{file_path}' for modality '{modality}' (category: {category})"
+        )
 
         if category == "image":
-            s3_key = s3_store_image(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args, check=(modality not in ("volume", "movie", "volume_movie")))
+            s3_key = s3_store_image(
+                s3,
+                full_bucket_name,
+                subdir,
+                file_path,
+                data_mq,
+                metadata_args,
+                check=(modality not in ("volume", "movie", "volume_movie")),
+            )
             if s3_key and notify_server:
                 s3_uri = f"s3://{full_bucket_name}/{s3_key}"
-                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri])
+                ctx.control_mq.notify_server(
+                    username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri]
+                )
             return s3_key, 1
         elif category == "text_file":
-            s3_key = s3_store_text_file(s3, full_bucket_name, subdir, file_path, data_mq, metadata_args)
+            s3_key = s3_store_text_file(
+                s3, full_bucket_name, subdir, file_path, data_mq, metadata_args
+            )
             if s3_key and notify_server:
                 s3_uri = f"s3://{full_bucket_name}/{s3_key}"
-                ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri])
+                ctx.control_mq.notify_server(
+                    username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri]
+                )
             return s3_key, 1
         elif category == "text":
             try:
@@ -4292,22 +5125,40 @@ def _action_s3_transfer(ctx):
                     for line in file.readlines():
                         line = line.strip()
                         if line != "":
-                            s3_key = s3_store_txt(s3, full_bucket_name, subdir, line, data_mq, metadata_args)
+                            s3_key = s3_store_txt(
+                                s3,
+                                full_bucket_name,
+                                subdir,
+                                line,
+                                data_mq,
+                                metadata_args,
+                            )
                             s3_key_list.append(s3_key)
                             nb_objects += 1
                     if notify_server and nb_objects > 0:
                         s3_uris = [f"s3://{full_bucket_name}/{k}" for k in s3_key_list]
-                        ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects, s3_keys=s3_uris)
+                        ctx.control_mq.notify_server(
+                            username,
+                            TaskCmd.PROCESS_OBJECTS,
+                            nb_objects,
+                            s3_keys=s3_uris,
+                        )
                     return s3_key_list, nb_objects
             except UnicodeDecodeError as e:
                 print(f"Unicode decoding error: {e}")
-                print(f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file.")
+                print(
+                    f"{args.data} is not a text file. Cannot use modality: '{modality}' for this file."
+                )
         else:
-            print(f"Error: Unknown modality category '{category}' (modality: '{modality}'). Nothing has been sent to the server")
+            print(
+                f"Error: Unknown modality category '{category}' (modality: '{modality}'). Nothing has been sent to the server"
+            )
 
         return None, 0
 
-    def process_dir(path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username):
+    def process_dir(
+        path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username
+    ):
         if not os.path.isdir(path):
             print(f"Error: {path} is not a valid directory.")
             return [], []
@@ -4317,11 +5168,21 @@ def _action_s3_transfer(ctx):
         nb_objects = 0
         for file_path in glob(os.path.join(path, "*")):
             if os.path.isfile(file_path):
-                s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, file_path, modality, data_mq, metadata_args, username, notify_server=False)
+                s3_key, nb_sent = process_file(
+                    s3,
+                    full_bucket_name,
+                    subdir,
+                    file_path,
+                    modality,
+                    data_mq,
+                    metadata_args,
+                    username,
+                    notify_server=False,
+                )
                 if s3_key:
                     if isinstance(s3_key, list):
                         s3_key_list.extend(s3_key)
-                        assert(len(s3_key) == nb_sent)
+                        assert len(s3_key) == nb_sent
                         file_list.extend([file_path] * nb_sent)
                     else:
                         s3_key_list.append(s3_key)
@@ -4330,14 +5191,16 @@ def _action_s3_transfer(ctx):
 
         if nb_objects > 0:
             s3_uris = [f"s3://{full_bucket_name}/{k}" for k in s3_key_list]
-            ctx.control_mq.notify_server(username, TaskCmd.PROCESS_OBJECTS, nb_objects, s3_keys=s3_uris)
+            ctx.control_mq.notify_server(
+                username, TaskCmd.PROCESS_OBJECTS, nb_objects, s3_keys=s3_uris
+            )
         return s3_key_list, file_list
 
     def download_results_fn(full_bucket_name, modality, subdir):
         effective_username = args.username
         verbose = args.verbose
         if not effective_username and isinstance(ctx.user, dict):
-            effective_username = ctx.user.get('username')
+            effective_username = ctx.user.get("username")
         if not effective_username:
             response = {
                 "status": "error",
@@ -4366,7 +5229,9 @@ def _action_s3_transfer(ctx):
         timeout = 1
         _wait_start = time.time()
         while not done:
-            raw_response = ctx.control_mq.request_status(effective_username, TaskCmd.PROCESS_OBJECTS)
+            raw_response = ctx.control_mq.request_status(
+                effective_username, TaskCmd.PROCESS_OBJECTS
+            )
             if raw_response is None:
                 break
             parsed = _json.loads(raw_response)
@@ -4388,53 +5253,119 @@ def _action_s3_transfer(ctx):
             if not done:
                 if verbose:
                     elapsed = int(time.time() - _wait_start)
-                    print(f"Waiting for update... (elapsed: {elapsed // 60}m {elapsed % 60}s)")
-                res = ctx.control_mq.wait_for_new_data(effective_username, full_bucket_name, timeout=timeout)
+                    print(
+                        f"Waiting for update... (elapsed: {elapsed // 60}m {elapsed % 60}s)"
+                    )
+                res = ctx.control_mq.wait_for_new_data(
+                    effective_username, full_bucket_name, timeout=timeout
+                )
                 if res == "TIMEOUT":
                     timeout = min(timeout * 2, 64)
                 elif res == "UPDATE":
                     timeout = 1
                 else:
                     if verbose:
-                        print(f"Error: receiving '{res}' from server while waiting to be notified for new data")
+                        print(
+                            f"Error: receiving '{res}' from server while waiting to be notified for new data"
+                        )
         objects_list, _, checksums = list_s3_bucket(s3, full_bucket_name, prefix=subdir)
-        downloaded_files, _ = download_objects(s3, objects_list, checksums, args.local_path,
-                            files_allready_received=objects_received,
-                            force_overwrite=args.force_overwrite, print_only_new=print_only_new)
+        downloaded_files, _ = download_objects(
+            s3,
+            objects_list,
+            checksums,
+            args.local_path,
+            files_allready_received=objects_received,
+            force_overwrite=args.force_overwrite,
+            print_only_new=print_only_new,
+        )
 
         objects_received.update(downloaded_files)
 
         response = {
-                "status": "ok",
-                "message": f"Files downloaded with overwrite={args.force_overwrite}",
-                "bucket": full_bucket_name,
-                "local_path": args.local_path,
-                "subdir": subdir,
-                "modality": modality,
-                "output_format": args.output,
-                "objects_received": f"{sorted(objects_received)}",
-            }
+            "status": "ok",
+            "message": f"Files downloaded with overwrite={args.force_overwrite}",
+            "bucket": full_bucket_name,
+            "local_path": args.local_path,
+            "subdir": subdir,
+            "modality": modality,
+            "output_format": args.output,
+            "objects_received": f"{sorted(objects_received)}",
+        }
         return True, response
 
     try:
         if args.action == "upload_file":
-            s3_key, nb_sent = process_file(s3, full_bucket_name, subdir, args.file_path, modality, data_mq, metadata_args, username, notify_server=True)
+            s3_key, nb_sent = process_file(
+                s3,
+                full_bucket_name,
+                subdir,
+                args.file_path,
+                modality,
+                data_mq,
+                metadata_args,
+                username,
+                notify_server=True,
+            )
             if s3_key:
-                print(api_json(s3_key=s3_key, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+                print(
+                    api_json(
+                        s3_key=s3_key,
+                        bucket=full_bucket_name,
+                        subdir=subdir,
+                        modality=modality,
+                        output_format=args.output,
+                    )
+                )
             else:
-                print(api_json(status='error', message=f"Cannot process file: {args.file_path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+                print(
+                    api_json(
+                        status="error",
+                        message=f"Cannot process file: {args.file_path}",
+                        bucket=full_bucket_name,
+                        subdir=subdir,
+                        modality=modality,
+                        output_format=args.output,
+                    )
+                )
 
         elif args.action == "upload_dir":
-            s3_key_list, file_list = process_dir(args.path, s3, full_bucket_name, subdir, modality, data_mq, metadata_args, username)
+            s3_key_list, file_list = process_dir(
+                args.path,
+                s3,
+                full_bucket_name,
+                subdir,
+                modality,
+                data_mq,
+                metadata_args,
+                username,
+            )
             if len(s3_key_list) > 0:
-                print(api_json(s3_key_list=s3_key_list, file_list=file_list, bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+                print(
+                    api_json(
+                        s3_key_list=s3_key_list,
+                        file_list=file_list,
+                        bucket=full_bucket_name,
+                        subdir=subdir,
+                        modality=modality,
+                        output_format=args.output,
+                    )
+                )
             else:
-                print(api_json(status='error', message=f"Cannot process directory: {args.path}", bucket=full_bucket_name, subdir=subdir, modality=modality, output_format=args.output))
+                print(
+                    api_json(
+                        status="error",
+                        message=f"Cannot process directory: {args.path}",
+                        bucket=full_bucket_name,
+                        subdir=subdir,
+                        modality=modality,
+                        output_format=args.output,
+                    )
+                )
         elif args.action == "download_results":
             ok, response = download_results_fn(full_bucket_name, modality, subdir)
             print(api_json(**response))
     except Exception as e:
-        print(api_json(status='error', message=str(e), output_format=args.output))
+        print(api_json(status="error", message=str(e), output_format=args.output))
         if args.verbose:
             traceback.print_exc()
 
@@ -4445,25 +5376,25 @@ def _action_s3_transfer(ctx):
 
 # Action dispatch table — maps CLI action name to handler function
 _ACTION_HANDLERS = {
-    'ping': _action_ping,
-    'model': _action_model,
-    'job': _action_job,
-    'endpoint': _action_endpoint,
-    'monitor': _action_monitor,
-    'workflow': _action_workflow,
-    'upload-workflow': _action_upload_workflow,
-    'run-workflow': _action_run_workflow,
-    'list_buckets': _action_list_buckets,
-    'purge_remote_buckets': _action_purge_remote_buckets,
-    'status': _action_status,
-    'recompute': _action_maintenance,
-    'update': _action_maintenance,
-    'check': _action_maintenance,
-    'reload': _action_maintenance,
-    'export_embeddings': _action_export_embeddings,
-    'upload_file': _action_s3_transfer,
-    'upload_dir': _action_s3_transfer,
-    'download_results': _action_s3_transfer,
+    "ping": _action_ping,
+    "model": _action_model,
+    "job": _action_job,
+    "endpoint": _action_endpoint,
+    "monitor": _action_monitor,
+    "workflow": _action_workflow,
+    "upload-workflow": _action_upload_workflow,
+    "run-workflow": _action_run_workflow,
+    "list_buckets": _action_list_buckets,
+    "purge_remote_buckets": _action_purge_remote_buckets,
+    "status": _action_status,
+    "recompute": _action_maintenance,
+    "update": _action_maintenance,
+    "check": _action_maintenance,
+    "reload": _action_maintenance,
+    "export_embeddings": _action_export_embeddings,
+    "upload_file": _action_s3_transfer,
+    "upload_dir": _action_s3_transfer,
+    "download_results": _action_s3_transfer,
 }
 
 
@@ -4482,7 +5413,9 @@ def _maybe_load_saved_curve_session() -> bool:
         import time as _time
 
         xdg = os.environ.get("XDG_CONFIG_HOME")
-        session_path = (_Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4") / "curve-session.json"
+        session_path = (
+            _Path(xdg, "r4") if xdg else _Path.home() / ".config" / "r4"
+        ) / "curve-session.json"
         if not session_path.is_file():
             return False
         data = _json.loads(session_path.read_text(encoding="utf-8"))
@@ -4499,9 +5432,11 @@ def _maybe_load_saved_curve_session() -> bool:
         os.environ["UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY"] = client_pk
         os.environ["UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY"] = client_sk
         import logging as _logging
+
         _logging.getLogger(__name__).debug(
             "Loaded saved CURVE session from %s (TTL %.0fs)",
-            session_path, expires_at - _time.time(),
+            session_path,
+            expires_at - _time.time(),
         )
         return True
     except Exception:
@@ -4527,6 +5462,7 @@ def _resolve_session_jwt(connection) -> str | None:
         profile_path = getattr(connection, "profile_path", None)
         if profile_path:
             from pathlib import Path as _Path
+
             token_path = _Path(profile_path).with_suffix(".token")
             if token_path.is_file():
                 jwt_token = token_path.read_text(encoding="utf-8").strip()
@@ -4595,6 +5531,7 @@ def _force_refresh_curve_session(connection) -> bool:
         )
         _persist_curve_session(info, gateway_url)
         import logging as _logging
+
         _logging.getLogger(__name__).debug(
             "Re-bootstrapped CURVE session %s after stale-session detection",
             info.session_id,
@@ -4602,8 +5539,10 @@ def _force_refresh_curve_session(connection) -> bool:
         return True
     except Exception as exc:
         import logging as _logging
+
         _logging.getLogger(__name__).debug(
-            "Forced CURVE session refresh failed (non-fatal): %s", exc,
+            "Forced CURVE session refresh failed (non-fatal): %s",
+            exc,
         )
         return False
 
@@ -4646,8 +5585,10 @@ def _maybe_bootstrap_curve_session(connection) -> None:
     except Exception as exc:
         # Non-fatal: fall back to whatever auth the MessageQueue already supports
         import logging as _logging
+
         _logging.getLogger(__name__).debug(
-            "CURVE session bootstrap failed (non-fatal): %s", exc,
+            "CURVE session bootstrap failed (non-fatal): %s",
+            exc,
         )
         pass  # logged above at DEBUG level
 
@@ -4661,318 +5602,662 @@ def main():
     subparsers = parser.add_subparsers(dest="action", help="API action", required=False)
 
     # Global / legacy flags
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose mode")
-    parser.add_argument('-c', '--conf', default=None, help='User config JSON path for this invocation (overrides the selected user*.json file)')
-    parser.add_argument('--server-conf', default=None, help='Server config JSON path for this invocation (overrides the selected conf_umrs.json file)')
-    parser.add_argument('--s3cfg', default=None, help='S3 config file path for this invocation (overrides the selected s3cfg file)')
-    parser.add_argument('--profile', default=None, help='Named connection profile to use from the UMRS config directory')
-    parser.add_argument("-k", action="append", help="Metadatata key:value", required=False)
-    parser.add_argument('--no-check-server', action='store_true', help='Do not check if the server is ready. Just copy data in the S3 server if no ready')
-    parser.add_argument('--server-ip', default=None, help='Server IP for ZeroMQ control channel')
-    parser.add_argument('--control-port', type=int, default=None, help='Control port for the ZeroMQ control channel')
-    parser.add_argument('--output', choices=['json','text'], default='text', help='Output format for API actions')
-    parser.add_argument('--admin-token', default=None,
-                        help='Admin token for privileged commands (or set UMRS_ADMIN_TOKEN)')
+    parser.add_argument(
+        "-v", "--verbose", action="store_true", help="Enable verbose mode"
+    )
+    parser.add_argument(
+        "-c",
+        "--conf",
+        default=None,
+        help="User config JSON path for this invocation (overrides the selected user*.json file)",
+    )
+    parser.add_argument(
+        "--server-conf",
+        default=None,
+        help="Server config JSON path for this invocation (overrides the selected conf_umrs.json file)",
+    )
+    parser.add_argument(
+        "--s3cfg",
+        default=None,
+        help="S3 config file path for this invocation (overrides the selected s3cfg file)",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="Named connection profile to use from the UMRS config directory",
+    )
+    parser.add_argument(
+        "-k", action="append", help="Metadatata key:value", required=False
+    )
+    parser.add_argument(
+        "--no-check-server",
+        action="store_true",
+        help="Do not check if the server is ready. Just copy data in the S3 server if no ready",
+    )
+    parser.add_argument(
+        "--server-ip", default=None, help="Server IP for ZeroMQ control channel"
+    )
+    parser.add_argument(
+        "--control-port",
+        type=int,
+        default=None,
+        help="Control port for the ZeroMQ control channel",
+    )
+    parser.add_argument(
+        "--output",
+        choices=["json", "text"],
+        default="text",
+        help="Output format for API actions",
+    )
+    parser.add_argument(
+        "--admin-token",
+        default=None,
+        help="Admin token for privileged commands (or set UMRS_ADMIN_TOKEN)",
+    )
     # Removed deprecated auto-add-columns behavior; metadata must be declared in server config
 
-    completion_p = subparsers.add_parser('completion', help='Shell completion setup')
-    comp_sub = completion_p.add_subparsers(dest='completion_action')
-    comp_sub.add_parser('bash', help='Print bash completion script')
-    comp_sub.add_parser('zsh', help='Print zsh completion script')
-    inst_p = comp_sub.add_parser('install', help='Install completion into your shell RC file')
-    inst_p.add_argument('--shell', choices=('bash', 'zsh'), default=None)
-    uninst_p = comp_sub.add_parser('uninstall', help='Remove completion from your shell RC file')
-    uninst_p.add_argument('--shell', choices=('bash', 'zsh'), default=None)
+    completion_p = subparsers.add_parser("completion", help="Shell completion setup")
+    comp_sub = completion_p.add_subparsers(dest="completion_action")
+    comp_sub.add_parser("bash", help="Print bash completion script")
+    comp_sub.add_parser("zsh", help="Print zsh completion script")
+    inst_p = comp_sub.add_parser(
+        "install", help="Install completion into your shell RC file"
+    )
+    inst_p.add_argument("--shell", choices=("bash", "zsh"), default=None)
+    uninst_p = comp_sub.add_parser(
+        "uninstall", help="Remove completion from your shell RC file"
+    )
+    uninst_p.add_argument("--shell", choices=("bash", "zsh"), default=None)
 
     # API subcommands
-    ping_p = subparsers.add_parser('ping', help='Check server readiness')
+    ping_p = subparsers.add_parser("ping", help="Check server readiness")
     configure_ping_parser(ping_p)
 
-    subparsers.add_parser('info', help='Show connection setup, transport modes, auth, and S3 status at a glance')
+    subparsers.add_parser(
+        "info",
+        help="Show connection setup, transport modes, auth, and S3 status at a glance",
+    )
 
-    ui_p = subparsers.add_parser('upload_file', help="Upload file to a bucket (ommit empty lines in case of 'text' modality)")
-    ui_p.add_argument('file_path')
+    ui_p = subparsers.add_parser(
+        "upload_file",
+        help="Upload file to a bucket (ommit empty lines in case of 'text' modality)",
+    )
+    ui_p.add_argument("file_path")
     ui_p.add_argument(
-        'bucket_alias',
+        "bucket_alias",
         help=(
             "Alias of a bucket as defined in the client configuration file.\n"
             "Use the list_bucket command to show available bucket aliases for a given user.\n"
             "You may append a subdirectory using '/' as in a typical Unix path."
-        )
+        ),
     )
 
+    ui_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
 
-    ui_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
-
-    utf_p = subparsers.add_parser('upload_dir', help='Upload all files of a directory to a bucket')
-    utf_p.add_argument('path')
+    utf_p = subparsers.add_parser(
+        "upload_dir", help="Upload all files of a directory to a bucket"
+    )
+    utf_p.add_argument("path")
     utf_p.add_argument(
-        'bucket_alias',
+        "bucket_alias",
         help=(
             "Alias of a bucket as defined in the client configuration file.\n"
             "Use the list_bucket command to show available bucket aliases for a given user.\n"
             "You may append a subdirectory using '/' as in a typical Unix path."
-        )
+        ),
     )
-    utf_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
+    utf_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
 
-    dr_p = subparsers.add_parser('download_results', help="Download file results computed by the server")
+    dr_p = subparsers.add_parser(
+        "download_results", help="Download file results computed by the server"
+    )
     dr_p.add_argument(
-        'bucket_alias',
+        "bucket_alias",
         help=(
             "Alias of a bucket as defined in the client configuration file.\n"
             "Use the list_bucket command to show available bucket aliases for a given user.\n"
             "You may append a subdirectory using '/' as in a typical Unix path."
-        )
+        ),
     )
     dr_p.add_argument(
-        'local_path',
+        "local_path",
         help=(
             "local Unix path where the results will be stored.\n"
             "New files will erase local files."
-        )
+        ),
     )
 
     dr_p.add_argument(
-        '--force-overwrite',
-        action='store_true',
+        "--force-overwrite",
+        action="store_true",
         default=False,
-        help="Force overwriting existing local files even if checksums mismatch."
+        help="Force overwriting existing local files even if checksums mismatch.",
     )
-    dr_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
+    dr_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
 
     # New actions
-    lb_p = subparsers.add_parser('list_buckets', help='List bucket aliases for a username')
-    lb_p.add_argument('username', nargs='?', help='Username to filter buckets (defaults to config if omitted)')
-    lb_p.add_argument('--no-check-remote', action='store_true', default=False,
-                      help='Skip probing MinIO/S3 for remote bucket status (faster)')
+    lb_p = subparsers.add_parser(
+        "list_buckets", help="List bucket aliases for a username"
+    )
+    lb_p.add_argument(
+        "username",
+        nargs="?",
+        help="Username to filter buckets (defaults to config if omitted)",
+    )
+    lb_p.add_argument(
+        "--no-check-remote",
+        action="store_true",
+        default=False,
+        help="Skip probing MinIO/S3 for remote bucket status (faster)",
+    )
 
-    prb_p = subparsers.add_parser('purge_remote_buckets', help='Delete extra remote S3 buckets not in user config')
-    prb_p.add_argument('username', nargs='?', help='Username (defaults to config if omitted)')
-    prb_p.add_argument('--bucket', action='append', dest='buckets', metavar='NAME',
-                       help='Specific bucket name(s) to purge (repeatable; default: all extra)')
-    prb_p.add_argument('-y', '--yes', action='store_true', default=False,
-                       help='Skip confirmation prompt')
+    prb_p = subparsers.add_parser(
+        "purge_remote_buckets", help="Delete extra remote S3 buckets not in user config"
+    )
+    prb_p.add_argument(
+        "username", nargs="?", help="Username (defaults to config if omitted)"
+    )
+    prb_p.add_argument(
+        "--bucket",
+        action="append",
+        dest="buckets",
+        metavar="NAME",
+        help="Specific bucket name(s) to purge (repeatable; default: all extra)",
+    )
+    prb_p.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
 
-    status_p = subparsers.add_parser('status', help='Fetch the latest server summary for maintenance commands')
+    status_p = subparsers.add_parser(
+        "status", help="Fetch the latest server summary for maintenance commands"
+    )
     configure_status_parser(status_p, include_username=True)
 
     # Embedding maintenance actions
-    subparsers.add_parser('recompute', help='Recompute embeddings for your own buckets (admin: all users)')
-    subparsers.add_parser('update', help='Update embeddings for missing/mismatched entries in your own buckets (admin: all users)')
-    subparsers.add_parser('check', help='Check consistency between S3 objects and DB (admin-only: checks all users)')
-    subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')
+    subparsers.add_parser(
+        "recompute", help="Recompute embeddings for your own buckets (admin: all users)"
+    )
+    subparsers.add_parser(
+        "update",
+        help="Update embeddings for missing/mismatched entries in your own buckets (admin: all users)",
+    )
+    subparsers.add_parser(
+        "check",
+        help="Check consistency between S3 objects and DB (admin-only: checks all users)",
+    )
+    subparsers.add_parser(
+        "reload",
+        help="Reload server configuration (users, buckets, models) without restart; if -c points to a user JSON, it will be uploaded and persisted on the server before reloading",
+    )
 
     # Export embeddings from pgvector (server-mediated)
-    ee_p = subparsers.add_parser('export_embeddings', help='Export computed embeddings to a local file (via server)')
+    ee_p = subparsers.add_parser(
+        "export_embeddings",
+        help="Export computed embeddings to a local file (via server)",
+    )
     ee_p.add_argument(
-        'bucket_alias',
+        "bucket_alias",
         help=(
             "Alias of a bucket as defined in the client configuration file.\n"
             "Use the list_bucket command to show available bucket aliases for a given user."
-        )
+        ),
     )
     ee_p.add_argument(
-        'local_path',
-        help='Local file path to write the exported embeddings'
+        "local_path", help="Local file path to write the exported embeddings"
     )
     ee_p.add_argument(
-        '--format', choices=['csv', 'jsonl'], default='csv', dest='export_format',
-        help='Output format (default: csv)'
+        "--format",
+        choices=["csv", "jsonl"],
+        default="csv",
+        dest="export_format",
+        help="Output format (default: csv)",
     )
     ee_p.add_argument(
-        '--profile', choices=['full', 'minimal', 'embedding-only'], default='minimal', dest='export_profile',
-        help='Export profile: minimal keeps embedding plus essential metadata; embedding-only keeps only the embedding vector'
+        "--profile",
+        choices=["full", "minimal", "embedding-only"],
+        default="minimal",
+        dest="export_profile",
+        help="Export profile: minimal keeps embedding plus essential metadata; embedding-only keeps only the embedding vector",
     )
-    ee_p.add_argument('username', nargs='?', help='Configured username owning the bucket (defaults to config if omitted)')
+    ee_p.add_argument(
+        "username",
+        nargs="?",
+        help="Configured username owning the bucket (defaults to config if omitted)",
+    )
 
     # --- Model registry commands ---
-    model_p = subparsers.add_parser('model', help='Model registry commands (register, list, download, upload)')
-    model_sub = model_p.add_subparsers(dest='model_action', required=True)
+    model_p = subparsers.add_parser(
+        "model", help="Model registry commands (register, list, download, upload)"
+    )
+    model_sub = model_p.add_subparsers(dest="model_action", required=True)
 
     # model register
-    mr_p = model_sub.add_parser('register', help='Register a local model with UMRS')
+    mr_p = model_sub.add_parser("register", help="Register a local model with UMRS")
     configure_model_register_parser(mr_p)
 
     # model list
-    ml_p = model_sub.add_parser('list', help='List registered models')
+    ml_p = model_sub.add_parser("list", help="List registered models")
     configure_model_list_parser(ml_p)
 
     # model download (default: client-side; --server-side sends to server as background task)
-    md_p = model_sub.add_parser('download', help='Download model from HuggingFace and register with UMRS')
+    md_p = model_sub.add_parser(
+        "download", help="Download model from HuggingFace and register with UMRS"
+    )
     configure_model_download_parser(md_p)
-    md_p.add_argument('--staging-dir', default=None,
-                       help='Directory to store downloaded model (default: ~/.config/umrs/models/ or UMRS_MODEL_STAGING_ROOT)')
-    md_p.add_argument('--server-side', action='store_true', default=False,
-                       help='Download on the server machine instead of locally (requires server internet access)')
+    md_p.add_argument(
+        "--staging-dir",
+        default=None,
+        help="Directory to store downloaded model (default: ~/.config/umrs/models/ or UMRS_MODEL_STAGING_ROOT)",
+    )
+    md_p.add_argument(
+        "--server-side",
+        action="store_true",
+        default=False,
+        help="Download on the server machine instead of locally (requires server internet access)",
+    )
 
     # model delete
-    mdel_p = model_sub.add_parser('delete', help='Remove a registered model from the catalog')
-    mdel_p.add_argument('name', help='Model name or model ID (mdl-...) to delete')
-    mdel_p.add_argument('--scope', choices=MODEL_SCOPE_CHOICES, default='user', help='Scope of the model to delete')
-    mdel_p.add_argument('--delete-files', action='store_true', default=False,
-                         help='Also remove model files from disk')
-    mdel_p.add_argument('--force', '-f', action='store_true', default=False,
-                         help='Skip confirmation prompt')
+    mdel_p = model_sub.add_parser(
+        "delete", help="Remove a registered model from the catalog"
+    )
+    mdel_p.add_argument("name", help="Model name or model ID (mdl-...) to delete")
+    mdel_p.add_argument(
+        "--scope",
+        choices=MODEL_SCOPE_CHOICES,
+        default="user",
+        help="Scope of the model to delete",
+    )
+    mdel_p.add_argument(
+        "--delete-files",
+        action="store_true",
+        default=False,
+        help="Also remove model files from disk",
+    )
+    mdel_p.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        default=False,
+        help="Skip confirmation prompt",
+    )
 
     # model upload (copy local directory to staging root, then register)
-    mu_p = model_sub.add_parser('upload', help='Copy a local model directory to the staging root and register with UMRS')
-    mu_p.add_argument('path', help='Local directory containing model files')
-    mu_p.add_argument('--name', required=True, help='Model name for registration')
-    mu_p.add_argument('--type', choices=MODEL_TYPE_CHOICES, default='embedding', dest='model_type', help='Model type')
-    mu_p.add_argument('--scope', choices=MODEL_SCOPE_CHOICES, default='user', help='Model scope')
-    mu_p.add_argument('--project-id', default=None, help='Project identifier (required for project scope)')
-    mu_p.add_argument('--description', default=None, help='Model description')
-    mu_p.add_argument('--staging-dir', default=None,
-                       help='Staging root directory (default: UMRS_MODEL_STAGING_ROOT or ~/.config/umrs/models/)')
-    mu_p.add_argument('--register-path', default=None,
-                       help='Server-side path to register (use when client and server have different filesystems, e.g. Mac → HPC)')
-    mu_p.add_argument('--force', action='store_true', default=False,
-                       help='Overwrite existing model directory in staging root')
+    mu_p = model_sub.add_parser(
+        "upload",
+        help="Copy a local model directory to the staging root and register with UMRS",
+    )
+    mu_p.add_argument("path", help="Local directory containing model files")
+    mu_p.add_argument("--name", required=True, help="Model name for registration")
+    mu_p.add_argument(
+        "--type",
+        choices=MODEL_TYPE_CHOICES,
+        default="embedding",
+        dest="model_type",
+        help="Model type",
+    )
+    mu_p.add_argument(
+        "--scope", choices=MODEL_SCOPE_CHOICES, default="user", help="Model scope"
+    )
+    mu_p.add_argument(
+        "--project-id",
+        default=None,
+        help="Project identifier (required for project scope)",
+    )
+    mu_p.add_argument("--description", default=None, help="Model description")
+    mu_p.add_argument(
+        "--staging-dir",
+        default=None,
+        help="Staging root directory (default: UMRS_MODEL_STAGING_ROOT or ~/.config/umrs/models/)",
+    )
+    mu_p.add_argument(
+        "--register-path",
+        default=None,
+        help="Server-side path to register (use when client and server have different filesystems, e.g. Mac → HPC)",
+    )
+    mu_p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite existing model directory in staging root",
+    )
 
     # --- Job tracking commands ---
-    job_p = subparsers.add_parser('job', help='Job commands (submit, status, list, cancel)')
-    job_sub = job_p.add_subparsers(dest='job_action', required=True)
+    job_p = subparsers.add_parser(
+        "job", help="Job commands (submit, status, list, cancel)"
+    )
+    job_sub = job_p.add_subparsers(dest="job_action", required=True)
 
     # job submit
-    js_p = job_sub.add_parser('submit', help='Submit a new job')
+    js_p = job_sub.add_parser("submit", help="Submit a new job")
     configure_job_submit_parser(js_p)
 
     # job cancel
-    jc_p = job_sub.add_parser('cancel', help='Cancel a running job')
+    jc_p = job_sub.add_parser("cancel", help="Cancel a running job")
     configure_job_cancel_parser(jc_p)
 
     # job status
-    jst_p = job_sub.add_parser('status', help='Show a specific durable job')
+    jst_p = job_sub.add_parser("status", help="Show a specific durable job")
     configure_job_status_parser(jst_p)
 
     # job list
-    jl_p = job_sub.add_parser('list', help='List durable jobs with optional filters')
+    jl_p = job_sub.add_parser("list", help="List durable jobs with optional filters")
     configure_job_list_parser(jl_p)
 
     # --- Endpoint control commands ---
-    endpoint_p = subparsers.add_parser('endpoint', help='Endpoint lifecycle commands (up, list, status, stop)')
-    endpoint_sub = endpoint_p.add_subparsers(dest='endpoint_action', required=True)
-    eup_p = endpoint_sub.add_parser('up', help='Provision a reusable endpoint job')
+    endpoint_p = subparsers.add_parser(
+        "endpoint", help="Endpoint lifecycle commands (up, list, status, stop)"
+    )
+    endpoint_sub = endpoint_p.add_subparsers(dest="endpoint_action", required=True)
+    eup_p = endpoint_sub.add_parser("up", help="Provision a reusable endpoint job")
     configure_endpoint_up_parser(eup_p)
-    el_p = endpoint_sub.add_parser('list', help='List endpoint provision jobs')
+    el_p = endpoint_sub.add_parser("list", help="List endpoint provision jobs")
     configure_endpoint_list_parser(el_p)
-    est_p = endpoint_sub.add_parser('status', help='Show endpoint provision job details')
+    est_p = endpoint_sub.add_parser(
+        "status", help="Show endpoint provision job details"
+    )
     configure_endpoint_status_parser(est_p)
-    esp_p = endpoint_sub.add_parser('stop', help='Stop an endpoint provision job')
+    esp_p = endpoint_sub.add_parser("stop", help="Stop an endpoint provision job")
     configure_endpoint_stop_parser(esp_p)
 
     # --- Workflow upload command ---
-    uw_p = subparsers.add_parser('upload-workflow', help='Upload a workflow directory (with workflow.json + step scripts) to the server')
-    uw_p.add_argument('path', help='Local directory containing workflow.json and step scripts')
-    uw_p.add_argument('--name', default=None, help='Workflow name (defaults to directory basename)')
+    uw_p = subparsers.add_parser(
+        "upload-workflow",
+        help="Upload a workflow directory (with workflow.json + step scripts) to the server",
+    )
+    uw_p.add_argument(
+        "path", help="Local directory containing workflow.json and step scripts"
+    )
+    uw_p.add_argument(
+        "--name", default=None, help="Workflow name (defaults to directory basename)"
+    )
 
     # --- Run workflow command ---
-    rw_p = subparsers.add_parser('run-workflow', help='Trigger execution of a registered workflow on the server')
+    rw_p = subparsers.add_parser(
+        "run-workflow", help="Trigger execution of a registered workflow on the server"
+    )
     configure_workflow_run_parser(rw_p)
 
     # --- Workflow registry commands ---
-    wf_p = subparsers.add_parser('workflow', help='Workflow registry commands (list, run)')
-    wf_sub = wf_p.add_subparsers(dest='workflow_action', required=True)
+    wf_p = subparsers.add_parser(
+        "workflow", help="Workflow registry commands (list, run)"
+    )
+    wf_sub = wf_p.add_subparsers(dest="workflow_action", required=True)
 
     # workflow list
-    wl_p = wf_sub.add_parser('list', help='List registered workflows')
+    wl_p = wf_sub.add_parser("list", help="List registered workflows")
     configure_workflow_list_parser(wl_p)
 
     # workflow run
-    wr_p = wf_sub.add_parser('run', help='Trigger execution of a registered workflow on the server')
+    wr_p = wf_sub.add_parser(
+        "run", help="Trigger execution of a registered workflow on the server"
+    )
     configure_workflow_run_parser(wr_p)
 
     # --- Monitor (TUI dashboard) ---
-    mon_p = subparsers.add_parser('monitor', help='Live-refreshing multi-tab system monitor (TUI)')
-    mon_p.add_argument('--interval', type=float, default=3.0, help='Refresh interval in seconds')
-    mon_p.add_argument('--status', default=None,
-                       choices=['running', 'queued', 'planned', 'completed', 'failed', 'cancelled'],
-                       help='Initial status filter (Jobs tab)')
-    mon_p.add_argument('--project', default=None, help='Filter by project ID (Jobs tab)')
-    mon_p.add_argument('--once', action='store_true', default=False,
-                       help='Print dashboard once and exit (no live refresh)')
-    mon_p.add_argument('--tab', default='jobs',
-                       choices=['jobs', 'endpoints', 'status', 'models', 'workflows', 'connection', 'logs'],
-                       help='Tab to display on startup (default: jobs)')
+    mon_p = subparsers.add_parser(
+        "monitor", help="Live-refreshing multi-tab system monitor (TUI)"
+    )
+    mon_p.add_argument(
+        "--interval", type=float, default=3.0, help="Refresh interval in seconds"
+    )
+    mon_p.add_argument(
+        "--status",
+        default=None,
+        choices=["running", "queued", "planned", "completed", "failed", "cancelled"],
+        help="Initial status filter (Jobs tab)",
+    )
+    mon_p.add_argument(
+        "--project", default=None, help="Filter by project ID (Jobs tab)"
+    )
+    mon_p.add_argument(
+        "--once",
+        action="store_true",
+        default=False,
+        help="Print dashboard once and exit (no live refresh)",
+    )
+    mon_p.add_argument(
+        "--tab",
+        default="jobs",
+        choices=[
+            "jobs",
+            "endpoints",
+            "status",
+            "models",
+            "workflows",
+            "connection",
+            "logs",
+        ],
+        help="Tab to display on startup (default: jobs)",
+    )
 
     # --- Disabled admin command ---
     admin_p = subparsers.add_parser(
-        'admin',
-        help='Disabled; use umrs-server admin on the server',
+        "admin",
+        help="Disabled; use umrs-server admin on the server",
         description=_disabled_admin_message(),
     )
-    admin_p.add_argument('admin_args', nargs='*', help=argparse.SUPPRESS)
+    admin_p.add_argument("admin_args", nargs="*", help=argparse.SUPPRESS)
 
     # --- login: unified auth + profile + config setup ---
     login_p = subparsers.add_parser(
-        'login',
-        help='Authenticate and configure connection in one step',
+        "login",
+        help="Authenticate and configure connection in one step",
     )
-    login_p.add_argument('--host', default='127.0.0.1', help='UMRS server host')
-    login_p.add_argument('--port', type=int, default=5555, help='UMRS ZMQ control port')
-    login_p.add_argument('--api-key', '-k', help='JWT or onboarding token')
-    login_p.add_argument('--mode', default='direct', choices=['direct', 'ssh_tunnel', 'gateway'],
-                         help='Connection mode (gateway uses HTTP through the gateway)')
-    login_p.add_argument('--gateway-url', default=None,
-                         help='Gateway HTTP URL (e.g. http://134.160.189.136:50080). Implies --mode gateway')
-    login_p.add_argument('--username', default=None, help='UMRS username (auto-extracted from JWT)')
-    login_p.add_argument('--profile-name', default=None, help='Connection profile name (default: auto)')
+    login_p.add_argument("--host", default="127.0.0.1", help="UMRS server host")
+    login_p.add_argument("--port", type=int, default=5555, help="UMRS ZMQ control port")
+    login_p.add_argument("--api-key", "-k", help="JWT or onboarding token")
+    login_p.add_argument(
+        "--mode",
+        default="direct",
+        choices=["direct", "ssh_tunnel", "gateway"],
+        help="Connection mode (gateway uses HTTP through the gateway)",
+    )
+    login_p.add_argument(
+        "--gateway-url",
+        default=None,
+        help="Gateway HTTP URL (e.g. http://134.160.189.136:50080). Implies --mode gateway",
+    )
+    login_p.add_argument(
+        "--username", default=None, help="UMRS username (auto-extracted from JWT)"
+    )
+    login_p.add_argument(
+        "--profile-name", default=None, help="Connection profile name (default: auto)"
+    )
 
-    profile_p = subparsers.add_parser('profile', help='Connection profile commands (init, list, show, use, import)')
-    profile_sub = profile_p.add_subparsers(dest='profile_action', required=True)
-    pn_p = profile_sub.add_parser('init', help='Create a new connection profile and set it as current')
-    pn_p.add_argument('--name', default=None, help='Profile name (prompted if omitted)')
-    pn_p.add_argument('--mode', default='direct', choices=['direct', 'ssh_tunnel'], help='Connection mode (default: direct)')
-    pn_p.add_argument('--host', default='127.0.0.1', help='Server host (default: 127.0.0.1)')
-    pn_p.add_argument('--control-port', type=int, default=5555, help='ZMQ control port (default: 5555)')
-    pn_p.add_argument('--data-port-start', type=int, default=5556, help='Data port range start (default: 5556)')
-    pn_p.add_argument('--data-port-end', type=int, default=5563, help='Data port range end (default: 5563)')
-    pn_p.add_argument('--minio-url', default=None, help='MinIO URL (default: http://<host>:9000)')
-    pn_p.add_argument('--rag-url', default=None, help='RAG URL (default: http://<host>:8081)')
-    pn_p.add_argument('--ssh-host', default=None, help='SSH host for tunnel mode')
-    pn_p.add_argument('--force', action='store_true', default=False, help='Overwrite if the profile already exists')
-    profile_sub.add_parser('list', help='List available connection profiles')
-    profile_sub.add_parser('show', help='Show the effective connection resolved from profile/env/flags')
-    pu_p = profile_sub.add_parser('use', help='Set the current default connection profile')
-    pu_p.add_argument('name', help='Profile name to persist as the current default')
-    pi_p = profile_sub.add_parser('import', help='Import a connection profile JSON file into the UMRS config directory')
-    pi_p.add_argument('file', help='Path to a connection profile JSON file')
-    pi_p.add_argument('--force', action='store_true', default=False, help='Overwrite an existing profile with the same name')
+    profile_p = subparsers.add_parser(
+        "profile", help="Connection profile commands (init, list, show, use, import)"
+    )
+    profile_sub = profile_p.add_subparsers(dest="profile_action", required=True)
+    pn_p = profile_sub.add_parser(
+        "init", help="Create a new connection profile and set it as current"
+    )
+    pn_p.add_argument("--name", default=None, help="Profile name (prompted if omitted)")
+    pn_p.add_argument(
+        "--mode",
+        default="direct",
+        choices=["direct", "ssh_tunnel"],
+        help="Connection mode (default: direct)",
+    )
+    pn_p.add_argument(
+        "--host", default="127.0.0.1", help="Server host (default: 127.0.0.1)"
+    )
+    pn_p.add_argument(
+        "--control-port",
+        type=int,
+        default=5555,
+        help="ZMQ control port (default: 5555)",
+    )
+    pn_p.add_argument(
+        "--data-port-start",
+        type=int,
+        default=5556,
+        help="Data port range start (default: 5556)",
+    )
+    pn_p.add_argument(
+        "--data-port-end",
+        type=int,
+        default=5563,
+        help="Data port range end (default: 5563)",
+    )
+    pn_p.add_argument(
+        "--minio-url", default=None, help="MinIO URL (default: http://<host>:9000)"
+    )
+    pn_p.add_argument(
+        "--rag-url", default=None, help="RAG URL (default: http://<host>:8081)"
+    )
+    pn_p.add_argument("--ssh-host", default=None, help="SSH host for tunnel mode")
+    pn_p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite if the profile already exists",
+    )
+    profile_sub.add_parser("list", help="List available connection profiles")
+    profile_sub.add_parser(
+        "show", help="Show the effective connection resolved from profile/env/flags"
+    )
+    pu_p = profile_sub.add_parser(
+        "use", help="Set the current default connection profile"
+    )
+    pu_p.add_argument("name", help="Profile name to persist as the current default")
+    pi_p = profile_sub.add_parser(
+        "import",
+        help="Import a connection profile JSON file into the UMRS config directory",
+    )
+    pi_p.add_argument("file", help="Path to a connection profile JSON file")
+    pi_p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite an existing profile with the same name",
+    )
 
-    config_p = subparsers.add_parser('config', help='Loaded config file commands (init, list, show, use)')
-    config_sub = config_p.add_subparsers(dest='config_action', required=True)
-    ci_p = config_sub.add_parser('init', help='Create a new user config JSON and set it as current')
-    ci_p.add_argument('--username', default=None, help='Username for the new config (prompted if omitted)')
-    ci_p.add_argument('--fullname', default=None, help='Full name of the user (prompted if omitted)')
-    ci_p.add_argument('--output-path', default=None, help='Where to write the JSON (default: ~/.config/umrs/users/<username>.json)')
-    ci_p.add_argument('--template', default=None, help='Path to an existing user JSON to use as template')
-    ci_p.add_argument('--force', action='store_true', default=False, help='Overwrite if the output file already exists')
-    cae_p = config_sub.add_parser('add-experience', help='Merge experience fragment(s) from a JSON file into the current user config')
-    cae_p.add_argument('fragment', help='Path to a JSON file containing one experience object or an array of experiences')
-    cae_p.add_argument('--update', action='store_true', default=False, help='Replace existing experience(s) with matching xp_name instead of skipping')
-    cie_p = config_sub.add_parser('import', help='Import experience(s) from a JSON file (alias for add-experience --update)')
-    cie_p.add_argument('fragment', help='Path to a JSON file containing one experience object or an array of experiences')
-    cie_p.add_argument('--no-update', dest='update', action='store_false', default=True, help='Skip existing experiences instead of replacing them')
-    cre_p = config_sub.add_parser('remove-experience', help='Remove experience(s) by xp_name from the current user config')
+    config_p = subparsers.add_parser(
+        "config", help="Loaded config file commands (init, list, show, use)"
+    )
+    config_sub = config_p.add_subparsers(dest="config_action", required=True)
+    ci_p = config_sub.add_parser(
+        "init", help="Create a new user config JSON and set it as current"
+    )
+    ci_p.add_argument(
+        "--username",
+        default=None,
+        help="Username for the new config (prompted if omitted)",
+    )
+    ci_p.add_argument(
+        "--fullname", default=None, help="Full name of the user (prompted if omitted)"
+    )
+    ci_p.add_argument(
+        "--output-path",
+        default=None,
+        help="Where to write the JSON (default: ~/.config/umrs/users/<username>.json)",
+    )
+    ci_p.add_argument(
+        "--template",
+        default=None,
+        help="Path to an existing user JSON to use as template",
+    )
+    ci_p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Overwrite if the output file already exists",
+    )
+    cae_p = config_sub.add_parser(
+        "add-experience",
+        help="Merge experience fragment(s) from a JSON file into the current user config",
+    )
+    cae_p.add_argument(
+        "fragment",
+        help="Path to a JSON file containing one experience object or an array of experiences",
+    )
+    cae_p.add_argument(
+        "--update",
+        action="store_true",
+        default=False,
+        help="Replace existing experience(s) with matching xp_name instead of skipping",
+    )
+    cie_p = config_sub.add_parser(
+        "import",
+        help="Import experience(s) from a JSON file (alias for add-experience --update)",
+    )
+    cie_p.add_argument(
+        "fragment",
+        help="Path to a JSON file containing one experience object or an array of experiences",
+    )
+    cie_p.add_argument(
+        "--no-update",
+        dest="update",
+        action="store_false",
+        default=True,
+        help="Skip existing experiences instead of replacing them",
+    )
+    cre_p = config_sub.add_parser(
+        "remove-experience",
+        help="Remove experience(s) by xp_name from the current user config",
+    )
     _configure_experience_remove_parser(cre_p)
-    crx_p = config_sub.add_parser('recover-experience', help='Recover experience JSON from MinIO/S3 and optional Postgres status')
+    crx_p = config_sub.add_parser(
+        "recover-experience",
+        help="Recover experience JSON from MinIO/S3 and optional Postgres status",
+    )
     _configure_experience_recover_parser(crx_p)
-    config_sub.add_parser('list', help='List discovered conf_umrs.json, user*.json, and s3cfg candidates')
-    config_sub.add_parser('show', help='Show the resolved config stack for server, user, and s3 files')
-    cu_p = config_sub.add_parser('use', help='Persist the current server/user/s3 config selections')
-    cu_p.add_argument('--server', default=None, help='Server config file path or unique basename to select')
-    cu_p.add_argument('--user', default=None, help='User config file path or unique basename to select')
-    cu_p.add_argument('--s3', default=None, help='S3 config file path or unique basename to select')
+    config_sub.add_parser(
+        "list", help="List discovered conf_umrs.json, user*.json, and s3cfg candidates"
+    )
+    config_sub.add_parser(
+        "show", help="Show the resolved config stack for server, user, and s3 files"
+    )
+    cu_p = config_sub.add_parser(
+        "use", help="Persist the current server/user/s3 config selections"
+    )
+    cu_p.add_argument(
+        "--server",
+        default=None,
+        help="Server config file path or unique basename to select",
+    )
+    cu_p.add_argument(
+        "--user",
+        default=None,
+        help="User config file path or unique basename to select",
+    )
+    cu_p.add_argument(
+        "--s3", default=None, help="S3 config file path or unique basename to select"
+    )
 
-    experience_p = subparsers.add_parser('experience', help='Experience config commands (recover, remove)')
-    experience_sub = experience_p.add_subparsers(dest='experience_action', required=True)
-    er_p = experience_sub.add_parser('recover', help='Recover experience JSON from MinIO/S3 and optional Postgres status')
+    experience_p = subparsers.add_parser(
+        "experience", help="Experience config commands (recover, remove)"
+    )
+    experience_sub = experience_p.add_subparsers(
+        dest="experience_action", required=True
+    )
+    er_p = experience_sub.add_parser(
+        "recover",
+        help="Recover experience JSON from MinIO/S3 and optional Postgres status",
+    )
     _configure_experience_recover_parser(er_p)
-    erm_p = experience_sub.add_parser('remove', help='Remove experience(s) by xp_name from the current user config')
+    erm_p = experience_sub.add_parser(
+        "remove", help="Remove experience(s) by xp_name from the current user config"
+    )
     _configure_experience_remove_parser(erm_p)
 
-    if emit_completion_if_requested(parser, 'umrs-client', '_UMRS_CLIENT_COMPLETE'):
+    if emit_completion_if_requested(parser, "umrs-client", "_UMRS_CLIENT_COMPLETE"):
         return 0
 
     args = parser.parse_args()
@@ -4983,57 +6268,63 @@ def main():
         parser.print_help()
         return 0
 
-    if args.action == 'completion':
-        action = getattr(args, 'completion_action', None)
-        if action == 'install':
-            print(install_completion('umrs-client', shell=args.shell))
+    if args.action == "completion":
+        action = getattr(args, "completion_action", None)
+        if action == "install":
+            print(install_completion("umrs-client", shell=args.shell))
             return 0
-        if action == 'uninstall':
-            print(uninstall_completion('umrs-client', shell=args.shell))
+        if action == "uninstall":
+            print(uninstall_completion("umrs-client", shell=args.shell))
             return 0
-        if action in ('bash', 'zsh'):
-            print_completion_script('umrs-client', '_UMRS_CLIENT_COMPLETE', action)
+        if action in ("bash", "zsh"):
+            print_completion_script("umrs-client", "_UMRS_CLIENT_COMPLETE", action)
             return 0
-        print_completion_script('umrs-client', '_UMRS_CLIENT_COMPLETE', 'bash')
+        print_completion_script("umrs-client", "_UMRS_CLIENT_COMPLETE", "bash")
         return 0
 
-    if args.action == 'profile':
+    if args.action == "profile":
         try:
             sys.exit(_handle_profile_command(args))
         except Exception as e:
-            print(api_json(status='error', message=str(e), output_format=args.output))
+            print(api_json(status="error", message=str(e), output_format=args.output))
             sys.exit(1)
 
-    if args.action == 'login':
+    if args.action == "login":
         try:
             sys.exit(_handle_login(args))
         except Exception as e:
-            print(api_json(status='error', message=str(e), output_format=args.output))
+            print(api_json(status="error", message=str(e), output_format=args.output))
             sys.exit(1)
 
-    if args.action == 'config':
+    if args.action == "config":
         try:
             sys.exit(_handle_config_command(args))
         except Exception as e:
-            print(api_json(status='error', message=str(e), output_format=args.output))
+            print(api_json(status="error", message=str(e), output_format=args.output))
             sys.exit(1)
 
-    if args.action == 'experience':
+    if args.action == "experience":
         try:
             sys.exit(_handle_experience_command(args))
         except Exception as e:
-            print(api_json(status='error', message=str(e), output_format=args.output))
+            print(api_json(status="error", message=str(e), output_format=args.output))
             sys.exit(1)
 
-    if args.action == 'info':
+    if args.action == "info":
         try:
             sys.exit(_handle_info(args))
         except Exception as e:
-            print(api_json(status='error', message=str(e), output_format=args.output))
+            print(api_json(status="error", message=str(e), output_format=args.output))
             sys.exit(1)
 
-    if args.action == 'admin':
-        print(api_json(status='error', message=_disabled_admin_message(), output_format=args.output))
+    if args.action == "admin":
+        print(
+            api_json(
+                status="error",
+                message=_disabled_admin_message(),
+                output_format=args.output,
+            )
+        )
         sys.exit(2)
 
     connection = resolve_connection(
@@ -5045,10 +6336,21 @@ def main():
     # --- Gateway-only mode: skip ZMQ for actions that work over HTTP or local config ---
     _gateway_http_actions = {"reload", "list_buckets"}
     gateway_url = getattr(connection, "gateway_url", None)
-    _is_model_list = args.action == "model" and getattr(args, "model_action", None) == "list"
-    _is_model_register = args.action == "model" and getattr(args, "model_action", None) == "register"
-    _is_model_delete = args.action == "model" and getattr(args, "model_action", None) == "delete"
-    if gateway_url and (args.action in _gateway_http_actions or _is_model_list or _is_model_register or _is_model_delete):
+    _is_model_list = (
+        args.action == "model" and getattr(args, "model_action", None) == "list"
+    )
+    _is_model_register = (
+        args.action == "model" and getattr(args, "model_action", None) == "register"
+    )
+    _is_model_delete = (
+        args.action == "model" and getattr(args, "model_action", None) == "delete"
+    )
+    if gateway_url and (
+        args.action in _gateway_http_actions
+        or _is_model_list
+        or _is_model_register
+        or _is_model_delete
+    ):
         # Resolve admin token and config state without ZMQ
         admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
         config_state = resolve_loaded_config(
@@ -5088,8 +6390,8 @@ def main():
     _maybe_bootstrap_curve_session(connection)
 
     control_mq = MessageQueue(
-        role = "client",
-        queue_type = 'control',
+        role="client",
+        queue_type="control",
         server_ip=connection.server_host,
         port=connection.control_port,
         tunnel_mode=connection.tunnel_mode,
@@ -5098,8 +6400,10 @@ def main():
 
     if (
         not args.no_check_server
-        and args.action != 'ping'
-        and not control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms)
+        and args.action != "ping"
+        and not control_mq.is_server_ready(
+            timeout_ms=connection.health_check_timeout_ms
+        )
     ):
         # In session-mode CURVE auth a readiness failure is often a stale session:
         # the server restarted and dropped its in-memory session registry, so the
@@ -5110,20 +6414,24 @@ def main():
             control_mq.close()
             control_mq = MessageQueue(
                 role="client",
-                queue_type='control',
+                queue_type="control",
                 server_ip=connection.server_host,
                 port=connection.control_port,
                 tunnel_mode=connection.tunnel_mode,
                 prefer_env_server_host=False,
             )
-            recovered = control_mq.is_server_ready(timeout_ms=connection.health_check_timeout_ms)
+            recovered = control_mq.is_server_ready(
+                timeout_ms=connection.health_check_timeout_ms
+            )
         if not recovered:
             sys.exit(f"{_red('✗')} Server connection timeout — cannot continue!")
 
-    if args.action != 'ping':
+    if args.action != "ping":
         profile_name = getattr(connection, "profile_name", None)
         profile_label = _bold(profile_name) if profile_name else _dim("(none)")
-        print(f"{_green('✓')} Server ready  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}")
+        print(
+            f"{_green('✓')} Server ready  {_dim('|')}  profile={profile_label}  {_dim('|')}  {connection.server_host}:{connection.control_port}"
+        )
 
     # Resolve admin token from CLI flag or environment
     admin_token = args.admin_token or os.environ.get("UMRS_ADMIN_TOKEN")
@@ -5138,14 +6446,27 @@ def main():
     configure_file = config_state.user.path if config_state.user.path else None
 
     # Only enforce config file for legacy mode or actions that need bucket/user config
-    status_needs_config = args.action == 'status' and not getattr(args, 'username', None)
-    requires_config =  args.action in {
-        'list_buckets', 'purge_remote_buckets', 'upload_file', 'upload_dir', "download_results",
-        "recompute", "update", "reload", "export_embeddings"
-    } or status_needs_config
+    status_needs_config = args.action == "status" and not getattr(
+        args, "username", None
+    )
+    requires_config = (
+        args.action
+        in {
+            "list_buckets",
+            "purge_remote_buckets",
+            "upload_file",
+            "upload_dir",
+            "download_results",
+            "recompute",
+            "update",
+            "reload",
+            "export_embeddings",
+        }
+        or status_needs_config
+    )
 
     explicit_s3_selected = bool(
-        config_state.s3.source and not str(config_state.s3.source).startswith('user:')
+        config_state.s3.source and not str(config_state.s3.source).startswith("user:")
     )
 
     if requires_config and not config_state.user.valid:
@@ -5160,7 +6481,12 @@ def main():
             f"Provide one with -c/--conf or place it in one of:\n  {search_locations}"
         )
 
-    if requires_config and explicit_s3_selected and config_state.s3.path and not config_state.s3.valid:
+    if (
+        requires_config
+        and explicit_s3_selected
+        and config_state.s3.path
+        and not config_state.s3.valid
+    ):
         sys.exit(
             f"S3 config file not usable: {config_state.s3.path}\n"
             f"{config_state.s3.error}"
@@ -5200,10 +6526,17 @@ def main():
     )
     handler = _ACTION_HANDLERS.get(args.action)
     if handler is None:
-        print(api_json(status='error', message=f'Unknown action: {args.action}', output_format=args.output))
+        print(
+            api_json(
+                status="error",
+                message=f"Unknown action: {args.action}",
+                output_format=args.output,
+            )
+        )
         control_mq.close()
         sys.exit(1)
     sys.exit(handler(ctx))
+
 
 if __name__ == "__main__":
     main()

@@ -25,5 +25,7 @@ def create_model(model_type, **kwargs):
     """
     if model_type not in _model_factory:
         available = ", ".join(_model_factory.keys())
-        raise ValueError(f"Unsupported HMAE model type: {model_type}. Available: {available}")
+        raise ValueError(
+            f"Unsupported HMAE model type: {model_type}. Available: {available}"
+        )
     return _model_factory[model_type](**kwargs)

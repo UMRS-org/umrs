@@ -80,9 +80,7 @@ class Reconciler:
         _start = _time.monotonic()
         result = ReconcileResult()
 
-        logger.info(
-            f"Starting boot reconciliation (instance={self.umrs_instance_id})"
-        )
+        logger.info(f"Starting boot reconciliation (instance={self.umrs_instance_id})")
 
         # Find stale attempts (from previous UMRS instance or crashed state)
         stale_attempts = self._find_stale_attempts()
@@ -125,7 +123,8 @@ class Reconciler:
                 # Find all in-flight attempts that either:
                 # - Have a different umrs_instance_id (from previous instance)
                 # - Have NULL umrs_instance_id (legacy or failed to set)
-                cur.execute("""
+                cur.execute(
+                    """
                     SELECT
                         attempt_id,
                         job_id,
@@ -135,11 +134,13 @@ class Reconciler:
                     WHERE status IN (%s, %s)
                       AND (umrs_instance_id IS NULL OR umrs_instance_id != %s)
                     ORDER BY created_at ASC
-                """, (
-                    AttemptStatus.SUBMITTED.value,
-                    AttemptStatus.RUNNING.value,
-                    self.umrs_instance_id,
-                ))
+                """,
+                    (
+                        AttemptStatus.SUBMITTED.value,
+                        AttemptStatus.RUNNING.value,
+                        self.umrs_instance_id,
+                    ),
+                )
 
                 return cur.fetchall()
         finally:
@@ -196,7 +197,9 @@ class Reconciler:
             logger.info(f"Requeued job {job_id} (attempt {attempt_no} was lost)")
         else:
             # No more retries - mark job as failed
-            self._fail_job(job_id, f"exhausted retries after crash (last attempt: {attempt_no})")
+            self._fail_job(
+                job_id, f"exhausted retries after crash (last attempt: {attempt_no})"
+            )
             result.failed_jobs.append(job_id)
             METRICS.job_failed("reconciler")
             METRICS.reconciler_items("failed_exhausted")
@@ -231,14 +234,17 @@ class Reconciler:
         conn = self.job_store.db_pool.getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE jobs SET
                         status = %s,
                         active_attempt_id = NULL,
                         next_run_at = %s,
                         last_state_change_at = NOW()
                     WHERE job_id = %s
-                """, (JobStatus.QUEUED.value, next_run, job_id))
+                """,
+                    (JobStatus.QUEUED.value, next_run, job_id),
+                )
                 conn.commit()
         except Exception:
             conn.rollback()
@@ -255,13 +261,16 @@ class Reconciler:
         conn = self.job_store.db_pool.getconn()
         try:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE jobs SET
                         status = %s,
                         active_attempt_id = NULL,
                         last_state_change_at = NOW()
                     WHERE job_id = %s
-                """, (JobStatus.FAILED.value, job_id))
+                """,
+                    (JobStatus.FAILED.value, job_id),
+                )
                 conn.commit()
         except Exception:
             conn.rollback()

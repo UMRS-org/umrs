@@ -3,6 +3,7 @@
 Wraps the opossum frame-difference analysis engine as a UDM Step.
 Processes consecutive video pairs and outputs TSV files with motion events.
 """
+
 import json
 import os
 import sys
@@ -31,10 +32,7 @@ class OpossumAnalyzeStep(Step):
         from opossum.analyze import get_duration
 
         # Sort video keys for consecutive pairing
-        video_keys = sorted(
-            k for k in ctx.input_keys
-            if k.lower().endswith((".mp4", ".avi"))
-        )
+        video_keys = sorted(k for k in ctx.input_keys if k.lower().endswith((".mp4", ".avi")))
 
         output_keys = []
         all_events = []
@@ -55,7 +53,8 @@ class OpossumAnalyzeStep(Step):
                 pair_name = f"{os.path.basename(v1)}_{os.path.basename(v2)}"
                 try:
                     events = get_duration(
-                        v1, v2,
+                        v1,
+                        v2,
                         distance_threshold=self.distance_threshold,
                         time_threshold=self.time_threshold,
                     )
@@ -86,8 +85,7 @@ class OpossumAnalyzeStep(Step):
             "distance_threshold": self.distance_threshold,
             "time_threshold": self.time_threshold,
             "events": [
-                {"pair": ev[0], "start": str(ev[1]), "end": str(ev[2])}
-                for ev in all_events
+                {"pair": ev[0], "start": str(ev[1]), "end": str(ev[2])} for ev in all_events
             ],
         }
         summary_key = "results/analysis_summary.json"

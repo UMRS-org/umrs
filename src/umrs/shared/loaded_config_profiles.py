@@ -68,11 +68,16 @@ class ResolvedLoadedConfig:
 
 
 def get_current_server_config_path() -> Path:
-    return Path(get_resolved_umrs_cfg_dir()).expanduser() / get_current_server_config_file()
+    return (
+        Path(get_resolved_umrs_cfg_dir()).expanduser()
+        / get_current_server_config_file()
+    )
 
 
 def get_current_user_config_path() -> Path:
-    return Path(get_resolved_umrs_cfg_dir()).expanduser() / get_current_user_config_file()
+    return (
+        Path(get_resolved_umrs_cfg_dir()).expanduser() / get_current_user_config_file()
+    )
 
 
 def get_current_s3_config_path() -> Path:
@@ -278,11 +283,14 @@ def _validate_s3(path: Path) -> ConfigLayer:
         return layer
 
     missing = [
-        key for key in ("host_base", "access_key", "secret_key", "bucket_location")
+        key
+        for key in ("host_base", "access_key", "secret_key", "bucket_location")
         if not parser.has_option("default", key)
     ]
     if missing:
-        layer.error = f"Invalid S3 config file {path}: missing keys {', '.join(missing)}"
+        layer.error = (
+            f"Invalid S3 config file {path}: missing keys {', '.join(missing)}"
+        )
         return layer
 
     layer.valid = True
@@ -290,7 +298,9 @@ def _validate_s3(path: Path) -> ConfigLayer:
         "host_base": parser.get("default", "host_base"),
         "bucket_location": parser.get("default", "bucket_location"),
         "use_https": parser.getboolean("default", "use_https", fallback=False),
-        "check_ssl_certificate": parser.getboolean("default", "check_ssl_certificate", fallback=True),
+        "check_ssl_certificate": parser.getboolean(
+            "default", "check_ssl_certificate", fallback=True
+        ),
     }
     return layer
 
@@ -314,7 +324,9 @@ _ENV_SOURCES = {
 }
 
 
-def _pick_explicit(pairs: list[tuple[str | None, str]]) -> tuple[str | None, str | None]:
+def _pick_explicit(
+    pairs: list[tuple[str | None, str]],
+) -> tuple[str | None, str | None]:
     """Return the first ``(path, source)`` whose path is set, else ``(None, None)``.
 
     Used to collapse the ordered "explicit-like" tiers (CLI flag, env var,
@@ -327,9 +339,13 @@ def _pick_explicit(pairs: list[tuple[str | None, str]]) -> tuple[str | None, str
     return None, None
 
 
-def _make_candidate(kind: str, path: Path, current_path: str | None) -> ConfigFileCandidate:
+def _make_candidate(
+    kind: str, path: Path, current_path: str | None
+) -> ConfigFileCandidate:
     layer = _VALIDATORS[kind](path)
-    current = bool(current_path and _normalize_path(path) == _normalize_path(current_path))
+    current = bool(
+        current_path and _normalize_path(path) == _normalize_path(current_path)
+    )
     return ConfigFileCandidate(
         kind=kind,
         path=str(path),
@@ -348,14 +364,20 @@ def discover_loaded_config_profiles() -> dict[str, list[ConfigFileCandidate]]:
     current_s3 = _read_pointer(get_current_s3_config_path())
 
     server_paths = _unique_paths([*_candidate_paths_for_server(), current_server])
-    server_candidates = [_make_candidate("server", path, current_server) for path in server_paths]
+    server_candidates = [
+        _make_candidate("server", path, current_server) for path in server_paths
+    ]
 
     referenced_user_paths: list[str] = []
     for candidate in server_candidates:
         referenced_user_paths.extend(candidate.details.get("user_config_paths") or [])
 
-    user_paths = _unique_paths([*_candidate_paths_for_user(), *referenced_user_paths, current_user])
-    user_candidates = [_make_candidate("user", path, current_user) for path in user_paths]
+    user_paths = _unique_paths(
+        [*_candidate_paths_for_user(), *referenced_user_paths, current_user]
+    )
+    user_candidates = [
+        _make_candidate("user", path, current_user) for path in user_paths
+    ]
 
     referenced_s3_paths: list[str] = []
     for candidate in user_candidates:
@@ -363,7 +385,9 @@ def discover_loaded_config_profiles() -> dict[str, list[ConfigFileCandidate]]:
         if s3_path:
             referenced_s3_paths.append(s3_path)
 
-    s3_paths = _unique_paths([*_candidate_paths_for_s3(), *referenced_s3_paths, current_s3])
+    s3_paths = _unique_paths(
+        [*_candidate_paths_for_s3(), *referenced_s3_paths, current_s3]
+    )
     s3_candidates = [_make_candidate("s3", path, current_s3) for path in s3_paths]
 
     return {
@@ -419,8 +443,12 @@ def resolve_loaded_config(
     current_user = _read_pointer(get_current_user_config_path())
     current_s3 = _read_pointer(get_current_s3_config_path())
 
-    server = _resolve_server_layer(explicit_server_config_path, current_server, discovered)
-    user = _resolve_user_layer(explicit_user_config_path, current_user, discovered, server)
+    server = _resolve_server_layer(
+        explicit_server_config_path, current_server, discovered
+    )
+    user = _resolve_user_layer(
+        explicit_user_config_path, current_user, discovered, server
+    )
     s3 = _resolve_s3_layer(explicit_s3_config_path, current_s3, discovered, user)
     warnings = _loaded_config_warnings(server, user, s3)
 
@@ -432,10 +460,12 @@ def _resolve_server_layer(
     current_server: str | None,
     discovered: dict[str, list[ConfigFileCandidate]],
 ) -> ConfigLayer:
-    explicit, source = _pick_explicit([
-        (explicit_server_config_path, _FLAG_SOURCES["server"]),
-        (get_env_server_conf_path(), _ENV_SOURCES["server"]),
-    ])
+    explicit, source = _pick_explicit(
+        [
+            (explicit_server_config_path, _FLAG_SOURCES["server"]),
+            (get_env_server_conf_path(), _ENV_SOURCES["server"]),
+        ]
+    )
     return _resolve_selector(
         "server",
         explicit,
@@ -454,13 +484,18 @@ def _resolve_user_layer(
 ) -> ConfigLayer:
     env_user = get_env_user_conf_path()
     derived_user_path = _derived_user_path(
-        explicit_user_config_path, env_user, current_user, server,
+        explicit_user_config_path,
+        env_user,
+        current_user,
+        server,
     )
-    explicit, source = _pick_explicit([
-        (explicit_user_config_path, _FLAG_SOURCES["user"]),
-        (env_user, _ENV_SOURCES["user"]),
-        (derived_user_path, f"server:{server.path}"),
-    ])
+    explicit, source = _pick_explicit(
+        [
+            (explicit_user_config_path, _FLAG_SOURCES["user"]),
+            (env_user, _ENV_SOURCES["user"]),
+            (derived_user_path, f"server:{server.path}"),
+        ]
+    )
     return _resolve_selector(
         "user",
         explicit,
@@ -558,11 +593,17 @@ def _loaded_config_warnings(
 ) -> list[str]:
     warnings: list[str] = []
     if _selected_user_missing_from_server(server, user):
-        warnings.append("Selected user config is not listed in the selected server config.")
+        warnings.append(
+            "Selected user config is not listed in the selected server config."
+        )
     if _has_explicit_s3_override(user, s3):
-        warnings.append("An explicit S3 config override is active for this client session.")
+        warnings.append(
+            "An explicit S3 config override is active for this client session."
+        )
     if user.valid and not s3.valid and s3.path:
-        warnings.append("The resolved S3 config is invalid; runtime operations may fail unless a fallback applies.")
+        warnings.append(
+            "The resolved S3 config is invalid; runtime operations may fail unless a fallback applies."
+        )
     return warnings
 
 
@@ -573,14 +614,18 @@ def _selected_user_missing_from_server(server: ConfigLayer, user: ConfigLayer) -
         _normalize_path(path)
         for path in (server.details.get("user_config_paths") or [])
     }
-    return bool(server_user_paths and _normalize_path(user.path) not in server_user_paths)
+    return bool(
+        server_user_paths and _normalize_path(user.path) not in server_user_paths
+    )
 
 
 def _has_explicit_s3_override(user: ConfigLayer, s3: ConfigLayer) -> bool:
     if not (user.valid and s3.valid):
         return False
     user_s3_path = user.details.get("s3_configuration_file")
-    return bool(user_s3_path and _normalize_path(user_s3_path) != _normalize_path(s3.path))
+    return bool(
+        user_s3_path and _normalize_path(user_s3_path) != _normalize_path(s3.path)
+    )
 
 
 def _select_candidate_path(kind: str, selection: str) -> Path:
@@ -589,7 +634,9 @@ def _select_candidate_path(kind: str, selection: str) -> Path:
         return path
 
     discovered = discover_loaded_config_profiles()[kind]
-    matches = [Path(candidate.path) for candidate in discovered if candidate.label == selection]
+    matches = [
+        Path(candidate.path) for candidate in discovered if candidate.label == selection
+    ]
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
@@ -623,7 +670,9 @@ def set_current_s3_config(selection: str) -> Path:
     return _write_pointer(get_current_s3_config_path(), path)
 
 
-def apply_s3_config_override(user_cfg: dict[str, Any], s3_config_path: str | None) -> dict[str, Any]:
+def apply_s3_config_override(
+    user_cfg: dict[str, Any], s3_config_path: str | None
+) -> dict[str, Any]:
     if not s3_config_path:
         return user_cfg
     if user_cfg.get("s3_configuration_file") == s3_config_path:

@@ -18,20 +18,20 @@ from typing import Any
 class PluginSourceType(Enum):
     """Types of plugin sources."""
 
-    GIT_REPO = "git_repo"       # Git repository + commit
-    S3_WHEEL = "s3_wheel"       # S3 path to wheel file
-    LOCAL_PATH = "local_path"   # Local filesystem path (dev only)
+    GIT_REPO = "git_repo"  # Git repository + commit
+    S3_WHEEL = "s3_wheel"  # S3 path to wheel file
+    LOCAL_PATH = "local_path"  # Local filesystem path (dev only)
 
 
 class PluginStatus(Enum):
     """Status of a plugin execution."""
 
-    PENDING = "pending"         # Queued for execution
-    VALIDATING = "validating"   # Checking plugin spec
-    RUNNING = "running"         # Execution in progress
-    SUCCEEDED = "succeeded"     # Completed successfully
-    FAILED = "failed"           # Execution failed
-    CANCELLED = "cancelled"     # User cancelled
+    PENDING = "pending"  # Queued for execution
+    VALIDATING = "validating"  # Checking plugin spec
+    RUNNING = "running"  # Execution in progress
+    SUCCEEDED = "succeeded"  # Completed successfully
+    FAILED = "failed"  # Execution failed
+    CANCELLED = "cancelled"  # User cancelled
 
 
 @dataclass

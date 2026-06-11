@@ -32,12 +32,14 @@ async def fork_workflow(req: dict):
 
     forker = _get_forker()
     try:
-        result = forker.fork(WorkflowForkRequest(
-            source_job_id=req["source_job_id"],
-            user_id=req["user_id"],
-            param_overrides=req.get("param_overrides", {}),
-            description=req.get("description", ""),
-        ))
+        result = forker.fork(
+            WorkflowForkRequest(
+                source_job_id=req["source_job_id"],
+                user_id=req["user_id"],
+                param_overrides=req.get("param_overrides", {}),
+                description=req.get("description", ""),
+            )
+        )
         return result.to_dict()
     except WorkflowForkError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

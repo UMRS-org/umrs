@@ -23,22 +23,28 @@ class TestObjectRecord:
 
 class TestVersionManifest:
     def test_fingerprint_deterministic(self):
-        m = VersionManifest(objects={
-            "a.txt": ObjectRecord(key="a.txt", etag="e1", size_bytes=10),
-            "b.txt": ObjectRecord(key="b.txt", etag="e2", size_bytes=20),
-        })
+        m = VersionManifest(
+            objects={
+                "a.txt": ObjectRecord(key="a.txt", etag="e1", size_bytes=10),
+                "b.txt": ObjectRecord(key="b.txt", etag="e2", size_bytes=20),
+            }
+        )
         f1 = m.fingerprint()
         f2 = m.fingerprint()
         assert f1 == f2
         assert len(f1) > 0
 
     def test_fingerprint_changes_with_content(self):
-        m1 = VersionManifest(objects={
-            "a.txt": ObjectRecord(key="a.txt", etag="e1", size_bytes=10),
-        })
-        m2 = VersionManifest(objects={
-            "a.txt": ObjectRecord(key="a.txt", etag="e2", size_bytes=10),
-        })
+        m1 = VersionManifest(
+            objects={
+                "a.txt": ObjectRecord(key="a.txt", etag="e1", size_bytes=10),
+            }
+        )
+        m2 = VersionManifest(
+            objects={
+                "a.txt": ObjectRecord(key="a.txt", etag="e2", size_bytes=10),
+            }
+        )
         assert m1.fingerprint() != m2.fingerprint()
 
     def test_diff_no_changes(self):
@@ -50,14 +56,18 @@ class TestVersionManifest:
         assert len(diff.unchanged) == 1
 
     def test_diff_added_removed_modified(self):
-        m1 = VersionManifest(objects={
-            "a.txt": ObjectRecord(key="a.txt", etag="e1", size_bytes=10),
-            "b.txt": ObjectRecord(key="b.txt", etag="e2", size_bytes=20),
-        })
-        m2 = VersionManifest(objects={
-            "a.txt": ObjectRecord(key="a.txt", etag="e1_changed", size_bytes=15),
-            "c.txt": ObjectRecord(key="c.txt", etag="e3", size_bytes=30),
-        })
+        m1 = VersionManifest(
+            objects={
+                "a.txt": ObjectRecord(key="a.txt", etag="e1", size_bytes=10),
+                "b.txt": ObjectRecord(key="b.txt", etag="e2", size_bytes=20),
+            }
+        )
+        m2 = VersionManifest(
+            objects={
+                "a.txt": ObjectRecord(key="a.txt", etag="e1_changed", size_bytes=15),
+                "c.txt": ObjectRecord(key="c.txt", etag="e3", size_bytes=30),
+            }
+        )
         diff = m1.diff(m2)
         assert diff.has_changes
         assert "c.txt" in diff.added

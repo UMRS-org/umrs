@@ -85,14 +85,21 @@ class DockerWrapper(RuntimeWrapper):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                self.runtime, "stop", "-t", "30", container_id,
+                self.runtime,
+                "stop",
+                "-t",
+                "30",
+                container_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
             await proc.communicate()
 
             proc = await asyncio.create_subprocess_exec(
-                self.runtime, "rm", "-f", container_id,
+                self.runtime,
+                "rm",
+                "-f",
+                container_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -112,7 +119,11 @@ class DockerWrapper(RuntimeWrapper):
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                self.runtime, "inspect", "-f", "{{.State.Running}}", container_id,
+                self.runtime,
+                "inspect",
+                "-f",
+                "{{.State.Running}}",
+                container_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

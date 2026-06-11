@@ -393,10 +393,14 @@ def test_capability_ping_updates_capacity():
                 raw = sock.recv()
                 payload = pickle.loads(raw)
                 if isinstance(payload, dict) and payload.get("type") == "ping":
-                    sock.send(pickle.dumps({
-                        "type": "pong",
-                        "capabilities": {"gpu": True, "slots": 3},
-                    }))
+                    sock.send(
+                        pickle.dumps(
+                            {
+                                "type": "pong",
+                                "capabilities": {"gpu": True, "slots": 3},
+                            }
+                        )
+                    )
         except zmq.ContextTerminated:
             pass
 

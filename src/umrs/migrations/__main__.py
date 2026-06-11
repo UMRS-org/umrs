@@ -21,28 +21,29 @@ def main():
         print("Error: psycopg2 is required. Install with: pip install psycopg2-binary")
         sys.exit(1)
 
-    from umrs.migrations import apply_migrations, get_current_version, get_pending_migrations
+    from umrs.migrations import (
+        apply_migrations,
+        get_current_version,
+        get_pending_migrations,
+    )
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
     parser = argparse.ArgumentParser(description="UMRS Database Migrations")
     parser.add_argument(
         "--db-url",
         default=os.environ.get("DATABASE_URL"),
-        help="PostgreSQL connection URL"
+        help="PostgreSQL connection URL",
     )
     parser.add_argument(
         "--status",
         action="store_true",
-        help="Show migration status instead of applying"
+        help="Show migration status instead of applying",
     )
-    parser.add_argument(
-        "--target",
-        help="Target version to migrate to"
-    )
+    parser.add_argument("--target", help="Target version to migrate to")
 
     args = parser.parse_args()
 

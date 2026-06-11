@@ -179,7 +179,9 @@ class AdaptivePlanningEngine:
     ) -> PlanningHeuristic:
         """Store a planning heuristic."""
         if rule_type not in VALID_RULE_TYPES:
-            raise ValueError(f"Invalid rule_type: {rule_type!r}; must be one of {VALID_RULE_TYPES}")
+            raise ValueError(
+                f"Invalid rule_type: {rule_type!r}; must be one of {VALID_RULE_TYPES}"
+            )
 
         self._counter += 1
         h = PlanningHeuristic(
@@ -197,7 +199,9 @@ class AdaptivePlanningEngine:
     def get_heuristic(self, heuristic_id: str) -> PlanningHeuristic | None:
         return self._heuristics.get(heuristic_id)
 
-    def list_heuristics(self, workflow_name: str | None = None) -> list[PlanningHeuristic]:
+    def list_heuristics(
+        self, workflow_name: str | None = None
+    ) -> list[PlanningHeuristic]:
         results = list(self._heuristics.values())
         if workflow_name:
             results = [h for h in results if h.workflow_name == workflow_name]
@@ -219,7 +223,9 @@ class AdaptivePlanningEngine:
     # =========================================================================
 
     def _analyze_model_performance(
-        self, workflow_name: str, outcomes: list[Any],
+        self,
+        workflow_name: str,
+        outcomes: list[Any],
     ) -> Recommendation | None:
         """Recommend best-performing model based on outcome history."""
         model_stats: dict[str, dict[str, int]] = {}
@@ -261,7 +267,9 @@ class AdaptivePlanningEngine:
         return None
 
     def _analyze_failure_patterns(
-        self, workflow_name: str, outcomes: list[Any],
+        self,
+        workflow_name: str,
+        outcomes: list[Any],
     ) -> list[Recommendation]:
         """Identify recurring failure patterns and suggest avoidance."""
         recs: list[Recommendation] = []
@@ -270,29 +278,41 @@ class AdaptivePlanningEngine:
 
         for o in outcomes:
             if o.failure_category:
-                category_counts[o.failure_category] = category_counts.get(o.failure_category, 0) + 1
+                category_counts[o.failure_category] = (
+                    category_counts.get(o.failure_category, 0) + 1
+                )
 
         for cat, count in category_counts.items():
             rate = count / total if total > 0 else 0
             if rate >= 0.2 and count >= 2:
                 self._counter += 1
-                recs.append(Recommendation(
-                    recommendation_id=f"rec-{self._counter:04d}",
-                    category="retry_config",
-                    confidence=min(rate, 0.9),
-                    description=f"Failure category '{cat}' occurs in {rate:.0%} of runs ({count}/{total})",
-                    current_value=cat,
-                    suggested_value=f"Add retry/mitigation for {cat}",
-                    evidence={"failure_category": cat, "count": count, "total": total},
-                ))
+                recs.append(
+                    Recommendation(
+                        recommendation_id=f"rec-{self._counter:04d}",
+                        category="retry_config",
+                        confidence=min(rate, 0.9),
+                        description=f"Failure category '{cat}' occurs in {rate:.0%} of runs ({count}/{total})",
+                        current_value=cat,
+                        suggested_value=f"Add retry/mitigation for {cat}",
+                        evidence={
+                            "failure_category": cat,
+                            "count": count,
+                            "total": total,
+                        },
+                    )
+                )
 
         return recs
 
     def _analyze_resource_usage(
-        self, workflow_name: str, outcomes: list[Any],
+        self,
+        workflow_name: str,
+        outcomes: list[Any],
     ) -> Recommendation | None:
         """Suggest resource adjustments based on outcome data."""
-        durations = [o.execution_duration_sec for o in outcomes if o.execution_duration_sec]
+        durations = [
+            o.execution_duration_sec for o in outcomes if o.execution_duration_sec
+        ]
         if len(durations) < 3:
             return None
 

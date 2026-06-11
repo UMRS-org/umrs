@@ -29,9 +29,28 @@ logger = logging.getLogger(__name__)
 
 _GITHUB_API = "https://api.github.com"
 _TEXT_EXTENSIONS = {
-    ".md", ".txt", ".rst", ".py", ".js", ".ts", ".go", ".rs",
-    ".java", ".c", ".cpp", ".h", ".rb", ".sh", ".yaml", ".yml",
-    ".toml", ".json", ".xml", ".html", ".css", ".sql",
+    ".md",
+    ".txt",
+    ".rst",
+    ".py",
+    ".js",
+    ".ts",
+    ".go",
+    ".rs",
+    ".java",
+    ".c",
+    ".cpp",
+    ".h",
+    ".rb",
+    ".sh",
+    ".yaml",
+    ".yml",
+    ".toml",
+    ".json",
+    ".xml",
+    ".html",
+    ".css",
+    ".sql",
 }
 _MAX_FILE_SIZE = 1_000_000  # 1 MB
 
@@ -95,9 +114,7 @@ class GitHubConnector(Connector):
             logger.warning("Failed to fetch tree for %s: %s", repo, exc)
             return []
 
-    def _fetch_file_content(
-        self, repo: str, path: str, token: str
-    ) -> Optional[str]:
+    def _fetch_file_content(self, repo: str, path: str, token: str) -> Optional[str]:
         """Fetch raw file content."""
         try:
             url = f"{_GITHUB_API}/repos/{repo}/contents/{path}"

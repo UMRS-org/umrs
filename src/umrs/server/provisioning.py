@@ -71,7 +71,9 @@ def _tar_model_cache(model_name: str, tmp_root: str) -> str | None:
     tar_path = os.path.join(out_dir, "weights.tar")
 
     relative_posix = Path(cache_entry.relative_path).as_posix().lstrip("./")
-    arcname = f"{cache_entry.kind}/{relative_posix}" if relative_posix else cache_entry.kind
+    arcname = (
+        f"{cache_entry.kind}/{relative_posix}" if relative_posix else cache_entry.kind
+    )
 
     try:
         with tarfile.open(tar_path, "w:gz") as tar:
@@ -188,7 +190,9 @@ def _resolve_s3cfg_path(user_cfg):
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
-    print(f"######################\nCreating {fullname} ({username})\n######################")
+    print(
+        f"######################\nCreating {fullname} ({username})\n######################"
+    )
 
     bucket_list = []
     for xp in user_cfg["experiences"]:
@@ -196,7 +200,9 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
         sql_username = xp["sql_username"]
         create_db_user(sql_username)
         for modality in xp["modalities"]:
-            raw_modality_name = modality.get("modality_name") or modality.get("modality")
+            raw_modality_name = modality.get("modality_name") or modality.get(
+                "modality"
+            )
             raw_task = modality.get("task")
             resolve_modality_task(raw_modality_name, raw_task)
             bucket_alias = modality["s3"]["bucket_alias"]
@@ -228,7 +234,9 @@ def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
 
 
 def is_client_configured(client_id, server_cfg):
-    return any(entry.s3_username == client_id for entry in server_cfg.buckets_cfg.values())
+    return any(
+        entry.s3_username == client_id for entry in server_cfg.buckets_cfg.values()
+    )
 
 
 def reconcile_status_on_startup(active_threads, buckets_cfg):
@@ -258,7 +266,9 @@ def reconcile_status_on_startup(active_threads, buckets_cfg):
             continue
         synthetic_thread_status["startup"] = {
             "thread_id": "snapshot",
-            "status": "Done" if any(work["nb_objects"] > 0 for work in works) else "Idle",
+            "status": "Done"
+            if any(work["nb_objects"] > 0 for work in works)
+            else "Idle",
             "updated_at": snapshot_time,
             "work": works,
         }
@@ -310,7 +320,9 @@ def _configure_modality_bucket(
             os.path.dirname(user_cfg["config_file_path"]),
         )
     except Exception as e:
-        print(f"Warning: failed to upload weights to RiVault for model '{model_cfg.get('model_name', '?')}': {e}")
+        print(
+            f"Warning: failed to upload weights to RiVault for model '{model_cfg.get('model_name', '?')}': {e}"
+        )
 
     if model.return_type == "file":
         assert need_output_bucket
@@ -359,7 +371,9 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
     server_cfg.user_config_map[username] = user_cfg["config_file_path"]
     buckets_cfg = server_cfg.buckets_cfg
 
-    print(f"######################\nConfiguring {fullname} ({username})\n######################")
+    print(
+        f"######################\nConfiguring {fullname} ({username})\n######################"
+    )
 
     user_s3_configuration_file = _resolve_s3cfg_path(user_cfg)
     s3_connection, bucket_location = connect_to_s3(user_s3_configuration_file)
@@ -371,23 +385,30 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
         data_base, _db_name = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
             try:
-                bucket_alias, path_to_bucket, num_objects, bucket_entry = _configure_modality_bucket(
-                    user_cfg,
-                    username,
-                    xp_name,
-                    sql_username,
-                    modality,
-                    s3_connection,
-                    bucket_location,
-                    data_base,
+                bucket_alias, path_to_bucket, num_objects, bucket_entry = (
+                    _configure_modality_bucket(
+                        user_cfg,
+                        username,
+                        xp_name,
+                        sql_username,
+                        modality,
+                        s3_connection,
+                        bucket_location,
+                        data_base,
+                    )
                 )
                 buckets_cfg.store(path_to_bucket, bucket_entry)
                 print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
             except Exception as e:
                 import traceback
-                mod_name = modality.get("modality_name") or modality.get("modality", "?")
-                print(f"\t\t\tWARNING: Failed to configure modality '{mod_name}' "
-                      f"in experience '{xp_name}': {e}")
+
+                mod_name = modality.get("modality_name") or modality.get(
+                    "modality", "?"
+                )
+                print(
+                    f"\t\t\tWARNING: Failed to configure modality '{mod_name}' "
+                    f"in experience '{xp_name}': {e}"
+                )
                 traceback.print_exc()
 
 
@@ -426,7 +447,9 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
             path_to_bucket = make_path_to_bucket_string(xp_name, bucket_alias, username)
             bucket_names.append(path_to_bucket)
             if modality["s3"].get("need_output_bucket", False):
-                output_path = make_path_to_bucket_string(xp_name, bucket_alias, username, output=True)
+                output_path = make_path_to_bucket_string(
+                    xp_name, bucket_alias, username, output=True
+                )
                 bucket_names.append(output_path)
 
         # Drop PostgreSQL database.
@@ -446,7 +469,8 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
     admin_cfg_path = os.path.expanduser(admin_s3_configuration_file)
     if os.path.isfile(admin_cfg_path):
         import configparser as _cp
-        cfg = _cp.ConfigParser(inline_comment_prefixes=('#', ';'))
+
+        cfg = _cp.ConfigParser(inline_comment_prefixes=("#", ";"))
         cfg.read(admin_cfg_path)
         alias = cfg.get("default", "alias", fallback="myminio")
 
@@ -462,11 +486,16 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
         except Exception as e:
             print(f"  Warning: failed to remove MinIO user '{username}': {e}")
     else:
-        print(f"  Warning: admin S3 config not found at '{admin_cfg_path}', skipping S3/MinIO cleanup.")
+        print(
+            f"  Warning: admin S3 config not found at '{admin_cfg_path}', skipping S3/MinIO cleanup."
+        )
 
     # Remove user S3 config file.
     from umrs.shared.config import default_s3cfg_path
-    user_s3_cfg = os.path.expanduser(user_cfg.get("s3_configuration_file", default_s3cfg_path(username)))
+
+    user_s3_cfg = os.path.expanduser(
+        user_cfg.get("s3_configuration_file", default_s3cfg_path(username))
+    )
     if os.path.isfile(user_s3_cfg):
         os.remove(user_s3_cfg)
         print(f"==> Removed S3 config file: {user_s3_cfg}")

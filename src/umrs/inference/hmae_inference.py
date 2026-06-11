@@ -56,6 +56,7 @@ def normalize_hmae_task(task=None):
 # Model loading
 # ---------------------------------------------------------------------------
 
+
 def _load_hmae_from_config(config, device):
     """Instantiate HMAEVIT and load checkpoint weights."""
     model_cfg = config["model"]
@@ -110,8 +111,10 @@ def load_hmae_model(cfg_file, checkpoint_path):
 # Image preprocessing (S3 → quadtree patches)
 # ---------------------------------------------------------------------------
 
-def preprocess_image_from_s3(s3, bucket, s3_key, img_size=1024, in_channels=1,
-                              fixed_length=1024, patch_size=32):
+
+def preprocess_image_from_s3(
+    s3, bucket, s3_key, img_size=1024, in_channels=1, fixed_length=1024, patch_size=32
+):
     """Download image from S3, run quadtree decomposition, return patch tensors."""
     obj = s3.get_object(Bucket=bucket, Key=s3_key)
     checksum = obj["ETag"].strip('"')
@@ -132,12 +135,16 @@ def preprocess_image_from_s3(s3, bucket, s3_key, img_size=1024, in_channels=1,
         full_image = cv2.resize(full_image, (img_size, img_size))
 
     # Edge detection for quadtree
-    gray = full_image if in_channels == 1 else cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
+    gray = (
+        full_image if in_channels == 1 else cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
+    )
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 100)
 
     # Quadtree decomposition
-    engine = HierarchicalMaskedAutoEncoder(fixed_length=fixed_length, patch_size=patch_size)
+    engine = HierarchicalMaskedAutoEncoder(
+        fixed_length=fixed_length, patch_size=patch_size
+    )
     img_np = full_image[..., np.newaxis] if in_channels == 1 else full_image
     patches, coords, depths = engine.process_single(img_np, edges)
 
@@ -145,19 +152,25 @@ def preprocess_image_from_s3(s3, bucket, s3_key, img_size=1024, in_channels=1,
     if in_channels == 1:
         original = torch.from_numpy(full_image).float().unsqueeze(0) / 255.0
     else:
-        original = torch.from_numpy(cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB)).float().permute(2, 0, 1) / 255.0
+        original = (
+            torch.from_numpy(cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB))
+            .float()
+            .permute(2, 0, 1)
+            / 255.0
+        )
 
     data = {
-        "patches": patches.unsqueeze(0),        # [1, L, C, P, P]
-        "coords": coords.unsqueeze(0),          # [1, L, 4]
-        "depths": depths.unsqueeze(0),           # [1, L]
-        "original_image": original.unsqueeze(0), # [1, C, H, W]
+        "patches": patches.unsqueeze(0),  # [1, L, C, P, P]
+        "coords": coords.unsqueeze(0),  # [1, L, 4]
+        "depths": depths.unsqueeze(0),  # [1, L]
+        "original_image": original.unsqueeze(0),  # [1, C, H, W]
     }
     return data, checksum, metadata
 
 
-def preprocess_image_from_bytes(image_bytes, img_size=1024, in_channels=1,
-                                 fixed_length=1024, patch_size=32):
+def preprocess_image_from_bytes(
+    image_bytes, img_size=1024, in_channels=1, fixed_length=1024, patch_size=32
+):
     """Preprocess raw image bytes (for BentoML service path)."""
     image_array = np.frombuffer(image_bytes, np.uint8)
 
@@ -172,18 +185,27 @@ def preprocess_image_from_bytes(image_bytes, img_size=1024, in_channels=1,
     if full_image.shape[0] != img_size or full_image.shape[1] != img_size:
         full_image = cv2.resize(full_image, (img_size, img_size))
 
-    gray = full_image if in_channels == 1 else cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
+    gray = (
+        full_image if in_channels == 1 else cv2.cvtColor(full_image, cv2.COLOR_BGR2GRAY)
+    )
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 100)
 
-    engine = HierarchicalMaskedAutoEncoder(fixed_length=fixed_length, patch_size=patch_size)
+    engine = HierarchicalMaskedAutoEncoder(
+        fixed_length=fixed_length, patch_size=patch_size
+    )
     img_np = full_image[..., np.newaxis] if in_channels == 1 else full_image
     patches, coords, depths = engine.process_single(img_np, edges)
 
     if in_channels == 1:
         original = torch.from_numpy(full_image).float().unsqueeze(0) / 255.0
     else:
-        original = torch.from_numpy(cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB)).float().permute(2, 0, 1) / 255.0
+        original = (
+            torch.from_numpy(cv2.cvtColor(full_image, cv2.COLOR_BGR2RGB))
+            .float()
+            .permute(2, 0, 1)
+            / 255.0
+        )
 
     return {
         "patches": patches.unsqueeze(0),
@@ -197,6 +219,7 @@ def preprocess_image_from_bytes(image_bytes, img_size=1024, in_channels=1,
 # Inference functions (3 modes)
 # ---------------------------------------------------------------------------
 
+
 @torch.no_grad()
 def infer_reconstruct(model, data, device, config, use_bf16=True):
     """Full reconstruction: encode all patches → decode all."""
@@ -205,8 +228,11 @@ def infer_reconstruct(model, data, device, config, use_bf16=True):
     depths = data["depths"].to(device)
 
     dtype = torch.bfloat16 if use_bf16 else torch.float32
-    with autocast(device_type=device.type, dtype=dtype,
-                  enabled=(device.type != "cpu" or not use_bf16)):
+    with autocast(
+        device_type=device.type,
+        dtype=dtype,
+        enabled=(device.type != "cpu" or not use_bf16),
+    ):
         pred = model.reconstruct(patches, coords, depths)
     return pred.float().cpu()
 
@@ -219,8 +245,11 @@ def infer_mae(model, data, device, config, use_bf16=True):
     depths = data["depths"].to(device)
 
     dtype = torch.bfloat16 if use_bf16 else torch.float32
-    with autocast(device_type=device.type, dtype=dtype,
-                  enabled=(device.type != "cpu" or not use_bf16)):
+    with autocast(
+        device_type=device.type,
+        dtype=dtype,
+        enabled=(device.type != "cpu" or not use_bf16),
+    ):
         loss, pred, mask = model(patches, coords, depths)
     return pred.float().cpu(), mask.float().cpu(), loss.item()
 
@@ -233,8 +262,11 @@ def infer_features(model, data, device, config, use_bf16=True):
     depths = data["depths"].to(device)
 
     dtype = torch.bfloat16 if use_bf16 else torch.float32
-    with autocast(device_type=device.type, dtype=dtype,
-                  enabled=(device.type != "cpu" or not use_bf16)):
+    with autocast(
+        device_type=device.type,
+        dtype=dtype,
+        enabled=(device.type != "cpu" or not use_bf16),
+    ):
         features = model.encode(patches, coords, depths)
     return features.float().cpu()
 
@@ -242,6 +274,7 @@ def infer_features(model, data, device, config, use_bf16=True):
 # ---------------------------------------------------------------------------
 # Visualization
 # ---------------------------------------------------------------------------
+
 
 def visualize_reconstruction(data, pred, config, mask=None, loss=None):
     """Render side-by-side: Original | Quadtree Grid | Reconstruction → PNG bytes."""
@@ -296,7 +329,12 @@ def visualize_reconstruction(data, pred, config, mask=None, loss=None):
             else:
                 canvas_recon[y1:y2, x1:x2] = resized_t
         else:
-            r_patch = recon_flat[i].view(in_channels, patch_size, patch_size).permute(1, 2, 0).numpy()
+            r_patch = (
+                recon_flat[i]
+                .view(in_channels, patch_size, patch_size)
+                .permute(1, 2, 0)
+                .numpy()
+            )
             if in_channels == 1:
                 r_patch = r_patch.squeeze()
             if norm_pix_loss:
@@ -320,9 +358,12 @@ def visualize_reconstruction(data, pred, config, mask=None, loss=None):
         title_str += f" | Loss: {loss:.6f}"
     fig.suptitle(title_str, fontsize=14)
 
-    for ax, canvas, title in zip(axes,
-                                  [canvas_orig, canvas_qdt, canvas_recon],
-                                  ["Original", "Quadtree Grid", "Reconstruction"], strict=False):
+    for ax, canvas, title in zip(
+        axes,
+        [canvas_orig, canvas_qdt, canvas_recon],
+        ["Original", "Quadtree Grid", "Reconstruction"],
+        strict=False,
+    ):
         if in_channels == 1:
             ax.imshow(canvas, cmap="gray", vmin=0, vmax=1)
         else:
@@ -346,7 +387,16 @@ def _upload_png_to_s3(s3, bucket, key, png_bytes):
 # UMRS compute pipeline (for embedding worker / model_loading integration)
 # ---------------------------------------------------------------------------
 
-def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, task="reconstruction", skip_existing=True):
+
+def compute_hmae_inference(
+    self,
+    s3,
+    s3_keys,
+    path_to_bucket,
+    output_bucket,
+    task="reconstruction",
+    skip_existing=True,
+):
     """Main UMRS pipeline: process images from S3 through HMAE inference.
 
     Args:
@@ -371,7 +421,9 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
     if device.type == "cpu":
         use_bf16 = False
 
-    exts = config["input"].get("img_extensions", [".png", ".jpg", ".jpeg", ".tif", ".tiff"])
+    exts = config["input"].get(
+        "img_extensions", [".png", ".jpg", ".jpeg", ".tif", ".tiff"]
+    )
     filtered_keys = [k for k in s3_keys if any(k.lower().endswith(ext) for ext in exts)]
 
     saved_keys = []
@@ -380,7 +432,9 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
     metadata_list = []
 
     for idx, s3_key in enumerate(filtered_keys):
-        logger.info("[%d/%d] Processing %s (task=%s)", idx + 1, len(filtered_keys), s3_key, task)
+        logger.info(
+            "[%d/%d] Processing %s (task=%s)", idx + 1, len(filtered_keys), s3_key, task
+        )
 
         base = os.path.splitext(s3_key)[0]
 
@@ -398,8 +452,13 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
         if skip_existing and output_bucket and expected_out_key:
             try:
                 s3.head_object(Bucket=output_bucket, Key=expected_out_key)
-                logger.info("[%d/%d] Skipping %s — output already exists in %s",
-                            idx + 1, len(filtered_keys), s3_key, output_bucket)
+                logger.info(
+                    "[%d/%d] Skipping %s — output already exists in %s",
+                    idx + 1,
+                    len(filtered_keys),
+                    s3_key,
+                    output_bucket,
+                )
                 obj = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
                 checksums.append(obj["ETag"].strip('"'))
                 metadata_list.append(obj.get("Metadata", {}))
@@ -410,7 +469,9 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
                 pass  # Output does not exist, proceed with computation
 
         data, checksum, metadata = preprocess_image_from_s3(
-            s3, path_to_bucket, s3_key,
+            s3,
+            path_to_bucket,
+            s3_key,
             img_size=model_cfg["img_size"],
             in_channels=model_cfg.get("in_channels", 1),
             fixed_length=model_cfg.get("fixed_length", 1024),
@@ -430,7 +491,9 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
             pred, mask, loss = infer_mae(model, data, device, config, use_bf16)
             logger.info("  MAE loss: %.6f", loss)
             saved_key = f"{base}_mae.png"
-            png_bytes = visualize_reconstruction(data, pred, config, mask=mask, loss=loss)
+            png_bytes = visualize_reconstruction(
+                data, pred, config, mask=mask, loss=loss
+            )
             _upload_png_to_s3(s3, output_bucket, saved_key, png_bytes)
             embedding = None
 
@@ -438,10 +501,15 @@ def compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, tas
             features = infer_features(model, data, device, config, use_bf16)
             cls_token = features[:, 0, :]
             patch_tokens = features[:, 1:, :]
-            logger.info("  CLS token: %s, Patch tokens: %s", cls_token.shape, patch_tokens.shape)
+            logger.info(
+                "  CLS token: %s, Patch tokens: %s", cls_token.shape, patch_tokens.shape
+            )
             saved_key = f"{base}_features.pt"
             buffer = io.BytesIO()
-            torch.save({"cls": cls_token, "patches": patch_tokens, "coords": data["coords"]}, buffer)
+            torch.save(
+                {"cls": cls_token, "patches": patch_tokens, "coords": data["coords"]},
+                buffer,
+            )
             buffer.seek(0)
             s3.put_object(Bucket=output_bucket, Key=saved_key, Body=buffer.getvalue())
             embedding = cls_token
@@ -470,6 +538,14 @@ def make_hmae_compute_func(modality, cfg_file, task=None):
     resolved_task = normalize_hmae_task(task)
 
     def func(self, s3, s3_keys, path_to_bucket, output_bucket, skip_existing=True):
-        return compute_hmae_inference(self, s3, s3_keys, path_to_bucket, output_bucket, resolved_task, skip_existing=skip_existing)
+        return compute_hmae_inference(
+            self,
+            s3,
+            s3_keys,
+            path_to_bucket,
+            output_bucket,
+            resolved_task,
+            skip_existing=skip_existing,
+        )
 
     return func

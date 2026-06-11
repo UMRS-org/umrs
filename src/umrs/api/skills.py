@@ -37,7 +37,9 @@ class SkillRegisterRequest(BaseModel):
     manifest: dict[str, Any] = Field(..., description="Skill manifest/config.json")
     skill_md: str = Field(default="", description="SKILL.md content")
     scope: str = Field(default="user", description="system, project, or user")
-    project_id: str | None = Field(default=None, description="Owning project for project skills")
+    project_id: str | None = Field(
+        default=None, description="Owning project for project skills"
+    )
 
 
 class SkillResponse(BaseModel):
@@ -149,7 +151,9 @@ async def search_skills(
 ) -> list[SkillResponse]:
     """Search skills visible to the authenticated caller."""
     registry = _get_registry()
-    matches = [skill for skill in registry.search(q, limit=limit) if _is_visible(skill, caller)]
+    matches = [
+        skill for skill in registry.search(q, limit=limit) if _is_visible(skill, caller)
+    ]
     return [_skill_response(skill) for skill in matches[:limit]]
 
 
@@ -162,7 +166,9 @@ async def register_skill(
     """Register a skill bundle in the UMRS registry."""
     scope = _resolve_scope(request.scope)
     if scope == SkillScope.SYSTEM and not caller.is_admin:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="admin required"
+        )
     if scope == SkillScope.PROJECT:
         project_id = request.project_id or caller.project_id
     elif scope == SkillScope.SYSTEM:
@@ -180,7 +186,9 @@ async def register_skill(
             project_id=project_id,
         )
     except SkillValidationError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
     return _skill_response(skill)
 
 
@@ -191,7 +199,10 @@ async def get_skill(
 ) -> SkillResponse:
     """Get a visible skill by ID or manifest name."""
     for skill in _visible_skills(caller):
-        if skill.skill_id == skill_id_or_name or skill.manifest.name == skill_id_or_name:
+        if (
+            skill.skill_id == skill_id_or_name
+            or skill.manifest.name == skill_id_or_name
+        ):
             return _skill_response(skill)
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -207,7 +218,10 @@ async def unregister_skill(
     """Unregister a skill by ID or manifest name."""
     target: RegisteredSkill | None = None
     for skill in _visible_skills(caller):
-        if skill.skill_id == skill_id_or_name or skill.manifest.name == skill_id_or_name:
+        if (
+            skill.skill_id == skill_id_or_name
+            or skill.manifest.name == skill_id_or_name
+        ):
             target = skill
             break
     if target is None:
@@ -216,6 +230,8 @@ async def unregister_skill(
             detail=f"Skill not found: {skill_id_or_name}",
         )
     if not caller.is_admin and target.owner_id != caller.user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="owner or admin required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="owner or admin required"
+        )
     _get_registry().unregister(target.skill_id)
     return {"status": "unregistered", "skill_id": target.skill_id}

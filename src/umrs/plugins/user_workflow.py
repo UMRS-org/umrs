@@ -53,6 +53,7 @@ logger = logging.getLogger(__name__)
 # UserWorkflow — superset dataclass
 # =========================================================================
 
+
 @dataclass
 class UserWorkflow:
     """Unified workflow specification.
@@ -158,6 +159,7 @@ class UserWorkflow:
 # UserWorkflowRunner — orchestrator
 # =========================================================================
 
+
 class UserWorkflowRunner:
     """Execute a :class:`UserWorkflow` using the configured backend.
 
@@ -212,7 +214,10 @@ class UserWorkflowRunner:
         run_id = uuid.uuid4().hex[:12]
         logger.info(
             "UserWorkflowRunner[in_process] '%s' run=%s: %d steps, %d keys",
-            self.workflow.name, run_id, len(steps), len(s3_keys),
+            self.workflow.name,
+            run_id,
+            len(steps),
+            len(s3_keys),
         )
 
         current_keys = list(s3_keys)
@@ -223,15 +228,20 @@ class UserWorkflowRunner:
         last_checksums: list[str] = []
         last_metadata: list[dict[str, Any]] = []
 
-        for idx, (step, spec) in enumerate(zip(steps, self.workflow.steps, strict=False)):
+        for idx, (step, spec) in enumerate(
+            zip(steps, self.workflow.steps, strict=False)
+        ):
             # Keep all step outputs in the workflow output bucket so
             # intermediate artifacts do not retrigger the watched input bucket.
             step_output_bucket = output_bucket
 
             logger.info(
                 "  step %d/%d [%s]: %d keys → bucket=%s",
-                idx + 1, len(steps), spec.name,
-                len(current_keys), step_output_bucket,
+                idx + 1,
+                len(steps),
+                spec.name,
+                len(current_keys),
+                step_output_bucket,
             )
 
             ctx = StepContext(
@@ -260,8 +270,9 @@ class UserWorkflowRunner:
             try:
                 step.teardown()
             except Exception:
-                logger.warning("teardown failed for step '%s'", step.name,
-                               exc_info=True)
+                logger.warning(
+                    "teardown failed for step '%s'", step.name, exc_info=True
+                )
 
         # Cleanup staging
         self._cleanup_staging(s3, input_bucket, run_id)
@@ -273,16 +284,21 @@ class UserWorkflowRunner:
             last_metadata = self._collect_metadata(s3, input_bucket, s3_keys)
 
         embeddings_list: list[Any] = (
-            list(last_embeddings) if last_embeddings is not None
+            list(last_embeddings)
+            if last_embeddings is not None
             else [None] * len(s3_keys)
         )
         saved_keys: list[str | None] = (
-            list(current_keys) if current_keys != list(s3_keys)
+            list(current_keys)
+            if current_keys != list(s3_keys)
             else [None] * len(s3_keys)
         )
 
-        logger.info("UserWorkflowRunner[in_process] '%s' run=%s complete.",
-                     self.workflow.name, run_id)
+        logger.info(
+            "UserWorkflowRunner[in_process] '%s' run=%s complete.",
+            self.workflow.name,
+            run_id,
+        )
         return embeddings_list, last_checksums, last_metadata, saved_keys
 
     # ── Subprocess execution ─────────────────────────────────────────────
@@ -327,16 +343,17 @@ class UserWorkflowRunner:
         run_id = uuid.uuid4().hex[:12]
         logger.info(
             "UserWorkflowRunner[slurm] '%s' run=%s: %d steps, %d keys",
-            self.workflow.name, run_id, len(self.workflow.steps), len(s3_keys),
+            self.workflow.name,
+            run_id,
+            len(self.workflow.steps),
+            len(s3_keys),
         )
 
         wf_def = self.workflow.to_workflow_definition()
         script_dir = str(_resolve_source(wf_def, s3))
 
         runner = SlurmPluginRunner(
-            partition=self.workflow.resources.extra.get(
-                "slurm_partition", "a100"
-            ),
+            partition=self.workflow.resources.extra.get("slurm_partition", "a100"),
         )
 
         current_keys = list(s3_keys)
@@ -351,7 +368,9 @@ class UserWorkflowRunner:
 
             logger.info(
                 "  [slurm] step %d/%d [%s]: submitting job",
-                idx + 1, len(self.workflow.steps), spec.name,
+                idx + 1,
+                len(self.workflow.steps),
+                spec.name,
             )
 
             plugin_spec = step_to_plugin_spec(
@@ -393,16 +412,22 @@ class UserWorkflowRunner:
                 if manifest.get("metadata"):
                     last_metadata = manifest["metadata"]
 
-            logger.info("  [slurm] step %d/%d [%s]: completed", idx + 1,
-                        len(self.workflow.steps), spec.name)
+            logger.info(
+                "  [slurm] step %d/%d [%s]: completed",
+                idx + 1,
+                len(self.workflow.steps),
+                spec.name,
+            )
 
         # Build return tuple
         embeddings_list: list[Any] = (
-            list(last_embeddings) if last_embeddings is not None
+            list(last_embeddings)
+            if last_embeddings is not None
             else [None] * len(s3_keys)
         )
         saved_keys: list[str | None] = (
-            list(current_keys) if current_keys != list(s3_keys)
+            list(current_keys)
+            if current_keys != list(s3_keys)
             else [None] * len(s3_keys)
         )
 
@@ -429,16 +454,17 @@ class UserWorkflowRunner:
         run_id = uuid.uuid4().hex[:12]
         logger.info(
             "UserWorkflowRunner[k8s] '%s' run=%s: %d steps, %d keys",
-            self.workflow.name, run_id, len(self.workflow.steps), len(s3_keys),
+            self.workflow.name,
+            run_id,
+            len(self.workflow.steps),
+            len(s3_keys),
         )
 
         wf_def = self.workflow.to_workflow_definition()
         script_dir = str(_resolve_source(wf_def, s3))
 
         runner = K8sPluginRunner(
-            namespace=self.workflow.resources.extra.get(
-                "k8s_namespace", "umrs"
-            ),
+            namespace=self.workflow.resources.extra.get("k8s_namespace", "umrs"),
         )
 
         current_keys = list(s3_keys)
@@ -453,7 +479,9 @@ class UserWorkflowRunner:
 
             logger.info(
                 "  [k8s] step %d/%d [%s]: submitting job",
-                idx + 1, len(self.workflow.steps), spec.name,
+                idx + 1,
+                len(self.workflow.steps),
+                spec.name,
             )
 
             plugin_spec = step_to_plugin_spec(
@@ -495,16 +523,22 @@ class UserWorkflowRunner:
                 if manifest.get("metadata"):
                     last_metadata = manifest["metadata"]
 
-            logger.info("  [k8s] step %d/%d [%s]: completed", idx + 1,
-                        len(self.workflow.steps), spec.name)
+            logger.info(
+                "  [k8s] step %d/%d [%s]: completed",
+                idx + 1,
+                len(self.workflow.steps),
+                spec.name,
+            )
 
         # Build return tuple
         embeddings_list: list[Any] = (
-            list(last_embeddings) if last_embeddings is not None
+            list(last_embeddings)
+            if last_embeddings is not None
             else [None] * len(s3_keys)
         )
         saved_keys: list[str | None] = (
-            list(current_keys) if current_keys != list(s3_keys)
+            list(current_keys)
+            if current_keys != list(s3_keys)
             else [None] * len(s3_keys)
         )
 
@@ -540,7 +574,8 @@ class UserWorkflowRunner:
 
     @staticmethod
     def _read_step_manifest(
-        work_dir: Path, plugin_id: str,
+        work_dir: Path,
+        plugin_id: str,
     ) -> dict[str, Any] | None:
         """Read result_manifest.json written by the in-container step executor.
 
@@ -568,7 +603,9 @@ class UserWorkflowRunner:
 
     @staticmethod
     def _collect_checksums(
-        s3: Any, bucket: str, keys: list[str],
+        s3: Any,
+        bucket: str,
+        keys: list[str],
     ) -> list[str]:
         checksums = []
         for key in keys:
@@ -581,7 +618,9 @@ class UserWorkflowRunner:
 
     @staticmethod
     def _collect_metadata(
-        s3: Any, bucket: str, keys: list[str],
+        s3: Any,
+        bucket: str,
+        keys: list[str],
     ) -> list[dict[str, Any]]:
         meta = []
         for key in keys:
@@ -594,7 +633,9 @@ class UserWorkflowRunner:
 
     @staticmethod
     def _cleanup_staging(
-        s3: Any | None, bucket: str, run_id: str,
+        s3: Any | None,
+        bucket: str,
+        run_id: str,
     ) -> None:
         """Delete intermediate staging objects for this run."""
         if s3 is None or not bucket:
@@ -613,5 +654,4 @@ class UserWorkflowRunner:
                     Delete={"Objects": batch, "Quiet": True},
                 )
         except Exception:
-            logger.debug("Staging cleanup failed for run=%s", run_id,
-                         exc_info=True)
+            logger.debug("Staging cleanup failed for run=%s", run_id, exc_info=True)

@@ -83,10 +83,30 @@ def test_handle_list_filters_models_by_visibility(tmp_path, monkeypatch):
         {
             "models": [
                 {"name": "sys", "scope": "system", "storage_ref": "/models/sys"},
-                {"name": "mine", "scope": "user", "owner_id": "alice", "storage_ref": "/shared/users/alice/models/mine"},
-                {"name": "other", "scope": "user", "owner_id": "bob", "storage_ref": "/shared/users/bob/models/other"},
-                {"name": "team", "scope": "project", "project_id": "proj-123", "storage_ref": "/shared/projects/proj-123/models/team"},
-                {"name": "secret-team", "scope": "project", "project_id": "proj-999", "storage_ref": "/shared/projects/proj-999/models/secret"},
+                {
+                    "name": "mine",
+                    "scope": "user",
+                    "owner_id": "alice",
+                    "storage_ref": "/shared/users/alice/models/mine",
+                },
+                {
+                    "name": "other",
+                    "scope": "user",
+                    "owner_id": "bob",
+                    "storage_ref": "/shared/users/bob/models/other",
+                },
+                {
+                    "name": "team",
+                    "scope": "project",
+                    "project_id": "proj-123",
+                    "storage_ref": "/shared/projects/proj-123/models/team",
+                },
+                {
+                    "name": "secret-team",
+                    "scope": "project",
+                    "project_id": "proj-999",
+                    "storage_ref": "/shared/projects/proj-999/models/secret",
+                },
             ]
         }
     )
@@ -108,7 +128,9 @@ def test_handle_model_command_prefers_backend_for_list():
 
     backend = DummyBackend()
 
-    result = json.loads(handler.handle_model_command(TaskCmd.MODEL_LIST, "alice", "{}", backend=backend))
+    result = json.loads(
+        handler.handle_model_command(TaskCmd.MODEL_LIST, "alice", "{}", backend=backend)
+    )
 
     assert result["status"] == "ok"
     assert result["models"] == [{"name": "shared-model"}]

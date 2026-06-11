@@ -32,13 +32,13 @@ logger = logging.getLogger(__name__)
 class AllocationStatus(Enum):
     """Status of a resource allocation."""
 
-    PENDING = "pending"      # Waiting for resources
+    PENDING = "pending"  # Waiting for resources
     ALLOCATED = "allocated"  # Resources granted, ready for container
-    RUNNING = "running"      # Container launched
+    RUNNING = "running"  # Container launched
     COMPLETED = "completed"  # Job finished successfully
-    FAILED = "failed"        # Allocation failed
+    FAILED = "failed"  # Allocation failed
     CANCELLED = "cancelled"  # User cancelled
-    UNKNOWN = "unknown"      # Cannot determine status
+    UNKNOWN = "unknown"  # Cannot determine status
 
 
 @dataclass
@@ -50,8 +50,8 @@ class AllocationInfo:
     RuntimeWrapper.launch() to start the container.
     """
 
-    job_id: str                     # Backend-specific job ID
-    node: str                       # Allocated node hostname
+    job_id: str  # Backend-specific job ID
+    node: str  # Allocated node hostname
     status: AllocationStatus
     allocated_at: datetime | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -214,10 +214,15 @@ class ExecutionTarget(ABC):
         while True:
             info = await self.status(job_id)
 
-            if info.status == AllocationStatus.ALLOCATED or info.status == AllocationStatus.RUNNING:
+            if (
+                info.status == AllocationStatus.ALLOCATED
+                or info.status == AllocationStatus.RUNNING
+            ):
                 return info
             elif info.status in (AllocationStatus.FAILED, AllocationStatus.CANCELLED):
-                raise RuntimeError(f"Job {job_id} failed during allocation: {info.status}")
+                raise RuntimeError(
+                    f"Job {job_id} failed during allocation: {info.status}"
+                )
 
             elapsed = (datetime.now() - start).total_seconds()
             if elapsed > timeout_sec:
@@ -228,6 +233,7 @@ class ExecutionTarget(ABC):
 
 class SubmissionError(Exception):
     """Error during job submission."""
+
     pass
 
 
@@ -319,7 +325,8 @@ class SlurmTarget(ExecutionTarget):
         """Cancel job via scancel."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "scancel", job_id,
+                "scancel",
+                job_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -378,11 +385,13 @@ class SlurmTarget(ExecutionTarget):
                         if not match:
                             continue
 
-                    jobs.append(AllocationInfo(
-                        job_id=job_id,
-                        node=node,
-                        status=self._parse_slurm_state(state),
-                    ))
+                    jobs.append(
+                        AllocationInfo(
+                            job_id=job_id,
+                            node=node,
+                            status=self._parse_slurm_state(state),
+                        )
+                    )
 
             return jobs
 
@@ -427,12 +436,14 @@ class SlurmTarget(ExecutionTarget):
 
         # Output files
         log_dir = spec.extra.get("log_dir", "/var/log/rivault")
-        lines.extend([
-            f"#SBATCH --output={log_dir}/job-%j.out",
-            f"#SBATCH --error={log_dir}/job-%j.err",
-            "",
-            "# Attribution environment — propagated into container",
-        ])
+        lines.extend(
+            [
+                f"#SBATCH --output={log_dir}/job-%j.out",
+                f"#SBATCH --error={log_dir}/job-%j.err",
+                "",
+                "# Attribution environment — propagated into container",
+            ]
+        )
 
         # Export attribution env vars for container-level auditing
         if spec.requesting_user:
@@ -442,40 +453,44 @@ class SlurmTarget(ExecutionTarget):
         if spec.requesting_session:
             lines.append(f'export UMRS_SESSION="{spec.requesting_session}"')
 
-        lines.extend([
-            "",
-            "# Write allocation info for discovery",
-            f"INFO_DIR={self.job_info_dir}",
-            'mkdir -p "$INFO_DIR"',
-            'INFO_FILE="$INFO_DIR/rivault-$SLURM_JOB_ID.json"',
-            "",
-            "# Signal that allocation is ready",
-            'cat > "$INFO_FILE" << EOF',
-            '{',
-            '  "job_id": "$SLURM_JOB_ID",',
-            '  "node": "$SLURMD_NODENAME",',
-            '  "status": "allocated",',
-            '  "gpus": ' + str(spec.gpus) + ',',
-            '  "cpus": ' + str(spec.cpus) + ',',
-            '  "user": "' + (spec.requesting_user or "unknown") + '",',
-            '  "project": "' + (spec.requesting_project or "") + '",',
-            '  "allocated_at": "$(date -Iseconds)"',
-            '}',
-            'EOF',
-            "",
-            "# Wait for container to finish (or job timeout)",
-            "# RuntimeWrapper will handle actual container launch",
-            "while [ -f $INFO_FILE ]; do",
-            "    sleep 10",
-            "done",
-        ])
+        lines.extend(
+            [
+                "",
+                "# Write allocation info for discovery",
+                f"INFO_DIR={self.job_info_dir}",
+                'mkdir -p "$INFO_DIR"',
+                'INFO_FILE="$INFO_DIR/rivault-$SLURM_JOB_ID.json"',
+                "",
+                "# Signal that allocation is ready",
+                'cat > "$INFO_FILE" << EOF',
+                "{",
+                '  "job_id": "$SLURM_JOB_ID",',
+                '  "node": "$SLURMD_NODENAME",',
+                '  "status": "allocated",',
+                '  "gpus": ' + str(spec.gpus) + ",",
+                '  "cpus": ' + str(spec.cpus) + ",",
+                '  "user": "' + (spec.requesting_user or "unknown") + '",',
+                '  "project": "' + (spec.requesting_project or "") + '",',
+                '  "allocated_at": "$(date -Iseconds)"',
+                "}",
+                "EOF",
+                "",
+                "# Wait for container to finish (or job timeout)",
+                "# RuntimeWrapper will handle actual container launch",
+                "while [ -f $INFO_FILE ]; do",
+                "    sleep 10",
+                "done",
+            ]
+        )
 
         return "\n".join(lines)
 
     async def _run_sbatch(self, script_path: str) -> str:
         """Run sbatch and return job ID."""
         proc = await asyncio.create_subprocess_exec(
-            "sbatch", "--parsable", script_path,
+            "sbatch",
+            "--parsable",
+            script_path,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -495,7 +510,8 @@ class SlurmTarget(ExecutionTarget):
                 "squeue",
                 "--noheader",
                 "--format=%i|%T|%N|%C|%m",
-                "--job", job_id,
+                "--job",
+                job_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -526,7 +542,8 @@ class SlurmTarget(ExecutionTarget):
                 "--noheader",
                 "--format=JobID,State,NodeList",
                 "--parsable2",
-                "--jobs", job_id,
+                "--jobs",
+                job_id,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -591,7 +608,9 @@ class K8sTarget(ExecutionTarget):
             kubeconfig: Path to kubeconfig file.
         """
         self.namespace = namespace or os.getenv("K8S_NAMESPACE", "rivault-system")
-        self.gpu_resource = gpu_resource or os.getenv("K8S_GPU_RESOURCE", "nvidia.com/gpu")
+        self.gpu_resource = gpu_resource or os.getenv(
+            "K8S_GPU_RESOURCE", "nvidia.com/gpu"
+        )
         self.kubeconfig = kubeconfig or os.getenv("KUBECONFIG")
 
     @property
@@ -613,8 +632,12 @@ class K8sTarget(ExecutionTarget):
         try:
             # Apply via kubectl
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "apply", "-f", "-",
-                "--namespace", self.namespace,
+                "kubectl",
+                "apply",
+                "-f",
+                "-",
+                "--namespace",
+                self.namespace,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -642,8 +665,12 @@ class K8sTarget(ExecutionTarget):
         """Delete K8s Job."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "delete", "job", job_id,
-                "--namespace", self.namespace,
+                "kubectl",
+                "delete",
+                "job",
+                job_id,
+                "--namespace",
+                self.namespace,
                 "--ignore-not-found",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -658,9 +685,14 @@ class K8sTarget(ExecutionTarget):
         """Get Job status via kubectl."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "get", "job", job_id,
-                "--namespace", self.namespace,
-                "-o", "json",
+                "kubectl",
+                "get",
+                "job",
+                job_id,
+                "--namespace",
+                self.namespace,
+                "-o",
+                "json",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -700,9 +732,13 @@ class K8sTarget(ExecutionTarget):
         """List Jobs with optional label selector."""
         try:
             cmd = [
-                "kubectl", "get", "jobs",
-                "--namespace", self.namespace,
-                "-o", "json",
+                "kubectl",
+                "get",
+                "jobs",
+                "--namespace",
+                self.namespace,
+                "-o",
+                "json",
             ]
 
             if labels:
@@ -725,11 +761,13 @@ class K8sTarget(ExecutionTarget):
             for item in data.get("items", []):
                 job_id = item["metadata"]["name"]
                 status = self._parse_job_status(item)
-                jobs.append(AllocationInfo(
-                    job_id=job_id,
-                    node="",
-                    status=status,
-                ))
+                jobs.append(
+                    AllocationInfo(
+                        job_id=job_id,
+                        node="",
+                        status=status,
+                    )
+                )
 
             return jobs
 
@@ -761,23 +799,25 @@ class K8sTarget(ExecutionTarget):
                     "metadata": {"labels": labels},
                     "spec": {
                         "restartPolicy": "Never",
-                        "containers": [{
-                            "name": "placeholder",
-                            "image": "busybox",
-                            "command": ["sleep", "infinity"],
-                            "resources": {
-                                "requests": {
-                                    "cpu": str(spec.cpus),
-                                    "memory": f"{spec.memory_mb}Mi",
-                                    self.gpu_resource: str(spec.gpus),
+                        "containers": [
+                            {
+                                "name": "placeholder",
+                                "image": "busybox",
+                                "command": ["sleep", "infinity"],
+                                "resources": {
+                                    "requests": {
+                                        "cpu": str(spec.cpus),
+                                        "memory": f"{spec.memory_mb}Mi",
+                                        self.gpu_resource: str(spec.gpus),
+                                    },
+                                    "limits": {
+                                        "cpu": str(spec.cpus),
+                                        "memory": f"{spec.memory_mb}Mi",
+                                        self.gpu_resource: str(spec.gpus),
+                                    },
                                 },
-                                "limits": {
-                                    "cpu": str(spec.cpus),
-                                    "memory": f"{spec.memory_mb}Mi",
-                                    self.gpu_resource: str(spec.gpus),
-                                },
-                            },
-                        }],
+                            }
+                        ],
                     },
                 },
             },
@@ -796,7 +836,10 @@ class K8sTarget(ExecutionTarget):
 
         # Check conditions
         for condition in status.get("conditions", []):
-            if condition.get("type") == "Complete" and condition.get("status") == "True":
+            if (
+                condition.get("type") == "Complete"
+                and condition.get("status") == "True"
+            ):
                 return AllocationStatus.COMPLETED
             if condition.get("type") == "Failed" and condition.get("status") == "True":
                 return AllocationStatus.FAILED
@@ -807,10 +850,15 @@ class K8sTarget(ExecutionTarget):
         """Get node name from Job's pod."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "kubectl", "get", "pods",
-                "--namespace", self.namespace,
-                "--selector", f"job-name={job_name}",
-                "-o", "jsonpath={.items[0].spec.nodeName}",
+                "kubectl",
+                "get",
+                "pods",
+                "--namespace",
+                self.namespace,
+                "--selector",
+                f"job-name={job_name}",
+                "-o",
+                "jsonpath={.items[0].spec.nodeName}",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -847,7 +895,9 @@ class ComposeTarget(ExecutionTarget):
             compose_file: Path to compose file.
             work_dir: Working directory for compose commands.
         """
-        self.project_name = project_name or os.getenv("COMPOSE_PROJECT_NAME", "mini-rivault")
+        self.project_name = project_name or os.getenv(
+            "COMPOSE_PROJECT_NAME", "mini-rivault"
+        )
         self.compose_file = compose_file or os.getenv("COMPOSE_FILE", "compose.yaml")
         self.work_dir = work_dir or os.getcwd()
 
@@ -879,9 +929,12 @@ class ComposeTarget(ExecutionTarget):
         """Stop compose project."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "compose",
-                "-p", self.project_name,
-                "-f", self.compose_file,
+                "docker",
+                "compose",
+                "-p",
+                self.project_name,
+                "-f",
+                self.compose_file,
                 "down",
                 cwd=self.work_dir,
                 stdout=asyncio.subprocess.PIPE,
@@ -897,10 +950,15 @@ class ComposeTarget(ExecutionTarget):
         """Check if compose services are running."""
         try:
             proc = await asyncio.create_subprocess_exec(
-                "docker", "compose",
-                "-p", self.project_name,
-                "-f", self.compose_file,
-                "ps", "--format", "json",
+                "docker",
+                "compose",
+                "-p",
+                self.project_name,
+                "-f",
+                self.compose_file,
+                "ps",
+                "--format",
+                "json",
                 cwd=self.work_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -929,15 +987,14 @@ class ComposeTarget(ExecutionTarget):
                 )
 
             # Check if all services are running
-            all_running = all(
-                s.get("State") == "running"
-                for s in services
-            )
+            all_running = all(s.get("State") == "running" for s in services)
 
             return AllocationInfo(
                 job_id=job_id,
                 node="localhost",
-                status=AllocationStatus.RUNNING if all_running else AllocationStatus.PENDING,
+                status=AllocationStatus.RUNNING
+                if all_running
+                else AllocationStatus.PENDING,
             )
 
         except Exception as e:
