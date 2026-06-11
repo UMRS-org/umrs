@@ -92,6 +92,10 @@ from .service import (
     ProvisionResult,
     get_orchestration_service,
 )
+from .autoscaler import (
+    AutoscalePolicy,
+    PoolAutoscaler,
+)
 from .site_config import (
     SiteConfig,
     get_site_config,
@@ -152,4 +156,7 @@ __all__ = [
     "get_site_config",
     "load_site_config",
     "reset_site_config",
+    # Autoscaler
+    "AutoscalePolicy",
+    "PoolAutoscaler",
 ]

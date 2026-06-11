@@ -47,7 +47,7 @@ _ROSTER_FIELDS = (
 
 # Cache keyed by the resolved roster path tuple; invalidated when any file's
 # mtime changes so operators can edit the roster without restarting UMRS.
-_cache: dict[tuple[str, ...], tuple[tuple[float, ...], dict[str, dict[str, Any]]]] = {}
+_cache: dict[tuple[str, ...], tuple[tuple[float, ...], dict[tuple[str, str | None], dict[str, Any]]]] = {}
 
 
 def _roster_paths() -> list[str]:
@@ -86,17 +86,27 @@ def _parse_roster(path: str) -> list[dict[str, Any]]:
     return merged
 
 
-def _build_index(paths: list[str]) -> dict[str, dict[str, Any]]:
-    """Build a ``model`` → sizing-defaults map across all roster files.
+def _build_index(paths: list[str]) -> dict[tuple[str, str | None], dict[str, Any]]:
+    """Build a ``(model, variant)`` → sizing-defaults map across all roster files.
 
-    First entry per model wins (canonical sizing). Later files/entries do not
-    override an already-seen model, keeping behaviour deterministic.
+    First entry per ``(model, variant)`` wins (canonical sizing). Later
+    files/entries do not override an already-seen key, keeping behaviour
+    deterministic.
+
+    The variant is derived from the entry's ``name`` field if present.
+    Entries without a ``name`` use ``variant=None`` (the default variant).
     """
-    index: dict[str, dict[str, Any]] = {}
+    index: dict[tuple[str, str | None], dict[str, Any]] = {}
     for path in paths:
         for entry in _parse_roster(path):
             model = str(entry["model"])
-            if model in index:
+            variant = entry.get("name")  # variant = pool YAML entry name
+            if isinstance(variant, str) and variant:
+                variant = variant
+            else:
+                variant = None
+            key = (model, variant)
+            if key in index:
                 continue
             defaults: dict[str, Any] = {}
             for field in _ROSTER_FIELDS:
@@ -105,11 +115,11 @@ def _build_index(paths: list[str]) -> dict[str, dict[str, Any]]:
             env_vars = entry.get("env_vars")
             if isinstance(env_vars, dict) and env_vars:
                 defaults["env_vars"] = {str(k): str(v) for k, v in env_vars.items()}
-            index[model] = defaults
+            index[key] = defaults
     return index
 
 
-def _load_index() -> dict[str, dict[str, Any]]:
+def _load_index() -> dict[tuple[str, str | None], dict[str, Any]]:
     paths = _roster_paths()
     if not paths:
         return {}
@@ -125,15 +135,22 @@ def _load_index() -> dict[str, dict[str, Any]]:
     _cache[key] = (mtimes, index)
     if index:
         logger.info(
-            "Loaded provision roster (%d models) from %s",
+            "Loaded provision roster (%d entries) from %s",
             len(index),
             os.pathsep.join(paths),
         )
     return index
 
 
-def resolve_model_provision_defaults(model: str) -> dict[str, Any] | None:
-    """Return roster sizing defaults for ``model`` or ``None`` if unlisted.
+def resolve_model_provision_defaults(
+    model: str,
+    variant: str | None = None,
+) -> dict[str, Any] | None:
+    """Return roster sizing defaults for ``model`` (and optional ``variant``).
+
+    Lookup order:
+    1. Exact ``(model, variant)`` match
+    2. ``(model, None)`` fallback (default variant for this model)
 
     The returned mapping may contain any of: ``partition``, ``node_count``,
     ``gpu_count``, ``max_model_len``, ``ttl_sec``, ``tier``,
@@ -141,5 +158,12 @@ def resolve_model_provision_defaults(model: str) -> dict[str, Any] | None:
     the corresponding request field is still at its default.
     """
     index = _load_index()
-    entry = index.get(model)
-    return dict(entry) if entry else None
+    # 1. Exact variant match
+    entry = index.get((model, variant))
+    if entry:
+        return dict(entry)
+    # 2. Default variant fallback
+    entry = index.get((model, None))
+    if entry:
+        return dict(entry)
+    return None
