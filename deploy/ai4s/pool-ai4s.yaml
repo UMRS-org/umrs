@@ -116,7 +116,7 @@ endpoints:
   # TTFT ~10× higher than autoregressive (489ms vs 53ms) but 1.9× output TPS.
 
   - name: diffusiongemma-26b
-    model: google/diffusiongemma-26B-A4B-it
+    model: diffusiongemma-26B-A4B-it   # registered UMRS name (HF: google/diffusiongemma-26B-A4B-it)
     tier: system
     gpu_count: 1           # BF16 ~50 GiB + diffusion buffers fits B200 (173.2 GiB)
     node_count: 1
@@ -142,7 +142,7 @@ endpoints:
   # Generation params: temperature=0.6, top_p=0.95, top_k=20, min_p=0.
 
   - name: gpt-oss-swallow-120b
-    model: tokyotech-llm/GPT-OSS-Swallow-120B-RL-v0.1-MXFP4
+    model: GPT-OSS-Swallow-120B-RL-v0.1-MXFP4   # registered UMRS name (HF: tokyotech-llm/GPT-OSS-Swallow-120B-RL-v0.1-MXFP4)
     tier: system
     gpu_count: 1           # MXFP4 ~60 GiB weights fits B200 (173.2 GiB) with KV headroom
     node_count: 1          # single-node TP=1; scale TP for throughput if needed
@@ -166,7 +166,7 @@ endpoints:
   # Tiny model — BF16 ~64 GiB, fits single B200 with huge KV headroom.
 
   - name: llm-jp-4-32b-thinking
-    model: llm-jp/llm-jp-4-32b-a3b-thinking
+    model: llm-jp-4-32b-a3b-thinking   # registered UMRS name (HF: llm-jp/llm-jp-4-32b-a3b-thinking)
     tier: system
     gpu_count: 1           # BF16 ~64 GiB fits B200 (173.2 GiB) easily
     node_count: 1
