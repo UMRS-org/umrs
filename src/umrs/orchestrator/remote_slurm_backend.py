@@ -45,6 +45,65 @@ from .tunnel_pool import TunnelPool, TunnelPoolConfig
 
 logger = logging.getLogger(__name__)
 
+# Memory units understood in scheduler.memory (case-insensitive suffix → MB).
+_MEM_UNIT_TO_MB = {"K": 1 / 1024, "M": 1.0, "G": 1024.0, "T": 1024.0 * 1024.0}
+
+
+def _parse_mem_to_mb(value: str) -> float | None:
+    """Parse a Slurm-style memory string (e.g. ``1400G``, ``400000M``) to MB.
+
+    Returns ``None`` when the value cannot be parsed.
+    """
+    text = str(value).strip()
+    if not text:
+        return None
+    match = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([KkMmGgTt]?)[Bb]?", text)
+    if not match:
+        return None
+    number = float(match.group(1))
+    unit = (match.group(2) or "M").upper()
+    return number * _MEM_UNIT_TO_MB.get(unit, 1.0)
+
+
+def _scale_memory_for_gpus(
+    memory: str, effective_gpus: int | None, max_node_gpus: int | None
+) -> str:
+    """Scale a full-node memory request down to a partial-GPU allocation.
+
+    ``scheduler.memory`` is sized for a full node (all GPUs). Sub-node Slurm
+    partitions (e.g. AI4S ``1n1gpu``) enforce a ``MaxMemPerNode`` proportional
+    to the GPU share, so a full-node ``--mem`` trips ``MaxMemPerLimit`` and the
+    job never starts. When fewer GPUs than a full node are requested, scale the
+    memory by the GPU fraction. Full-node and multi-node-per-node requests are
+    returned unchanged.
+    """
+    if not effective_gpus or not max_node_gpus or effective_gpus >= max_node_gpus:
+        return memory
+    total_mb = _parse_mem_to_mb(memory)
+    if total_mb is None:
+        return memory
+    scaled_mb = int(total_mb * effective_gpus / max_node_gpus)
+    if scaled_mb <= 0:
+        return memory
+    return f"{scaled_mb}M"
+
+
+def _resolve_sbatch_mem_arg(site: Any, effective_gpus: int | None) -> str:
+    """Return the ``--mem=`` sbatch argument for a wrapper job.
+
+    Uses ``--mem=0`` (suppress DefMemPerCPU) when no memory is configured;
+    otherwise scales the configured full-node memory by the requested GPU
+    fraction (see :func:`_scale_memory_for_gpus`).
+    """
+    if not site.scheduler.memory:
+        return "--mem=0"
+    max_node_gpus = max(
+        (p.gpus for p in site.partition_profiles.values()),
+        default=0,
+    )
+    mem = _scale_memory_for_gpus(site.scheduler.memory, effective_gpus, max_node_gpus)
+    return f"--mem={mem}"
+
 
 class RemoteSlurmBackend(SlurmBackend):
     """
@@ -275,119 +334,43 @@ class RemoteSlurmBackend(SlurmBackend):
 
         site = load_site_config()
 
-        sbatch_args = ["sbatch", "--parsable"]
-
-        # Output/error dirs
         output_dir = self._job_info_dir()
-        sbatch_args.append(f"--output={output_dir}/slurm-%j.out")
-        sbatch_args.append(f"--error={output_dir}/slurm-%j.err")
 
-        # GPU / node sizing (popped up-front so partition selection can use them)
+        # Resource sizing (popped up-front so partition selection can use them).
         gpu_count = kwargs.pop("gpu_count", None)
         node_count = kwargs.pop("node_count", None)
         partition_override = kwargs.pop("partition_override", None)
-
-        # Partition. When the site declares partitions following the AI4S
-        # "<nodes>n<gpus>gpu" convention, auto-select the matching profile from
-        # the requested GPU/node sizing; otherwise fall back to the site default.
-        partition = partition_override or self._select_partition(
-            site, gpu_count, node_count
-        )
-        if partition:
-            sbatch_args.append(f"--partition={partition}")
-
-        # Time limit
-        if site.scheduler.time_limit:
-            sbatch_args.append(f"--time={site.scheduler.time_limit}")
-
-        # GPUs (only if site allows GRES tracking — gpus=0 means no GRES)
-        if site.scheduler.gpus != 0:
-            effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
-            if effective_gpus:
-                sbatch_args.append(f"--gres=gpu:{effective_gpus}")
-
-        # CPUs
-        if site.scheduler.cpus:
-            sbatch_args.append(f"--cpus-per-task={site.scheduler.cpus}")
-
-        # Memory (explicit value or --mem=0 to suppress DefMemPerCPU default)
-        if site.scheduler.memory:
-            sbatch_args.append(f"--mem={site.scheduler.memory}")
-        else:
-            sbatch_args.append("--mem=0")
-
-        # Slurm account: per-user override > site config default
         slurm_account = kwargs.pop("slurm_account", None) or site.scheduler.account
-        if slurm_account:
-            sbatch_args.append(f"--account={slurm_account}")
-
-        # QoS
-        if site.scheduler.qos:
-            sbatch_args.append(f"--qos={site.scheduler.qos}")
-
-        # Nodelist hint
         nodelist_hint = kwargs.pop("nodelist_hint", None)
-        if nodelist_hint:
-            sbatch_args.append(f"--nodelist={nodelist_hint}")
 
-        # Node count
-        if node_count and node_count > 1:
-            sbatch_args.append(f"--nodes={node_count}")
-
-        # Extra sbatch args from site config
-        for extra in getattr(site.scheduler, "extra_sbatch", []):
-            sbatch_args.append(extra)
+        sbatch_args = self._build_wrapper_sbatch_args(
+            site=site,
+            output_dir=output_dir,
+            gpu_count=gpu_count,
+            node_count=node_count,
+            partition_override=partition_override,
+            slurm_account=slurm_account,
+            nodelist_hint=nodelist_hint,
+        )
 
         # Pop unused kwargs before building env
         kwargs.pop("min_gpu_memory_gb", None)
 
-        # Build environment exports for the job
-        env_overrides: dict[str, str] = {}
+        # Build environment exports + sacct attribution for the job.
         requested_env = kwargs.pop("env", None)
-        if isinstance(requested_env, dict):
-            env_overrides.update(
-                {
-                    k: str(v)
-                    for k, v in requested_env.items()
-                    if isinstance(v, (str, int, float))
-                }
+        project_id = kwargs.pop("project_id", None)
+        if isinstance(requested_env, dict) and not project_id:
+            project_id = requested_env.get("PROJECT_ID", "")
+        sbatch_args.extend(
+            self._build_wrapper_job_exports(
+                model_path=model_path,
+                wrapper_script=wrapper_script,
+                output_dir=output_dir,
+                requesting_user=requesting_user,
+                project_id=project_id,
+                requested_env=requested_env,
             )
-        env_overrides["VLLM_MODEL_PATH"] = model_path
-        env_overrides.setdefault(
-            "VLLM_SERVED_MODEL_NAME", env_overrides.get("MODEL_NAME", model_path)
         )
-        env_overrides.setdefault("RIVAULT_WRAPPER_DIR", os.path.dirname(wrapper_script))
-        env_overrides.setdefault("JOB_INFO_DIR", output_dir)
-        env_overrides.setdefault("RIVAULT_CONTROL_DIR", self._control_dir())
-
-        # Attribution: inject requesting user identity for Slurm accounting.
-        # These env vars are exported into the job so containers can log
-        # the originating user even when submitted via the master account.
-        if requesting_user:
-            env_overrides.setdefault("UMRS_USER", requesting_user)
-        project_id = kwargs.pop("project_id", None) or env_overrides.get(
-            "PROJECT_ID", ""
-        )
-        if project_id:
-            env_overrides.setdefault("UMRS_PROJECT", project_id)
-
-        # Slurm --comment for sacct attribution
-        attribution_parts = []
-        if requesting_user:
-            attribution_parts.append(f"user={requesting_user}")
-        if project_id:
-            attribution_parts.append(f"project={project_id}")
-        if attribution_parts:
-            sbatch_args.append(f"--comment={','.join(attribution_parts)}")
-
-        # Build --export arg: ALL plus per-job overrides. Values may contain
-        # spaces (e.g. RIVAULT_PROFILES="harness vllm"), so the whole argument
-        # must be shell-quoted — otherwise the remote shell word-splits the
-        # comma list and sbatch treats the tail as a stray filename.
-        export_parts = ["ALL"]
-        for k, v in env_overrides.items():
-            export_parts.append(f"{k}={v}")
-        sbatch_args.append(shlex.quote(f"--export={','.join(export_parts)}"))
 
         # Append the wrapper script path
         sbatch_args.append(shlex.quote(wrapper_script))
@@ -414,6 +397,111 @@ class RemoteSlurmBackend(SlurmBackend):
             created_at=datetime.now(),
             backend=self.backend_name,
         )
+
+    def _build_wrapper_sbatch_args(
+        self,
+        *,
+        site: Any,
+        output_dir: str,
+        gpu_count: int | None,
+        node_count: int | None,
+        partition_override: str | None,
+        slurm_account: str | None,
+        nodelist_hint: str | None,
+    ) -> list[str]:
+        """Assemble the resource-directive portion of a wrapper-job sbatch CLI.
+
+        Returns the leading ``sbatch`` argument list (output/error paths plus
+        partition/time/GPU/CPU/memory/account/qos/nodelist/nodes/extras). The
+        caller appends ``--comment``/``--export`` attribution and the wrapper
+        script path. ``scheduler.memory`` is full-node sized; it is scaled by
+        the requested GPU fraction so sub-node partitions (e.g. AI4S ``1n1gpu``)
+        do not trip ``MaxMemPerLimit``.
+        """
+        sched = site.scheduler
+        # Explicit GPU request wins; otherwise the site default.
+        effective_gpus = gpu_count if gpu_count is not None else sched.gpus
+        # Partition auto-selection honours the AI4S "<n>n<g>gpu" convention.
+        partition = partition_override or self._select_partition(
+            site, gpu_count, node_count
+        )
+        nodes = node_count if (node_count or 0) > 1 else None
+
+        sbatch_args = [
+            "sbatch",
+            "--parsable",
+            f"--output={output_dir}/slurm-%j.out",
+            f"--error={output_dir}/slurm-%j.err",
+            _resolve_sbatch_mem_arg(site, effective_gpus),
+        ]
+        # Optional scalar directives appended only when truthy.
+        optional = [
+            ("--partition=", partition),
+            ("--time=", sched.time_limit),
+            ("--gres=gpu:", effective_gpus if sched.gpus != 0 else None),
+            ("--cpus-per-task=", sched.cpus),
+            ("--account=", slurm_account),
+            ("--qos=", sched.qos),
+            ("--nodelist=", nodelist_hint),
+            ("--nodes=", nodes),
+        ]
+        for flag, value in optional:
+            if value:
+                sbatch_args.append(f"{flag}{value}")
+        sbatch_args.extend(getattr(sched, "extra_sbatch", []))
+        return sbatch_args
+
+    def _build_wrapper_job_exports(
+        self,
+        *,
+        model_path: str,
+        wrapper_script: str,
+        output_dir: str,
+        requesting_user: str | None,
+        project_id: str | None,
+        requested_env: Any,
+    ) -> list[str]:
+        """Build the ``--comment`` and ``--export`` sbatch args for a wrapper job.
+
+        The ``--export`` arg is shell-quoted because values may contain spaces
+        (e.g. ``RIVAULT_PROFILES="harness vllm"``); otherwise the remote shell
+        word-splits the comma list and sbatch treats the tail as a stray file.
+        """
+        env_overrides: dict[str, str] = {}
+        if isinstance(requested_env, dict):
+            env_overrides.update(
+                {
+                    k: str(v)
+                    for k, v in requested_env.items()
+                    if isinstance(v, (str, int, float))
+                }
+            )
+        env_overrides["VLLM_MODEL_PATH"] = model_path
+        env_overrides.setdefault(
+            "VLLM_SERVED_MODEL_NAME", env_overrides.get("MODEL_NAME", model_path)
+        )
+        env_overrides.setdefault("RIVAULT_WRAPPER_DIR", os.path.dirname(wrapper_script))
+        env_overrides.setdefault("JOB_INFO_DIR", output_dir)
+        env_overrides.setdefault("RIVAULT_CONTROL_DIR", self._control_dir())
+
+        # Attribution: export the requesting user/project identity for Slurm
+        # accounting (UMRS_* env vars) and sacct (--comment), so containers can
+        # log the originating user even when submitted via the master account.
+        args: list[str] = []
+        attribution_parts = []
+        if requesting_user:
+            env_overrides.setdefault("UMRS_USER", requesting_user)
+            attribution_parts.append(f"user={requesting_user}")
+        if project_id:
+            env_overrides.setdefault("UMRS_PROJECT", project_id)
+            attribution_parts.append(f"project={project_id}")
+        if attribution_parts:
+            args.append(f"--comment={','.join(attribution_parts)}")
+
+        export_parts = ["ALL"] + [f"{k}={v}" for k, v in env_overrides.items()]
+        args.append(shlex.quote(f"--export={','.join(export_parts)}"))
+        return args
+
 
     async def get_job_status(self, job_id: str) -> JobInfo:
         """Get status of a Slurm job via SSH."""
