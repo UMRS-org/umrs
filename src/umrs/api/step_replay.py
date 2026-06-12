@@ -43,6 +43,7 @@ def get_engine() -> StepReplayEngine:
 # Request / Response models
 # ---------------------------------------------------------------------------
 
+
 class ReplayCreateRequest(BaseModel):
     source_trace_id: str
     user_id: str
@@ -71,16 +72,19 @@ class ReplayResponse(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
+
 @router.post("", response_model=ReplayResponse, status_code=status.HTTP_201_CREATED)
 def create_replay(req: ReplayCreateRequest):
     engine = get_engine()
-    result = engine.replay(ReplayRequest(
-        source_trace_id=req.source_trace_id,
-        user_id=req.user_id,
-        reason=req.reason,
-        param_overrides=req.param_overrides,
-        new_job_id=req.new_job_id,
-    ))
+    result = engine.replay(
+        ReplayRequest(
+            source_trace_id=req.source_trace_id,
+            user_id=req.user_id,
+            reason=req.reason,
+            param_overrides=req.param_overrides,
+            new_job_id=req.new_job_id,
+        )
+    )
     return ReplayResponse(**result.to_dict())
 
 

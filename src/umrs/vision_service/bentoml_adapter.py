@@ -47,7 +47,10 @@ _CLIENT_CACHE_LOCK = threading.Lock()
 
 def _client_reuse_enabled() -> bool:
     return os.environ.get("BENTOML_CLIENT_REUSE", "1").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -75,7 +78,8 @@ async def _get_or_open_client(service_url: str, token: str | None):
         _CLIENT_CACHE[key] = client
         logger.debug(
             "Opened cached BentoML client for %s on loop %s",
-            service_url, loop_id,
+            service_url,
+            loop_id,
         )
         return client
 
@@ -120,7 +124,10 @@ def _copy_to_output_bucket(s3, s3_uri, output_bucket):
 
 def _require_presigned_urls() -> bool:
     return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -154,7 +161,9 @@ def _jens_task_for_model(model_type: str, config: dict) -> str:
     return str(config.get("task") or config.get("prompt") or "")
 
 
-def _jens_output_artifact(model_type: str, s3_key: str, config: dict) -> tuple[str, str]:
+def _jens_output_artifact(
+    model_type: str, s3_key: str, config: dict
+) -> tuple[str, str]:
     predicted = describe_output_artifacts(model_type, s3_key, config)
     for out_key in predicted:
         if out_key.endswith(".pkl"):
@@ -166,9 +175,15 @@ def _jens_output_artifact(model_type: str, s3_key: str, config: dict) -> tuple[s
     return f"{base}_{model_type}_results.pkl", "application/octet-stream"
 
 
-def make_jens_vision_compute(service_url: str, model_type, model_config,
-                             task=None, token: str | None = None,
-                             poll_interval=2.0, timeout=1200.0):
+def make_jens_vision_compute(
+    service_url: str,
+    model_type,
+    model_config,
+    task=None,
+    token: str | None = None,
+    poll_interval=2.0,
+    timeout=1200.0,
+):
     """Create a compute_embeddings closure for internal_genAI VisionFrontend.
 
     The Jens stack exposes ``vision_task(image, model, task, out)`` rather
@@ -199,13 +214,20 @@ def make_jens_vision_compute(service_url: str, model_type, model_config,
             else:
                 import bentoml
 
-                _client_ctx = bentoml.AsyncHTTPClient(service_url, token=effective_token)
+                _client_ctx = bentoml.AsyncHTTPClient(
+                    service_url, token=effective_token
+                )
                 client = await _client_ctx.__aenter__()
 
             try:
                 for idx, s3_key in enumerate(s3_keys):
-                    logger.info("[%d/%d] Jens BentoML %s: %s",
-                                idx + 1, len(s3_keys), model_type, s3_key)
+                    logger.info(
+                        "[%d/%d] Jens BentoML %s: %s",
+                        idx + 1,
+                        len(s3_keys),
+                        model_type,
+                        s3_key,
+                    )
 
                     obj = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
                     checksums.append(obj["ETag"].strip('"'))
@@ -228,7 +250,9 @@ def make_jens_vision_compute(service_url: str, model_type, model_config,
                         else:
                             output_s3_uri = f"s3://{target_bucket}/{out_key}"
                             saved_keys.append(output_s3_uri)
-                            results.append({"status": "skipped", "output_s3_key": output_s3_uri})
+                            results.append(
+                                {"status": "skipped", "output_s3_key": output_s3_uri}
+                            )
                             continue
 
                     presign_endpoint = _vision_presign_endpoint()
@@ -240,7 +264,9 @@ def make_jens_vision_compute(service_url: str, model_type, model_config,
                         endpoint_override=presign_endpoint,
                     )
                     if not presigned_input_url:
-                        raise RuntimeError(f"Could not presign input s3://{path_to_bucket}/{s3_key}")
+                        raise RuntimeError(
+                            f"Could not presign input s3://{path_to_bucket}/{s3_key}"
+                        )
 
                     presigned_output_url = generate_presigned_put(
                         s3,
@@ -251,7 +277,9 @@ def make_jens_vision_compute(service_url: str, model_type, model_config,
                         endpoint_override=presign_endpoint,
                     )
                     if not presigned_output_url:
-                        raise RuntimeError(f"Could not presign output s3://{target_bucket}/{out_key}")
+                        raise RuntimeError(
+                            f"Could not presign output s3://{target_bucket}/{out_key}"
+                        )
 
                     jens_task = _jens_task_for_model(str(model_type), effective_config)
                     result = await async_submit_and_wait(
@@ -265,7 +293,10 @@ def make_jens_vision_compute(service_url: str, model_type, model_config,
                         out=presigned_output_url,
                     )
 
-                    if isinstance(result, dict) and result.get("status") not in {None, "success"}:
+                    if isinstance(result, dict) and result.get("status") not in {
+                        None,
+                        "success",
+                    }:
                         raise RuntimeError(
                             f"Jens BentoML {model_type} task failed for {s3_key}: "
                             f"{result.get('status')}"
@@ -273,7 +304,9 @@ def make_jens_vision_compute(service_url: str, model_type, model_config,
 
                     output_s3_uri = f"s3://{target_bucket}/{out_key}"
                     if isinstance(result, dict):
-                        result.setdefault("source_image", f"s3://{path_to_bucket}/{s3_key}")
+                        result.setdefault(
+                            "source_image", f"s3://{path_to_bucket}/{s3_key}"
+                        )
                         result.setdefault("task", jens_task)
                         result.setdefault("output_s3_key", output_s3_uri)
                         result.setdefault("results_pkl_s3_key", output_s3_uri)
@@ -290,9 +323,15 @@ def make_jens_vision_compute(service_url: str, model_type, model_config,
     return _compute
 
 
-def make_bentoml_vision_compute(service_url: str, model_type, model_config,
-                                task=None, token: str | None = None,
-                                poll_interval=2.0, timeout=1200.0):
+def make_bentoml_vision_compute(
+    service_url: str,
+    model_type,
+    model_config,
+    task=None,
+    token: str | None = None,
+    poll_interval=2.0,
+    timeout=1200.0,
+):
     """Create a compute_embeddings closure for any vision model via BentoML.
 
     Submits tasks to the ``/infer`` endpoint using an ``AsyncHTTPClient``
@@ -337,10 +376,18 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
 
             try:
                 for idx, s3_key in enumerate(s3_keys):
-                    logger.info("[%d/%d] BentoML %s: %s",
-                                idx + 1, len(s3_keys), model_type, s3_key)
-                    logger.debug("Vision adapter buckets: input=%s output=%s",
-                                 path_to_bucket, output_bucket)
+                    logger.info(
+                        "[%d/%d] BentoML %s: %s",
+                        idx + 1,
+                        len(s3_keys),
+                        model_type,
+                        s3_key,
+                    )
+                    logger.debug(
+                        "Vision adapter buckets: input=%s output=%s",
+                        path_to_bucket,
+                        output_bucket,
+                    )
 
                     obj = s3.head_object(Bucket=path_to_bucket, Key=s3_key)
                     checksums.append(obj["ETag"].strip('"'))
@@ -382,7 +429,9 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                             )
                             output_s3_uri = f"s3://{output_bucket}/{first_key}"
                             saved_keys.append(output_s3_uri)
-                            results.append({"status": "skipped", "output_s3_key": output_s3_uri})
+                            results.append(
+                                {"status": "skipped", "output_s3_key": output_s3_uri}
+                            )
                             continue
 
                     image_url = f"s3://{path_to_bucket}/{s3_key}"
@@ -410,9 +459,12 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
                     logger.debug(
                         "Submitting BentoML vision task: model_type=%s image_url=%s "
                         "presigned_input=%s presigned_output_keys=%s endpoint=%s",
-                        model_type, image_url,
+                        model_type,
+                        image_url,
                         bool(presigned_input_url),
-                        list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
+                        list(presigned_output_urls.keys())
+                        if presigned_output_urls
+                        else "(empty)",
                         presign_endpoint or "(default)",
                     )
 
@@ -431,7 +483,9 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
 
                     logger.debug(
                         "BentoML vision result keys=%s",
-                        list(result.keys()) if isinstance(result, dict) else type(result),
+                        list(result.keys())
+                        if isinstance(result, dict)
+                        else type(result),
                     )
 
                     if "error" in result:
@@ -442,10 +496,12 @@ def make_bentoml_vision_compute(service_url: str, model_type, model_config,
 
                     results.append(result)
 
-                    output_s3_key = (result.get("output_s3_key")
-                                     or result.get("overlay_s3_key"))
-                    output_s3_key = _copy_to_output_bucket(s3, output_s3_key,
-                                                           output_bucket)
+                    output_s3_key = result.get("output_s3_key") or result.get(
+                        "overlay_s3_key"
+                    )
+                    output_s3_key = _copy_to_output_bucket(
+                        s3, output_s3_key, output_bucket
+                    )
                     saved_keys.append(output_s3_key)
             finally:
                 if _client_ctx is not None:

@@ -177,6 +177,7 @@ class DurableOrchestrationService:
         # Create backend factory that wraps the orchestrator
         try:
             from umrs.admin.user_store import UserStore
+
             user_store = UserStore()
         except Exception:
             logger.debug("UserStore unavailable; per-user Slurm accounts disabled")

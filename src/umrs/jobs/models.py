@@ -18,54 +18,54 @@ from typing import Any
 class JobType(Enum):
     """Types of jobs supported by UMRS."""
 
-    INDEX_BUILD = "index_build"           # Build RAG index from dataset
-    EMBEDDING_BATCH = "embedding_batch"   # Batch embedding computation
-    PIPELINE_RUN = "pipeline_run"         # Execute ingestion pipeline
-    WORKFLOW_RUN = "workflow_run"         # Execute registered user workflow
+    INDEX_BUILD = "index_build"  # Build RAG index from dataset
+    EMBEDDING_BATCH = "embedding_batch"  # Batch embedding computation
+    PIPELINE_RUN = "pipeline_run"  # Execute ingestion pipeline
+    WORKFLOW_RUN = "workflow_run"  # Execute registered user workflow
     ENDPOINT_PROVISION = "endpoint_provision"  # Provision Mini-RiVault
-    MODEL_DOWNLOAD = "model_download"     # Download model weights to approved path
-    CLEANUP = "cleanup"                   # Delete resources
+    MODEL_DOWNLOAD = "model_download"  # Download model weights to approved path
+    CLEANUP = "cleanup"  # Delete resources
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
 class JobStatus(Enum):
     """Job-level status (user intent)."""
 
-    PLANNED = "planned"       # Created but not yet queued
-    QUEUED = "queued"         # Ready to schedule
-    RUNNING = "running"       # Has active attempt
-    COMPLETED = "completed"   # Successfully finished
-    FAILED = "failed"         # All retries exhausted
-    CANCELLED = "cancelled"   # User cancelled
+    PLANNED = "planned"  # Created but not yet queued
+    QUEUED = "queued"  # Ready to schedule
+    RUNNING = "running"  # Has active attempt
+    COMPLETED = "completed"  # Successfully finished
+    FAILED = "failed"  # All retries exhausted
+    CANCELLED = "cancelled"  # User cancelled
 
 
 class AttemptStatus(Enum):
     """Attempt-level status (execution try)."""
 
-    CREATED = "created"       # Attempt record created
-    SUBMITTED = "submitted"   # Submitted to backend (Slurm/K8s/Compose)
-    RUNNING = "running"       # Backend reports running
-    SUCCEEDED = "succeeded"   # Completed successfully
-    FAILED = "failed"         # Attempt failed (may retry)
-    LOST = "lost"             # UMRS crashed, attempt orphaned
+    CREATED = "created"  # Attempt record created
+    SUBMITTED = "submitted"  # Submitted to backend (Slurm/K8s/Compose)
+    RUNNING = "running"  # Backend reports running
+    SUCCEEDED = "succeeded"  # Completed successfully
+    FAILED = "failed"  # Attempt failed (may retry)
+    LOST = "lost"  # UMRS crashed, attempt orphaned
 
 
 class RestartPolicy(Enum):
     """When to retry failed/lost attempts."""
 
-    ON_CRASH = "on_crash"     # Retry on UMRS crash (default)
-    ON_FAILURE = "on_failure" # Retry on any failure
-    NEVER = "never"           # No retry (destructive ops)
+    ON_CRASH = "on_crash"  # Retry on UMRS crash (default)
+    ON_FAILURE = "on_failure"  # Retry on any failure
+    NEVER = "never"  # No retry (destructive ops)
 
 
 # Default backoff settings per job type
 DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.ENDPOINT_PROVISION: {
-        "delays": [5, 10, 20],      # Fast retry
+        "delays": [5, 10, 20],  # Fast retry
         "max_attempts": 3,
     },
     JobType.INDEX_BUILD: {
-        "delays": [30, 60, 120],    # Slow retry
+        "delays": [30, 60, 120],  # Slow retry
         "max_attempts": 5,
     },
     JobType.EMBEDDING_BATCH: {
@@ -73,7 +73,7 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
         "max_attempts": 5,
     },
     JobType.PIPELINE_RUN: {
-        "delays": [15, 30, 60],     # Medium
+        "delays": [15, 30, 60],  # Medium
         "max_attempts": 4,
     },
     JobType.WORKFLOW_RUN: {
@@ -81,12 +81,12 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
         "max_attempts": 4,
     },
     JobType.MODEL_DOWNLOAD: {
-        "delays": [60, 120],        # Slow retry for downloads
-        "max_attempts": 2,          # Limited retries (network issues)
+        "delays": [60, 120],  # Slow retry for downloads
+        "max_attempts": 2,  # Limited retries (network issues)
     },
     JobType.CLEANUP: {
         "delays": [],
-        "max_attempts": 1,         # No retry for cleanup
+        "max_attempts": 1,  # No retry for cleanup
     },
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE backoffs excluded
 }
@@ -185,8 +185,12 @@ class Job:
             "commit_attempt_id": self.commit_attempt_id,
             "created_at": self.created_at.isoformat(),
             "updated_at": self.updated_at.isoformat(),
-            "last_state_change_at": self.last_state_change_at.isoformat() if self.last_state_change_at else None,
-            "last_heartbeat_at": self.last_heartbeat_at.isoformat() if self.last_heartbeat_at else None,
+            "last_state_change_at": self.last_state_change_at.isoformat()
+            if self.last_state_change_at
+            else None,
+            "last_heartbeat_at": self.last_heartbeat_at.isoformat()
+            if self.last_heartbeat_at
+            else None,
         }
 
     @classmethod
@@ -268,7 +272,9 @@ class JobAttempt:
             "log_uri": self.log_uri,
             "metrics": self.metrics,
             "umrs_instance_id": self.umrs_instance_id,
-            "scheduler_claimed_at": self.scheduler_claimed_at.isoformat() if self.scheduler_claimed_at else None,
+            "scheduler_claimed_at": self.scheduler_claimed_at.isoformat()
+            if self.scheduler_claimed_at
+            else None,
             "status_detail": self.status_detail,
             "ignored_at": self.ignored_at.isoformat() if self.ignored_at else None,
             "ignore_reason": self.ignore_reason,

@@ -39,6 +39,12 @@ from .site_config import load_site_config
 
 logger = logging.getLogger(__name__)
 
+# scancel/cleanup is asynchronous: the scheduler can still report a job as
+# active for a few seconds after the cancel signal is issued. Poll the backend
+# briefly before declaring a deprovision failed.
+_DEPROVISION_VERIFY_ATTEMPTS = 6
+_DEPROVISION_VERIFY_DELAY_SEC = 1.0
+
 
 def _friendly_probe_detail(error: str | None, state: str) -> str:
     """Translate raw readiness-probe errors into user-friendly messages.
@@ -108,8 +114,15 @@ class ProvisionRequest:
     metadata: dict[str, Any] = field(default_factory=dict)
     partition_override: str | None = None  # Override site partition for this request
     nodelist_hint: str | None = None  # Slurm --nodelist hint (e.g. "ai-h200-brc-00")
-    min_gpu_memory_gb: float | None = None  # Resource hint from model catalog for partition selection
-    requesting_user: str | None = None  # Username for per-user Slurm delegation & accounting
+    min_gpu_memory_gb: float | None = (
+        None  # Resource hint from model catalog for partition selection
+    )
+    requesting_user: str | None = (
+        None  # Username for per-user Slurm delegation & accounting
+    )
+    variant: str | None = (
+        None  # Deployment variant name (e.g. "128k", "tep-128k")
+    )
 
 
 @dataclass
@@ -287,7 +300,8 @@ class OrchestrationService:
         except Exception as exc:  # noqa: BLE001 - defensive
             logger.warning(
                 "Backend get_job_status(%s) failed during warm-endpoint check: %s",
-                job_id, exc,
+                job_id,
+                exc,
             )
             return False
         return info.status in (
@@ -363,7 +377,9 @@ class OrchestrationService:
                 pass
             return record.resolve_slurm_account(site_name)
         except Exception:
-            logger.debug("Could not resolve slurm_account for user %s", username, exc_info=True)
+            logger.debug(
+                "Could not resolve slurm_account for user %s", username, exc_info=True
+            )
             return None
 
     async def provision(
@@ -405,6 +421,7 @@ class OrchestrationService:
                 request.model,
                 prefer_warm=True,
                 min_ttl_sec=request.min_ttl_for_reuse_sec,
+                variant=request.variant,
             )
             if existing and existing.is_usable:
                 # Verify the backend job is actually still alive before
@@ -423,12 +440,15 @@ class OrchestrationService:
                         endpoint=existing,
                         job_id=existing.job_id,
                         reused=True,
-                        provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
+                        provisioning_time_sec=asyncio.get_event_loop().time()
+                        - start_time,
                     )
                 logger.warning(
                     "Stale warm endpoint for %s/%s (job_id=%s) — "
                     "marking failed and provisioning fresh",
-                    request.project_id, request.model, existing.job_id,
+                    request.project_id,
+                    request.model,
+                    existing.job_id,
                 )
                 self.registry.mark_failed(
                     existing.job_id,
@@ -537,8 +557,12 @@ class OrchestrationService:
                 else port
             )
             if actual_host and actual_host != "pending":
-                endpoint_metadata.setdefault("service_url", f"http://{actual_host}:{actual_port}")
-                endpoint_metadata["detail"] = f"container starting on {actual_host}:{actual_port}"
+                endpoint_metadata.setdefault(
+                    "service_url", f"http://{actual_host}:{actual_port}"
+                )
+                endpoint_metadata["detail"] = (
+                    f"container starting on {actual_host}:{actual_port}"
+                )
             else:
                 endpoint_metadata["detail"] = "waiting for resource allocation"
 
@@ -552,6 +576,7 @@ class OrchestrationService:
                 backend=self.backend_type.value,
                 ttl_sec=request.ttl_sec,
                 metadata=endpoint_metadata,
+                variant=request.variant,
             )
             progress("registered", {"endpoint_id": job_id})
 
@@ -644,14 +669,22 @@ class OrchestrationService:
                     },
                 )
                 if progress:
-                    progress("assignment_resolved", {"host": actual_host, "port": actual_port})
+                    progress(
+                        "assignment_resolved",
+                        {"host": actual_host, "port": actual_port},
+                    )
 
             self.registry.update_status(job_id, EndpointStatus.STARTING)
-            self.registry.update_metadata(job_id, {
-                "detail": "waiting for model to load",
-            })
+            self.registry.update_metadata(
+                job_id,
+                {
+                    "detail": "waiting for model to load",
+                },
+            )
 
-            remaining_timeout = max(1, int(deadline - asyncio.get_running_loop().time()))
+            remaining_timeout = max(
+                1, int(deadline - asyncio.get_running_loop().time())
+            )
             if progress:
                 progress("waiting_for_ready", {"timeout": remaining_timeout})
             readiness_probe = str(request.metadata.get("readiness_probe") or "chat")
@@ -661,11 +694,16 @@ class OrchestrationService:
                 if progress:
                     progress("readiness_check", r.to_dict())
                 detail = _friendly_probe_detail(r.error, r.state.value)
-                self.registry.update_metadata(job_id, {
-                    "detail": f"probe #{r.attempts}: {detail}" if detail else f"probe #{r.attempts}",
-                    "readiness_attempts": r.attempts,
-                    "readiness_elapsed_sec": round(r.elapsed_sec, 1),
-                })
+                self.registry.update_metadata(
+                    job_id,
+                    {
+                        "detail": f"probe #{r.attempts}: {detail}"
+                        if detail
+                        else f"probe #{r.attempts}",
+                        "readiness_attempts": r.attempts,
+                        "readiness_elapsed_sec": round(r.elapsed_sec, 1),
+                    },
+                )
 
             readiness_result = await self._wait_for_ready_with_budget(
                 job_id=job_id,
@@ -693,7 +731,10 @@ class OrchestrationService:
                     provisioning_time_sec=asyncio.get_event_loop().time() - start_time,
                 )
 
-            error = readiness_result.error or f"Readiness check failed: {readiness_result.state.value}"
+            error = (
+                readiness_result.error
+                or f"Readiness check failed: {readiness_result.state.value}"
+            )
             self.registry.mark_failed(job_id, error)
             if progress:
                 progress("failed", {"error": error})
@@ -754,28 +795,46 @@ class OrchestrationService:
             logger.error(f"Backend cleanup failed for {job_id}: {e}")
             return False
 
-        try:
-            backend_info = await self.backend.get_job_status(job_id)
-        except Exception as e:
-            logger.error(f"Backend cleanup verification failed for {job_id}: {e}")
-            return False
-
-        if backend_info.status in (
+        # Verify the backend job has actually left the active state. scancel is
+        # asynchronous, so poll briefly before declaring the cleanup complete.
+        # This absorbs the transient window where squeue still reports the job
+        # as RUNNING for a few seconds after the cancel signal is issued.
+        active_states = (
             JobStatus.PENDING,
             JobStatus.STARTING,
             JobStatus.READY,
             JobStatus.RUNNING,
-        ):
-            logger.error(
-                "Backend cleanup for %s returned while job is still active: %s",
+        )
+        backend_status: JobStatus | None = None
+        for attempt in range(_DEPROVISION_VERIFY_ATTEMPTS):
+            try:
+                backend_info = await self.backend.get_job_status(job_id)
+            except Exception as e:
+                logger.error(f"Backend cleanup verification failed for {job_id}: {e}")
+                return False
+            backend_status = backend_info.status
+            if backend_status not in active_states:
+                break
+            if attempt < _DEPROVISION_VERIFY_ATTEMPTS - 1:
+                await asyncio.sleep(_DEPROVISION_VERIFY_DELAY_SEC)
+
+        if backend_status in active_states:
+            # The cancel was issued but the scheduler still reports the job as
+            # active (e.g. stuck in COMPLETING). Preserve the registry entry so
+            # the allocation is not orphaned; the janitor finalizes removal once
+            # the backend job exits. Callers should treat this as "stopping in
+            # progress", not a hard failure.
+            logger.info(
+                "Backend cleanup for %s still settling (status=%s); deferring "
+                "registry removal to janitor",
                 job_id,
-                backend_info.status.value,
+                backend_status.value,
             )
             self.registry.update_metadata(
                 job_id,
                 {
                     "detail": "backend cleanup still pending",
-                    "cleanup_status": backend_info.status.value,
+                    "cleanup_status": backend_status.value,
                 },
             )
             return False

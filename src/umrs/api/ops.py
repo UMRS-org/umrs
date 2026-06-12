@@ -29,6 +29,7 @@ router = APIRouter(prefix="/umrs/ops", tags=["ops"])
 # Response models
 # ---------------------------------------------------------------------------
 
+
 class SubsystemHealth(BaseModel):
     name: str
     status: str  # "healthy" | "degraded" | "unavailable"
@@ -98,6 +99,7 @@ def _uptime() -> float:
 def _lazy_get_optional_job_store() -> Any:
     """Lazy import to avoid triggering umrs.jobs circular import at module level."""
     from .jobs import get_optional_job_store
+
     return get_optional_job_store()
 
 
@@ -107,7 +109,9 @@ def require_ops_admin(
     x_verified_is_admin: str | None = Header(None),
     caller_user_id: str | None = Query(None, description="Caller's user ID"),
     caller_project_id: str | None = Query(None, description="Caller's project ID"),
-    is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
+    is_admin: bool = Query(
+        False, description="Admin flag (legacy, ignored in strict mode)"
+    ),
 ) -> None:
     """Enforce admin-only access for ops endpoints.
 
@@ -183,15 +187,20 @@ def require_authenticated(
 # Subsystem health probes
 # ---------------------------------------------------------------------------
 
+
 def _probe_job_store(store: Any) -> SubsystemHealth:
     if store is None:
-        return SubsystemHealth(name="job_store", status="unavailable", detail="not initialized")
+        return SubsystemHealth(
+            name="job_store", status="unavailable", detail="not initialized"
+        )
     try:
         # Lightweight probe: list 1 job
         store.list_jobs(limit=1)
         return SubsystemHealth(name="job_store", status="healthy", detail="connected")
     except Exception as exc:
-        return SubsystemHealth(name="job_store", status="degraded", detail=str(exc)[:200])
+        return SubsystemHealth(
+            name="job_store", status="degraded", detail=str(exc)[:200]
+        )
 
 
 def _probe_scheduler() -> SubsystemHealth:
@@ -202,7 +211,9 @@ def _probe_scheduler() -> SubsystemHealth:
     is configured to run a scheduler.
     """
     if os.environ.get("UMRS_SCHEDULER_ENABLED", "true").lower() == "false":
-        return SubsystemHealth(name="scheduler", status="unavailable", detail="disabled by config")
+        return SubsystemHealth(
+            name="scheduler", status="unavailable", detail="disabled by config"
+        )
     return SubsystemHealth(name="scheduler", status="healthy", detail="enabled")
 
 
@@ -219,6 +230,7 @@ def _probe_transport() -> SubsystemHealth:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/health",
@@ -262,21 +274,25 @@ def ops_topology(
 
     # Report gateway mode
     gw_mode = os.environ.get("GATEWAY_MODE", "nginx")
-    components.append({
-        "component": "gateway",
-        "role": "policy_edge",
-        "status": "configured",
-        "detail": f"mode={gw_mode}",
-    })
+    components.append(
+        {
+            "component": "gateway",
+            "role": "policy_edge",
+            "status": "configured",
+            "detail": f"mode={gw_mode}",
+        }
+    )
 
     # Report transport
     transport = os.environ.get("UMRS_TRANSPORT", "http")
-    components.append({
-        "component": "transport",
-        "role": "data_plane",
-        "status": "active",
-        "detail": f"type={transport}",
-    })
+    components.append(
+        {
+            "component": "transport",
+            "role": "data_plane",
+            "status": "active",
+            "detail": f"type={transport}",
+        }
+    )
 
     active_jobs = 0
     active_attempts = 0
@@ -284,6 +300,7 @@ def ops_topology(
     if store is not None:
         try:
             from ..jobs.models import JobStatus
+
             running_jobs = store.list_jobs(status=JobStatus.RUNNING, limit=1000)
             active_jobs = len(running_jobs)
 
@@ -295,13 +312,15 @@ def ops_topology(
             for att in active_atts:
                 backends[att.backend] = backends.get(att.backend, 0) + 1
             for backend, count in backends.items():
-                components.append({
-                    "component": f"backend:{backend}",
-                    "role": "execution_authority",
-                    "status": "active",
-                    "detail": f"{count} active attempt(s)",
-                    "metadata": {"count": count},
-                })
+                components.append(
+                    {
+                        "component": f"backend:{backend}",
+                        "role": "execution_authority",
+                        "status": "active",
+                        "detail": f"{count} active attempt(s)",
+                        "metadata": {"count": count},
+                    }
+                )
         except Exception as exc:
             logger.warning("Failed to query job store for topology: %s", exc)
 
@@ -320,7 +339,9 @@ def ops_topology(
     summary="Job-attempt timeline",
 )
 def ops_timeline(
-    window_minutes: int = Query(60, ge=1, le=1440, description="Look-back window in minutes"),
+    window_minutes: int = Query(
+        60, ge=1, le=1440, description="Look-back window in minutes"
+    ),
     limit: int = Query(100, ge=1, le=500),
     _admin: None = Depends(require_ops_admin),
     store=Depends(lambda: _lazy_get_optional_job_store()),
@@ -343,46 +364,64 @@ def ops_timeline(
 
             # Job creation event
             if job.created_at and job.created_at >= cutoff:
-                events.append({
-                    "timestamp": job.created_at.isoformat(),
-                    "job_id": job.job_id,
-                    "job_type": job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
-                    "event": "created",
-                    "detail": f"status={job.status.value if hasattr(job.status, 'value') else job.status}",
-                })
+                events.append(
+                    {
+                        "timestamp": job.created_at.isoformat(),
+                        "job_id": job.job_id,
+                        "job_type": job.job_type.value
+                        if hasattr(job.job_type, "value")
+                        else str(job.job_type),
+                        "event": "created",
+                        "detail": f"status={job.status.value if hasattr(job.status, 'value') else job.status}",
+                    }
+                )
 
             # Attempt events
             attempts = store.get_attempts_for_job(job.job_id)
             for att in attempts:
-                jt = job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type)
+                jt = (
+                    job.job_type.value
+                    if hasattr(job.job_type, "value")
+                    else str(job.job_type)
+                )
 
                 if att.started_at and att.started_at >= cutoff:
-                    events.append({
-                        "timestamp": att.started_at.isoformat(),
-                        "job_id": job.job_id,
-                        "job_type": jt,
-                        "event": "attempt_started",
-                        "attempt_id": att.attempt_id,
-                        "attempt_no": att.attempt_no,
-                        "backend": att.backend,
-                        "detail": att.status_detail or "",
-                    })
+                    events.append(
+                        {
+                            "timestamp": att.started_at.isoformat(),
+                            "job_id": job.job_id,
+                            "job_type": jt,
+                            "event": "attempt_started",
+                            "attempt_id": att.attempt_id,
+                            "attempt_no": att.attempt_no,
+                            "backend": att.backend,
+                            "detail": att.status_detail or "",
+                        }
+                    )
 
                 if att.ended_at and att.ended_at >= cutoff:
-                    att_status = att.status.value if hasattr(att.status, "value") else str(att.status)
-                    event_type = "succeeded" if att_status == "succeeded" else (
-                        "lost" if att_status == "lost" else "failed"
+                    att_status = (
+                        att.status.value
+                        if hasattr(att.status, "value")
+                        else str(att.status)
                     )
-                    events.append({
-                        "timestamp": att.ended_at.isoformat(),
-                        "job_id": job.job_id,
-                        "job_type": jt,
-                        "event": event_type,
-                        "attempt_id": att.attempt_id,
-                        "attempt_no": att.attempt_no,
-                        "backend": att.backend,
-                        "detail": att.exit_reason or "",
-                    })
+                    event_type = (
+                        "succeeded"
+                        if att_status == "succeeded"
+                        else ("lost" if att_status == "lost" else "failed")
+                    )
+                    events.append(
+                        {
+                            "timestamp": att.ended_at.isoformat(),
+                            "job_id": job.job_id,
+                            "job_type": jt,
+                            "event": event_type,
+                            "attempt_id": att.attempt_id,
+                            "attempt_no": att.attempt_no,
+                            "backend": att.backend,
+                            "detail": att.exit_reason or "",
+                        }
+                    )
 
     except Exception as exc:
         logger.warning("Failed to build timeline: %s", exc)
@@ -401,6 +440,7 @@ def ops_timeline(
 # ---------------------------------------------------------------------------
 # Lightweight ping (no admin required) — used by umrs-client over HTTP
 # ---------------------------------------------------------------------------
+
 
 class OpsPingResponse(BaseModel):
     status: str
@@ -432,6 +472,7 @@ def ops_ping() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # Client connection info (unauthenticated, non-secret)
 # ---------------------------------------------------------------------------
+
 
 class ConnectInfoZMQ(BaseModel):
     host: str
@@ -472,7 +513,9 @@ def ops_connect_info(
 
     control_port = int(os.environ.get("UMRS_CONTROL_PORT", "5555"))
     tunnel_mode = os.environ.get("UMRS_TUNNEL_MODE", "false").lower() in (
-        "true", "1", "yes",
+        "true",
+        "1",
+        "yes",
     )
     auth_type = os.environ.get("UMRS_ZMQ_AUTH_TYPE", "none").lower()
     # Prefer UMRS_ADVERTISE_HOST (client-facing) over UMRS_SERVER_HOST (bind).
@@ -617,7 +660,10 @@ def _get_or_create_user_s3cfg(username: str) -> str | None:
         s3_connection, _ = connect_to_s3(admin_s3cfg)
         try:
             _alias, s3cfg_content = minio_s3_create_user(
-                username, s3_connection, user_s3cfg_path, admin_s3cfg,
+                username,
+                s3_connection,
+                user_s3cfg_path,
+                admin_s3cfg,
             )
         finally:
             s3_connection.close()
@@ -633,9 +679,11 @@ def _get_or_create_user_s3cfg(username: str) -> str | None:
 # Configuration reload via HTTP (any authenticated user)
 # ---------------------------------------------------------------------------
 
+
 class OpsReloadRequest(BaseModel):
     """Optional request body for reload.  When ``user_config`` is provided,
     the server persists it to the user's config file before re-reading."""
+
     user_config: dict | None = None
 
 
@@ -700,13 +748,19 @@ def ops_reload(
     if body.user_config and x_user_id:
         try:
             from umrs.server.maintenance import persist_uploaded_user_config
+
             persist_uploaded_user_config(
-                body.user_config, x_user_id, _reload_configure_file,
+                body.user_config,
+                x_user_id,
+                _reload_configure_file,
             )
         except Exception as exc:
             import logging
+
             logging.getLogger(__name__).warning(
-                "Failed to persist user config for %s: %s", x_user_id, exc,
+                "Failed to persist user config for %s: %s",
+                x_user_id,
+                exc,
             )
 
     from umrs.server.maintenance import reload_configuration
@@ -731,7 +785,9 @@ def ops_reload(
         from umrs.shared.pretty_print import pretty_print_cfg_for_user
 
         summary = pretty_print_cfg_for_user(
-            _reload_buckets_cfg, x_user_id, print_output=False,
+            _reload_buckets_cfg,
+            x_user_id,
+            print_output=False,
         )
 
     return {
@@ -775,7 +831,11 @@ async def audit_trace(
     # Apply project_id filter post-query (ring buffer doesn't support it natively)
     if project_id:
         events = [e for e in events if e.get("project_id") == project_id]
-    return {"events": events, "count": len(events), "persistent": _audit_store_available()}
+    return {
+        "events": events,
+        "count": len(events),
+        "persistent": _audit_store_available(),
+    }
 
 
 @router.delete("/audit/retention")
@@ -789,7 +849,9 @@ async def audit_retention_cleanup(
     """
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
+        )
 
     from .audit_events import _audit_store
 
@@ -809,6 +871,7 @@ async def audit_retention_cleanup(
 def _audit_store_available() -> bool:
     """Check if persistent audit store is configured."""
     from .audit_events import _audit_store
+
     return _audit_store is not None
 
 
@@ -836,7 +899,9 @@ async def governance_ownership(
 
     if owner_id:
         records = store.list_owned(
-            owner_id, resource_type=resource_type, project_id=project_id,
+            owner_id,
+            resource_type=resource_type,
+            project_id=project_id,
         )
     elif project_id:
         records = store.list_by_project(project_id, resource_type=resource_type)
@@ -860,7 +925,9 @@ async def governance_transfer(
     """Transfer ownership of a resource (admin-only)."""
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
+        )
 
     from .governance import get_governance_store
 
@@ -872,7 +939,9 @@ async def governance_transfer(
         )
 
     updated = store.transfer_owner(
-        resource_type, resource_id, new_owner_id,
+        resource_type,
+        resource_id,
+        new_owner_id,
         new_project_id=new_project_id,
     )
     if not updated:
@@ -882,6 +951,7 @@ async def governance_transfer(
         )
 
     from .audit_events import emit_audit
+
     emit_audit(
         "governance.ownership_transferred",
         details={
@@ -891,7 +961,11 @@ async def governance_transfer(
             "new_project": new_project_id,
         },
     )
-    return {"status": "transferred", "resource_type": resource_type, "resource_id": resource_id}
+    return {
+        "status": "transferred",
+        "resource_type": resource_type,
+        "resource_id": resource_id,
+    }
 
 
 @router.get("/governance/quotas")
@@ -916,9 +990,13 @@ async def governance_quotas(
 @router.put("/governance/quotas")
 async def governance_set_quota(
     project_id: str = Query(..., description="Project ID"),
-    resource_type: str = Query(..., description="Resource type (endpoints, mcp_servers, etc.)"),
+    resource_type: str = Query(
+        ..., description="Resource type (endpoints, mcp_servers, etc.)"
+    ),
     max_count: int = Query(..., ge=0, description="Maximum allowed count"),
-    warn_count: int | None = Query(None, ge=0, description="Soft warning threshold (optional)"),
+    warn_count: int | None = Query(
+        None, ge=0, description="Soft warning threshold (optional)"
+    ),
     admin_token: str = Header("", alias="x-admin-token"),
 ):
     """Set quota for a project + resource type (admin-only).
@@ -929,7 +1007,9 @@ async def governance_set_quota(
     """
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
+        )
 
     if warn_count is not None and warn_count >= max_count:
         raise HTTPException(
@@ -949,6 +1029,7 @@ async def governance_set_quota(
     store.set_quota(project_id, resource_type, max_count, warn_count=warn_count)
 
     from .audit_events import emit_audit
+
     emit_audit(
         "governance.quota_set",
         project_id=project_id,
@@ -978,7 +1059,9 @@ async def governance_orphans(
     """
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
+        )
 
     from .governance import get_governance_store
 
@@ -994,6 +1077,7 @@ async def governance_orphans(
     if resource_type == "endpoints":
         try:
             from .endpoints import get_registry
+
             registry = get_registry()
             all_endpoints = registry.list_all()
             known_ids = [ep.job_id for ep in all_endpoints]
@@ -1002,6 +1086,7 @@ async def governance_orphans(
     elif resource_type == "mcp_servers":
         try:
             from .mcp import _get_store as _get_mcp_store
+
             mcp_store = _get_mcp_store()
             servers = mcp_store.list_servers()
             known_ids = [s.server_id for s in servers]
@@ -1024,7 +1109,9 @@ async def governance_cleanup_orphans(
     """
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
+        )
 
     from .governance import get_governance_store
 
@@ -1039,6 +1126,7 @@ async def governance_cleanup_orphans(
     if resource_type == "endpoints":
         try:
             from .endpoints import get_registry
+
             registry = get_registry()
             all_endpoints = registry.list_all()
             known_ids = [ep.job_id for ep in all_endpoints]
@@ -1047,6 +1135,7 @@ async def governance_cleanup_orphans(
     elif resource_type == "mcp_servers":
         try:
             from .mcp import _get_store as _get_mcp_store
+
             mcp_store = _get_mcp_store()
             servers = mcp_store.list_servers()
             known_ids = [s.server_id for s in servers]
@@ -1056,6 +1145,7 @@ async def governance_cleanup_orphans(
     deleted = store.cleanup_orphans(resource_type, known_ids)
 
     from .audit_events import emit_audit
+
     emit_audit(
         "governance.orphans_cleaned",
         details={
@@ -1121,7 +1211,9 @@ async def governance_create_share(
             )
 
     share = store.create_share(
-        resource_type, resource_id, granted_to,
+        resource_type,
+        resource_id,
+        granted_to,
         granted_to_type=granted_to_type,
         access_level=access_level,
         granted_by=user_id or "admin",
@@ -1129,6 +1221,7 @@ async def governance_create_share(
     )
 
     from .audit_events import emit_audit
+
     emit_audit(
         "governance.share_created",
         actor=user_id or "admin",
@@ -1175,12 +1268,15 @@ async def governance_revoke_share(
             )
 
     deleted = store.revoke_share(
-        resource_type, resource_id, granted_to,
+        resource_type,
+        resource_id,
+        granted_to,
         granted_to_type=granted_to_type,
     )
 
     if deleted:
         from .audit_events import emit_audit
+
         emit_audit(
             "governance.share_revoked",
             actor=user_id or "admin",
@@ -1251,7 +1347,9 @@ async def governance_analytics(
     """
     expected = os.environ.get("UMRS_ADMIN_TOKEN", "")
     if not expected or admin_token != expected:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Admin token required"
+        )
 
     from .governance import get_governance_store
     from .audit_events import query_audit_events
@@ -1282,14 +1380,16 @@ async def governance_analytics(
                 )
             for row in cur.fetchall():
                 pct = (row[3] / row[2] * 100) if row[2] > 0 else 0
-                analytics["quota_utilization"].append({
-                    "project_id": row[0],
-                    "resource_type": row[1],
-                    "max_count": row[2],
-                    "current_count": row[3],
-                    "warn_count": row[4],
-                    "utilization_pct": round(pct, 1),
-                })
+                analytics["quota_utilization"].append(
+                    {
+                        "project_id": row[0],
+                        "resource_type": row[1],
+                        "max_count": row[2],
+                        "current_count": row[3],
+                        "warn_count": row[4],
+                        "utilization_pct": round(pct, 1),
+                    }
+                )
         except Exception:
             store.conn.rollback()
         finally:
@@ -1335,8 +1435,7 @@ async def governance_analytics(
         e for e in gov_events if e.get("outcome") == "denied"
     ][:20]
     analytics["recent_warnings"] = [
-        e for e in gov_events
-        if e.get("event") == "governance.quota_warning"
+        e for e in gov_events if e.get("event") == "governance.quota_warning"
     ][:20]
 
     return analytics
@@ -1361,6 +1460,7 @@ async def schema_versions(
     # Audit schema
     try:
         from .audit_store import AUDIT_STORE_SCHEMA_VERSION
+
         versions["audit"] = {
             "code_version": AUDIT_STORE_SCHEMA_VERSION,
             "status": "active" if _audit_store_available() else "unavailable",
@@ -1371,6 +1471,7 @@ async def schema_versions(
     # Governance schema
     try:
         from .governance import GOVERNANCE_SCHEMA_VERSION, get_governance_store
+
         store = get_governance_store()
         versions["governance"] = {
             "code_version": GOVERNANCE_SCHEMA_VERSION,
@@ -1382,6 +1483,7 @@ async def schema_versions(
     # MCP schema
     try:
         from ..mcp.schema import MCP_SCHEMA_VERSION
+
         versions["mcp"] = {"code_version": MCP_SCHEMA_VERSION}
     except ImportError:
         versions["mcp"] = {"status": "not_installed"}

@@ -94,14 +94,10 @@ def process_s3_objects(
         with reentrant_lock:
             should_process = (
                 store_embeddings_flag
+                or (model is not None and getattr(model, "return_type", None) == "file")
                 or (
                     model is not None
-                    and getattr(model, "return_type", None) == "file"
-                )
-                or (
-                    model is not None
-                    and getattr(model, "type", None)
-                    in ("user_script", "user_workflow")
+                    and getattr(model, "type", None) in ("user_script", "user_workflow")
                 )
             )
             if should_process:
@@ -134,7 +130,7 @@ def process_s3_objects(
                         exit_status = TaskStatus.ERROR
             else:
                 print(
-                    f'Error: We do not compute embeddings for this bucket '
+                    f"Error: We do not compute embeddings for this bucket "
                     f'"{path_to_bucket}" (modality = "{modality_name}")\n'
                     f"\tUser is probably not configured"
                 )
@@ -149,10 +145,11 @@ def process_s3_objects(
     service_lifecycle = os.environ.get("UMRS_SERVICE_LIFECYCLE", "auto_release")
     if service_lifecycle == "auto_release":
         with active_threads.lock:
+            current_ident = threading.current_thread().ident
             still_running = sum(
                 1
-                for t in active_threads.thread_list
-                if t.is_alive() and t is not threading.current_thread()
+                for future in active_threads.thread_list
+                if not future.done() and future.ident != current_ident
             )
         if still_running == 0:
             from umrs.server.rivault_launcher import release_all_backend_jobs

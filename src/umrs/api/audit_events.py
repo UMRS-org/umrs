@@ -40,7 +40,9 @@ from typing import Any
 logger = logging.getLogger("umrs.audit")
 
 # Audit log level: uses INFO by default. Set UMRS_AUDIT_LEVEL=DEBUG to lower.
-_AUDIT_LEVEL = getattr(logging, os.getenv("UMRS_AUDIT_LEVEL", "INFO").upper(), logging.INFO)
+_AUDIT_LEVEL = getattr(
+    logging, os.getenv("UMRS_AUDIT_LEVEL", "INFO").upper(), logging.INFO
+)
 
 # Schema version for forward compatibility.
 AUDIT_SCHEMA_VERSION = "1"
@@ -65,6 +67,7 @@ def _get_correlation_id() -> str:
     """Retrieve correlation ID from request context (best-effort)."""
     try:
         from umrs.server.correlation import get_request_id
+
         return get_request_id()
     except Exception:
         return ""

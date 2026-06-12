@@ -46,9 +46,7 @@ class TenantSpec:
 
     def __post_init__(self) -> None:
         if not self.tenant_id and self.project_id:
-            self.tenant_id = hashlib.sha256(
-                self.project_id.encode()
-            ).hexdigest()[:16]
+            self.tenant_id = hashlib.sha256(self.project_id.encode()).hexdigest()[:16]
         if not self.schema_name and self.project_id:
             # Sanitize project_id for use as schema name
             safe = re.sub(r"[^a-z0-9_]", "_", self.project_id.lower())
@@ -207,9 +205,7 @@ class TenantManager:
                 return t
         return None
 
-    def list_tenants(
-        self, owner_id: Optional[str] = None
-    ) -> List[TenantSpec]:
+    def list_tenants(self, owner_id: Optional[str] = None) -> List[TenantSpec]:
         results: List[TenantSpec] = []
         for t in self._tenants.values():
             if owner_id and t.owner_id != owner_id:

@@ -75,10 +75,7 @@ class HMAEMaeStep(Step):
                 "total_images": len(original_keys),
                 "task": "mae_reconstruction",
                 "anomaly_count": anomaly_count,
-                "anomaly_rate": (
-                    anomaly_count / len(original_keys)
-                    if original_keys else 0.0
-                ),
+                "anomaly_rate": (anomaly_count / len(original_keys) if original_keys else 0.0),
                 "items": metadata_list,
             },
         )
@@ -101,7 +98,9 @@ class HMAEMaeStep(Step):
     ) -> tuple[str, Dict[str, Any], bool]:
         logger.info(
             "[%d/%d] HMAE mae: %s",
-            index + 1, total, source_key,
+            index + 1,
+            total,
+            source_key,
         )
 
         result = self._submit_and_poll(f"s3://{source_bucket}/{source_key}")
@@ -151,7 +150,9 @@ class HMAEMaeStep(Step):
             return
         logger.info(
             "  → mae_loss=%.4f [%s], output: %s",
-            meta["mae_loss"], status_str, meta["output_s3_key"],
+            meta["mae_loss"],
+            status_str,
+            meta["output_s3_key"],
         )
 
     # ------------------------------------------------------------------

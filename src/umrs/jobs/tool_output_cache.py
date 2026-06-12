@@ -255,9 +255,7 @@ class ToolOutputCache:
             session_cache.clear()
             return count
 
-        to_remove = [
-            k for k, v in session_cache.items() if v.tool_name == tool_name
-        ]
+        to_remove = [k for k, v in session_cache.items() if v.tool_name == tool_name]
         for k in to_remove:
             del session_cache[k]
         return len(to_remove)
@@ -317,7 +315,9 @@ class ToolOutputCache:
                         entry.session_id,
                         entry.tool_name,
                         entry.inputs_hash,
-                        json.dumps(entry.inputs_summary) if entry.inputs_summary else None,
+                        json.dumps(entry.inputs_summary)
+                        if entry.inputs_summary
+                        else None,
                         json.dumps(entry.output) if entry.output else None,
                         entry.output_ref,
                         entry.output_size_bytes,

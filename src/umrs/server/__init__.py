@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 def __getattr__(name: str):
     if name == "ServerCfg":
         from umrs.server.provisioning import ServerCfg
+
         return ServerCfg
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 

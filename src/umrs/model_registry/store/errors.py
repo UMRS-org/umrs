@@ -21,9 +21,7 @@ class DuplicateModelError(Exception):
         self.scope = scope
         self.project_id = project_id
         if scope == ModelScope.PROJECT:
-            super().__init__(
-                f"Model '{name}' already exists in project '{project_id}'"
-            )
+            super().__init__(f"Model '{name}' already exists in project '{project_id}'")
         else:
             super().__init__(f"Model '{name}' already exists in {scope.value} scope")
 

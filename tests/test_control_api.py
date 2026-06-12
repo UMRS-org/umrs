@@ -35,7 +35,9 @@ def test_list_jobs_uses_job_list_filters():
     mq.request_job_list.return_value = {"status": "ok", "jobs": []}
 
     api = UMRSControlAPI(mq, "tester")
-    result = api.list_jobs(project="demo", status="running", job_type="index_build", limit=5, offset=2)
+    result = api.list_jobs(
+        project="demo", status="running", job_type="index_build", limit=5, offset=2
+    )
 
     assert result == {"status": "ok", "jobs": []}
     mq.request_job_list.assert_called_once_with(
@@ -69,7 +71,9 @@ def test_get_job_returns_first_job_from_job_list():
 
 def test_execute_command_supports_workflow_run():
     mq = MagicMock()
-    mq.request_model_command.return_value = json.dumps({"status": "ok", "message": "workflow started"})
+    mq.request_model_command.return_value = json.dumps(
+        {"status": "ok", "message": "workflow started"}
+    )
 
     api = UMRSControlAPI(mq, "tester")
     result = api.execute_command('workflow run demo-flow --params {"alpha": 1} --bucket outbox')
@@ -96,7 +100,11 @@ def test_maintenance_reload_notifies_server():
 def test_maintenance_variants_notify_server():
     api = UMRSControlAPI(MagicMock(), "tester")
 
-    for action, expected_cmd in (("recompute", "RECOMPUTE"), ("update", "UPDATE"), ("check", "CHECK")):
+    for action, expected_cmd in (
+        ("recompute", "RECOMPUTE"),
+        ("update", "UPDATE"),
+        ("check", "CHECK"),
+    ):
         api._mq.reset_mock()
         api._mq.notify_server.return_value = True
 

@@ -65,17 +65,13 @@ def _two_endpoint_router() -> StepRouter:
     satisfy the capability.
     """
 
-    def find_models(
-        caps: List[str], mt: Optional[str]
-    ) -> List[Dict[str, Any]]:
+    def find_models(caps: List[str], mt: Optional[str]) -> List[Dict[str, Any]]:
         return [
             {"name": "vlm-a", "scope": "system", "model_type": "vision"},
             {"name": "vlm-b", "scope": "system", "model_type": "vision"},
         ]
 
-    def find_endpoint(
-        model_name: str, *_a: Any, **_k: Any
-    ) -> Optional[Dict[str, Any]]:
+    def find_endpoint(model_name: str, *_a: Any, **_k: Any) -> Optional[Dict[str, Any]]:
         if model_name == "vlm-a":
             return {"litellm_url": "http://a", "job_id": "ep-1"}
         if model_name == "vlm-b":
@@ -96,15 +92,11 @@ class _RecordingStep(Step):
     def run(self, ctx: StepContext) -> StepResult:
         return StepResult(
             extra={
-                "endpoint_id": (ctx.config.get("_routing") or {}).get(
-                    "endpoint_id"
+                "endpoint_id": (ctx.config.get("_routing") or {}).get("endpoint_id"),
+                "affinity_used": (ctx.config.get("_routing") or {}).get("affinity_used"),
+                "affinity_matched_parents": (ctx.config.get("_routing") or {}).get(
+                    "affinity_matched_parents"
                 ),
-                "affinity_used": (ctx.config.get("_routing") or {}).get(
-                    "affinity_used"
-                ),
-                "affinity_matched_parents": (
-                    ctx.config.get("_routing") or {}
-                ).get("affinity_matched_parents"),
             }
         )
 
@@ -114,9 +106,7 @@ class _RecordingStep(Step):
 # ---------------------------------------------------------------------------
 
 
-def test_runner_propagates_parent_endpoint_to_dependent(
-    probe_module, tmp_path, monkeypatch
-):
+def test_runner_propagates_parent_endpoint_to_dependent(probe_module, tmp_path, monkeypatch):
     """Parent lands on ep-1; child has two viable candidates and must
     pick ep-1 via affinity."""
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
@@ -168,9 +158,7 @@ def test_runner_propagates_parent_endpoint_to_dependent(
 # ---------------------------------------------------------------------------
 
 
-def test_runner_skips_affinity_for_unrelated_branch(
-    probe_module, tmp_path, monkeypatch
-):
+def test_runner_skips_affinity_for_unrelated_branch(probe_module, tmp_path, monkeypatch):
     """A step that does not declare a parent must not pick up affinity
     from an unrelated step that ran earlier in another wave."""
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
@@ -218,9 +206,7 @@ def test_runner_skips_affinity_for_unrelated_branch(
 # ---------------------------------------------------------------------------
 
 
-def test_routing_hints_off_disables_affinity_in_runner(
-    probe_module, tmp_path, monkeypatch
-):
+def test_routing_hints_off_disables_affinity_in_runner(probe_module, tmp_path, monkeypatch):
     monkeypatch.delenv("UMRS_STEP_ROUTER_MOCK", raising=False)
     # Slice 6: this test verifies declaration-order tiebreak when
     # affinity is off. Disable the feedback signal so the parent's
@@ -273,9 +259,7 @@ def test_routing_hints_off_disables_affinity_in_runner(
 # ---------------------------------------------------------------------------
 
 
-def test_runner_records_exec_time_outcome_in_routing_log(
-    probe_module, tmp_path, monkeypatch
-):
+def test_runner_records_exec_time_outcome_in_routing_log(probe_module, tmp_path, monkeypatch):
     """The runner must annotate each routing entry with the realised
     exec_time_ms and an outcome string after the step finishes."""
     import time as _time
@@ -327,9 +311,7 @@ def test_runner_records_exec_time_outcome_in_routing_log(
 # ---------------------------------------------------------------------------
 
 
-def test_runner_records_outcome_into_feedback_store(
-    probe_module, tmp_path, monkeypatch
-):
+def test_runner_records_outcome_into_feedback_store(probe_module, tmp_path, monkeypatch):
     """After a successful step, the chosen endpoint's EWMA must be set."""
     import time as _time
 

@@ -254,7 +254,9 @@ def _record_trace_duration(parts: _LineageParts, trace: TraceRecord) -> None:
         parts.durations[trace.trace_id] = duration
 
 
-def _record_trace_edge(parts: _LineageParts, trace: TraceRecord, trace_ids: set[str]) -> None:
+def _record_trace_edge(
+    parts: _LineageParts, trace: TraceRecord, trace_ids: set[str]
+) -> None:
     if not trace.parent_trace_id or trace.parent_trace_id not in trace_ids:
         return
     parts.edges.append(LineageEdge(source=trace.parent_trace_id, target=trace.trace_id))
@@ -266,7 +268,9 @@ def _root_ids(traces: list[TraceRecord], parent_set: set[str]) -> list[str]:
     return [trace.trace_id for trace in traces if trace.trace_id not in parent_set]
 
 
-def _leaf_ids(traces: list[TraceRecord], children_map: dict[str, list[str]]) -> list[str]:
+def _leaf_ids(
+    traces: list[TraceRecord], children_map: dict[str, list[str]]
+) -> list[str]:
     return [trace.trace_id for trace in traces if trace.trace_id not in children_map]
 
 
@@ -288,7 +292,9 @@ def _build_metrics(
         failed_count=status_counts["failed"],
         running_count=status_counts["running"],
         total_duration_seconds=_total_duration_seconds(traces),
-        critical_path_seconds=_compute_critical_path(root_ids, parts.children_map, parts.durations),
+        critical_path_seconds=_compute_critical_path(
+            root_ids, parts.children_map, parts.durations
+        ),
     )
 
 
@@ -297,7 +303,10 @@ def _max_depth(
     children_map: dict[str, list[str]],
     depth_cache: dict[str, int],
 ) -> int:
-    return max((_compute_depth(root_id, children_map, depth_cache) for root_id in root_ids), default=0)
+    return max(
+        (_compute_depth(root_id, children_map, depth_cache) for root_id in root_ids),
+        default=0,
+    )
 
 
 def _total_duration_seconds(traces: list[TraceRecord]) -> float | None:

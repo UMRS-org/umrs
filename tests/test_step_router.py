@@ -202,9 +202,7 @@ def test_default_router_falls_back_to_env(monkeypatch):
 
 
 def test_routing_decision_round_trips_via_to_dict():
-    d = RoutingDecision(
-        api_base="http://x", model="m", endpoint_id="ep", resolved_via="mock"
-    )
+    d = RoutingDecision(api_base="http://x", model="m", endpoint_id="ep", resolved_via="mock")
     out = d.to_dict()
     assert out["api_base"] == "http://x"
     assert out["model"] == "m"
@@ -287,9 +285,7 @@ def test_resolve_respects_affinity_disabled_hint(monkeypatch):
     router = _two_endpoint_router(monkeypatch)
     spec = _spec(name="child", requires=["vision"], model_type="vision")
 
-    hints = AffinityHints(
-        parent_endpoint_ids={"parent": "ep-2"}, disabled=True
-    )
+    hints = AffinityHints(parent_endpoint_ids={"parent": "ep-2"}, disabled=True)
     decision = router.resolve(spec, affinity_hints=hints)
     assert decision.endpoint_id == "ep-1"  # default, not ep-2
     assert decision.affinity_used is False
@@ -298,9 +294,7 @@ def test_resolve_respects_affinity_disabled_hint(monkeypatch):
 def test_resolve_without_affinity_hints_unchanged(monkeypatch):
     """Calling ``resolve`` without the new kwarg behaves exactly as before."""
     router = _two_endpoint_router(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-1"
     assert decision.affinity_used is False
     assert decision.affinity_matched_parents == []
@@ -364,9 +358,7 @@ def test_load_penalty_breaks_affinity_tie(monkeypatch):
         a_load={"active_requests": 8, "max_concurrency": 8},  # saturated
         b_load={"active_requests": 0, "max_concurrency": 8},  # idle
     )
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # Without load awareness, ep-1 (declaration order) would win.
     # With load awareness, ep-2 (idle) wins.
     assert decision.endpoint_id == "ep-2"
@@ -434,9 +426,7 @@ def test_load_weight_zero_disables_load_term(monkeypatch):
         b_load={"active_requests": 0, "max_concurrency": 8},
     )
     # Without affinity, ties broken by declaration order -> ep-1.
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-1"
     # load_score is still recorded for observability even when weight=0.
     assert decision.load_score == pytest.approx(1.0)
@@ -469,18 +459,14 @@ def test_load_norm_top_level_override(monkeypatch):
         }
 
     router = StepRouter(find_models=find_models, find_endpoint=find_endpoint)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-2"
 
 
 def test_no_load_metadata_preserves_legacy_order(monkeypatch):
     """Endpoints without any load info score 0; declaration order wins."""
     router = _two_endpoint_router_with_load(monkeypatch)  # no metadata
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-1"
     assert decision.load_score == pytest.approx(0.0)
     assert decision.total_score == pytest.approx(0.0)
@@ -513,9 +499,7 @@ def test_scope_tier_is_hard_gate_not_score(monkeypatch):
         }
 
     router = StepRouter(find_models=find_models, find_endpoint=find_endpoint)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # System tier wins despite being saturated.
     assert decision.endpoint_id == "ep-sys"
 
@@ -530,9 +514,7 @@ def test_latency_penalty_breaks_tie(monkeypatch):
         a_load={"avg_latency_ms": 2000},  # slow
         b_load={"avg_latency_ms": 200},  # fast
     )
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # Default: w_lat=0.3, ref=1000ms.
     # ep-1: 0 - 0.3*2.0 = -0.6;  ep-2: 0 - 0.3*0.2 = -0.06. ep-2 wins.
     assert decision.endpoint_id == "ep-2"
@@ -546,9 +528,7 @@ def test_queue_time_penalty_breaks_tie(monkeypatch):
         a_load={"queue_time_ms": 2000},
         b_load={"queue_time_ms": 50},
     )
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # Default: w_q=0.3, queue_ref=500ms.
     # ep-1: 0 - 0.3*4.0 = -1.2;  ep-2: 0 - 0.3*0.1 = -0.03. ep-2 wins.
     assert decision.endpoint_id == "ep-2"
@@ -582,17 +562,13 @@ def test_softcap_penalty_at_saturation(monkeypatch):
     # ep-2: 0.0 - 0.5*0.9 - 0   = -0.45
     # ep-1 still wins on affinity here. To verify softcap fires, drop
     # affinity and check ep-2 wins.
-    decision_no_aff = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision_no_aff = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision_no_aff.endpoint_id == "ep-2"
     # Sanity: the saturated endpoint's load_score is exactly 1.0.
     # Pick ep-1 deliberately to inspect: route again with weight=0
     # disables softcap entirely → declaration order returns.
     monkeypatch.setenv("UMRS_ROUTER_LOAD_WEIGHT", "0")
-    decision_off = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision_off = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision_off.endpoint_id == "ep-1"
 
 
@@ -604,9 +580,7 @@ def test_softcap_disabled_via_env(monkeypatch):
         a_load={"active_requests": 10, "max_concurrency": 10},
         b_load={"active_requests": 9, "max_concurrency": 10},
     )
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # Linear load only: ep-2 still slightly less loaded → still wins.
     assert decision.endpoint_id == "ep-2"
     # But the gap is much smaller without softcap.
@@ -616,9 +590,7 @@ def test_softcap_disabled_via_env(monkeypatch):
 def test_latency_and_queue_default_zero_without_metadata(monkeypatch):
     """Endpoints without latency/queue telemetry score 0 on those terms."""
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.latency_score == pytest.approx(0.0)
     assert decision.queue_score == pytest.approx(0.0)
 
@@ -631,9 +603,7 @@ def test_latency_ref_env_override(monkeypatch):
         a_load={"avg_latency_ms": 200},  # was 0.2 with default ref; now 1.0
         b_load={"avg_latency_ms": 100},  # was 0.1 with default ref; now 0.5
     )
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-2"
     assert decision.latency_score == pytest.approx(0.5)
 
@@ -682,9 +652,7 @@ def test_feedback_norm_biases_routing(monkeypatch):
 
     # No metadata-reported latency; only feedback differs.
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-2"
     assert decision.feedback_score == pytest.approx(0.0)
     reset_feedback_store()
@@ -702,9 +670,7 @@ def test_feedback_weight_zero_disables(monkeypatch):
     monkeypatch.setenv("UMRS_ROUTER_FEEDBACK_WEIGHT", "0")
 
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # Feedback disabled -> declaration order wins (ep-1).
     assert decision.endpoint_id == "ep-1"
     reset_feedback_store()
@@ -719,9 +685,7 @@ def test_feedback_cold_endpoints_score_zero(monkeypatch):
     monkeypatch.setenv("UMRS_ROUTER_EXPLORE_EPSILON", "0")
     monkeypatch.setenv("UMRS_ROUTER_MIN_VISITS", "0")
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-1"
     assert decision.feedback_score == pytest.approx(0.0)
 
@@ -796,9 +760,7 @@ def test_failure_score_biases_routing(monkeypatch):
     monkeypatch.setenv("UMRS_ROUTER_MIN_VISITS", "0")
 
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-2"
     assert decision.failure_score == pytest.approx(0.0)
     reset_feedback_store()
@@ -819,9 +781,7 @@ def test_failure_weight_zero_disables(monkeypatch):
     monkeypatch.setenv("UMRS_ROUTER_MIN_VISITS", "0")
 
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # Failure penalty disabled -> declaration order wins.
     assert decision.endpoint_id == "ep-1"
     reset_feedback_store()
@@ -851,9 +811,7 @@ def test_latency_decorrelation_shrinks_when_feedback_present(monkeypatch):
         a_load={"avg_latency_ms": 5000},  # would normally lose
         b_load={},  # cold
     )
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-1"
     reset_feedback_store()
 
@@ -871,9 +829,7 @@ def test_latency_decorrelation_does_not_apply_to_cold(monkeypatch):
         a_load={"avg_latency_ms": 5000},  # cold + slow -> should lose
         b_load={"avg_latency_ms": 100},  # cold + fast
     )
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-2"
 
 
@@ -892,9 +848,7 @@ def test_ucb_cold_endpoint_prioritised(monkeypatch):
     monkeypatch.setenv("UMRS_ROUTER_UCB_C", "2.0")
 
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # ep-2 (cold) must be chosen because UCB bonus is maximal.
     assert decision.endpoint_id == "ep-2"
     reset_feedback_store()
@@ -916,9 +870,7 @@ def test_ucb_bonus_decays_with_visits(monkeypatch):
     monkeypatch.setenv("UMRS_ROUTER_UCB_C", "1.0")
 
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     # With equal visits and equal load, declaration order wins (ep-1).
     assert decision.endpoint_id == "ep-1"
     reset_feedback_store()
@@ -939,9 +891,7 @@ def test_ucb_weight_zero_disables_exploration(monkeypatch):
 
     router = _two_endpoint_router_with_load(monkeypatch)
     for _ in range(5):
-        decision = router.resolve(
-            _spec(requires=["vision"], model_type="vision")
-        )
+        decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
         # With UCB disabled, declaration order + equal scores picks ep-1.
         assert decision.endpoint_id == "ep-1"
         assert decision.exploration_used is False
@@ -965,16 +915,12 @@ def test_ucb_c_controls_bonus_strength(monkeypatch):
     monkeypatch.setenv("UMRS_ROUTER_FEEDBACK_WEIGHT", "0")
 
     router = _two_endpoint_router_with_load(monkeypatch)
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-1"
 
     # Now crank C high — ep-2 (cold) should win.
     monkeypatch.setenv("UMRS_ROUTER_UCB_C", "10.0")
-    decision = router.resolve(
-        _spec(requires=["vision"], model_type="vision")
-    )
+    decision = router.resolve(_spec(requires=["vision"], model_type="vision"))
     assert decision.endpoint_id == "ep-2"
     reset_feedback_store()
 
@@ -1198,6 +1144,15 @@ def test_decision_breakdown_round_trips(monkeypatch):
     assert "decision_breakdown" in d
     assert isinstance(d["decision_breakdown"], dict)
     # All expected keys present.
-    for key in ("affinity", "load", "latency", "queue", "feedback",
-                "failure", "softcap", "ucb", "capability"):
+    for key in (
+        "affinity",
+        "load",
+        "latency",
+        "queue",
+        "feedback",
+        "failure",
+        "softcap",
+        "ucb",
+        "capability",
+    ):
         assert key in d["decision_breakdown"]

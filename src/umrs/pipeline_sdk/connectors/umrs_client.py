@@ -33,10 +33,13 @@ class UMRSClientConnector:
             from the host.
     """
 
-    def __init__(self, client_bin: str = "/opt/umrs/client_umrs.py",
-                 user_config: str | None = None,
-                 server_ip: str | None = None,
-                 container: str | None = None):
+    def __init__(
+        self,
+        client_bin: str = "/opt/umrs/client_umrs.py",
+        user_config: str | None = None,
+        server_ip: str | None = None,
+        container: str | None = None,
+    ):
         self.client_bin = client_bin
         self.user_config = user_config or _default_user_config_path()
         self.server_ip = server_ip
@@ -63,16 +66,16 @@ class UMRSClientConnector:
 
     def get_status(self) -> dict:
         """Query the status of all tasks (``status all --output json``)."""
-        out = self._run_client("--output", "json", "status", "all",
-                               capture=True)
+        out = self._run_client("--output", "json", "status", "all", capture=True)
         for line in reversed(out.strip().splitlines()):
             line = line.strip()
             if line.startswith("{"):
                 return json.loads(line)
         return {}
 
-    def wait_for_embeddings(self, timeout: float = 600.0,
-                            poll_interval: float = 10.0) -> bool:
+    def wait_for_embeddings(
+        self, timeout: float = 600.0, poll_interval: float = 10.0
+    ) -> bool:
         """Poll ``status all`` until all tasks finish.
 
         Returns True if all succeeded, False if any errored.
@@ -95,21 +98,37 @@ class UMRSClientConnector:
                 return False
 
             elapsed = time.monotonic() - start
-            logger.info("Tasks running: %d, errors: %d (%.0fs elapsed)",
-                        running, errors, elapsed)
+            logger.info(
+                "Tasks running: %d, errors: %d (%.0fs elapsed)",
+                running,
+                errors,
+                elapsed,
+            )
             time.sleep(poll_interval)
 
         logger.error("Embedding wait timed out after %.0fs", timeout)
         return False
 
-    def export_embeddings(self, bucket_alias: str, local_path: str,
-                          fmt: str = "csv",
-                          profile: str = "minimal",
-                          db_host: str | None = None,
-                          db_user: str | None = None) -> str:
+    def export_embeddings(
+        self,
+        bucket_alias: str,
+        local_path: str,
+        fmt: str = "csv",
+        profile: str = "minimal",
+        db_host: str | None = None,
+        db_user: str | None = None,
+    ) -> str:
         """Export embeddings to a local file."""
-        args = ["--no-check-server", "export_embeddings",
-                bucket_alias, local_path, "--format", fmt, "--profile", profile]
+        args = [
+            "--no-check-server",
+            "export_embeddings",
+            bucket_alias,
+            local_path,
+            "--format",
+            fmt,
+            "--profile",
+            profile,
+        ]
         if db_host:
             args.extend(["--db-host", db_host])
         if db_user:
@@ -133,7 +152,10 @@ class UMRSClientConnector:
         cmd = self._build_cmd(*args)
         logger.debug("Running: %s", " ".join(cmd))
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120,
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         if result.returncode != 0:
             logger.error("UMRS client error:\n%s", result.stderr)

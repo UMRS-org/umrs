@@ -25,8 +25,11 @@ logger = logging.getLogger(__name__)
 # HTTP config persistence helper
 # ---------------------------------------------------------------------------
 
+
 def persist_uploaded_user_config(
-    user_config: dict, expected_username: str, configure_file: str,
+    user_config: dict,
+    expected_username: str,
+    configure_file: str,
 ) -> None:
     """Write a user config dict to disk so the next reload picks it up.
 
@@ -60,7 +63,9 @@ def persist_uploaded_user_config(
             _json.dump(user_config, f, indent=4, ensure_ascii=False)
             f.write("\n")
         ok, uname, dest = _persist_file(
-            tmp_path, configure_file, user_config_map,
+            tmp_path,
+            configure_file,
+            user_config_map,
             expected_username=expected_username,
             allow_create=True,
         )
@@ -80,6 +85,7 @@ def persist_uploaded_user_config(
 # ---------------------------------------------------------------------------
 # Maintenance commands
 # ---------------------------------------------------------------------------
+
 
 def recompute_all_objects(
     active_threads,
@@ -339,6 +345,7 @@ def check_objects(
 # Outcome filtering (per-user scoping for STATUS replies)
 # ---------------------------------------------------------------------------
 
+
 def filter_outcome(active_threads, outcome, buckets_cfg, key):
     """For each user in the configuration, store its relevant data
     to be later visible via STATUS."""
@@ -403,24 +410,27 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
         if cmd_upper == TaskCmd.RELOAD:
             # Build a per-user configuration summary from the live buckets_cfg
             # instead of forwarding the full server summary.
-            summary = pretty_print_cfg_for_user(buckets_cfg, client_id, print_output=False)
+            summary = pretty_print_cfg_for_user(
+                buckets_cfg, client_id, print_output=False
+            )
             result = {"summary": summary}
             # Attach s3cfg credentials for this user (if available)
-            s3cfg_map = outcome.get("s3cfg_by_user") if isinstance(outcome, dict) else None
+            s3cfg_map = (
+                outcome.get("s3cfg_by_user") if isinstance(outcome, dict) else None
+            )
             if s3cfg_map and client_id in s3cfg_map:
                 result["s3cfg_content"] = s3cfg_map[client_id]
             return result
     except Exception as e:
         # If filtering fails for any reason, fall back to original outcome
-        print(
-            f"Warning: failed to filter outcome for client '{client_id}': {e}"
-        )
+        print(f"Warning: failed to filter outcome for client '{client_id}': {e}")
     return outcome
 
 
 # ---------------------------------------------------------------------------
 # Configuration reload and validation
 # ---------------------------------------------------------------------------
+
 
 def check_duplicated_database(users):
     """Raise if two users share the same database name."""
@@ -466,9 +476,7 @@ def _migrate_list_policies(admin_s3_cfg_path, users):
             print(f"Warning: policy migration failed for '{username}': {e}")
 
 
-def reload_configuration(
-    configure_file, buckets_cfg, user_config_map, log_output=True
-):
+def reload_configuration(configure_file, buckets_cfg, user_config_map, log_output=True):
     """Hot-reload server configuration from disk."""
     from umrs.server.json_config import load_server_cfg_file
     from umrs.server.provisioning import create_s3_sql_users
@@ -488,9 +496,7 @@ def reload_configuration(
                 if conn:
                     conn.close()
             except Exception as e:
-                print(
-                    f"Warning: failed to close S3 connection during reload: {e}"
-                )
+                print(f"Warning: failed to close S3 connection during reload: {e}")
 
         s3cfg_by_user = {}
         for u in new_users:
@@ -526,6 +532,7 @@ def reload_configuration(
 # ---------------------------------------------------------------------------
 # Maintenance command dispatcher
 # ---------------------------------------------------------------------------
+
 
 def handle_maintenance_command(
     active_threads,
@@ -596,6 +603,7 @@ def handle_maintenance_command(
 # Bucket purge (server-side, uses admin S3 credentials)
 # ---------------------------------------------------------------------------
 
+
 def handle_purge_buckets(
     cmd: str,
     client_id: str,
@@ -636,26 +644,35 @@ def handle_purge_buckets(
         if not bname.startswith(username_prefix):
             logger.warning(
                 "PURGE_BUCKETS denied: user=%s tried to delete bucket=%s (prefix mismatch)",
-                client_id, bname,
+                client_id,
+                bname,
             )
-            return json.dumps({
-                "status": "error",
-                "message": f"Bucket '{bname}' does not belong to user '{client_id}'",
-            })
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Bucket '{bname}' does not belong to user '{client_id}'",
+                }
+            )
 
     # Load admin S3 config to get the mc alias
     from umrs.shared.json_config import load_server_cfg_file
+
     try:
         admin_s3_cfg_file, _users, _cfg = load_server_cfg_file(configure_file)
     except Exception as exc:
-        return json.dumps({"status": "error", "message": f"Server config load failed: {exc}"})
+        return json.dumps(
+            {"status": "error", "message": f"Server config load failed: {exc}"}
+        )
 
     admin_cfg_path = os.path.expanduser(admin_s3_cfg_file)
     if not os.path.isfile(admin_cfg_path):
-        return json.dumps({"status": "error", "message": "Admin S3 config not found on server"})
+        return json.dumps(
+            {"status": "error", "message": "Admin S3 config not found on server"}
+        )
 
     import configparser
-    cfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+
+    cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
     cfg.read(admin_cfg_path)
     alias = cfg.get("default", "alias", fallback="myminio")
 
@@ -676,7 +693,10 @@ def handle_purge_buckets(
     if deleted:
         try:
             removed_experiences = _remove_purged_experiences_from_user_config(
-                deleted, client_id, username_prefix, configure_file,
+                deleted,
+                client_id,
+                username_prefix,
+                configure_file,
             )
         except Exception as exc:
             logger.warning("Could not update user config after purge: %s", exc)
@@ -704,7 +724,7 @@ def _remove_purged_experiences_from_user_config(
     # Bucket format: <username_norm>.<xp_name_norm>.<alias>[-output]
     purged_xp_names: set[str] = set()
     for bname in deleted_buckets:
-        rest = bname[len(username_prefix):]  # already validated prefix
+        rest = bname[len(username_prefix) :]  # already validated prefix
         parts = rest.split(".", 1)
         if len(parts) >= 2:
             purged_xp_names.add(parts[0])
@@ -714,6 +734,7 @@ def _remove_purged_experiences_from_user_config(
 
     # Find the user's config file via server config
     from umrs.shared.json_config import load_server_cfg_file
+
     _admin_s3, users, _server_cfg = load_server_cfg_file(configure_file)
     user_cfg = None
     user_cfg_path = None
@@ -743,12 +764,14 @@ def _remove_purged_experiences_from_user_config(
 
     # Re-read the raw file to preserve structure, then update experiences
     import os
+
     cfg_path = os.path.expanduser(user_cfg_path)
     with open(cfg_path, encoding="utf-8") as f:
         raw_cfg = _json.load(f)
 
     raw_cfg["experiences"] = [
-        xp for xp in raw_cfg.get("experiences", [])
+        xp
+        for xp in raw_cfg.get("experiences", [])
         if xp.get("xp_name", "").strip().lower().replace(" ", "-").replace("_", "-")
         not in purged_xp_names
     ]
@@ -759,6 +782,8 @@ def _remove_purged_experiences_from_user_config(
 
     logger.info(
         "Removed %d experience(s) from %s after purge: %s",
-        len(removed_names), cfg_path, ", ".join(removed_names),
+        len(removed_names),
+        cfg_path,
+        ", ".join(removed_names),
     )
     return removed_names

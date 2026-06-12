@@ -56,11 +56,11 @@ class ScheduleSpec:
 # ── Cron parser (minimal, 5-field) ──────────────────────────────────────────
 
 _CRON_FIELD_RANGES = [
-    (0, 59),   # minute
-    (0, 23),   # hour
-    (1, 31),   # day of month
-    (1, 12),   # month
-    (0, 6),    # day of week (0=Sun)
+    (0, 59),  # minute
+    (0, 23),  # hour
+    (1, 31),  # day of month
+    (1, 12),  # month
+    (0, 6),  # day of week (0=Sun)
 ]
 
 
@@ -95,14 +95,18 @@ def validate_cron(expr: str) -> List[str]:
                 try:
                     a, b = int(bounds[0]), int(bounds[1])
                     if a < lo or b > hi or a > b:
-                        errors.append(f"{field_names[i]}: range {a}-{b} out of bounds ({lo}-{hi})")
+                        errors.append(
+                            f"{field_names[i]}: range {a}-{b} out of bounds ({lo}-{hi})"
+                        )
                 except ValueError:
                     errors.append(f"{field_names[i]}: non-numeric range '{token}'")
             else:
                 try:
                     v = int(token)
                     if v < lo or v > hi:
-                        errors.append(f"{field_names[i]}: value {v} out of bounds ({lo}-{hi})")
+                        errors.append(
+                            f"{field_names[i]}: value {v} out of bounds ({lo}-{hi})"
+                        )
                 except ValueError:
                     errors.append(f"{field_names[i]}: non-numeric value '{token}'")
     return errors

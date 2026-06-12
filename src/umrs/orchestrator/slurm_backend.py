@@ -74,7 +74,9 @@ class SlurmBackend(OrchestratorBackend):
         """Submit a Slurm job for Mini-RiVault."""
         model = model_path or self.config.model_path
         if not model:
-            raise ValueError("model_path is required (set VLLM_MODEL_PATH or pass explicitly)")
+            raise ValueError(
+                "model_path is required (set VLLM_MODEL_PATH or pass explicitly)"
+            )
 
         # Generate sbatch script
         script_content = self._build_sbatch_script(model, **kwargs)
@@ -146,9 +148,11 @@ class SlurmBackend(OrchestratorBackend):
     async def _query_squeue_status(self, job_id: str) -> JobStatus | None:
         proc = await asyncio.create_subprocess_exec(
             "squeue",
-            "-j", job_id,
+            "-j",
+            job_id,
             "-h",
-            "-o", "%T",  # State
+            "-o",
+            "%T",  # State
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -161,9 +165,11 @@ class SlurmBackend(OrchestratorBackend):
     async def _query_sacct_status(self, job_id: str) -> JobStatus:
         proc = await asyncio.create_subprocess_exec(
             "sacct",
-            "-j", job_id,
+            "-j",
+            job_id,
             "-n",
-            "-o", "State",
+            "-o",
+            "State",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -270,9 +276,11 @@ class SlurmBackend(OrchestratorBackend):
         user = os.environ.get("USER", "")
         proc = await asyncio.create_subprocess_exec(
             "squeue",
-            "-u", user,
+            "-u",
+            user,
             "-h",
-            "-o", "%i|%T",
+            "-o",
+            "%i|%T",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -290,11 +298,13 @@ class SlurmBackend(OrchestratorBackend):
                 continue
             status = self._status_from_slurm_state(state)
             if status_filter is None or status in status_filter:
-                jobs.append(JobInfo(
-                    job_id=job_id,
-                    status=status,
-                    backend=self.backend_name,
-                ))
+                jobs.append(
+                    JobInfo(
+                        job_id=job_id,
+                        status=status,
+                        backend=self.backend_name,
+                    )
+                )
                 seen.add(job_id)
 
     async def cleanup_orphans(self) -> int:
@@ -324,9 +334,11 @@ class SlurmBackend(OrchestratorBackend):
         active_ids: set[str] = set()
         proc = await asyncio.create_subprocess_exec(
             "squeue",
-            "-u", user,
+            "-u",
+            user,
             "-h",
-            "-o", "%i",
+            "-o",
+            "%i",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -351,8 +363,10 @@ class SlurmBackend(OrchestratorBackend):
             proc = await asyncio.create_subprocess_exec(
                 "sinfo",
                 "-h",
-                "-p", self.config.slurm_partition,
-                "-o", "%P %a %D",
+                "-p",
+                self.config.slurm_partition,
+                "-o",
+                "%P %a %D",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )

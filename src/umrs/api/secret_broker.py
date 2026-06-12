@@ -45,6 +45,7 @@ def get_broker() -> SecretBroker:
 # Request / Response models
 # ---------------------------------------------------------------------------
 
+
 class IssueLeaseRequest(BaseModel):
     job_id: str
     secret_name: str
@@ -108,7 +109,10 @@ class AuditEntryResponse(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
-@router.post("/lease", response_model=IssueLeaseResponse, status_code=status.HTTP_201_CREATED)
+
+@router.post(
+    "/lease", response_model=IssueLeaseResponse, status_code=status.HTTP_201_CREATED
+)
 def issue_lease(req: IssueLeaseRequest):
     broker = get_broker()
     lease, secret_value = broker.issue_lease(
@@ -153,8 +157,10 @@ def list_leases(
 ):
     broker = get_broker()
     results = broker.list_leases(
-        job_id=job_id, scope=scope,
-        active_only=active_only, limit=limit,
+        job_id=job_id,
+        scope=scope,
+        active_only=active_only,
+        limit=limit,
     )
     return [LeaseResponse(**l.to_dict()) for l in results]
 
@@ -204,7 +210,9 @@ def get_audit_trail(
 ):
     broker = get_broker()
     entries = broker.get_audit_trail(
-        lease_id=lease_id, operation=operation, limit=limit,
+        lease_id=lease_id,
+        operation=operation,
+        limit=limit,
     )
     return [AuditEntryResponse(**e.to_dict()) for e in entries]
 

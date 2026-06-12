@@ -21,7 +21,9 @@ def set_engine(engine) -> None:
 
 def _get_engine():
     if _engine is None:
-        raise HTTPException(status_code=503, detail="Knowledge search engine not initialized")
+        raise HTTPException(
+            status_code=503, detail="Knowledge search engine not initialized"
+        )
     return _engine
 
 
@@ -35,7 +37,9 @@ async def search_knowledge(
 ):
     """Search across knowledge namespaces with source attribution."""
     engine = _get_engine()
-    ns_list = [n.strip() for n in namespaces.split(",") if n.strip()] if namespaces else None
+    ns_list = (
+        [n.strip() for n in namespaces.split(",") if n.strip()] if namespaces else None
+    )
     result = engine.search(
         query=query,
         scope=scope,

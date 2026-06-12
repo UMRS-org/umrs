@@ -134,7 +134,9 @@ class ModelStore:
                         model.description,
                         json.dumps(model.serving_profile.to_dict()),
                         model.status.value,
-                        json.dumps(model.model_ref.to_dict()) if model.model_ref else None,
+                        json.dumps(model.model_ref.to_dict())
+                        if model.model_ref
+                        else None,
                         model.execution_authority_default.value,
                         json.dumps(model.capabilities.to_dict()),
                     ),
@@ -360,7 +362,7 @@ class ModelStore:
             cur.execute(
                 f"""
                 UPDATE model_catalog_entries
-                SET {', '.join(updates)}
+                SET {", ".join(updates)}
                 WHERE model_id = %s
                 RETURNING updated_at
                 """,
@@ -488,9 +490,13 @@ class ModelStore:
 
         publish_name = new_name if new_name else model.name
 
-        existing = self._find_model_by_name(publish_name, ModelScope.PROJECT, target_project_id)
+        existing = self._find_model_by_name(
+            publish_name, ModelScope.PROJECT, target_project_id
+        )
         if existing is not None:
-            raise DuplicateModelError(publish_name, ModelScope.PROJECT, target_project_id)
+            raise DuplicateModelError(
+                publish_name, ModelScope.PROJECT, target_project_id
+            )
 
         with self.conn.cursor() as cur:
             cur.execute(
@@ -509,7 +515,10 @@ class ModelStore:
 
         logger.info(
             "Published model %s (%s) to project %s as %s",
-            model_id, model.name, target_project_id, publish_name,
+            model_id,
+            model.name,
+            target_project_id,
+            publish_name,
         )
         METRICS.model_event("published")
 
@@ -600,9 +609,7 @@ class ModelStore:
     ) -> ModelPolicy:
         """Create a model policy (U-805)."""
         if ctx and not ctx.is_admin:
-            raise PermissionDeniedError(
-                ctx.user_id, "policy", "create", "Admin only"
-            )
+            raise PermissionDeniedError(ctx.user_id, "policy", "create", "Admin only")
 
         policy_id = generate_policy_id()
         default_serving_profile = default_serving_profile or ServingProfile()
@@ -748,9 +755,7 @@ class ModelStore:
     ) -> ModelPolicy:
         """Update a model policy."""
         if ctx and not ctx.is_admin:
-            raise PermissionDeniedError(
-                ctx.user_id, policy_id, "update", "Admin only"
-            )
+            raise PermissionDeniedError(ctx.user_id, policy_id, "update", "Admin only")
 
         self.get_policy(policy_id)
 
@@ -791,7 +796,7 @@ class ModelStore:
             cur.execute(
                 f"""
                 UPDATE model_policies
-                SET {', '.join(updates)}
+                SET {", ".join(updates)}
                 WHERE policy_id = %s
                 """,
                 params,
@@ -803,9 +808,7 @@ class ModelStore:
     def delete_policy(self, policy_id: str, ctx: AccessContext | None = None) -> None:
         """Delete a model policy."""
         if ctx and not ctx.is_admin:
-            raise PermissionDeniedError(
-                ctx.user_id, policy_id, "delete", "Admin only"
-            )
+            raise PermissionDeniedError(ctx.user_id, policy_id, "delete", "Admin only")
 
         with self.conn.cursor() as cur:
             cur.execute(
@@ -882,7 +885,9 @@ class ModelStore:
 
         self.path_validator.validate(storage_ref)
 
-        if self._check_duplicate(name, ModelScope.SYSTEM, None, ctx.user_id if ctx else None):
+        if self._check_duplicate(
+            name, ModelScope.SYSTEM, None, ctx.user_id if ctx else None
+        ):
             raise DuplicateModelError(name, ModelScope.SYSTEM)
 
         model_id = generate_model_id()
@@ -944,8 +949,7 @@ class ModelStore:
                 self.conn.commit()
 
             logger.info(
-                "Created system model %s (%s) with policy %s",
-                model_id, name, policy_id
+                "Created system model %s (%s) with policy %s", model_id, name, policy_id
             )
 
             return (
@@ -970,7 +974,13 @@ class ModelStore:
 
         if not policy.is_project_allowed(project_id):
             if project_id in policy.denied_projects:
-                return False, f"Project {project_id} is denied access to model {model_name}"
-            return False, f"Project {project_id} is not in allowed list for model {model_name}"
+                return (
+                    False,
+                    f"Project {project_id} is denied access to model {model_name}",
+                )
+            return (
+                False,
+                f"Project {project_id} is not in allowed list for model {model_name}",
+            )
 
         return True, None

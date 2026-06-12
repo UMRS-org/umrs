@@ -28,9 +28,9 @@ PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
 
 def _run(cmd: list[str], label: str) -> bool:
     """Run a command and return True on success."""
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {label}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     result = subprocess.run(cmd, cwd=str(REPO_ROOT))
     if result.returncode == 0:
         print(f"  ✓ {label} PASSED")
@@ -44,30 +44,40 @@ def main() -> int:
     results: list[tuple[str, bool]] = []
 
     # --- Boundary validators (always run) ---
-    results.append((
-        "Import boundary validator",
-        _run([PYTHON, "tools/import_boundary_validator.py"], "Import boundary validator"),
-    ))
-    results.append((
-        "Contracts fence",
-        _run([PYTHON, "tools/contracts_fence.py"], "Contracts fence"),
-    ))
-    results.append((
-        "Schema version tracker",
-        _run([PYTHON, "tools/schema_version_tracker.py"], "Schema version tracker"),
-    ))
-    results.append((
-        "Stale name validator",
-        _run([PYTHON, "tools/stale_name_validator.py"], "Stale name validator"),
-    ))
+    results.append(
+        (
+            "Import boundary validator",
+            _run([PYTHON, "tools/import_boundary_validator.py"], "Import boundary validator"),
+        )
+    )
+    results.append(
+        (
+            "Contracts fence",
+            _run([PYTHON, "tools/contracts_fence.py"], "Contracts fence"),
+        )
+    )
+    results.append(
+        (
+            "Schema version tracker",
+            _run([PYTHON, "tools/schema_version_tracker.py"], "Schema version tracker"),
+        )
+    )
+    results.append(
+        (
+            "Stale name validator",
+            _run([PYTHON, "tools/stale_name_validator.py"], "Stale name validator"),
+        )
+    )
 
     # --- Slurm script syntax check ---
     slurm_script = UMRS_ROOT / "src" / "umrs" / "mini-rivault-llm" / "serve-model.slurm"
     if slurm_script.exists():
-        results.append((
-            "Slurm script syntax",
-            _run(["bash", "-n", str(slurm_script)], "Slurm script syntax (bash -n)"),
-        ))
+        results.append(
+            (
+                "Slurm script syntax",
+                _run(["bash", "-n", str(slurm_script)], "Slurm script syntax (bash -n)"),
+            )
+        )
 
     # --- UMRS domain tests ---
     domain_tests = [
@@ -83,10 +93,12 @@ def main() -> int:
     ]
     existing_tests = [t for t in domain_tests if (REPO_ROOT / t).exists()]
     if existing_tests:
-        results.append((
-            "UMRS domain tests",
-            _run([PYTHON, "-m", "pytest"] + existing_tests + ["-q"], "UMRS domain tests"),
-        ))
+        results.append(
+            (
+                "UMRS domain tests",
+                _run([PYTHON, "-m", "pytest"] + existing_tests + ["-q"], "UMRS domain tests"),
+            )
+        )
 
     # --- Full mode: additional enforcement tests ---
     if full_mode:
@@ -102,25 +114,27 @@ def main() -> int:
         ]
         existing_enforcement = [t for t in enforcement_tests if (REPO_ROOT / t).exists()]
         if existing_enforcement:
-            results.append((
-                "Enforcement tests",
-                _run(
-                    [PYTHON, "-m", "pytest"] + existing_enforcement + ["-q"],
-                    "Enforcement tests (61 tests)",
-                ),
-            ))
+            results.append(
+                (
+                    "Enforcement tests",
+                    _run(
+                        [PYTHON, "-m", "pytest"] + existing_enforcement + ["-q"],
+                        "Enforcement tests (61 tests)",
+                    ),
+                )
+            )
 
     # --- Summary ---
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  VALIDATION SUMMARY")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     passed = sum(1 for _, ok in results if ok)
     failed = sum(1 for _, ok in results if not ok)
     for label, ok in results:
         status = "✓ PASS" if ok else "✗ FAIL"
         print(f"  {status}  {label}")
     print(f"\n  Total: {passed} passed, {failed} failed")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     return 0 if failed == 0 else 1
 

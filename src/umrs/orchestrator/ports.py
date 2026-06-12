@@ -116,9 +116,7 @@ class StaticRangeAllocator(PortAllocator):
         with self._lock:
             # Get currently allocated ports for this host
             allocated_on_host = {
-                alloc.port
-                for (h, _), alloc in self._allocations.items()
-                if h == host
+                alloc.port for (h, _), alloc in self._allocations.items() if h == host
             }
 
             # Try to find a free port

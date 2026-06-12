@@ -84,12 +84,13 @@ class FilesystemResolver(ModelRefResolver):
 
         path_normalized = os.path.normpath(path)
         allowed = any(
-            path_normalized.startswith(prefix)
-            for prefix in self.allowed_prefixes
+            path_normalized.startswith(prefix) for prefix in self.allowed_prefixes
         )
 
         if not allowed:
-            logger.warning(f"Path {path} not in allowed prefixes: {self.allowed_prefixes}")
+            logger.warning(
+                f"Path {path} not in allowed prefixes: {self.allowed_prefixes}"
+            )
             return False
 
         if not os.path.exists(path):

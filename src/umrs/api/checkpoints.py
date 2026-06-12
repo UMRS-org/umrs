@@ -43,6 +43,7 @@ def get_checkpoint_store() -> CheckpointStore:
 # Request / Response models
 # ---------------------------------------------------------------------------
 
+
 class SaveCheckpointRequest(BaseModel):
     job_id: str
     attempt_id: str
@@ -78,6 +79,7 @@ def _to_response(ckpt: Checkpoint) -> CheckpointResponse:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def save_checkpoint(

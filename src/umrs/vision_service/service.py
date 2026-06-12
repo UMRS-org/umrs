@@ -55,7 +55,10 @@ logger = logging.getLogger(__name__)
 
 def _require_presigned_urls() -> bool:
     return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
@@ -85,7 +88,9 @@ def _download_image_from_s3(s3, image_url):
     path = image_url[5:] if image_url.startswith("s3://") else image_url
     parts = path.split("/", 1)
     if len(parts) != 2:
-        raise ValueError(f"Invalid S3 image URL: {image_url}. Expected format: s3://bucket/key")
+        raise ValueError(
+            f"Invalid S3 image URL: {image_url}. Expected format: s3://bucket/key"
+        )
     bucket, key = parts
 
     obj = s3.get_object(Bucket=bucket, Key=key)
@@ -115,21 +120,30 @@ def _download_image_from_presigned_url(presigned_url, image_url):
             req = urllib.request.Request(presigned_url, method="GET")
             with urllib.request.urlopen(req, timeout=120) as resp:  # noqa: S310
                 image_bytes = resp.read()
-            return Image.open(io.BytesIO(image_bytes)).convert("RGB"), bucket, key, image_bytes
+            return (
+                Image.open(io.BytesIO(image_bytes)).convert("RGB"),
+                bucket,
+                key,
+                image_bytes,
+            )
         except (urllib.error.URLError, OSError) as exc:
             last_exc = exc
             if attempt < max_retries - 1:
-                backoff = 2 ** attempt
+                backoff = 2**attempt
                 logger.warning(
                     "Presigned URL download attempt %d/%d failed: %s. "
                     "Retrying in %ds...",
-                    attempt + 1, max_retries, exc, backoff,
+                    attempt + 1,
+                    max_retries,
+                    exc,
+                    backoff,
                 )
                 time.sleep(backoff)
             else:
                 logger.error(
                     "Presigned URL download failed after %d attempts: %s",
-                    max_retries, exc,
+                    max_retries,
+                    exc,
                 )
     raise last_exc  # type: ignore[misc]
 
@@ -218,37 +232,51 @@ class VisionModelService:
         logger.info(
             "Vision infer request: model_type=%s image_url=%s output_bucket=%s "
             "presigned_input=%s presigned_output_keys=%s",
-            model_type, image_url, output_bucket,
+            model_type,
+            image_url,
+            output_bucket,
             bool(presigned_input_url),
             list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
         )
 
         adapter = ADAPTER_REGISTRY.get(model_type)
         if adapter is None:
-            logger.error("Unknown vision model_type '%s'. Available: %s",
-                         model_type, sorted(ADAPTER_REGISTRY))
-            return pickle.dumps({
-                "error": (
-                    f"Unknown model_type '{model_type}'. "
-                    f"Available: {sorted(ADAPTER_REGISTRY)}"
-                ),
-            }, protocol=pickle.HIGHEST_PROTOCOL)
+            logger.error(
+                "Unknown vision model_type '%s'. Available: %s",
+                model_type,
+                sorted(ADAPTER_REGISTRY),
+            )
+            return pickle.dumps(
+                {
+                    "error": (
+                        f"Unknown model_type '{model_type}'. "
+                        f"Available: {sorted(ADAPTER_REGISTRY)}"
+                    ),
+                },
+                protocol=pickle.HIGHEST_PROTOCOL,
+            )
 
         try:
             if _require_presigned_urls() and not presigned_input_url:
-                return pickle.dumps({
-                    "error": (
-                        "presigned_input_url is required when "
-                        "VISION_REQUIRE_PRESIGNED_URLS=true"
-                    ),
-                    "source_image": image_url,
-                }, protocol=pickle.HIGHEST_PROTOCOL)
+                return pickle.dumps(
+                    {
+                        "error": (
+                            "presigned_input_url is required when "
+                            "VISION_REQUIRE_PRESIGNED_URLS=true"
+                        ),
+                        "source_image": image_url,
+                    },
+                    protocol=pickle.HIGHEST_PROTOCOL,
+                )
 
             # Download input image: prefer presigned URL, fall back to direct S3
             if presigned_input_url:
                 logger.debug("Downloading vision input via presigned URL")
-                image, bucket, key, raw_image_bytes = _download_image_from_presigned_url(
-                    presigned_input_url, image_url,
+                image, bucket, key, raw_image_bytes = (
+                    _download_image_from_presigned_url(
+                        presigned_input_url,
+                        image_url,
+                    )
                 )
                 s3 = (
                     None
@@ -262,7 +290,9 @@ class VisionModelService:
                     "Vision direct S3 endpoint: %s",
                     os.environ.get("S3_ENDPOINT_URL", "(not set)"),
                 )
-                image, bucket, key, raw_image_bytes = _download_image_from_s3(s3, image_url)
+                image, bucket, key, raw_image_bytes = _download_image_from_s3(
+                    s3, image_url
+                )
 
             expected_outputs = adapter.describe_outputs(key, inference_config)
             if _require_presigned_urls():
@@ -272,23 +302,37 @@ class VisionModelService:
                     if out_key not in (presigned_output_urls or {})
                 )
                 if missing:
-                    return pickle.dumps({
-                        "error": (
-                            "Missing presigned output URLs for "
-                            + ", ".join(missing)
-                        ),
-                        "source_image": image_url,
-                    }, protocol=pickle.HIGHEST_PROTOCOL)
+                    return pickle.dumps(
+                        {
+                            "error": (
+                                "Missing presigned output URLs for "
+                                + ", ".join(missing)
+                            ),
+                            "source_image": image_url,
+                        },
+                        protocol=pickle.HIGHEST_PROTOCOL,
+                    )
 
-            logger.debug("Vision input downloaded: bucket=%s key=%s size=%s",
-                         bucket, key, image.size)
+            logger.debug(
+                "Vision input downloaded: bucket=%s key=%s size=%s",
+                bucket,
+                key,
+                image.size,
+            )
 
             model = self._cache.get_or_load(adapter, inference_config)
-            logger.debug("Dispatching vision request to adapter %s", type(adapter).__name__)
+            logger.debug(
+                "Dispatching vision request to adapter %s", type(adapter).__name__
+            )
 
             result = adapter.infer(
-                model, image, bucket, key,
-                inference_config, s3, output_bucket or bucket,
+                model,
+                image,
+                bucket,
+                key,
+                inference_config,
+                s3,
+                output_bucket or bucket,
                 presigned_output_urls=presigned_output_urls or {},
                 raw_image_bytes=raw_image_bytes,
             )
@@ -298,7 +342,9 @@ class VisionModelService:
             )
             return pickle.dumps(result, protocol=pickle.HIGHEST_PROTOCOL)
         except Exception as exc:
-            logger.exception("Vision inference failed (model_type=%s): %s", model_type, exc)
+            logger.exception(
+                "Vision inference failed (model_type=%s): %s", model_type, exc
+            )
             return pickle.dumps(
                 {"error": str(exc), "source_image": image_url},
                 protocol=pickle.HIGHEST_PROTOCOL,

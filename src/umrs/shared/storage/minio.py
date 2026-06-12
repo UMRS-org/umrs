@@ -8,6 +8,7 @@ from umrs.shared.utils import normalize_json
 
 MC_TIMEOUT = 30  # seconds, timeout for mc CLI subprocess calls
 
+
 def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     """
     Ensure the mc alias exists. If not, create it.
@@ -29,8 +30,10 @@ def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     try:
         result = subprocess.run(
             ["mc", "alias", "list"],
-            capture_output=True, text=True, check=True,
-            timeout=MC_TIMEOUT
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=MC_TIMEOUT,
         )
         for line in result.stdout.splitlines():
             if line.strip().startswith(alias):
@@ -43,7 +46,7 @@ def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     # If not found, create alias
     cmd = ["mc", "alias", "set", alias, url, access_key, secret_key]
     if insecure:
-        cmd.append('--insecure')
+        cmd.append("--insecure")
     try:
         subprocess.run(cmd, check=True, timeout=MC_TIMEOUT)
         print(f"Alias '{alias}' created.")
@@ -51,7 +54,6 @@ def minio_check_create_alias(alias, url, access_key, secret_key, insecure=True):
     except subprocess.CalledProcessError as e:
         print(f"Error creating alias '{alias}': {e.stderr}")
         return False
-
 
 
 def minio_create_user_with_policy(user, password, target, policy_name):
@@ -74,8 +76,10 @@ def minio_create_user_with_policy(user, password, target, policy_name):
     try:
         result = subprocess.run(
             ["mc", "admin", "user", "list", target, "--insecure"],
-            capture_output=True, text=True, check=True,
-            timeout=MC_TIMEOUT
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=MC_TIMEOUT,
         )
         user_exists = user in result.stdout
     except subprocess.CalledProcessError as e:
@@ -104,21 +108,39 @@ def minio_create_user_with_policy(user, password, target, policy_name):
     try:
         result = subprocess.run(
             ["mc", "admin", "policy", "list", target, "--insecure"],
-            capture_output=True, text=True, check=True,
-            timeout=MC_TIMEOUT
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=MC_TIMEOUT,
         )
-        policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
+        policies = [
+            line.strip().split()[0]
+            for line in result.stdout.splitlines()
+            if line.strip()
+        ]
         if policy_name not in policies:
-            print(f"Policy '{policy_name}' not found on '{target}', creating it first may be required.")
+            print(
+                f"Policy '{policy_name}' not found on '{target}', creating it first may be required."
+            )
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Error listing policies: {e.stderr}") from e
 
     # Attach the policy to the user (idempotent)
     try:
         subprocess.run(
-            ["mc", "admin", "policy", "attach", target, policy_name, "--user", user, "--insecure"],
+            [
+                "mc",
+                "admin",
+                "policy",
+                "attach",
+                target,
+                policy_name,
+                "--user",
+                user,
+                "--insecure",
+            ],
             check=True,
-            timeout=MC_TIMEOUT
+            timeout=MC_TIMEOUT,
         )
         print(f"Policy '{policy_name}' attached to user '{user}'.")
     except subprocess.CalledProcessError as e:
@@ -137,10 +159,16 @@ def check_statement_policy(target, policy_name, policy_json):
         # List policies on the MinIO server
         result = subprocess.run(
             ["mc", "admin", "policy", "list", target, "--insecure"],
-            capture_output=True, text=True, check=True,
-            timeout=MC_TIMEOUT
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=MC_TIMEOUT,
         )
-        policies = [line.strip().split()[0] for line in result.stdout.splitlines() if line.strip()]
+        policies = [
+            line.strip().split()[0]
+            for line in result.stdout.splitlines()
+            if line.strip()
+        ]
 
         if policy_name not in policies:
             print(f"Policy '{policy_name}' does not exist on '{target}'.")
@@ -149,11 +177,15 @@ def check_statement_policy(target, policy_name, policy_json):
         # Get the actual policy content
         result = subprocess.run(
             ["mc", "admin", "policy", "info", target, policy_name, "--insecure"],
-            capture_output=True, text=True, check=True,
-            timeout=MC_TIMEOUT
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=MC_TIMEOUT,
         )
         actual_policy = json.loads(result.stdout)
-        actual_statement = normalize_json(actual_policy.get("Policy", {}).get("Statement", []))
+        actual_statement = normalize_json(
+            actual_policy.get("Policy", {}).get("Statement", [])
+        )
 
         if input_statement == actual_statement:
             print(f"Policy '{policy_name}' exists and Statement matches.")
@@ -166,21 +198,17 @@ def check_statement_policy(target, policy_name, policy_json):
         print("Error accessing MinIO:", e)
         return False
 
+
 def minio_check_create_list_only_policy(target):
     policy = {
         "Version": "2012-10-17",
         "Statement": [
             {
                 "Effect": "Allow",
-                "Action": [
-                    "s3:ListAllMyBuckets",
-                    "s3:GetBucketLocation"
-                ],
-                "Resource": [
-                    "arn:aws:s3:::*"
-                ]
+                "Action": ["s3:ListAllMyBuckets", "s3:GetBucketLocation"],
+                "Resource": ["arn:aws:s3:::*"],
             }
-        ]
+        ],
     }
 
     policy_json = json.dumps(policy, indent=2)
@@ -189,22 +217,31 @@ def minio_check_create_list_only_policy(target):
 
     # Check if the policy already exists
     try:
-       if check_statement_policy(target, policy_name, policy_json):
+        if check_statement_policy(target, policy_name, policy_json):
             print(f"Policy '{policy_name}' already exists on '{target}'.")
             return policy_name
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Error listing policies: {e.stderr}") from e
 
     # Save policy JSON to file
-    with open(policy_file, 'w') as f:
+    with open(policy_file, "w") as f:
         f.write(policy_json)
 
     # Create policy
     try:
         subprocess.run(
-            ["mc", "admin", "policy", "create", target, policy_name, policy_file, "--insecure"],
+            [
+                "mc",
+                "admin",
+                "policy",
+                "create",
+                target,
+                policy_name,
+                policy_file,
+                "--insecure",
+            ],
             check=True,
-            timeout=MC_TIMEOUT
+            timeout=MC_TIMEOUT,
         )
     except subprocess.CalledProcessError as e:
         raise RuntimeError(f"Error creating policy: {e}") from e
@@ -269,7 +306,16 @@ def minio_check_create_user_list_policy(target, username):
     # Create policy
     try:
         subprocess.run(
-            ["mc", "admin", "policy", "create", target, policy_name, policy_file, "--insecure"],
+            [
+                "mc",
+                "admin",
+                "policy",
+                "create",
+                target,
+                policy_name,
+                policy_file,
+                "--insecure",
+            ],
             check=True,
             timeout=MC_TIMEOUT,
         )
@@ -290,7 +336,17 @@ def minio_migrate_user_list_policy(username, target):
     # Attach per-user policy
     try:
         subprocess.run(
-            ["mc", "admin", "policy", "attach", target, user_policy, "--user", username, "--insecure"],
+            [
+                "mc",
+                "admin",
+                "policy",
+                "attach",
+                target,
+                user_policy,
+                "--user",
+                username,
+                "--insecure",
+            ],
             check=True,
             timeout=MC_TIMEOUT,
         )
@@ -301,8 +357,20 @@ def minio_migrate_user_list_policy(username, target):
     # Detach shared listonly (best-effort)
     try:
         subprocess.run(
-            ["mc", "admin", "policy", "detach", target, "listonly", "--user", username, "--insecure"],
-            capture_output=True, text=True, check=True,
+            [
+                "mc",
+                "admin",
+                "policy",
+                "detach",
+                target,
+                "listonly",
+                "--user",
+                username,
+                "--insecure",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
             timeout=MC_TIMEOUT,
         )
         print(f"==> Detached 'listonly' from user '{username}'.")
@@ -330,26 +398,15 @@ def minio_grant_user_access(user, bucket, target):
         "Statement": [
             {
                 "Effect": "Allow",
-                "Action": [
-                    "s3:ListBucket",
-                    "s3:GetBucketLocation"
-                ],
-                "Resource": [
-                    f"arn:aws:s3:::{bucket}"
-                ]
+                "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+                "Resource": [f"arn:aws:s3:::{bucket}"],
             },
             {
                 "Effect": "Allow",
-                "Action": [
-                    "s3:GetObject",
-                    "s3:PutObject",
-                    "s3:DeleteObject"
-                ],
-                "Resource": [
-                    f"arn:aws:s3:::{bucket}/*"
-                ]
-            }
-        ]
+                "Action": ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
+                "Resource": [f"arn:aws:s3:::{bucket}/*"],
+            },
+        ],
     }
 
     policy_json = json.dumps(policy, indent=2)
@@ -359,8 +416,10 @@ def minio_grant_user_access(user, bucket, target):
     try:
         results = subprocess.run(
             ["mc", "admin", "policy", "entities", target, "--user", user, "--insecure"],
-            capture_output=True, text=True, check=True,
-            timeout=MC_TIMEOUT
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=MC_TIMEOUT,
         )
         already_attached = policy_name in results.stdout
     except subprocess.CalledProcessError as e:
@@ -370,19 +429,30 @@ def minio_grant_user_access(user, bucket, target):
     # Re-create policy if content changed (idempotent), even if attached
     policy_matches = check_statement_policy(target, policy_name, policy_json)
     if already_attached and policy_matches:
-        print(f"==> Policy '{policy_name}' already attached to user '{user}' with correct scope.")
+        print(
+            f"==> Policy '{policy_name}' already attached to user '{user}' with correct scope."
+        )
         return
 
     # Save policy JSON to file
-    with open(policy_file, 'w') as f:
+    with open(policy_file, "w") as f:
         f.write(policy_json)
 
     # Create/update policy
     try:
         subprocess.run(
-            ["mc", "admin", "policy", "create", target, policy_name, policy_file, "--insecure"],
+            [
+                "mc",
+                "admin",
+                "policy",
+                "create",
+                target,
+                policy_name,
+                policy_file,
+                "--insecure",
+            ],
             check=True,
-            timeout=MC_TIMEOUT
+            timeout=MC_TIMEOUT,
         )
         if not policy_matches:
             print(f"==> Policy '{policy_name}' updated with corrected scope.")
@@ -394,21 +464,33 @@ def minio_grant_user_access(user, bucket, target):
     try:
         print(f"Attaching allow policy to bucket '{bucket}'...")
         subprocess.run(
-            ["mc", "admin", "policy", "attach", target, policy_name, "--user", user, "--insecure"],
+            [
+                "mc",
+                "admin",
+                "policy",
+                "attach",
+                target,
+                policy_name,
+                "--user",
+                user,
+                "--insecure",
+            ],
             check=True,
-            timeout=MC_TIMEOUT
+            timeout=MC_TIMEOUT,
         )
         print(f"==> Policy '{policy_name}' attached to user '{user}'.")
     except subprocess.CalledProcessError as e:
         print(f"Error attaching policy to user: {e}")
 
 
-def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file):
+def minio_s3_create_user(
+    username, s3_connection, user_s3_configuration_file, admin_s3_configuration_file
+):
     from umrs.shared.storage.s3 import s3_strong_password
 
     # Load admin S3 config (for mc admin operations)
     admin_cfg_path = os.path.expanduser(admin_s3_configuration_file)
-    admin_cfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+    admin_cfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
     admin_cfg.read(admin_cfg_path)
     alias = admin_cfg.get("default", "alias", fallback="myminio")
     s3_host = admin_cfg.get("default", "host_base")
@@ -420,13 +502,18 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
     protocol = "https" if use_https else "http"
     endpoint_url = f"{protocol}://{s3_host}"
 
-
     if not os.path.exists(os.path.expanduser(user_s3_configuration_file)):
         # First-run: create mc alias (admin), ensure policy, create user with random password, then write user config
         user_passwd = s3_strong_password()
 
         # Ensure mc alias exists using admin credentials
-        minio_check_create_alias(alias, endpoint_url, admin_access_key, admin_secret_key, insecure=not use_https or not verify_ssl)
+        minio_check_create_alias(
+            alias,
+            endpoint_url,
+            admin_access_key,
+            admin_secret_key,
+            insecure=not use_https or not verify_ssl,
+        )
         user_list_policy = minio_check_create_user_list_policy(alias, username)
         minio_create_user_with_policy(username, user_passwd, alias, user_list_policy)
 
@@ -453,11 +540,13 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
         _mirror_s3cfg_to_user_files(username, s3cfg_content)
 
     else:
-        print(f"==> S3 configuration file '{user_s3_configuration_file}' allready exists for user '{username}' and alias '{alias}'.")
+        print(
+            f"==> S3 configuration file '{user_s3_configuration_file}' allready exists for user '{username}' and alias '{alias}'."
+        )
         print("==> Delete this file manually if you want to reconfigure the user.")
         # Read existing user config
         user_cfg_path = os.path.expanduser(user_s3_configuration_file)
-        ucfg = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+        ucfg = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
         ucfg.read(user_cfg_path)
         u_access_key = ucfg.get("default", "access_key")
         u_secret_key = ucfg.get("default", "secret_key")
@@ -476,7 +565,13 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
                 ucfg.write(file)
             print(f"==> Updated unsafe S3 secret in: {user_s3_configuration_file}")
         # Ensure mc alias exists using admin credentials (needed for admin commands)
-        minio_check_create_alias(alias, endpoint_url, admin_access_key, admin_secret_key, insecure=not use_https or not verify_ssl)
+        minio_check_create_alias(
+            alias,
+            endpoint_url,
+            admin_access_key,
+            admin_secret_key,
+            insecure=not use_https or not verify_ssl,
+        )
         user_list_policy = minio_check_create_user_list_policy(alias, username)
         # Ensure user exists with the password declared in the user's config
         minio_create_user_with_policy(username, u_secret_key, alias, user_list_policy)
@@ -487,7 +582,6 @@ def minio_s3_create_user(username, s3_connection, user_s3_configuration_file, ad
 
         # Mirror after reading to keep user_files in sync
         _prune_stale_user_files_s3cfg(username, s3cfg_content)
-
 
     return alias, s3cfg_content
 
@@ -561,7 +655,9 @@ def minio_delete_user(username, target):
         # User may not exist — treat as idempotent.
         stderr = getattr(e, "stderr", "") or ""
         if "does not exist" in stderr.lower() or "not found" in stderr.lower():
-            print(f"==> MinIO user '{username}' does not exist on '{target}', skipping.")
+            print(
+                f"==> MinIO user '{username}' does not exist on '{target}', skipping."
+            )
         else:
             print(f"Error removing MinIO user '{username}': {e}")
 
@@ -575,8 +671,19 @@ def minio_detach_all_policies(username, target):
     """
     try:
         result = subprocess.run(
-            ["mc", "admin", "policy", "entities", target, "--user", username, "--insecure"],
-            capture_output=True, text=True, check=True,
+            [
+                "mc",
+                "admin",
+                "policy",
+                "entities",
+                target,
+                "--user",
+                username,
+                "--insecure",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
             timeout=MC_TIMEOUT,
         )
         # Parse attached policy names from output.
@@ -588,13 +695,25 @@ def minio_detach_all_policies(username, target):
             if policy_name:
                 try:
                     subprocess.run(
-                        ["mc", "admin", "policy", "detach", target, policy_name,
-                         "--user", username, "--insecure"],
-                        check=True, timeout=MC_TIMEOUT,
+                        [
+                            "mc",
+                            "admin",
+                            "policy",
+                            "detach",
+                            target,
+                            policy_name,
+                            "--user",
+                            username,
+                            "--insecure",
+                        ],
+                        check=True,
+                        timeout=MC_TIMEOUT,
                     )
                     print(f"  Detached policy '{policy_name}' from user '{username}'.")
                 except subprocess.CalledProcessError:
-                    print(f"  Warning: failed to detach policy '{policy_name}' from '{username}'.")
+                    print(
+                        f"  Warning: failed to detach policy '{policy_name}' from '{username}'."
+                    )
     except subprocess.CalledProcessError:
         # User may not exist or have no policies — safe to ignore.
         pass

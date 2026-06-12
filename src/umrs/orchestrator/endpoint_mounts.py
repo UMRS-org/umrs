@@ -42,7 +42,9 @@ def build_mount_environment(
 ) -> tuple[dict[str, str], dict[str, Any]]:
     """Translate endpoint mount intent into launch env and registry metadata."""
     normalized_mounts = normalize_mounts(mounts)
-    domains = [str(domain).strip() for domain in (egress_domains or []) if str(domain).strip()]
+    domains = [
+        str(domain).strip() for domain in (egress_domains or []) if str(domain).strip()
+    ]
     env: dict[str, str] = {"RIVAULT_TIER": tier}
     metadata: dict[str, Any] = {"tier": tier}
     extra_profiles: list[str] = []
@@ -150,7 +152,9 @@ def _require_allowed_mount_source(resolved: Path) -> None:
 
 def _source_prefixes(env_name: str, defaults: tuple[str, ...]) -> list[Path]:
     raw = os.environ.get(env_name)
-    values = [part.strip() for part in raw.split(",")] if raw is not None else list(defaults)
+    values = (
+        [part.strip() for part in raw.split(",")] if raw is not None else list(defaults)
+    )
     return [Path(value).expanduser().resolve(strict=False) for value in values if value]
 
 

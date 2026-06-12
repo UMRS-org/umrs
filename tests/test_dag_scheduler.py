@@ -36,6 +36,7 @@ from umrs.pipeline_sdk.workflow import (
 # Helper step classes
 # =========================================================================
 
+
 class PassthroughStep(Step):
     name = "passthrough"
 
@@ -45,6 +46,7 @@ class PassthroughStep(Step):
 
 class AppendSuffixStep(Step):
     """Appends a configurable suffix to each key."""
+
     name = "append_suffix"
 
     def setup(self, config: dict) -> None:
@@ -71,6 +73,7 @@ class EmbeddingStep(Step):
 
 class RecordThreadStep(Step):
     """Records the thread it ran on — used to verify parallel execution."""
+
     name = "record_thread"
 
     def __init__(self):
@@ -85,6 +88,7 @@ class RecordThreadStep(Step):
 
 class FailThenSucceedStep(Step):
     """Fails N times then succeeds."""
+
     name = "fail_then_succeed"
 
     def __init__(self, fail_count: int = 1):
@@ -101,6 +105,7 @@ class FailThenSucceedStep(Step):
 
 class FanInStep(Step):
     """Stores parent_results for inspection."""
+
     name = "fan_in"
 
     def __init__(self):
@@ -115,6 +120,7 @@ class FanInStep(Step):
 # =========================================================================
 # Helpers
 # =========================================================================
+
 
 def _make_specs(
     names: List[str],
@@ -149,15 +155,13 @@ def _mock_s3() -> MagicMock:
             raise Exception(f"NoSuchKey: {full}")
         body = MagicMock()
         body.read.return_value = store[full]
-        return {"Body": body, "ETag": '"abc"', "ContentLength": len(store[full]),
-                "Metadata": {}}
+        return {"Body": body, "ETag": '"abc"', "ContentLength": len(store[full]), "Metadata": {}}
 
     def head_object(Bucket, Key):
         full = f"{Bucket}/{Key}"
         if full not in store:
             raise Exception(f"NoSuchKey: {full}")
-        return {"ETag": '"abc"', "ContentLength": len(store[full]),
-                "Metadata": {}}
+        return {"ETag": '"abc"', "ContentLength": len(store[full]), "Metadata": {}}
 
     s3.put_object = MagicMock(side_effect=put_object)
     s3.get_object = MagicMock(side_effect=get_object)
@@ -170,8 +174,8 @@ def _mock_s3() -> MagicMock:
 # DAGScheduler — graph construction
 # =========================================================================
 
-class TestDAGSchedulerConstruction:
 
+class TestDAGSchedulerConstruction:
     def test_linear_fallback_no_depends_on(self):
         """When no step declares depends_on, use linear chain."""
         specs = _make_specs(["a", "b", "c"])
@@ -245,8 +249,8 @@ class TestDAGSchedulerConstruction:
 # DAGScheduler — validation
 # =========================================================================
 
-class TestDAGSchedulerValidation:
 
+class TestDAGSchedulerValidation:
     def test_cycle_detected(self):
         """A → B → C → A is a cycle."""
         specs = _make_specs(
@@ -274,10 +278,12 @@ class TestDAGSchedulerValidation:
                 ["A", "B"],
                 deps={"A": [], "B": ["GHOST"]},
             )
-            DAGScheduler(_make_specs(
-                ["A", "B"],
-                deps={"A": [], "B": ["GHOST"]},
-            ))
+            DAGScheduler(
+                _make_specs(
+                    ["A", "B"],
+                    deps={"A": [], "B": ["GHOST"]},
+                )
+            )
 
     def test_valid_linear_does_not_raise(self):
         specs = _make_specs(["a", "b", "c"])
@@ -289,42 +295,52 @@ class TestDAGSchedulerValidation:
 # WorkflowDefinition.validate() — DAG integration
 # =========================================================================
 
-class TestWorkflowDefinitionDAGValidation:
 
+class TestWorkflowDefinitionDAGValidation:
     def _make_wf(self, steps_list):
-        return WorkflowDefinition.from_dict({
-            "name": "dag-test",
-            "source": {"type": "local_path", "path": "/tmp"},
-            "steps": steps_list,
-        })
+        return WorkflowDefinition.from_dict(
+            {
+                "name": "dag-test",
+                "source": {"type": "local_path", "path": "/tmp"},
+                "steps": steps_list,
+            }
+        )
 
     def test_validate_unknown_depends_on(self):
-        wf = self._make_wf([
-            {"name": "s1", "entrypoint": "a:B", "depends_on": ["nope"]},
-        ])
+        wf = self._make_wf(
+            [
+                {"name": "s1", "entrypoint": "a:B", "depends_on": ["nope"]},
+            ]
+        )
         with pytest.raises(ValueError, match="unknown step.*nope"):
             wf.validate()
 
     def test_validate_self_dependency(self):
-        wf = self._make_wf([
-            {"name": "s1", "entrypoint": "a:B", "depends_on": ["s1"]},
-        ])
+        wf = self._make_wf(
+            [
+                {"name": "s1", "entrypoint": "a:B", "depends_on": ["s1"]},
+            ]
+        )
         with pytest.raises(ValueError, match="depends on itself"):
             wf.validate()
 
     def test_validate_cycle(self):
-        wf = self._make_wf([
-            {"name": "s1", "entrypoint": "a:B", "depends_on": ["s2"]},
-            {"name": "s2", "entrypoint": "c:D", "depends_on": ["s1"]},
-        ])
+        wf = self._make_wf(
+            [
+                {"name": "s1", "entrypoint": "a:B", "depends_on": ["s2"]},
+                {"name": "s2", "entrypoint": "c:D", "depends_on": ["s1"]},
+            ]
+        )
         with pytest.raises(ValueError, match="[Cc]ycle"):
             wf.validate()
 
     def test_validate_valid_dag(self):
-        wf = self._make_wf([
-            {"name": "s1", "entrypoint": "a:B", "depends_on": []},
-            {"name": "s2", "entrypoint": "c:D", "depends_on": ["s1"]},
-        ])
+        wf = self._make_wf(
+            [
+                {"name": "s1", "entrypoint": "a:B", "depends_on": []},
+                {"name": "s2", "entrypoint": "c:D", "depends_on": ["s1"]},
+            ]
+        )
         wf.validate()  # should not raise
 
 
@@ -332,13 +348,16 @@ class TestWorkflowDefinitionDAGValidation:
 # StepSpec — new fields
 # =========================================================================
 
-class TestStepSpecDAGFields:
 
+class TestStepSpecDAGFields:
     def test_depends_on_from_dict(self):
-        spec = StepSpec.from_dict({
-            "name": "s", "entrypoint": "a:B",
-            "depends_on": ["parent1", "parent2"],
-        })
+        spec = StepSpec.from_dict(
+            {
+                "name": "s",
+                "entrypoint": "a:B",
+                "depends_on": ["parent1", "parent2"],
+            }
+        )
         assert spec.depends_on == ["parent1", "parent2"]
 
     def test_depends_on_default_none(self):
@@ -346,10 +365,14 @@ class TestStepSpecDAGFields:
         assert spec.depends_on is None
 
     def test_max_retries_from_dict(self):
-        spec = StepSpec.from_dict({
-            "name": "s", "entrypoint": "a:B",
-            "max_retries": 3, "retry_delay": 0.5,
-        })
+        spec = StepSpec.from_dict(
+            {
+                "name": "s",
+                "entrypoint": "a:B",
+                "max_retries": 3,
+                "retry_delay": 0.5,
+            }
+        )
         assert spec.max_retries == 3
         assert spec.retry_delay == 0.5
 
@@ -360,8 +383,11 @@ class TestStepSpecDAGFields:
 
     def test_to_dict_includes_depends_on(self):
         spec = StepSpec(
-            name="s", entrypoint="a:B", config={},
-            depends_on=["p1"], max_retries=2,
+            name="s",
+            entrypoint="a:B",
+            config={},
+            depends_on=["p1"],
+            max_retries=2,
         )
         d = spec.to_dict()
         assert d["depends_on"] == ["p1"]
@@ -378,8 +404,8 @@ class TestStepSpecDAGFields:
 # execute_dag — linear execution
 # =========================================================================
 
-class TestExecuteDAGLinear:
 
+class TestExecuteDAGLinear:
     def test_linear_three_steps(self):
         """Three PassthroughSteps in a linear chain."""
         specs = _make_specs(["a", "b", "c"])
@@ -389,9 +415,15 @@ class TestExecuteDAGLinear:
 
         sch = DAGScheduler(specs)
         results = execute_dag(
-            sch, steps, specs,
-            s3=_mock_s3(), input_bucket="src", input_keys=["k1", "k2"],
-            output_bucket="dst", run_id="r1", shared_metadata={},
+            sch,
+            steps,
+            specs,
+            s3=_mock_s3(),
+            input_bucket="src",
+            input_keys=["k1", "k2"],
+            output_bucket="dst",
+            run_id="r1",
+            shared_metadata={},
         )
         assert set(results.keys()) == {"a", "b", "c"}
         for r in results.values():
@@ -403,9 +435,15 @@ class TestExecuteDAGLinear:
         steps[0].setup({})
         sch = DAGScheduler(specs)
         results = execute_dag(
-            sch, steps, specs,
-            s3=_mock_s3(), input_bucket="b", input_keys=["k1"],
-            output_bucket="out", run_id="r2", shared_metadata={},
+            sch,
+            steps,
+            specs,
+            s3=_mock_s3(),
+            input_bucket="b",
+            input_keys=["k1"],
+            output_bucket="out",
+            run_id="r2",
+            shared_metadata={},
         )
         assert results["embed"].embeddings is not None
         assert results["embed"].checksums == ["abc"]
@@ -415,14 +453,13 @@ class TestExecuteDAGLinear:
 # execute_dag — parallel execution
 # =========================================================================
 
-class TestExecuteDAGParallel:
 
+class TestExecuteDAGParallel:
     def test_parallel_steps_run_concurrently(self):
         """Diamond DAG: root → (B, C) parallel → merge."""
         specs = _make_specs(
             ["root", "B", "C", "merge"],
-            deps={"root": [], "B": ["root"], "C": ["root"],
-                  "merge": ["B", "C"]},
+            deps={"root": [], "B": ["root"], "C": ["root"], "merge": ["B", "C"]},
         )
         step_b = RecordThreadStep()
         step_c = RecordThreadStep()
@@ -432,9 +469,15 @@ class TestExecuteDAGParallel:
 
         sch = DAGScheduler(specs)
         results = execute_dag(
-            sch, steps, specs,
-            s3=_mock_s3(), input_bucket="b", input_keys=["k1"],
-            output_bucket="out", run_id="r3", shared_metadata={},
+            sch,
+            steps,
+            specs,
+            s3=_mock_s3(),
+            input_bucket="b",
+            input_keys=["k1"],
+            output_bucket="out",
+            run_id="r3",
+            shared_metadata={},
         )
         assert len(results) == 4
         # B and C should have run on different threads (parallel level)
@@ -470,9 +513,15 @@ class TestExecuteDAGParallel:
 
         sch = DAGScheduler(specs)
         results = execute_dag(
-            sch, steps, specs,
-            s3=_mock_s3(), input_bucket="b", input_keys=["k1"],
-            output_bucket="out", run_id="r4", shared_metadata={},
+            sch,
+            steps,
+            specs,
+            s3=_mock_s3(),
+            input_bucket="b",
+            input_keys=["k1"],
+            output_bucket="out",
+            run_id="r4",
+            shared_metadata={},
         )
         # merge step should see keys from both parents
         merge_input_expected = {"A_k1", "B_k1"}
@@ -495,9 +544,15 @@ class TestExecuteDAGParallel:
 
         sch = DAGScheduler(specs)
         execute_dag(
-            sch, steps, specs,
-            s3=_mock_s3(), input_bucket="b", input_keys=["k"],
-            output_bucket="out", run_id="r5", shared_metadata={},
+            sch,
+            steps,
+            specs,
+            s3=_mock_s3(),
+            input_bucket="b",
+            input_keys=["k"],
+            output_bucket="out",
+            run_id="r5",
+            shared_metadata={},
         )
         assert set(fan_in.received_parent_results.keys()) == {"A", "B"}
 
@@ -506,54 +561,86 @@ class TestExecuteDAGParallel:
 # execute_dag — retry
 # =========================================================================
 
-class TestExecuteDAGRetry:
 
+class TestExecuteDAGRetry:
     def test_retry_succeeds_after_failures(self):
-        specs = [StepSpec(
-            name="flaky", entrypoint="a:B", config={},
-            max_retries=2, retry_delay=0.0,
-        )]
+        specs = [
+            StepSpec(
+                name="flaky",
+                entrypoint="a:B",
+                config={},
+                max_retries=2,
+                retry_delay=0.0,
+            )
+        ]
         step = FailThenSucceedStep(fail_count=2)
         step.setup({})
 
         sch = DAGScheduler(specs)
         results = execute_dag(
-            sch, [step], specs,
-            s3=_mock_s3(), input_bucket="b", input_keys=["k"],
-            output_bucket="out", run_id="r6", shared_metadata={},
+            sch,
+            [step],
+            specs,
+            s3=_mock_s3(),
+            input_bucket="b",
+            input_keys=["k"],
+            output_bucket="out",
+            run_id="r6",
+            shared_metadata={},
         )
         assert "flaky" in results
         assert step.attempt == 3  # 2 failures + 1 success
 
     def test_retry_exhausted_raises(self):
-        specs = [StepSpec(
-            name="always_fail", entrypoint="a:B", config={},
-            max_retries=1, retry_delay=0.0,
-        )]
+        specs = [
+            StepSpec(
+                name="always_fail",
+                entrypoint="a:B",
+                config={},
+                max_retries=1,
+                retry_delay=0.0,
+            )
+        ]
         step = FailThenSucceedStep(fail_count=999)
         step.setup({})
 
         sch = DAGScheduler(specs)
         with pytest.raises(RuntimeError, match="fail attempt"):
             execute_dag(
-                sch, [step], specs,
-                s3=_mock_s3(), input_bucket="b", input_keys=["k"],
-                output_bucket="out", run_id="r7", shared_metadata={},
+                sch,
+                [step],
+                specs,
+                s3=_mock_s3(),
+                input_bucket="b",
+                input_keys=["k"],
+                output_bucket="out",
+                run_id="r7",
+                shared_metadata={},
             )
 
     def test_no_retry_by_default(self):
-        specs = [StepSpec(
-            name="fail_once", entrypoint="a:B", config={},
-        )]
+        specs = [
+            StepSpec(
+                name="fail_once",
+                entrypoint="a:B",
+                config={},
+            )
+        ]
         step = FailThenSucceedStep(fail_count=1)
         step.setup({})
 
         sch = DAGScheduler(specs)
         with pytest.raises(RuntimeError):
             execute_dag(
-                sch, [step], specs,
-                s3=_mock_s3(), input_bucket="b", input_keys=["k"],
-                output_bucket="out", run_id="r8", shared_metadata={},
+                sch,
+                [step],
+                specs,
+                s3=_mock_s3(),
+                input_bucket="b",
+                input_keys=["k"],
+                output_bucket="out",
+                run_id="r8",
+                shared_metadata={},
             )
 
 
@@ -561,8 +648,8 @@ class TestExecuteDAGRetry:
 # StepContext.report_progress
 # =========================================================================
 
-class TestStepContextReportProgress:
 
+class TestStepContextReportProgress:
     def test_report_progress_logs(self, caplog):
         ctx = StepContext(
             s3=MagicMock(),
@@ -583,8 +670,8 @@ class TestStepContextReportProgress:
 # _aggregate_dag_results
 # =========================================================================
 
-class TestAggregateDAGResults:
 
+class TestAggregateDAGResults:
     def test_linear_last_step_wins(self):
         specs = _make_specs(["a", "b"])
         sch = DAGScheduler(specs)
@@ -598,7 +685,9 @@ class TestAggregateDAGResults:
             ),
         }
         emb, ck, meta, keys = WorkflowPipeline._aggregate_dag_results(
-            step_results, sch, ["orig"],
+            step_results,
+            sch,
+            ["orig"],
         )
         assert keys == ["k_b"]
         assert ck == ["ck"]
@@ -612,7 +701,9 @@ class TestAggregateDAGResults:
             "a": StepResult(output_keys=[]),
         }
         emb, ck, meta, keys = WorkflowPipeline._aggregate_dag_results(
-            step_results, sch, ["orig"],
+            step_results,
+            sch,
+            ["orig"],
         )
         assert keys == ["orig"]
         assert emb is None
@@ -638,7 +729,9 @@ class TestAggregateDAGResults:
             ),
         }
         emb, ck, meta, keys = WorkflowPipeline._aggregate_dag_results(
-            step_results, sch, ["orig"],
+            step_results,
+            sch,
+            ["orig"],
         )
         assert keys == ["d_k"]
         assert ck == ["ck_d"]

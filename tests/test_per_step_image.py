@@ -85,8 +85,7 @@ class _RaisingExecutor(StepExecutor):
             if not isinstance(override, str):
                 raise StepExecutionError(
                     "setup",
-                    f"per-step image override must be a string, got "
-                    f"{type(override).__name__}",
+                    f"per-step image override must be a string, got {type(override).__name__}",
                 )
             if not override.strip():
                 raise StepExecutionError("setup", "override is empty")
@@ -122,10 +121,7 @@ def test_routing_hints_image_threaded_into_metadata(tmp_path):
     )
     assert record.status == "succeeded", record.error
     assert len(executor.calls) == 1
-    assert (
-        executor.calls[0]["metadata"].get(EXECUTOR_IMAGE_METADATA_KEY)
-        == "vlm:cuda"
-    )
+    assert executor.calls[0]["metadata"].get(EXECUTOR_IMAGE_METADATA_KEY) == "vlm:cuda"
 
 
 def test_no_routing_hints_no_metadata_key(tmp_path):
@@ -140,9 +136,7 @@ def test_no_routing_hints_no_metadata_key(tmp_path):
         executor=executor,
     )
     assert record.status == "succeeded", record.error
-    assert (
-        EXECUTOR_IMAGE_METADATA_KEY not in executor.calls[0]["metadata"]
-    )
+    assert EXECUTOR_IMAGE_METADATA_KEY not in executor.calls[0]["metadata"]
 
 
 def test_non_string_image_hint_surfaces_setup_error(tmp_path):

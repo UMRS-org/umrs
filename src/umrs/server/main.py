@@ -12,15 +12,23 @@ import sys
 def _handle_completion_command(argv: list[str]) -> int:
     import argparse
 
-    from umrs.cli.completion import install_completion, print_completion_script, uninstall_completion
+    from umrs.cli.completion import (
+        install_completion,
+        print_completion_script,
+        uninstall_completion,
+    )
 
     parser = argparse.ArgumentParser(prog="umrs-server completion")
     sub = parser.add_subparsers(dest="completion_action")
     sub.add_parser("bash", help="Print bash completion script")
     sub.add_parser("zsh", help="Print zsh completion script")
-    inst_p = sub.add_parser("install", help="Install completion into your shell RC file")
+    inst_p = sub.add_parser(
+        "install", help="Install completion into your shell RC file"
+    )
     inst_p.add_argument("--shell", choices=("bash", "zsh"), default=None)
-    uninst_p = sub.add_parser("uninstall", help="Remove completion from your shell RC file")
+    uninst_p = sub.add_parser(
+        "uninstall", help="Remove completion from your shell RC file"
+    )
     uninst_p.add_argument("--shell", choices=("bash", "zsh"), default=None)
 
     args = parser.parse_args(argv)
@@ -71,7 +79,9 @@ def _emit_completion_if_requested() -> bool:
         cword = int(os.environ.get("COMP_CWORD", "0"))
     except ValueError:
         cword = 0
-    words, adjusted_cword = normalize_completion_words(sys.argv[1:], cword, "umrs-server")
+    words, adjusted_cword = normalize_completion_words(
+        sys.argv[1:], cword, "umrs-server"
+    )
     if words and words[0] == "admin":
         admin_words = words[1:]
         admin_cword = max(adjusted_cword - 1, 0)
@@ -96,9 +106,7 @@ def main():
         return admin_main(sys.argv[2:])
 
     # Fast-path: show lightweight help when no daemon-class args are given.
-    if len(sys.argv) == 1 or (
-        len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help")
-    ):
+    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] in ("-h", "--help")):
         _print_toplevel_help()
         return 0
 
@@ -106,8 +114,7 @@ def main():
     first = sys.argv[1]
     if not first.startswith("-"):
         print(
-            f"umrs-server: unknown command '{first}'\n"
-            f"Run 'umrs-server -h' for usage.",
+            f"umrs-server: unknown command '{first}'\nRun 'umrs-server -h' for usage.",
             file=sys.stderr,
         )
         return 2
@@ -145,10 +152,10 @@ def _print_toplevel_help():
         "               Max pending tasks (default: 64)\n"
         "\n"
         "Operator onboarding:\n"
-        "  umrs-server admin user add <username> --fullname \"Your Name\" --role user\n"
+        '  umrs-server admin user add <username> --fullname "Your Name" --role user\n'
         "  umrs-server admin user list\n"
         "  umrs-server admin user show <username>\n"
-        "  eval \"$(umrs-server completion bash)\"\n"
+        '  eval "$(umrs-server completion bash)"\n'
         "\n"
         "Run 'umrs-server admin -h' for admin subcommands.\n"
     )

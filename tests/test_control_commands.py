@@ -16,12 +16,12 @@ def test_shared_control_parser_uses_user_model_scope_defaults():
 def test_shared_control_parser_accepts_project_id_for_model_commands():
     parser = build_control_command_parser()
 
-    register_args = parser.parse_args([
-        "model", "register", "demo-model", "/tmp/model", "--project-id", "proj-123"
-    ])
-    download_args = parser.parse_args([
-        "model", "download", "demo/repo", "--project-id", "proj-123"
-    ])
+    register_args = parser.parse_args(
+        ["model", "register", "demo-model", "/tmp/model", "--project-id", "proj-123"]
+    )
+    download_args = parser.parse_args(
+        ["model", "download", "demo/repo", "--project-id", "proj-123"]
+    )
 
     assert register_args.project_id == "proj-123"
     assert download_args.project_id == "proj-123"

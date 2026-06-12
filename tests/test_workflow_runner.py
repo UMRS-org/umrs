@@ -45,23 +45,17 @@ def _figure_workflow_json():
         "steps": [
             {
                 "name": "vision_dense",
-                "entrypoint": (
-                    "umrs.pipeline_sdk.templates.vision_step:VisionStep"
-                ),
+                "entrypoint": ("umrs.pipeline_sdk.templates.vision_step:VisionStep"),
                 "config": {"mode": "dense"},
             },
             {
                 "name": "vision_ocr",
-                "entrypoint": (
-                    "umrs.pipeline_sdk.templates.ocr_step:OCRStep"
-                ),
+                "entrypoint": ("umrs.pipeline_sdk.templates.ocr_step:OCRStep"),
                 "config": {},
             },
             {
                 "name": "reason",
-                "entrypoint": (
-                    "umrs.pipeline_sdk.templates.llm_step:LLMStep"
-                ),
+                "entrypoint": ("umrs.pipeline_sdk.templates.llm_step:LLMStep"),
                 "depends_on": ["vision_dense", "vision_ocr"],
                 "config": {
                     "model": "rivault-llm-static",
@@ -205,9 +199,7 @@ def test_runner_fails_step_when_routing_strict_mode_unmatched(tmp_path, monkeypa
         "steps": [
             {
                 "name": "vd",
-                "entrypoint": (
-                    "umrs.pipeline_sdk.templates.vision_step:VisionStep"
-                ),
+                "entrypoint": ("umrs.pipeline_sdk.templates.vision_step:VisionStep"),
                 "config": {"mode": "dense"},
                 "requires": ["vision"],
                 "model_type": "vision",
@@ -258,9 +250,7 @@ def test_runner_injects_routing_into_step_config(tmp_path, monkeypatch):
     probe_module = types.ModuleType("umrs_test_probe_module")
     probe_module._ProbeStep = _ProbeStep  # type: ignore[attr-defined]
     sys.modules["umrs_test_probe_module"] = probe_module
-    monkeypatch.setattr(
-        "sys.modules", sys.modules
-    )  # ensure module visible during import
+    monkeypatch.setattr("sys.modules", sys.modules)  # ensure module visible during import
 
     from umrs.server.step_router import StepRouter
 

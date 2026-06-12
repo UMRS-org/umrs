@@ -226,15 +226,11 @@ class TestAccessControl:
 
         # Owner can write
         owner_ctx = UserContext(user_id="user1", project_id="project1")
-        assert ac.validate_resource_access(
-            owner_ctx, ownership, AccessLevel.WRITE
-        )
+        assert ac.validate_resource_access(owner_ctx, ownership, AccessLevel.WRITE)
 
         # Shared user cannot write
         shared_ctx = UserContext(user_id="user2", project_id="project1")
-        assert not ac.validate_resource_access(
-            shared_ctx, ownership, AccessLevel.WRITE
-        )
+        assert not ac.validate_resource_access(shared_ctx, ownership, AccessLevel.WRITE)
 
 
 class TestIsolationValidator:
@@ -326,10 +322,12 @@ class TestConfigIsolation:
 
     def test_user_cannot_access_other_config(self):
         """User cannot access another user's config."""
-        isolation = ConfigIsolation({
-            "user1": "/path/to/user1/config.json",
-            "user2": "/path/to/user2/config.json",
-        })
+        isolation = ConfigIsolation(
+            {
+                "user1": "/path/to/user1/config.json",
+                "user2": "/path/to/user2/config.json",
+            }
+        )
 
         # user1 gets user1's config
         ctx1 = UserContext(user_id="user1", project_id="project1")
@@ -341,9 +339,11 @@ class TestConfigIsolation:
 
     def test_admin_can_access_target_user_config(self):
         """Admin can access any user's config via metadata."""
-        isolation = ConfigIsolation({
-            "user1": "/path/to/user1/config.json",
-        })
+        isolation = ConfigIsolation(
+            {
+                "user1": "/path/to/user1/config.json",
+            }
+        )
 
         ctx = UserContext(
             user_id="admin1",

@@ -54,6 +54,7 @@ def _create_app():
     from fastapi import FastAPI
 
     from umrs.server.structured_logging import configure_structured_logging
+
     configure_structured_logging()
 
     from umrs.api import (
@@ -91,12 +92,14 @@ def _create_app():
     # Correlation ID middleware: extracts X-Request-ID from Gateway (NGINX)
     # or X-Correlation-ID from R4 SDK; makes it available via get_request_id().
     from umrs.server.correlation import CorrelationIDMiddleware
+
     app.add_middleware(CorrelationIDMiddleware)
 
     # Structured error responses: all HTTPException responses include
     # error_id and request_id for distributed tracing and automation.
     from fastapi import HTTPException as _HTTPException
     from umrs.api.error_responses import structured_http_exception_handler
+
     app.add_exception_handler(_HTTPException, structured_http_exception_handler)
 
     app.include_router(egress_audit_router)
@@ -137,11 +140,15 @@ def _create_app():
             set_job_store(JobStore(db_pool))
             logger.info("Job store initialized for HTTP sidecar")
         except Exception:
-            logger.warning("Job store unavailable in HTTP sidecar — /umrs/jobs/* will return 503")
+            logger.warning(
+                "Job store unavailable in HTTP sidecar — /umrs/jobs/* will return 503"
+            )
 
         try:
             from umrs.api.models import set_model_store
-            from umrs.model_registry import ensure_schema as ensure_model_registry_schema
+            from umrs.model_registry import (
+                ensure_schema as ensure_model_registry_schema,
+            )
             from umrs.model_registry.store import ModelStore, PathValidator
 
             model_conn = db_pool.getconn()
@@ -151,7 +158,9 @@ def _create_app():
             set_model_store(ModelStore(model_conn, path_validator=PathValidator()))
             logger.info("Model store initialized for HTTP sidecar")
         except Exception:
-            logger.warning("Model store unavailable in HTTP sidecar — /umrs/models/* will return 503")
+            logger.warning(
+                "Model store unavailable in HTTP sidecar — /umrs/models/* will return 503"
+            )
 
         try:
             from umrs.api.mcp import set_mcp_store
@@ -165,7 +174,9 @@ def _create_app():
             set_mcp_store(MCPServerStore(mcp_conn))
             logger.info("MCP server store initialized for HTTP sidecar")
         except Exception:
-            logger.warning("MCP store unavailable in HTTP sidecar — /umrs/mcp/* will return 503")
+            logger.warning(
+                "MCP store unavailable in HTTP sidecar — /umrs/mcp/* will return 503"
+            )
 
         try:
             from umrs.api.audit_events import set_audit_store
@@ -181,7 +192,11 @@ def _create_app():
             logger.warning("Audit store unavailable — using in-memory buffer only")
 
         try:
-            from umrs.api.governance import GovernanceStore, ensure_governance_schema, set_governance_store
+            from umrs.api.governance import (
+                GovernanceStore,
+                ensure_governance_schema,
+                set_governance_store,
+            )
 
             gov_conn = db_pool.getconn()
             ensure_governance_schema(gov_conn)
@@ -201,7 +216,9 @@ def _create_app():
             set_usage_db_pool(db_pool)
             logger.info("LLM usage recording pool initialized")
         except Exception:
-            logger.warning("LLM usage recording unavailable — usage will not be tracked")
+            logger.warning(
+                "LLM usage recording unavailable — usage will not be tracked"
+            )
 
     @app.get("/health")
     async def health():

@@ -33,8 +33,7 @@ class HuggingFaceResolver(ModelRefResolver):
         download_timeout_sec: int = 3600,
     ):
         self.cache_dir = cache_dir or os.getenv(
-            "HF_HOME",
-            os.path.expanduser("~/.cache/huggingface/hub")
+            "HF_HOME", os.path.expanduser("~/.cache/huggingface/hub")
         )
         self.umrs_client = umrs_client
         self.download_timeout_sec = download_timeout_sec
@@ -125,9 +124,7 @@ class HuggingFaceResolver(ModelRefResolver):
             )
 
             if response.status_code != 200:
-                raise ResolutionError(
-                    f"Download request failed: {response.text}"
-                )
+                raise ResolutionError(f"Download request failed: {response.text}")
 
             result = response.json()
 

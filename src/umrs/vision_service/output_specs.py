@@ -44,7 +44,9 @@ def resolve_hmae_task(config: dict) -> str:
     return _HMAE_MODE_TO_TASK.get(task, task)
 
 
-def describe_output_artifacts(model_type: str, key: str, config: dict) -> dict[str, str]:
+def describe_output_artifacts(
+    model_type: str, key: str, config: dict
+) -> dict[str, str]:
     """Return deterministic output keys and content types for built-in adapters."""
     base = key.rsplit(".", 1)[0] if "." in key else key
 

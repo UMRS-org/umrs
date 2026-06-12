@@ -30,7 +30,12 @@ from psycopg2 import pool as pg_pool
 from psycopg2 import sql as pg_sql
 
 from umrs.jobs.models import JobStatus, JobType, RestartPolicy
-from umrs.jobs.store import DuplicateJobError, InvalidTransitionError, JobNotFoundError, JobStore
+from umrs.jobs.store import (
+    DuplicateJobError,
+    InvalidTransitionError,
+    JobNotFoundError,
+    JobStore,
+)
 from umrs.metrics import METRICS
 
 logger = logging.getLogger(__name__)
@@ -64,7 +69,9 @@ def _parse_job_type(job_type: str) -> JobType:
     if not job_type:
         raise ValueError("job_type is required")
     if job_type not in VALID_JOB_TYPES:
-        raise ValueError(f"Invalid job_type: {job_type}. Valid: {sorted(VALID_JOB_TYPES)}")
+        raise ValueError(
+            f"Invalid job_type: {job_type}. Valid: {sorted(VALID_JOB_TYPES)}"
+        )
     return JobType(job_type)
 
 
@@ -220,7 +227,9 @@ class DurableJobCommandBackend:
                 f"{exc.existing_job_id}"
             )
 
-        logger.info("Durable endpoint cleanup requested: %s by %s", job.job_id, client_id)
+        logger.info(
+            "Durable endpoint cleanup requested: %s by %s", job.job_id, client_id
+        )
         return json.dumps(
             {
                 "status": "ok",
@@ -251,7 +260,9 @@ class DurableJobCommandBackend:
             spec = _validate_job_spec(job_type, payload.get("spec", {}))
             priority = int(payload.get("priority", 0))
             max_attempts = int(payload.get("max_attempts", 3))
-            restart_policy = _parse_restart_policy(payload.get("restart_policy", "on_crash"))
+            restart_policy = _parse_restart_policy(
+                payload.get("restart_policy", "on_crash")
+            )
             idempotency_key = payload.get("idempotency_key")
 
             job_id = self._job_store.create_job(
@@ -281,7 +292,12 @@ class DurableJobCommandBackend:
         except (InvalidTransitionError, JobNotFoundError, ValueError) as exc:
             return json.dumps({"status": "error", "message": str(exc)})
 
-        logger.info("Durable job submitted: %s (type=%s, user=%s)", job.job_id, job.job_type.value, client_id)
+        logger.info(
+            "Durable job submitted: %s (type=%s, user=%s)",
+            job.job_id,
+            job.job_type.value,
+            client_id,
+        )
         return json.dumps(
             {
                 "status": "ok",
@@ -313,7 +329,10 @@ class DurableJobCommandBackend:
 
                 cancel_workflow_execution_for_job(job)
         except InvalidTransitionError as exc:
-            if job.job_type == JobType.ENDPOINT_PROVISION and job.status == JobStatus.COMPLETED:
+            if (
+                job.job_type == JobType.ENDPOINT_PROVISION
+                and job.status == JobStatus.COMPLETED
+            ):
                 return self._submit_endpoint_cleanup(client_id, job)
             return json.dumps({"status": "error", "message": str(exc)})
 
@@ -381,7 +400,9 @@ def build_durable_job_db_pool_from_env():
     db_host = os.environ.get("DB_HOST", "127.0.0.1")
     db_port = os.environ.get("DB_PORT", os.environ.get("POSTGRES_PORT", "5432"))
     db_name = os.environ.get("UMRS_JOBS_DB", os.environ.get("POSTGRES_DB", "umrs_db"))
-    db_user = os.environ.get("DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres"))
+    db_user = os.environ.get(
+        "DB_SUPERUSER", os.environ.get("POSTGRES_USER", "postgres")
+    )
     db_password = os.environ.get(
         "DB_SUPERUSER_PASSWORD",
         os.environ.get("POSTGRES_PASSWORD", "postgres"),
@@ -405,8 +426,7 @@ def build_durable_job_db_pool_from_env():
             exists = cur.fetchone()
             if not exists:
                 cur.execute(
-                    pg_sql.SQL("CREATE DATABASE {}")
-                    .format(pg_sql.Identifier(db_name))
+                    pg_sql.SQL("CREATE DATABASE {}").format(pg_sql.Identifier(db_name))
                 )
     finally:
         admin_conn.close()
@@ -451,7 +471,12 @@ def _backend_unavailable_response() -> str:
     )
 
 
-def handle_job_command(cmd: str, client_id: str, payload_str: str, backend: DurableJobCommandBackend | None = None) -> str:
+def handle_job_command(
+    cmd: str,
+    client_id: str,
+    payload_str: str,
+    backend: DurableJobCommandBackend | None = None,
+) -> str:
     """
     Dispatch a job tracking command and return a JSON response string.
 
@@ -482,7 +507,9 @@ def handle_job_command(cmd: str, client_id: str, payload_str: str, backend: Dura
         elif cmd == JOB_LIST:
             return backend.list_jobs(client_id, payload_str)
         else:
-            return json.dumps({"status": "error", "message": f"Unknown job command: {cmd}"})
+            return json.dumps(
+                {"status": "error", "message": f"Unknown job command: {cmd}"}
+            )
     except Exception as e:
         logger.exception("Error handling job command %s", cmd)
         METRICS.bridge_event(_BRIDGE_NAME, "error")

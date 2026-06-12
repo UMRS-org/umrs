@@ -11,12 +11,13 @@ from .base import Result
 logger = logging.getLogger(__name__)
 
 
-def poll_until_done(probe: Callable[[], str | None],
-                    success_values: set = frozenset({"success", "done"}),
-                    failure_values: set = frozenset({"failure", "error",
-                                                      "cancelled"}),
-                    poll_interval: float = 5.0,
-                    timeout: float = 300.0) -> str:
+def poll_until_done(
+    probe: Callable[[], str | None],
+    success_values: set = frozenset({"success", "done"}),
+    failure_values: set = frozenset({"failure", "error", "cancelled"}),
+    poll_interval: float = 5.0,
+    timeout: float = 300.0,
+) -> str:
     """Generic poller.
 
     Calls *probe()* repeatedly until it returns a value present in
@@ -39,9 +40,7 @@ def poll_until_done(probe: Callable[[], str | None],
     while True:
         elapsed = time.monotonic() - start
         if elapsed > timeout:
-            raise TimeoutError(
-                f"Polling timed out after {timeout:.0f}s"
-            )
+            raise TimeoutError(f"Polling timed out after {timeout:.0f}s")
 
         status = probe()
         if status is None:
@@ -87,15 +86,12 @@ def format_results_table(results: list[Result]) -> str:
                     detail_parts.append(f"{k}={r.data[k]}")
         detail = ", ".join(detail_parts) or "—"
 
-        lines.append(
-            f"{i:>3}  {r.status:<10}  {endpoint:<20}  {key:<30}  {detail}"
-        )
+        lines.append(f"{i:>3}  {r.status:<10}  {endpoint:<20}  {key:<30}  {detail}")
 
     successes = sum(1 for r in results if r.status == "success")
     failures = sum(1 for r in results if r.status == "failure")
     lines.append("")
     lines.append(
-        f"Total: {len(results)} result(s), "
-        f"{successes} success, {failures} failure"
+        f"Total: {len(results)} result(s), {successes} success, {failures} failure"
     )
     return "\n".join(lines)

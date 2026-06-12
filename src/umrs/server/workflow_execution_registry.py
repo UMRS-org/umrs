@@ -210,9 +210,7 @@ class WorkflowExecutionRegistry:
                     return
                 runner(record)
             except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "Workflow execution %s crashed", record.execution_id
-                )
+                logger.exception("Workflow execution %s crashed", record.execution_id)
                 record.update(
                     status="failed",
                     error=f"{exc.__class__.__name__}: {exc}\n{traceback.format_exc()}",

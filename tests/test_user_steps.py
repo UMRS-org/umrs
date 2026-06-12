@@ -42,6 +42,7 @@ from umrs.pipeline_sdk.adapter import EmbeddingAdapter
 # Fixtures
 # =========================================================================
 
+
 def _minimal_workflow_dict(**overrides: Any) -> Dict[str, Any]:
     """Return the smallest valid workflow.json dict."""
     d = {
@@ -57,6 +58,7 @@ def _minimal_workflow_dict(**overrides: Any) -> Dict[str, Any]:
 
 class PassthroughStep(Step):
     """Minimal concrete step: copies input keys to output keys."""
+
     name = "passthrough"
 
     def run(self, ctx: StepContext) -> StepResult:
@@ -65,6 +67,7 @@ class PassthroughStep(Step):
 
 class UppercaseStep(Step):
     """Reads text from S3, uppercases it, writes to output bucket."""
+
     name = "uppercase"
 
     def setup(self, config: dict) -> None:
@@ -82,6 +85,7 @@ class UppercaseStep(Step):
 
 class EmbeddingStep(Step):
     """Produces dummy embeddings."""
+
     name = "embed"
 
     def run(self, ctx: StepContext) -> StepResult:
@@ -98,6 +102,7 @@ class EmbeddingStep(Step):
 # Mock S3
 # =========================================================================
 
+
 def _mock_s3():
     """Build a mock S3 client with basic get/put/head support."""
     store: Dict[str, bytes] = {}
@@ -113,15 +118,13 @@ def _mock_s3():
         data = store[full]
         body = MagicMock()
         body.read.return_value = data
-        return {"Body": body, "ETag": '"abc123"', "ContentLength": len(data),
-                "Metadata": {}}
+        return {"Body": body, "ETag": '"abc123"', "ContentLength": len(data), "Metadata": {}}
 
     def head_object(Bucket, Key):
         full = f"{Bucket}/{Key}"
         if full not in store:
             raise Exception(f"NoSuchKey: {full}")
-        return {"ETag": '"abc123"', "ContentLength": len(store[full]),
-                "Metadata": {}}
+        return {"ETag": '"abc123"', "ContentLength": len(store[full]), "Metadata": {}}
 
     s3.put_object = MagicMock(side_effect=put_object)
     s3.get_object = MagicMock(side_effect=get_object)
@@ -134,8 +137,8 @@ def _mock_s3():
 # WorkflowDefinition
 # =========================================================================
 
-class TestWorkflowDefinition:
 
+class TestWorkflowDefinition:
     def test_from_dict_minimal(self):
         wf = WorkflowDefinition.from_dict(_minimal_workflow_dict())
         assert wf.name == "test-pipeline"
@@ -177,18 +180,22 @@ class TestWorkflowDefinition:
             wf.validate()
 
     def test_validate_duplicate_step_names(self):
-        d = _minimal_workflow_dict(steps=[
-            {"name": "dup", "entrypoint": "a:B"},
-            {"name": "dup", "entrypoint": "c:D"},
-        ])
+        d = _minimal_workflow_dict(
+            steps=[
+                {"name": "dup", "entrypoint": "a:B"},
+                {"name": "dup", "entrypoint": "c:D"},
+            ]
+        )
         wf = WorkflowDefinition.from_dict(d)
         with pytest.raises(ValueError, match="Duplicate step name"):
             wf.validate()
 
     def test_validate_bad_entrypoint(self):
-        d = _minimal_workflow_dict(steps=[
-            {"name": "s1", "entrypoint": "no_colon_here"},
-        ])
+        d = _minimal_workflow_dict(
+            steps=[
+                {"name": "s1", "entrypoint": "no_colon_here"},
+            ]
+        )
         wf = WorkflowDefinition.from_dict(d)
         with pytest.raises(ValueError, match="module:ClassName"):
             wf.validate()
@@ -206,27 +213,31 @@ class TestWorkflowDefinition:
             WorkflowDefinition.from_file("/nonexistent/workflow.json")
 
     def test_from_dict_execution_parallel_roots(self):
-        wf = WorkflowDefinition.from_dict(_minimal_workflow_dict(
-            steps=[
-                {"name": "segment", "entrypoint": "segment:SegmentStep"},
-                {"name": "features", "entrypoint": "features:FeatureStep"},
-                {"name": "thumbnails", "entrypoint": "thumbs:ThumbnailStep"},
-            ],
-            execution={"parallel": ["segment", "features", "thumbnails"]},
-        ))
+        wf = WorkflowDefinition.from_dict(
+            _minimal_workflow_dict(
+                steps=[
+                    {"name": "segment", "entrypoint": "segment:SegmentStep"},
+                    {"name": "features", "entrypoint": "features:FeatureStep"},
+                    {"name": "thumbnails", "entrypoint": "thumbs:ThumbnailStep"},
+                ],
+                execution={"parallel": ["segment", "features", "thumbnails"]},
+            )
+        )
 
         assert [step.depends_on for step in wf.steps] == [[], [], []]
 
     def test_from_dict_execution_parallel_fans_back_into_next_step(self):
-        wf = WorkflowDefinition.from_dict(_minimal_workflow_dict(
-            steps=[
-                {"name": "load", "entrypoint": "load:LoadStep"},
-                {"name": "segment", "entrypoint": "segment:SegmentStep"},
-                {"name": "features", "entrypoint": "features:FeatureStep"},
-                {"name": "merge", "entrypoint": "merge:MergeStep"},
-            ],
-            execution={"parallel": ["segment", "features"]},
-        ))
+        wf = WorkflowDefinition.from_dict(
+            _minimal_workflow_dict(
+                steps=[
+                    {"name": "load", "entrypoint": "load:LoadStep"},
+                    {"name": "segment", "entrypoint": "segment:SegmentStep"},
+                    {"name": "features", "entrypoint": "features:FeatureStep"},
+                    {"name": "merge", "entrypoint": "merge:MergeStep"},
+                ],
+                execution={"parallel": ["segment", "features"]},
+            )
+        )
 
         assert wf.steps[0].depends_on == []
         assert wf.steps[1].depends_on == ["load"]
@@ -238,8 +249,8 @@ class TestWorkflowDefinition:
 # SourceSpec validation
 # =========================================================================
 
-class TestSourceSpec:
 
+class TestSourceSpec:
     def test_local_path_valid(self):
         s = SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp/scripts")
         s.validate()  # should not raise
@@ -264,8 +275,8 @@ class TestSourceSpec:
 # Script loading (load_workflow + load_steps)
 # =========================================================================
 
-class TestScriptLoading:
 
+class TestScriptLoading:
     def test_load_workflow_local(self, tmp_path: Path):
         d = _minimal_workflow_dict()
         d["source"]["path"] = str(tmp_path)
@@ -275,7 +286,8 @@ class TestScriptLoading:
         assert wf.name == "test-pipeline"
 
     def test_load_steps_local(self, tmp_path: Path):
-        (tmp_path / "my_step.py").write_text(textwrap.dedent("""\
+        (tmp_path / "my_step.py").write_text(
+            textwrap.dedent("""\
             from umrs.pipeline_sdk import Step, StepContext, StepResult
 
             class HelloStep(Step):
@@ -284,13 +296,15 @@ class TestScriptLoading:
                     self.greeting = config.get("greeting", "hi")
                 def run(self, ctx):
                     return StepResult(output_keys=ctx.input_keys)
-        """))
+        """)
+        )
 
         wf = WorkflowDefinition(
             name="test",
             source=SourceSpec(type=SourceType.LOCAL_PATH, path=str(tmp_path)),
-            steps=[StepSpec(name="hello", entrypoint="my_step:HelloStep",
-                            config={"greeting": "howdy"})],
+            steps=[
+                StepSpec(name="hello", entrypoint="my_step:HelloStep", config={"greeting": "howdy"})
+            ],
         )
         instances = load_steps(wf)
         assert len(instances) == 1
@@ -340,11 +354,12 @@ class TestScriptLoading:
 # WorkflowPipeline (step chaining via run_as_embeddings)
 # =========================================================================
 
-class TestWorkflowPipeline:
 
+class TestWorkflowPipeline:
     def _make_pipeline(self, steps: List[Step], **wf_kw) -> WorkflowPipeline:
-        step_specs = [StepSpec(name=s.name, entrypoint=f"fake:{s.__class__.__name__}")
-                      for s in steps]
+        step_specs = [
+            StepSpec(name=s.name, entrypoint=f"fake:{s.__class__.__name__}") for s in steps
+        ]
         wf = WorkflowDefinition(
             name=wf_kw.get("name", "test-wf"),
             source=SourceSpec(type=SourceType.LOCAL_PATH, path="/tmp"),
@@ -370,9 +385,7 @@ class TestWorkflowPipeline:
         s3._store["bkt/a.txt"] = b"data"
 
         pipeline = self._make_pipeline([EmbeddingStep()])
-        embs, chk, meta, _saved = pipeline.run_as_embeddings(
-            s3, ["a.txt"], "bkt", "out"
-        )
+        embs, chk, meta, _saved = pipeline.run_as_embeddings(s3, ["a.txt"], "bkt", "out")
         assert len(embs) == 1
         np.testing.assert_array_equal(embs[0], np.ones(4, dtype=np.float32))
         assert chk == ["abc"]
@@ -388,9 +401,7 @@ class TestWorkflowPipeline:
         passth = PassthroughStep()
 
         pipeline = self._make_pipeline([upper, passth])
-        _embs, _chk, _meta, saved = pipeline.run_as_embeddings(
-            s3, ["hello.txt"], "in", "out"
-        )
+        _embs, _chk, _meta, saved = pipeline.run_as_embeddings(s3, ["hello.txt"], "in", "out")
         assert len(saved) == 1
 
     def test_teardown_called(self):
@@ -409,14 +420,13 @@ class TestWorkflowPipeline:
 # StepContext helpers
 # =========================================================================
 
-class TestStepContext:
 
+class TestStepContext:
     def test_download_upload_bytes(self):
         s3 = _mock_s3()
         s3._store["bkt/in.bin"] = b"\x00\x01\x02"
 
-        ctx = StepContext(s3=s3, input_bucket="bkt", input_keys=["in.bin"],
-                          output_bucket="out")
+        ctx = StepContext(s3=s3, input_bucket="bkt", input_keys=["in.bin"], output_bucket="out")
         data = ctx.download_bytes("in.bin")
         assert data == b"\x00\x01\x02"
 
@@ -433,8 +443,7 @@ class TestStepContext:
         s3 = _mock_s3()
         s3._store["bkt/vec.npy"] = npy_bytes
 
-        ctx = StepContext(s3=s3, input_bucket="bkt", input_keys=["vec.npy"],
-                          output_bucket="out")
+        ctx = StepContext(s3=s3, input_bucket="bkt", input_keys=["vec.npy"], output_bucket="out")
         loaded = ctx.download_numpy("vec.npy")
         np.testing.assert_array_equal(loaded, arr)
 
@@ -446,8 +455,8 @@ class TestStepContext:
 # Step ABC enforcement
 # =========================================================================
 
-class TestStepContract:
 
+class TestStepContract:
     def test_cannot_instantiate_abc(self):
         with pytest.raises(TypeError):
             Step()  # type: ignore[abstract]
@@ -461,8 +470,8 @@ class TestStepContract:
 # EmbeddingAdapter
 # =========================================================================
 
-class TestEmbeddingAdapter:
 
+class TestEmbeddingAdapter:
     def test_adapter_returns_4_tuple(self):
         s3 = _mock_s3()
         s3._store["bkt/a.txt"] = b"data"
@@ -491,8 +500,8 @@ class TestEmbeddingAdapter:
 # ResourceSpec.extra field
 # =========================================================================
 
-class TestResourceSpecExtra:
 
+class TestResourceSpecExtra:
     def test_extra_field_default(self):
         rs = ResourceSpec()
         assert rs.extra == {}

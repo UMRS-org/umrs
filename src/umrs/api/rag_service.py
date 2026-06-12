@@ -19,7 +19,11 @@ from langchain_core.retrievers import BaseRetriever
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, Field
 
-from umrs.orchestrator.endpoint_registry import EndpointStatus, RegisteredEndpoint, get_registry
+from umrs.orchestrator.endpoint_registry import (
+    EndpointStatus,
+    RegisteredEndpoint,
+    get_registry,
+)
 from umrs.orchestrator.site_config import get_site_config
 from umrs.rag.search import CrossEncoderReranker, HybridSearcher, SearchResult
 from umrs.server.json_config import load_server_cfg_file
@@ -135,9 +139,7 @@ def _resolve_server_config_path() -> str:
     if os.path.isfile(config_path):
         return config_path
 
-    raise RuntimeError(
-        f"No valid UMRS server config file found at {config_path}"
-    )
+    raise RuntimeError(f"No valid UMRS server config file found at {config_path}")
 
 
 def _build_cfg_store(configure_file: str) -> dict[str, Any]:
@@ -208,6 +210,7 @@ class UMRSPgVectorRetriever(BaseRetriever):
     For now this retriever assumes a single matching table per query,
     identified by (user, xp_name, bucket_alias, modality).
     """
+
     # Pydantic fields so that BaseRetriever / BaseModel can manage
     # attribute validation correctly.
     db_model_store: dict[str, dict[str, Any]]
@@ -263,7 +266,9 @@ class UMRSPgVectorRetriever(BaseRetriever):
         from psycopg2 import sql
 
         if not self.db_model_store:
-            raise ValueError("UMRS db_model_store is empty; server may not be configured.")
+            raise ValueError(
+                "UMRS db_model_store is empty; server may not be configured."
+            )
 
         entry = self._select_entry()
         data_base = entry["data_base"]
@@ -527,7 +532,9 @@ def _resolve_registry_base_url(endpoint: RegisteredEndpoint) -> str:
         try:
             port = get_site_config().network.litellm_port
         except Exception:
-            port = os.getenv("NGINX_LITELLM_DOCKER_PORT") or os.getenv("RIVAULT_REMOTE_PORT")
+            port = os.getenv("NGINX_LITELLM_DOCKER_PORT") or os.getenv(
+                "RIVAULT_REMOTE_PORT"
+            )
 
     resolved_port = int(port or endpoint.port)
     return f"http://{endpoint.host}:{resolved_port}/v1"
@@ -574,12 +581,8 @@ def _build_registry_candidate_models(
         return base_url, candidate_models
 
     model_name = str(endpoint.model)
-    if (
-        model_name == desired_model
-        or (
-            model_name not in known_ingestion_models
-            and "://" not in model_name
-        )
+    if model_name == desired_model or (
+        model_name not in known_ingestion_models and "://" not in model_name
     ):
         return base_url, [model_name]
 
@@ -650,7 +653,11 @@ def _build_llm_candidates() -> list[ResolvedLLMEndpoint]:
     transitional_registry_endpoints = _probeable_registry_endpoints(registry_endpoints)
 
     exact_matches = sorted(
-        [endpoint for endpoint in usable_registry_endpoints if endpoint.model == desired_model],
+        [
+            endpoint
+            for endpoint in usable_registry_endpoints
+            if endpoint.model == desired_model
+        ],
         key=_endpoint_sort_key,
         reverse=True,
     )
@@ -705,7 +712,11 @@ def _build_llm_candidates() -> list[ResolvedLLMEndpoint]:
             )
 
     stale_exact_matches = sorted(
-        [endpoint for endpoint in transitional_registry_endpoints if endpoint.model == desired_model],
+        [
+            endpoint
+            for endpoint in transitional_registry_endpoints
+            if endpoint.model == desired_model
+        ],
         key=_endpoint_sort_key,
         reverse=True,
     )
@@ -855,15 +866,15 @@ def startup_event() -> None:
         "UMRS_RAG_RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2"
     )
     reranker_device = os.getenv("UMRS_RAG_RERANKER_DEVICE", "cpu")
-    RERANKER = CrossEncoderReranker(
-        model_name=reranker_model, device=reranker_device
-    )
+    RERANKER = CrossEncoderReranker(model_name=reranker_model, device=reranker_device)
 
 
 @app.post("/rag/search", response_model=RAGSearchResponse)
 def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
     if EMBEDDINGS is None:
-        raise HTTPException(status_code=500, detail="Embeddings backend not initialized")
+        raise HTTPException(
+            status_code=500, detail="Embeddings backend not initialized"
+        )
 
     try:
         # Fetch more candidates when using hybrid or reranking so the
@@ -895,8 +906,11 @@ def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
         hybrid_results = HYBRID_SEARCHER.search(
             query=payload.query,
             documents=[
-                (str(doc.metadata.get("id", i)), doc.page_content,
-                 _cosine_score(doc.metadata.get("distance")))
+                (
+                    str(doc.metadata.get("id", i)),
+                    doc.page_content,
+                    _cosine_score(doc.metadata.get("distance")),
+                )
                 for i, doc in enumerate(docs)
             ],
             top_k=fetch_k,
@@ -957,7 +971,9 @@ def rag_search(payload: RAGSearchRequest) -> RAGSearchResponse:
                 results.append(
                     RAGSearchResultItem(
                         id=int(meta.get("id", 0)),
-                        score=sr.rerank_score if sr.rerank_score is not None else sr.score,
+                        score=sr.rerank_score
+                        if sr.rerank_score is not None
+                        else sr.score,
                         content=sr.content,
                         metadata=meta,
                     )
@@ -993,7 +1009,9 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
     """
 
     if EMBEDDINGS is None:
-        raise HTTPException(status_code=500, detail="Embeddings backend not initialized")
+        raise HTTPException(
+            status_code=500, detail="Embeddings backend not initialized"
+        )
     llm_candidates = _build_llm_candidates()
 
     try:
@@ -1028,9 +1046,7 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
             SystemMessage(content=system_prompt),
             HumanMessage(
                 content=(
-                    "User question: "
-                    + payload.query
-                    + "\nGenerate search queries:"
+                    "User question: " + payload.query + "\nGenerate search queries:"
                 )
             ),
         ]
@@ -1091,18 +1107,27 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
     unique_docs.sort(key=_score, reverse=True)
 
     # Optional: apply hybrid BM25+RRF fusion on the candidate pool
-    if payload.search_method == "hybrid" and HYBRID_SEARCHER is not None and unique_docs:
+    if (
+        payload.search_method == "hybrid"
+        and HYBRID_SEARCHER is not None
+        and unique_docs
+    ):
         hybrid_results = HYBRID_SEARCHER.search(
             query=payload.query,
             documents=[
-                (str(doc.metadata.get("id", i)), doc.page_content,
-                 _cosine_score((doc.metadata or {}).get("distance")))
+                (
+                    str(doc.metadata.get("id", i)),
+                    doc.page_content,
+                    _cosine_score((doc.metadata or {}).get("distance")),
+                )
                 for i, doc in enumerate(unique_docs)
             ],
             top_k=len(unique_docs),
         )
         # Re-order unique_docs by hybrid score
-        doc_by_id = {str(doc.metadata.get("id", i)): doc for i, doc in enumerate(unique_docs)}
+        doc_by_id = {
+            str(doc.metadata.get("id", i)): doc for i, doc in enumerate(unique_docs)
+        }
         unique_docs = [
             doc_by_id[sr.document_id]
             for sr in hybrid_results
@@ -1127,11 +1152,11 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
             top_k=payload.max_context_chunks,
         )
         # Rebuild unique_docs in reranked order
-        doc_by_id = {str(doc.metadata.get("id", i)): doc for i, doc in enumerate(unique_docs)}
+        doc_by_id = {
+            str(doc.metadata.get("id", i)): doc for i, doc in enumerate(unique_docs)
+        }
         unique_docs = [
-            doc_by_id[sr.document_id]
-            for sr in reranked
-            if sr.document_id in doc_by_id
+            doc_by_id[sr.document_id] for sr in reranked if sr.document_id in doc_by_id
         ]
 
     top_docs = unique_docs[: payload.max_context_chunks]
@@ -1148,8 +1173,10 @@ def rag_qa(payload: RAGQARequest) -> RAGQAResponse:
     context_blocks: list[str] = []
     for i, doc in enumerate(top_docs, start=1):
         meta = doc.metadata or {}
-        header = f"[Chunk {i}] user={meta.get('user')} xp={meta.get('xp_name')} " \
+        header = (
+            f"[Chunk {i}] user={meta.get('user')} xp={meta.get('xp_name')} "
             f"bucket={meta.get('bucket_alias')} s3_object={meta.get('s3_object')}"
+        )
         body = doc.page_content or ""
         context_blocks.append(header + "\n" + body)
 
@@ -1272,7 +1299,9 @@ def rag_query(payload: GatewayQueryRequest) -> GatewayQueryResponse:
     Wraps the internal /rag/qa endpoint with Gateway's expected format.
     """
     if EMBEDDINGS is None:
-        raise HTTPException(status_code=500, detail="Embeddings backend not initialized")
+        raise HTTPException(
+            status_code=500, detail="Embeddings backend not initialized"
+        )
 
     # Map Gateway request to internal format
     # Resolve xp_name: use project_id if it matches a known experience,
@@ -1440,9 +1469,16 @@ async def rag_upload(
                 cur.execute(
                     insert_sql,
                     (
-                        s3_object, emb, date_str, time_str,
-                        file_checksum, model_name or "unknown",
-                        chunk_text, chunk_start, chunk_end, chunk_md5,
+                        s3_object,
+                        emb,
+                        date_str,
+                        time_str,
+                        file_checksum,
+                        model_name or "unknown",
+                        chunk_text,
+                        chunk_start,
+                        chunk_end,
+                        chunk_md5,
                     ),
                 )
             elif has_embedding:
@@ -1459,7 +1495,14 @@ async def rag_upload(
                 ).format(table=psql.Identifier(table_name))
                 cur.execute(
                     insert_sql,
-                    (s3_object, emb, date_str, time_str, file_checksum, model_name or "unknown"),
+                    (
+                        s3_object,
+                        emb,
+                        date_str,
+                        time_str,
+                        file_checksum,
+                        model_name or "unknown",
+                    ),
                 )
 
         conn.commit()
@@ -1538,7 +1581,9 @@ def rag_stats(
                 (project_id,),
             )
         else:
-            cur.execute("SELECT COUNT(DISTINCT metadata->>'document_id') FROM rag_chunks")
+            cur.execute(
+                "SELECT COUNT(DISTINCT metadata->>'document_id') FROM rag_chunks"
+            )
         stats["documents"] = cur.fetchone()[0]
 
         # Distinct projects
@@ -1587,7 +1632,9 @@ def main() -> None:
 
     bind_host = os.getenv("UMRS_RAG_BIND_HOST", "127.0.0.1")
     bind_port = int(os.getenv("UMRS_RAG_PORT", "8081"))
-    uvicorn.run("umrs.api.rag_service:app", host=bind_host, port=bind_port, reload=False)
+    uvicorn.run(
+        "umrs.api.rag_service:app", host=bind_host, port=bind_port, reload=False
+    )
 
 
 __all__ = ["app", "main"]

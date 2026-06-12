@@ -10,8 +10,8 @@ if len(sys.argv) != 4:
     sys.exit(1)
 
 file_path = sys.argv[1]
-start     = int(sys.argv[2])
-end       = int(sys.argv[3])
+start = int(sys.argv[2])
+end = int(sys.argv[3])
 
 match = from_path(file_path).best()
 if match is None:

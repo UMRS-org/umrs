@@ -56,9 +56,7 @@ def test_query_rag_discovers_and_proxies():
 
     rag_response = {
         "answer": "The answer is 42.",
-        "sources": [
-            {"document_id": "doc1", "content": "snippet", "score": 0.95, "metadata": {}}
-        ],
+        "sources": [{"document_id": "doc1", "content": "snippet", "score": 0.95, "metadata": {}}],
     }
 
     async def fake_post(self, url, **kwargs):
@@ -212,13 +210,15 @@ def test_get_document_endpoint():
     client = _create_client(registry)
 
     async def fake_get(self, url, **kwargs):
-        return _mock_rag_response({
-            "document_id": "doc-123",
-            "filename": "paper.pdf",
-            "project_id": "test-project",
-            "chunks": 5,
-            "metadata": {},
-        })
+        return _mock_rag_response(
+            {
+                "document_id": "doc-123",
+                "filename": "paper.pdf",
+                "project_id": "test-project",
+                "chunks": 5,
+                "metadata": {},
+            }
+        )
 
     import httpx
 

@@ -182,13 +182,21 @@ class TestAdminParser:
         p = build_parser()
         args = p.parse_args(
             [
-                "user", "add", "alice",
-                "--fullname", "Alice A",
-                "--email", "a@example.org",
-                "--role", "admin",
-                "--slurm-account", "lab-alpha",
-                "--project", "proj-a",
-                "--project", "proj-b",
+                "user",
+                "add",
+                "alice",
+                "--fullname",
+                "Alice A",
+                "--email",
+                "a@example.org",
+                "--role",
+                "admin",
+                "--slurm-account",
+                "lab-alpha",
+                "--project",
+                "proj-a",
+                "--project",
+                "proj-b",
                 "--json",
             ]
         )
@@ -324,9 +332,17 @@ class TestAdminCLI:
             },
         )
 
-        monkeypatch.setitem(sys.modules, "umrs.server.provisioning", type("_M", (), {
-            "deprovision_user": staticmethod(fake_deprovision_user),
-        })())
+        monkeypatch.setitem(
+            sys.modules,
+            "umrs.server.provisioning",
+            type(
+                "_M",
+                (),
+                {
+                    "deprovision_user": staticmethod(fake_deprovision_user),
+                },
+            )(),
+        )
         monkeypatch.setattr(admin_main_module, "_maybe_signal_reload", lambda args: None)
 
         assert _run(d, "user", "delete", "alice", "--purge", "--deprovision", "-y") == 0

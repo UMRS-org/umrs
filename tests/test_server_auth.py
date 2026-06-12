@@ -6,6 +6,7 @@ Covers:
 - _authorize helper in server_umrs
 - Client UNAUTHORIZED detection in control_api
 """
+
 from __future__ import annotations
 
 import json
@@ -210,7 +211,11 @@ class TestClientUnauthorizedHandling:
         raw = "UNAUTHORIZED:MODEL_LIST"
         # Replicate the logic from UMRSControlAPI._request_json
         if raw.startswith("UNAUTHORIZED:"):
-            result = {"status": "error", "message": f"Authorization denied for MODEL_LIST", "code": "UNAUTHORIZED"}
+            result = {
+                "status": "error",
+                "message": f"Authorization denied for MODEL_LIST",
+                "code": "UNAUTHORIZED",
+            }
         else:
             result = json.loads(raw)
         assert result["status"] == "error"
@@ -247,7 +252,12 @@ class TestClientUnauthorizedHandling:
         if ok:
             parsed = {"status": "ok", "action": action, "accepted": True}
         else:
-            parsed = {"status": "error", "action": action, "accepted": False, "message": "Authorization denied (admin required)"}
+            parsed = {
+                "status": "error",
+                "action": action,
+                "accepted": False,
+                "message": "Authorization denied (admin required)",
+            }
         assert parsed["status"] == "error"
         assert parsed["accepted"] is False
         assert "admin" in parsed["message"].lower()
@@ -263,11 +273,22 @@ class TestCommandCoverage:
     """Verify that all commands dispatched in the event loop are declared."""
 
     EXPECTED_USER_COMMANDS = {
-        "PROCESS_OBJECTS", "FILE", "WAIT_OUTPUT", "EXPORT_EMBEDDINGS",
-        "MODEL_REGISTER", "MODEL_LIST", "MODEL_DOWNLOAD",
-        "JOB_SUBMIT", "JOB_CANCEL", "JOB_LIST",
-        "UPLOAD_WORKFLOW", "LIST_WORKFLOWS", "RUN_WORKFLOW",
-        "STATUS", "CREATE_DATA_QUEUE", "HAND_CHECK",
+        "PROCESS_OBJECTS",
+        "FILE",
+        "WAIT_OUTPUT",
+        "EXPORT_EMBEDDINGS",
+        "MODEL_REGISTER",
+        "MODEL_LIST",
+        "MODEL_DOWNLOAD",
+        "JOB_SUBMIT",
+        "JOB_CANCEL",
+        "JOB_LIST",
+        "UPLOAD_WORKFLOW",
+        "LIST_WORKFLOWS",
+        "RUN_WORKFLOW",
+        "STATUS",
+        "CREATE_DATA_QUEUE",
+        "HAND_CHECK",
     }
 
     EXPECTED_ADMIN_COMMANDS = {"RECOMPUTE", "UPDATE", "CHECK"}

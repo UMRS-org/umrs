@@ -69,7 +69,7 @@ class FakeJobStore:
             jobs = [job for job in jobs if job.status == status]
         if job_type is not None:
             jobs = [job for job in jobs if job.job_type == job_type]
-        return jobs[offset: offset + limit]
+        return jobs[offset : offset + limit]
 
     def cancel_job(self, job_id, reason="user_cancelled"):
         self.jobs[job_id].status = JobStatus.CANCELLED
@@ -79,18 +79,22 @@ def test_durable_backend_accepts_workflow_run_job_type() -> None:
     store = FakeJobStore()
     backend = DurableJobCommandBackend(store)
 
-    result = json.loads(backend.submit(
-        "alice",
-        json.dumps({
-            "project_id": "project-a",
-            "job_type": "workflow_run",
-            "spec": {
-                "workflow_name": "ct-analysis",
-                "execution_id": "wf-123",
-                "params": {"bucket": "demo"},
-            },
-        }),
-    ))
+    result = json.loads(
+        backend.submit(
+            "alice",
+            json.dumps(
+                {
+                    "project_id": "project-a",
+                    "job_type": "workflow_run",
+                    "spec": {
+                        "workflow_name": "ct-analysis",
+                        "execution_id": "wf-123",
+                        "params": {"bucket": "demo"},
+                    },
+                }
+            ),
+        )
+    )
 
     assert result["status"] == "ok"
     assert result["job"]["job_type"] == "workflow_run"
@@ -101,14 +105,18 @@ def test_durable_backend_accepts_workflow_run_job_type() -> None:
 def test_workflow_run_spec_requires_execution_id() -> None:
     backend = DurableJobCommandBackend(FakeJobStore())
 
-    result = json.loads(backend.submit(
-        "alice",
-        json.dumps({
-            "project_id": "project-a",
-            "job_type": "workflow_run",
-            "spec": {"workflow_name": "ct-analysis"},
-        }),
-    ))
+    result = json.loads(
+        backend.submit(
+            "alice",
+            json.dumps(
+                {
+                    "project_id": "project-a",
+                    "job_type": "workflow_run",
+                    "spec": {"workflow_name": "ct-analysis"},
+                }
+            ),
+        )
+    )
 
     assert result["status"] == "error"
     assert "workflow_run spec.execution_id is required" in result["message"]
@@ -117,18 +125,22 @@ def test_workflow_run_spec_requires_execution_id() -> None:
 def test_workflow_run_spec_requires_params_object() -> None:
     backend = DurableJobCommandBackend(FakeJobStore())
 
-    result = json.loads(backend.submit(
-        "alice",
-        json.dumps({
-            "project_id": "project-a",
-            "job_type": "workflow_run",
-            "spec": {
-                "workflow_name": "ct-analysis",
-                "execution_id": "wf-123",
-                "params": ["not", "object"],
-            },
-        }),
-    ))
+    result = json.loads(
+        backend.submit(
+            "alice",
+            json.dumps(
+                {
+                    "project_id": "project-a",
+                    "job_type": "workflow_run",
+                    "spec": {
+                        "workflow_name": "ct-analysis",
+                        "execution_id": "wf-123",
+                        "params": ["not", "object"],
+                    },
+                }
+            ),
+        )
+    )
 
     assert result["status"] == "error"
     assert "workflow_run spec.params must be an object" in result["message"]
@@ -192,15 +204,19 @@ def test_run_workflow_uses_durable_job_backend_when_available(tmp_path) -> None:
 
         store = FakeJobStore()
         backend = DurableJobCommandBackend(store)
-        result = json.loads(handle_workflow_command(
-            TaskCmd.RUN_WORKFLOW,
-            "alice",
-            json.dumps({
-                "workflow_name": "ct-analysis",
-                "params": {"project_id": "project-a", "bucket": "demo"},
-            }),
-            job_backend=backend,
-        ))
+        result = json.loads(
+            handle_workflow_command(
+                TaskCmd.RUN_WORKFLOW,
+                "alice",
+                json.dumps(
+                    {
+                        "workflow_name": "ct-analysis",
+                        "params": {"project_id": "project-a", "bucket": "demo"},
+                    }
+                ),
+                job_backend=backend,
+            )
+        )
 
     assert result["status"] == "ok"
     assert result["durable_job_id"] == "job-001"

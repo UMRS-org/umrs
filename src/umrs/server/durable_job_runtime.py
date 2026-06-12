@@ -69,7 +69,9 @@ class DurableJobRuntime:
             if self._thread is not None:
                 self._thread.join(timeout=5.0)
             self._close_pool()
-            raise DurableJobRuntimeError("Failed to start durable job runtime") from self._startup_error
+            raise DurableJobRuntimeError(
+                "Failed to start durable job runtime"
+            ) from self._startup_error
 
         self._started = True
         METRICS.bridge_event(_BRIDGE_NAME, "start")
@@ -96,7 +98,9 @@ class DurableJobRuntime:
                 future.result(timeout + 5.0)
         except FutureTimeoutError as exc:
             METRICS.bridge_event(_BRIDGE_NAME, "shutdown_timeout")
-            raise DurableJobRuntimeError("Timed out shutting down durable job runtime") from exc
+            raise DurableJobRuntimeError(
+                "Timed out shutting down durable job runtime"
+            ) from exc
         finally:
             METRICS.bridge_event(_BRIDGE_NAME, "stop")
             if loop is not None:
@@ -152,7 +156,9 @@ class DurableJobRuntime:
             self._db_pool = None
 
 
-def start_durable_job_runtime_from_env(timeout: float = 30.0) -> DurableJobRuntime | None:
+def start_durable_job_runtime_from_env(
+    timeout: float = 30.0,
+) -> DurableJobRuntime | None:
     """Best-effort bootstrap of the process-owned durable jobs runtime."""
     try:
         db_pool = build_durable_job_db_pool_from_env()

@@ -89,10 +89,7 @@ def apply_migration(cursor, version: str, sql_path: Path) -> bool:
     cursor.execute(sql_content)
 
     # Record migration
-    cursor.execute(
-        "INSERT INTO schema_migrations (version) VALUES (%s)",
-        (version,)
-    )
+    cursor.execute("INSERT INTO schema_migrations (version) VALUES (%s)", (version,))
 
     logger.info(f"Applied migration: {version} ({sql_path.name})")
     return True
@@ -135,7 +132,8 @@ def apply_migrations(
             # Get pending migrations
             all_migrations = get_migration_files()
             pending = [
-                (v, p) for v, p in all_migrations
+                (v, p)
+                for v, p in all_migrations
                 if v not in applied and (target_version is None or v <= target_version)
             ]
 
@@ -237,24 +235,21 @@ if __name__ == "__main__":
 
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     )
 
     parser = argparse.ArgumentParser(description="UMRS Database Migrations")
     parser.add_argument(
         "--db-url",
         default=os.environ.get("DATABASE_URL"),
-        help="PostgreSQL connection URL"
+        help="PostgreSQL connection URL",
     )
     parser.add_argument(
         "--status",
         action="store_true",
-        help="Show migration status instead of applying"
+        help="Show migration status instead of applying",
     )
-    parser.add_argument(
-        "--target",
-        help="Target version to migrate to"
-    )
+    parser.add_argument("--target", help="Target version to migrate to")
 
     args = parser.parse_args()
 

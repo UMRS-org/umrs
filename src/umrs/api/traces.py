@@ -123,6 +123,7 @@ class CleanupResponse(BaseModel):
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _to_response(record: TraceRecord) -> TraceResponse:
     d = record.to_dict()
     return TraceResponse(**d)
@@ -153,6 +154,7 @@ def _verify_job_access(
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.post(
     "",
@@ -247,8 +249,11 @@ def update_trace(
         # Generic field updates
         updates: dict[str, Any] = {}
         for field_name in (
-            "outputs_ref", "artifact_refs", "tool_calls",
-            "retrieval_refs", "routing_decision",
+            "outputs_ref",
+            "artifact_refs",
+            "tool_calls",
+            "retrieval_refs",
+            "routing_decision",
         ):
             val = getattr(req, field_name, None)
             if val is not None:

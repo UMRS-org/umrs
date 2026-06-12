@@ -42,6 +42,7 @@ def get_issuer() -> WorkloadIdentityIssuer:
 # Request / Response models
 # ---------------------------------------------------------------------------
 
+
 class IssueRequest(BaseModel):
     job_id: str
     step_name: str
@@ -87,6 +88,7 @@ class IdentityResponse(BaseModel):
 # Routes
 # ---------------------------------------------------------------------------
 
+
 @router.post("", response_model=IssueResponse, status_code=status.HTTP_201_CREATED)
 def issue_identity(req: IssueRequest):
     issuer = get_issuer()
@@ -131,8 +133,10 @@ def list_identities(
 ):
     issuer = get_issuer()
     results = issuer.list_identities(
-        job_id=job_id, scope=scope,
-        active_only=active_only, limit=limit,
+        job_id=job_id,
+        scope=scope,
+        active_only=active_only,
+        limit=limit,
     )
     return [IdentityResponse(**i.to_dict()) for i in results]
 

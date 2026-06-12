@@ -42,18 +42,18 @@ DEFAULT_TASK = "embedding"
 # scheme.
 LEGACY_MAPPING: dict[str, tuple[str, str]] = {
     # pure data types (task defaults to embedding)
-    "image":                           ("image",  "embedding"),
-    "text":                            ("text",   "embedding"),
-    "text file":                       ("text_file", "embedding"),
-    "text_file":                       ("text_file", "embedding"),
-    "tomography":                      ("volume", "embedding"),
+    "image": ("image", "embedding"),
+    "text": ("text", "embedding"),
+    "text file": ("text_file", "embedding"),
+    "text_file": ("text_file", "embedding"),
+    "tomography": ("volume", "embedding"),
     # compound names
-    "segmentation":                    ("image",  "segmentation"),
-    "tomography_embedding":            ("volume", "embedding"),
-    "tomography_reconstruction":       ("volume", "reconstruction"),
-    "tomography_mae_reconstruction":   ("volume", "mae_reconstruction"),
-    "tomography_features_extraction":  ("volume", "feature_extraction"),
-    "detection":                       ("image",  "detection"),
+    "segmentation": ("image", "segmentation"),
+    "tomography_embedding": ("volume", "embedding"),
+    "tomography_reconstruction": ("volume", "reconstruction"),
+    "tomography_mae_reconstruction": ("volume", "mae_reconstruction"),
+    "tomography_features_extraction": ("volume", "feature_extraction"),
+    "detection": ("image", "detection"),
 }
 
 # Set of all accepted legacy names (for fast lookup).
@@ -62,16 +62,17 @@ _LEGACY_NAMES = frozenset(LEGACY_MAPPING)
 # ── Upload-category mapping (data type → upload behaviour) ────────────────
 # The client uses this to decide *how* to push data to S3.
 _MODALITY_UPLOAD_CATEGORY: dict[str, str] = {
-    "text":         "text",
-    "text_file":    "text_file",
-    "image":        "image",
-    "volume":       "image",
-    "movie":        "image",
+    "text": "text",
+    "text_file": "text_file",
+    "image": "image",
+    "volume": "image",
+    "movie": "image",
     "volume_movie": "image",
 }
 
 
 # ── Public helpers ─────────────────────────────────────────────────────────
+
 
 def resolve_modality_task(
     modality_name: str,

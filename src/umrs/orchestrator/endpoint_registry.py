@@ -2,8 +2,12 @@
 Endpoint Registry for Mini-RiVault instances.
 
 This module provides a registry of active inference endpoints,
-keyed by (project_id, model). Gateway uses this to discover which endpoint
+keyed by (project_id, job_id). Gateway uses this to discover which endpoint
 to route requests to.
+
+Multiple endpoints per model are supported via the ``variant`` field, allowing
+parameter-differentiated deployments (e.g. different ctx lengths, node counts,
+parallel strategies) and load-based scaling of identical replicas.
 
 UMRS readiness polling (U-107) is the authoritative source of endpoint status.
 Backends only provide discovery coordinates (host/port).
@@ -85,6 +89,15 @@ class RegisteredEndpoint:
     error_message: str | None = None
     consecutive_failures: int = 0
 
+    # Variant — differentiates multiple endpoints for the same model.
+    # Derived from the pool YAML ``name`` field (e.g. "128k", "tep-128k").
+    # ``None`` means the default/sole deployment for this model.
+    variant: str | None = None
+
+    # Active request counter for least-connections routing.
+    # Incremented before proxying a request, decremented after completion.
+    active_requests: int = 0
+
     # Metadata
     metadata: dict[str, Any] = field(default_factory=dict)
 
@@ -127,14 +140,21 @@ class RegisteredEndpoint:
             "status": self.status.value,
             "created_at": self.created_at.isoformat() + "Z",
             "ready_at": self.ready_at.isoformat() + "Z" if self.ready_at else None,
-            "last_used_at": self.last_used_at.isoformat() + "Z" if self.last_used_at else None,
-            "expires_at": self.expires_at.isoformat() + "Z" if self.expires_at else None,
+            "last_used_at": self.last_used_at.isoformat() + "Z"
+            if self.last_used_at
+            else None,
+            "expires_at": self.expires_at.isoformat() + "Z"
+            if self.expires_at
+            else None,
             "backend": self.backend,
             "error_message": self.error_message,
             "litellm_url": self.litellm_url,
             "owner_type": str(owner_type),
             "tier": str(tier),
+            "active_requests": self.active_requests,
         }
+        if self.variant is not None:
+            d["variant"] = self.variant
         owner_id = self.metadata.get("owner_id")
         if owner_id is not None:
             d["owner_id"] = str(owner_id)
@@ -178,10 +198,13 @@ class EndpointRegistry:
     Uses pluggable storage backends (U-109) for persistence.
 
     Key design decisions:
-    - Keyed by (project_id, model) for multi-tenant isolation
+    - Keyed by (project_id, job_id) for multi-tenant isolation
+    - Multiple endpoints per model supported via the ``variant`` field
     - UMRS readiness polling is authoritative (not backend)
     - Warm reuse: existing ready endpoint reused until expires_at
     - Pluggable storage: in-memory (default) or persistent (Postgres/Redis)
+    - Least-connections routing: ``select_endpoint()`` picks the endpoint
+      with the fewest active_requests among candidates for a model/variant
     """
 
     def __init__(
@@ -211,7 +234,7 @@ class EndpointRegistry:
             endpoints = self._backend.list_all()
             with self._lock:
                 for ep in endpoints:
-                    key = (ep.project_id, ep.model)
+                    key = (ep.project_id, ep.job_id)
                     self._endpoints[key] = ep
                     self._by_job_id[ep.job_id] = ep
             logger.info(f"Loaded {len(endpoints)} endpoints from backend")
@@ -244,9 +267,24 @@ class EndpointRegistry:
         backend: str = "unknown",
         ttl_sec: int | None = None,
         metadata: dict[str, Any] | None = None,
+        variant: str | None = None,
     ) -> RegisteredEndpoint:
         """
         Register a new endpoint (status=PROVISIONING).
+
+        Args:
+            project_id: Tenant/project identifier.
+            model: Model name (e.g. "DeepSeek-V4-Pro").
+            job_id: Unique job identifier from the backend.
+            host: Compute node hostname.
+            port: LiteLLM proxy port.
+            backend: Execution backend ("slurm", "kubernetes", "compose").
+            ttl_sec: Time-to-live in seconds. 0 = never expires, None = default.
+            metadata: Optional metadata dict (tier, owner_id, served_model_name, etc.).
+            variant: Deployment variant name (e.g. "128k", "tep-128k").
+                     Differentiates multiple endpoints serving the same model
+                     with different parameters (ctx length, node count, etc.).
+                     ``None`` means the default/sole deployment.
 
         Returns:
             The registered endpoint.
@@ -276,30 +314,34 @@ class EndpointRegistry:
             status=EndpointStatus.PROVISIONING,
             backend=backend,
             expires_at=expires_at,
+            variant=variant,
             metadata=metadata,
         )
 
-        key = (project_id, model)
+        key = (project_id, job_id)
 
         with self._lock:
-            # Check if there's an existing endpoint to replace
+            # Check by job_id — allow multiple deployments of same model
             old = self._endpoints.get(key)
             if old:
                 logger.info(
                     f"Replacing endpoint for ({project_id}, {model}): "
                     f"{old.job_id} -> {job_id}"
                 )
-                # Remove old from both in-memory index and backend
                 self._by_job_id.pop(old.job_id, None)
                 self._delete_from_backend(old.job_id)
 
             self._endpoints[key] = endpoint
             self._by_job_id[job_id] = endpoint
+            # Persist inside the lock so in-memory and backend states stay
+            # consistent when concurrent register() calls race for the same
+            # (project_id, model).  NOTE: this still does not protect against
+            # multi-process races; the caller serialises duplicates.
+            self._persist(endpoint)
 
-        # Persist to backend
-        self._persist(endpoint)
-
-        logger.info(f"Registered endpoint: {project_id}/{model} -> {host}:{port} (job={job_id})")
+        logger.info(
+            f"Registered endpoint: {project_id}/{model} -> {host}:{port} (job={job_id})"
+        )
         return endpoint
 
     def update_status(
@@ -332,7 +374,9 @@ class EndpointRegistry:
             # Persist status change
             self._persist(endpoint)
 
-            logger.info(f"Endpoint {job_id} status: {old_status.value} -> {status.value}")
+            logger.info(
+                f"Endpoint {job_id} status: {old_status.value} -> {status.value}"
+            )
             return endpoint
 
     def update_location(
@@ -400,7 +444,9 @@ class EndpointRegistry:
                 self._persist(endpoint)
             return endpoint
 
-    def extend_ttl(self, job_id: str, new_expires_at: datetime) -> RegisteredEndpoint | None:
+    def extend_ttl(
+        self, job_id: str, new_expires_at: datetime
+    ) -> RegisteredEndpoint | None:
         """Extend endpoint TTL to a new expiration time.
 
         Only extends (never shortens). Returns the updated endpoint or None
@@ -421,58 +467,175 @@ class EndpointRegistry:
                 )
             return endpoint
 
+    def _find_candidate(
+        self, project_id: str, model: str
+    ) -> RegisteredEndpoint | None:
+        """Find an endpoint by (project_id, model) or served_model_name fallback."""
+        for candidate in self._endpoints.values():
+            if candidate.project_id != project_id:
+                continue
+            if candidate.model == model:
+                return candidate
+        # R-15: fall back to served_model_name index.
+        for candidate in self._endpoints.values():
+            if candidate.project_id != project_id:
+                continue
+            served = candidate.metadata.get("served_model_name")
+            if served and served == model:
+                return candidate
+        return None
+
+    def _find_candidates(
+        self,
+        project_id: str,
+        model: str,
+        variant: str | None = None,
+        status_filter: list[EndpointStatus] | None = None,
+    ) -> list[RegisteredEndpoint]:
+        """Find all endpoints matching (project_id, model[, variant]).
+
+        Args:
+            project_id: Tenant/project identifier.
+            model: Model name to match.
+            variant: If provided, only return endpoints with this variant.
+                     If ``None``, return endpoints regardless of variant.
+            status_filter: If provided, only return endpoints with one of
+                           these statuses. Typical: ``[READY, DEGRADED]``.
+
+        Returns:
+            List of matching endpoints (may be empty).
+        """
+        results: list[RegisteredEndpoint] = []
+        for candidate in self._endpoints.values():
+            if candidate.project_id != project_id:
+                continue
+            if candidate.model != model:
+                # R-15: also match by served_model_name in metadata
+                served = candidate.metadata.get("served_model_name")
+                if not served or served != model:
+                    continue
+            if variant is not None and candidate.variant != variant:
+                continue
+            if status_filter and candidate.status not in status_filter:
+                continue
+            results.append(candidate)
+        return results
+
     def get(
         self,
         project_id: str,
         model: str,
         prefer_warm: bool = True,
         min_ttl_sec: int | None = None,
+        variant: str | None = None,
     ) -> RegisteredEndpoint | None:
+        """Get an endpoint for (project_id, model[, variant]).
+
+        Supports multiple deployments of the same model within a project.
+        When ``variant`` is specified, only considers endpoints with that
+        variant. Otherwise returns the first ready, usable match regardless
+        of variant (backwards compatible).
         """
-        Get an endpoint for (project_id, model).
-
-        Args:
-            project_id: Project/tenant identifier.
-            model: Model name.
-            prefer_warm: If True, only return ready endpoints.
-            min_ttl_sec: Minimum TTL required (default: min_ttl_for_reuse_sec).
-
-        Returns:
-            RegisteredEndpoint if found and usable, None otherwise.
-
-        R-15 (Phase 2k): Falls back to a `served_model_name` lookup when the
-        primary `(project_id, model)` key misses. The mini-rivault stack
-        sometimes registers under the user-facing model name (``Qwen/Qwen3-8B``)
-        and sometimes under the vLLM-served name (a filesystem basename). Both
-        callers should resolve to the same endpoint.
-        """
-        min_ttl = min_ttl_sec if min_ttl_sec is not None else self._min_ttl_for_reuse_sec
-        key = (project_id, model)
-
+        min_ttl = (
+            min_ttl_sec if min_ttl_sec is not None else self._min_ttl_for_reuse_sec
+        )
         with self._lock:
-            endpoint = self._endpoints.get(key)
-            if endpoint is None:
-                # R-15: fall back to served_model_name index.
-                for candidate in self._endpoints.values():
-                    if candidate.project_id != project_id:
+            if variant is not None:
+                # Variant-aware: search candidates directly
+                candidates = self._find_candidates(
+                    project_id, model, variant=variant
+                )
+                for ep in candidates:
+                    if prefer_warm and not ep.is_usable:
                         continue
-                    served = candidate.metadata.get("served_model_name")
-                    if served and served == model:
-                        endpoint = candidate
-                        break
+                    ttl_remaining = ep.ttl_remaining_sec
+                    if ttl_remaining is not None and ttl_remaining < min_ttl:
+                        continue
+                    return ep
+                return None
+            # Legacy path: first match (backwards compatible)
+            endpoint = self._find_candidate(project_id, model)
             if not endpoint:
                 return None
-
-            # Check if usable
             if prefer_warm and not endpoint.is_usable:
                 return None
-
-            # Check TTL
             ttl_remaining = endpoint.ttl_remaining_sec
             if ttl_remaining is not None and ttl_remaining < min_ttl:
                 return None
-
             return endpoint
+
+    def select_endpoint(
+        self,
+        project_id: str,
+        model: str,
+        variant: str | None = None,
+        strategy: str = "least_connections",
+        min_ttl_sec: int | None = None,
+    ) -> RegisteredEndpoint | None:
+        """Select the best endpoint for (project_id, model[, variant]).
+
+        Unlike ``get()`` (which returns the first match), this method
+        considers all usable candidates and applies a selection strategy.
+
+        Args:
+            project_id: Tenant/project identifier.
+            model: Model name.
+            variant: If provided, only consider endpoints with this variant.
+            strategy: Selection strategy:
+                - ``"least_connections"``: Pick the endpoint with the
+                  fewest ``active_requests`` among usable candidates.
+                - ``"first"``: First usable candidate (same as ``get()``).
+            min_ttl_sec: Minimum remaining TTL for candidates.
+
+        Returns:
+            Selected endpoint, or ``None`` if no usable candidate exists.
+        """
+        min_ttl = (
+            min_ttl_sec if min_ttl_sec is not None else self._min_ttl_for_reuse_sec
+        )
+        with self._lock:
+            candidates = self._find_candidates(
+                project_id,
+                model,
+                variant=variant,
+                status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+            )
+            # Filter by TTL
+            usable: list[RegisteredEndpoint] = []
+            for ep in candidates:
+                ttl_remaining = ep.ttl_remaining_sec
+                if ttl_remaining is not None and ttl_remaining < min_ttl:
+                    continue
+                usable.append(ep)
+            if not usable:
+                return None
+
+            if strategy == "least_connections":
+                return min(usable, key=lambda e: e.active_requests)
+            # "first" or unknown strategy
+            return usable[0]
+
+    def increment_requests(self, job_id: str) -> None:
+        """Atomically increment active_requests for an endpoint.
+
+        Called before proxying a request to track load for least-connections
+        routing. No-op if job_id is not found.
+        """
+        with self._lock:
+            endpoint = self._by_job_id.get(job_id)
+            if endpoint:
+                endpoint.active_requests += 1
+
+    def decrement_requests(self, job_id: str) -> None:
+        """Atomically decrement active_requests for an endpoint.
+
+        Called after a proxied request completes (success or failure).
+        No-op if job_id is not found. Never decrements below zero.
+        """
+        with self._lock:
+            endpoint = self._by_job_id.get(job_id)
+            if endpoint and endpoint.active_requests > 0:
+                endpoint.active_requests -= 1
 
     def get_by_job_id(self, job_id: str) -> RegisteredEndpoint | None:
         """Get endpoint by job_id."""
@@ -489,7 +652,7 @@ class EndpointRegistry:
         with self._lock:
             endpoint = self._by_job_id.pop(job_id, None)
             if endpoint:
-                key = (endpoint.project_id, endpoint.model)
+                key = (endpoint.project_id, endpoint.job_id)
                 # Only remove from main index if it's the current endpoint
                 if self._endpoints.get(key) is endpoint:
                     del self._endpoints[key]
@@ -529,7 +692,8 @@ class EndpointRegistry:
         now = datetime.utcnow()
         with self._lock:
             return [
-                e for e in self._endpoints.values()
+                e
+                for e in self._endpoints.values()
                 if e.expires_at and e.expires_at < now
             ]
 
@@ -538,7 +702,8 @@ class EndpointRegistry:
         threshold = datetime.utcnow() - timedelta(seconds=idle_threshold_sec)
         with self._lock:
             return [
-                e for e in self._endpoints.values()
+                e
+                for e in self._endpoints.values()
                 if e.is_usable and e.last_used_at and e.last_used_at < threshold
             ]
 

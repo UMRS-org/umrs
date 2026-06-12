@@ -116,9 +116,7 @@ def _import_step_class(entrypoint: str, script_dir: Path):
 
     cls = getattr(mod, class_name, None)
     if cls is None:
-        raise RuntimeError(
-            f"Class {class_name!r} not found in module {module_name!r}"
-        )
+        raise RuntimeError(f"Class {class_name!r} not found in module {module_name!r}")
     return cls
 
 
@@ -170,9 +168,11 @@ def main() -> int:
         run_id = _read_env("UMRS_RUN_ID", required=False) or "unknown"
 
         logger.info(
-            "Step executor starting: name=%s entrypoint=%s run_id=%s "
-            "input_keys=%d",
-            step_name, entrypoint, run_id, len(input_keys),
+            "Step executor starting: name=%s entrypoint=%s run_id=%s input_keys=%d",
+            step_name,
+            entrypoint,
+            run_id,
+            len(input_keys),
         )
 
         # ── Determine source directory ───────────────────────────────
@@ -235,6 +235,7 @@ def main() -> int:
         if result.embeddings is not None:
             try:
                 import numpy as np
+
                 if isinstance(result.embeddings, np.ndarray):
                     embeddings_serialised = result.embeddings.tolist()
                 else:

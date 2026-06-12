@@ -26,8 +26,8 @@ class MountSpec:
     Abstracts different mount types across container runtimes.
     """
 
-    source: str           # Host path, PVC name, or volume name
-    target: str           # Container path
+    source: str  # Host path, PVC name, or volume name
+    target: str  # Container path
     mount_type: str = "bind"  # "bind", "volume", "pvc", "tmpfs"
     read_only: bool = False
     options: dict[str, str] = field(default_factory=dict)
@@ -203,11 +203,14 @@ class RuntimeWrapper(ABC):
 
         while True:
             try:
-                async with aiohttp.ClientSession() as session, session.get(
-                    endpoint.models_url,
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10),
-                ) as resp:
+                async with (
+                    aiohttp.ClientSession() as session,
+                    session.get(
+                        endpoint.models_url,
+                        headers=headers,
+                        timeout=aiohttp.ClientTimeout(total=10),
+                    ) as resp,
+                ):
                     if resp.status == 200:
                         return True
             except Exception:
@@ -224,4 +227,5 @@ class RuntimeWrapper(ABC):
 
 class LaunchError(Exception):
     """Error during container launch."""
+
     pass

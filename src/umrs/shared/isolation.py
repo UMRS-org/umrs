@@ -135,7 +135,8 @@ class UserContext:
             project_id=project_id,
             role=role,
             groups=groups,
-            slurm_account=(x_slurm_account.strip() if x_slurm_account else None) or None,
+            slurm_account=(x_slurm_account.strip() if x_slurm_account else None)
+            or None,
         )
 
     @property
@@ -221,9 +222,7 @@ class AccessControl:
     ]
 
     def __init__(self):
-        self._compiled_patterns = [
-            re.compile(p) for p in self.SUSPICIOUS_PATTERNS
-        ]
+        self._compiled_patterns = [re.compile(p) for p in self.SUSPICIOUS_PATTERNS]
 
     def validate_resource_access(
         self,
@@ -327,7 +326,9 @@ class IsolationValidator:
                 path_val = request_data[path_field]
                 if isinstance(path_val, str):
                     if not self._access_control.validate_path(path_val, ctx):
-                        violations.append(f"Suspicious path in {path_field}: {path_val}")
+                        violations.append(
+                            f"Suspicious path in {path_field}: {path_val}"
+                        )
 
         return violations
 
@@ -347,8 +348,7 @@ class IsolationValidator:
         # Filter list responses
         if isinstance(response_data, list):
             return [
-                item for item in response_data
-                if self._item_visible_to_user(item, ctx)
+                item for item in response_data if self._item_visible_to_user(item, ctx)
             ]
 
         # For single items, check visibility

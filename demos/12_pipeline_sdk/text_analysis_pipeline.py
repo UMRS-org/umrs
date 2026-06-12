@@ -68,23 +68,23 @@ class TextAnalysisPipeline(Pipeline):
         """Scan input directory for .txt files and create DataItems."""
         input_path = Path(self._input_dir)
         if not input_path.is_dir():
-            raise FileNotFoundError(
-                f"Input directory not found: {self._input_dir}"
-            )
+            raise FileNotFoundError(f"Input directory not found: {self._input_dir}")
 
         items: List[DataItem] = []
         for path in sorted(input_path.rglob("*.txt")):
             if not path.is_file():
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
-            items.append(DataItem(
-                key=path.name,
-                source=str(path),
-                metadata={
-                    "size_bytes": path.stat().st_size,
-                    "content": text,
-                },
-            ))
+            items.append(
+                DataItem(
+                    key=path.name,
+                    source=str(path),
+                    metadata={
+                        "size_bytes": path.stat().st_size,
+                        "content": text,
+                    },
+                )
+            )
 
         if not items:
             self._log.warning("No .txt files found in %s", self._input_dir)
@@ -93,8 +93,7 @@ class TextAnalysisPipeline(Pipeline):
 
     # ── Phase 3: COMPUTE ─────────────────────────────────────────────────
 
-    def compute(self, config: PipelineConfig,
-                items: List[DataItem]) -> List[TaskHandle]:
+    def compute(self, config: PipelineConfig, items: List[DataItem]) -> List[TaskHandle]:
         """Compute word-frequency statistics for each text file.
 
         In LOCAL mode this runs in-process.  With UMRS_EMBEDDING or
@@ -118,8 +117,7 @@ class TextAnalysisPipeline(Pipeline):
 
     # ── Phase 4: COLLECT ─────────────────────────────────────────────────
 
-    def collect(self, config: PipelineConfig,
-                handles: List[TaskHandle]) -> List[Result]:
+    def collect(self, config: PipelineConfig, handles: List[TaskHandle]) -> List[Result]:
         """Collect results from completed handles.
 
         For LOCAL mode the result is already in handle.metadata.
@@ -129,23 +127,26 @@ class TextAnalysisPipeline(Pipeline):
         for handle in handles:
             stats = handle.metadata.get("result")
             if stats is None:
-                results.append(Result(
-                    task_handle=handle,
-                    status="failure",
-                    error="No result in handle metadata",
-                ))
+                results.append(
+                    Result(
+                        task_handle=handle,
+                        status="failure",
+                        error="No result in handle metadata",
+                    )
+                )
             else:
-                results.append(Result(
-                    task_handle=handle,
-                    status="success",
-                    data=stats,
-                ))
+                results.append(
+                    Result(
+                        task_handle=handle,
+                        status="success",
+                        data=stats,
+                    )
+                )
         return results
 
     # ── Phase 5: VERIFY (optional override) ──────────────────────────────
 
-    def verify(self, config: PipelineConfig,
-               results: List[Result]) -> bool:
+    def verify(self, config: PipelineConfig, results: List[Result]) -> bool:
         """Check that every file produced valid statistics."""
         ok = super().verify(config, results)
         if ok:
@@ -154,15 +155,14 @@ class TextAnalysisPipeline(Pipeline):
                 if r.data.get("word_count", 0) == 0:
                     self._log.warning(
                         "File %s has 0 words",
-                        r.task_handle.data_item.key if r.task_handle.data_item else "?"
+                        r.task_handle.data_item.key if r.task_handle.data_item else "?",
                     )
                     ok = False
         return ok
 
     # ── Phase 6: PRESENT (optional override) ─────────────────────────────
 
-    def present(self, config: PipelineConfig,
-                results: List[Result]) -> None:
+    def present(self, config: PipelineConfig, results: List[Result]) -> None:
         """Print a detailed summary including top words per file."""
         # Default table
         super().present(config, results)
@@ -195,30 +195,29 @@ class TextAnalysisPipeline(Pipeline):
             "unique_words": unique_words,
             "char_count": total_chars,
             "sentence_count": sentences,
-            "avg_word_length": round(
-                sum(len(w) for w in words) / max(len(words), 1), 2
-            ),
+            "avg_word_length": round(sum(len(w) for w in words) / max(len(words), 1), 2),
             "avg_words_per_sentence": round(len(words) / sentences, 1),
             "top_words": counter.most_common(top_n),
-            "content_hash": hashlib.sha256(
-                text.encode("utf-8")
-            ).hexdigest()[:16],
+            "content_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
         }
 
 
 # ── CLI Entry Point ──────────────────────────────────────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(
         description="Pipeline SDK Demo — Text Analysis Pipeline",
     )
     parser.add_argument(
-        "--input-dir", default=None,
-        help="Directory containing .txt files to analyse "
-             "(default: ../../data/file_of_texts/)",
+        "--input-dir",
+        default=None,
+        help="Directory containing .txt files to analyse (default: ../../data/file_of_texts/)",
     )
     parser.add_argument(
-        "--top-n", type=int, default=10,
+        "--top-n",
+        type=int,
+        default=10,
         help="Number of top words to show per file (default: 10)",
     )
     args = parser.parse_args()

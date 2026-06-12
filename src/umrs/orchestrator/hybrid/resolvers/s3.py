@@ -44,9 +44,7 @@ class S3Resolver(ModelRefResolver):
     ) -> ResolvedModel:
         """Resolve S3 reference to local path."""
         if ref.type != ModelRefType.S3_REF:
-            raise ResolutionError(
-                f"S3Resolver cannot handle ref type '{ref.type}'"
-            )
+            raise ResolutionError(f"S3Resolver cannot handle ref type '{ref.type}'")
 
         s3_data = ref.to_dict()
         bucket = s3_data.get("bucket", "")

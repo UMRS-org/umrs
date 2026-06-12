@@ -235,7 +235,9 @@ class HybridSearcher:
 
         # Sort by vector similarity
         vector_scores.sort(key=lambda x: x[2], reverse=True)
-        vector_ranks = {doc_id: rank for rank, (doc_id, _, _) in enumerate(vector_scores)}
+        vector_ranks = {
+            doc_id: rank for rank, (doc_id, _, _) in enumerate(vector_scores)
+        }
 
         # Combine scores using RRF
         combined_scores: dict[str, float] = {}
@@ -381,10 +383,28 @@ class RAGContentScanner:
 
     # High-confidence injection patterns for RAG
     INJECTION_PATTERNS = [
-        (re.compile(r"\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?\b", re.IGNORECASE), 0.9),
-        (re.compile(r"\bdisregard\s+(?:all\s+)?(?:previous|prior)\b", re.IGNORECASE), 0.85),
-        (re.compile(r"\boverride\s+(?:your|the|all)\s+(?:instructions?|rules?)\b", re.IGNORECASE), 0.9),
-        (re.compile(r"\benter\s+(?:developer|admin|root)\s+mode\b", re.IGNORECASE), 0.95),
+        (
+            re.compile(
+                r"\bignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions?\b",
+                re.IGNORECASE,
+            ),
+            0.9,
+        ),
+        (
+            re.compile(r"\bdisregard\s+(?:all\s+)?(?:previous|prior)\b", re.IGNORECASE),
+            0.85,
+        ),
+        (
+            re.compile(
+                r"\boverride\s+(?:your|the|all)\s+(?:instructions?|rules?)\b",
+                re.IGNORECASE,
+            ),
+            0.9,
+        ),
+        (
+            re.compile(r"\benter\s+(?:developer|admin|root)\s+mode\b", re.IGNORECASE),
+            0.95,
+        ),
         (re.compile(r"\[system\]", re.IGNORECASE), 0.85),
         (re.compile(r'"role"\s*:\s*"system"', re.IGNORECASE), 0.9),
     ]
@@ -431,7 +451,11 @@ class RAGContentScanner:
                     "risk_score": max_score,
                 },
             )
-            return f"[RAG chunk blocked: injection risk {max_score:.2f}]", max_score, True
+            return (
+                f"[RAG chunk blocked: injection risk {max_score:.2f}]",
+                max_score,
+                True,
+            )
 
         if max_score >= self.warn_threshold:
             logger.warning(
@@ -726,11 +750,14 @@ class RAGPipeline:
             "temperature": temperature,
         }
 
-        async with aiohttp.ClientSession() as session, session.post(
-            f"{self.gateway_url}/gw/llm/v1/chat/completions",
-            json=payload,
-            timeout=aiohttp.ClientTimeout(total=120),
-        ) as response:
+        async with (
+            aiohttp.ClientSession() as session,
+            session.post(
+                f"{self.gateway_url}/gw/llm/v1/chat/completions",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as response,
+        ):
             result = await response.json()
 
         return {

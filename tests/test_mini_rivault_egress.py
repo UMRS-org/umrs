@@ -91,7 +91,7 @@ def test_forward_proxy_allows_only_rendered_bucket_host():
     assert "map $host $egress_proxy_allowed_host" in nginx_conf
     assert "UMRS_S3_BUCKET_HOST 1;" in nginx_conf
     assert "return 403;" in nginx_conf
-    assert 's@UMRS_S3_BUCKET_HOST@' in slurm
+    assert "s@UMRS_S3_BUCKET_HOST@" in slurm
     assert '_substitute_required "out-nginx.conf"' in slurm
 
 
@@ -105,10 +105,12 @@ def test_e2e_compute_mock_exports_proxy_env():
 
 
 def test_kubernetes_job_manifest_exports_egress_proxy_env():
-    backend = KubernetesBackend(OrchestratorConfig(
-        egress_proxy_url="http://egress-guard.rivault:18888",
-        egress_no_proxy="localhost,litellm,vllm,egress-guard",
-    ))
+    backend = KubernetesBackend(
+        OrchestratorConfig(
+            egress_proxy_url="http://egress-guard.rivault:18888",
+            egress_no_proxy="localhost,litellm,vllm,egress-guard",
+        )
+    )
     manifest = backend._build_job_manifest("mini-rivault-test", "/models/test")
     container = manifest["spec"]["template"]["spec"]["containers"][0]
     env = {item["name"]: item["value"] for item in container["env"] if "value" in item}
@@ -129,9 +131,11 @@ def test_kubernetes_job_manifest_exports_egress_proxy_env():
 
 def test_kubernetes_network_policy_defaults_to_dns_and_egress_guard(monkeypatch):
     monkeypatch.delenv("K8S_EGRESS_ALLOWED_CIDRS", raising=False)
-    backend = KubernetesBackend(OrchestratorConfig(
-        egress_proxy_url="http://egress-guard.rivault:18888",
-    ))
+    backend = KubernetesBackend(
+        OrchestratorConfig(
+            egress_proxy_url="http://egress-guard.rivault:18888",
+        )
+    )
     policy = backend._build_network_policy("mini-rivault-test", "rivault-test")
     egress_rules = policy["spec"]["egress"]
     peers = [peer for rule in egress_rules for peer in rule.get("to", [])]

@@ -121,13 +121,15 @@ class MCPServerStore:
             )
 
             mcp_tools = []
-            for tool_def in (tools or []):
+            for tool_def in tools or []:
                 tool_name = tool_def.get("name", "")
                 if not tool_name:
                     continue
                 tool_id = generate_tool_id()
                 # Normalize: accept both "inputSchema" and "parameters"
-                input_schema = tool_def.get("inputSchema", tool_def.get("parameters", {}))
+                input_schema = tool_def.get(
+                    "inputSchema", tool_def.get("parameters", {})
+                )
                 tool_desc = tool_def.get("description", "")
 
                 cur.execute(
@@ -143,13 +145,15 @@ class MCPServerStore:
                         json.dumps(input_schema),
                     ),
                 )
-                mcp_tools.append(MCPTool(
-                    tool_id=tool_id,
-                    server_id=actual_server_id,
-                    name=tool_name,
-                    description=tool_desc,
-                    input_schema=input_schema,
-                ))
+                mcp_tools.append(
+                    MCPTool(
+                        tool_id=tool_id,
+                        server_id=actual_server_id,
+                        name=tool_name,
+                        description=tool_desc,
+                        input_schema=input_schema,
+                    )
+                )
 
             self.conn.commit()
 
@@ -348,7 +352,9 @@ class MCPServerStore:
                 {
                     "name": row[0],
                     "description": row[1],
-                    "inputSchema": row[2] if isinstance(row[2], dict) else json.loads(row[2]),
+                    "inputSchema": row[2]
+                    if isinstance(row[2], dict)
+                    else json.loads(row[2]),
                     "server": row[3],
                 }
                 for row in cur.fetchall()
@@ -434,12 +440,14 @@ class MCPServerStore:
             input_schema = row[4]
             if isinstance(input_schema, str):
                 input_schema = json.loads(input_schema)
-            tools.append(MCPTool(
-                tool_id=row[0],
-                server_id=row[1],
-                name=row[2],
-                description=row[3] or "",
-                input_schema=input_schema or {},
-                created_at=row[5],
-            ))
+            tools.append(
+                MCPTool(
+                    tool_id=row[0],
+                    server_id=row[1],
+                    name=row[2],
+                    description=row[3] or "",
+                    input_schema=input_schema or {},
+                    created_at=row[5],
+                )
+            )
         return tools

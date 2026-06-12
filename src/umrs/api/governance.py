@@ -116,7 +116,9 @@ def ensure_governance_schema(conn) -> None:
             )
 
         if stored_version < GOVERNANCE_SCHEMA_VERSION:
-            _apply_governance_migrations(conn, cur, stored_version, GOVERNANCE_SCHEMA_VERSION)
+            _apply_governance_migrations(
+                conn, cur, stored_version, GOVERNANCE_SCHEMA_VERSION
+            )
 
         # Upsert version
         cur.execute(
@@ -128,7 +130,8 @@ def ensure_governance_schema(conn) -> None:
         conn.commit()
         logger.info(
             "Governance schema ensured (version %d, migrated from %d)",
-            GOVERNANCE_SCHEMA_VERSION, stored_version,
+            GOVERNANCE_SCHEMA_VERSION,
+            stored_version,
         )
     except RuntimeError:
         conn.rollback()
@@ -151,7 +154,9 @@ def _apply_governance_migrations(conn, cur, from_version: int, to_version: int) 
         # Version 1: initial schema (tables created above)
         # Version 2: ownership lifecycle support — no DDL needed, only
         # new store methods (transfer_owner, find_orphans, cleanup_orphans)
-        3: ["ALTER TABLE resource_quotas ADD COLUMN IF NOT EXISTS warn_count INTEGER DEFAULT NULL"],
+        3: [
+            "ALTER TABLE resource_quotas ADD COLUMN IF NOT EXISTS warn_count INTEGER DEFAULT NULL"
+        ],
         4: [
             "ALTER TABLE resource_ownership ADD COLUMN IF NOT EXISTS group_id VARCHAR(128) NOT NULL DEFAULT ''",
             CREATE_RESOURCE_SHARES_TABLE,
@@ -647,8 +652,15 @@ class GovernanceStore:
                 "DO UPDATE SET access_level = EXCLUDED.access_level, "
                 "granted_by = EXCLUDED.granted_by, expires_at = EXCLUDED.expires_at "
                 "RETURNING share_id, created_at",
-                (resource_type, resource_id, granted_to, granted_to_type,
-                 access_level, granted_by, expires_at),
+                (
+                    resource_type,
+                    resource_id,
+                    granted_to,
+                    granted_to_type,
+                    access_level,
+                    granted_by,
+                    expires_at,
+                ),
             )
             row = cur.fetchone()
             self.conn.commit()
@@ -910,8 +922,13 @@ def check_quota(project_id: str, resource_type: str) -> None:
 
     # Soft quota warning (warn_count)
     warn_count = quota.get("warn_count")
-    if warn_count is not None and quota["current_count"] >= warn_count and quota["current_count"] < quota["max_count"]:
+    if (
+        warn_count is not None
+        and quota["current_count"] >= warn_count
+        and quota["current_count"] < quota["max_count"]
+    ):
         from .audit_events import emit_audit
+
         emit_audit(
             "governance.quota_warning",
             project_id=project_id,
@@ -926,6 +943,7 @@ def check_quota(project_id: str, resource_type: str) -> None:
 
     if quota["current_count"] >= quota["max_count"]:
         from .audit_events import emit_audit
+
         emit_audit(
             "governance.quota_exceeded",
             project_id=project_id,
@@ -937,6 +955,7 @@ def check_quota(project_id: str, resource_type: str) -> None:
             },
         )
         from fastapi import HTTPException, status
+
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -967,20 +986,35 @@ def record_resource_created(
 
     try:
         store.register_owner(
-            resource_type, resource_id, owner_id,
-            project_id=project_id, tier=tier, metadata=metadata,
+            resource_type,
+            resource_id,
+            owner_id,
+            project_id=project_id,
+            tier=tier,
+            metadata=metadata,
         )
     except Exception:
-        logger.debug("Governance: failed to record ownership for %s/%s", resource_type, resource_id, exc_info=True)
+        logger.debug(
+            "Governance: failed to record ownership for %s/%s",
+            resource_type,
+            resource_id,
+            exc_info=True,
+        )
 
     if project_id:
         try:
             store.increment_usage(project_id, resource_type)
         except Exception:
-            logger.debug("Governance: failed to increment quota for %s/%s", project_id, resource_type, exc_info=True)
+            logger.debug(
+                "Governance: failed to increment quota for %s/%s",
+                project_id,
+                resource_type,
+                exc_info=True,
+            )
 
     try:
         from .audit_events import emit_audit
+
         emit_audit(
             "governance.resource_created",
             actor=owner_id,
@@ -1012,16 +1046,27 @@ def record_resource_deleted(
     try:
         store.remove_owner(resource_type, resource_id)
     except Exception:
-        logger.debug("Governance: failed to remove ownership for %s/%s", resource_type, resource_id, exc_info=True)
+        logger.debug(
+            "Governance: failed to remove ownership for %s/%s",
+            resource_type,
+            resource_id,
+            exc_info=True,
+        )
 
     if project_id:
         try:
             store.decrement_usage(project_id, resource_type)
         except Exception:
-            logger.debug("Governance: failed to decrement quota for %s/%s", project_id, resource_type, exc_info=True)
+            logger.debug(
+                "Governance: failed to decrement quota for %s/%s",
+                project_id,
+                resource_type,
+                exc_info=True,
+            )
 
     try:
         from .audit_events import emit_audit
+
         emit_audit(
             "governance.resource_deleted",
             project_id=project_id,

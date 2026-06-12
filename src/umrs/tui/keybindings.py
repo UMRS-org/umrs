@@ -59,7 +59,12 @@ class KeyReader:
                     ready, _, _ = select.select([sys.stdin], [], [], 0.05)
                     if ready:
                         seq = sys.stdin.read(2)
-                        _ARROW_MAP = {"[A": "up", "[B": "down", "[C": "right", "[D": "left"}
+                        _ARROW_MAP = {
+                            "[A": "up",
+                            "[B": "down",
+                            "[C": "right",
+                            "[D": "left",
+                        }
                         key = _ARROW_MAP.get(seq, "esc")
                     else:
                         # No follow-up chars: bare Esc key

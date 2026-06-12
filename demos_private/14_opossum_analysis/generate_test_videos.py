@@ -8,6 +8,7 @@ algorithm.
 Usage:
     python generate_test_videos.py --output-dir sample_videos/ --num-videos 4
 """
+
 import argparse
 import os
 import math
@@ -50,7 +51,9 @@ def generate_video(
             cx = int(width * 0.5 + width * 0.3 * math.sin(2.0 * math.pi * t / duration_sec))
             cy = int(height * 0.5 + height * 0.2 * math.cos(2.0 * math.pi * t / duration_sec))
             size = 40
-            cv2.rectangle(frame, (cx - size, cy - size), (cx + size, cy + size), (255, 255, 255), -1)
+            cv2.rectangle(
+                frame, (cx - size, cy - size), (cx + size, cy + size), (255, 255, 255), -1
+            )
 
         out.write(frame)
 
@@ -72,13 +75,13 @@ def main():
     for i in range(args.num_videos):
         label = labels[i % len(labels)]
         # Alternate: some videos have motion, some are static
-        has_motion = (i % 3 != 2)  # every 3rd video is static
-        output_path = os.path.join(args.output_dir, f"camera01_{i+1:04d}.mp4")
+        has_motion = i % 3 != 2  # every 3rd video is static
+        output_path = os.path.join(args.output_dir, f"camera01_{i + 1:04d}.mp4")
         generate_video(
             output_path,
             duration_sec=args.duration,
             fps=args.fps,
-            label=f"Video {i+1}: {label}",
+            label=f"Video {i + 1}: {label}",
             add_motion=has_motion,
         )
 

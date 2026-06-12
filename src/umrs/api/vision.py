@@ -20,7 +20,10 @@ from umrs.orchestrator.endpoint_registry import (
     RegisteredEndpoint,
     get_registry,
 )
-from umrs.shared.storage.s3_presign import generate_presigned_get, generate_presigned_put
+from umrs.shared.storage.s3_presign import (
+    generate_presigned_get,
+    generate_presigned_put,
+)
 from umrs.vision_service.output_specs import describe_output_artifacts
 
 logger = logging.getLogger(__name__)
@@ -31,18 +34,24 @@ router = APIRouter(prefix="/umrs/vision", tags=["vision"])
 class VisionInferSubmitRequest(BaseModel):
     """Submit a BentoML vision inference task through UMRS."""
 
-    image_uri: str = Field(..., description="S3 URI or project-scoped object key for the input image")
+    image_uri: str = Field(
+        ..., description="S3 URI or project-scoped object key for the input image"
+    )
     model: str | None = Field(None, description="Endpoint model name to use")
     endpoint_id: str | None = Field(None, description="Specific endpoint job_id to use")
     adapter: str | None = Field(None, description="BentoML vision adapter name")
-    model_type: str | None = Field(None, description="Alias for adapter, matching BentoML payload naming")
+    model_type: str | None = Field(
+        None, description="Alias for adapter, matching BentoML payload naming"
+    )
     inference_config: dict[str, Any] = Field(default_factory=dict)
     output_bucket: str | None = None
     output_artifacts: dict[str, str] | None = Field(
         None,
         description="Optional output object keys mapped to content types for custom adapters",
     )
-    ttl_sec: int | None = Field(None, ge=60, le=86400, description="Presigned URL TTL for internal BentoML use")
+    ttl_sec: int | None = Field(
+        None, ge=60, le=86400, description="Presigned URL TTL for internal BentoML use"
+    )
 
 
 class VisionOutputArtifact(BaseModel):
@@ -77,7 +86,9 @@ def _parse_s3_uri(image_uri: str, project_id: str, config: S3Config) -> tuple[st
 
 
 def _has_project_access(endpoint: RegisteredEndpoint, project_id: str) -> bool:
-    owner_type = str(endpoint.metadata.get("owner_type") or endpoint.metadata.get("tier") or "")
+    owner_type = str(
+        endpoint.metadata.get("owner_type") or endpoint.metadata.get("tier") or ""
+    )
     return endpoint.project_id == project_id or owner_type == "system"
 
 
@@ -99,9 +110,15 @@ def _resolve_endpoint(
 ) -> RegisteredEndpoint:
     if endpoint_id:
         endpoint = registry.get_by_job_id(endpoint_id)
-        if endpoint and endpoint.is_usable and _has_project_access(endpoint, project_id):
+        if (
+            endpoint
+            and endpoint.is_usable
+            and _has_project_access(endpoint, project_id)
+        ):
             return endpoint
-        raise HTTPException(status_code=404, detail=f"No ready vision endpoint: {endpoint_id}")
+        raise HTTPException(
+            status_code=404, detail=f"No ready vision endpoint: {endpoint_id}"
+        )
 
     statuses = [EndpointStatus.READY, EndpointStatus.DEGRADED]
     candidates = registry.list_all(status_filter=statuses)
@@ -117,16 +134,27 @@ def _resolve_endpoint(
         return matches[0]
 
     target = model or "vision"
-    raise HTTPException(status_code=404, detail=f"No ready vision endpoint for {target}")
+    raise HTTPException(
+        status_code=404, detail=f"No ready vision endpoint for {target}"
+    )
 
 
-def _adapter_name(request: VisionInferSubmitRequest, endpoint: RegisteredEndpoint) -> str:
-    adapter = request.adapter or request.model_type or endpoint.metadata.get("vision_adapter") or endpoint.model
+def _adapter_name(
+    request: VisionInferSubmitRequest, endpoint: RegisteredEndpoint
+) -> str:
+    adapter = (
+        request.adapter
+        or request.model_type
+        or endpoint.metadata.get("vision_adapter")
+        or endpoint.model
+    )
     return str(adapter)
 
 
 def _endpoint_base_url(endpoint: RegisteredEndpoint) -> str:
-    base_url = str(endpoint.metadata.get("service_url") or endpoint.litellm_url).rstrip("/")
+    base_url = str(endpoint.metadata.get("service_url") or endpoint.litellm_url).rstrip(
+        "/"
+    )
     invoke_base_path = endpoint.metadata.get("invoke_base_path")
     if invoke_base_path:
         return f"{base_url}/{str(invoke_base_path).strip('/')}"
@@ -245,7 +273,9 @@ async def submit_inference(
         "presigned_input_url": input_url,
         "presigned_output_urls": output_urls,
     }
-    response = await _request_endpoint(endpoint, "POST", "/infer/submit", json_payload=payload)
+    response = await _request_endpoint(
+        endpoint, "POST", "/infer/submit", json_payload=payload
+    )
     try:
         task = response.json()
     except ValueError:
@@ -269,8 +299,12 @@ async def get_inference_status(
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> Response:
-    endpoint = _resolve_endpoint(registry, project_id, endpoint_id=endpoint_id, model=model)
-    response = await _request_endpoint(endpoint, "GET", "/infer/status", params={"task_id": task_id})
+    endpoint = _resolve_endpoint(
+        registry, project_id, endpoint_id=endpoint_id, model=model
+    )
+    response = await _request_endpoint(
+        endpoint, "GET", "/infer/status", params={"task_id": task_id}
+    )
     return _response_from_downstream(response)
 
 
@@ -282,8 +316,12 @@ async def get_inference_result(
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> Response:
-    endpoint = _resolve_endpoint(registry, project_id, endpoint_id=endpoint_id, model=model)
-    response = await _request_endpoint(endpoint, "GET", "/infer/get", params={"task_id": task_id})
+    endpoint = _resolve_endpoint(
+        registry, project_id, endpoint_id=endpoint_id, model=model
+    )
+    response = await _request_endpoint(
+        endpoint, "GET", "/infer/get", params={"task_id": task_id}
+    )
     registry.mark_used(endpoint.job_id)
     return _response_from_downstream(response)
 
@@ -296,6 +334,10 @@ async def cancel_inference(
     project_id: str = Depends(get_project_id),
     registry: EndpointRegistry = Depends(get_registry),
 ) -> Response:
-    endpoint = _resolve_endpoint(registry, project_id, endpoint_id=endpoint_id, model=model)
-    response = await _request_endpoint(endpoint, "POST", "/infer/cancel", params={"task_id": task_id})
+    endpoint = _resolve_endpoint(
+        registry, project_id, endpoint_id=endpoint_id, model=model
+    )
+    response = await _request_endpoint(
+        endpoint, "POST", "/infer/cancel", params={"task_id": task_id}
+    )
     return _response_from_downstream(response)

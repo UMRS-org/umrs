@@ -119,8 +119,12 @@ def test_experience_recover_writes_json_without_live_services(tmp_path, monkeypa
         ],
         vector_size=768,
     )
-    monkeypatch.setattr(client_umrs, "_list_recovery_buckets_from_s3", lambda **kwargs: ([bucket], []))
-    monkeypatch.setattr(client_umrs, "_list_recovery_postgres_status", lambda xp_names: ([table], []))
+    monkeypatch.setattr(
+        client_umrs, "_list_recovery_buckets_from_s3", lambda **kwargs: ([bucket], [])
+    )
+    monkeypatch.setattr(
+        client_umrs, "_list_recovery_postgres_status", lambda xp_names: ([table], [])
+    )
 
     args = Namespace(
         experience_action="recover",

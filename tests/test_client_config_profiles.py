@@ -65,9 +65,7 @@ def _write_user_config(path, username, s3cfg_path):
                                 "sql": {
                                     "store_embeddings": "yes",
                                     "table_name": "text_embeddings",
-                                    "meta_data": [
-                                        {"name": "keywords", "type": "TEXT"}
-                                    ],
+                                    "meta_data": [{"name": "keywords", "type": "TEXT"}],
                                 },
                             }
                         ],

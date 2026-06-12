@@ -37,6 +37,7 @@ class ScheduleStatus(Enum):
 @dataclass
 class Schedule:
     """A recurring or one-shot schedule."""
+
     schedule_id: str
     name: str
     schedule_type: ScheduleType
@@ -52,7 +53,9 @@ class Schedule:
     run_at: str | None = None  # ISO-8601
 
     status: ScheduleStatus = ScheduleStatus.ACTIVE
-    created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     last_run_at: str | None = None
     next_run_at: str | None = None
     run_count: int = 0
@@ -78,6 +81,7 @@ class Schedule:
 @dataclass
 class ScheduleEvent:
     """Record of a schedule execution."""
+
     schedule_id: str
     run_number: int
     triggered_at: str
@@ -130,7 +134,9 @@ def cron_matches(expression: str, dt: datetime) -> bool:
     """Check if datetime matches a cron expression (minute hour dom month dow)."""
     parts = expression.strip().split()
     if len(parts) != 5:
-        raise ValueError(f"Cron expression must have 5 fields, got {len(parts)}: {expression!r}")
+        raise ValueError(
+            f"Cron expression must have 5 fields, got {len(parts)}: {expression!r}"
+        )
 
     minute, hour, dom, month, dow = parts
     return (
@@ -409,7 +415,9 @@ class JobScheduler:
                     fired += 1
 
                     if sched.schedule_type == ScheduleType.FIXED_INTERVAL:
-                        sched.next_run_at = (now + timedelta(seconds=sched.interval_seconds)).isoformat()
+                        sched.next_run_at = (
+                            now + timedelta(seconds=sched.interval_seconds)
+                        ).isoformat()
                     elif sched.schedule_type == ScheduleType.ONE_SHOT:
                         sched.status = ScheduleStatus.EXPIRED
 

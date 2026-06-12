@@ -80,9 +80,7 @@ class _FakePodman:
             out_path = _os.path.join(workdir, "output.pkl")
             with open(out_path, "wb") as fh:
                 fh.write(self._pkl.dumps(self._reply))
-        return subprocess.CompletedProcess(
-            cmd, self._returncode, stdout=b"", stderr=b""
-        )
+        return subprocess.CompletedProcess(cmd, self._returncode, stdout=b"", stderr=b"")
 
 
 class _OkStep(Step):
@@ -234,9 +232,7 @@ class TestRunnerGpuHint:
         """routing_hints.gpu=True lands in ctx.metadata under the
         executor-internal key."""
         executor = _RecordingExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -244,16 +240,12 @@ class TestRunnerGpuHint:
             executor=executor,
         )
         assert record.status == "succeeded", record.error
-        assert (
-            executor.calls[0]["metadata"].get(EXECUTOR_GPU_METADATA_KEY) is True
-        )
+        assert executor.calls[0]["metadata"].get(EXECUTOR_GPU_METADATA_KEY) is True
 
     def test_gpu_hint_false_threaded(self, tmp_path):
         """routing_hints.gpu=False also threads (not just truthy values)."""
         executor = _RecordingExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -261,17 +253,12 @@ class TestRunnerGpuHint:
             executor=executor,
         )
         assert record.status == "succeeded", record.error
-        assert (
-            executor.calls[0]["metadata"].get(EXECUTOR_GPU_METADATA_KEY)
-            is False
-        )
+        assert executor.calls[0]["metadata"].get(EXECUTOR_GPU_METADATA_KEY) is False
 
     def test_no_gpu_hint_no_metadata_key(self, tmp_path):
         """Absence of routing_hints.gpu leaves the dunder key out."""
         executor = _RecordingExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -284,9 +271,7 @@ class TestRunnerGpuHint:
     def test_routing_log_records_resolved_gpu_from_hint(self, tmp_path):
         """When gpu hint is present, routing log shows the hint value."""
         executor = _RecordingExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -296,16 +281,12 @@ class TestRunnerGpuHint:
         routing = record.results.get("_routing", {})
         assert routing["probe"]["gpu"] is True
 
-    def test_routing_log_records_default_gpu_when_absent(
-        self, tmp_path, monkeypatch
-    ):
+    def test_routing_log_records_default_gpu_when_absent(self, tmp_path, monkeypatch):
         """When gpu hint is absent the routing log shows the
         deployment-wide default (UMRS_STEP_GPU)."""
         monkeypatch.setenv("UMRS_STEP_GPU", "1")
         executor = _RecordingExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -315,15 +296,11 @@ class TestRunnerGpuHint:
         routing = record.results.get("_routing", {})
         assert routing["probe"]["gpu"] is True
 
-    def test_routing_log_shows_false_default_when_env_unset(
-        self, tmp_path, monkeypatch
-    ):
+    def test_routing_log_shows_false_default_when_env_unset(self, tmp_path, monkeypatch):
         """Default GPU is False when UMRS_STEP_GPU is unset."""
         monkeypatch.delenv("UMRS_STEP_GPU", raising=False)
         executor = _RecordingExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -333,16 +310,12 @@ class TestRunnerGpuHint:
         routing = record.results.get("_routing", {})
         assert routing["probe"]["gpu"] is False
 
-    def test_override_precedence_env_true_hint_false(
-        self, tmp_path, monkeypatch
-    ):
+    def test_override_precedence_env_true_hint_false(self, tmp_path, monkeypatch):
         """The most important edge case: env GPU=true, hint=false → GPU is
         NOT used. The hint must override, not merge."""
         monkeypatch.setenv("UMRS_STEP_GPU", "1")
         executor = _RecordingExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -351,10 +324,7 @@ class TestRunnerGpuHint:
         )
         assert record.status == "succeeded", record.error
         # Metadata should carry False (overriding the env default).
-        assert (
-            executor.calls[0]["metadata"].get(EXECUTOR_GPU_METADATA_KEY)
-            is False
-        )
+        assert executor.calls[0]["metadata"].get(EXECUTOR_GPU_METADATA_KEY) is False
         # Routing log should also show False.
         routing = record.results.get("_routing", {})
         assert routing["probe"]["gpu"] is False

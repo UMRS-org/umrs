@@ -47,6 +47,7 @@ def get_outcome_store() -> WorkflowOutcomeStore:
 # Response models
 # ---------------------------------------------------------------------------
 
+
 class StepMetricResponse(BaseModel):
     step_name: str
     status: str = ""
@@ -105,6 +106,7 @@ def _summary_to_response(s: OutcomeSummary) -> OutcomeSummaryResponse:
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get("/outcomes")
 async def list_outcomes(

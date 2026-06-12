@@ -29,11 +29,13 @@ logger = logging.getLogger(__name__)
 
 # ── Data classes ─────────────────────────────────────────────────────────────
 
+
 class ComputeBackend(Enum):
     """How the pipeline dispatches computation."""
-    UMRS_EMBEDDING = "umrs_embedding"   # Slurm / vLLM / local via UMRS server
-    BENTOML_TASK = "bentoml_task"       # BentoML async task queue
-    LOCAL = "local"                     # In-process (for dev / small datasets)
+
+    UMRS_EMBEDDING = "umrs_embedding"  # Slurm / vLLM / local via UMRS server
+    BENTOML_TASK = "bentoml_task"  # BentoML async task queue
+    LOCAL = "local"  # In-process (for dev / small datasets)
 
 
 @dataclass
@@ -42,17 +44,18 @@ class PipelineConfig:
 
     Fields that don't apply to a given pipeline may be left as ``None``.
     """
+
     name: str
     compute_backend: ComputeBackend
 
     # --- UMRS embedding backend ---
-    user_config_path: str | None = None      # path to user_*.json
-    umrs_server_ip: str | None = None        # ZMQ control plane host
-    umrs_client_bin: str | None = None       # path to client_umrs.py
+    user_config_path: str | None = None  # path to user_*.json
+    umrs_server_ip: str | None = None  # ZMQ control plane host
+    umrs_client_bin: str | None = None  # path to client_umrs.py
 
     # --- BentoML task-queue backend ---
-    bentoml_url: str | None = None           # e.g. http://localhost:3000
-    bentoml_endpoint: str | None = None      # e.g. "infer"
+    bentoml_url: str | None = None  # e.g. http://localhost:3000
+    bentoml_endpoint: str | None = None  # e.g. "infer"
 
     # --- S3 ---
     s3_endpoint: str | None = None
@@ -86,6 +89,7 @@ class DataItem:
         source: Where the data came from (local path, URL, ...).
         metadata: Free-form metadata (mime type, size, ...).
     """
+
     key: str
     source: str
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -101,6 +105,7 @@ class TaskHandle:
         data_item: The input item this task processes.
         metadata: Extra info (slurm job id, bentoml endpoint, ...).
     """
+
     task_id: str
     endpoint: str
     data_item: DataItem | None = None
@@ -117,6 +122,7 @@ class Result:
         data: The actual output payload (model-specific dict).
         error: Error message if status == "failure".
     """
+
     task_handle: TaskHandle
     status: str = "success"
     data: dict[str, Any] = field(default_factory=dict)
@@ -124,6 +130,7 @@ class Result:
 
 
 # ── Phase tracking ───────────────────────────────────────────────────────────
+
 
 class Phase(Enum):
     CONFIGURE = "configure"
@@ -135,6 +142,7 @@ class Phase(Enum):
 
 
 # ── Abstract base class ─────────────────────────────────────────────────────
+
 
 class Pipeline(abc.ABC):
     """Abstract base class for UMRS pipelines.
@@ -166,9 +174,7 @@ class Pipeline(abc.ABC):
 
     def __init__(self):
         self._config: PipelineConfig | None = None
-        self._log = logging.getLogger(
-            f"{__name__}.{self.__class__.__name__}"
-        )
+        self._log = logging.getLogger(f"{__name__}.{self.__class__.__name__}")
 
     # ── Lifecycle hooks (override these) ─────────────────────────────────
 
@@ -191,8 +197,9 @@ class Pipeline(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def compute(self, config: PipelineConfig,
-                items: list[DataItem]) -> list[TaskHandle]:
+    def compute(
+        self, config: PipelineConfig, items: list[DataItem]
+    ) -> list[TaskHandle]:
         """Submit computation and return ``TaskHandle`` references.
 
         - **Embedding backend**: trigger UMRS ``process_objects`` or
@@ -202,8 +209,9 @@ class Pipeline(abc.ABC):
         ...
 
     @abc.abstractmethod
-    def collect(self, config: PipelineConfig,
-                handles: list[TaskHandle]) -> list[Result]:
+    def collect(
+        self, config: PipelineConfig, handles: list[TaskHandle]
+    ) -> list[Result]:
         """Wait for computation to finish and return ``Result`` objects.
 
         Implementations typically poll for status until all handles
@@ -211,8 +219,7 @@ class Pipeline(abc.ABC):
         """
         ...
 
-    def verify(self, config: PipelineConfig,
-               results: list[Result]) -> bool:
+    def verify(self, config: PipelineConfig, results: list[Result]) -> bool:
         """Optional quality check on results.  Return True if OK.
 
         Default implementation returns True if no results have
@@ -220,19 +227,17 @@ class Pipeline(abc.ABC):
         """
         failures = [r for r in results if r.status == "failure"]
         if failures:
-            self._log.warning(
-                "%d / %d results failed", len(failures), len(results)
-            )
+            self._log.warning("%d / %d results failed", len(failures), len(results))
             return False
         return True
 
-    def present(self, config: PipelineConfig,
-                results: list[Result]) -> None:
+    def present(self, config: PipelineConfig, results: list[Result]) -> None:
         """Optional visualization / export step.
 
         Default implementation prints a summary table.
         """
         from .helpers import format_results_table
+
         print(format_results_table(results))
 
     # ── Orchestrator ─────────────────────────────────────────────────────
@@ -261,7 +266,9 @@ class Pipeline(abc.ABC):
         successes = sum(1 for r in results if r.status == "success")
         self._log.info(
             "Collected %d result(s): %d success, %d other",
-            len(results), successes, len(results) - successes,
+            len(results),
+            successes,
+            len(results) - successes,
         )
 
         self._log_phase(Phase.VERIFY)

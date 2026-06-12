@@ -10,7 +10,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from umrs.core.MessageQueue import BASE_PORT, DATA_BASE_PORT, DEFAULT_NB_MSG, MessageQueue
+    from umrs.core.MessageQueue import (
+        BASE_PORT,
+        DATA_BASE_PORT,
+        DEFAULT_NB_MSG,
+        MessageQueue,
+    )
     from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
     from umrs.core.TaskManager import TaskManager
     from umrs.core.UMRSTask import UMRSTask
@@ -32,7 +37,12 @@ __all__ = [
 
 def __getattr__(name: str):
     if name in {"BASE_PORT", "DATA_BASE_PORT", "DEFAULT_NB_MSG", "MessageQueue"}:
-        from umrs.core.MessageQueue import BASE_PORT, DATA_BASE_PORT, DEFAULT_NB_MSG, MessageQueue
+        from umrs.core.MessageQueue import (
+            BASE_PORT,
+            DATA_BASE_PORT,
+            DEFAULT_NB_MSG,
+            MessageQueue,
+        )
 
         return {
             "BASE_PORT": BASE_PORT,

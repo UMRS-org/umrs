@@ -127,10 +127,7 @@ class K8sPluginRunner(PluginRunner):
 
         # Environment variables
         env_vars = self._generate_container_env(spec)
-        env_list = [
-            client.V1EnvVar(name=k, value=v)
-            for k, v in env_vars.items()
-        ]
+        env_list = [client.V1EnvVar(name=k, value=v) for k, v in env_vars.items()]
 
         # Resource requests and limits
         resources = client.V1ResourceRequirements(
@@ -259,7 +256,11 @@ class K8sPluginRunner(PluginRunner):
         while elapsed < max_wait:
             status = await self._get_job_status(job_name)
 
-            if status in (PluginStatus.SUCCEEDED, PluginStatus.FAILED, PluginStatus.CANCELLED):
+            if status in (
+                PluginStatus.SUCCEEDED,
+                PluginStatus.FAILED,
+                PluginStatus.CANCELLED,
+            ):
                 break
 
             await asyncio.sleep(poll_interval)

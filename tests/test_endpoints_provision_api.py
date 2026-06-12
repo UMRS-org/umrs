@@ -22,7 +22,9 @@ class _ReadyPoller:
     def __init__(self):
         self.calls = []
 
-    async def check_ready_detail(self, host, port, *, probe_model=None, probe_kind="models", probe_path=None):
+    async def check_ready_detail(
+        self, host, port, *, probe_model=None, probe_kind="models", probe_path=None
+    ):
         self.calls.append(
             {
                 "host": host,
@@ -225,10 +227,7 @@ def test_provision_endpoint_preserves_site_litellm_db_profile(monkeypatch):
         "vllm",
         "litellm-db",
     ]
-    assert (
-        service.requests[0].env_vars["RIVAULT_PROFILES"]
-        == "harness vllm litellm-db"
-    )
+    assert service.requests[0].env_vars["RIVAULT_PROFILES"] == "harness vllm litellm-db"
 
 
 def test_provision_endpoint_llm_without_profiles_excludes_vision_bentoml(monkeypatch):
@@ -440,9 +439,7 @@ def test_provision_endpoint_forwards_mounts_to_service(monkeypatch):
         "model": "qwen3-8b",
         "tier": "project",
         "mounts": {
-            "mcp_servers": [
-                {"source": "/home/alice/tools", "target": "/mcp-servers/tools"}
-            ],
+            "mcp_servers": [{"source": "/home/alice/tools", "target": "/mcp-servers/tools"}],
             "project_data": {"source": "/project/data", "target": "/project"},
             "rag_index": {"source": "/project/rag-index", "target": "/rag-index"},
         },

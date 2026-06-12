@@ -45,6 +45,7 @@ class CurveSessionInfo:
 
 class SessionBootstrapError(Exception):
     """Raised when session bootstrap fails."""
+
     pass
 
 
@@ -126,10 +127,19 @@ def bootstrap_curve_session(
     # Step 2: Generate ephemeral CURVE keypair
     try:
         import zmq
+
         client_pub, client_sec = zmq.curve_keypair()
         # zmq.curve_keypair() returns bytes (Z85-encoded)
-        client_pub_str = client_pub.decode("ascii") if isinstance(client_pub, bytes) else str(client_pub)
-        client_sec_str = client_sec.decode("ascii") if isinstance(client_sec, bytes) else str(client_sec)
+        client_pub_str = (
+            client_pub.decode("ascii")
+            if isinstance(client_pub, bytes)
+            else str(client_pub)
+        )
+        client_sec_str = (
+            client_sec.decode("ascii")
+            if isinstance(client_sec, bytes)
+            else str(client_sec)
+        )
     except ImportError:
         raise SessionBootstrapError(
             "pyzmq is required for CURVE session bootstrap. Install with: pip install pyzmq"
@@ -159,9 +169,7 @@ def bootstrap_curve_session(
         resp.raise_for_status()
         data = resp.json()
     except requests.RequestException as exc:
-        raise SessionBootstrapError(
-            f"Failed to register CURVE session: {exc}"
-        ) from exc
+        raise SessionBootstrapError(f"Failed to register CURVE session: {exc}") from exc
 
     session_info = CurveSessionInfo(
         session_id=data["session_id"],
@@ -268,7 +276,8 @@ def refresh_curve_session(
             new_expiry = data.get("expires_at", 0)
             logger.info(
                 "CURVE session refreshed: %s → expires_at=%.0f",
-                session_id, new_expiry,
+                session_id,
+                new_expiry,
             )
             return new_expiry
         logger.warning(

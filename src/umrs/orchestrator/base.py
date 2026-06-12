@@ -20,11 +20,13 @@ DEFAULT_MINI_RIVAULT_IMAGE = "mini-rivault:latest"
 def _inject_orchestrator_env_defaults() -> None:
     try:
         from .site_config import get_site_config
+
         get_site_config().inject_env(overwrite=False)
     except Exception:
         pass  # graceful fallback when no site.yaml
     try:
         from .site_profiles import inject_site_profile_env
+
         inject_site_profile_env(overwrite=False)
     except Exception:
         pass  # graceful fallback when no named profile is selected
@@ -41,12 +43,12 @@ def _env_bool(name: str, default: bool = False) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-
 def _env_nonempty(name: str, default: str) -> str:
     value = os.getenv(name)
     if value is None or not value.strip():
         return default
     return value.strip()
+
 
 class JobStatus(Enum):
     """Status of a Mini-RiVault job."""
@@ -98,11 +100,20 @@ class JobInfo:
     stopped_at: datetime | None = None
     error_message: str | None = None
     backend: str = "unknown"  # "slurm", "kubernetes", "docker-compose"
+    # Scheduler-reported reason for the current state (e.g. Slurm squeue %R:
+    # "MaxMemPerLimit", "Resources", "Priority"). Surfaced to users so a job
+    # held PENDING for an unsatisfiable allocation is no longer invisible.
+    state_reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def is_active(self) -> bool:
         """Check if job is in an active state."""
-        return self.status in (JobStatus.PENDING, JobStatus.STARTING, JobStatus.READY, JobStatus.RUNNING)
+        return self.status in (
+            JobStatus.PENDING,
+            JobStatus.STARTING,
+            JobStatus.READY,
+            JobStatus.RUNNING,
+        )
 
     def is_ready(self) -> bool:
         """Check if job is ready to serve requests."""
@@ -138,7 +149,9 @@ class OrchestratorConfig:
     slurm_nodes: int = 1  # Number of nodes (>1 for multi-node PP)
     slurm_log_dir: str = "/var/log/rivault"
     slurm_job_info_dir: str = "/var/run/rivault"
-    slurm_modules: list[str] = field(default_factory=lambda: ["cuda/12.1", "singularity"])
+    slurm_modules: list[str] = field(
+        default_factory=lambda: ["cuda/12.1", "singularity"]
+    )
     singularity_image: str = "/opt/singularity/mini-rivault.sif"
 
     # Kubernetes-specific
@@ -178,12 +191,16 @@ class OrchestratorConfig:
             vllm_max_model_len=int(os.getenv("VLLM_MAX_MODEL_LEN", "4096")),
             vllm_max_num_seqs=int(os.getenv("VLLM_MAX_NUM_SEQS", "4")),
             vllm_tensor_parallel_size=int(os.getenv("VLLM_TENSOR_PARALLEL_SIZE", "1")),
-            vllm_gpu_memory_utilization=float(os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.9")),
+            vllm_gpu_memory_utilization=float(
+                os.getenv("VLLM_GPU_MEMORY_UTILIZATION", "0.9")
+            ),
             vllm_enable_prefix_caching=_env_bool("VLLM_ENABLE_PREFIX_CACHING", False),
             # Timeouts
             startup_timeout_sec=int(os.getenv("RIVAULT_STARTUP_TIMEOUT_SEC", "600")),
             idle_timeout_sec=int(os.getenv("RIVAULT_IDLE_TIMEOUT_SEC", "3600")),
-            readiness_poll_interval_sec=int(os.getenv("RIVAULT_READINESS_POLL_SEC", "5")),
+            readiness_poll_interval_sec=int(
+                os.getenv("RIVAULT_READINESS_POLL_SEC", "5")
+            ),
             # Slurm
             slurm_partition=os.getenv("SLURM_PARTITION", "gpu"),
             slurm_time=os.getenv("SLURM_TIME", "02:00:00"),
@@ -194,7 +211,9 @@ class OrchestratorConfig:
             slurm_log_dir=os.getenv("SLURM_LOG_DIR", "/var/log/rivault"),
             slurm_job_info_dir=os.getenv("SLURM_JOB_INFO_DIR", "/var/run/rivault"),
             slurm_modules=_env_list("SLURM_MODULES", "cuda/12.1 singularity"),
-            singularity_image=os.getenv("SINGULARITY_IMAGE", "/opt/singularity/mini-rivault.sif"),
+            singularity_image=os.getenv(
+                "SINGULARITY_IMAGE", "/opt/singularity/mini-rivault.sif"
+            ),
             # Kubernetes
             k8s_namespace=os.getenv("K8S_NAMESPACE", "rivault-system"),
             k8s_image=os.getenv("K8S_MINI_RIVAULT_IMAGE", DEFAULT_MINI_RIVAULT_IMAGE),
@@ -338,11 +357,14 @@ class OrchestratorBackend(ABC):
             headers["Authorization"] = f"Bearer {self.config.litellm_master_key}"
 
         try:
-            async with aiohttp.ClientSession() as session, session.get(
-                endpoint.models_url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(
+                    endpoint.models_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp,
+            ):
                 return resp.status == 200
         except Exception:
             return False

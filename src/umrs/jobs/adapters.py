@@ -58,7 +58,9 @@ def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
     if not matches:
         return None
 
-    matches.sort(key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99))
+    matches.sort(
+        key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
+    )
     return matches[0]
 
 
@@ -107,7 +109,9 @@ def _readiness_progress_detail(endpoint: Any, error: str | None) -> str:
         return "starting LiteLLM / waiting for service port"
     if "chat probe timeout" in lowered or "request timeout" in lowered:
         return "loading model weights / waiting for inference warmup"
-    if any(code in lowered for code in ("http 404", "http 500", "http 502", "http 503")):
+    if any(
+        code in lowered for code in ("http 404", "http 500", "http 502", "http 503")
+    ):
         return "starting LiteLLM / waiting for proxy readiness"
     if "no models in response" in lowered or "expected model" in lowered:
         return "registering served model / loading model"
@@ -159,6 +163,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
             return None
         try:
             from umrs.orchestrator.site_config import load_site_config
+
             site_name: str | None = None
             try:
                 site_name = load_site_config().name
@@ -213,7 +218,9 @@ class EndpointProvisionBackend(OrchestratorBackend):
         mount_env, mount_metadata = build_mount_environment(
             tier=str(spec.get("tier") or "user"),
             mounts=spec.get("mounts") if isinstance(spec.get("mounts"), dict) else None,
-            egress_domains=spec.get("egress_domains") if isinstance(spec.get("egress_domains"), list) else None,
+            egress_domains=spec.get("egress_domains")
+            if isinstance(spec.get("egress_domains"), list)
+            else None,
         )
 
         if not model_path and model_name:
@@ -294,11 +301,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 raise RuntimeError("Backend failed to submit job")
 
             # Get actual host from job info
-            actual_host = (
-                job_info.endpoint.node
-                if job_info.endpoint
-                else target_host
-            )
+            actual_host = job_info.endpoint.node if job_info.endpoint else target_host
 
             # Register endpoint in registry (status=provisioning)
             # Use attempt_id as endpoint ID for correlation
@@ -416,7 +419,8 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         if endpoint.status == EndpointStatus.FAILED:
             self._clear_readiness_tracking(backend_ref)
             return AttemptCheckResult.failed(
-                endpoint.error_message or endpoint.metadata.get("error", "endpoint failed")
+                endpoint.error_message
+                or endpoint.metadata.get("error", "endpoint failed")
             )
 
         if endpoint.host in ("", "pending"):
@@ -500,9 +504,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                 },
             )
 
-            return AttemptCheckResult.running(
-                progress_detail
-            )
+            return AttemptCheckResult.running(progress_detail)
 
         except Exception as e:
             logger.warning(f"Readiness check failed for {backend_ref}: {e}")
@@ -524,9 +526,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                 },
             )
 
-            return AttemptCheckResult.running(
-                progress_detail
-            )
+            return AttemptCheckResult.running(progress_detail)
 
     async def check_attempt(
         self,
@@ -544,7 +544,9 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         try:
             job_info = await self.orchestrator.get_job_status(backend_ref)
         except Exception as exc:
-            logger.warning("Failed to refresh backend status for %s: %s", backend_ref, exc)
+            logger.warning(
+                "Failed to refresh backend status for %s: %s", backend_ref, exc
+            )
             return None
 
         from umrs.orchestrator.base import JobStatus as OrchestratorJobStatus
@@ -555,7 +557,9 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
             "detail": _backend_progress_detail(job_info),
         }
         if job_info.error_message:
-            progress_metadata["backend_error"] = _short_progress_text(job_info.error_message)
+            progress_metadata["backend_error"] = _short_progress_text(
+                job_info.error_message
+            )
 
         if job_info.endpoint:
             self.registry.update_location(
@@ -719,7 +723,8 @@ class CleanupBackend(OrchestratorBackend):
         self,
         orchestrator,
         registry: EndpointRegistry,
-        get_job_with_attempts: Callable[[str], tuple[Job, list[JobAttempt]]] | None = None,
+        get_job_with_attempts: Callable[[str], tuple[Job, list[JobAttempt]]]
+        | None = None,
     ):
         self.orchestrator = orchestrator
         self.registry = registry

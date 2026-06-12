@@ -84,13 +84,17 @@ class TestGenerateContainerEnv:
 
     def _make_runner(self):
         """Create a concrete runner subclass for testing the base method."""
+
         class _TestRunner(PluginRunner):
             async def _execute_backend(self, plugin_id, spec):
                 pass
+
             async def cancel(self, plugin_id):
                 return False
+
             async def get_status(self, plugin_id):
                 return None
+
         return _TestRunner()
 
     def test_umrs_vars_pass_through_unprefixed(self):
@@ -119,10 +123,12 @@ class TestGenerateContainerEnv:
 
     def test_plugin_vars_are_blocked(self):
         runner = self._make_runner()
-        spec = _make_plugin_spec(env_vars={
-            "PLUGIN_EVIL": "should_not_appear",
-            "UMRS_STEP_NAME": "ok",
-        })
+        spec = _make_plugin_spec(
+            env_vars={
+                "PLUGIN_EVIL": "should_not_appear",
+                "UMRS_STEP_NAME": "ok",
+            }
+        )
         env = runner._generate_container_env(spec)
 
         assert "PLUGIN_EVIL" not in env
@@ -309,8 +315,10 @@ class MyStep(Step):
 
         with patch.dict(os.environ, env, clear=False):
             from umrs.plugins.plugin_runner.entrypoint import main, WORKSPACE, SOURCE_DIR
+
             # Patch module-level constants
             import umrs.plugins.plugin_runner.entrypoint as ep_mod
+
             orig_ws = ep_mod.WORKSPACE
             orig_sd = ep_mod.SOURCE_DIR
             ep_mod.WORKSPACE = workspace
@@ -347,6 +355,7 @@ class MyStep(Step):
 
         with patch.dict(os.environ, env, clear=False):
             import umrs.plugins.plugin_runner.entrypoint as ep_mod
+
             orig_ws = ep_mod.WORKSPACE
             ep_mod.WORKSPACE = workspace
             try:
@@ -369,7 +378,6 @@ class MyStep(Step):
 
 
 class TestReadStepManifest:
-
     def test_reads_valid_manifest(self, tmp_path):
         work_dir = tmp_path
         plugin_id = "plugin-abc"
@@ -445,10 +453,11 @@ class TestSlurmModeAsync:
             }
             (manifest_dir / "result_manifest.json").write_text(json.dumps(manifest))
 
-            with patch("umrs.plugins.user_workflow._resolve_source", return_value=Path("/tmp/src")), \
-                 patch("umrs.plugins.slurm_runner.SlurmPluginRunner") as MockSlurm, \
-                 patch("asyncio.run", return_value=mock_result) as mock_asyncio_run:
-
+            with (
+                patch("umrs.plugins.user_workflow._resolve_source", return_value=Path("/tmp/src")),
+                patch("umrs.plugins.slurm_runner.SlurmPluginRunner") as MockSlurm,
+                patch("asyncio.run", return_value=mock_result) as mock_asyncio_run,
+            ):
                 mock_runner_instance = MockSlurm.return_value
                 mock_runner_instance.work_dir = work_dir
                 mock_runner_instance.execute.return_value = "coroutine_placeholder"
@@ -489,16 +498,20 @@ class TestK8sModeManifestHandling:
             def execute(self, spec):
                 return "coroutine_placeholder"
 
-        with patch(
-            "umrs.plugins.user_workflow._resolve_source",
-            return_value=Path("/tmp/src"),
-        ), patch(
-            "umrs.plugins.k8s_runner.K8sPluginRunner",
-            return_value=_FakeK8sRunner(),
-        ), patch(
-            "asyncio.run",
-            return_value=mock_result,
-        ) as mock_asyncio_run:
+        with (
+            patch(
+                "umrs.plugins.user_workflow._resolve_source",
+                return_value=Path("/tmp/src"),
+            ),
+            patch(
+                "umrs.plugins.k8s_runner.K8sPluginRunner",
+                return_value=_FakeK8sRunner(),
+            ),
+            patch(
+                "asyncio.run",
+                return_value=mock_result,
+            ) as mock_asyncio_run,
+        ):
             result = runner._run_k8s(
                 mock_s3,
                 ["key1.npy"],

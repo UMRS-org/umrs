@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 _SHELL_INJECTION_PATTERNS = [
     (r"\$\(", "Command substitution ($(...)) detected"),
     (r"`[^`]+`", "Backtick command substitution detected"),
-    (r";\s*(rm|dd|mkfs|shutdown|reboot|kill)\b", "Dangerous command chained with semicolon"),
+    (
+        r";\s*(rm|dd|mkfs|shutdown|reboot|kill)\b",
+        "Dangerous command chained with semicolon",
+    ),
     (r"\|\s*(sh|bash|zsh|eval)\b", "Pipe to shell interpreter"),
     (r">\s*/dev/sd", "Write to block device"),
     (r"rm\s+-rf?\s+/(?!\w)", "Recursive delete from root"),
@@ -37,7 +40,10 @@ _SHELL_INJECTION_PATTERNS = [
 ]
 
 _ENV_SUSPICIOUS_PATTERNS = [
-    (r"\$\{?(AWS_SECRET|GITHUB_TOKEN|API_KEY|PASSWORD|SECRET)", "Potential secret in env var"),
+    (
+        r"\$\{?(AWS_SECRET|GITHUB_TOKEN|API_KEY|PASSWORD|SECRET)",
+        "Potential secret in env var",
+    ),
 ]
 
 _PATH_TRAVERSAL_PATTERNS = [
@@ -68,9 +74,7 @@ class RecipeScanner:
 
         return result
 
-    def _scan_step(
-        self, step: Dict[str, Any], index: int, result: ScanResult
-    ) -> None:
+    def _scan_step(self, step: Dict[str, Any], index: int, result: ScanResult) -> None:
         step_type = step.get("type", "shell")
         location = f"step[{index}]"
 
@@ -129,9 +133,7 @@ class RecipeScanner:
                     )
                 )
 
-    def _scan_prompt(
-        self, prompt: str, location: str, result: ScanResult
-    ) -> None:
+    def _scan_prompt(self, prompt: str, location: str, result: ScanResult) -> None:
         # Check for prompt injection patterns
         injection_markers = [
             "ignore previous instructions",
@@ -151,9 +153,7 @@ class RecipeScanner:
                     )
                 )
 
-    def _scan_value(
-        self, value: str, location: str, result: ScanResult
-    ) -> None:
+    def _scan_value(self, value: str, location: str, result: ScanResult) -> None:
         for pattern, msg in _PATH_TRAVERSAL_PATTERNS:
             if re.search(pattern, value):
                 result.findings.append(
@@ -212,9 +212,7 @@ class SkillScanner:
 
         return result
 
-    def _scan_mcp_config(
-        self, mcp: Dict[str, Any], result: ScanResult
-    ) -> None:
+    def _scan_mcp_config(self, mcp: Dict[str, Any], result: ScanResult) -> None:
         entry = mcp.get("entry_point", "")
         if entry:
             for pattern, msg in _SHELL_INJECTION_PATTERNS:
