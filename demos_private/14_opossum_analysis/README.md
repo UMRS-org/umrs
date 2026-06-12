@@ -1,105 +1,114 @@
-# Demo 14: Opossum Motion Analysis (Private)
+# Demo 14: Opossum Motion Analysis (Production Pipeline)
 
-This private demo wraps an opossum motion-analysis workflow for video input.
-The checked-in repo contains the UMRS step wrapper and workflow spec, while the
-actual external opossum analysis engine is expected to be available separately
-in the local environment.
+GPU-accelerated video motion analysis using the same frame-difference pipeline
+as the production `tmp/opossum-video-analysis/` engine.
 
-## What is in this directory
+## Pipeline Stages
 
-- `workflow/opossum_step.py` — the Pipeline SDK step wrapper.
-- `workflow/workflow.json` — single-step workflow spec.
-- `generate_test_videos.py` — synthetic test-video generator.
-- `run_demo.sh` — shell entrypoint for upload, workflow upload, and result collection.
+1. **VFR→CFR conversion** (ffmpeg) — real trail-camera footage is VFR
+2. **Frame-difference motion detection** — binarize → absdiff → morphology → merge
+3. **Per-camera incremental tracking** — checkpoint files skip already-processed videos
+4. **Per-pair TSV output** — one TSV per video pair, plus aggregated `motion_events.tsv`
 
-## Important Current-State Note
+GPU acceleration uses `cv2.cuda` (OpenCV CUDA module) when available.
 
-The script defaults to a site-local proprietary corpus path and also tries a
-local fallback analysis through an external opossum engine checkout if it is
-present. That external tree is **not** part of the current repo.
+## Directory Layout
 
-On the current `rccs-cloud` validation setup, the usable upload bucket is the
-configured movie bucket `user1-video`, not `user1-textfiles`. The private
-`opossum-analysis` workflow can still be uploaded and registered, but server-side
-execution requires site wiring beyond what is present in this repo. The portable
-validated path is therefore:
+```
+workflow/
+  opossum_step.py      — Pipeline SDK step (production logic)
+  workflow.json         — workflow spec (GPU, 8 CPU, 16 GiB)
+  opossum/              — bundled opossum engine (auto-copied by run_demo.sh)
+generate_test_videos.py — synthetic test-video generator
+run_demo.sh             — shell entrypoint (upload, workflow, results)
+experience.json         — UMRS experience definition
+results/                — output directory
+sample_videos/          — synthetic test videos (GEN_TEST_VIDEOS=1)
+```
 
-1. upload the workflow bundle successfully
-2. optionally invoke it explicitly with `umrs-client workflow run opossum-analysis --bucket user1-video`
-3. use synthetic or user-provided videos
-4. run the local fallback analysis if the external opossum engine checkout is present
-
-Automatic uploads to `user1-video` still exercise the site's configured
-`video-motion-analysis` experience unless the deployment is explicitly rewired to
-route that bucket through `opossum-analysis`.
-
-For a portable smoke test, use synthetic videos instead of relying on the
-missing proprietary dataset:
+## Quick Start
 
 ```bash
-cd demos_private/14_opossum_analysis
+# Production pipeline with real data
+bash run_demo.sh ../../tmp/opossum-video-analysis/data
+
+# GPU-accelerated server execution
+GPU_ENABLED=1 bash run_demo.sh ../../tmp/opossum-video-analysis/data
+
+# Synthetic test videos (no real data needed)
 GEN_TEST_VIDEOS=1 bash run_demo.sh
+
+# Limit videos per camera
+MAX_VIDEOS=10 bash run_demo.sh ../../tmp/opossum-video-analysis/data
 ```
 
-To use your own real videos:
+## Data Source
 
-```bash
-bash run_demo.sh /path/to/videos
+Real data from `tmp/opossum-video-analysis/data/`:
+```
+opossum_215_A/
+  opossumA/Schedule/20260330/00/20260330_000001.mp4
+                                 20260330_001132.mp4
+                                 ...
+                            01/...
+                            02/...
 ```
 
-## What the script does
+Multi-camera layout: `opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4`
 
-1. Runs the standard UMRS pre-flight checks.
-2. Optionally generates synthetic `.mp4` files.
-3. Uploads the workflow from `workflow/` to the server.
-4. Uploads videos to the selected bucket.
-5. Attempts to download server-side results.
-6. If an external opossum engine checkout is available, it also runs a local
-   fallback analysis and writes `results/motion_events.tsv`.
-
-## Running Manually
+## Manual Steps
 
 ```bash
 # 1. Verify server connectivity
 umrs-client ping
 
-# 2. (Optional) Generate synthetic test videos
-#    Creates short MP4 files with simulated motion for testing.
-python3 generate_test_videos.py --output-dir sample_videos/ --num-videos 4
+# 2. Bundle opossum engine into workflow
+cp -r ../../tmp/opossum-video-analysis/src/opossum workflow/opossum
 
-# 3. Upload the opossum workflow to the server
-#    The workflow wraps the opossum motion analysis engine as a
-#    Pipeline SDK step for server-side execution via Slurm.
+# 3. Upload workflow (includes bundled engine)
 umrs-client upload-workflow workflow/ --name opossum-analysis
 
-# 3b. (Optional) Explicitly invoke the uploaded workflow
-umrs-client workflow run opossum-analysis --bucket user1-video
+# 4. Upload videos (preserves camera/Schedule date hierarchy)
+umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
 
-# 4. Upload videos for analysis
-#    Each video is analyzed for motion events by comparing
-#    consecutive frames using the opossum engine.
-umrs-client upload_dir ./sample_videos user1-video
-
-# 5. Download analysis results
-#    Results include motion_events.tsv with start/end timestamps
-#    for each detected motion period.
-umrs-client download_results user1-video ./results --force-overwrite
+# 5. Download results
+umrs-client download_results demo-opossum results/ --force-overwrite
 ```
 
-## Defaults Used By The Script
+## Dependencies
+
+- `opencv-python-headless` with CUDA support (for GPU acceleration)
+- `numpy`
+- `ffmpeg` + `ffprobe` (for VFR→CFR conversion)
+- Python ≥3.11
+
+## Defaults
 
 | Setting | Default |
 |---|---|
-| Bucket alias | `user1-video` |
-| Default video dir | Site-local external corpus path configured in the script |
-| Synthetic mode | `GEN_TEST_VIDEOS=1` |
+| Bucket alias | `demo-opossum` |
+| GPU mode | 0 (CPU) — set `GPU_ENABLED=1` for GPU |
+| Distance threshold | 0.05 (ratio of frame width) |
+| Time threshold | 15 seconds |
 | Result dir | `results/` |
+
+## Output
+
+```
+results/
+  motion_events.tsv           — aggregated: camera, video_pair, start_time, end_time
+  analysis_summary.json       — GPU mode, camera counts, event counts
+  opossum_215_A/opossumA/     — per-camera per-pair TSVs + checkpoints
+    20260330_000001.tsv
+    20260330_001132.tsv
+    last_target.txt
+```
 
 ## External Dependency
 
-`opossum_step.py` imports `opossum.analyze.get_duration`. That module must be
-available in the external engine tree for the local fallback analysis path to
-work.
+The opossum engine (`tmp/opossum-video-analysis/src/opossum/`) is bundled into the
+workflow directory when `run_demo.sh` runs (step 3). It is NOT checked into version
+control.
 
 ## Public Analogue
 
