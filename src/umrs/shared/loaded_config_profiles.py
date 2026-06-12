@@ -398,13 +398,6 @@ def resolve_loaded_config(
     derived_s3_path = None
     if user.valid:
         derived_s3_path = user.details.get("s3_configuration_file")
-
-    print(    "s3",
-        explicit_s3_config_path,
-        current_s3, "\n============\n",
-        discovered["s3"], "\n============\n",
-        get_current_s3_config_path(),
-    )
     
     user_s3_path = user.details.get("s3_configuration_file")
 
@@ -416,8 +409,6 @@ def resolve_loaded_config(
         discovered["s3"],
         get_current_s3_config_path(),
     )
-
-    print(f"\n\n***********\n{s3.path=}")
 
     if not s3.path and derived_s3_path:
         s3 = _VALIDATORS["s3"](Path(derived_s3_path).expanduser())
