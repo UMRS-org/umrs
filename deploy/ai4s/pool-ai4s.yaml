@@ -103,6 +103,82 @@ endpoints:
     max_model_len: 245760  # 240K. Canary 10064 showed INT4 weights leave only 16.68 GiB/GPU KV at gpu_mem_util=0.9 → hard ceiling 254816 tokens for native 262144. Trimmed to 245760 for fragmentation margin. (orchestrator does not thread per-model gpu_memory_utilization, so raising util is not available via pool.)
     # 1T MoE (32B active, 384 experts), native INT4; TP=4 × PP=1 (single node)
 
+  # ── DiffusionGemma 26B-A4B-it (block-diffusion LLM) ──────────────────────
+  # Google diffusion model on Gemma 4 MoE backbone.
+  # 25.2B total / 3.8B active (128 experts, 8 active + 1 shared), 256K context.
+  # KEY CONSTRAINT: --max-num-seqs must be ≤4 — diffusion state tensors
+  #   (self_conditioning_probs) pre-allocate max_seqs × canvas_length × vocab_size
+  #   (4 × 256 × 262K = 268M floats), higher values cause OOM.
+  # Needs vllm-openai:gemma docker image (diffusion model support).
+  # Single GPU viable (BF16 ~50 GiB + diffusion buffers + KV). B200 1 GPU safe.
+  # Recommended: --generation-config vllm, --gpu-memory-utilization 0.85,
+  #   --hf-overrides '{"diffusion_sampler":"entropy_bound","diffusion_entropy_bound":0.1}'
+  # TTFT ~10× higher than autoregressive (489ms vs 53ms) but 1.9× output TPS.
+
+  - name: diffusiongemma-26b
+    model: google/diffusiongemma-26B-A4B-it
+    tier: system
+    gpu_count: 1           # BF16 ~50 GiB + diffusion buffers fits B200 (173.2 GiB)
+    node_count: 1
+    partition: 4n4gpu-p    # single GPU within a 4-GPU node; TP=1 adequate
+    max_model_len: 262144  # native 256K context
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "4"              # hard limit — diffusion state OOM above 4
+      VLLM_GPU_MEMORY_UTILIZATION: "0.85" # headroom for denoising activations
+    # vLLM flags needed (wire via extra_args or recipe):
+    #   --generation-config vllm  (ignore checkpoint's max_tokens:256 override)
+    #   --hf-overrides '{"diffusion_sampler":"entropy_bound","diffusion_entropy_bound":0.1}'
+    # Needs vllm/vllm-openai:gemma docker image (diffusion model support).
+    # Multimodal (text+image+video), thinking mode, function calling supported.
+    # Reasoning parser: gemma4 (if thinking mode desired).
+
+  # ── GPT-OSS-Swallow 120B RL MXFP4 (bilingual JA/EN reasoning) ─────────────
+  # TokyoTech continual-pretrained GPT-OSS 120B, RLVR-aligned, MXFP4 quantized.
+  # 120B params, MXFP4 → ~60 GiB weights. GPT-OSS architecture.
+  # Single A100 viable per vLLM recipe. B200 1 GPU with ample KV headroom.
+  # 32K recommended max context (trained w/ 32K, YaRN extension available).
+  # Reasoning effort: medium (default; low/high not trained — stick to medium).
+  # No tool-call training — function calling not supported out of box.
+  # Generation params: temperature=0.6, top_p=0.95, top_k=20, min_p=0.
+
+  - name: gpt-oss-swallow-120b
+    model: tokyotech-llm/GPT-OSS-Swallow-120B-RL-v0.1-MXFP4
+    tier: system
+    gpu_count: 1           # MXFP4 ~60 GiB weights fits B200 (173.2 GiB) with KV headroom
+    node_count: 1          # single-node TP=1; scale TP for throughput if needed
+    partition: 4n4gpu-p
+    max_model_len: 32768   # trained context; 32K recommended per model card
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "64"               # moderate concurrency
+      VLLM_MAX_NUM_BATCHED_TOKENS: "8192"   # per GPT-OSS recipe
+      VLLM_GPU_MEMORY_UTILIZATION: "0.85"   # safe headroom
+    # No tool-call-parser needed (not trained for tools).
+    # Reasoning parser: gpt_oss (via --reasoning-parser gpt_oss).
+    # Best practices: temperature=0.6, top_p=0.95, top_k=20, min_p=0.
+    # Bilingual JA/EN, strong math/code via RLVR.
+
+  # ── llm-jp-4 32B-A3B thinking (Japanese MoE reasoning model) ──────────────
+  # NII LLM-jp-4 MoE: 32B total / 3.8B active (128 experts, 8 active), 64K context.
+  # Qwen-based architecture, Harmony response format (OpenAI-compatible).
+  # Thinking model with reasoning_effort: low|medium|high.
+  # Needs --trust-remote-code (custom tokenizer + harmony parser).
+  # Needs --reasoning-parser llmjp4 (custom parser from llm-jp-4-cookbook).
+  # Tiny model — BF16 ~64 GiB, fits single B200 with huge KV headroom.
+
+  - name: llm-jp-4-32b-thinking
+    model: llm-jp/llm-jp-4-32b-a3b-thinking
+    tier: system
+    gpu_count: 1           # BF16 ~64 GiB fits B200 (173.2 GiB) easily
+    node_count: 1
+    partition: 4n4gpu-p
+    max_model_len: 65536   # native 64K context
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "64"
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"   # plenty of headroom for small model
+    # Needs: --trust-remote-code --reasoning-parser llmjp4
+    # Japanese-first MoE thinking model, Harmony response format.
+    # reasoning_effort: low|medium|high supported.
+
   # ── MCP-enabled example ───────────────────────────────────────────────────
   # Users can mount custom MCP servers into mini-RiVaults via the Gateway.
   # The endpoint provisioning API accepts mount specs under:
