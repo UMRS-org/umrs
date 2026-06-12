@@ -3330,6 +3330,95 @@ def _http_model_register(
         return {"status": "error", "message": str(e)}
 
 
+def _jwt_user_id(api_key: str | None) -> str | None:
+    """Best-effort extract the user identity from a JWT (no signature check)."""
+    if not api_key or api_key.count(".") < 2:
+        return None
+    import base64
+
+    try:
+        payload_b64 = api_key.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        claims = _json.loads(base64.urlsafe_b64decode(payload_b64))
+    except Exception:
+        return None
+    return (
+        claims.get("user_id") or claims.get("sub") or claims.get("preferred_username")
+    )
+
+
+def _http_upload_workflow(
+    gateway_url: str,
+    *,
+    zip_path: str,
+    workflow_name: str,
+    user_id: str,
+    scope: str = "user",
+    api_key: str | None = None,
+) -> dict:
+    """Upload a workflow zip via the HTTP gateway (POST /gw/workflows/upload).
+
+    Used for external clients where the ZMQ data-plane ports are not
+    reachable. Mirrors the multipart contract of the UMRS workflows upload
+    route, which requires a ``user_id`` form field (the Gateway-verified
+    ``X-User-ID`` header takes precedence server-side).
+    """
+    import urllib.error
+    import urllib.request
+    import uuid
+
+    with open(zip_path, "rb") as fh:
+        file_bytes = fh.read()
+
+    boundary = f"----umrs{uuid.uuid4().hex}"
+    boundary_bytes = boundary.encode()
+    parts: list[bytes] = []
+    for name, value in (
+        ("workflow_name", workflow_name),
+        ("user_id", user_id),
+        ("scope", scope),
+    ):
+        parts.append(b"--" + boundary_bytes)
+        parts.append(f'Content-Disposition: form-data; name="{name}"'.encode())
+        parts.append(b"")
+        parts.append(value.encode())
+    parts.append(b"--" + boundary_bytes)
+    parts.append(
+        f'Content-Disposition: form-data; name="file"; '
+        f'filename="{workflow_name}.zip"'.encode()
+    )
+    parts.append(b"Content-Type: application/zip")
+    parts.append(b"")
+    parts.append(file_bytes)
+    parts.append(b"--" + boundary_bytes + b"--")
+    parts.append(b"")
+    body = b"\r\n".join(parts)
+
+    url = f"{gateway_url.rstrip('/')}/gw/workflows/upload"
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+    if api_key:
+        req.add_header("Authorization", f"Bearer {api_key}")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = resp.read().decode("utf-8")
+        try:
+            return _json.loads(raw)
+        except Exception:
+            return {"status": "ok", "message": raw}
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+            detail = _json.loads(err_body).get("detail", err_body)
+            if isinstance(detail, dict) and "message" in detail:
+                detail = detail["message"]
+        except Exception:
+            detail = e.reason
+        return {"status": "error", "message": f"HTTP {e.code}: {detail}"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 def _try_read_r4_token(profile_name: str | None) -> str | None:
     """Read a JWT from r4's token store (stdlib only, no r4 import).
 
@@ -4189,75 +4278,163 @@ def _action_workflow(ctx):
     return exit_code
 
 
-def _action_upload_workflow(ctx):
+def _upload_workflow_via_zmq(ctx, tmp_zip_path, client_id, workflow_name):
+    """Upload a workflow zip over the ZMQ control/data planes (local/tunnel)."""
+    args = ctx.args
+    data_mq = ctx.control_mq.get_data_queue(client_id, admin_token=ctx.admin_token)
+    try:
+        ctx.control_mq.set_timeouts(120_000, 120_000)
+        ctx.control_mq.send_string(
+            f"{TaskCmd.UPLOAD_WORKFLOW}:{client_id}:{workflow_name}"
+        )
+        data_mq.send_file(tmp_zip_path)
+        _, reply = ctx.control_mq.recv_string()
+        if reply != "ACKNOWLEDGE":
+            raise RuntimeError(
+                f"Unexpected reply from server during workflow upload: {reply}"
+            )
+        if args.output == "json":
+            print(
+                api_json(
+                    action="upload-workflow",
+                    workflow_name=workflow_name,
+                    accepted=True,
+                    output_format="json",
+                )
+            )
+        else:
+            print(
+                f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully"
+            )
+    finally:
+        ctx.control_mq.set_timeouts(ctx.control_mq.timeout, ctx.control_mq.timeout)
+        with contextlib.suppress(Exception):
+            data_mq.close()
+
+
+def _upload_workflow_via_gateway(
+    ctx, gateway_url, api_key, tmp_zip_path, client_id, workflow_name
+):
+    """Upload a workflow zip via the HTTP gateway. Returns an exit code."""
+    args = ctx.args
+    parsed = _http_upload_workflow(
+        gateway_url,
+        zip_path=tmp_zip_path,
+        workflow_name=workflow_name,
+        user_id=_jwt_user_id(api_key) or client_id,
+        scope=getattr(args, "scope", "user") or "user",
+        api_key=api_key,
+    )
+    if parsed.get("status") == "error":
+        print(
+            api_json(
+                status="error",
+                action="upload-workflow",
+                message=parsed.get("message", "workflow upload failed"),
+                output_format=args.output,
+            )
+        )
+        return 1
+    if args.output == "json":
+        print(
+            api_json(
+                action="upload-workflow",
+                workflow_name=workflow_name,
+                accepted=True,
+                output_format="json",
+            )
+        )
+    else:
+        print(f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully")
+    return 0
+
+
+def _close_control_mq(ctx):
+    """Close the control ZMQ socket if one is attached to the context."""
+    if ctx.control_mq is not None:
+        ctx.control_mq.close()
+
+
+def _validate_workflow_source(src_path, output_format):
+    """Return an error response string if src_path is not a valid workflow dir."""
+    if not os.path.isdir(src_path):
+        return api_json(
+            status="error",
+            message=f"Source path is not a directory: {src_path}",
+            output_format=output_format,
+        )
+    if not os.path.isfile(os.path.join(src_path, "workflow.json")):
+        return api_json(
+            status="error",
+            message=f"No workflow.json found in {src_path}",
+            output_format=output_format,
+        )
+    return None
+
+
+def _zip_workflow_dir(src_path):
+    """Zip the contents of src_path into a temp file and return its path."""
     import tempfile
     import zipfile
 
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
+        tmp_zip_path = tmp_zip.name
+    with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _dirs, files in os.walk(src_path):
+            for f in files:
+                abs_path = os.path.join(root, f)
+                zf.write(abs_path, os.path.relpath(abs_path, src_path))
+    return tmp_zip_path
+
+
+def _dispatch_workflow_upload(ctx, tmp_zip_path, client_id, workflow_name):
+    """Pick the upload transport and return an exit code.
+
+    Prefer the HTTP gateway for external clients: the ZMQ data-plane ports are
+    not reachable behind the auth gateway, so a data-queue upload would hang and
+    time out. The gateway route streams the zip to UMRS over HTTP and matches
+    the platform invariant that external clients upload via Gateway HTTP.
+    """
+    gateway_url = _get_gateway_url_from_ctx(ctx)
+    api_key = _get_api_key_from_profile(ctx)
+    if gateway_url and api_key:
+        return _upload_workflow_via_gateway(
+            ctx, gateway_url, api_key, tmp_zip_path, client_id, workflow_name
+        )
+    if ctx.control_mq is not None:
+        _upload_workflow_via_zmq(ctx, tmp_zip_path, client_id, workflow_name)
+        return 0
+    print(
+        api_json(
+            status="error",
+            action="upload-workflow",
+            message=(
+                "upload-workflow requires a ZMQ connection or a "
+                "gateway_url + token in the connection profile"
+            ),
+            output_format=ctx.args.output,
+        )
+    )
+    return 1
+
+
+def _action_upload_workflow(ctx):
     args = ctx.args
-    exit_code = 0
     client_id = _resolve_control_client_id(ctx.user)
     src_path = os.path.abspath(args.path)
-    if not os.path.isdir(src_path):
-        print(
-            api_json(
-                status="error",
-                message=f"Source path is not a directory: {src_path}",
-                output_format=args.output,
-            )
-        )
-        ctx.control_mq.close()
-        return 1
-    wf_json = os.path.join(src_path, "workflow.json")
-    if not os.path.isfile(wf_json):
-        print(
-            api_json(
-                status="error",
-                message=f"No workflow.json found in {src_path}",
-                output_format=args.output,
-            )
-        )
-        ctx.control_mq.close()
+    err = _validate_workflow_source(src_path, args.output)
+    if err is not None:
+        print(err)
+        _close_control_mq(ctx)
         return 1
     workflow_name = args.name or os.path.basename(src_path)
     tmp_zip_path = None
+    exit_code = 0
     try:
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp_zip:
-            tmp_zip_path = tmp_zip.name
-        with zipfile.ZipFile(tmp_zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for root, _dirs, files in os.walk(src_path):
-                for f in files:
-                    abs_path = os.path.join(root, f)
-                    arc_name = os.path.relpath(abs_path, src_path)
-                    zf.write(abs_path, arc_name)
-        data_mq = ctx.control_mq.get_data_queue(client_id, admin_token=ctx.admin_token)
-        try:
-            ctx.control_mq.set_timeouts(120_000, 120_000)
-            ctx.control_mq.send_string(
-                f"{TaskCmd.UPLOAD_WORKFLOW}:{client_id}:{workflow_name}"
-            )
-            data_mq.send_file(tmp_zip_path)
-            _, reply = ctx.control_mq.recv_string()
-            if reply != "ACKNOWLEDGE":
-                raise RuntimeError(
-                    f"Unexpected reply from server during workflow upload: {reply}"
-                )
-            if args.output == "json":
-                print(
-                    api_json(
-                        action="upload-workflow",
-                        workflow_name=workflow_name,
-                        accepted=True,
-                        output_format="json",
-                    )
-                )
-            else:
-                print(
-                    f"{_green('✓')} Workflow {_bold(workflow_name)} uploaded successfully"
-                )
-        finally:
-            ctx.control_mq.set_timeouts(ctx.control_mq.timeout, ctx.control_mq.timeout)
-            with contextlib.suppress(Exception):
-                data_mq.close()
+        tmp_zip_path = _zip_workflow_dir(src_path)
+        exit_code = _dispatch_workflow_upload(
+            ctx, tmp_zip_path, client_id, workflow_name
+        )
     except Exception as e:
         exit_code = 1
         print(
@@ -4274,7 +4451,7 @@ def _action_upload_workflow(ctx):
         if tmp_zip_path:
             with contextlib.suppress(Exception):
                 os.remove(tmp_zip_path)
-        ctx.control_mq.close()
+        _close_control_mq(ctx)
     return exit_code
 
 
@@ -5985,6 +6162,12 @@ def main():
     )
     uw_p.add_argument(
         "--name", default=None, help="Workflow name (defaults to directory basename)"
+    )
+    uw_p.add_argument(
+        "--scope",
+        default="user",
+        choices=["user", "project", "system"],
+        help="Workflow visibility scope (default: user). Used for HTTP gateway uploads.",
     )
 
     # --- Run workflow command ---
