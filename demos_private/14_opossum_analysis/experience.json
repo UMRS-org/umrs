@@ -10,7 +10,7 @@
         "data": { "type": "file", "mime_type": "video/mp4" }
       },
       "model": {
-        "model_name": "opossum-motion-analysis",
+        "model_name": "opossum-gpu-motion-analysis",
         "vector_size": "0",
         "model_type": "pipeline://opossum_analyze:OpossumAnalyzeStep",
         "return_type": "file"
