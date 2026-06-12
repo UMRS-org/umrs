@@ -21,6 +21,7 @@ from typing import Any
 @dataclass
 class ExperimentManifest:
     """Metadata for an exported experiment."""
+
     experiment_id: str
     name: str
     user_id: str = ""
@@ -45,6 +46,7 @@ class ExperimentManifest:
 @dataclass
 class DataObjectRef:
     """Reference to a data object in an experiment."""
+
     key: str
     bucket: str
     etag: str = ""
@@ -62,6 +64,7 @@ class DataObjectRef:
 @dataclass
 class ExperimentArchive:
     """Represents a complete experiment archive."""
+
     manifest: ExperimentManifest
     config: dict[str, Any] = field(default_factory=dict)
     data_manifest: list[DataObjectRef] = field(default_factory=list)
@@ -139,24 +142,36 @@ class ExperimentExporter:
 
         with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as zf:
             # manifest.json
-            zf.writestr("manifest.json", json.dumps(manifest.to_dict(), indent=2, default=str))
+            zf.writestr(
+                "manifest.json", json.dumps(manifest.to_dict(), indent=2, default=str)
+            )
 
             # config/
             if config:
-                zf.writestr("config/user_config.json", json.dumps(config, indent=2, default=str))
+                zf.writestr(
+                    "config/user_config.json", json.dumps(config, indent=2, default=str)
+                )
 
             # data/
             if data_objects:
                 data_manifest = [o.to_dict() for o in data_objects]
-                zf.writestr("data/data_manifest.json", json.dumps(data_manifest, indent=2, default=str))
+                zf.writestr(
+                    "data/data_manifest.json",
+                    json.dumps(data_manifest, indent=2, default=str),
+                )
 
             # results/
             if results:
-                zf.writestr("results/results.json", json.dumps(results, indent=2, default=str))
+                zf.writestr(
+                    "results/results.json", json.dumps(results, indent=2, default=str)
+                )
 
             # metadata/
             if pipeline_log:
-                zf.writestr("metadata/pipeline_log.json", json.dumps(pipeline_log, indent=2, default=str))
+                zf.writestr(
+                    "metadata/pipeline_log.json",
+                    json.dumps(pipeline_log, indent=2, default=str),
+                )
 
             # extra/
             if extra_files:
@@ -185,15 +200,21 @@ class ExperimentExporter:
         )
 
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("manifest.json", json.dumps(manifest.to_dict(), indent=2, default=str))
+            zf.writestr(
+                "manifest.json", json.dumps(manifest.to_dict(), indent=2, default=str)
+            )
 
             config = kwargs.get("config")
             if config:
-                zf.writestr("config/user_config.json", json.dumps(config, indent=2, default=str))
+                zf.writestr(
+                    "config/user_config.json", json.dumps(config, indent=2, default=str)
+                )
 
             results = kwargs.get("results")
             if results:
-                zf.writestr("results/results.json", json.dumps(results, indent=2, default=str))
+                zf.writestr(
+                    "results/results.json", json.dumps(results, indent=2, default=str)
+                )
 
         return buf.getvalue()
 

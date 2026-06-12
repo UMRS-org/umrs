@@ -15,4 +15,3 @@ try:
     print(json.dumps(data, indent=2))
 except Exception as e:
     print(f"Invalid JSON: {e}")
-

@@ -41,35 +41,39 @@ class UserRole(str, Enum):
 
 
 # Commands that require admin role
-ADMIN_ONLY_COMMANDS: set[str] = frozenset({
-    "RECOMPUTE",    # Recompute embeddings across configured buckets
-    "UPDATE",       # Update embeddings across configured buckets
-    "CHECK",        # Global consistency check across all users' buckets
-    "ENROLL_USER",  # Admin-only: register a new user on the server
-})
+ADMIN_ONLY_COMMANDS: set[str] = frozenset(
+    {
+        "RECOMPUTE",  # Recompute embeddings across configured buckets
+        "UPDATE",  # Update embeddings across configured buckets
+        "CHECK",  # Global consistency check across all users' buckets
+        "ENROLL_USER",  # Admin-only: register a new user on the server
+    }
+)
 
 # Commands that users can run on their own data
-USER_ALLOWED_COMMANDS: set[str] = frozenset({
-    "PROCESS_OBJECTS",
-    "WAIT_OUTPUT",
-    "FILE",
-    "STATUS",
-    "CREATE_DATA_QUEUE",
-    "HAND_CHECK",
-    "EXPORT_EMBEDDINGS",
-    "MODEL_REGISTER",
-    "MODEL_LIST",
-    "MODEL_DOWNLOAD",
-    "JOB_SUBMIT",
-    "JOB_CANCEL",
-    "JOB_LIST",
-    "UPLOAD_WORKFLOW",
-    "LIST_WORKFLOWS",
-    "RUN_WORKFLOW",
-    "GET_BOOTSTRAP_CONTEXT",
-    "PURGE_BUCKETS",
-    "RELOAD",       # Reload server configuration (re-provision buckets/users)
-})
+USER_ALLOWED_COMMANDS: set[str] = frozenset(
+    {
+        "PROCESS_OBJECTS",
+        "WAIT_OUTPUT",
+        "FILE",
+        "STATUS",
+        "CREATE_DATA_QUEUE",
+        "HAND_CHECK",
+        "EXPORT_EMBEDDINGS",
+        "MODEL_REGISTER",
+        "MODEL_LIST",
+        "MODEL_DOWNLOAD",
+        "JOB_SUBMIT",
+        "JOB_CANCEL",
+        "JOB_LIST",
+        "UPLOAD_WORKFLOW",
+        "LIST_WORKFLOWS",
+        "RUN_WORKFLOW",
+        "GET_BOOTSTRAP_CONTEXT",
+        "PURGE_BUCKETS",
+        "RELOAD",  # Reload server configuration (re-provision buckets/users)
+    }
+)
 
 
 @dataclass
@@ -480,10 +484,7 @@ class UserIdentityStore:
     def list_users(self) -> list[dict]:
         """List all registered users."""
         identities = self._load()
-        return [
-            {"username": k, **v}
-            for k, v in identities.items()
-        ]
+        return [{"username": k, **v} for k, v in identities.items()]
 
     def _load(self) -> dict:
         """Load identities from file."""
@@ -510,6 +511,7 @@ class UserIdentityStore:
     def _now_iso(self) -> str:
         """Get current time in ISO format."""
         from datetime import datetime, timezone
+
         return datetime.now(timezone.utc).isoformat()
 
 
@@ -679,6 +681,7 @@ class AdminTokenManager:
             else:
                 # Legacy unsalted SHA-256 — validate and upgrade in-place
                 import hashlib
+
                 legacy_hash = hashlib.sha256(token.encode()).hexdigest()
                 if legacy_hash == entry.get("token_hash"):
                     # Upgrade to salted hash
@@ -693,7 +696,9 @@ class AdminTokenManager:
 
         return None
 
-    def rotate_token(self, old_name: str, new_name: str, description: str = "") -> str | None:
+    def rotate_token(
+        self, old_name: str, new_name: str, description: str = ""
+    ) -> str | None:
         """
         Rotate a token: create a new one and invalidate the old.
 
@@ -708,7 +713,9 @@ class AdminTokenManager:
         tokens = self._load_tokens()
         if old_name not in tokens:
             return None
-        new_token = self.generate_token(new_name, description=description, replaces=old_name)
+        new_token = self.generate_token(
+            new_name, description=description, replaces=old_name
+        )
         self._emit_audit_event(
             "token_rotate",
             token_name=old_name,
@@ -775,6 +782,7 @@ class AdminTokenManager:
             (hex_hash, hex_salt) tuple.
         """
         import hashlib
+
         if salt is None:
             salt = os.urandom(16).hex()
         h = hashlib.pbkdf2_hmac("sha256", token.encode(), bytes.fromhex(salt), 100_000)
@@ -798,6 +806,7 @@ class AdminTokenManager:
     def _now_iso(self) -> str:
         """Get current time in ISO format."""
         from datetime import datetime, timezone
+
         return datetime.now(timezone.utc).isoformat()
 
     def _emit_audit_event(

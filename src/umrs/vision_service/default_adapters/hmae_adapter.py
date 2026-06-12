@@ -22,12 +22,14 @@ logger = logging.getLogger(__name__)
 
 def _require_presigned_urls() -> bool:
     return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
-def _upload_result(s3, dst_bucket, out_key, data, content_type,
-                   presigned_output_urls):
+def _upload_result(s3, dst_bucket, out_key, data, content_type, presigned_output_urls):
     """Upload result via presigned URL or direct S3.
 
     Helper to avoid repeating the presigned/direct branching in each task.
@@ -44,8 +46,9 @@ def _upload_result(s3, dst_bucket, out_key, data, content_type,
     else:
         if _require_presigned_urls() or s3 is None:
             raise RuntimeError(f"Missing presigned PUT URL for {out_key}")
-        s3.put_object(Bucket=dst_bucket, Key=out_key,
-                      Body=data, ContentType=content_type)
+        s3.put_object(
+            Bucket=dst_bucket, Key=out_key, Body=data, ContentType=content_type
+        )
 
 
 class HMAEAdapter(VisionModelAdapter):
@@ -98,13 +101,13 @@ class HMAEAdapter(VisionModelAdapter):
     def cache_key(self, config: dict[str, Any]) -> str:
         cfg_path = config.get(
             "config_path",
-            os.environ.get("HMAE_CONFIG_PATH",
-                           "umrs/models/hmae/configs/infer_hmae_vit_b.yaml"),
+            os.environ.get(
+                "HMAE_CONFIG_PATH", "umrs/models/hmae/configs/infer_hmae_vit_b.yaml"
+            ),
         )
         checkpoint = config.get(
             "checkpoint",
-            os.environ.get("HMAE_CHECKPOINT",
-                           "./checkpoints/latest_checkpoint.pth"),
+            os.environ.get("HMAE_CHECKPOINT", "./checkpoints/latest_checkpoint.pth"),
         )
         return f"hmae:{cfg_path}:{checkpoint}"
 
@@ -113,13 +116,13 @@ class HMAEAdapter(VisionModelAdapter):
 
         cfg_path = config.get(
             "config_path",
-            os.environ.get("HMAE_CONFIG_PATH",
-                           "umrs/models/hmae/configs/infer_hmae_vit_b.yaml"),
+            os.environ.get(
+                "HMAE_CONFIG_PATH", "umrs/models/hmae/configs/infer_hmae_vit_b.yaml"
+            ),
         )
         checkpoint = config.get(
             "checkpoint",
-            os.environ.get("HMAE_CHECKPOINT",
-                           "./checkpoints/latest_checkpoint.pth"),
+            os.environ.get("HMAE_CHECKPOINT", "./checkpoints/latest_checkpoint.pth"),
         )
         model, device, hmae_config = load_hmae_model(cfg_path, checkpoint)
         return {"model": model, "device": device, "config": hmae_config}
@@ -147,10 +150,16 @@ class HMAEAdapter(VisionModelAdapter):
         # Accept both "task" and "mode" keys for backward compatibility.
         # The demo scripts historically used "mode" while the adapter expected "task".
         task = resolve_hmae_task(config)
-        logger.info("[HMAE] infer: bucket=%s key=%s task=%s "
-                    "output_bucket=%s s3=%s presigned_output_urls=%s",
-                    bucket, key, task, output_bucket, s3 is not None,
-                    list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)")
+        logger.info(
+            "[HMAE] infer: bucket=%s key=%s task=%s "
+            "output_bucket=%s s3=%s presigned_output_urls=%s",
+            bucket,
+            key,
+            task,
+            output_bucket,
+            s3 is not None,
+            list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
+        )
         hmae_config = model["config"]
         device = torch.device(model["device"])
         model_cfg = hmae_config["model"]
@@ -195,12 +204,19 @@ class HMAEAdapter(VisionModelAdapter):
 
         try:
             if task == "reconstruction":
-                pred = infer_reconstruct(model["model"], data, device,
-                                         hmae_config, use_bf16)
+                pred = infer_reconstruct(
+                    model["model"], data, device, hmae_config, use_bf16
+                )
                 png_bytes = visualize_reconstruction(data, pred, hmae_config)
                 out_key = next(iter(described_outputs))
-                _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
-                               presigned_output_urls)
+                _upload_result(
+                    s3,
+                    dst_bucket,
+                    out_key,
+                    png_bytes,
+                    "image/png",
+                    presigned_output_urls,
+                )
                 response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
                 response["prediction"] = pred
 
@@ -215,18 +231,32 @@ class HMAEAdapter(VisionModelAdapter):
                     },
                     protocol=pickle.HIGHEST_PROTOCOL,
                 )
-                _upload_result(s3, dst_bucket, pkl_key, pkl_data,
-                               "application/octet-stream", presigned_output_urls)
+                _upload_result(
+                    s3,
+                    dst_bucket,
+                    pkl_key,
+                    pkl_data,
+                    "application/octet-stream",
+                    presigned_output_urls,
+                )
                 response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
             elif task == "mae_reconstruction":
-                pred, mask, loss = infer_mae(model["model"], data, device,
-                                             hmae_config, use_bf16)
-                png_bytes = visualize_reconstruction(data, pred, hmae_config,
-                                                     mask=mask, loss=loss)
+                pred, mask, loss = infer_mae(
+                    model["model"], data, device, hmae_config, use_bf16
+                )
+                png_bytes = visualize_reconstruction(
+                    data, pred, hmae_config, mask=mask, loss=loss
+                )
                 out_key = next(iter(described_outputs))
-                _upload_result(s3, dst_bucket, out_key, png_bytes, "image/png",
-                               presigned_output_urls)
+                _upload_result(
+                    s3,
+                    dst_bucket,
+                    out_key,
+                    png_bytes,
+                    "image/png",
+                    presigned_output_urls,
+                )
                 response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
                 response["mae_loss"] = loss
                 response["prediction"] = pred
@@ -245,24 +275,43 @@ class HMAEAdapter(VisionModelAdapter):
                     },
                     protocol=pickle.HIGHEST_PROTOCOL,
                 )
-                _upload_result(s3, dst_bucket, pkl_key, pkl_data,
-                               "application/octet-stream", presigned_output_urls)
+                _upload_result(
+                    s3,
+                    dst_bucket,
+                    pkl_key,
+                    pkl_data,
+                    "application/octet-stream",
+                    presigned_output_urls,
+                )
                 response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
             elif task == "feature_extraction":
-                features = infer_features(model["model"], data, device,
-                                          hmae_config, use_bf16)
+                features = infer_features(
+                    model["model"], data, device, hmae_config, use_bf16
+                )
                 cls_token = features[:, 0, :]
                 patch_tokens = features[:, 1:, :]
 
                 out_key = next(iter(described_outputs))
                 feat_buf = io.BytesIO()
-                torch.save({"cls": cls_token, "patches": patch_tokens,
-                            "coords": data["coords"]}, feat_buf)
+                torch.save(
+                    {
+                        "cls": cls_token,
+                        "patches": patch_tokens,
+                        "coords": data["coords"],
+                    },
+                    feat_buf,
+                )
                 feat_buf.seek(0)
                 feat_data = feat_buf.getvalue()
-                _upload_result(s3, dst_bucket, out_key, feat_data,
-                               "application/octet-stream", presigned_output_urls)
+                _upload_result(
+                    s3,
+                    dst_bucket,
+                    out_key,
+                    feat_data,
+                    "application/octet-stream",
+                    presigned_output_urls,
+                )
                 response["output_s3_key"] = f"s3://{dst_bucket}/{out_key}"
                 response["cls_shape"] = list(cls_token.shape)
                 response["patch_shape"] = list(patch_tokens.shape)
@@ -280,8 +329,14 @@ class HMAEAdapter(VisionModelAdapter):
                     },
                     protocol=pickle.HIGHEST_PROTOCOL,
                 )
-                _upload_result(s3, dst_bucket, pkl_key, pkl_data,
-                               "application/octet-stream", presigned_output_urls)
+                _upload_result(
+                    s3,
+                    dst_bucket,
+                    pkl_key,
+                    pkl_data,
+                    "application/octet-stream",
+                    presigned_output_urls,
+                )
                 response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
             else:
@@ -303,7 +358,9 @@ class HMAEAdapter(VisionModelAdapter):
         except RuntimeError as rt_exc:
             # Catch CUDA-related RuntimeErrors (device-side asserts, etc.)
             if "CUDA" in str(rt_exc) or "device-side" in str(rt_exc):
-                logger.error("[HMAE] CUDA error during %s for %s: %s", task, key, rt_exc)
+                logger.error(
+                    "[HMAE] CUDA error during %s for %s: %s", task, key, rt_exc
+                )
                 torch.cuda.empty_cache()
                 return {
                     "error": f"CUDA error during {task}: {rt_exc}",

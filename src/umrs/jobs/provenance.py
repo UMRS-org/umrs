@@ -59,7 +59,9 @@ def _attempt_summary(attempt: Any) -> AttemptSummary:
         attempt_no=attempt.attempt_no,
         backend=attempt.backend,
         backend_ref=attempt.backend_ref,
-        status=attempt.status.value if hasattr(attempt.status, "value") else str(attempt.status),
+        status=attempt.status.value
+        if hasattr(attempt.status, "value")
+        else str(attempt.status),
         started_at=_iso(attempt.started_at),
         ended_at=_iso(attempt.ended_at),
         exit_reason=attempt.exit_reason,
@@ -78,17 +80,21 @@ def _artifacts_from_attempts(job: Any, attempts: list[Any]) -> list[ArtifactRef]
             continue
 
         if att.log_uri:
-            artifacts.append(ArtifactRef(uri=att.log_uri, media_type="application/x-log"))
+            artifacts.append(
+                ArtifactRef(uri=att.log_uri, media_type="application/x-log")
+            )
 
         # Look for artifact refs stored in attempt metrics
         for artifact_entry in att.metrics.get("artifacts", []):
             if isinstance(artifact_entry, dict) and "uri" in artifact_entry:
-                artifacts.append(ArtifactRef(
-                    uri=artifact_entry["uri"],
-                    media_type=artifact_entry.get("media_type", ""),
-                    size_bytes=artifact_entry.get("size_bytes"),
-                    sha256=artifact_entry.get("sha256"),
-                ))
+                artifacts.append(
+                    ArtifactRef(
+                        uri=artifact_entry["uri"],
+                        media_type=artifact_entry.get("media_type", ""),
+                        size_bytes=artifact_entry.get("size_bytes"),
+                        sha256=artifact_entry.get("sha256"),
+                    )
+                )
 
     return artifacts
 
@@ -115,7 +121,9 @@ def build_provenance(job: Any, attempts: list[Any]) -> ProvenanceRecord:
 
     return ProvenanceRecord(
         job_id=job.job_id,
-        job_type=job.job_type.value if hasattr(job.job_type, "value") else str(job.job_type),
+        job_type=job.job_type.value
+        if hasattr(job.job_type, "value")
+        else str(job.job_type),
         project_id=job.project_id,
         user_id=job.user_id,
         status=job.status.value if hasattr(job.status, "value") else str(job.status),

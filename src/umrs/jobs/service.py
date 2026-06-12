@@ -260,7 +260,9 @@ class JobService:
             if kwargs:
                 raise TypeError("submit_job accepts either request or keyword fields")
             if args:
-                raise TypeError("submit_job request cannot be combined with positional fields")
+                raise TypeError(
+                    "submit_job request cannot be combined with positional fields"
+                )
             return request
 
         positional_values = () if request is None else (request,)

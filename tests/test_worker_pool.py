@@ -559,9 +559,7 @@ class TestPoolControls:
 
     def test_max_workers_enforced(self, monkeypatch):
         """Pool never exceeds max_workers_per_key."""
-        exe = _make_pool_executor(
-            monkeypatch, max_workers_per_key=2, acquire_timeout=10.0
-        )
+        exe = _make_pool_executor(monkeypatch, max_workers_per_key=2, acquire_timeout=10.0)
         results: List[StepResult] = []
         errors: List[Exception] = []
 
@@ -593,9 +591,7 @@ class TestPoolControls:
 
     def test_acquire_timeout_fires(self, monkeypatch):
         """When all workers are busy and timeout expires, raise."""
-        exe = _make_pool_executor(
-            monkeypatch, max_workers_per_key=1, acquire_timeout=0.2
-        )
+        exe = _make_pool_executor(monkeypatch, max_workers_per_key=1, acquire_timeout=0.2)
         barrier = threading.Event()
         holder_done = threading.Event()
 
@@ -631,9 +627,7 @@ class TestPoolControls:
 
     def test_blocking_proceeds_after_release(self, monkeypatch):
         """A blocked waiter proceeds when a worker is released."""
-        exe = _make_pool_executor(
-            monkeypatch, max_workers_per_key=1, acquire_timeout=10.0
-        )
+        exe = _make_pool_executor(monkeypatch, max_workers_per_key=1, acquire_timeout=10.0)
         results: List[StepResult] = []
         errors: List[Exception] = []
 
@@ -665,20 +659,14 @@ class TestPoolControls:
 
     def test_idle_eviction(self, monkeypatch):
         """Workers idle past timeout are evicted on next acquire."""
-        exe = _make_pool_executor(
-            monkeypatch, idle_timeout=0.1, max_workers_per_key=4
-        )
+        exe = _make_pool_executor(monkeypatch, idle_timeout=0.1, max_workers_per_key=4)
         try:
             # Run two tasks → two workers idle in pool.
             t1 = threading.Thread(
-                target=lambda: exe.execute(
-                    entrypoint=_TEST_ENTRYPOINT, config={}, ctx=_make_ctx()
-                )
+                target=lambda: exe.execute(entrypoint=_TEST_ENTRYPOINT, config={}, ctx=_make_ctx())
             )
             t2 = threading.Thread(
-                target=lambda: exe.execute(
-                    entrypoint=_TEST_ENTRYPOINT, config={}, ctx=_make_ctx()
-                )
+                target=lambda: exe.execute(entrypoint=_TEST_ENTRYPOINT, config={}, ctx=_make_ctx())
             )
             t1.start()
             t2.start()
@@ -695,9 +683,7 @@ class TestPoolControls:
             time.sleep(0.2)
 
             # Next acquire should evict stale workers (keeping ≥1).
-            exe.execute(
-                entrypoint=_TEST_ENTRYPOINT, config={}, ctx=_make_ctx()
-            )
+            exe.execute(entrypoint=_TEST_ENTRYPOINT, config={}, ctx=_make_ctx())
             # After eviction sweep + new task, pool should be lean.
             with exe._lock:
                 count = exe._active_count.get(key, 0)
@@ -708,9 +694,7 @@ class TestPoolControls:
 
     def test_prewarm_spawns_extra_worker(self, monkeypatch):
         """With prewarm=True, first execute spawns an extra idle worker."""
-        exe = _make_pool_executor(
-            monkeypatch, prewarm=True, max_workers_per_key=4
-        )
+        exe = _make_pool_executor(monkeypatch, prewarm=True, max_workers_per_key=4)
         try:
             exe.execute(
                 entrypoint=_TEST_ENTRYPOINT,
@@ -730,9 +714,7 @@ class TestPoolControls:
 
     def test_prewarm_respects_max(self, monkeypatch):
         """Prewarm doesn't exceed max_workers_per_key."""
-        exe = _make_pool_executor(
-            monkeypatch, prewarm=True, max_workers_per_key=1
-        )
+        exe = _make_pool_executor(monkeypatch, prewarm=True, max_workers_per_key=1)
         try:
             exe.execute(
                 entrypoint=_TEST_ENTRYPOINT,
@@ -749,16 +731,16 @@ class TestPoolControls:
 
     def test_dead_worker_notifies_waiters(self, monkeypatch):
         """When a worker dies during a task, blocked waiters can proceed."""
-        exe = _make_pool_executor(
-            monkeypatch, max_workers_per_key=1, acquire_timeout=10.0
-        )
+        exe = _make_pool_executor(monkeypatch, max_workers_per_key=1, acquire_timeout=10.0)
         results: List[StepResult] = []
         errors: List[Exception] = []
 
         call_count = [0]
 
         # First call: kill the worker mid-task to simulate a crash.
-        original_start = exe._start_worker.__func__ if hasattr(exe._start_worker, '__func__') else None
+        original_start = (
+            exe._start_worker.__func__ if hasattr(exe._start_worker, "__func__") else None
+        )
 
         def _crashing_start(image, gpu):
             proc = _FakeProc()
@@ -811,9 +793,7 @@ class TestPoolControls:
 
     def test_active_count_accurate_after_discard(self, monkeypatch):
         """Discarded workers correctly decrement the active count."""
-        exe = _make_pool_executor(
-            monkeypatch, max_workers_per_key=2
-        )
+        exe = _make_pool_executor(monkeypatch, max_workers_per_key=2)
         try:
             # Run a task that will fail (worker gets discarded via
             # StepExecutionError from broken pipe).
@@ -871,9 +851,7 @@ class TestRunnerShutdown:
     def test_shutdown_called_on_success(self, tmp_path):
         """Runner calls shutdown() after successful workflow."""
         exe = _RecordingPoolExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -896,9 +874,7 @@ class TestRunnerShutdown:
                 self.shutdown_called = True
 
         exe = _FailExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),
@@ -916,9 +892,7 @@ class TestRunnerShutdown:
                 return StepResult(extra={"ok": True})
 
         exe = _PlainExecutor()
-        record = get_execution_registry().create(
-            workflow_name="wf", user_id="alice"
-        )
+        record = get_execution_registry().create(workflow_name="wf", user_id="alice")
         run_workflow_record(
             record,
             source_path=str(tmp_path),

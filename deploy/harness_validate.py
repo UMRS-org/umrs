@@ -19,7 +19,10 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from umrs.orchestrator.base import EndpointInfo, JobStatus
-from umrs.orchestrator.service import OrchestrationService, ProvisionRequest as ServiceProvisionRequest
+from umrs.orchestrator.service import (
+    OrchestrationService,
+    ProvisionRequest as ServiceProvisionRequest,
+)
 from umrs.orchestrator.readiness import ReadinessConfig, ReadinessPoller
 from umrs.orchestrator.site_config import SiteConfig, load_site_config
 from umrs.orchestrator.slurm_podman_backend import SlurmPodmanBackend
@@ -83,7 +86,9 @@ async def wait_for_endpoint(
     while time.monotonic() < deadline:
         job = await backend.get_job_status(job_id)
         if job.status == JobStatus.FAILED:
-            raise RuntimeError(f"Slurm job {job_id} failed: {job.error_message or 'unknown failure'}")
+            raise RuntimeError(
+                f"Slurm job {job_id} failed: {job.error_message or 'unknown failure'}"
+            )
         if job.status == JobStatus.STOPPED:
             raise RuntimeError(f"Slurm job {job_id} stopped before exposing an endpoint")
         if job.endpoint:
@@ -106,9 +111,7 @@ async def wait_for_log_summary(
                 return
         await asyncio.sleep(2)
 
-    raise TimeoutError(
-        f"Timed out waiting for retained wrapper log summary in {log_path}"
-    )
+    raise TimeoutError(f"Timed out waiting for retained wrapper log summary in {log_path}")
 
 
 async def wait_for_log_any(
@@ -344,7 +347,9 @@ async def run_lifecycle_case(
         log(f"Running lifecycle validation for {case.name} with profiles: {profiles_value}")
 
         first_job_id, first_endpoint, first_log_path = await provision_once(expect_reuse=False)
-        await wait_for_log_summary(first_log_path, profiles_value, timeout_sec=assignment_timeout_sec)
+        await wait_for_log_summary(
+            first_log_path, profiles_value, timeout_sec=assignment_timeout_sec
+        )
         log(
             f"Lifecycle initial provision ready via Slurm job {first_job_id} at "
             f"{first_endpoint.node}:{first_endpoint.litellm_port}"
@@ -360,7 +365,9 @@ async def run_lifecycle_case(
                 await wait_for_vision_health(first_endpoint, timeout_sec=endpoint_timeout_sec)
             bentoml_port = first_endpoint.litellm_port if vision_only else BENTOML_DEFAULT_PORT
             await wait_for_bentoml_readiness(
-                first_endpoint.node, bentoml_port, timeout_sec=endpoint_timeout_sec,
+                first_endpoint.node,
+                bentoml_port,
+                timeout_sec=endpoint_timeout_sec,
             )
             log(
                 f"Lifecycle initial vision readiness confirmed: {marker} "
@@ -369,9 +376,7 @@ async def run_lifecycle_case(
 
         second_job_id, second_endpoint, _second_log_path = await provision_once(expect_reuse=True)
         if second_job_id != first_job_id:
-            raise RuntimeError(
-                f"Lifecycle reuse expected job {first_job_id}, got {second_job_id}"
-            )
+            raise RuntimeError(f"Lifecycle reuse expected job {first_job_id}, got {second_job_id}")
         log(
             f"Lifecycle reuse confirmed for {case.name}: reused Slurm job {second_job_id} "
             f"at {second_endpoint.node}:{second_endpoint.litellm_port}"
@@ -390,7 +395,9 @@ async def run_lifecycle_case(
             raise RuntimeError(
                 f"Lifecycle restart expected a fresh backend after cleanup, but reused {third_job_id}"
             )
-        await wait_for_log_summary(third_log_path, profiles_value, timeout_sec=assignment_timeout_sec)
+        await wait_for_log_summary(
+            third_log_path, profiles_value, timeout_sec=assignment_timeout_sec
+        )
         log(
             f"Lifecycle fresh restart confirmed for {case.name}: new Slurm job {third_job_id} "
             f"at {third_endpoint.node}:{third_endpoint.litellm_port}"
@@ -406,7 +413,9 @@ async def run_lifecycle_case(
                 await wait_for_vision_health(third_endpoint, timeout_sec=endpoint_timeout_sec)
             bentoml_port = third_endpoint.litellm_port if vision_only else BENTOML_DEFAULT_PORT
             await wait_for_bentoml_readiness(
-                third_endpoint.node, bentoml_port, timeout_sec=endpoint_timeout_sec,
+                third_endpoint.node,
+                bentoml_port,
+                timeout_sec=endpoint_timeout_sec,
             )
             log(
                 f"Lifecycle restart vision readiness confirmed: {marker} "
@@ -444,7 +453,9 @@ async def run_case(
     try:
         await wait_for_log_summary(log_path, profiles_value, timeout_sec=assignment_timeout_sec)
         endpoint = await wait_for_endpoint(backend, job.job_id, timeout_sec=assignment_timeout_sec)
-        log(f"Case {case.name} assigned to {endpoint.node}:{endpoint.litellm_port} via Slurm job {job.job_id}")
+        log(
+            f"Case {case.name} assigned to {endpoint.node}:{endpoint.litellm_port} via Slurm job {job.job_id}"
+        )
 
         if case.expect_models:
             models = await wait_for_models(site, endpoint, timeout_sec=endpoint_timeout_sec)
@@ -463,9 +474,13 @@ async def run_case(
             # Also validate BentoML direct readiness (/readyz on port 3001)
             bentoml_port = int(os.environ.get("BENTOML_VISION_DOCKER_PORT", BENTOML_DEFAULT_PORT))
             await wait_for_bentoml_readiness(
-                endpoint.node, bentoml_port, timeout_sec=endpoint_timeout_sec,
+                endpoint.node,
+                bentoml_port,
+                timeout_sec=endpoint_timeout_sec,
             )
-            log(f"Case {case.name} BentoML readiness confirmed at {endpoint.node}:{bentoml_port}/readyz")
+            log(
+                f"Case {case.name} BentoML readiness confirmed at {endpoint.node}:{bentoml_port}/readyz"
+            )
 
     finally:
         if not skip_cleanup:

@@ -33,19 +33,13 @@ class FakeDownloadJobStore:
     def list_jobs(self, **kwargs):
         status = kwargs.get("status")
         job_type = kwargs.get("job_type")
-        return [
-            job for job in self.jobs
-            if job.status == status and job.job_type == job_type
-        ]
+        return [job for job in self.jobs if job.status == status and job.job_type == job_type]
 
     def get_attempt(self, attempt_id: str) -> JobAttempt:
         return self.attempts[attempt_id]
 
     def get_attempts_for_job(self, job_id: str) -> list[JobAttempt]:
-        return [
-            attempt for attempt in self.attempts.values()
-            if attempt.job_id == job_id
-        ]
+        return [attempt for attempt in self.attempts.values() if attempt.job_id == job_id]
 
 
 @pytest.fixture

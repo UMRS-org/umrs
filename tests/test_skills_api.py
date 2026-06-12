@@ -14,7 +14,9 @@ def _client() -> TestClient:
     return TestClient(app)
 
 
-def _headers(user: str = "alice", project: str = "project-a", admin: bool = False) -> dict[str, str]:
+def _headers(
+    user: str = "alice", project: str = "project-a", admin: bool = False
+) -> dict[str, str]:
     return {
         "x-user-id": user,
         "x-project-id": project,

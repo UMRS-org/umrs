@@ -61,11 +61,13 @@ class WordCountEmbeddingStep(Step):
             # Upload metadata
             head = ctx.head_object(key)
             checksums.append(head["ETag"].strip('"'))
-            metadata_list.append({
-                "source_key": key,
-                "word_count": len(words),
-                "unique_words": len(counts),
-            })
+            metadata_list.append(
+                {
+                    "source_key": key,
+                    "word_count": len(words),
+                    "unique_words": len(counts),
+                }
+            )
 
         return StepResult(
             output_keys=output_keys,

@@ -116,9 +116,11 @@ class ModelRefResolver(ABC):
 
 class ResolutionError(Exception):
     """Error during model reference resolution."""
+
     pass
 
 
 class IncompatibleAuthorityError(ResolutionError):
     """ModelRef not compatible with target execution authority."""
+
     pass

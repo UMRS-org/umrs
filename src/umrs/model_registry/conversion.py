@@ -37,9 +37,9 @@ class ConversionType(Enum):
     FP16_TO_FP8 = "fp16_to_fp8"
 
     # Quantization
-    AWQ = "awq"              # 4-bit Activation-aware Weight Quantization
-    GPTQ = "gptq"            # 4-bit GPTQ quantization
-    GGUF = "gguf"            # llama.cpp format
+    AWQ = "awq"  # 4-bit Activation-aware Weight Quantization
+    GPTQ = "gptq"  # 4-bit GPTQ quantization
+    GGUF = "gguf"  # llama.cpp format
     GGUF_Q4_K_M = "gguf_q4_k_m"  # Specific GGUF quantization
     GGUF_Q5_K_M = "gguf_q5_k_m"
     GGUF_Q8_0 = "gguf_q8_0"
@@ -74,23 +74,23 @@ class ConversionConfig:
 
     # Common parameters
     output_name: str | None = None  # Override output model name
-    keep_original: bool = True         # Keep source model after conversion
+    keep_original: bool = True  # Keep source model after conversion
 
     # Quantization parameters
-    bits: int = 4                      # For AWQ/GPTQ: 4 or 8
-    group_size: int = 128              # Quantization group size
-    use_exllama: bool = True           # Use exllama kernels for faster inference
-    desc_act: bool = False             # Order activations by decreasing order
+    bits: int = 4  # For AWQ/GPTQ: 4 or 8
+    group_size: int = 128  # Quantization group size
+    use_exllama: bool = True  # Use exllama kernels for faster inference
+    desc_act: bool = False  # Order activations by decreasing order
 
     # AWQ specific
-    awq_version: str = "gemm"          # "gemm" or "gemv"
+    awq_version: str = "gemm"  # "gemm" or "gemv"
 
     # GPTQ specific
-    gptq_damp_percent: float = 0.01    # Dampening percentage
-    gptq_sym: bool = True              # Symmetric quantization
+    gptq_damp_percent: float = 0.01  # Dampening percentage
+    gptq_sym: bool = True  # Symmetric quantization
 
     # GGUF specific
-    gguf_type: str = "q4_k_m"          # Quantization type for GGUF
+    gguf_type: str = "q4_k_m"  # Quantization type for GGUF
     gguf_vocab_type: str | None = None  # Override vocab type
 
     # LoRA merge parameters
@@ -197,7 +197,9 @@ class ConversionJob:
             "output_size_bytes": self.output_size_bytes,
             "created_at": self.created_at.isoformat(),
             "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "completed_at": self.completed_at.isoformat()
+            if self.completed_at
+            else None,
         }
 
 
@@ -210,15 +212,36 @@ class ConversionPipeline:
 
     # Conversion compatibility matrix
     SUPPORTED_CONVERSIONS = {
-        ConversionType.FP32_TO_FP16: {"source_formats": ["fp32"], "requires_gpu": False},
-        ConversionType.FP32_TO_BF16: {"source_formats": ["fp32"], "requires_gpu": False},
-        ConversionType.FP16_TO_FP8: {"source_formats": ["fp16", "bf16"], "requires_gpu": True},
+        ConversionType.FP32_TO_FP16: {
+            "source_formats": ["fp32"],
+            "requires_gpu": False,
+        },
+        ConversionType.FP32_TO_BF16: {
+            "source_formats": ["fp32"],
+            "requires_gpu": False,
+        },
+        ConversionType.FP16_TO_FP8: {
+            "source_formats": ["fp16", "bf16"],
+            "requires_gpu": True,
+        },
         ConversionType.AWQ: {"source_formats": ["fp16", "bf16"], "requires_gpu": True},
         ConversionType.GPTQ: {"source_formats": ["fp16", "bf16"], "requires_gpu": True},
-        ConversionType.GGUF: {"source_formats": ["fp16", "bf16", "fp32"], "requires_gpu": False},
-        ConversionType.GGUF_Q4_K_M: {"source_formats": ["fp16", "bf16"], "requires_gpu": False},
-        ConversionType.GGUF_Q5_K_M: {"source_formats": ["fp16", "bf16"], "requires_gpu": False},
-        ConversionType.GGUF_Q8_0: {"source_formats": ["fp16", "bf16"], "requires_gpu": False},
+        ConversionType.GGUF: {
+            "source_formats": ["fp16", "bf16", "fp32"],
+            "requires_gpu": False,
+        },
+        ConversionType.GGUF_Q4_K_M: {
+            "source_formats": ["fp16", "bf16"],
+            "requires_gpu": False,
+        },
+        ConversionType.GGUF_Q5_K_M: {
+            "source_formats": ["fp16", "bf16"],
+            "requires_gpu": False,
+        },
+        ConversionType.GGUF_Q8_0: {
+            "source_formats": ["fp16", "bf16"],
+            "requires_gpu": False,
+        },
         ConversionType.MERGE_LORA: {"source_formats": ["*"], "requires_gpu": True},
         ConversionType.MERGE_QLORA: {"source_formats": ["*"], "requires_gpu": True},
         ConversionType.SAFETENSORS: {"source_formats": ["*"], "requires_gpu": False},
@@ -289,16 +312,22 @@ class ConversionPipeline:
         if config.conversion_type == ConversionType.AWQ:
             return base_cmd + [
                 "awq",
-                "--bits", str(config.bits),
-                "--group-size", str(config.group_size),
-                "--version", config.awq_version,
+                "--bits",
+                str(config.bits),
+                "--group-size",
+                str(config.group_size),
+                "--version",
+                config.awq_version,
             ]
         elif config.conversion_type == ConversionType.GPTQ:
             return base_cmd + [
                 "gptq",
-                "--bits", str(config.bits),
-                "--group-size", str(config.group_size),
-                "--damp-percent", str(config.gptq_damp_percent),
+                "--bits",
+                str(config.bits),
+                "--group-size",
+                str(config.group_size),
+                "--damp-percent",
+                str(config.gptq_damp_percent),
                 "--sym" if config.gptq_sym else "--asym",
             ]
         elif config.conversion_type in [
@@ -309,13 +338,16 @@ class ConversionPipeline:
         ]:
             return base_cmd + [
                 "gguf",
-                "--type", config.gguf_type,
+                "--type",
+                config.gguf_type,
             ]
         elif config.conversion_type == ConversionType.MERGE_LORA:
             return base_cmd + [
                 "merge-lora",
-                "--adapter", config.lora_adapter_path or "",
-                "--scale", str(config.lora_scale),
+                "--adapter",
+                config.lora_adapter_path or "",
+                "--scale",
+                str(config.lora_scale),
             ]
         elif config.conversion_type == ConversionType.FP32_TO_FP16:
             return base_cmd + ["fp16"]

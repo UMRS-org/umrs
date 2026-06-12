@@ -70,9 +70,7 @@ def _parse_usage_dict(usage: dict) -> dict:
             (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
             or usage.get("cache_read_input_tokens", 0)
         ),
-        "cached_write_tokens": int(
-            usage.get("cache_creation_input_tokens", 0)
-        ),
+        "cached_write_tokens": int(usage.get("cache_creation_input_tokens", 0)),
     }
 
 

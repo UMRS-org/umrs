@@ -64,10 +64,7 @@ def main():
 
     # Write metrics (read by the runner)
     metrics_file = Path(workspace) / "metrics.txt"
-    metrics_file.write_text(
-        f"files_processed={len(results)}\n"
-        f"total_words={total_words}\n"
-    )
+    metrics_file.write_text(f"files_processed={len(results)}\ntotal_words={total_words}\n")
 
     return 0
 

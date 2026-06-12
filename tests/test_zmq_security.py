@@ -24,14 +24,16 @@ class TestZMQSecurityConfig:
     def test_curve_config_from_env(self):
         from umrs.core.zmq_security import ZMQSecurityConfig
 
-        config = ZMQSecurityConfig.from_env({
-            "UMRS_ZMQ_AUTH_TYPE": "curve",
-            "UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY": KEY_A,
-            "UMRS_ZMQ_CURVE_SERVER_SECRET_KEY": KEY_B,
-            "UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY": KEY_C,
-            "UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY": KEY_A,
-            "UMRS_ZMQ_CURVE_ALLOW_ANY_CLIENT_KEY": "true",
-        })
+        config = ZMQSecurityConfig.from_env(
+            {
+                "UMRS_ZMQ_AUTH_TYPE": "curve",
+                "UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY": KEY_A,
+                "UMRS_ZMQ_CURVE_SERVER_SECRET_KEY": KEY_B,
+                "UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY": KEY_C,
+                "UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY": KEY_A,
+                "UMRS_ZMQ_CURVE_ALLOW_ANY_CLIENT_KEY": "true",
+            }
+        )
 
         assert config.enabled is True
         assert config.auth_type == "curve"
@@ -240,6 +242,7 @@ class TestGenerateCurveKeypair:
 
         # Secret file should be mode 600
         import stat
+
         mode = os.stat(sec_path).st_mode & 0o777
         assert mode == 0o600
 
@@ -290,6 +293,7 @@ class TestCurveIntegration:
         trusted_dir = str(tmp_path / "trusted")
         os.makedirs(trusted_dir)
         import shutil
+
         shutil.copy(str(tmp_path / "clients" / "alice.key"), trusted_dir)
 
         server_config = ZMQSecurityConfig(
@@ -384,6 +388,7 @@ class TestCurveIntegration:
             # never receive it because ZAP rejects the client key.
             client_sock.send_string("SHOULD_FAIL", zmq.NOBLOCK)
             import time
+
             time.sleep(0.3)  # Give ZAP time to reject
 
             # Server should NOT have received anything

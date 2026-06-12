@@ -48,9 +48,15 @@ class UMRSControlAPI:
 
     def list_models(self, scope: str | None = None) -> dict[str, Any]:
         payload = json.dumps({"scope": scope}) if scope else ""
-        raw = self._mq.request_model_command(self._client_id, TaskCmd.MODEL_LIST, payload)
+        raw = self._mq.request_model_command(
+            self._client_id, TaskCmd.MODEL_LIST, payload
+        )
         if raw.startswith("UNAUTHORIZED:"):
-            return {"status": "error", "message": "Authorization denied for MODEL_LIST", "code": "UNAUTHORIZED"}
+            return {
+                "status": "error",
+                "message": "Authorization denied for MODEL_LIST",
+                "code": "UNAUTHORIZED",
+            }
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return {"status": "ok", "models": parsed}
@@ -276,10 +282,14 @@ class UMRSControlAPI:
         workflow_params = dict(params or {})
         if bucket:
             workflow_params["bucket"] = bucket
-        payload = json.dumps({"workflow_name": workflow_name, "params": workflow_params})
+        payload = json.dumps(
+            {"workflow_name": workflow_name, "params": workflow_params}
+        )
         return self._request_json(TaskCmd.RUN_WORKFLOW, payload)
 
-    def maintenance(self, action: str, config_path: str | None = None) -> dict[str, Any]:
+    def maintenance(
+        self, action: str, config_path: str | None = None
+    ) -> dict[str, Any]:
         action = action.lower()
         if action not in MAINTENANCE_ACTIONS:
             raise ValueError(f"Unsupported maintenance action: {action}")
@@ -295,7 +305,12 @@ class UMRSControlAPI:
         )
         if ok:
             return {"status": "ok", "action": action, "accepted": True}
-        return {"status": "error", "action": action, "accepted": False, "message": "Authorization denied (admin required)"}
+        return {
+            "status": "error",
+            "action": action,
+            "accepted": False,
+            "message": "Authorization denied (admin required)",
+        }
 
     def enroll_user(self, config_path: str) -> dict[str, Any]:
         """Enroll a new user on the server (admin-only).
@@ -312,7 +327,10 @@ class UMRSControlAPI:
                 cfg_json = json.load(fh)
             upload_user = cfg_json.get("username")
             if not upload_user:
-                return {"status": "error", "message": "Config file missing 'username' field"}
+                return {
+                    "status": "error",
+                    "message": "Config file missing 'username' field",
+                }
         except Exception as e:
             return {"status": "error", "message": f"Cannot read config file: {e}"}
 
@@ -331,12 +349,18 @@ class UMRSControlAPI:
 
         if ok:
             return {"status": "ok", "username": upload_user, "accepted": True}
-        return {"status": "error", "username": upload_user, "accepted": False,
-                "message": "Server rejected ENROLL_USER (check admin token)"}
+        return {
+            "status": "error",
+            "username": upload_user,
+            "accepted": False,
+            "message": "Server rejected ENROLL_USER (check admin token)",
+        }
 
     def execute_command(self, command_line: str) -> dict[str, Any]:
         parser = build_control_command_parser()
-        args = parser.parse_args(shlex.split(prepare_control_command_line(command_line)))
+        args = parser.parse_args(
+            shlex.split(prepare_control_command_line(command_line))
+        )
 
         if args.action == "ping":
             return self.ping(timeout_ms=args.timeout_ms)
@@ -379,7 +403,11 @@ class UMRSControlAPI:
                     offset=getattr(args, "offset", 0),
                 )
             if args.job_action == "submit":
-                spec = parse_json_object_arg(args.spec, field_name="spec") if args.spec else {}
+                spec = (
+                    parse_json_object_arg(args.spec, field_name="spec")
+                    if args.spec
+                    else {}
+                )
                 return self.submit_job(
                     job_type=args.job_type,
                     spec=spec,
@@ -391,7 +419,11 @@ class UMRSControlAPI:
                 )
         if args.action == "endpoint":
             if args.endpoint_action == "up":
-                spec = parse_json_object_arg(args.spec, field_name="spec") if args.spec else {}
+                spec = (
+                    parse_json_object_arg(args.spec, field_name="spec")
+                    if args.spec
+                    else {}
+                )
                 idle_ttl_sec = parse_duration_seconds(
                     args.idle_ttl or "30m",
                     field_name="idle_ttl",
@@ -422,17 +454,29 @@ class UMRSControlAPI:
                 return self.stop_endpoint(args.job_id)
         if args.action == "workflow":
             if args.workflow_action == "list":
-                return self.list_workflows(scope=args.scope, user=args.user, name=args.name)
+                return self.list_workflows(
+                    scope=args.scope, user=args.user, name=args.name
+                )
             if args.workflow_action == "run":
-                params = parse_json_object_arg(args.params, field_name="params") if args.params else {}
-                return self.run_workflow(workflow_name=args.workflow_name, params=params, bucket=args.bucket)
+                params = (
+                    parse_json_object_arg(args.params, field_name="params")
+                    if args.params
+                    else {}
+                )
+                return self.run_workflow(
+                    workflow_name=args.workflow_name, params=params, bucket=args.bucket
+                )
 
         raise ValueError(f"Unsupported command: {command_line}")
 
     def _request_json(self, task_cmd: str, payload: str) -> dict[str, Any]:
         raw = self._mq.request_model_command(self._client_id, task_cmd, payload)
         if raw.startswith("UNAUTHORIZED:"):
-            return {"status": "error", "message": f"Authorization denied for {task_cmd}", "code": "UNAUTHORIZED"}
+            return {
+                "status": "error",
+                "message": f"Authorization denied for {task_cmd}",
+                "code": "UNAUTHORIZED",
+            }
         parsed = json.loads(raw)
         if isinstance(parsed, list):
             return {"status": "ok", "items": parsed}

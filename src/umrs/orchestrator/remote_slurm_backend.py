@@ -59,7 +59,9 @@ class RemoteSlurmBackend(SlurmBackend):
     in their ~/.ssh/authorized_keys (via ``r4 onboard``).
     """
 
-    def __init__(self, config: Any, ssh_config: Optional[SSHControlConfig] = None) -> None:
+    def __init__(
+        self, config: Any, ssh_config: Optional[SSHControlConfig] = None
+    ) -> None:
         super().__init__(config)
         # Build SSH config from site config extra section or explicit param.
         if ssh_config:
@@ -70,6 +72,7 @@ class RemoteSlurmBackend(SlurmBackend):
                 # Fallback: load extra from site config directly
                 try:
                     from .site_config import load_site_config
+
                     site = load_site_config()
                     extra = site.extra or {}
                 except Exception:
@@ -85,6 +88,7 @@ class RemoteSlurmBackend(SlurmBackend):
         self._user_ssh_pool: dict[str, SSHControlManager] = {}
         try:
             from .site_config import load_site_config
+
             site = load_site_config()
             self._delegation_mode = site.scheduler.slurm_delegation
             # Derive private key path from pubkey path (strip .pub suffix)
@@ -157,6 +161,7 @@ class RemoteSlurmBackend(SlurmBackend):
         if not extra.get("slurm_wrapper_script"):
             try:
                 from .site_config import load_site_config
+
                 site = load_site_config()
                 extra = site.extra or {}
             except Exception:
@@ -171,6 +176,7 @@ class RemoteSlurmBackend(SlurmBackend):
             return str(extra["slurm_job_info_dir"])
         try:
             from .site_config import load_site_config
+
             site = load_site_config()
             return str(site.extra.get("slurm_job_info_dir", info_dir))
         except Exception:
@@ -196,14 +202,18 @@ class RemoteSlurmBackend(SlurmBackend):
         """
         model = model_path or self.config.model_path
         if not model:
-            raise ValueError("model_path is required (set VLLM_MODEL_PATH or pass explicitly)")
+            raise ValueError(
+                "model_path is required (set VLLM_MODEL_PATH or pass explicitly)"
+            )
 
         # Determine which SSH connection to use for submission
         requesting_user = kwargs.pop("requesting_user", None)
 
         wrapper_script = self._get_wrapper_script()
         if wrapper_script:
-            return await self._submit_wrapper_job(model, wrapper_script, requesting_user=requesting_user, **kwargs)
+            return await self._submit_wrapper_job(
+                model, wrapper_script, requesting_user=requesting_user, **kwargs
+            )
 
         # Legacy: generate Singularity-based sbatch script and pipe via stdin.
         script_content = self._build_sbatch_script(model, **kwargs)
@@ -232,7 +242,9 @@ class RemoteSlurmBackend(SlurmBackend):
         )
 
     @staticmethod
-    def _select_partition(site: Any, gpu_count: int | None, node_count: int | None) -> str:
+    def _select_partition(
+        site: Any, gpu_count: int | None, node_count: int | None
+    ) -> str:
         """Pick a Slurm partition from the requested GPU/node sizing.
 
         AI4S declares partitions following a ``<nodes>n<gpus>gpu`` naming
@@ -260,6 +272,7 @@ class RemoteSlurmBackend(SlurmBackend):
         """Submit a site-provided wrapper script (e.g. serve-model.slurm) via remote sbatch."""
         # Build sbatch CLI args from site config.
         from .site_config import load_site_config
+
         site = load_site_config()
 
         sbatch_args = ["sbatch", "--parsable"]
@@ -277,7 +290,9 @@ class RemoteSlurmBackend(SlurmBackend):
         # Partition. When the site declares partitions following the AI4S
         # "<nodes>n<gpus>gpu" convention, auto-select the matching profile from
         # the requested GPU/node sizing; otherwise fall back to the site default.
-        partition = partition_override or self._select_partition(site, gpu_count, node_count)
+        partition = partition_override or self._select_partition(
+            site, gpu_count, node_count
+        )
         if partition:
             sbatch_args.append(f"--partition={partition}")
 
@@ -331,10 +346,16 @@ class RemoteSlurmBackend(SlurmBackend):
         requested_env = kwargs.pop("env", None)
         if isinstance(requested_env, dict):
             env_overrides.update(
-                {k: str(v) for k, v in requested_env.items() if isinstance(v, (str, int, float))}
+                {
+                    k: str(v)
+                    for k, v in requested_env.items()
+                    if isinstance(v, (str, int, float))
+                }
             )
         env_overrides["VLLM_MODEL_PATH"] = model_path
-        env_overrides.setdefault("VLLM_SERVED_MODEL_NAME", env_overrides.get("MODEL_NAME", model_path))
+        env_overrides.setdefault(
+            "VLLM_SERVED_MODEL_NAME", env_overrides.get("MODEL_NAME", model_path)
+        )
         env_overrides.setdefault("RIVAULT_WRAPPER_DIR", os.path.dirname(wrapper_script))
         env_overrides.setdefault("JOB_INFO_DIR", output_dir)
         env_overrides.setdefault("RIVAULT_CONTROL_DIR", self._control_dir())
@@ -344,7 +365,9 @@ class RemoteSlurmBackend(SlurmBackend):
         # the originating user even when submitted via the master account.
         if requesting_user:
             env_overrides.setdefault("UMRS_USER", requesting_user)
-        project_id = kwargs.pop("project_id", None) or env_overrides.get("PROJECT_ID", "")
+        project_id = kwargs.pop("project_id", None) or env_overrides.get(
+            "PROJECT_ID", ""
+        )
         if project_id:
             env_overrides.setdefault("UMRS_PROJECT", project_id)
 
@@ -412,8 +435,13 @@ class RemoteSlurmBackend(SlurmBackend):
             )
 
         # Fallback to squeue/sacct.
-        status = await self._query_slurm_job_status(job_id)
-        return JobInfo(job_id=job_id, status=status, backend=self.backend_name)
+        status, reason = await self._query_slurm_job_status(job_id)
+        return JobInfo(
+            job_id=job_id,
+            status=status,
+            backend=self.backend_name,
+            state_reason=reason,
+        )
 
     async def _endpoint_via_tunnel(self, endpoint: EndpointInfo) -> EndpointInfo:
         """Return a front-end local endpoint backed by an SSH forward tunnel."""
@@ -434,6 +462,7 @@ class RemoteSlurmBackend(SlurmBackend):
             local_port_max = 12999
             try:
                 from .site_config import load_site_config
+
                 site = load_site_config()
                 local_port_min = site.network.port_range_min
                 local_port_max = site.network.port_range_max
@@ -469,21 +498,41 @@ class RemoteSlurmBackend(SlurmBackend):
                 info[key] = value
         return info
 
-    async def _query_slurm_job_status(self, job_id: str) -> JobStatus:
-        """Query Slurm job status via remote squeue/sacct."""
-        status = await self._query_squeue_status(job_id)
-        if status is not None:
-            return status
-        return await self._query_sacct_status(job_id)
+    async def _query_slurm_job_status(
+        self, job_id: str
+    ) -> tuple[JobStatus, str | None]:
+        """Query Slurm job status via remote squeue/sacct.
 
-    async def _query_squeue_status(self, job_id: str) -> JobStatus | None:
-        """Query squeue for active job status via SSH."""
+        Returns ``(status, reason)`` where ``reason`` is the scheduler's
+        human-readable explanation for the current state (squeue ``%R`` — e.g.
+        ``MaxMemPerLimit``, ``Resources``, ``Priority``) when the job is still
+        queued, or ``None`` otherwise.
+        """
+        squeue_result = await self._query_squeue_status(job_id)
+        if squeue_result is not None:
+            return squeue_result
+        return await self._query_sacct_status(job_id), None
+
+    async def _query_squeue_status(
+        self, job_id: str
+    ) -> tuple[JobStatus, str | None] | None:
+        """Query squeue for active job status + pending reason via SSH."""
         ssh = await self._get_ssh()
-        result = await ssh.run_remote(f"squeue -j {job_id} -h -o %T")
+        # %T = job state, %R = reason (for PENDING) or node list (for RUNNING).
+        result = await ssh.run_remote(f'squeue -j {job_id} -h -o "%T|%R"')
 
         if not result.ok or not result.stdout.strip():
             return None
-        return self._status_from_slurm_state(result.stdout.strip())
+        raw = result.stdout.strip().splitlines()[0]
+        state, _, reason = raw.partition("|")
+        state = state.strip()
+        reason = reason.strip() or None
+        status = self._status_from_slurm_state(state)
+        # Only surface the reason while the job is still queued/pending. For a
+        # RUNNING job, %R holds the node list, not a diagnostic.
+        if status != JobStatus.PENDING:
+            reason = None
+        return status, reason
 
     async def _query_sacct_status(self, job_id: str) -> JobStatus:
         """Query sacct for completed job status via SSH."""
@@ -500,7 +549,9 @@ class RemoteSlurmBackend(SlurmBackend):
             info = self._parse_info_content(info_content)
             endpoint = self._endpoint_from_info(JobStatus.RUNNING, info)
             if endpoint is not None:
-                await self._tunnel_pool.close_tunnel(endpoint.node, endpoint.litellm_port)
+                await self._tunnel_pool.close_tunnel(
+                    endpoint.node, endpoint.litellm_port
+                )
 
         ssh = await self._get_ssh()
         info_dir = self._job_info_dir()
@@ -516,7 +567,9 @@ class RemoteSlurmBackend(SlurmBackend):
                 )
             )
             if result.ok:
-                graceful_timeout = int(os.environ.get("RIVAULT_GRACEFUL_STOP_TIMEOUT", "20"))
+                graceful_timeout = int(
+                    os.environ.get("RIVAULT_GRACEFUL_STOP_TIMEOUT", "20")
+                )
                 logger.info(
                     "requested graceful remote compute-node stop for %s via %s",
                     job_id,
@@ -550,7 +603,7 @@ class RemoteSlurmBackend(SlurmBackend):
     async def _wait_for_remote_job_exit(self, job_id: str, timeout_sec: int) -> bool:
         """Wait briefly for a remote Slurm job to leave the active queue."""
         for _ in range(max(timeout_sec, 0)):
-            status = await self._query_slurm_job_status(job_id)
+            status, _reason = await self._query_slurm_job_status(job_id)
             if status in (JobStatus.STOPPED, JobStatus.FAILED, JobStatus.UNKNOWN):
                 return True
             await asyncio.sleep(1)
@@ -597,9 +650,7 @@ class RemoteSlurmBackend(SlurmBackend):
         """Query squeue for running jobs via SSH."""
         user = os.environ.get("USER", "")
         ssh = await self._get_ssh()
-        result = await ssh.run_remote(
-            f"squeue -u {user} -n mini-rivault -h -o %i"
-        )
+        result = await ssh.run_remote(f"squeue -u {user} -n mini-rivault -h -o %i")
 
         if not result.stdout.strip():
             return
@@ -643,9 +694,7 @@ class RemoteSlurmBackend(SlurmBackend):
         try:
             ssh = await self._get_ssh()
             partition = self.config.slurm_partition
-            result = await ssh.run_remote(
-                f"sinfo -h -p {partition} -o '%P %a %D'"
-            )
+            result = await ssh.run_remote(f"sinfo -h -p {partition} -o '%P %a %D'")
 
             if not result.ok:
                 return {

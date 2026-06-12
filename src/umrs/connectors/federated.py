@@ -96,9 +96,7 @@ class FederatedSearcher:
                 results = source.search(query, creds, limit=limit)
                 all_results.extend(results)
             except Exception as exc:
-                logger.warning(
-                    "Federated search failed for %s: %s", src_name, exc
-                )
+                logger.warning("Federated search failed for %s: %s", src_name, exc)
 
         # Sort by score descending
         all_results.sort(key=lambda r: r.score, reverse=True)

@@ -95,9 +95,7 @@ class ImageStatsStep(Step):
                 "avg_brightness": round(
                     sum(s["brightness"] for s in all_stats) / len(all_stats), 4
                 ),
-                "avg_contrast": round(
-                    sum(s["contrast"] for s in all_stats) / len(all_stats), 4
-                ),
+                "avg_contrast": round(sum(s["contrast"] for s in all_stats) / len(all_stats), 4),
                 "size_range": {
                     "min_width": min(s["width"] for s in all_stats),
                     "max_width": max(s["width"] for s in all_stats),

@@ -28,6 +28,7 @@ from umrs.shared.config import default_s3cfg_path
 def _get_hostname() -> str:
     """Return a short hostname for scp instructions."""
     import socket
+
     return socket.gethostname()
 
 
@@ -89,7 +90,9 @@ def _resolve_slurm_account_requirement() -> tuple[bool, str | None]:
         return False, None
 
 
-def _record_row(rec: UserRecord, *, require_acct: bool, master_account: str | None) -> dict[str, Any]:
+def _record_row(
+    rec: UserRecord, *, require_acct: bool, master_account: str | None
+) -> dict[str, Any]:
     account = rec.slurm_account or ""
     if not account:
         if require_acct:
@@ -118,7 +121,7 @@ def _print_table(
         print("(no users)")
         print(
             "hint: register one with `umrs-server admin user add <username> "
-            "--fullname \"Your Name\" --role user`"
+            '--fullname "Your Name" --role user`'
         )
         return
     columns = ["username", "role", "slurm_account", "projects", "disabled", "email"]
@@ -270,9 +273,7 @@ def _maybe_register_in_server_config(
     for u in users_list:
         try:
             existing_abs.add(
-                os.path.abspath(
-                    os.path.join(config_dir, os.path.expanduser(u))
-                )
+                os.path.abspath(os.path.join(config_dir, os.path.expanduser(u)))
             )
         except Exception:
             pass
@@ -348,10 +349,15 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
     if site_name and args.slurm_account:
         try:
             rec = store.set_slurm_account_for_site(
-                args.username, site_name, args.slurm_account,
+                args.username,
+                site_name,
+                args.slurm_account,
             )
         except UserStoreError as exc:
-            print(f"warning: user created but failed to set site account: {exc}", file=sys.stderr)
+            print(
+                f"warning: user created but failed to set site account: {exc}",
+                file=sys.stderr,
+            )
 
     # Auto-generate a client config template alongside the admin record.
     _maybe_emit_template(args, store, rec)
@@ -397,6 +403,7 @@ def _cmd_user_add(args: argparse.Namespace, store: UserStore) -> int:
 
 def _client_template_path(args, store, rec):
     from pathlib import Path
+
     if getattr(args, "no_client_template", False):
         return None
     if getattr(args, "client_template", None):
@@ -450,35 +457,57 @@ def _maybe_emit_template(args, store, rec) -> None:
                 print(f"  Onboarding token (valid {getattr(args, 'token_days', 30)}d):")
                 print(f"    {token}")
             except Exception as exc:
-                print(f"  warning: could not issue onboarding JWT: {exc}", file=sys.stderr)
+                print(
+                    f"  warning: could not issue onboarding JWT: {exc}", file=sys.stderr
+                )
 
         print()
         print("  Onboarding steps for the new user:")
         if token_hint:
             gw_hint = payload.get("gateway_url", "")
             if gw_hint:
-                print(f"  1. (recommended) r4 via Gateway HTTP (gateway_url embedded — no flags needed):")
+                print(
+                    f"  1. (recommended) r4 via Gateway HTTP (gateway_url embedded — no flags needed):"
+                )
                 print(f"       r4 auth login --api-key {token_hint}")
             else:
                 print(f"  1. (recommended) r4 via Gateway HTTP:")
-                print(f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}")
-            print(f"  2. (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:")
+                print(
+                    f"       r4 auth login --gateway-url <GATEWAY_URL> --api-key {token_hint}"
+                )
+            print(
+                f"  2. (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
+            )
             print(f"       umrs-client login --host <HOST> --api-key {token_hint}")
         else:
-            print(f"  1. Generate a token for the user (embed --gateway-url for single-flag login):")
-            print(f"       umrs-server admin token generate-jwt --user {rec.username} --gateway-url <GATEWAY_URL>")
+            print(
+                f"  1. Generate a token for the user (embed --gateway-url for single-flag login):"
+            )
+            print(
+                f"       umrs-server admin token generate-jwt --user {rec.username} --gateway-url <GATEWAY_URL>"
+            )
             print(f"  2. Give the token to the user, who runs:")
             print(f"       r4 auth login --api-key <TOKEN>")
-            print(f"     (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:")
+            print(
+                f"     (alternative) umrs-client direct ZMQ — requires CURVE keys if CURVE auth is enabled:"
+            )
             print(f"       umrs-client login --host <HOST> --api-key <TOKEN>")
         if not rec.slurm_account and not rec.slurm_accounts:
             require_acct, _ = _resolve_slurm_account_requirement()
             if require_acct:
-                print(f"  NOTE: set a Slurm account before the user can provision endpoints:")
-                print(f"       umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>")
+                print(
+                    f"  NOTE: set a Slurm account before the user can provision endpoints:"
+                )
+                print(
+                    f"       umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>"
+                )
             else:
-                print(f"  NOTE: per-user Slurm account is optional on this site; jobs use the site master account.")
-                print(f"       to assign one anyway: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>")
+                print(
+                    f"  NOTE: per-user Slurm account is optional on this site; jobs use the site master account."
+                )
+                print(
+                    f"       to assign one anyway: umrs-server admin user set-slurm-account {rec.username} <ACCOUNT>"
+                )
 
 
 def _cmd_user_list(args: argparse.Namespace, store: UserStore) -> int:
@@ -539,7 +568,10 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
             get_resolved_umrs_cfg_dir,
         )
         import os
-        server_json = os.path.join(get_resolved_umrs_cfg_dir(), get_default_json_server_file())
+
+        server_json = os.path.join(
+            get_resolved_umrs_cfg_dir(), get_default_json_server_file()
+        )
         admin_s3_cfg = None
         if os.path.isfile(server_json):
             with open(server_json, encoding="utf-8") as f:
@@ -547,10 +579,14 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
             admin_s3_cfg = srv.get("admin_s3_configuration_file")
 
         if not admin_s3_cfg:
-            print("warning: admin_s3_configuration_file not found in server config; "
-                  "S3/MinIO cleanup will be skipped.", file=sys.stderr)
+            print(
+                "warning: admin_s3_configuration_file not found in server config; "
+                "S3/MinIO cleanup will be skipped.",
+                file=sys.stderr,
+            )
 
         from umrs.server.provisioning import deprovision_user
+
         deprovision_user(user_cfg, admin_s3_cfg or "")
 
         path = store.delete(args.username)
@@ -573,7 +609,9 @@ def _cmd_user_delete(args: argparse.Namespace, store: UserStore) -> int:
     store.set_disabled(args.username, True)
     print(f"soft-deleted (disabled) user {rec.username}")
     print("Use `--purge` to remove the JSON file and revoke filesystem presence.")
-    print("Use `--purge --deprovision` to also remove S3 buckets, Postgres databases, and MinIO IAM user.")
+    print(
+        "Use `--purge --deprovision` to also remove S3 buckets, Postgres databases, and MinIO IAM user."
+    )
     return 0
 
 
@@ -611,7 +649,9 @@ def _cmd_user_set_slurm_account(args: argparse.Namespace, store: UserStore) -> i
     try:
         if args.site:
             rec = store.set_slurm_account_for_site(
-                args.username, args.site, args.account,
+                args.username,
+                args.site,
+                args.account,
             )
             label = f"slurm_accounts[{args.site}]"
             value = rec.slurm_accounts.get(args.site, "(unset)")
@@ -674,7 +714,10 @@ def _cmd_user_generate_template(args: argparse.Namespace, _store: UserStore) -> 
 
     out_path = Path(output).expanduser()
     if out_path.exists() and not args.force:
-        print(f"error: {out_path} already exists (use --force to overwrite)", file=sys.stderr)
+        print(
+            f"error: {out_path} already exists (use --force to overwrite)",
+            file=sys.stderr,
+        )
         return 2
 
     _write_client_template(username, fullname, out_path)
@@ -684,7 +727,9 @@ def _cmd_user_generate_template(args: argparse.Namespace, _store: UserStore) -> 
     print(f"  Onboarding steps for the user:")
     print(f"  1. Send '{out_path.name}' to the user (or copy via scp)")
     print(f"  2. On their local machine:")
-    print(f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {username}")
+    print(
+        f"       r4 config init --gateway-url <GATEWAY_URL> --umrs-username {username}"
+    )
     print(f"  3. Config is stored locally at ~/.config/r4/profiles.json")
     return 0
 
@@ -708,7 +753,8 @@ def _cmd_config_show(args: argparse.Namespace, _store: UserStore) -> int:
 
     cfg_dir = get_resolved_umrs_cfg_dir()
     cfg_dir_source = (
-        f"${UMRS_CFG_ENV_VAR_NAME}" if os.environ.get(UMRS_CFG_ENV_VAR_NAME)
+        f"${UMRS_CFG_ENV_VAR_NAME}"
+        if os.environ.get(UMRS_CFG_ENV_VAR_NAME)
         else "default"
     )
 
@@ -739,21 +785,24 @@ def _cmd_config_show(args: argparse.Namespace, _store: UserStore) -> int:
     else:
         user_files_dir = resolve_server_user_files_dir()
         user_files_source = (
-            f"${UMRS_USER_FILES_ENV_VAR_NAME}" if os.environ.get(UMRS_USER_FILES_ENV_VAR_NAME)
+            f"${UMRS_USER_FILES_ENV_VAR_NAME}"
+            if os.environ.get(UMRS_USER_FILES_ENV_VAR_NAME)
             else "default"
         )
     user_files_exists = os.path.isdir(user_files_dir)
 
     if args.json:
-        _print_json({
-            "config_dir": cfg_dir,
-            "config_dir_source": cfg_dir_source,
-            "server_config": server_json,
-            "server_config_exists": server_json_exists,
-            "user_files_dir": user_files_dir,
-            "user_files_dir_source": user_files_source,
-            "user_files_dir_exists": user_files_exists,
-        })
+        _print_json(
+            {
+                "config_dir": cfg_dir,
+                "config_dir_source": cfg_dir_source,
+                "server_config": server_json,
+                "server_config_exists": server_json_exists,
+                "user_files_dir": user_files_dir,
+                "user_files_dir_source": user_files_source,
+                "user_files_dir_exists": user_files_exists,
+            }
+        )
     else:
         ok = "\u2713"
         no = "\u2717"
@@ -788,6 +837,7 @@ def _cmd_config_show(args: argparse.Namespace, _store: UserStore) -> int:
 
 def _token_manager():
     from umrs.shared.auth import AdminTokenManager
+
     return AdminTokenManager()
 
 
@@ -800,7 +850,9 @@ def _cmd_token_generate(args: argparse.Namespace, _store: UserStore) -> int:
         _print_json({"name": args.name, "token": token, "overwritten": overwrite})
     else:
         action = "Regenerated" if overwrite else "Generated"
-        print(f"{action} admin token '{args.name}' (for umrs-client --admin-token / $UMRS_ADMIN_TOKEN)")
+        print(
+            f"{action} admin token '{args.name}' (for umrs-client --admin-token / $UMRS_ADMIN_TOKEN)"
+        )
         print(f"token: {token}")
         print("  (this is the only time the raw token will be shown)")
         print()
@@ -808,7 +860,9 @@ def _cmd_token_generate(args: argparse.Namespace, _store: UserStore) -> int:
         print("         or: export UMRS_ADMIN_TOKEN=<token>")
         print()
         print("  NOTE: this token is for the umrs-client ZMQ control plane only.")
-        print("        To authenticate r4/Gateway, use 'umrs-server admin token generate-jwt' instead.")
+        print(
+            "        To authenticate r4/Gateway, use 'umrs-server admin token generate-jwt' instead."
+        )
     return 0
 
 
@@ -900,16 +954,25 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
     except UserStoreError:
         pass
     if _user_rec and _user_rec.disabled:
-        print(f"error: user {args.user!r} is disabled; refusing to generate token", file=sys.stderr)
+        print(
+            f"error: user {args.user!r} is disabled; refusing to generate token",
+            file=sys.stderr,
+        )
         return 2
-    email = args.email or (_user_rec.email if _user_rec and _user_rec.email else f"{args.user}@dev.local")
+    email = args.email or (
+        _user_rec.email if _user_rec and _user_rec.email else f"{args.user}@dev.local"
+    )
     if args.roles:
         roles = args.roles
     else:
         roles = [_user_rec.role] if _user_rec else ["user"]
     projects = getattr(args, "projects", None) or None
     payload = _build_jwt_payload(
-        args.user, email, args.project, roles, args.days,
+        args.user,
+        email,
+        args.project,
+        roles,
+        args.days,
         projects=projects,
         gateway_url=getattr(args, "gateway_url", None),
         profile=getattr(args, "profile", None),
@@ -920,13 +983,15 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
     using_default_project = args.project == "default" and not projects
 
     if args.json:
-        _print_json({
-            "token": token,
-            "claims": payload,
-            "expires_at_utc": time.strftime(
-                "%Y-%m-%dT%H:%M:%SZ", time.gmtime(payload["exp"])
-            ),
-        })
+        _print_json(
+            {
+                "token": token,
+                "claims": payload,
+                "expires_at_utc": time.strftime(
+                    "%Y-%m-%dT%H:%M:%SZ", time.gmtime(payload["exp"])
+                ),
+            }
+        )
     else:
         memberships = payload.get("project_memberships")
         scope_label = (
@@ -946,7 +1011,9 @@ def _cmd_token_generate_jwt(args: argparse.Namespace, _store: UserStore) -> int:
             print(f"  gateway:    {payload['gateway_url']}")
         if payload.get("profile"):
             print(f"  profile:    {payload['profile']}")
-        print(f"  expires:    {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(payload['exp']))}")
+        print(
+            f"  expires:    {time.strftime('%Y-%m-%d %H:%M UTC', time.gmtime(payload['exp']))}"
+        )
         if using_default_user or using_default_project:
             warnings = []
             if using_default_user:
@@ -991,7 +1058,11 @@ def _cmd_token_list(args: argparse.Namespace, _store: UserStore) -> int:
         print("  ".join(column.ljust(widths[column]) for column in columns))
         print("  ".join("-" * widths[column] for column in columns))
         for row in rows:
-            print("  ".join(str(row.get(column, "")).ljust(widths[column]) for column in columns))
+            print(
+                "  ".join(
+                    str(row.get(column, "")).ljust(widths[column]) for column in columns
+                )
+            )
     return 0
 
 
@@ -1028,9 +1099,7 @@ def _cmd_bootstrap(args: argparse.Namespace, store: UserStore) -> int:
     existing = mgr.list_tokens()
     token: str | None = None
     if not any(t.get("name") == args.token_name for t in existing):
-        token = mgr.generate_token(
-            args.token_name, description="Bootstrap admin token"
-        )
+        token = mgr.generate_token(args.token_name, description="Bootstrap admin token")
 
     result: dict[str, Any] = {
         "admin_user": rec.username,
@@ -1074,7 +1143,13 @@ def _cmd_slurm_accounts(args: argparse.Namespace, _store: UserStore) -> int:
     if shutil.which("sacctmgr") is None:
         print("sacctmgr not found on PATH", file=sys.stderr)
         return 2
-    cmd = ["sacctmgr", "show", "account", "-P", "format=Account,Description,Organization"]
+    cmd = [
+        "sacctmgr",
+        "show",
+        "account",
+        "-P",
+        "format=Account,Description,Organization",
+    ]
     try:
         result = subprocess.run(
             cmd,
@@ -1120,7 +1195,7 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
         description="Register a general UMRS user in the server-side user_files store.",
         epilog=(
             "Example:\n"
-            "  umrs-server admin user add alice --fullname \"Alice Smith\" "
+            '  umrs-server admin user add alice --fullname "Alice Smith" '
             "--email alice@example.org --role user --project proj-alpha"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1217,11 +1292,16 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
     show_p.add_argument("username")
     show_p.set_defaults(func=_cmd_user_show)
 
-    del_p = user_sub.add_parser("delete", help="Soft-delete (disable) a user; --purge to remove file")
+    del_p = user_sub.add_parser(
+        "delete", help="Soft-delete (disable) a user; --purge to remove file"
+    )
     del_p.add_argument("username")
     del_p.add_argument("--purge", action="store_true", help="Remove the JSON file")
-    del_p.add_argument("--deprovision", action="store_true",
-                       help="Also remove S3 buckets, Postgres DBs, and MinIO IAM user (requires --purge)")
+    del_p.add_argument(
+        "--deprovision",
+        action="store_true",
+        help="Also remove S3 buckets, Postgres DBs, and MinIO IAM user (requires --purge)",
+    )
     del_p.add_argument("-y", "--yes", action="store_true", help="Assume yes on prompts")
     del_p.set_defaults(func=_cmd_user_delete)
 
@@ -1299,11 +1379,17 @@ def _add_user_parsers(user_sub: argparse._SubParsersAction) -> None:
     tpl_p.add_argument("username", help="Username for the template")
     tpl_p.add_argument("--fullname", default="", help="Full name of the user")
     tpl_p.add_argument(
-        "-o", "--output-file", default=None,
+        "-o",
+        "--output-file",
+        default=None,
         help="Output file path (default: user_<username>.json in current directory)",
     )
     tpl_p.add_argument("--force", action="store_true", help="Overwrite existing file")
-    tpl_p.add_argument("--json", action="store_true", help="Print template as JSON to stdout instead of writing a file")
+    tpl_p.add_argument(
+        "--json",
+        action="store_true",
+        help="Print template as JSON to stdout instead of writing a file",
+    )
     tpl_p.set_defaults(func=_cmd_user_generate_template)
 
 
@@ -1329,19 +1415,27 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
         description=_GENERATE_JWT_DESCRIPTION,
     )
     jwt_p.add_argument(
-        "--user", "-u", default="admin",
+        "--user",
+        "-u",
+        default="admin",
         help="User identity (sub claim). Default: admin",
     )
     jwt_p.add_argument(
-        "--email", "-e", default=None,
+        "--email",
+        "-e",
+        default=None,
         help="Email claim. Default: <user>@dev.local",
     )
     jwt_p.add_argument(
-        "--project", "-p", default="default",
+        "--project",
+        "-p",
+        default="default",
         help="Primary project ID claim. Default: default",
     )
     jwt_p.add_argument(
-        "--projects", nargs="+", default=None,
+        "--projects",
+        nargs="+",
+        default=None,
         metavar="ID",
         help=(
             "Grant access to multiple projects. The first ID becomes "
@@ -1350,25 +1444,36 @@ def _add_token_parsers(token_sub: argparse._SubParsersAction) -> None:
         ),
     )
     jwt_p.add_argument(
-        "--roles", "-r", nargs="*", default=None,
+        "--roles",
+        "-r",
+        nargs="*",
+        default=None,
         help="Roles list. Default: read from user record (falls back to 'user')",
     )
     import os as _os
+
     _default_days = int(_os.environ.get("UMRS_JWT_DEFAULT_DAYS", "30"))
     jwt_p.add_argument(
-        "--days", "-d", type=int, default=_default_days,
+        "--days",
+        "-d",
+        type=int,
+        default=_default_days,
         help="Token validity in days. Default: 30 (or $UMRS_JWT_DEFAULT_DAYS)",
     )
     jwt_p.add_argument(
-        "--secret", "-s", default=None,
+        "--secret",
+        "-s",
+        default=None,
         help="JWT signing secret. Default: $JWT_SECRET, Gateway secret, or dev default",
     )
     jwt_p.add_argument(
-        "--gateway-url", default=None,
+        "--gateway-url",
+        default=None,
         help="Embed Gateway URL so 'r4 auth login --api-key <token>' auto-configures (ignored for OIDC)",
     )
     jwt_p.add_argument(
-        "--profile", default=None,
+        "--profile",
+        default=None,
         help="Embed suggested profile name in token (default: not set)",
     )
     jwt_p.add_argument("--json", action="store_true")
@@ -1419,12 +1524,14 @@ def _cmd_zmq_keygen(args: argparse.Namespace, _store: UserStore) -> int:
     pub_path, sec_path = generate_curve_keypair(keys_dir, name)
 
     if args.json:
-        _print_json({
-            "name": name,
-            "type": "server" if is_server else "client",
-            "public_key_file": pub_path,
-            "secret_key_file": sec_path,
-        })
+        _print_json(
+            {
+                "name": name,
+                "type": "server" if is_server else "client",
+                "public_key_file": pub_path,
+                "secret_key_file": sec_path,
+            }
+        )
     else:
         kind = "server" if is_server else "client"
         print(f"Generated CURVE {kind} keypair for '{name}':")
@@ -1433,7 +1540,9 @@ def _cmd_zmq_keygen(args: argparse.Namespace, _store: UserStore) -> int:
         if not is_server:
             print()
             print("Next steps:")
-            print(f"  1. Copy {name}.key to the server's UMRS_ZMQ_CURVE_CLIENT_KEYS_DIR")
+            print(
+                f"  1. Copy {name}.key to the server's UMRS_ZMQ_CURVE_CLIENT_KEYS_DIR"
+            )
             print(f"  2. Give {sec_path} to the user (keep secret!)")
             print(f"  3. The user sets UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY and")
             print(f"     UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY from {sec_path}")
@@ -1469,12 +1578,14 @@ def _cmd_zmq_list_keys(args: argparse.Namespace, _store: UserStore) -> int:
         except Exception as exc:
             z85 = f"<error: {exc}>"
         has_secret = key_file.with_name(f"{username}.key_secret").exists()
-        rows.append({
-            "username": username,
-            "public_key": z85,
-            "has_secret": has_secret,
-            "file": str(key_file),
-        })
+        rows.append(
+            {
+                "username": username,
+                "public_key": z85,
+                "has_secret": has_secret,
+                "file": str(key_file),
+            }
+        )
 
     if args.json:
         _print_json(rows)
@@ -1502,13 +1613,19 @@ def _add_zmq_parsers(zmq_sub: argparse._SubParsersAction) -> None:
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    keygen_p.add_argument("name", help="Key name (typically the UMRS username, or 'server')")
     keygen_p.add_argument(
-        "--server", action="store_true",
+        "name", help="Key name (typically the UMRS username, or 'server')"
+    )
+    keygen_p.add_argument(
+        "--server",
+        action="store_true",
         help="Generate a server keypair instead of a client keypair",
     )
     keygen_p.add_argument(
-        "-o", "--output-dir", dest="output_dir", default=None,
+        "-o",
+        "--output-dir",
+        dest="output_dir",
+        default=None,
         help="Output directory (default: ~/.config/umrs/curve-keys/{clients,server})",
     )
     keygen_p.add_argument("--json", action="store_true")
@@ -1519,7 +1636,9 @@ def _add_zmq_parsers(zmq_sub: argparse._SubParsersAction) -> None:
         help="List registered CURVE client public keys",
     )
     list_p.add_argument(
-        "--keys-dir", dest="keys_dir", default=None,
+        "--keys-dir",
+        dest="keys_dir",
+        default=None,
         help="Client keys directory (default: ~/.config/umrs/curve-keys/clients)",
     )
     list_p.add_argument("--json", action="store_true")
@@ -1529,6 +1648,7 @@ def _add_zmq_parsers(zmq_sub: argparse._SubParsersAction) -> None:
 # ---------------------------------------------------------------------------
 # endpoint subcommand handlers (admin-scoped, reads from running UMRS)
 # ---------------------------------------------------------------------------
+
 
 def _umrs_base_url(args: argparse.Namespace) -> str:
     """Resolve the UMRS HTTP base URL."""
@@ -1599,7 +1719,8 @@ def _cmd_endpoint_list(args: argparse.Namespace, _store: UserStore) -> int:
     tier_filter = getattr(args, "tier", None)
     if tier_filter:
         endpoints = [
-            e for e in endpoints
+            e
+            for e in endpoints
             if e.get("tier") == tier_filter or e.get("owner_type") == tier_filter
         ]
 
@@ -1612,7 +1733,16 @@ def _cmd_endpoint_list(args: argparse.Namespace, _store: UserStore) -> int:
         return 0
 
     # Table output
-    cols = ["JOB_ID", "MODEL", "PROJECT", "STATUS", "TIER", "OWNER", "BACKEND", "HOST:PORT"]
+    cols = [
+        "JOB_ID",
+        "MODEL",
+        "PROJECT",
+        "STATUS",
+        "TIER",
+        "OWNER",
+        "BACKEND",
+        "HOST:PORT",
+    ]
     widths = {c: len(c) for c in cols}
     rows = []
     for ep in endpoints:
@@ -1691,19 +1821,30 @@ def _add_endpoint_parsers(endpoint_sub: argparse._SubParsersAction) -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     list_p.add_argument(
-        "--status", choices=["pending", "provisioning", "starting", "ready",
-                             "degraded", "expired", "failed", "terminated"],
+        "--status",
+        choices=[
+            "pending",
+            "provisioning",
+            "starting",
+            "ready",
+            "degraded",
+            "expired",
+            "failed",
+            "terminated",
+        ],
         help="Filter by endpoint status",
     )
     list_p.add_argument(
-        "--tier", choices=["system", "project", "user"],
+        "--tier",
+        choices=["system", "project", "user"],
         help="Filter by deployment tier",
     )
     list_p.add_argument("--json", action="store_true")
     list_p.set_defaults(func=_cmd_endpoint_list)
 
     show_p = endpoint_sub.add_parser(
-        "show", help="Show detailed info for an endpoint",
+        "show",
+        help="Show detailed info for an endpoint",
     )
     show_p.add_argument("job_id", help="Endpoint job ID")
     show_p.set_defaults(func=_cmd_endpoint_show)
@@ -1722,7 +1863,8 @@ def _add_endpoint_parsers(endpoint_sub: argparse._SubParsersAction) -> None:
     stop_p.set_defaults(func=_cmd_endpoint_stop)
 
     stats_p = endpoint_sub.add_parser(
-        "stats", help="Show endpoint registry statistics",
+        "stats",
+        help="Show endpoint registry statistics",
     )
     stats_p.add_argument("--json", action="store_true")
     stats_p.set_defaults(func=_cmd_endpoint_stats)
@@ -1751,7 +1893,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "Common onboarding flow:\n"
             "  1. Register a user (with Slurm account for HPC):\n"
-            "       umrs-server admin user add <username> --fullname \"Your Name\" "
+            '       umrs-server admin user add <username> --fullname "Your Name" '
             "--role user --slurm-account <ACCOUNT>\n"
             "  2. Generate an authentication token:\n"
             "       umrs-server admin token generate-jwt --user <username> --project <project>\n"
@@ -1764,7 +1906,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  umrs-server admin user list\n"
             "  umrs-server admin user show <username>\n\n"
             "Shell completion:\n"
-            "  eval \"$(umrs-server completion bash)\""
+            '  eval "$(umrs-server completion bash)"'
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -1822,7 +1964,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Most common commands:\n"
-            "  umrs-server admin user add <username> --fullname \"Your Name\" --role user\n"
+            '  umrs-server admin user add <username> --fullname "Your Name" --role user\n'
             "  umrs-server admin user list\n"
             "  umrs-server admin user show <username>"
         ),
@@ -2028,9 +2170,7 @@ def _resolve_user_files_dir_from_config(
             file=sys.stderr,
         )
         return None
-    return resolve_server_user_files_dir(
-        config_file=config_path, server_cfg=server_cfg
-    )
+    return resolve_server_user_files_dir(config_file=config_path, server_cfg=server_cfg)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -2043,10 +2183,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _apply_deploy_dir(deploy_dir)
         # Auto-discover conf_umrs.json from the deploy directory itself.
         import os
+
         if not args.server_config:
-            candidate = os.path.join(
-                os.path.abspath(deploy_dir), "conf_umrs.json"
-            )
+            candidate = os.path.join(os.path.abspath(deploy_dir), "conf_umrs.json")
             if os.path.isfile(candidate):
                 args.server_config = candidate
 

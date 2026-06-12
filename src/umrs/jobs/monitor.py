@@ -257,8 +257,7 @@ class AttemptMonitor:
 
         except Exception as e:
             logger.error(
-                f"Error checking attempt {attempt.attempt_id}: {e}",
-                exc_info=True
+                f"Error checking attempt {attempt.attempt_id}: {e}", exc_info=True
             )
 
     @property

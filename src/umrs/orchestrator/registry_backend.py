@@ -220,7 +220,9 @@ class PostgresBackend(RegistryBackend):
         try:
             import psycopg2
         except ImportError:
-            raise ImportError("psycopg2 required for PostgreSQL backend: pip install psycopg2-binary") from None
+            raise ImportError(
+                "psycopg2 required for PostgreSQL backend: pip install psycopg2-binary"
+            ) from None
 
         if self._conn is None or self._conn.closed:
             self._conn = psycopg2.connect(self._dsn)
@@ -445,9 +447,7 @@ def get_backend(backend_type: str | None = None) -> RegistryBackend:
     elif backend_type == "postgres":
         dsn = os.environ.get("UMRS_REGISTRY_POSTGRES_DSN")
         if not dsn:
-            raise ValueError(
-                "UMRS_REGISTRY_POSTGRES_DSN required for postgres backend"
-            )
+            raise ValueError("UMRS_REGISTRY_POSTGRES_DSN required for postgres backend")
         logger.info("Using PostgreSQL registry backend")
         return PostgresBackend(dsn)
 

@@ -64,7 +64,9 @@ class HMAEAnalysisStep(Step):
         for idx, key in enumerate(ctx.input_keys):
             logger.info(
                 "[%d/%d] HMAE analysis: %s",
-                idx + 1, len(ctx.input_keys), key,
+                idx + 1,
+                len(ctx.input_keys),
+                key,
             )
 
             image_url = f"s3://{ctx.input_bucket}/{key}"
@@ -73,7 +75,8 @@ class HMAEAnalysisStep(Step):
 
             # ── 1. Feature extraction ────────────────────────────────────
             feat_result = self._submit_and_poll(
-                image_url, task="feature_extraction",
+                image_url,
+                task="feature_extraction",
             )
             if "error" in feat_result:
                 logger.warning("  features failed: %s", feat_result["error"])
@@ -89,12 +92,11 @@ class HMAEAnalysisStep(Step):
 
             # ── 2. MAE anomaly scoring ───────────────────────────────────
             mae_result = self._submit_and_poll(
-                image_url, task="mae_reconstruction",
+                image_url,
+                task="mae_reconstruction",
             )
             mae_loss = float(mae_result.get("mae_loss", -1.0))
-            is_anomaly = (
-                mae_loss > self.anomaly_threshold if mae_loss >= 0 else False
-            )
+            is_anomaly = mae_loss > self.anomaly_threshold if mae_loss >= 0 else False
             if is_anomaly:
                 anomaly_count += 1
 
@@ -123,7 +125,9 @@ class HMAEAnalysisStep(Step):
             status_str = "ANOMALY" if is_anomaly else "normal"
             logger.info(
                 "  → emb=%s  mae_loss=%.4f [%s]",
-                cls_emb.shape, mae_loss, status_str,
+                cls_emb.shape,
+                mae_loss,
+                status_str,
             )
 
         # ── Stack all embeddings ─────────────────────────────────────────
@@ -141,10 +145,7 @@ class HMAEAnalysisStep(Step):
             extra={
                 "total_patches": len(ctx.input_keys),
                 "anomaly_count": anomaly_count,
-                "anomaly_rate": (
-                    anomaly_count / len(ctx.input_keys)
-                    if ctx.input_keys else 0.0
-                ),
+                "anomaly_rate": (anomaly_count / len(ctx.input_keys) if ctx.input_keys else 0.0),
                 "embedding_dim": 768,
             },
         )
@@ -152,7 +153,9 @@ class HMAEAnalysisStep(Step):
     # ------------------------------------------------------------------
 
     def _submit_and_poll(
-        self, image_url: str, task: str,
+        self,
+        image_url: str,
+        task: str,
     ) -> Dict[str, Any]:
         """Submit HMAE task and poll until done."""
         try:
@@ -178,6 +181,7 @@ class HMAEAnalysisStep(Step):
 
         try:
             import torch
+
             data = ctx.download_bytes(key, bucket=bucket)
             obj = torch.load(io.BytesIO(data), map_location="cpu", weights_only=False)
             cls_token = obj["cls"]  # [1, 768]

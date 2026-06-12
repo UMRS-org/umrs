@@ -177,7 +177,8 @@ class JobStore:
 
         with self._get_conn() as conn, conn.cursor() as cur:
             try:
-                cur.execute("""
+                cur.execute(
+                    """
                         INSERT INTO jobs (
                             job_id, project_id, user_id, job_type, spec,
                             idempotency_key, status, priority,
@@ -189,12 +190,22 @@ class JobStore:
                             %s, %s,
                             %s, %s
                         )
-                    """, (
-                    job_id, project_id, user_id, job_type.value, json.dumps(spec),
-                    idempotency_key, JobStatus.PLANNED.value, priority,
-                    max_attempts, restart_policy.value,
-                    now, now,
-                ))
+                    """,
+                    (
+                        job_id,
+                        project_id,
+                        user_id,
+                        job_type.value,
+                        json.dumps(spec),
+                        idempotency_key,
+                        JobStatus.PLANNED.value,
+                        priority,
+                        max_attempts,
+                        restart_policy.value,
+                        now,
+                        now,
+                    ),
+                )
                 conn.commit()
                 logger.info(f"Created job {job_id} (type={job_type.value})")
                 METRICS.job_submitted(job_type.value)
@@ -203,17 +214,23 @@ class JobStore:
             except psycopg2.errors.UniqueViolation:
                 conn.rollback()
                 # Find existing job
-                cur.execute("""
+                cur.execute(
+                    """
                         SELECT job_id FROM jobs
                         WHERE project_id = %s AND idempotency_key = %s
-                    """, (project_id, idempotency_key))
+                    """,
+                    (project_id, idempotency_key),
+                )
                 row = cur.fetchone()
                 existing_id = row[0] if row else "unknown"
                 raise DuplicateJobError(existing_id) from None
 
     def get_job(self, job_id: str) -> Job:
         """Get job by ID."""
-        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
             cur.execute("SELECT * FROM jobs WHERE job_id = %s", (job_id,))
             row = cur.fetchone()
             if not row:
@@ -227,7 +244,10 @@ class JobStore:
         """
         if not job_ids:
             return {}
-        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
             cur.execute(
                 "SELECT * FROM jobs WHERE job_id = ANY(%s)",
                 (job_ids,),
@@ -238,17 +258,21 @@ class JobStore:
         self, project_id: str, idempotency_key: str
     ) -> Job | None:
         """Get job by idempotency key (for duplicate detection)."""
-        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                """
                     SELECT * FROM jobs
                     WHERE project_id = %s AND idempotency_key = %s
-                """, (project_id, idempotency_key))
+                """,
+                (project_id, idempotency_key),
+            )
             row = cur.fetchone()
             return self._row_to_job(row) if row else None
 
-    def enqueue_job(
-        self, job_id: str, when: datetime | None = None
-    ) -> None:
+    def enqueue_job(self, job_id: str, when: datetime | None = None) -> None:
         """
         Enqueue a job for scheduling.
 
@@ -260,20 +284,23 @@ class JobStore:
 
         with self._get_conn() as conn, self._advisory_lock(conn, job_id):
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                         UPDATE jobs SET
                             status = %s,
                             next_run_at = %s,
                             last_state_change_at = %s
                         WHERE job_id = %s AND status = %s
                         RETURNING job_id
-                    """, (
-                    JobStatus.QUEUED.value,
-                    when,
-                    now,
-                    job_id,
-                    JobStatus.PLANNED.value,
-                ))
+                    """,
+                    (
+                        JobStatus.QUEUED.value,
+                        when,
+                        now,
+                        job_id,
+                        JobStatus.PLANNED.value,
+                    ),
+                )
 
                 if cur.fetchone() is None:
                     conn.rollback()
@@ -296,13 +323,16 @@ class JobStore:
 
         with self._get_conn() as conn, conn.cursor() as cur:
             # Use FOR UPDATE SKIP LOCKED for concurrent schedulers
-            cur.execute("""
+            cur.execute(
+                """
                     SELECT job_id FROM jobs
                     WHERE status = %s AND next_run_at <= %s
                     ORDER BY priority DESC, next_run_at ASC
                     LIMIT %s
                     FOR UPDATE SKIP LOCKED
-                """, (JobStatus.QUEUED.value, now, limit))
+                """,
+                (JobStatus.QUEUED.value, now, limit),
+            )
 
             return [row[0] for row in cur.fetchall()]
 
@@ -330,13 +360,19 @@ class JobStore:
 
         where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
 
-        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(f"""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                f"""
                     SELECT * FROM jobs
                     {where_clause}
                     ORDER BY created_at DESC
                     LIMIT %s OFFSET %s
-                """, params + [limit, offset])
+                """,
+                params + [limit, offset],
+            )
 
             return [self._row_to_job(row) for row in cur.fetchall()]
 
@@ -357,15 +393,19 @@ class JobStore:
         with self._get_conn() as conn, self._advisory_lock(conn, job_id):
             with conn.cursor() as cur:
                 # Get current attempt count
-                cur.execute("""
+                cur.execute(
+                    """
                         SELECT COALESCE(MAX(attempt_no), 0) FROM job_attempts
                         WHERE job_id = %s
-                    """, (job_id,))
+                    """,
+                    (job_id,),
+                )
                 max_attempt = cur.fetchone()[0]
                 attempt_no = max_attempt + 1
 
                 # Create attempt
-                cur.execute("""
+                cur.execute(
+                    """
                         INSERT INTO job_attempts (
                             attempt_id, job_id, attempt_no, backend, status,
                             umrs_instance_id, scheduler_claimed_at, created_at
@@ -373,36 +413,50 @@ class JobStore:
                             %s, %s, %s, %s, %s,
                             %s, %s, %s
                         )
-                    """, (
-                    attempt_id, job_id, attempt_no, backend,
-                    AttemptStatus.CREATED.value,
-                    self.umrs_instance_id, now, now,
-                ))
+                    """,
+                    (
+                        attempt_id,
+                        job_id,
+                        attempt_no,
+                        backend,
+                        AttemptStatus.CREATED.value,
+                        self.umrs_instance_id,
+                        now,
+                        now,
+                    ),
+                )
 
                 # Update job state
-                cur.execute("""
+                cur.execute(
+                    """
                         UPDATE jobs SET
                             status = %s,
                             active_attempt_id = %s,
                             last_state_change_at = %s
                         WHERE job_id = %s
-                    """, (
-                    JobStatus.RUNNING.value,
-                    attempt_id,
-                    now,
-                    job_id,
-                ))
+                    """,
+                    (
+                        JobStatus.RUNNING.value,
+                        attempt_id,
+                        now,
+                        job_id,
+                    ),
+                )
 
                 conn.commit()
-                logger.info(f"Created attempt {attempt_id} (job={job_id}, no={attempt_no})")
+                logger.info(
+                    f"Created attempt {attempt_id} (job={job_id}, no={attempt_no})"
+                )
                 return attempt_id
 
     def get_attempt(self, attempt_id: str) -> JobAttempt:
         """Get attempt by ID."""
-        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
             cur.execute(
-                "SELECT * FROM job_attempts WHERE attempt_id = %s",
-                (attempt_id,)
+                "SELECT * FROM job_attempts WHERE attempt_id = %s", (attempt_id,)
             )
             row = cur.fetchone()
             if not row:
@@ -411,27 +465,37 @@ class JobStore:
 
     def get_attempts_for_job(self, job_id: str) -> list[JobAttempt]:
         """Get all attempts for a job, ordered by attempt_no."""
-        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                """
                     SELECT * FROM job_attempts
                     WHERE job_id = %s
                     ORDER BY attempt_no ASC
-                """, (job_id,))
+                """,
+                (job_id,),
+            )
             return [self._row_to_attempt(row) for row in cur.fetchall()]
 
     def get_active_attempts(self) -> list[JobAttempt]:
         """Get all attempts in SUBMITTED or RUNNING status."""
-        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("""
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
+            cur.execute(
+                """
                     SELECT * FROM job_attempts
                     WHERE status IN (%s, %s)
                     ORDER BY created_at ASC
-                """, (AttemptStatus.SUBMITTED.value, AttemptStatus.RUNNING.value))
+                """,
+                (AttemptStatus.SUBMITTED.value, AttemptStatus.RUNNING.value),
+            )
             return [self._row_to_attempt(row) for row in cur.fetchall()]
 
-    def mark_attempt_submitted(
-        self, attempt_id: str, backend_ref: str
-    ) -> None:
+    def mark_attempt_submitted(self, attempt_id: str, backend_ref: str) -> None:
         """
         Mark attempt as submitted to backend.
 
@@ -440,7 +504,8 @@ class JobStore:
         now = datetime.utcnow()
 
         with self._get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                     UPDATE job_attempts SET
                         status = %s,
                         backend_ref = %s,
@@ -448,13 +513,15 @@ class JobStore:
                         status_detail = 'submitted to backend'
                     WHERE attempt_id = %s AND status = %s
                     RETURNING attempt_id
-                """, (
-                AttemptStatus.SUBMITTED.value,
-                backend_ref,
-                now,
-                attempt_id,
-                AttemptStatus.CREATED.value,
-            ))
+                """,
+                (
+                    AttemptStatus.SUBMITTED.value,
+                    backend_ref,
+                    now,
+                    attempt_id,
+                    AttemptStatus.CREATED.value,
+                ),
+            )
 
             if cur.fetchone() is None:
                 conn.rollback()
@@ -473,18 +540,21 @@ class JobStore:
         Transitions: SUBMITTED → RUNNING
         """
         with self._get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                     UPDATE job_attempts SET
                         status = %s,
                         status_detail = COALESCE(%s, 'running')
                     WHERE attempt_id = %s AND status = %s
                     RETURNING attempt_id
-                """, (
-                AttemptStatus.RUNNING.value,
-                status_detail,
-                attempt_id,
-                AttemptStatus.SUBMITTED.value,
-            ))
+                """,
+                (
+                    AttemptStatus.RUNNING.value,
+                    status_detail,
+                    attempt_id,
+                    AttemptStatus.SUBMITTED.value,
+                ),
+            )
 
             if cur.fetchone() is None:
                 conn.rollback()
@@ -509,7 +579,8 @@ class JobStore:
 
         with self._get_conn() as conn, conn.cursor() as cur:
             # Update attempt
-            cur.execute("""
+            cur.execute(
+                """
                     UPDATE job_attempts SET
                         status = %s,
                         ended_at = %s,
@@ -518,14 +589,16 @@ class JobStore:
                         metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
                     WHERE attempt_id = %s AND status IN (%s, %s)
                     RETURNING job_id
-                """, (
-                AttemptStatus.SUCCEEDED.value,
-                now,
-                json.dumps(metrics or {}),
-                attempt_id,
-                AttemptStatus.SUBMITTED.value,
-                AttemptStatus.RUNNING.value,
-            ))
+                """,
+                (
+                    AttemptStatus.SUCCEEDED.value,
+                    now,
+                    json.dumps(metrics or {}),
+                    attempt_id,
+                    AttemptStatus.SUBMITTED.value,
+                    AttemptStatus.RUNNING.value,
+                ),
+            )
 
             row = cur.fetchone()
             if row is None:
@@ -537,7 +610,11 @@ class JobStore:
             job_id = row[0]
 
             # Update job
-            update_fields = ["status = %s", "active_attempt_id = NULL", "last_state_change_at = %s"]
+            update_fields = [
+                "status = %s",
+                "active_attempt_id = NULL",
+                "last_state_change_at = %s",
+            ]
             update_values = [JobStatus.COMPLETED.value, now]
 
             if commit:
@@ -546,10 +623,13 @@ class JobStore:
 
             update_values.append(job_id)
 
-            cur.execute(f"""
-                    UPDATE jobs SET {', '.join(update_fields)}
+            cur.execute(
+                f"""
+                    UPDATE jobs SET {", ".join(update_fields)}
                     WHERE job_id = %s
-                """, update_values)
+                """,
+                update_values,
+            )
 
             conn.commit()
             logger.info(f"Attempt {attempt_id} succeeded (commit={commit})")
@@ -577,9 +657,13 @@ class JobStore:
         now = datetime.utcnow()
         requeued = False
 
-        with self._get_conn() as conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+        with (
+            self._get_conn() as conn,
+            conn.cursor(cursor_factory=RealDictCursor) as cur,
+        ):
             # Update attempt
-            cur.execute("""
+            cur.execute(
+                """
                     UPDATE job_attempts SET
                         status = %s,
                         ended_at = %s,
@@ -587,15 +671,17 @@ class JobStore:
                         status_detail = 'failed'
                     WHERE attempt_id = %s AND status IN (%s, %s, %s)
                     RETURNING job_id, attempt_no
-                """, (
-                AttemptStatus.FAILED.value,
-                now,
-                exit_reason,
-                attempt_id,
-                AttemptStatus.CREATED.value,
-                AttemptStatus.SUBMITTED.value,
-                AttemptStatus.RUNNING.value,
-            ))
+                """,
+                (
+                    AttemptStatus.FAILED.value,
+                    now,
+                    exit_reason,
+                    attempt_id,
+                    AttemptStatus.CREATED.value,
+                    AttemptStatus.SUBMITTED.value,
+                    AttemptStatus.RUNNING.value,
+                ),
+            )
 
             row = cur.fetchone()
             if row is None:
@@ -617,14 +703,17 @@ class JobStore:
                 delay = retry_delay or job.get_backoff_delay(attempt_no)
                 next_run = now + timedelta(seconds=delay)
 
-                cur.execute("""
+                cur.execute(
+                    """
                         UPDATE jobs SET
                             status = %s,
                             active_attempt_id = NULL,
                             next_run_at = %s,
                             last_state_change_at = %s
                         WHERE job_id = %s
-                    """, (JobStatus.QUEUED.value, next_run, now, job_id))
+                    """,
+                    (JobStatus.QUEUED.value, next_run, now, job_id),
+                )
 
                 requeued = True
                 logger.info(
@@ -633,13 +722,16 @@ class JobStore:
                 METRICS.retry_attempt("durable")
             else:
                 # No more retries
-                cur.execute("""
+                cur.execute(
+                    """
                         UPDATE jobs SET
                             status = %s,
                             active_attempt_id = NULL,
                             last_state_change_at = %s
                         WHERE job_id = %s
-                    """, (JobStatus.FAILED.value, now, job_id))
+                    """,
+                    (JobStatus.FAILED.value, now, job_id),
+                )
 
                 logger.warning(
                     f"Attempt {attempt_id} failed, job {job_id} exhausted retries"
@@ -663,7 +755,8 @@ class JobStore:
         now = datetime.utcnow()
 
         with self._get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                     UPDATE job_attempts SET
                         status = %s,
                         ended_at = %s,
@@ -673,15 +766,17 @@ class JobStore:
                         status_detail = 'marked lost during reconciliation'
                     WHERE attempt_id = %s AND status IN (%s, %s)
                     RETURNING job_id
-                """, (
-                AttemptStatus.LOST.value,
-                now,
-                now,
-                ignore_reason,
-                attempt_id,
-                AttemptStatus.SUBMITTED.value,
-                AttemptStatus.RUNNING.value,
-            ))
+                """,
+                (
+                    AttemptStatus.LOST.value,
+                    now,
+                    now,
+                    ignore_reason,
+                    attempt_id,
+                    AttemptStatus.SUBMITTED.value,
+                    AttemptStatus.RUNNING.value,
+                ),
+            )
 
             if cur.fetchone() is None:
                 conn.rollback()
@@ -693,27 +788,29 @@ class JobStore:
             logger.info(f"Marked attempt {attempt_id} as LOST ({ignore_reason})")
             METRICS.job_lost("durable")
 
-    def update_attempt_status_detail(
-        self, attempt_id: str, status_detail: str
-    ) -> None:
+    def update_attempt_status_detail(self, attempt_id: str, status_detail: str) -> None:
         """Update status_detail for progress tracking."""
         with self._get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                     UPDATE job_attempts SET status_detail = %s
                     WHERE attempt_id = %s
-                """, (status_detail, attempt_id))
+                """,
+                (status_detail, attempt_id),
+            )
             conn.commit()
 
-    def update_attempt_metrics(
-        self, attempt_id: str, metrics: dict[str, Any]
-    ) -> None:
+    def update_attempt_metrics(self, attempt_id: str, metrics: dict[str, Any]) -> None:
         """Merge metrics into attempt record."""
         with self._get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                     UPDATE job_attempts SET
                         metrics = COALESCE(metrics, '{}')::jsonb || %s::jsonb
                     WHERE attempt_id = %s
-                """, (json.dumps(metrics), attempt_id))
+                """,
+                (json.dumps(metrics), attempt_id),
+            )
             conn.commit()
 
     # =========================================================================
@@ -732,21 +829,24 @@ class JobStore:
         with self._get_conn() as conn, self._advisory_lock(conn, job_id):
             with conn.cursor() as cur:
                 # Mark job as cancelled
-                cur.execute("""
+                cur.execute(
+                    """
                         UPDATE jobs SET
                             status = %s,
                             active_attempt_id = NULL,
                             last_state_change_at = %s
                         WHERE job_id = %s AND status NOT IN (%s, %s, %s)
                         RETURNING job_id
-                    """, (
-                    JobStatus.CANCELLED.value,
-                    now,
-                    job_id,
-                    JobStatus.COMPLETED.value,
-                    JobStatus.FAILED.value,
-                    JobStatus.CANCELLED.value,
-                ))
+                    """,
+                    (
+                        JobStatus.CANCELLED.value,
+                        now,
+                        job_id,
+                        JobStatus.COMPLETED.value,
+                        JobStatus.FAILED.value,
+                        JobStatus.CANCELLED.value,
+                    ),
+                )
 
                 if cur.fetchone() is None:
                     raise InvalidTransitionError(
@@ -754,21 +854,24 @@ class JobStore:
                     )
 
                 # Mark any active attempts as failed
-                cur.execute("""
+                cur.execute(
+                    """
                         UPDATE job_attempts SET
                             status = %s,
                             ended_at = %s,
                             exit_reason = %s
                         WHERE job_id = %s AND status IN (%s, %s, %s)
-                    """, (
-                    AttemptStatus.FAILED.value,
-                    now,
-                    f"cancelled: {reason}",
-                    job_id,
-                    AttemptStatus.CREATED.value,
-                    AttemptStatus.SUBMITTED.value,
-                    AttemptStatus.RUNNING.value,
-                ))
+                    """,
+                    (
+                        AttemptStatus.FAILED.value,
+                        now,
+                        f"cancelled: {reason}",
+                        job_id,
+                        AttemptStatus.CREATED.value,
+                        AttemptStatus.SUBMITTED.value,
+                        AttemptStatus.RUNNING.value,
+                    ),
+                )
 
                 conn.commit()
                 logger.info(f"Cancelled job {job_id}: {reason}")
@@ -785,7 +888,8 @@ class JobStore:
 
         with self._get_conn() as conn, self._advisory_lock(conn, job_id):
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                         UPDATE jobs SET
                             status = %s,
                             active_attempt_id = NULL,
@@ -793,14 +897,16 @@ class JobStore:
                             last_state_change_at = %s
                         WHERE job_id = %s AND status IN (%s, %s)
                         RETURNING job_id
-                    """, (
-                    JobStatus.QUEUED.value,
-                    now,
-                    now,
-                    job_id,
-                    JobStatus.FAILED.value,
-                    JobStatus.CANCELLED.value,
-                ))
+                    """,
+                    (
+                        JobStatus.QUEUED.value,
+                        now,
+                        now,
+                        job_id,
+                        JobStatus.FAILED.value,
+                        JobStatus.CANCELLED.value,
+                    ),
+                )
 
                 if cur.fetchone() is None:
                     raise InvalidTransitionError(
@@ -814,10 +920,13 @@ class JobStore:
     def update_heartbeat(self, job_id: str) -> None:
         """Update job heartbeat timestamp (for HA detection)."""
         with self._get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                     UPDATE jobs SET last_heartbeat_at = NOW()
                     WHERE job_id = %s
-                """, (job_id,))
+                """,
+                (job_id,),
+            )
             conn.commit()
 
     # =========================================================================
@@ -831,7 +940,9 @@ class JobStore:
             project_id=row["project_id"],
             user_id=row["user_id"],
             job_type=JobType(row["job_type"]),
-            spec=row["spec"] if isinstance(row["spec"], dict) else json.loads(row["spec"]),
+            spec=row["spec"]
+            if isinstance(row["spec"], dict)
+            else json.loads(row["spec"]),
             idempotency_key=row["idempotency_key"],
             status=JobStatus(row["status"]),
             priority=row["priority"],

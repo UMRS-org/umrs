@@ -131,9 +131,7 @@ def test_podman_command_shape(monkeypatch):
 def test_podman_gpu_flag_off_by_default(monkeypatch):
     fake = _FakePodman({"status": "ok", "result": StepResult()})
     monkeypatch.setattr(subprocess, "run", fake)
-    PodmanExecutor(image="img").execute(
-        entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx()
-    )
+    PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     assert "--device" not in fake.calls[0]
 
 
@@ -176,9 +174,7 @@ def test_podman_forwards_minio_env(monkeypatch):
     monkeypatch.setattr(subprocess, "run", fake)
     monkeypatch.setenv("MINIO_ENDPOINT", "http://minio:9000")
     monkeypatch.setenv("AWS_REGION", "us-east-1")
-    PodmanExecutor(image="img").execute(
-        entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx()
-    )
+    PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     cmd = fake.calls[0]
     assert "MINIO_ENDPOINT=http://minio:9000" in cmd
     assert "AWS_REGION=us-east-1" in cmd
@@ -193,35 +189,25 @@ def test_podman_returns_step_result(monkeypatch):
     expected = StepResult(extra={"hello": "podman"})
     fake = _FakePodman({"status": "ok", "result": expected})
     monkeypatch.setattr(subprocess, "run", fake)
-    out = PodmanExecutor(image="img").execute(
-        entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx()
-    )
+    out = PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     assert isinstance(out, StepResult)
     assert out.extra == {"hello": "podman"}
 
 
 def test_podman_propagates_run_phase_error(monkeypatch):
-    fake = _FakePodman(
-        {"status": "error", "phase": "run", "message": "step boom"}
-    )
+    fake = _FakePodman({"status": "error", "phase": "run", "message": "step boom"})
     monkeypatch.setattr(subprocess, "run", fake)
     with pytest.raises(StepExecutionError) as excinfo:
-        PodmanExecutor(image="img").execute(
-            entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx()
-        )
+        PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     assert excinfo.value.phase == "run"
     assert "step boom" in excinfo.value.message
 
 
 def test_podman_setup_phase_error(monkeypatch):
-    fake = _FakePodman(
-        {"status": "error", "phase": "setup", "message": "bad import"}
-    )
+    fake = _FakePodman({"status": "error", "phase": "setup", "message": "bad import"})
     monkeypatch.setattr(subprocess, "run", fake)
     with pytest.raises(StepExecutionError) as excinfo:
-        PodmanExecutor(image="img").execute(
-            entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx()
-        )
+        PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     assert excinfo.value.phase == "setup"
 
 
@@ -234,9 +220,7 @@ def test_podman_missing_output_classified_as_worker(monkeypatch):
     )
     monkeypatch.setattr(subprocess, "run", fake)
     with pytest.raises(StepExecutionError) as excinfo:
-        PodmanExecutor(image="img").execute(
-            entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx()
-        )
+        PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     assert excinfo.value.phase == "worker"
     assert "without writing" in excinfo.value.message
 
@@ -262,9 +246,7 @@ def test_podman_binary_missing_classified_as_worker(monkeypatch):
     )
     monkeypatch.setattr(subprocess, "run", fake)
     with pytest.raises(StepExecutionError) as excinfo:
-        PodmanExecutor(image="img").execute(
-            entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx()
-        )
+        PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     assert excinfo.value.phase == "worker"
 
 
@@ -277,15 +259,11 @@ def test_podman_workdir_cleaned_up_by_default(monkeypatch):
                 workdir = cmd[i + 1].split(":")[0]
                 captured.append(workdir)
                 with open(os.path.join(workdir, "output.pkl"), "wb") as fh:
-                    fh.write(
-                        pickle.dumps({"status": "ok", "result": StepResult()})
-                    )
+                    fh.write(pickle.dumps({"status": "ok", "result": StepResult()}))
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(subprocess, "run", _capture_then_succeed)
-    PodmanExecutor(image="img").execute(
-        entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx()
-    )
+    PodmanExecutor(image="img").execute(entrypoint="pkg.mod:Cls", config={}, ctx=_make_ctx())
     assert captured
     assert not os.path.isdir(captured[0])
 
@@ -299,9 +277,7 @@ def test_podman_keep_workdir_preserves_dir(monkeypatch, tmp_path):
                 workdir = cmd[i + 1].split(":")[0]
                 captured.append(workdir)
                 with open(os.path.join(workdir, "output.pkl"), "wb") as fh:
-                    fh.write(
-                        pickle.dumps({"status": "ok", "result": StepResult()})
-                    )
+                    fh.write(pickle.dumps({"status": "ok", "result": StepResult()}))
         return SimpleNamespace(returncode=0, stdout=b"", stderr=b"")
 
     monkeypatch.setattr(subprocess, "run", _ok)
@@ -416,14 +392,10 @@ def test_podman_run_failure_propagated_through_runner(monkeypatch):
         name = "podman-stub"
 
         def execute(self, *, entrypoint, config, ctx):
-            calls.append(
-                {"entrypoint": entrypoint, "run_id": ctx.run_id}
-            )
+            calls.append({"entrypoint": entrypoint, "run_id": ctx.run_id})
             raise StepExecutionError("run", "step crashed in container")
 
-    record = get_execution_registry().create(
-        workflow_name="podman-fail", user_id="u"
-    )
+    record = get_execution_registry().create(workflow_name="podman-fail", user_id="u")
     run_workflow_record(
         record,
         source_path="/tmp",
@@ -566,4 +538,3 @@ def test_podman_per_step_image_metadata_stripped_from_payload(monkeypatch):
     # The dunder key must not be visible to the step.
     ctx_metadata = payload["ctx"]["metadata"]
     assert EXECUTOR_IMAGE_METADATA_KEY not in ctx_metadata
-

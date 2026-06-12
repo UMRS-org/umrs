@@ -9,7 +9,13 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from umrs.orchestrator.base import JobStatus
-from umrs.orchestrator.site_config import SiteConfig, SchedulerConfig, RuntimeConfig, NetworkConfig, reset_site_config
+from umrs.orchestrator.site_config import (
+    SiteConfig,
+    SchedulerConfig,
+    RuntimeConfig,
+    NetworkConfig,
+    reset_site_config,
+)
 from umrs.orchestrator.slurm_podman_backend import SlurmPodmanBackend
 
 
@@ -71,7 +77,6 @@ def backend(site, slurm_script, output_dir):
 
 
 class TestBackendProperties:
-
     def test_backend_name(self, backend):
         assert backend.backend_name == "slurm-podman"
 
@@ -140,7 +145,6 @@ class TestBackendProperties:
 
 
 class TestSbatchEnv:
-
     def test_env_includes_site_values(self, backend):
         with patch.dict(os.environ, {}, clear=True):
             env = backend._sbatch_env()
@@ -208,7 +212,6 @@ class TestSbatchEnv:
 
 
 class TestSubmitJob:
-
     def test_submit_success(self, backend):
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"12345\n", b"")
@@ -296,7 +299,7 @@ class TestSubmitJob:
 
         with patch(
             "asyncio.create_subprocess_exec",
-                side_effect=[sinfo_proc, sbatch_proc],
+            side_effect=[sinfo_proc, sbatch_proc],
         ) as mock_exec:
             job = _run(backend.submit_job())
 
@@ -339,7 +342,6 @@ class TestSubmitJob:
 
 
 class TestGetJobStatus:
-
     def test_pending_job(self, backend):
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"(null) PENDING\n", b"")
@@ -391,7 +393,6 @@ class TestGetJobStatus:
 
 
 class TestCleanup:
-
     def test_cleanup_calls_scancel(self, backend):
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"", b"")
@@ -440,22 +441,24 @@ class TestCleanup:
 
 
 class TestMapSlurmState:
-
-    @pytest.mark.parametrize("slurm_state,expected", [
-        ("PENDING", JobStatus.PENDING),
-        ("CONFIGURING", JobStatus.PENDING),
-        ("RUNNING", JobStatus.STARTING),
-        ("COMPLETING", JobStatus.STOPPED),
-        ("COMPLETED", JobStatus.STOPPED),
-        ("FAILED", JobStatus.FAILED),
-        ("CANCELLED", JobStatus.STOPPED),
-        ("CANCELLED+", JobStatus.STOPPED),
-        ("TIMEOUT", JobStatus.FAILED),
-        ("NODE_FAIL", JobStatus.FAILED),
-        ("PREEMPTED", JobStatus.FAILED),
-        ("UNKNOWN_STATE", JobStatus.UNKNOWN),
-        ("", JobStatus.UNKNOWN),
-    ])
+    @pytest.mark.parametrize(
+        "slurm_state,expected",
+        [
+            ("PENDING", JobStatus.PENDING),
+            ("CONFIGURING", JobStatus.PENDING),
+            ("RUNNING", JobStatus.STARTING),
+            ("COMPLETING", JobStatus.STOPPED),
+            ("COMPLETED", JobStatus.STOPPED),
+            ("FAILED", JobStatus.FAILED),
+            ("CANCELLED", JobStatus.STOPPED),
+            ("CANCELLED+", JobStatus.STOPPED),
+            ("TIMEOUT", JobStatus.FAILED),
+            ("NODE_FAIL", JobStatus.FAILED),
+            ("PREEMPTED", JobStatus.FAILED),
+            ("UNKNOWN_STATE", JobStatus.UNKNOWN),
+            ("", JobStatus.UNKNOWN),
+        ],
+    )
     def test_state_mapping(self, slurm_state, expected):
         assert SlurmPodmanBackend._map_slurm_state(slurm_state) == expected
 
@@ -466,7 +469,6 @@ class TestMapSlurmState:
 
 
 class TestNodeFromOutput:
-
     def test_extracts_node(self, backend, output_dir):
         (output_dir / "slurm-123.out").write_text(
             "Starting job...\nFully qualified name: compute-42\nDone.\n"
@@ -490,9 +492,9 @@ class TestNodeFromOutput:
 
 
 class TestFactoryRegistration:
-
     def test_slurm_podman_registered(self):
         from umrs.orchestrator.factory import _lazy_register_builtins, _BACKEND_REGISTRY
+
         _lazy_register_builtins()
         assert "slurm-podman" in _BACKEND_REGISTRY
 
@@ -503,7 +505,6 @@ class TestFactoryRegistration:
 
 
 class TestHealthCheck:
-
     def test_healthy_when_script_exists(self, backend):
         mock_proc = AsyncMock()
         mock_proc.communicate.return_value = (b"test-gpu up 1\n", b"")

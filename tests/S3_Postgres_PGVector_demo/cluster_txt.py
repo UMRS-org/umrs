@@ -1,4 +1,4 @@
-#!/usr/bin/python3 
+#!/usr/bin/python3
 import psycopg2
 from psycopg2 import sql, pool
 import numpy as np
@@ -8,9 +8,10 @@ from PIL import Image
 from sentence_transformers import SentenceTransformer
 import os
 
+
 def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
     """
-    Performs K-Means clustering on text embeddings retrieved from PostgreSQL 
+    Performs K-Means clustering on text embeddings retrieved from PostgreSQL
     and returns one representative text per cluster.
 
     Args:
@@ -23,9 +24,9 @@ def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
     """
 
     print(f"Clustering data from table '{table}' using kmeans...")
-    
+
     # Fetch all embeddings and their corresponding texts from the database
-    #select s3_object, embedding from image;
+    # select s3_object, embedding from image;
     cur.execute(f"SELECT text, embedding FROM {table};")
     results = cur.fetchall()
 
@@ -40,7 +41,9 @@ def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
     for row in results:
         embedding_str = row[1]  # Extract the stored vector (string format)
         if isinstance(embedding_str, str):
-            embedding = np.array(ast.literal_eval(embedding_str))  # Convert string to list of floats
+            embedding = np.array(
+                ast.literal_eval(embedding_str)
+            )  # Convert string to list of floats
         else:
             embedding = np.array(embedding_str)  # Already a list
         embeddings.append(embedding)
@@ -69,35 +72,38 @@ def cluster_from_embeddings(conn, cur, table, nb_clusters=3):
 
     return centroid_texts
 
+
 def query_db_with_embeddings_txt(model, conn, cur, query_text, top_k=5):
     print(f"Searching table '{table}' for {query_text}...")
-    
+
     query_embedding = model.encode(query_text, convert_to_tensor=False).tolist()
 
     # Perform similarity search using L2 distance
-    cur.execute("""
+    cur.execute(
+        """
         SELECT text
         FROM text
         ORDER BY embedding <=> %s::vector
         LIMIT %s;
-    """, (query_embedding, top_k))
+    """,
+        (query_embedding, top_k),
+    )
 
     # Fetch results
     results = cur.fetchall()
-    
+
     # Extract IDs and texts
     texts = [row[0] for row in results]
 
     print(f"For {query_text}:")
     for text in texts:
         print(f"\t{os.path.basename(text)}")
-    
+
     return texts
 
 
-
 sql_username = "ejeannot"
-db_name =  "text_and_images_ejeannot"
+db_name = "text_and_images_ejeannot"
 table = "text"
 
 DB_HOST = "localhost"
@@ -111,14 +117,13 @@ print("Connecting to DB")
 conn = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, host=DB_HOST, port=DB_PORT)
 cur = conn.cursor()
 
-centroid_texts = cluster_from_embeddings(conn, cur, table, nb_clusters = 4)
+centroid_texts = cluster_from_embeddings(conn, cur, table, nb_clusters=4)
 for text in centroid_texts:
-        print(f"\t{os.path.basename(text)}")
+    print(f"\t{os.path.basename(text)}")
 
 print("Loading model...")
 model = SentenceTransformer("all-mpnet-base-v2")
-    
+
 query_db_with_embeddings_txt(model, conn, cur, "I love eating apple", top_k=3)
 query_db_with_embeddings_txt(model, conn, cur, "My computer is an apple", top_k=3)
 query_db_with_embeddings_txt(model, conn, cur, "In this picture apple means temptation", top_k=3)
-

@@ -230,7 +230,9 @@ def set_pipeline_store(store: PipelineStore) -> None:
 class ChunkerSpecRequest(BaseModel):
     """Chunker configuration request."""
 
-    chunker_type: str = Field("token", description="Chunker type: token, sentence, etc.")
+    chunker_type: str = Field(
+        "token", description="Chunker type: token, sentence, etc."
+    )
     chunk_size: int = Field(512, ge=10, le=10000, description="Chunk size")
     chunk_overlap: int = Field(50, ge=0, le=1000, description="Chunk overlap")
     separator: str | None = Field(None, description="Custom separator")
@@ -238,7 +240,9 @@ class ChunkerSpecRequest(BaseModel):
     max_chunk_size: int | None = Field(None, description="Maximum chunk size")
     respect_boundaries: bool = Field(True, description="Respect sentence boundaries")
     language: str = Field("en", description="Language code")
-    code_language: str | None = Field(None, description="Code language for code chunker")
+    code_language: str | None = Field(
+        None, description="Code language for code chunker"
+    )
 
 
 class EmbedderSpecRequest(BaseModel):
@@ -344,15 +348,23 @@ class RAGProfileCreateRequest(BaseModel):
     """Request to create a RAG profile (X-002)."""
 
     name: str = Field(..., min_length=1, max_length=256, description="Profile name")
-    search_type: str = Field("hybrid", description="Search type: vector, keyword, hybrid")
+    search_type: str = Field(
+        "hybrid", description="Search type: vector, keyword, hybrid"
+    )
     vector_weight: float = Field(0.7, ge=0, le=1, description="Vector search weight")
     keyword_weight: float = Field(0.3, ge=0, le=1, description="Keyword search weight")
-    top_k_retrieval: int = Field(20, ge=1, le=100, description="Initial retrieval count")
+    top_k_retrieval: int = Field(
+        20, ge=1, le=100, description="Initial retrieval count"
+    )
     reranker: RerankerSpecRequest | None = Field(None, description="Reranker config")
-    max_context_tokens: int = Field(4096, ge=256, le=32768, description="Max context tokens")
+    max_context_tokens: int = Field(
+        4096, ge=256, le=32768, description="Max context tokens"
+    )
     context_template: str | None = Field(None, description="Custom context template")
     include_sources: bool = Field(True, description="Include source citations")
-    default_model: str = Field("rivault-gpt-oss-static", description="Default LLM model")
+    default_model: str = Field(
+        "rivault-gpt-oss-static", description="Default LLM model"
+    )
     system_prompt: str | None = Field(None, description="System prompt for LLM")
     temperature: float = Field(0.3, ge=0, le=2, description="LLM temperature")
     max_tokens: int = Field(1024, ge=1, le=8192, description="Max LLM tokens")
@@ -536,7 +548,9 @@ def rag_profile_to_response(profile: RAGProfile) -> RAGProfileResponse:
 # =============================================================================
 
 
-@router.post("/pipelines", response_model=PipelineResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/pipelines", response_model=PipelineResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_pipeline(
     request: PipelineCreateRequest,
     x_user_id: str | None = Header(None),
@@ -556,6 +570,7 @@ async def create_pipeline(
     # Governance quota check
     try:
         from .governance import check_quota
+
         check_quota(project_id, "pipelines")
     except Exception as exc:
         if hasattr(exc, "status_code"):
@@ -595,8 +610,11 @@ async def create_pipeline(
 
     # Governance tracking
     from .governance import record_resource_created
+
     record_resource_created(
-        "pipelines", pipeline.pipeline_id, user_id,
+        "pipelines",
+        pipeline.pipeline_id,
+        user_id,
         project_id=project_id,
     )
 
@@ -701,6 +719,7 @@ async def delete_pipeline(
 
     # Governance tracking
     from .governance import record_resource_deleted
+
     record_resource_deleted("pipelines", pipeline_id, project_id)
 
     logger.info(f"Deleted pipeline {pipeline_id}")
@@ -712,7 +731,9 @@ async def delete_pipeline(
 
 
 @router.post(
-    "/rag-profiles", response_model=RAGProfileResponse, status_code=status.HTTP_201_CREATED
+    "/rag-profiles",
+    response_model=RAGProfileResponse,
+    status_code=status.HTTP_201_CREATED,
 )
 async def create_rag_profile(
     request: RAGProfileCreateRequest,
@@ -734,6 +755,7 @@ async def create_rag_profile(
     # Governance quota check
     try:
         from .governance import check_quota
+
         check_quota(project_id, "rag_profiles")
     except Exception as exc:
         if hasattr(exc, "status_code"):
@@ -774,8 +796,11 @@ async def create_rag_profile(
 
     # Governance tracking
     from .governance import record_resource_created
+
     record_resource_created(
-        "rag_profiles", profile.profile_id, user_id,
+        "rag_profiles",
+        profile.profile_id,
+        user_id,
         project_id=project_id,
     )
 
@@ -811,7 +836,9 @@ async def get_rag_profile(
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
-        raise HTTPException(status_code=404, detail=f"RAG profile {profile_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"RAG profile {profile_id} not found"
+        )
 
     if profile.project_id != project_id:
         raise HTTPException(status_code=403, detail="Access denied to this profile")
@@ -832,7 +859,9 @@ async def update_rag_profile(
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
-        raise HTTPException(status_code=404, detail=f"RAG profile {profile_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"RAG profile {profile_id} not found"
+        )
 
     if profile.project_id != project_id:
         raise HTTPException(status_code=403, detail="Access denied to this profile")
@@ -880,7 +909,9 @@ async def delete_rag_profile(
 
     profile = store.get_rag_profile(profile_id)
     if not profile:
-        raise HTTPException(status_code=404, detail=f"RAG profile {profile_id} not found")
+        raise HTTPException(
+            status_code=404, detail=f"RAG profile {profile_id} not found"
+        )
 
     if profile.project_id != project_id:
         raise HTTPException(status_code=403, detail="Access denied to this profile")
@@ -889,6 +920,7 @@ async def delete_rag_profile(
 
     # Governance tracking
     from .governance import record_resource_deleted
+
     record_resource_deleted("rag_profiles", profile_id, project_id)
 
     logger.info(f"Deleted RAG profile {profile_id}")

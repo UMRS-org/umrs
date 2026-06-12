@@ -36,7 +36,9 @@ def get_resolved_umrs_cfg_dir():
         return os.path.realpath(os.path.expanduser(override))
     xdg_config_home = os.environ.get("XDG_CONFIG_HOME")
     if xdg_config_home:
-        return os.path.realpath(os.path.join(os.path.expanduser(xdg_config_home), "umrs"))
+        return os.path.realpath(
+            os.path.join(os.path.expanduser(xdg_config_home), "umrs")
+        )
     return DEFAULT_UMRS_CFG_DIR
 
 
@@ -111,12 +113,18 @@ def _resolve_user_files_fallback_root(config_file=None):
     return get_resolved_umrs_cfg_dir()
 
 
-def resolve_server_user_files_dir(config_file=None, server_cfg=None, user_config_map=None):
-    explicit_dir = _resolve_explicit_user_files_dir(config_file=config_file, server_cfg=server_cfg)
+def resolve_server_user_files_dir(
+    config_file=None, server_cfg=None, user_config_map=None
+):
+    explicit_dir = _resolve_explicit_user_files_dir(
+        config_file=config_file, server_cfg=server_cfg
+    )
     if explicit_dir:
         return explicit_dir
 
-    inferred_dir = _infer_user_files_dir_from_map(config_file=config_file, user_config_map=user_config_map)
+    inferred_dir = _infer_user_files_dir_from_map(
+        config_file=config_file, user_config_map=user_config_map
+    )
     if inferred_dir:
         return inferred_dir
 

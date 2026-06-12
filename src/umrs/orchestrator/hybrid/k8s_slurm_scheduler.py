@@ -362,8 +362,7 @@ class K8sToSlurmTranslator:
             bind_args = " ".join(f"--bind {m}" for m in spec.mounts)
             cmd = " ".join(spec.command) if spec.command else ""
             lines.append(
-                f"singularity exec --nv {bind_args} "
-                f"{spec.container_image} {cmd}"
+                f"singularity exec --nv {bind_args} {spec.container_image} {cmd}"
             )
         elif spec.container_runtime == "docker":
             lines.append("# Run container with Docker")
@@ -385,6 +384,7 @@ class K8sToSlurmTranslator:
         """Sanitize job name for Slurm."""
         # Slurm job names: alphanumeric, underscore, dash
         import re
+
         sanitized = re.sub(r"[^a-zA-Z0-9_-]", "-", name)
         return sanitized[:128]  # Slurm limit
 
@@ -413,7 +413,7 @@ class K8sToSlurmTranslator:
 
         for k8s_suffix, slurm_suffix in suffixes.items():
             if mem_str.endswith(k8s_suffix):
-                value = mem_str[:-len(k8s_suffix)]
+                value = mem_str[: -len(k8s_suffix)]
                 return f"{value}{slurm_suffix}"
 
         # Plain bytes, convert to MB
@@ -604,9 +604,11 @@ class K8sOnSlurmScheduler:
         result = subprocess.run(
             [
                 self.slurm_status_cmd,
-                "-j", job_id,
+                "-j",
+                job_id,
                 "--noheader",
-                "-o", "%T",
+                "-o",
+                "%T",
             ],
             capture_output=True,
             text=True,

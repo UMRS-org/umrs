@@ -21,9 +21,11 @@ from umrs.core.session_curve_provider import SessionCredentialsProvider, Session
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_app():
     """Create a minimal FastAPI app with the ZMQ session router."""
     from fastapi import FastAPI
+
     app = FastAPI()
     app.include_router(router)
     return app
@@ -57,13 +59,16 @@ def _auth_header(user_id: str = "alice") -> dict[str, str]:
 
 def _override_user(user_id: str):
     """Create a FastAPI dependency override for _require_user_id."""
+
     async def _mock():
         return user_id
+
     return _mock
 
 
 def _override_identity(user_id: str):
     """Create a FastAPI dependency override for _extract_jwt_identity."""
+
     async def _mock():
         return _JWTIdentity(
             user_id=user_id,
@@ -71,6 +76,7 @@ def _override_identity(user_id: str):
             projects=["test-project"],
             roles=["user"],
         )
+
     return _mock
 
 
@@ -96,6 +102,7 @@ def bob_client(provider):
 # Tests: GET /umrs/zmq/server-key
 # ---------------------------------------------------------------------------
 
+
 class TestServerKey:
     def test_returns_key_when_configured(self, client):
         mock_cfg = MagicMock()
@@ -117,6 +124,7 @@ class TestServerKey:
 # ---------------------------------------------------------------------------
 # Tests: POST /umrs/zmq/session
 # ---------------------------------------------------------------------------
+
 
 class TestRegisterSession:
     def test_register_success(self, alice_client, provider):
@@ -161,6 +169,7 @@ class TestRegisterSession:
 # Tests: DELETE /umrs/zmq/session/{session_id}
 # ---------------------------------------------------------------------------
 
+
 class TestRevokeSession:
     def test_revoke_own_session(self, alice_client, provider):
         key = _fake_z85("D")
@@ -185,6 +194,7 @@ class TestRevokeSession:
 # ---------------------------------------------------------------------------
 # Tests: POST /umrs/zmq/session/{session_id}/refresh
 # ---------------------------------------------------------------------------
+
 
 class TestRefreshSession:
     def test_refresh_success(self, alice_client, provider):
@@ -212,6 +222,7 @@ class TestRefreshSession:
 # Tests: GET /umrs/zmq/session
 # ---------------------------------------------------------------------------
 
+
 class TestListSessions:
     def test_list_own_sessions(self, alice_client, provider):
         provider.register(_fake_z85("H"), user_id="alice", ttl_seconds=3600)
@@ -227,6 +238,7 @@ class TestListSessions:
 # ---------------------------------------------------------------------------
 # Tests: 503 when provider is not set
 # ---------------------------------------------------------------------------
+
 
 class TestProviderUnavailable:
     def test_register_503_when_no_provider(self):

@@ -133,9 +133,7 @@ class NotionConnector(Connector):
         for prop in props.values():
             if prop.get("type") == "title":
                 title_parts = prop.get("title", [])
-                title = "".join(
-                    t.get("plain_text", "") for t in title_parts
-                )
+                title = "".join(t.get("plain_text", "") for t in title_parts)
                 break
 
         if not title:

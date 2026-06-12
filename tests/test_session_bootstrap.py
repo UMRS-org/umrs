@@ -22,6 +22,7 @@ import pytest
 # bootstrap_curve_session gateway robustness
 # ---------------------------------------------------------------------------
 
+
 class _FakeResp:
     def __init__(self, status_code=200, json_data=None, raise_on_json=False):
         self.status_code = status_code
@@ -36,6 +37,7 @@ class _FakeResp:
     def raise_for_status(self):
         if self.status_code >= 400:
             import requests
+
             raise requests.HTTPError(f"status {self.status_code}")
 
 
@@ -53,15 +55,20 @@ def _run_bootstrap(get_resp):
     from umrs.client import session_bootstrap
 
     # Avoid mutating the real process environment across tests.
-    saved = {k: os.environ.get(k) for k in (
-        "UMRS_ZMQ_AUTH_TYPE",
-        "UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY",
-        "UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY",
-        "UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY",
-    )}
+    saved = {
+        k: os.environ.get(k)
+        for k in (
+            "UMRS_ZMQ_AUTH_TYPE",
+            "UMRS_ZMQ_CURVE_SERVER_PUBLIC_KEY",
+            "UMRS_ZMQ_CURVE_CLIENT_PUBLIC_KEY",
+            "UMRS_ZMQ_CURVE_CLIENT_SECRET_KEY",
+        )
+    }
     try:
-        with mock.patch("requests.get", return_value=get_resp), \
-                mock.patch("requests.post", return_value=_FakeResp(200, _POST_OK)):
+        with (
+            mock.patch("requests.get", return_value=get_resp),
+            mock.patch("requests.post", return_value=_FakeResp(200, _POST_OK)),
+        ):
             return session_bootstrap.bootstrap_curve_session(
                 gateway_url="https://gw.example/rccs",
                 jwt_token="jwt-token",
@@ -90,9 +97,7 @@ def test_bootstrap_tolerates_non_json_server_key():
 
 def test_bootstrap_uses_server_key_when_available():
     """When server-key GET returns JSON, the POST value still wins (authoritative)."""
-    info = _run_bootstrap(
-        _FakeResp(status_code=200, json_data={"server_public_key": "FROM_GET"})
-    )
+    info = _run_bootstrap(_FakeResp(status_code=200, json_data={"server_public_key": "FROM_GET"}))
     # POST response carries the authoritative key.
     assert info.server_public_key == "SERVER_PK_FROM_POST"
 
@@ -103,8 +108,10 @@ def test_bootstrap_get_network_error_is_non_fatal():
 
     import requests
 
-    with mock.patch("requests.get", side_effect=requests.ConnectionError("boom")), \
-            mock.patch("requests.post", return_value=_FakeResp(200, _POST_OK)):
+    with (
+        mock.patch("requests.get", side_effect=requests.ConnectionError("boom")),
+        mock.patch("requests.post", return_value=_FakeResp(200, _POST_OK)),
+    ):
         info = session_bootstrap.bootstrap_curve_session(
             gateway_url="https://gw.example/rccs",
             jwt_token="jwt-token",
@@ -117,6 +124,7 @@ def test_bootstrap_get_network_error_is_non_fatal():
 # ---------------------------------------------------------------------------
 # client-side refresh helpers
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def _client_mod():

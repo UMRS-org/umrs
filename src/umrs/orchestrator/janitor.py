@@ -73,13 +73,22 @@ class JanitorConfig:
             ttl_grace_sec=int(os.getenv("JANITOR_TTL_GRACE_SEC", "30")),
             stuck_timeout_sec=int(os.getenv("JANITOR_STUCK_TIMEOUT_SEC", "600")),
             batch_size=int(os.getenv("JANITOR_BATCH_SIZE", "10")),
-            enable_ttl_cleanup=os.getenv("JANITOR_ENABLE_TTL", "true").lower() == "true",
-            enable_orphan_cleanup=os.getenv("JANITOR_ENABLE_ORPHAN", "true").lower() == "true",
-            enable_stuck_cleanup=os.getenv("JANITOR_ENABLE_STUCK", "true").lower() == "true",
-            enable_liveness_cleanup=os.getenv("JANITOR_ENABLE_LIVENESS", "true").lower() == "true",
-            enable_ttl_auto_extend=os.getenv("JANITOR_ENABLE_TTL_AUTO_EXTEND", "true").lower() == "true",
+            enable_ttl_cleanup=os.getenv("JANITOR_ENABLE_TTL", "true").lower()
+            == "true",
+            enable_orphan_cleanup=os.getenv("JANITOR_ENABLE_ORPHAN", "true").lower()
+            == "true",
+            enable_stuck_cleanup=os.getenv("JANITOR_ENABLE_STUCK", "true").lower()
+            == "true",
+            enable_liveness_cleanup=os.getenv("JANITOR_ENABLE_LIVENESS", "true").lower()
+            == "true",
+            enable_ttl_auto_extend=os.getenv(
+                "JANITOR_ENABLE_TTL_AUTO_EXTEND", "true"
+            ).lower()
+            == "true",
             ttl_auto_extend_sec=int(os.getenv("JANITOR_TTL_AUTO_EXTEND_SEC", "600")),
-            ttl_auto_extend_threshold_sec=int(os.getenv("JANITOR_TTL_AUTO_EXTEND_THRESHOLD_SEC", "120")),
+            ttl_auto_extend_threshold_sec=int(
+                os.getenv("JANITOR_TTL_AUTO_EXTEND_THRESHOLD_SEC", "120")
+            ),
         )
 
 
@@ -101,7 +110,12 @@ class CleanupResult:
     @property
     def total_cleaned(self) -> int:
         """Total endpoints cleaned."""
-        return self.ttl_expired + self.stuck_cleaned + self.orphans_cleaned + self.ghosts_pruned
+        return (
+            self.ttl_expired
+            + self.stuck_cleaned
+            + self.orphans_cleaned
+            + self.ghosts_pruned
+        )
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary."""
@@ -374,31 +388,98 @@ class Janitor:
 
     async def _cleanup_stuck(self) -> int:
         """
-        Clean up endpoints stuck in provisioning/starting state.
+        Annotate and clean up endpoints stuck in provisioning/starting state.
 
-        Handles jobs that failed to reach ready state within timeout.
+        For every PROVISIONING/STARTING endpoint this records the scheduler's
+        current reason (e.g. Slurm ``MaxMemPerLimit``, ``Resources``,
+        ``Priority``) into the endpoint ``detail`` so users can see *why* a
+        provision is still pending instead of it failing silently.
+
+        A job that is still legitimately queued (benign reason such as
+        ``Resources`` or ``Priority``) is left alone even past the stuck
+        timeout — large multi-node, infinite-TTL endpoints can sit in the queue
+        for a long time before nodes free up. Endpoints whose job is held for an
+        unsatisfiable allocation, or that never reached ready for any other
+        reason, are cleaned up once they exceed ``stuck_timeout_sec``.
         """
+        from .base import JobStatus
+
+        # Slurm reasons that mean "legitimately waiting in the queue". These are
+        # not failures, so a stuck endpoint reporting one is preserved.
+        benign_reasons = (
+            "Resources",
+            "Priority",
+            "BeginTime",
+            "Dependency",
+            "JobArrayTaskLimit",
+        )
+
         cleaned = 0
         now = datetime.utcnow()
         stuck_threshold = timedelta(seconds=self.config.stuck_timeout_sec)
 
         endpoints = self.registry.list_all()
         for endpoint in endpoints:
-            if endpoint.status not in (EndpointStatus.PROVISIONING, EndpointStatus.STARTING):
+            if endpoint.status not in (
+                EndpointStatus.PROVISIONING,
+                EndpointStatus.STARTING,
+            ):
                 continue
 
-            # Check if stuck for too long
-            if now - endpoint.created_at > stuck_threshold:
-                logger.warning(
-                    f"Endpoint {endpoint.job_id} stuck in {endpoint.status.value} "
-                    f"for >{self.config.stuck_timeout_sec}s, cleaning up"
+            # Best-effort: query the backend for the live state + reason so we
+            # can surface it and make an informed cleanup decision.
+            reason: str | None = None
+            job_status = None
+            try:
+                info = await self.backend.get_job_status(endpoint.job_id)
+                reason = getattr(info, "state_reason", None)
+                job_status = getattr(info, "status", None)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "Stuck-check for %s skipped (backend error): %s",
+                    endpoint.job_id,
+                    exc,
                 )
-                success = await self._cleanup_endpoint(endpoint.job_id)
-                if success:
-                    cleaned += 1
+                continue  # Inconclusive — preserve the endpoint
 
-                if cleaned >= self.config.batch_size:
-                    break
+            # Surface the reason to users via the endpoint detail field.
+            if reason:
+                self.registry.update_metadata(
+                    endpoint.job_id, {"detail": f"queued: {reason}"}
+                )
+
+            age = now - endpoint.created_at
+            if age <= stuck_threshold:
+                continue  # Not stuck yet — leave it to keep provisioning
+
+            # Past the stuck timeout. Preserve jobs that are simply waiting in
+            # the queue for resources; only reap unsatisfiable / failed ones.
+            if (
+                job_status == JobStatus.PENDING
+                and reason
+                and any(b in reason for b in benign_reasons)
+            ):
+                logger.info(
+                    "Endpoint %s still queued after %ds (reason=%s); preserving",
+                    endpoint.job_id,
+                    int(age.total_seconds()),
+                    reason,
+                )
+                continue
+
+            logger.warning(
+                "Endpoint %s stuck in %s for >%ds (reason=%s), cleaning up",
+                endpoint.job_id,
+                endpoint.status.value,
+                self.config.stuck_timeout_sec,
+                reason or "unknown",
+            )
+            success = await self._cleanup_endpoint(endpoint.job_id)
+            if success:
+                cleaned += 1
+
+            if cleaned >= self.config.batch_size:
+                break
 
         return cleaned
 

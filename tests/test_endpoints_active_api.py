@@ -186,6 +186,7 @@ def test_active_endpoints_prune_stale_registry_ghosts(monkeypatch):
         "_backend_job_liveness",
         _fake_backend_job_liveness,
     )
+
     def _get_service():
         return SimpleNamespace()
 
@@ -235,6 +236,7 @@ def test_active_endpoints_specific_model_drops_stale_ready_entry(monkeypatch):
         "_backend_job_liveness",
         _fake_backend_job_liveness,
     )
+
     def _get_service():
         return SimpleNamespace()
 

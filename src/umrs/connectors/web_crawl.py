@@ -36,7 +36,9 @@ _DEFAULT_MAX_DEPTH = 2
 
 def _strip_html(html: str) -> str:
     """Rudimentary HTML → text."""
-    text = re.sub(r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(
+        r"<script[^>]*>.*?</script>", "", html, flags=re.DOTALL | re.IGNORECASE
+    )
     text = re.sub(r"<style[^>]*>.*?</style>", "", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"<[^>]+>", " ", text)
     return re.sub(r"\s+", " ", text).strip()
@@ -122,7 +124,9 @@ class WebCrawlConnector(Connector):
                 continue
 
             # Extract title
-            title_match = re.search(r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL)
+            title_match = re.search(
+                r"<title[^>]*>(.*?)</title>", raw, re.IGNORECASE | re.DOTALL
+            )
             title = _strip_html(title_match.group(1)) if title_match else url
 
             url_hash = hashlib.sha256(url.encode()).hexdigest()[:12]

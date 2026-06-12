@@ -134,6 +134,7 @@ class RoutingFeedbackStore:
         if db_url:
             try:
                 import psycopg2
+
                 self._psycopg2 = psycopg2
             except ImportError:
                 logger.warning("psycopg2 unavailable; using in-memory store")
@@ -169,7 +170,9 @@ class RoutingFeedbackStore:
     ) -> RoutingFeedback:
         """Record a model routing decision and its outcome."""
         if outcome not in VALID_OUTCOMES:
-            raise ValueError(f"Invalid outcome: {outcome!r}; must be one of {VALID_OUTCOMES}")
+            raise ValueError(
+                f"Invalid outcome: {outcome!r}; must be one of {VALID_OUTCOMES}"
+            )
 
         fb = RoutingFeedback(
             feedback_id=f"rfb-{uuid.uuid4().hex[:12]}",
@@ -203,11 +206,21 @@ class RoutingFeedbackStore:
                         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                         """,
                         (
-                            fb.feedback_id, fb.job_id, fb.step_name,
-                            fb.model_selected, fb.outcome, fb.user_accepted,
-                            fb.user_correction, fb.step_type, fb.routing_reason,
-                            fb.latency_ms, fb.tokens_used, fb.quality_score,
-                            fb.project_id, fb.user_id, fb.created_at,
+                            fb.feedback_id,
+                            fb.job_id,
+                            fb.step_name,
+                            fb.model_selected,
+                            fb.outcome,
+                            fb.user_accepted,
+                            fb.user_correction,
+                            fb.step_type,
+                            fb.routing_reason,
+                            fb.latency_ms,
+                            fb.tokens_used,
+                            fb.quality_score,
+                            fb.project_id,
+                            fb.user_id,
+                            fb.created_at,
                         ),
                     )
                 conn.commit()
@@ -264,7 +277,10 @@ class RoutingFeedbackStore:
             conn = self._get_conn()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("SELECT * FROM routing_feedback WHERE feedback_id = %s", (feedback_id,))
+                    cur.execute(
+                        "SELECT * FROM routing_feedback WHERE feedback_id = %s",
+                        (feedback_id,),
+                    )
                     row = cur.fetchone()
                     if not row:
                         return None
@@ -334,7 +350,10 @@ class RoutingFeedbackStore:
             conn = self._get_conn()
             try:
                 with conn.cursor() as cur:
-                    cur.execute("DELETE FROM routing_feedback WHERE feedback_id = %s", (feedback_id,))
+                    cur.execute(
+                        "DELETE FROM routing_feedback WHERE feedback_id = %s",
+                        (feedback_id,),
+                    )
                     deleted = cur.rowcount > 0
                 conn.commit()
                 return deleted
@@ -464,5 +483,7 @@ def _correction_targets(feedbacks: list[RoutingFeedback]) -> dict[str, int]:
     targets: dict[str, int] = {}
     for feedback in feedbacks:
         if feedback.user_correction:
-            targets[feedback.user_correction] = targets.get(feedback.user_correction, 0) + 1
+            targets[feedback.user_correction] = (
+                targets.get(feedback.user_correction, 0) + 1
+            )
     return targets

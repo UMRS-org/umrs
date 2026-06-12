@@ -83,9 +83,15 @@ SAMPLE_STATUS = {
 
 def _make_mock_mq() -> MagicMock:
     mq = MagicMock()
-    mq.request_job_list.return_value = {"status": "ok", "jobs": SAMPLE_JOBS, "total": len(SAMPLE_JOBS)}
+    mq.request_job_list.return_value = {
+        "status": "ok",
+        "jobs": SAMPLE_JOBS,
+        "total": len(SAMPLE_JOBS),
+    }
     mq.request_status.return_value = json.dumps(SAMPLE_STATUS)
-    mq.request_model_command.return_value = json.dumps({"status": "ok", "models": [], "workflows": []})
+    mq.request_model_command.return_value = json.dumps(
+        {"status": "ok", "models": [], "workflows": []}
+    )
     mq.is_server_ready.return_value = True
     mq.notify_server.return_value = True
     return mq
@@ -110,7 +116,12 @@ class TestDashboardRendering:
 
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=120, record=True)
-        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console, initial_tab=TAB_STATUS)
+        dash = Dashboard(
+            control_mq=_make_mock_mq(),
+            client_id="testuser",
+            console=console,
+            initial_tab=TAB_STATUS,
+        )
 
         dash.render_once()
 
@@ -124,7 +135,12 @@ class TestDashboardRendering:
 
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=180, record=True)
-        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console, initial_tab=TAB_STATUS)
+        dash = Dashboard(
+            control_mq=_make_mock_mq(),
+            client_id="testuser",
+            console=console,
+            initial_tab=TAB_STATUS,
+        )
 
         dash.render_once()
 
@@ -139,7 +155,12 @@ class TestDashboardRendering:
 
         buf = StringIO()
         console = Console(file=buf, force_terminal=True, width=180, record=True)
-        dash = Dashboard(control_mq=_make_mock_mq(), client_id="testuser", console=console, initial_tab=TAB_STATUS)
+        dash = Dashboard(
+            control_mq=_make_mock_mq(),
+            client_id="testuser",
+            console=console,
+            initial_tab=TAB_STATUS,
+        )
 
         dash.render_once()
 

@@ -16,7 +16,7 @@ attached_buckets = []
 # Check each bucket for SQS event notifications
 for bucket in buckets:
     bucket_name = bucket["Name"]
-    
+
     try:
         response = s3.get_bucket_notification_configuration(Bucket=bucket_name)
         queue_configs = response.get("QueueConfigurations", [])

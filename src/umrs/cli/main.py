@@ -64,6 +64,7 @@ def cmd_status(args: argparse.Namespace, config: dict) -> None:
 def get_env_config() -> dict:
     """Get configuration from environment variables."""
     import os
+
     return {
         "base_url": os.environ.get("UMRS_BASE_URL", "http://localhost:8000"),
     }

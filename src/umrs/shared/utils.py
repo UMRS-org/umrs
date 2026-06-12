@@ -10,7 +10,10 @@ def normalize_json(obj):
         return sorted((normalize_json(x) for x in obj), key=str)
     else:
         return obj
+
+
 ################################## Embedding model prefixes ##################################
+
 
 def _needs_instruction_prefix(model_name):
     """Return True if the model requires instruction prefixes (e.g., E5 family).
@@ -25,22 +28,26 @@ def _needs_instruction_prefix(model_name):
     name = model_name.lower()
     return "e5-" in name or "/e5-" in name
 
+
 def add_document_prefix(texts, model_name):
     """Prepend 'passage: ' to texts if the model requires it (e.g., E5)."""
     if _needs_instruction_prefix(model_name):
         return ["passage: " + t for t in texts]
     return texts
 
+
 def add_query_prefix(query, model_name):
     """Prepend 'query: ' to a query string if the model requires it (e.g., E5)."""
     if _needs_instruction_prefix(model_name):
         return "query: " + query
     return query
+
+
 ################################## md5 ##################################
+
 
 def compute_md5(input_string):
     return hashlib.md5(input_string.encode()).hexdigest()
-
 
 
 def md5_of_file(local_file):
@@ -53,6 +60,7 @@ def md5_of_file(local_file):
 
 
 ################################## Chunking texts ##################################
+
 
 def chunk_text_by_max_tokens(doc, tokenizer, max_tokens):
     """
@@ -81,7 +89,9 @@ def chunk_text_by_max_tokens(doc, tokenizer, max_tokens):
             continue
 
         # Tokenize the sentence and get the mapping between tokens and character offsets
-        encoding = tokenizer(sentence_text, return_offsets_mapping=True, add_special_tokens=False)
+        encoding = tokenizer(
+            sentence_text, return_offsets_mapping=True, add_special_tokens=False
+        )
         input_ids = encoding["input_ids"]
         offsets = encoding["offset_mapping"]
 
@@ -90,18 +100,20 @@ def chunk_text_by_max_tokens(doc, tokenizer, max_tokens):
             # If the sentence fits in the limit, use it directly
             start = sent.start_char
             end = sent.end_char
-            chunks.append({
-                "text": sentence_text,
-                "start": start,
-                "end": end,
-                "num_tokens": n_tokens,
-                "md5": compute_md5(sentence_text)
-            })
+            chunks.append(
+                {
+                    "text": sentence_text,
+                    "start": start,
+                    "end": end,
+                    "num_tokens": n_tokens,
+                    "md5": compute_md5(sentence_text),
+                }
+            )
         else:
             # Otherwise, split the sentence into subchunks of max_tokens
             for i in range(0, len(input_ids), max_tokens):
-                sub_ids = input_ids[i:i + max_tokens]
-                sub_offsets = offsets[i:i + max_tokens]
+                sub_ids = input_ids[i : i + max_tokens]
+                sub_offsets = offsets[i : i + max_tokens]
 
                 # Get the character range covered by the token span
                 sub_start = sub_offsets[0][0]
@@ -113,15 +125,19 @@ def chunk_text_by_max_tokens(doc, tokenizer, max_tokens):
                 global_end = sent.start_char + sub_end
 
                 if sub_text:
-                    chunks.append({
-                        "text": sub_text,
-                        "start": global_start,
-                        "end": global_end,
-                        "num_tokens": len(sub_ids),
-                        "md5": compute_md5(sub_text)
-                    })
+                    chunks.append(
+                        {
+                            "text": sub_text,
+                            "start": global_start,
+                            "end": global_end,
+                            "num_tokens": len(sub_ids),
+                            "md5": compute_md5(sub_text),
+                        }
+                    )
 
     return chunks
+
+
 def merge_chunks_by_tokens(chunks, max_tokens, tokenizer, original_text):
     """
     Merge consecutive chunks as long as the total token count stays under max_tokens,
@@ -146,15 +162,19 @@ def merge_chunks_by_tokens(chunks, max_tokens, tokenizer, original_text):
             current_token_count = chunk["num_tokens"]
         else:
             # Text between current chunk and new chunk
-            inter_text = original_text[current_chunk["end"]-1:chunk["start"]]
+            inter_text = original_text[current_chunk["end"] - 1 : chunk["start"]]
             inter_tokens = tokenizer(inter_text, add_special_tokens=False)["input_ids"]
-            new_total_tokens = current_token_count + len(inter_tokens) + chunk["num_tokens"] + 1
+            new_total_tokens = (
+                current_token_count + len(inter_tokens) + chunk["num_tokens"] + 1
+            )
 
             if new_total_tokens <= max_tokens:
                 # Update current_chunk
                 current_chunk["end"] = chunk["end"]
                 current_chunk["num_tokens"] = new_total_tokens
-                current_chunk["text"] = original_text[current_chunk["start"]:current_chunk["end"]]
+                current_chunk["text"] = original_text[
+                    current_chunk["start"] : current_chunk["end"]
+                ]
                 current_chunk["md5"] = compute_md5(current_chunk["text"])
                 current_token_count = new_total_tokens
             else:
@@ -170,43 +190,50 @@ def merge_chunks_by_tokens(chunks, max_tokens, tokenizer, original_text):
 
 def _chunk_text_without_nlp(text, tokenizer=None, max_tokens=None):
     if tokenizer is None or max_tokens is None or max_tokens <= 0:
-        return [{
-            "text": text,
-            "start": 0,
-            "end": len(text),
-            "num_tokens": 0 if not text else 1,
-            "md5": compute_md5(text),
-        }]
+        return [
+            {
+                "text": text,
+                "start": 0,
+                "end": len(text),
+                "num_tokens": 0 if not text else 1,
+                "md5": compute_md5(text),
+            }
+        ]
 
     encoding = tokenizer(text, return_offsets_mapping=True, add_special_tokens=False)
     input_ids = encoding["input_ids"]
     offsets = encoding["offset_mapping"]
 
     if not input_ids:
-        return [{
-            "text": "",
-            "start": 0,
-            "end": 0,
-            "num_tokens": 0,
-            "md5": compute_md5(""),
-        }]
+        return [
+            {
+                "text": "",
+                "start": 0,
+                "end": 0,
+                "num_tokens": 0,
+                "md5": compute_md5(""),
+            }
+        ]
 
     chunks = []
     for index in range(0, len(input_ids), max_tokens):
-        sub_ids = input_ids[index:index + max_tokens]
-        sub_offsets = offsets[index:index + max_tokens]
+        sub_ids = input_ids[index : index + max_tokens]
+        sub_offsets = offsets[index : index + max_tokens]
         sub_start = sub_offsets[0][0]
         sub_end = sub_offsets[-1][1]
         sub_text = text[sub_start:sub_end]
-        chunks.append({
-            "text": sub_text,
-            "start": sub_start,
-            "end": sub_end,
-            "num_tokens": len(sub_ids),
-            "md5": compute_md5(sub_text),
-        })
+        chunks.append(
+            {
+                "text": sub_text,
+                "start": sub_start,
+                "end": sub_end,
+                "num_tokens": len(sub_ids),
+                "md5": compute_md5(sub_text),
+            }
+        )
 
     return chunks
+
 
 def flatten_text_chunks(texts, nlp, tokenizer, max_tokens):
     """
@@ -227,7 +254,9 @@ def flatten_text_chunks(texts, nlp, tokenizer, max_tokens):
     chunks_by_text = []
     for text in texts:
         if nlp is None:
-            chunks = _chunk_text_without_nlp(text, tokenizer=tokenizer, max_tokens=max_tokens)
+            chunks = _chunk_text_without_nlp(
+                text, tokenizer=tokenizer, max_tokens=max_tokens
+            )
         else:
             doc = nlp(text)
             chunks = chunk_text_by_max_tokens(doc, tokenizer, max_tokens)
@@ -235,6 +264,7 @@ def flatten_text_chunks(texts, nlp, tokenizer, max_tokens):
         flat_chunks.extend([chunk["text"] for chunk in chunks])
         chunks_by_text.append(chunks)
     return flat_chunks, chunks_by_text
+
 
 def add_embeddings_to_chunks_dict(embeddings, list_dict):
     """
@@ -284,11 +314,13 @@ def zero_out_embeddings_for_empty_objects(embeddings, sizes, modality_name):
     for index, chunk_list in enumerate(embeddings):
         if sizes[index] == 0:
             if len(chunk_list) != 1:
-                print(f"Warining: chunk list len should be 1 and is {len(chunk_list)}. Zeroing everything...")
+                print(
+                    f"Warining: chunk list len should be 1 and is {len(chunk_list)}. Zeroing everything..."
+                )
             for chunk in chunk_list:
                 chunk["embedding"] = zero_vec
-                chunk["text"] = ''
-                chunk["md5"] = 'd41d8cd98f00b204e9800998ecf8427e' #md5 of empty string
+                chunk["text"] = ""
+                chunk["md5"] = "d41d8cd98f00b204e9800998ecf8427e"  # md5 of empty string
                 chunk["start"] = 0
                 chunk["end"] = 0
                 chunk["num_tokens"] = 0

@@ -95,6 +95,7 @@ class _EgressAuditStore:
         if self._db_url:
             try:
                 import psycopg2  # type: ignore
+
                 self._psycopg2 = psycopg2
             except ImportError:
                 logger.warning(
@@ -277,6 +278,7 @@ class _EgressAuditStore:
     @staticmethod
     def _json_dumps(value: Any) -> str:
         import json
+
         return json.dumps(value or {}, default=str)
 
 

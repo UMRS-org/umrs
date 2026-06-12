@@ -94,7 +94,9 @@ def ensure_audit_schema(conn) -> None:
             )
 
         if stored_version < AUDIT_STORE_SCHEMA_VERSION:
-            _apply_audit_migrations(conn, cur, stored_version, AUDIT_STORE_SCHEMA_VERSION)
+            _apply_audit_migrations(
+                conn, cur, stored_version, AUDIT_STORE_SCHEMA_VERSION
+            )
 
         # Upsert version
         cur.execute(
@@ -106,7 +108,8 @@ def ensure_audit_schema(conn) -> None:
         conn.commit()
         logger.info(
             "Audit schema ensured (version %d, migrated from %d)",
-            AUDIT_STORE_SCHEMA_VERSION, stored_version,
+            AUDIT_STORE_SCHEMA_VERSION,
+            stored_version,
         )
     except RuntimeError:
         conn.rollback()

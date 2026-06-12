@@ -16,16 +16,16 @@ class TaskCmd:
     MODEL_LIST = "MODEL_LIST"
     MODEL_DOWNLOAD = "MODEL_DOWNLOAD"  # server-side download (background thread)
     # Job tracking commands
-    JOB_SUBMIT = "JOB_SUBMIT"   # durable submission with retry config
-    JOB_CANCEL = "JOB_CANCEL"   # cancel a submitted job by ID
-    JOB_LIST = "JOB_LIST"       # list jobs with optional filters
+    JOB_SUBMIT = "JOB_SUBMIT"  # durable submission with retry config
+    JOB_CANCEL = "JOB_CANCEL"  # cancel a submitted job by ID
+    JOB_LIST = "JOB_LIST"  # list jobs with optional filters
     # Workflow upload command
     UPLOAD_WORKFLOW = "UPLOAD_WORKFLOW"  # upload a workflow zip to server
     # Workflow registry commands
-    LIST_WORKFLOWS = "LIST_WORKFLOWS"   # list registered workflows
-    RUN_WORKFLOW = "RUN_WORKFLOW"        # trigger execution of a registered workflow
+    LIST_WORKFLOWS = "LIST_WORKFLOWS"  # list registered workflows
+    RUN_WORKFLOW = "RUN_WORKFLOW"  # trigger execution of a registered workflow
     # Admin enrollment
-    ENROLL_USER = "ENROLL_USER"          # admin-only: register a new user
+    ENROLL_USER = "ENROLL_USER"  # admin-only: register a new user
     # Bootstrap context
     GET_BOOTSTRAP_CONTEXT = "GET_BOOTSTRAP_CONTEXT"  # return versioned user context
     # Bucket management
@@ -48,8 +48,9 @@ class TaskCmd:
             cls.UPDATE.lower(),
             cls.CHECK.lower(),
             cls.RELOAD.lower(),
-            "all"
+            "all",
         )
+
 
 class TaskStatus:
     SUBMITTED = "Submitted"

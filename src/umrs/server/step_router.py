@@ -169,9 +169,7 @@ class AffinityHints:
 ModelLookup = Callable[[list[str], str | None], list[dict[str, Any]]]
 
 #: ``find_endpoint(model_name, project_id, owner_hint) -> Optional[EndpointDict]``.
-EndpointLookup = Callable[
-    [str, str | None, str | None], dict[str, Any] | None
-]
+EndpointLookup = Callable[[str, str | None, str | None], dict[str, Any] | None]
 
 
 def _endpoint_id_of(ep: dict[str, Any]) -> str:
@@ -366,9 +364,7 @@ class EndpointFeedbackStore:
         alpha = self._alpha()
         with self._lock:
             prev_f = self._failure_ewma.get(endpoint_id, 0.0)
-            self._failure_ewma[endpoint_id] = (
-                alpha * 1.0 + (1.0 - alpha) * prev_f
-            )
+            self._failure_ewma[endpoint_id] = alpha * 1.0 + (1.0 - alpha) * prev_f
             self._visits[endpoint_id] = self._visits.get(endpoint_id, 0) + 1
 
     def get_norm(self, endpoint_id: str) -> float:
@@ -671,9 +667,7 @@ class StepRouter:
             api_base = ep.get("litellm_url") or ep.get("api_base")
             if not api_base:
                 continue
-            scope_tier = scope_order.get(
-                str(entry.get("scope", "system")), 99
-            )
+            scope_tier = scope_order.get(str(entry.get("scope", "system")), 99)
             viable.append(
                 {
                     "entry": entry,
@@ -691,9 +685,7 @@ class StepRouter:
         # tiers via score would let a project endpoint outrank a system
         # endpoint on load, which is a policy surprise we don't want.
         lowest_tier = min(item["scope_tier"] for item in viable)
-        tier_pool = [
-            item for item in viable if item["scope_tier"] == lowest_tier
-        ]
+        tier_pool = [item for item in viable if item["scope_tier"] == lowest_tier]
 
         affinity_active = bool(
             affinity_hints
@@ -731,16 +723,20 @@ class StepRouter:
             raw_prefer = step.routing_hints.get("prefer")
             if isinstance(raw_prefer, list):
                 preferred_caps = [
-                    c for c in raw_prefer
-                    if isinstance(c, str) and c
-                    or isinstance(c, dict) and isinstance(c.get("name"), str)
+                    c
+                    for c in raw_prefer
+                    if isinstance(c, str)
+                    and c
+                    or isinstance(c, dict)
+                    and isinstance(c.get("name"), str)
                 ]
 
         scored: list[dict[str, Any]] = []
         for idx, item in enumerate(tier_pool):
             if affinity_active:
                 aff_score, matches = _score_endpoint_for_affinity(
-                    item["ep"], affinity_hints  # type: ignore[arg-type]
+                    item["ep"],
+                    affinity_hints,  # type: ignore[arg-type]
                 )
             else:
                 aff_score, matches = 0, []
@@ -768,7 +764,11 @@ class StepRouter:
             eid = _endpoint_id_of(item["ep"])
             visits = _feedback_store.get_visits(eid)
             if visits == 0:
-                ucb_bonus = ucb_c * math.sqrt(math.log(total_visits + 1)) if total_visits > 0 else ucb_c
+                ucb_bonus = (
+                    ucb_c * math.sqrt(math.log(total_visits + 1))
+                    if total_visits > 0
+                    else ucb_c
+                )
             else:
                 ucb_bonus = ucb_c * math.sqrt(math.log(total_visits + 1) / (visits + 1))
             # Capability preference (Slice 17): score from endpoint
@@ -843,7 +843,14 @@ class StepRouter:
             decision_breakdown={
                 "affinity": w_aff * float(chosen["aff_score"]),
                 "load": -(w_load * float(chosen["load_norm"])),
-                "latency": -(w_lat * (float(chosen["latency_norm"]) * lat_decorr if chosen["feedback_norm"] > 0 else float(chosen["latency_norm"]))),
+                "latency": -(
+                    w_lat
+                    * (
+                        float(chosen["latency_norm"]) * lat_decorr
+                        if chosen["feedback_norm"] > 0
+                        else float(chosen["latency_norm"])
+                    )
+                ),
                 "queue": -(w_q * float(chosen["queue_norm"])),
                 "feedback": -(w_fb * float(chosen["feedback_norm"])),
                 "failure": -(w_fail * float(chosen["failure_norm"])),

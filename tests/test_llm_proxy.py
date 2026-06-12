@@ -353,12 +353,18 @@ def test_list_models_proxies_to_litellm():
 def test_list_models_aggregates_across_all_ready_endpoints():
     """/v1/models should merge models from every ready endpoint, deduped by id."""
     registry = _make_registry_with_endpoint(
-        model="qwen3-8b", job_id="job-1", host="compute-01",
+        model="qwen3-8b",
+        job_id="job-1",
+        host="compute-01",
         served_model_name="Qwen/Qwen3-8B",
     )
     registry.register(
-        project_id="test-project", model="llama3-70b", job_id="job-2",
-        host="compute-02", port=11434, backend="slurm",
+        project_id="test-project",
+        model="llama3-70b",
+        job_id="job-2",
+        host="compute-02",
+        port=11434,
+        backend="slurm",
         metadata={"served_model_name": "meta/Llama-3-70B"},
     )
     registry.mark_ready("job-2")

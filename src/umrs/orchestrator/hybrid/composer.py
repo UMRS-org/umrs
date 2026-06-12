@@ -324,7 +324,9 @@ class HybridOrchestrator(OrchestratorBackend):
             endpoint=BaseEndpointInfo(
                 node=endpoint.node,
                 litellm_port=endpoint.port,
-            ) if endpoint else None,
+            )
+            if endpoint
+            else None,
             backend=self.backend_name,
             metadata={
                 "allocation_status": allocation.status.value,
@@ -466,21 +468,29 @@ class HybridOrchestrator(OrchestratorBackend):
             "VLLM_MAX_NUM_SEQS": str(cfg.vllm_max_num_seqs),
             "VLLM_TENSOR_PARALLEL_SIZE": str(cfg.vllm_tensor_parallel_size),
             "VLLM_GPU_MEMORY_UTILIZATION": str(cfg.vllm_gpu_memory_utilization),
-            "VLLM_ENABLE_PREFIX_CACHING": "true" if cfg.vllm_enable_prefix_caching else "false",
+            "VLLM_ENABLE_PREFIX_CACHING": "true"
+            if cfg.vllm_enable_prefix_caching
+            else "false",
             "LITELLM_PORT": str(cfg.litellm_port),
             "LITELLM_MASTER_KEY": cfg.litellm_master_key,
             "TRANSFORMERS_OFFLINE": "1",  # No egress from inference
             "HF_HUB_OFFLINE": "1",
         }
         if cfg.egress_proxy_url:
-            env.update({
-                "HTTP_PROXY": cfg.egress_proxy_url,
-                "HTTPS_PROXY": os.getenv("RIVAULT_HTTPS_PROXY", cfg.egress_proxy_url),
-                "http_proxy": cfg.egress_proxy_url,
-                "https_proxy": os.getenv("RIVAULT_HTTPS_PROXY", cfg.egress_proxy_url),
-                "NO_PROXY": cfg.egress_no_proxy,
-                "no_proxy": cfg.egress_no_proxy,
-            })
+            env.update(
+                {
+                    "HTTP_PROXY": cfg.egress_proxy_url,
+                    "HTTPS_PROXY": os.getenv(
+                        "RIVAULT_HTTPS_PROXY", cfg.egress_proxy_url
+                    ),
+                    "http_proxy": cfg.egress_proxy_url,
+                    "https_proxy": os.getenv(
+                        "RIVAULT_HTTPS_PROXY", cfg.egress_proxy_url
+                    ),
+                    "NO_PROXY": cfg.egress_no_proxy,
+                    "no_proxy": cfg.egress_no_proxy,
+                }
+            )
         env.update(kwargs.get("env", {}))
 
         # Determine image
@@ -512,11 +522,14 @@ class HybridOrchestrator(OrchestratorBackend):
             headers["Authorization"] = f"Bearer {self.config.litellm_master_key}"
 
         try:
-            async with aiohttp.ClientSession() as session, session.get(
-                endpoint.models_url,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
+            async with (
+                aiohttp.ClientSession() as session,
+                session.get(
+                    endpoint.models_url,
+                    headers=headers,
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp,
+            ):
                 return resp.status == 200
         except Exception:
             return False

@@ -74,6 +74,7 @@ async def structured_http_exception_handler(
     request_id = ""
     try:
         from umrs.server.correlation import get_request_id
+
         request_id = get_request_id()
     except Exception:
         pass

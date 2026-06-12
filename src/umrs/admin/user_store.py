@@ -117,9 +117,7 @@ class UserRecord:
         raw_accounts = data.get("slurm_accounts")
         slurm_accounts: dict[str, str] = {}
         if isinstance(raw_accounts, dict):
-            slurm_accounts = {
-                str(k): str(v) for k, v in raw_accounts.items() if v
-            }
+            slurm_accounts = {str(k): str(v) for k, v in raw_accounts.items() if v}
         return cls(
             username=str(data.get("username", "")),
             fullname=str(data.get("fullname", "")),
@@ -231,9 +229,7 @@ class UserStore:
         extras: dict[str, Any] | None = None,
     ) -> UserRecord:
         if role not in VALID_ROLES:
-            raise UserStoreError(
-                f"Invalid role {role!r}; must be one of {VALID_ROLES}"
-            )
+            raise UserStoreError(f"Invalid role {role!r}; must be one of {VALID_ROLES}")
         path = self._path(username)
         if path.exists():
             raise UserStoreError(f"User {username!r} already exists at {path}")
@@ -288,13 +284,13 @@ class UserStore:
     def set_role(self, username: str, role: str) -> UserRecord:
         return self.update(username, role=role)
 
-    def set_slurm_account(
-        self, username: str, slurm_account: str | None
-    ) -> UserRecord:
+    def set_slurm_account(self, username: str, slurm_account: str | None) -> UserRecord:
         return self.update(username, slurm_account=slurm_account or None)
 
     def set_oidc_subject(
-        self, username: str, oidc_subject: str,
+        self,
+        username: str,
+        oidc_subject: str,
     ) -> UserRecord:
         """Set or clear the OIDC external identity subject for a user."""
         # Reject duplicate subjects when setting (not when clearing).
@@ -341,7 +337,10 @@ class UserStore:
         )
 
     def set_slurm_account_for_site(
-        self, username: str, site_name: str, slurm_account: str | None,
+        self,
+        username: str,
+        site_name: str,
+        slurm_account: str | None,
     ) -> UserRecord:
         """Set or clear the Slurm account for a specific site."""
         record = self.get(username)

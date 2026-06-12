@@ -49,8 +49,8 @@ class LLMStep(Step):
             or os.environ.get("OPENAI_BASE_URL")
             or os.environ.get("R4_GATEWAY_URL")
         )
-        self.api_key: str | None = (
-            config.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        self.api_key: str | None = config.get("api_key") or os.environ.get(
+            "OPENAI_API_KEY"
         )
 
     # ------------------------------------------------------------------
@@ -88,7 +88,9 @@ class LLMStep(Step):
             extra["validation_error"] = validation_error
 
         # Persist response to S3 for the API's results endpoint.
-        out_key = f"{ctx.run_id or 'run'}/{ctx.config.get('step_name', 'llm')}/response.json"
+        out_key = (
+            f"{ctx.run_id or 'run'}/{ctx.config.get('step_name', 'llm')}/response.json"
+        )
         try:
             payload = json.dumps(
                 {
@@ -197,7 +199,9 @@ class LLMStep(Step):
     # Output validation
     # ------------------------------------------------------------------
 
-    def _extract_structured(self, text: str) -> tuple[dict[str, Any] | None, str | None]:
+    def _extract_structured(
+        self, text: str
+    ) -> tuple[dict[str, Any] | None, str | None]:
         """Try to parse the model's text as JSON conforming to ``output_schema``.
 
         Returns ``(structured, error)``.  ``error`` is a string when the
@@ -231,7 +235,11 @@ def _resolve_dotted(scope: dict[str, Any], expr: str) -> Any:
     """Resolve ``a.b.c`` against ``scope``.  Returns ``None`` if not found."""
     current: Any = scope
     for part in expr.split("."):
-        current = current.get(part) if isinstance(current, dict) else getattr(current, part, None)
+        current = (
+            current.get(part)
+            if isinstance(current, dict)
+            else getattr(current, part, None)
+        )
         if current is None:
             return None
     return current

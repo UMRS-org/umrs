@@ -61,9 +61,7 @@ async def list_session_cache(session_id: str):
 
 
 @router.get("/session/{session_id}/lookup")
-async def lookup_cached_output(
-    session_id: str, tool_name: str, inputs_hash: str
-):
+async def lookup_cached_output(session_id: str, tool_name: str, inputs_hash: str):
     """Look up a specific cached output by inputs hash."""
     store = _get_store()
     # Direct hash lookup (bypass re-hashing)
@@ -76,9 +74,7 @@ async def lookup_cached_output(
 
 
 @router.delete("/session/{session_id}")
-async def invalidate_session_cache(
-    session_id: str, tool_name: str | None = None
-):
+async def invalidate_session_cache(session_id: str, tool_name: str | None = None):
     """Invalidate cached entries for a session."""
     store = _get_store()
     count = store.invalidate(session_id, tool_name)

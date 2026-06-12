@@ -89,7 +89,8 @@ def _install_requirements(directory: Path) -> None:
         installer = shutil.which("pip")
         if not installer:
             logger.warning(
-                "Neither uv nor pip found — cannot install %s", req_file,
+                "Neither uv nor pip found — cannot install %s",
+                req_file,
             )
             return
         cmd = [installer, "install", "-r", str(req_file)]
@@ -99,7 +100,9 @@ def _install_requirements(directory: Path) -> None:
         subprocess.run(cmd, check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
         logger.error(
-            "Failed to install %s:\n%s", req_file, exc.stderr,
+            "Failed to install %s:\n%s",
+            req_file,
+            exc.stderr,
         )
 
 
@@ -130,13 +133,16 @@ def _load_adapters_from_dir(directory: str) -> None:
                 register_adapter(name, cls())
             else:
                 logger.warning(
-                    "No VisionModelAdapter subclass found in %s", py_file,
+                    "No VisionModelAdapter subclass found in %s",
+                    py_file,
                 )
         except Exception:
             logger.exception("Failed to load adapter from %s", py_file)
         except SystemExit as exc:
             logger.error(
-                "Adapter %s called sys.exit(%s) — ignoring", py_file, exc.code,
+                "Adapter %s called sys.exit(%s) — ignoring",
+                py_file,
+                exc.code,
             )
 
 
@@ -156,23 +162,24 @@ def _load_adapters_from_env(env_value: str) -> None:
         try:
             mod = importlib.import_module(module_path)
             cls = getattr(mod, class_name)
-            if not (
-                inspect.isclass(cls) and issubclass(cls, VisionModelAdapter)
-            ):
+            if not (inspect.isclass(cls) and issubclass(cls, VisionModelAdapter)):
                 logger.warning(
                     "%s.%s is not a VisionModelAdapter subclass — skipped",
-                    module_path, class_name,
+                    module_path,
+                    class_name,
                 )
                 continue
             name = class_name.lower().removesuffix("adapter")
             register_adapter(name, cls())
         except Exception:
             logger.exception(
-                "Failed to load adapter from '%s'", entry,
+                "Failed to load adapter from '%s'",
+                entry,
             )
 
 
 # ── Run auto-discovery on import ────────────────────────────────────────
+
 
 # VISION_ADAPTERS_DIR supports colon-separated paths (like $PATH), e.g.
 #   /adapters/system:/adapters/user

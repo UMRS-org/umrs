@@ -57,5 +57,8 @@ class EmbeddingAdapter:
             ``(embeddings, checksums, metadata_list, saved_keys)``
         """
         return self.pipeline.run_as_embeddings(
-            s3, s3_keys, path_to_bucket, output_bucket,
+            s3,
+            s3_keys,
+            path_to_bucket,
+            output_bucket,
         )

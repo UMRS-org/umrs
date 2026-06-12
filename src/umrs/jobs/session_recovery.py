@@ -175,9 +175,7 @@ class SessionRecoverer:
             logger.info("No jobs to recover session state for")
             return result
 
-        logger.info(
-            "Recovering session state for %d jobs", len(lost_job_ids)
-        )
+        logger.info("Recovering session state for %d jobs", len(lost_job_ids))
 
         for job_id in lost_job_ids:
             try:
@@ -265,8 +263,10 @@ class SessionRecoverer:
             step_type=trace.step_type,
             status=trace.status,
             progress=trace.progress,
-            has_inputs=trace.inputs_snapshot is not None or trace.inputs_ref is not None,
-            has_outputs=trace.outputs_snapshot is not None or trace.outputs_ref is not None,
+            has_inputs=trace.inputs_snapshot is not None
+            or trace.inputs_ref is not None,
+            has_outputs=trace.outputs_snapshot is not None
+            or trace.outputs_ref is not None,
             has_checkpoint=self._has_checkpoint(trace),
             error=trace.error,
             started_at=trace.started_at,
@@ -291,7 +291,9 @@ class SessionRecoverer:
             return False, "unknown"
         if job is None:
             return False, "unknown"
-        job_status = job.status.value if hasattr(job.status, "value") else str(job.status)
+        job_status = (
+            job.status.value if hasattr(job.status, "value") else str(job.status)
+        )
         return job.can_retry(), job_status
 
 
@@ -313,7 +315,9 @@ def _recovered_step_summary(steps: list[RecoveredStep]) -> _RecoveredStepSummary
     )
 
 
-def _steps_with_status(steps: list[RecoveredStep], statuses: set[str]) -> list[RecoveredStep]:
+def _steps_with_status(
+    steps: list[RecoveredStep], statuses: set[str]
+) -> list[RecoveredStep]:
     return [step for step in steps if step.status in statuses]
 
 

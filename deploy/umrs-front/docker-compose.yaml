@@ -81,6 +81,10 @@ services:
     environment:
       # Cluster-specific overrides
       UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      # Model-window visibility: RCCS serves everything EXCEPT the AI4S frontier
+      # models (those run only on the GB200/AI4S cluster). Listing-only filter;
+      # provisioning a model by name is unaffected.
+      UMRS_MODEL_DENYLIST: ${UMRS_RCCS_MODEL_DENYLIST:-GLM-5.1,Kimi-K2.6,DeepSeek-V4-Pro,DeepSeek-V4-Pro-128K,DeepSeek-V4-Pro-TEP}
       UMRS_CONFIG: /etc/umrs
       UMRS_CONTROL_PORT: ${UMRS_RCCS_ZMQ_PORT:-50090}
       UMRS_DATA_PORT_RANGE: ${UMRS_RCCS_DATA_PORT_RANGE:-50091-50098}
@@ -164,6 +168,14 @@ services:
     environment:
       # Cluster-specific overrides
       UMRS_SITE_CONFIG: /etc/umrs/site.yaml
+      # Pool roster — sizing defaults for single-endpoint provisions of large
+      # models (routes DeepSeek-V4-Pro/GLM-5.1/Kimi-K2.6 to 4n4gpu-p with the
+      # right node/GPU/context/TTL instead of falling back to 1 node / 1 GPU).
+      UMRS_PROVISION_ROSTER: /etc/umrs/pool-ai4s.yaml
+      # Model-window visibility: AI4S surfaces ONLY the large frontier models;
+      # smaller models live on RCCS. Listing-only filter; provisioning a model
+      # by name is unaffected.
+      UMRS_MODEL_ALLOWLIST: ${UMRS_AI4S_MODEL_ALLOWLIST:-GLM-5.1,Kimi-K2.6,DeepSeek-V4-Pro,DeepSeek-V4-Pro-128K,DeepSeek-V4-Pro-TEP}
       UMRS_CONFIG: /etc/umrs
       UMRS_CONTROL_PORT: ${UMRS_AI4S_ZMQ_PORT:-50100}
       UMRS_DATA_PORT_RANGE: ${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}
@@ -197,6 +209,7 @@ services:
       PYTHONUNBUFFERED: "1"
     volumes:
       - ../ai4s/site.yaml:/etc/umrs/site.yaml:ro,z
+      - ../ai4s/pool-ai4s.yaml:/etc/umrs/pool-ai4s.yaml:ro,z
       - ./conf_umrs_ai4s.json:/etc/umrs/conf_umrs.json:z
       - ./user_files_ai4s:/etc/umrs/user_files:z
       - ./s3cfg:/etc/umrs/s3cfg:ro,z

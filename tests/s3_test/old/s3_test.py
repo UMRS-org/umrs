@@ -11,6 +11,7 @@ from botocore.exceptions import ClientError, EndpointConnectionError
 # ✅ Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
 
+
 def connect_to_s3(config_file):
     """
     Parses an S3 configuration file and returns a boto3 S3 client.
@@ -38,7 +39,7 @@ def connect_to_s3(config_file):
     access_key = config.get("access_key")
     secret_key = config.get("secret_key")
     region = config.get("bucket_location")
-    
+
     # Ensure correct protocol (http or https)
     protocol = "https" if use_https else "http"
     endpoint_url = f"{protocol}://{s3_host}"
@@ -50,7 +51,7 @@ def connect_to_s3(config_file):
         aws_access_key_id=access_key,
         aws_secret_access_key=secret_key,
         verify=verify_ssl,  # Disables SSL verification if False
-        region_name = region
+        region_name=region,
     )
 
     # Test connection: try listing buckets
@@ -60,37 +61,40 @@ def connect_to_s3(config_file):
         raise RuntimeError(f"Failed to connect to the S3 endpoint: {e}")
     except ClientError as e:
         # If access denied or other client errors, it still means connection succeeded
-        error_code = e.response['Error']['Code']
-        if error_code in ['AccessDenied', 'Unauthorized']:
+        error_code = e.response["Error"]["Code"]
+        if error_code in ["AccessDenied", "Unauthorized"]:
             print("Connection successful but access denied for listing buckets.")
         else:
             raise RuntimeError(f"S3 ClientError: {e}")
 
     print("S3 connection test passed.")
 
-    
     return s3, access_key
+
 
 def delete_all_files_in_s3_bucket(s3_client, bucket_name):
     """Deletes all files in an S3 bucket."""
     objects = s3_client.list_objects_v2(Bucket=bucket_name).get("Contents", [])
     if objects:
         s3_client.delete_objects(
-            Bucket=bucket_name,
-            Delete={"Objects": [{"Key": obj["Key"]} for obj in objects]}
+            Bucket=bucket_name, Delete={"Objects": [{"Key": obj["Key"]} for obj in objects]}
         )
-        
+
+
 def upload_file_to_s3(s3_client, bucket_name, file_path, s3_key):
     """Uploads a file to an S3 bucket."""
     s3_client.upload_file(file_path, bucket_name, s3_key)
+
 
 def list_s3_bucket(s3_client, bucket_name):
     """Lists all files in an S3 bucket."""
     return [obj["Key"] for obj in s3_client.list_objects_v2(Bucket=bucket_name).get("Contents", [])]
 
+
 def get_file_from_s3(s3_client, bucket_name, s3_key, download_path):
     """Downloads a file from an S3 bucket."""
     s3_client.download_file(bucket_name, s3_key, download_path)
+
 
 # def set_bucket_to_users(s3, bucket_name, access_key_list):
 #     """
@@ -146,6 +150,7 @@ def get_file_from_s3(s3_client, bucket_name, s3_key, download_path):
 # s3 = boto3.client('s3', ...)
 # set_bucket_to_users(s3, "test-ej", allowed_arns)
 
+
 def set_bucket_to_users(s3, bucket_name, access_key_list_allow, access_key_list_deny):
     """
     Set a bucket policy that *allows* access to the specified users and *denies* everyone else.
@@ -155,41 +160,33 @@ def set_bucket_to_users(s3, bucket_name, access_key_list_allow, access_key_list_
         bucket_name (str): Bucket name
         access_key_list (list): List of allowed principals (IAM ARNs or MinIO access keys)
     """
-    
+
     policy = {
         "Version": "2012-10-17",
         "Statement": [
             # First Deny everyone else aaccess to bucket and objects
             {
                 "Effect": "Deny",
-                "Principal": {
-                    "AWS": access_key_list_deny
-                },
+                "Principal": {"AWS": access_key_list_deny},
                 "Action": "s3:*",
-                "Resource": [
-                    f"arn:aws:s3:::{bucket_name}",
-                    f"arn:aws:s3:::{bucket_name}/*"
-                ]
+                "Resource": [f"arn:aws:s3:::{bucket_name}", f"arn:aws:s3:::{bucket_name}/*"],
             },
             # Then allow specified users full access
             {
                 "Effect": "Allow",
-                "Principal": {
-                    "AWS": access_key_list_allow
-                },
+                "Principal": {"AWS": access_key_list_allow},
                 "Action": "s3:*",
-                "Resource": [
-                    f"arn:aws:s3:::{bucket_name}",
-                    f"arn:aws:s3:::{bucket_name}/*"
-                ]
-            }
-        ]
+                "Resource": [f"arn:aws:s3:::{bucket_name}", f"arn:aws:s3:::{bucket_name}/*"],
+            },
+        ],
     }
 
     policy_json = json.dumps(policy)
-    print (policy_json)
+    print(policy_json)
     s3.put_bucket_policy(Bucket=bucket_name, Policy=policy_json)
-    print(f"Bucket policy applied to bucket '{bucket_name}', allowing only the specified users access and denying everyone else.")
+    print(
+        f"Bucket policy applied to bucket '{bucket_name}', allowing only the specified users access and denying everyone else."
+    )
 
 
 def readonly_user(user):
@@ -200,13 +197,13 @@ def readonly_user(user):
     try:
         subprocess.run(
             ["mc", "admin", "policy", "attach", target, policy_name, "--user", user, "--insecure"],
-            check=True
+            check=True,
         )
         print(f"Policy '{policy_name}' attached to user '{user}'.")
     except subprocess.CalledProcessError as e:
         print(f"Error attaching policy to user: {e}")
 
-    
+
 def grant_access(user, bucket):
     """background
     Create and attach a deny-write policy for the specified bucket to a MinIO user.
@@ -225,20 +222,18 @@ def grant_access(user, bucket):
                     "s3:DeleteObject",
                     "s3:ListAllMyBuckets",
                     "s3:ListBucket",
-                    "s3:PutObject"
+                    "s3:PutObject",
                 ],
-                "Resource": [
-                    f"arn:aws:s3:::{bucket}/*"
-                ]
+                "Resource": [f"arn:aws:s3:::{bucket}/*"],
             }
-        ]
+        ],
     }
 
     policy_json = json.dumps(policy, indent=2)
 
     policy_file = "/tmp/policy.json"
     # Save policy JSON to file
-    with open(policy_file, 'w') as f:
+    with open(policy_file, "w") as f:
         f.write(policy_json)
 
     policy_name = f"deny-{bucket}"
@@ -248,7 +243,7 @@ def grant_access(user, bucket):
     try:
         subprocess.run(
             ["mc", "admin", "policy", "create", target, policy_name, policy_file, "--insecure"],
-            check=True
+            check=True,
         )
     except subprocess.CalledProcessError as e:
         print(f"Error creating policy: {e}")
@@ -258,7 +253,7 @@ def grant_access(user, bucket):
     try:
         subprocess.run(
             ["mc", "admin", "policy", "attach", target, policy_name, "--user", user, "--insecure"],
-            check=True
+            check=True,
         )
         print(f"Policy '{policy_name}' attached to user '{user}'.")
     except subprocess.CalledProcessError as e:
@@ -267,7 +262,12 @@ def grant_access(user, bucket):
 
 default_config_file = os.path.expanduser("~/.s3cfg")
 parser = argparse.ArgumentParser(description="S3 Client demo")
-parser.add_argument("-c", "--config", default=default_config_file, help="Path to the S3 config file (default: ~/.s3cfg)")
+parser.add_argument(
+    "-c",
+    "--config",
+    default=default_config_file,
+    help="Path to the S3 config file (default: ~/.s3cfg)",
+)
 
 args = parser.parse_args()
 
@@ -277,33 +277,32 @@ s3, access_key = connect_to_s3(args.config)
 readonly_user("Badguy")
 grant_access("Badguy", "test-ej")
 
-print (f"acces_key: {access_key}")
+print(f"acces_key: {access_key}")
 
 # Test: List Buckets
 
-print ("Listing my buckets...");
+print("Listing my buckets...")
 try:
     buckets = s3.list_buckets()
     print("Bucket exists and access granted!")
     for bucket in buckets["Buckets"]:
-        print("\t"+bucket["Name"])
+        print("\t" + bucket["Name"])
 except ClientError as e:
     # error_code = int(e.response['Error']['Code'])
-    print(f"Error: {e}")#. Error code;{error_code}")
-
+    print(f"Error: {e}")  # . Error code;{error_code}")
 
 
 try:
     s3.head_bucket(Bucket="test-ej")
 except ClientError as e:
-    error_code = int(e.response['Error']['Code'])
+    error_code = int(e.response["Error"]["Code"])
     if error_code == 404:
         print("Bucket does not exist.")
         s3.create_bucket(
             Bucket="test-ej",
             CreateBucketConfiguration={
-                'LocationConstraint': 'ap-northeast-1'  # Match your desired region
-            }
+                "LocationConstraint": "ap-northeast-1"  # Match your desired region
+            },
         )
     elif error_code == 403:
         print(f"{e}: Bucket exists but you do not have access.")
@@ -316,12 +315,12 @@ delete_all_files_in_s3_bucket(s3, "test-ej")
 
 print("Listing test-ej:")
 keys = list_s3_bucket(s3, "test-ej")
-if len(keys)==0:
-   print("\t<empty>")
+if len(keys) == 0:
+    print("\t<empty>")
 for key in keys:
-    print ("\t"+key)
+    print("\t" + key)
 
-os.makedirs('../../data/tmp/', exist_ok=True)
+os.makedirs("../../data/tmp/", exist_ok=True)
 inpath = "../../data/img/Cat_4.jpg"
 outpath = "../../data/tmp/test.jpg"
 
@@ -330,10 +329,10 @@ upload_file_to_s3(s3, "test-ej", inpath, "img/data-1")
 
 print("Listing test-ej:")
 keys = list_s3_bucket(s3, "test-ej")
-if len(keys)==0:
-   print("\t<empty>")
+if len(keys) == 0:
+    print("\t<empty>")
 for key in keys:
-    print ("\t"+key)
+    print("\t" + key)
 
 print(f"Pulling file to test-ej into {outpath}")
 get_file_from_s3(s3, "test-ej", "img/data-1", outpath)

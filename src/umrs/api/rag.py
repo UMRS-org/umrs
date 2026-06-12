@@ -34,12 +34,14 @@ def _trace_headers() -> dict[str, str]:
     """Build headers that propagate correlation ID to downstream services."""
     try:
         from umrs.server.correlation import get_request_id
+
         rid = get_request_id()
         if rid:
             return {"X-Request-ID": rid}
     except Exception:
         pass
     return {}
+
 
 # RAG service port inside mini-rivault container
 _RAG_PORT = int(os.environ.get("MINI_RIVAULT_RAG_PORT", "8003"))
@@ -114,7 +116,10 @@ def _get_caller_identity(request: Request) -> tuple[str, str]:
     user_id = request.headers.get("x-user-id", "")
     verified_project_id = request.headers.get("x-verified-project-id", "").strip()
     project_id = verified_project_id or request.headers.get("x-project-id", "").strip()
-    if not verified_project_id and os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict":
+    if (
+        not verified_project_id
+        and os.environ.get("UMRS_AUTH_MODE", "mvp").strip().lower() == "strict"
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing X-Verified-Project-ID header (Gateway must set this)",
@@ -193,11 +198,15 @@ async def query_rag(
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/query"
 
-    timeout = httpx.Timeout(connect=_CONNECT_TIMEOUT, read=_READ_TIMEOUT, write=_READ_TIMEOUT, pool=5.0)
+    timeout = httpx.Timeout(
+        connect=_CONNECT_TIMEOUT, read=_READ_TIMEOUT, write=_READ_TIMEOUT, pool=5.0
+    )
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.post(rag_url, json=request_body.model_dump(), headers=_trace_headers())
+            response = await client.post(
+                rag_url, json=request_body.model_dump(), headers=_trace_headers()
+            )
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -237,6 +246,7 @@ async def upload_document(
     # Governance quota check
     try:
         from .governance import check_quota
+
         check_quota(project_id, "rag_documents")
     except Exception as exc:
         if hasattr(exc, "status_code"):
@@ -249,7 +259,9 @@ async def upload_document(
     rag_base = _discover_rag_endpoint(registry, project_id)
     rag_url = f"{rag_base}/rag/upload"
 
-    timeout = httpx.Timeout(connect=_CONNECT_TIMEOUT, read=_READ_TIMEOUT, write=_READ_TIMEOUT, pool=5.0)
+    timeout = httpx.Timeout(
+        connect=_CONNECT_TIMEOUT, read=_READ_TIMEOUT, write=_READ_TIMEOUT, pool=5.0
+    )
 
     try:
         content = await file.read()
@@ -264,7 +276,9 @@ async def upload_document(
             }
             data = {"project_id": project_id}
 
-            response = await client.post(rag_url, files=files, data=data, headers=_trace_headers())
+            response = await client.post(
+                rag_url, files=files, data=data, headers=_trace_headers()
+            )
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -274,6 +288,7 @@ async def upload_document(
 
             result = response.json()
             from .audit_events import emit_audit
+
             emit_audit(
                 "rag.upload",
                 user_id=_user_id,
@@ -287,6 +302,7 @@ async def upload_document(
 
             # Governance tracking
             from .governance import record_resource_created
+
             record_resource_created(
                 "rag_documents",
                 result.get("document_id", file.filename or "unknown"),
@@ -319,7 +335,9 @@ async def list_documents(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(rag_url, params={"project_id": project_id}, headers=_trace_headers())
+            response = await client.get(
+                rag_url, params={"project_id": project_id}, headers=_trace_headers()
+            )
 
             if response.status_code != 200:
                 raise HTTPException(
@@ -358,7 +376,9 @@ async def delete_document(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.delete(rag_url, params={"project_id": project_id}, headers=_trace_headers())
+            response = await client.delete(
+                rag_url, params={"project_id": project_id}, headers=_trace_headers()
+            )
 
             if response.status_code == 404:
                 raise HTTPException(status_code=404, detail="Document not found")
@@ -371,6 +391,7 @@ async def delete_document(
 
             # Governance tracking (best-effort)
             from .governance import record_resource_deleted
+
             record_resource_deleted("rag_documents", document_id, project_id)
 
             return {"status": "deleted", "document_id": document_id}
@@ -394,7 +415,9 @@ async def get_document(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(rag_url, params={"project_id": project_id}, headers=_trace_headers())
+            response = await client.get(
+                rag_url, params={"project_id": project_id}, headers=_trace_headers()
+            )
 
             if response.status_code == 404:
                 raise HTTPException(status_code=404, detail="Document not found")
@@ -432,7 +455,9 @@ async def rag_stats(
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            response = await client.get(rag_url, params={"project_id": project_id}, headers=_trace_headers())
+            response = await client.get(
+                rag_url, params={"project_id": project_id}, headers=_trace_headers()
+            )
 
             if response.status_code != 200:
                 raise HTTPException(

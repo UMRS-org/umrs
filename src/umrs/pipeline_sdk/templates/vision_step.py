@@ -70,8 +70,8 @@ class VisionStep(Step):
             or os.environ.get("OPENAI_BASE_URL")
             or os.environ.get("R4_GATEWAY_URL")
         )
-        self.api_key: str | None = (
-            config.get("api_key") or os.environ.get("OPENAI_API_KEY")
+        self.api_key: str | None = config.get("api_key") or os.environ.get(
+            "OPENAI_API_KEY"
         )
         self.timeout_sec: float = float(config.get("timeout_sec", 60.0))
         # Per-execution cache key (set by run() so retries are cheap).
@@ -96,7 +96,9 @@ class VisionStep(Step):
         # Persist perception JSON to S3 so other steps can pick it up.
         out_key = f"{ctx.run_id or 'run'}/{ctx.config.get('step_name', 'vision')}/perception.json"
         try:
-            payload = json.dumps(perception.to_dict(), ensure_ascii=False).encode("utf-8")
+            payload = json.dumps(perception.to_dict(), ensure_ascii=False).encode(
+                "utf-8"
+            )
             ctx.upload_bytes(out_key, payload, content_type="application/json")
             output_keys: list[str] = [out_key]
         except Exception as exc:  # noqa: BLE001 — runtime path, just log and skip
@@ -217,7 +219,9 @@ class VisionStep(Step):
             text = ""
         if isinstance(text, list):
             # OpenAI multimodal response — concatenate text parts.
-            text = "".join(part.get("text", "") for part in text if isinstance(part, dict))
+            text = "".join(
+                part.get("text", "") for part in text if isinstance(part, dict)
+            )
 
         return self._parse_vlm_text(text, image_ref)
 
@@ -483,7 +487,9 @@ class _ImageRef:
                 with open(self.path, "rb") as fh:
                     data = fh.read()
             except OSError as exc:
-                raise RuntimeError(f"Cannot read image file {self.path}: {exc}") from exc
+                raise RuntimeError(
+                    f"Cannot read image file {self.path}: {exc}"
+                ) from exc
         if data is None:
             raise RuntimeError("No image bytes available for VLM call")
         b64 = base64.b64encode(data).decode("ascii")

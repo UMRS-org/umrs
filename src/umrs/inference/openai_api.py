@@ -11,6 +11,7 @@ from umrs.shared.utils import (
 
 _clients = {}
 
+
 def get_client(url, model_name, api_key=None):
     api_key_hash = hashlib.sha256(api_key.encode()).hexdigest() if api_key else None
     key = (url, model_name, api_key_hash)
@@ -55,7 +56,10 @@ def is_server_alive(
     except httpx.HTTPError:
         return False
 
-def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0, api_key: str | None = None) -> int | None:
+
+def get_max_tokens_from_vllm(
+    url: str, model_name: str, timeout: float = 2.0, api_key: str | None = None
+) -> int | None:
     """
     Query a vLLM OpenAI-compatible server to get the max token length
     supported by a given model.
@@ -91,6 +95,7 @@ def get_max_tokens_from_vllm(url: str, model_name: str, timeout: float = 2.0, ap
 
     raise RuntimeError(f"Model {model_name} not found on vLLM server")
 
+
 def make_openai_compute_embeddings(url, model_name, api_key=None):
     """
     Factory that builds a `compute_embeddings` method backed by an
@@ -122,11 +127,14 @@ def make_openai_compute_embeddings(url, model_name, api_key=None):
       - A method compatible with `EmbeddingModel.compute_embeddings`
         that returns embeddings aligned with the original input structure
     """
+
     def _compute_embeddings_openai_api(self, texts):
         client = get_client(url, model_name, api_key=api_key)
 
         try:
-            flat_texts, chunks_dict = flatten_text_chunks(texts, self.nlp, tokenizer=self.tokenizer, max_tokens=self.max_tokens)
+            flat_texts, chunks_dict = flatten_text_chunks(
+                texts, self.nlp, tokenizer=self.tokenizer, max_tokens=self.max_tokens
+            )
             flat_texts = add_document_prefix(flat_texts, model_name)
             response = client.embeddings.create(
                 model=model_name,
@@ -150,7 +158,6 @@ def make_openai_compute_embeddings(url, model_name, api_key=None):
                 f"Embedding count mismatch: got {len(response.data)}, "
                 f"expected {len(flat_texts)}"
             )
-
 
         embeddings = [d.embedding for d in response.data]
         result = add_embeddings_to_chunks_dict(embeddings, chunks_dict)

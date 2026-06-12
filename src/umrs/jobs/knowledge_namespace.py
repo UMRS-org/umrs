@@ -52,7 +52,9 @@ class KnowledgeNamespace:
             "description": self.description,
             "is_active": self.is_active,
             "item_count": self.item_count,
-            "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else str(self.created_at),
+            "created_at": self.created_at.isoformat()
+            if isinstance(self.created_at, datetime)
+            else str(self.created_at),
         }
 
 
@@ -78,7 +80,9 @@ class NamespaceVisibility:
             "include_default": self.include_default,
             "include_project": self.include_project,
             "include_experiment": self.include_experiment,
-            "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else str(self.created_at),
+            "created_at": self.created_at.isoformat()
+            if isinstance(self.created_at, datetime)
+            else str(self.created_at),
         }
 
     def resolve_namespaces(
@@ -111,6 +115,7 @@ class KnowledgeNamespaceStore:
         if db_url:
             try:
                 import psycopg2
+
                 self._psycopg2 = psycopg2
             except ImportError:
                 logger.warning("psycopg2 unavailable; using in-memory store")
@@ -165,10 +170,15 @@ class KnowledgeNamespaceStore:
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
-                            ns.namespace_id, ns.name, ns.scope,
-                            ns.project_id, ns.experiment_id,
-                            ns.owner_id, ns.description,
-                            ns.is_active, ns.created_at,
+                            ns.namespace_id,
+                            ns.name,
+                            ns.scope,
+                            ns.project_id,
+                            ns.experiment_id,
+                            ns.owner_id,
+                            ns.description,
+                            ns.is_active,
+                            ns.created_at,
                         ),
                     )
                 conn.commit()
@@ -314,11 +324,14 @@ class KnowledgeNamespaceStore:
                         VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """,
                         (
-                            policy.policy_id, policy.job_id,
+                            policy.policy_id,
+                            policy.job_id,
                             policy.workflow_name,
                             ",".join(policy.visible_namespaces),
-                            policy.include_default, policy.include_project,
-                            policy.include_experiment, policy.created_at,
+                            policy.include_default,
+                            policy.include_project,
+                            policy.include_experiment,
+                            policy.created_at,
                         ),
                     )
                 conn.commit()
@@ -376,9 +389,7 @@ class KnowledgeNamespaceStore:
 
         Falls back to default visibility (default + project) if no policy exists.
         """
-        policy = self.get_visibility_policy(
-            job_id=job_id, workflow_name=workflow_name
-        )
+        policy = self.get_visibility_policy(job_id=job_id, workflow_name=workflow_name)
         if policy:
             return policy.resolve_namespaces(project_id, experiment_id)
 
@@ -417,7 +428,11 @@ class KnowledgeNamespaceStore:
         cols = [desc[0] for desc in cur.description]
         d = dict(zip(cols, row))
         vis_ns_raw = d.get("visible_namespaces", "")
-        vis_ns = [n.strip() for n in vis_ns_raw.split(",") if n.strip()] if vis_ns_raw else []
+        vis_ns = (
+            [n.strip() for n in vis_ns_raw.split(",") if n.strip()]
+            if vis_ns_raw
+            else []
+        )
         return NamespaceVisibility(
             policy_id=d["policy_id"],
             job_id=d.get("job_id"),

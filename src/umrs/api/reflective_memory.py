@@ -51,6 +51,7 @@ def get_inspector() -> ReflectiveMemoryInspector:
 # Response models
 # ---------------------------------------------------------------------------
 
+
 class EntryResponse(BaseModel):
     entry_id: str
     tier: str
@@ -75,6 +76,7 @@ VALID_TIERS = {"outcome", "routing", "heuristic"}
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
 
 @router.get("", response_model=SnapshotResponse)
 def inspect(
@@ -105,7 +107,9 @@ def delete_entry(tier: str, entry_id: str):
     inspector = get_inspector()
     ok = inspector.delete_entry(entry_id, tier)
     if not ok:
-        raise HTTPException(status_code=404, detail="Entry not found or deletion not supported")
+        raise HTTPException(
+            status_code=404, detail="Entry not found or deletion not supported"
+        )
     return {"status": "deleted", "entry_id": entry_id, "tier": tier}
 
 

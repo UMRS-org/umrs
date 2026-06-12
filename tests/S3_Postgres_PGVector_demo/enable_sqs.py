@@ -19,17 +19,12 @@ policy = {
             "Principal": "*",
             "Action": "sqs:SendMessage",
             "Resource": queue_arn,
-            "Condition": {
-                "ArnLike": {"aws:SourceArn": f"arn:aws:s3:::{bucket_name}"}
-            }
+            "Condition": {"ArnLike": {"aws:SourceArn": f"arn:aws:s3:::{bucket_name}"}},
         }
-    ]
+    ],
 }
 
 # Apply the updated policy to the SQS queue
-sqs.set_queue_attributes(
-    QueueUrl=queue_url,
-    Attributes={"Policy": json.dumps(policy)}
-)
+sqs.set_queue_attributes(QueueUrl=queue_url, Attributes={"Policy": json.dumps(policy)})
 
 print(f"✅ S3 is now allowed to send events to '{queue_name}'")

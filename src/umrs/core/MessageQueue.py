@@ -43,6 +43,8 @@ def _resolve_default_data_port_range() -> DataPortRange:
 DATA_PORT_RANGE = _resolve_default_data_port_range()
 DATA_BASE_PORT = DATA_PORT_RANGE.base_port
 DEFAULT_NB_MSG = 10240
+
+
 class MessageQueue:
     _AUTH_FIELD_INDEX = {
         TaskCmd.CREATE_DATA_QUEUE: 2,
@@ -73,7 +75,9 @@ class MessageQueue:
         cmd = parts[0]
         client_id = parts[1] if len(parts) > 1 else "<missing>"
         auth_index = cls._AUTH_FIELD_INDEX.get(cmd)
-        has_auth = bool(auth_index is not None and len(parts) > auth_index and parts[auth_index])
+        has_auth = bool(
+            auth_index is not None and len(parts) > auth_index and parts[auth_index]
+        )
         return (
             f"cmd={cmd} client_id={client_id} "
             f"fields={max(len(parts) - 1, 0)} has_auth={str(has_auth).lower()}"
@@ -142,10 +146,18 @@ class MessageQueue:
         existing_port = entry.get("port")
         existing_queue = entry.get("data_queue")
 
-        if existing_port is not None and port_range.contains(existing_port) and existing_queue is not None:
+        if (
+            existing_port is not None
+            and port_range.contains(existing_port)
+            and existing_queue is not None
+        ):
             return int(existing_port), port_range
 
-        if existing_port is not None and port_range.contains(existing_port) and self._is_data_port_available(existing_port):
+        if (
+            existing_port is not None
+            and port_range.contains(existing_port)
+            and self._is_data_port_available(existing_port)
+        ):
             selected_port = int(existing_port)
         else:
             selected_port = self._allocate_data_port(client_id, port_range)
@@ -156,12 +168,14 @@ class MessageQueue:
             try:
                 existing_queue.close()
             except Exception as exc:
-                logger.warning("Failed to close stale data queue for %s: %s", client_id, exc)
+                logger.warning(
+                    "Failed to close stale data queue for %s: %s", client_id, exc
+                )
 
         if existing_queue is None or existing_port != selected_port:
             entry["data_queue"] = MessageQueue(
-                role='server',
-                queue_type='data',
+                role="server",
+                queue_type="data",
                 server_ip=self.server_ip,
                 port=selected_port,
                 tunnel_mode=self.tunnel_mode,
@@ -172,10 +186,22 @@ class MessageQueue:
         entry["port"] = selected_port
         return selected_port, port_range
 
-    def __init__(self, role='server', queue_type='control', server_ip="127.0.0.1", port=BASE_PORT,
-                 max_nb_messages=DEFAULT_NB_MSG, timeout_ms=8000, tmp_dir = None, task_manager = None,
-                 status_store=None, tunnel_mode=None, prefer_env_server_host=True, zmq_security=None,
-                 session_curve_provider=None):
+    def __init__(
+        self,
+        role="server",
+        queue_type="control",
+        server_ip="127.0.0.1",
+        port=BASE_PORT,
+        max_nb_messages=DEFAULT_NB_MSG,
+        timeout_ms=8000,
+        tmp_dir=None,
+        task_manager=None,
+        status_store=None,
+        tunnel_mode=None,
+        prefer_env_server_host=True,
+        zmq_security=None,
+        session_curve_provider=None,
+    ):
         """
         Initializes the MessageQueue.
 
@@ -201,13 +227,19 @@ class MessageQueue:
         """
         self.role = role.lower()
         self.type = queue_type.lower()
-        self.tunnel_mode = self._env_flag("UMRS_TUNNEL_MODE", False) if tunnel_mode is None else bool(tunnel_mode)
+        self.tunnel_mode = (
+            self._env_flag("UMRS_TUNNEL_MODE", False)
+            if tunnel_mode is None
+            else bool(tunnel_mode)
+        )
         # Determine server_ip: prefer explicit env var so other containers/hosts can connect
-        env_server_host = os.environ.get("UMRS_SERVER_HOST") if prefer_env_server_host else None
+        env_server_host = (
+            os.environ.get("UMRS_SERVER_HOST") if prefer_env_server_host else None
+        )
         remote_server_ip = env_server_host if env_server_host else server_ip
         self.server_ip = "127.0.0.1" if self.tunnel_mode else remote_server_ip
         self.context = zmq.Context()
-        self.client_dictionary={}
+        self.client_dictionary = {}
         self.timeout = timeout_ms
         self.max_msg = max_nb_messages if max_nb_messages > 0 else DEFAULT_NB_MSG
         self.tmp_dir = tmp_dir
@@ -228,23 +260,37 @@ class MessageQueue:
         if self.role == "server" and self.zmq_security.is_session_mode:
             if self._session_curve_provider is None:
                 from umrs.core.session_curve_provider import SessionCredentialsProvider
+
                 self._session_curve_provider = SessionCredentialsProvider()
                 self._session_curve_provider.start()
             # Ensure the config carries the provider (frozen dataclass →
             # reconstruct only when the field differs).
-            if self.zmq_security.credentials_provider is not self._session_curve_provider:
+            if (
+                self.zmq_security.credentials_provider
+                is not self._session_curve_provider
+            ):
                 from dataclasses import replace as _dc_replace
+
                 self.zmq_security = _dc_replace(
                     self.zmq_security, credentials_provider=self._session_curve_provider
                 )
             # Publish to HTTP API layer so /umrs/zmq/session endpoints work.
             try:
                 from umrs.api.zmq_sessions import set_session_curve_provider
+
                 set_session_curve_provider(self._session_curve_provider)
             except Exception:
-                logger.debug("ZMQ session HTTP API not available — skipping provider publish")
-        elif self.role == "server" and self.zmq_security.enabled and self.zmq_security.client_keys_dir:
-            self._curve_key_map = CurveKeyMap.from_directory(self.zmq_security.client_keys_dir)
+                logger.debug(
+                    "ZMQ session HTTP API not available — skipping provider publish"
+                )
+        elif (
+            self.role == "server"
+            and self.zmq_security.enabled
+            and self.zmq_security.client_keys_dir
+        ):
+            self._curve_key_map = CurveKeyMap.from_directory(
+                self.zmq_security.client_keys_dir
+            )
 
         # Initialize the selected queue type
         if self.type == "control":
@@ -261,9 +307,8 @@ class MessageQueue:
 
     # ------------------------ Initializers ------------------------
 
-
     def _initialize_data_queue(self):
-        if self.role == 'server':
+        if self.role == "server":
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
             self._apply_zmq_security(server=True)
@@ -286,9 +331,8 @@ class MessageQueue:
             self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
 
-
     def _initialize_control_queue(self):
-        if self.role == 'server':
+        if self.role == "server":
             self.socket = self.context.socket(zmq.ROUTER)
             self._apply_zmq_security(server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
@@ -403,11 +447,13 @@ class MessageQueue:
                         raise RuntimeError(
                             "Server ROUTER socket requires client_id to send a message"
                         )
-                    self.socket.send_multipart([
-                        client_id,
-                        b"",  # Empty delimiter for REQ compatibility
-                        string.encode("utf-8")
-                    ])
+                    self.socket.send_multipart(
+                        [
+                            client_id,
+                            b"",  # Empty delimiter for REQ compatibility
+                            string.encode("utf-8"),
+                        ]
+                    )
                 else:
                     # DEALER socket
                     self.socket.send_string(string)
@@ -434,7 +480,9 @@ class MessageQueue:
 
         except Exception as e:
             METRICS.transport_error("zmq", "send_unexpected")
-            raise RuntimeError(f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}") from e
+            raise RuntimeError(
+                f"Unexpected error while sending '{string}' from {self.role} to {self.type}: {e}"
+            ) from e
 
     def recv_string(self):
         """
@@ -508,11 +556,11 @@ class MessageQueue:
         self.socket.RCVTIMEO = recv_timeout_ms
         self.socket.SNDTIMEO = send_timeout_ms
 
-
-
     def send_file(self, send_file_path, chunk_size=4096):
-        if self.role != 'client' or self.type != 'data':
-            raise PermissionError("Sending file can only be done by the client using the data queue")
+        if self.role != "client" or self.type != "data":
+            raise PermissionError(
+                "Sending file can only be done by the client using the data queue"
+            )
         if not os.path.isfile(send_file_path):
             raise FileNotFoundError(f"File '{send_file_path}' not found")
 
@@ -527,16 +575,17 @@ class MessageQueue:
                     self.socket.send(chunk)
                     total_bytes += len(chunk)
                 # Send end signal (can be empty frame)
-                self.socket.send(b'__END_OF_FILE__')
+                self.socket.send(b"__END_OF_FILE__")
                 METRICS.transport_bytes("zmq", "send", total_bytes)
             except zmq.ZMQError as e:
                 METRICS.transport_error("zmq", "file_send")
                 raise RuntimeError(f"Failed to send file: {e}") from e
 
-
     def recv_file(self, out_dir="/tmp"):
-        if self.role != 'server' or self.type != 'data':
-            raise PermissionError("Receiving file can only be done by the server using the data queue")
+        if self.role != "server" or self.type != "data":
+            raise PermissionError(
+                "Receiving file can only be done by the server using the data queue"
+            )
 
         if not os.path.exists(out_dir):
             os.makedirs(out_dir, exist_ok=True)  # Ensure directory exists
@@ -544,11 +593,13 @@ class MessageQueue:
         tmp_path = None
         try:
             total_bytes = 0
-            with tempfile.NamedTemporaryFile(mode='w+b', dir=out_dir, delete=False) as tmp_file:
+            with tempfile.NamedTemporaryFile(
+                mode="w+b", dir=out_dir, delete=False
+            ) as tmp_file:
                 tmp_path = os.path.abspath(tmp_file.name)
                 while True:
                     chunk = self.socket.recv()
-                    if chunk == b'__END_OF_FILE__':
+                    if chunk == b"__END_OF_FILE__":
                         break
                     tmp_file.write(chunk)
                     total_bytes += len(chunk)
@@ -559,8 +610,6 @@ class MessageQueue:
             if tmp_path and os.path.exists(tmp_path):
                 os.remove(tmp_path)
             raise
-
-
 
     # ------------------------ Close ------------------------
 
@@ -587,15 +636,16 @@ class MessageQueue:
                 logger.warning("Failed to stop ZMQ authenticator: %s", e)
             self._zmq_authenticator = None
 
-
     # ------------------------ Server methods ------------------------
     def server_control_queue_loop(self):
         if self.role != "server":
             raise PermissionError("Only server can call 'server_control_queue_loop'.")
 
         while True:
-            zmq_sender_id, msg = self.recv_string() # Blocking call
-            logger.info("Received control request: %s", self._redact_control_message(msg))
+            zmq_sender_id, msg = self.recv_string()  # Blocking call
+            logger.info(
+                "Received control request: %s", self._redact_control_message(msg)
+            )
             # messgae structure should be "{command}:{username}:{other information (e.g file/object count)}"
             splited_msg = msg.split(":")
 
@@ -622,24 +672,34 @@ class MessageQueue:
                 try:
                     if jwt_token:
                         from umrs.shared.auth import authenticate_request
+
                         auth_ctx = authenticate_request(jwt_token)
                     else:
-                        auth_ctx = create_auth_context_from_request(client_id, token=token)
+                        auth_ctx = create_auth_context_from_request(
+                            client_id, token=token
+                        )
                 except Exception as e:
-                    logger.warning("Failed to create auth context for %s: %s", client_id, e)
+                    logger.warning(
+                        "Failed to create auth context for %s: %s", client_id, e
+                    )
                     auth_ctx = AuthContext(
-                        user_id=client_id, username=client_id, role=UserRole.USER,
+                        user_id=client_id,
+                        username=client_id,
+                        role=UserRole.USER,
                     )
                 self._auth_sessions[client_id] = auth_ctx
                 logger.info(
                     "Auth session created: user=%s role=%s",
-                    client_id, auth_ctx.role.value,
+                    client_id,
+                    auth_ctx.role.value,
                 )
 
                 port, port_range = self._ensure_client_data_queue(client_id)
                 if port is None:
                     with contextlib.suppress(RuntimeError):
-                        self.send_string(f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id)
+                        self.send_string(
+                            f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id
+                        )
                     continue
 
                 reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
@@ -673,8 +733,12 @@ class MessageQueue:
                         try:
                             inline_keys = json.loads(raw_keys)
                         except (json.JSONDecodeError, ValueError):
-                            logger.warning("Failed to parse inline S3 keys: %s", raw_keys[:120])
-                return self._process_object_cmd(client_id, nb_objects, zmq_sender_id, inline_keys=inline_keys)
+                            logger.warning(
+                                "Failed to parse inline S3 keys: %s", raw_keys[:120]
+                            )
+                return self._process_object_cmd(
+                    client_id, nb_objects, zmq_sender_id, inline_keys=inline_keys
+                )
 
             elif cmd == TaskCmd.FILE:  # prepare PUB-SUB request
                 if len(splited_msg) < 3:
@@ -719,7 +783,9 @@ class MessageQueue:
                 token = self._control_auth_token()
                 if client_id and token:
                     try:
-                        auth_ctx = create_auth_context_from_request(client_id, token=token)
+                        auth_ctx = create_auth_context_from_request(
+                            client_id, token=token
+                        )
                         self._auth_sessions[client_id] = auth_ctx
                         logger.info(
                             "Auth session refreshed for ENROLL_USER: user=%s role=%s",
@@ -732,8 +798,9 @@ class MessageQueue:
                             client_id,
                             e,
                         )
-                return self._process_file_cmd(client_id, nb_files, zmq_sender_id,
-                                              result_cmd=TaskCmd.ENROLL_USER)
+                return self._process_file_cmd(
+                    client_id, nb_files, zmq_sender_id, result_cmd=TaskCmd.ENROLL_USER
+                )
             elif cmd == TaskCmd.UPLOAD_WORKFLOW:
                 if len(splited_msg) < 3:
                     logger.error(
@@ -746,10 +813,14 @@ class MessageQueue:
                 client_id = splited_msg[1]
                 workflow_name = splited_msg[2]
                 # Receive exactly 1 zip file via the data channel (same as FILE)
-                return self._process_file_cmd(client_id, 1, zmq_sender_id,
-                                              result_cmd=TaskCmd.UPLOAD_WORKFLOW,
-                                              extra_payload=workflow_name)
-            elif cmd ==  TaskCmd.STATUS:
+                return self._process_file_cmd(
+                    client_id,
+                    1,
+                    zmq_sender_id,
+                    result_cmd=TaskCmd.UPLOAD_WORKFLOW,
+                    extra_payload=workflow_name,
+                )
+            elif cmd == TaskCmd.STATUS:
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
                 payload = self._get_status_payload(client_id, status_key)
@@ -758,7 +829,7 @@ class MessageQueue:
                 except RuntimeError as e:
                     logger.error("Error sending status payload: %s", e)
                 continue
-            elif cmd == TaskCmd.WAIT_OUTPUT :
+            elif cmd == TaskCmd.WAIT_OUTPUT:
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 args = splited_msg[2] if len(splited_msg) > 2 else None
                 if client_id is None or args is None:
@@ -770,7 +841,12 @@ class MessageQueue:
                 splited_args = args.split(";")
                 bucket_name = splited_args[0]
                 timeout = int(splited_args[1]) if len(splited_args) > 1 else None
-                return TaskCmd.WAIT_OUTPUT, (client_id, bucket_name, timeout, zmq_sender_id)
+                return TaskCmd.WAIT_OUTPUT, (
+                    client_id,
+                    bucket_name,
+                    timeout,
+                    zmq_sender_id,
+                )
 
             elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
@@ -781,9 +857,18 @@ class MessageQueue:
                     except RuntimeError as e:
                         logger.error("Error sending export error: %s", e)
                     continue
-                return TaskCmd.EXPORT_EMBEDDINGS, (client_id, export_args, zmq_sender_id)
+                return TaskCmd.EXPORT_EMBEDDINGS, (
+                    client_id,
+                    export_args,
+                    zmq_sender_id,
+                )
 
-            elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
+            elif cmd in (
+                TaskCmd.RECOMPUTE,
+                TaskCmd.UPDATE,
+                TaskCmd.CHECK,
+                TaskCmd.RELOAD,
+            ):
                 # Do NOT acknowledge here — let the server main loop
                 # authorize the request first and reply with ACKNOWLEDGE
                 # or UNAUTHORIZED so the client sees the real outcome.
@@ -796,7 +881,9 @@ class MessageQueue:
                 )
                 if client_id and token:
                     try:
-                        auth_ctx = create_auth_context_from_request(client_id, token=token)
+                        auth_ctx = create_auth_context_from_request(
+                            client_id, token=token
+                        )
                         self._auth_sessions[client_id] = auth_ctx
                         logger.info(
                             "Auth session refreshed for maintenance: user=%s role=%s cmd=%s",
@@ -812,16 +899,25 @@ class MessageQueue:
                         )
                 return cmd, (client_id, zmq_sender_id)
 
-            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
-                         TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW):
+            elif cmd in (
+                TaskCmd.MODEL_REGISTER,
+                TaskCmd.MODEL_LIST,
+                TaskCmd.MODEL_DOWNLOAD,
+                TaskCmd.LIST_WORKFLOWS,
+                TaskCmd.RUN_WORKFLOW,
+            ):
                 # Model/workflow registry commands: immediate request/reply with JSON payload
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 # The rest of the message (after "CMD:client_id:") is the JSON payload
                 payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
                 return cmd, (client_id, payload_str, zmq_sender_id)
 
-            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST,
-                         TaskCmd.PURGE_BUCKETS):
+            elif cmd in (
+                TaskCmd.JOB_SUBMIT,
+                TaskCmd.JOB_CANCEL,
+                TaskCmd.JOB_LIST,
+                TaskCmd.PURGE_BUCKETS,
+            ):
                 # Job tracking / bucket management: immediate request/reply with JSON payload
                 client_id = splited_msg[1] if len(splited_msg) > 1 else None
                 payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
@@ -832,10 +928,13 @@ class MessageQueue:
                 jwt_token = self._control_auth_jwt()
                 if not jwt_token:
                     with contextlib.suppress(RuntimeError):
-                        self.send_string("AUTH_REQUIRED:JWT required for bootstrap", zmq_sender_id)
+                        self.send_string(
+                            "AUTH_REQUIRED:JWT required for bootstrap", zmq_sender_id
+                        )
                     continue
                 try:
                     from umrs.shared.auth import authenticate_request
+
                     auth_ctx = authenticate_request(jwt_token)
                 except Exception as exc:
                     with contextlib.suppress(RuntimeError):
@@ -857,7 +956,7 @@ class MessageQueue:
             List of received message strings (may be shorter than nb_objects
             if the timeout fires).
         """
-        if self.role != 'server':
+        if self.role != "server":
             raise PermissionError("Only server can call 'wait_for_s3_events'.")
 
         messages = []
@@ -879,29 +978,36 @@ class MessageQueue:
                 break
             _, message = self.recv_string()
             if message:
-                logger.debug("Received S3 event payload_bytes=%s", len(message.encode("utf-8")))
+                logger.debug(
+                    "Received S3 event payload_bytes=%s", len(message.encode("utf-8"))
+                )
                 messages.append(message)
                 nb_received += 1
 
         return messages
 
-    def _process_file_cmd(self, client_id, nb_files, zmq_sender_id, result_cmd=None, extra_payload=None):
+    def _process_file_cmd(
+        self, client_id, nb_files, zmq_sender_id, result_cmd=None, extra_payload=None
+    ):
         if result_cmd is None:
             result_cmd = TaskCmd.FILE
         # Verify client has a data socket ready
-        if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
+        if (
+            client_id in self.client_dictionary
+            and "data_queue" in self.client_dictionary[client_id]
+        ):
             data_queue = self.client_dictionary[client_id]["data_queue"]
             port = self.client_dictionary[client_id]["port"]
             logger.info("Listening for data on port %s", port)
 
             path_list = []
-            if not self.tmp_dir or not os.path.exists(self.tmp_dir) :
+            if not self.tmp_dir or not os.path.exists(self.tmp_dir):
                 logger.warning(
                     "No temporary receiving directory configured or accessible; using %s",
                     os.devnull,
                 )
                 recv_dir = os.devnull
-            else :
+            else:
                 recv_dir = self.tmp_dir
 
             # For each expected file:
@@ -920,14 +1026,19 @@ class MessageQueue:
             if extra_payload is not None:
                 return result_cmd, (client_id, path_list, extra_payload)
             return result_cmd, (client_id, path_list)
-        else: # cannot find the client in the client_dictionnary
+        else:  # cannot find the client in the client_dictionnary
             try:
                 self.send_string("NO_DATA_QUEUE", zmq_sender_id)
             except RuntimeError as e:
                 logger.error("Error sending NO_DATA_QUEUE to client: %s", e)
 
-    def _process_object_cmd(self, client_id, nb_objects, zmq_sender_id, *, inline_keys=None):
-        if client_id in self.client_dictionary and "data_queue" in self.client_dictionary[client_id]:
+    def _process_object_cmd(
+        self, client_id, nb_objects, zmq_sender_id, *, inline_keys=None
+    ):
+        if (
+            client_id in self.client_dictionary
+            and "data_queue" in self.client_dictionary[client_id]
+        ):
             data_queue = self.client_dictionary[client_id]["data_queue"]
             # ACK immediately so the client doesn't timeout while we collect S3 events
             try:
@@ -938,7 +1049,8 @@ class MessageQueue:
                 objects = inline_keys
                 logger.info(
                     "Using %s inline S3 key(s) for client=%s (data-queue bypassed)",
-                    len(objects), client_id,
+                    len(objects),
+                    client_id,
                 )
             else:
                 objects = data_queue.wait_for_s3_events(nb_objects, timeout_s=5)
@@ -961,11 +1073,13 @@ class MessageQueue:
     # ------------------------ client methods ------------------------
 
     def reset_control_queue(self):
-        if self.role != 'client' or self.type != 'control':
-            raise PermissionError("reset_control_plane can only be called by client control queue")
+        if self.role != "client" or self.type != "control":
+            raise PermissionError(
+                "reset_control_plane can only be called by client control queue"
+            )
 
         # Close existing socket if it exists
-        if hasattr(self, 'socket'):
+        if hasattr(self, "socket"):
             try:
                 self.socket.close()
             except Exception:
@@ -1011,7 +1125,9 @@ class MessageQueue:
                     return False
             return False
         finally:
-            self.set_timeouts(self.timeout, self.timeout) # always reset timeout before exiting
+            self.set_timeouts(
+                self.timeout, self.timeout
+            )  # always reset timeout before exiting
 
     def get_data_queue(self, client_id, tunnel_mode=None, admin_token=None, jwt=None):
         """Request a client data queue.
@@ -1035,25 +1151,29 @@ class MessageQueue:
             jwt=jwt,
         )
 
-        effective_tunnel_mode = self.tunnel_mode if tunnel_mode is None else bool(tunnel_mode)
+        effective_tunnel_mode = (
+            self.tunnel_mode if tunnel_mode is None else bool(tunnel_mode)
+        )
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in get_data_queue") from None
+            raise RuntimeError(
+                "Timeout waiting for server response in get_data_queue"
+            ) from None
         except (AttributeError, TypeError, ValueError):
             reply = self.socket.recv_string()
 
         if reply.startswith("tcp://"):
             # Remove protocol prefix
-            endpoint = reply[len("tcp://"):]
+            endpoint = reply[len("tcp://") :]
             # Split IP and port
             server_ip, port_str = endpoint.split(":")
             port = int(port_str)
 
             # Create MessageQueue with parsed IP and port
             data_mq = MessageQueue(
-                role='client',
-                queue_type='data',
+                role="client",
+                queue_type="data",
                 server_ip=server_ip,
                 port=port,
                 tunnel_mode=effective_tunnel_mode,
@@ -1067,13 +1187,22 @@ class MessageQueue:
         else:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
-    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None, s3_keys=None):
+    def notify_server(
+        self,
+        client_id,
+        notification_type,
+        nb_objects,
+        verbose=False,
+        admin_token=None,
+        s3_keys=None,
+    ):
         if self.role != "client":
             raise PermissionError("Only client can call 'notify_server'")
 
         fields = [notification_type, client_id, nb_objects]
         if s3_keys is not None:
             import json as _json
+
             fields.append(_json.dumps(s3_keys, ensure_ascii=False))
         self.send_control_request(
             fields,
@@ -1083,7 +1212,9 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in notify_server") from None
+            raise RuntimeError(
+                "Timeout waiting for server response in notify_server"
+            ) from None
 
         if reply is None:
             raise RuntimeError(
@@ -1100,9 +1231,13 @@ class MessageQueue:
             # Server denied the command after authorization check.
             return False
         elif reply == "NO_DATA_QUEUE":
-            raise RuntimeError(f"Error: the server cannot find the data queue for user {client_id}.")
+            raise RuntimeError(
+                f"Error: the server cannot find the data queue for user {client_id}."
+            )
         else:
-            raise RuntimeError(f"Unexpected error on server side for user {client_id}: {reply}.")
+            raise RuntimeError(
+                f"Unexpected error on server side for user {client_id}: {reply}."
+            )
 
     def request_status(self, client_id, status_key="all"):
         if self.role != "client":
@@ -1116,17 +1251,23 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_status") from None
+            raise RuntimeError(
+                "Timeout waiting for server response in request_status"
+            ) from None
 
         return reply
 
-    def request_export_embeddings(self, client_id, path_to_bucket, export_format="csv", export_profile="minimal"):
+    def request_export_embeddings(
+        self, client_id, path_to_bucket, export_format="csv", export_profile="minimal"
+    ):
         """Send EXPORT_EMBEDDINGS request and receive the serialised result."""
         if self.role != "client":
             raise PermissionError("Only client can call 'request_export_embeddings'")
 
         safe_client_id = (client_id or "").replace(":", "_")
-        safe_args = f"{path_to_bucket};{export_format};{export_profile}".replace(":", "_")
+        safe_args = f"{path_to_bucket};{export_format};{export_profile}".replace(
+            ":", "_"
+        )
         request_str = f"{TaskCmd.EXPORT_EMBEDDINGS}:{safe_client_id}:{safe_args}"
 
         # Allow a generous receive timeout for large tables
@@ -1137,7 +1278,9 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_export_embeddings") from None
+            raise RuntimeError(
+                "Timeout waiting for server response in request_export_embeddings"
+            ) from None
         finally:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
 
@@ -1147,11 +1290,9 @@ class MessageQueue:
         if self.role != "client":
             raise PermissionError("Only client can call 'request_status'")
 
+        timeout_ms = 10000 * (timeout * 2)
 
-        timeout_ms = 10000*(timeout*2)
-
-        self.set_timeouts(timeout_ms,self.timeout)
-
+        self.set_timeouts(timeout_ms, self.timeout)
 
         safe_client_id = (client_id or "").replace(":", "_")
         safe_args = f"{full_bucket_name};{timeout}".replace(":", "_")
@@ -1161,13 +1302,14 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_status") from None
+            raise RuntimeError(
+                "Timeout waiting for server response in request_status"
+            ) from None
 
         finally:
-            self.set_timeouts(self.timeout,self.timeout)
+            self.set_timeouts(self.timeout, self.timeout)
 
         return reply
-
 
     def get_status_store(self):
         return self.status_store
@@ -1199,14 +1341,17 @@ class MessageQueue:
             entry = None
 
             # First try ZAP-verified session_id (cryptographically guaranteed)
-            client_id_bytes = client_id.encode("utf-8") if isinstance(client_id, str) else client_id
+            client_id_bytes = (
+                client_id.encode("utf-8") if isinstance(client_id, str) else client_id
+            )
             zap_session_id = self._zap_user_ids.get(client_id_bytes)
             if zap_session_id:
                 entry = self._session_curve_provider.get_session(zap_session_id)
                 if entry is not None:
                     logger.debug(
                         "ZAP identity resolved: session=%s user=%s (RFC 27 verified)",
-                        zap_session_id, entry.user_id,
+                        zap_session_id,
+                        entry.user_id,
                     )
 
             # Fallback: lookup by pubkey (backward compat with older clients)
@@ -1215,7 +1360,10 @@ class MessageQueue:
                 if entry is not None:
                     logger.debug(
                         "Session CURVE provider resolved client_id=%s to user=%s projects=%s roles=%s",
-                        client_id, entry.user_id, entry.grants.projects, entry.grants.roles,
+                        client_id,
+                        entry.user_id,
+                        entry.grants.projects,
+                        entry.grants.roles,
                     )
 
             if entry is not None:
@@ -1226,7 +1374,9 @@ class MessageQueue:
                     user_id=entry.user_id,
                     username=entry.user_id,
                     role=role,
-                    project_id=entry.grants.projects[0] if entry.grants.projects else None,
+                    project_id=entry.grants.projects[0]
+                    if entry.grants.projects
+                    else None,
                     email=entry.grants.email or None,
                     session_id=entry.session_id,
                 )
@@ -1239,7 +1389,8 @@ class MessageQueue:
             if curve_user:
                 logger.debug(
                     "CURVE key map resolved client_id=%s to user=%s",
-                    client_id, curve_user,
+                    client_id,
+                    curve_user,
                 )
 
         # Create a default USER context for clients that connected before
@@ -1260,7 +1411,9 @@ class MessageQueue:
 
         uncompleted_key_list = None
         if self.task_manager is not None:
-            uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(client_id, status_key)
+            uncompleted_key_list = self.task_manager.tasks_status.all_uncompleted_task(
+                client_id, status_key
+            )
 
         # Collect pool metrics when available
         pool_metrics = None
@@ -1271,25 +1424,45 @@ class MessageQueue:
         client_store = store.get(client_id, {})
         if key in ("all", "*"):
             if not client_store:
-                payload = {"status": "error", "message": "No status entries", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
+                payload = {
+                    "status": "error",
+                    "message": "No status entries",
+                    "client": client_id,
+                    "uncompleted_key_list": uncompleted_key_list,
+                }
             else:
-                payload = {"status": "ok", "client": client_id, "summaries": client_store, "uncompleted_key_list": uncompleted_key_list}
+                payload = {
+                    "status": "ok",
+                    "client": client_id,
+                    "summaries": client_store,
+                    "uncompleted_key_list": uncompleted_key_list,
+                }
             if pool_metrics is not None:
                 payload["pool"] = pool_metrics
             return json.dumps(payload, ensure_ascii=False)
 
         entry = client_store.get(key)
         if not entry:
-            payload = {"status": "error", "message": f"No status for '{key}'", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
+            payload = {
+                "status": "error",
+                "message": f"No status for '{key}'",
+                "client": client_id,
+                "uncompleted_key_list": uncompleted_key_list,
+            }
         else:
-            payload = {"status": "ok", "client": client_id, "summary": entry, "uncompleted_key_list": uncompleted_key_list}
+            payload = {
+                "status": "ok",
+                "client": client_id,
+                "summary": entry,
+                "uncompleted_key_list": uncompleted_key_list,
+            }
         if pool_metrics is not None:
             payload["pool"] = pool_metrics
         return json.dumps(payload, ensure_ascii=False)
 
     def notify_s3(self, s3_object):
         """Notify the server about a new S3 event."""
-        if self.role != 'client':
+        if self.role != "client":
             raise PermissionError("notify_s3 can only be used by the client.")
 
         self.send_string(s3_object)
@@ -1318,7 +1491,9 @@ class MessageQueue:
         try:
             _, reply = self.recv_string()
         except zmq.Again:
-            raise RuntimeError("Timeout waiting for server response in request_model_command") from None
+            raise RuntimeError(
+                "Timeout waiting for server response in request_model_command"
+            ) from None
         finally:
             self.socket.setsockopt(zmq.RCVTIMEO, old_rcv)
 
@@ -1336,7 +1511,3 @@ class MessageQueue:
         payload = json.dumps(filters or {})
         raw = self.request_model_command(client_id, TaskCmd.JOB_LIST, payload)
         return json.loads(raw)
-
-
-
-

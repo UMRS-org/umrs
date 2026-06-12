@@ -120,6 +120,7 @@ class ExecutionTraceStore:
         if db_url:
             try:
                 import psycopg2  # type: ignore
+
                 self._psycopg2 = psycopg2
             except ImportError:
                 logger.warning(
@@ -160,6 +161,7 @@ class ExecutionTraceStore:
         ttl_expires = None
         if ttl_seconds is not None:
             from datetime import timedelta
+
             ttl_expires = now + timedelta(seconds=ttl_seconds)
 
         # Store inline snapshot for replay if inputs are small enough
@@ -320,10 +322,7 @@ class ExecutionTraceStore:
                 return self._db_get_children(trace_id)
             except Exception as exc:
                 logger.warning("DB get_children failed: %s", exc)
-        return [
-            t for t in self._traces.values()
-            if t.parent_trace_id == trace_id
-        ]
+        return [t for t in self._traces.values() if t.parent_trace_id == trace_id]
 
     def cleanup_expired(self) -> int:
         """Remove traces past their TTL. Returns count removed."""
@@ -335,7 +334,8 @@ class ExecutionTraceStore:
                 logger.warning("DB cleanup_expired failed: %s", exc)
 
         expired = [
-            tid for tid, t in self._traces.items()
+            tid
+            for tid, t in self._traces.items()
             if t.ttl_expires_at is not None and t.ttl_expires_at < now
         ]
         for tid in expired:
@@ -383,10 +383,7 @@ class ExecutionTraceStore:
             except Exception as exc:
                 logger.warning("DB find_traces_by_inputs_hash failed: %s", exc)
 
-        return [
-            t for t in self._traces.values()
-            if t.inputs_hash == inputs_hash
-        ]
+        return [t for t in self._traces.values() if t.inputs_hash == inputs_hash]
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -452,8 +449,14 @@ class ExecutionTraceStore:
         # Build SET clause dynamically
         set_parts: list[str] = []
         values: list[Any] = []
-        json_fields = {"model_ref", "artifact_refs", "tool_calls", "retrieval_refs",
-                       "routing_decision", "error_detail"}
+        json_fields = {
+            "model_ref",
+            "artifact_refs",
+            "tool_calls",
+            "retrieval_refs",
+            "routing_decision",
+            "error_detail",
+        }
         for key, value in fields.items():
             set_parts.append(f"{key} = %s")
             if key in json_fields and value is not None:
@@ -500,7 +503,9 @@ class ExecutionTraceStore:
                     (job_id,),
                 )
                 cols = [desc[0] for desc in cur.description]
-                return [self._row_to_record(dict(zip(cols, row))) for row in cur.fetchall()]
+                return [
+                    self._row_to_record(dict(zip(cols, row))) for row in cur.fetchall()
+                ]
         finally:
             conn.close()
 
@@ -513,7 +518,9 @@ class ExecutionTraceStore:
                     (execution_id,),
                 )
                 cols = [desc[0] for desc in cur.description]
-                return [self._row_to_record(dict(zip(cols, row))) for row in cur.fetchall()]
+                return [
+                    self._row_to_record(dict(zip(cols, row))) for row in cur.fetchall()
+                ]
         finally:
             conn.close()
 
@@ -526,7 +533,9 @@ class ExecutionTraceStore:
                     (trace_id,),
                 )
                 cols = [desc[0] for desc in cur.description]
-                return [self._row_to_record(dict(zip(cols, row))) for row in cur.fetchall()]
+                return [
+                    self._row_to_record(dict(zip(cols, row))) for row in cur.fetchall()
+                ]
         finally:
             conn.close()
 
@@ -565,8 +574,7 @@ class ExecutionTraceStore:
                     )
                 cols = [desc[0] for desc in cur.description]
                 return [
-                    self._row_to_record(dict(zip(cols, row)))
-                    for row in cur.fetchall()
+                    self._row_to_record(dict(zip(cols, row))) for row in cur.fetchall()
                 ]
         finally:
             conn.close()
@@ -582,8 +590,7 @@ class ExecutionTraceStore:
                 )
                 cols = [desc[0] for desc in cur.description]
                 return [
-                    self._row_to_record(dict(zip(cols, row)))
-                    for row in cur.fetchall()
+                    self._row_to_record(dict(zip(cols, row))) for row in cur.fetchall()
                 ]
         finally:
             conn.close()
@@ -592,9 +599,16 @@ class ExecutionTraceStore:
     def _row_to_record(row: dict[str, Any]) -> TraceRecord:
         """Convert a database row dict to a TraceRecord."""
         # Parse JSON fields that come back as strings
-        for json_field in ("model_ref", "artifact_refs", "tool_calls",
-                           "retrieval_refs", "routing_decision", "error_detail",
-                           "inputs_snapshot", "outputs_snapshot"):
+        for json_field in (
+            "model_ref",
+            "artifact_refs",
+            "tool_calls",
+            "retrieval_refs",
+            "routing_decision",
+            "error_detail",
+            "inputs_snapshot",
+            "outputs_snapshot",
+        ):
             val = row.get(json_field)
             if isinstance(val, str):
                 try:

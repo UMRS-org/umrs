@@ -76,9 +76,7 @@ def ensure_schema(conn: psycopg2.extensions.connection) -> int:
     with conn.cursor() as cur:
         cur.execute(CREATE_SCHEMA_VERSION_TABLE)
 
-        cur.execute(
-            "SELECT version FROM mcp_schema_version WHERE id = 1"
-        )
+        cur.execute("SELECT version FROM mcp_schema_version WHERE id = 1")
         row = cur.fetchone()
 
         if row is None:

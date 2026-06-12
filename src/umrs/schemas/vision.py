@@ -198,12 +198,16 @@ class VisionPerception:
         return VisionPerception(
             caption=other.caption if other.caption else self.caption,
             dense_description=(
-                other.dense_description if other.dense_description else self.dense_description
+                other.dense_description
+                if other.dense_description
+                else self.dense_description
             ),
             objects=list(self.objects) + list(other.objects),
             ocr=list(self.ocr) + list(other.ocr),
             embeddings_ref=other.embeddings_ref or self.embeddings_ref,
-            image=other.image if other.image.width or other.image.height else self.image,
+            image=other.image
+            if other.image.width or other.image.height
+            else self.image,
             model=other.model if other.model.name else self.model,
             meta={**self.meta, **other.meta},
         )

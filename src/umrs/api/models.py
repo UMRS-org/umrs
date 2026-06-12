@@ -90,55 +90,109 @@ def get_optional_model_store() -> ModelStore | None:
 class ServingProfileRequest(BaseModel):
     """Serving configuration for vLLM/LiteLLM or BentoML vision."""
 
-    serving_backend: str | None = Field(None, description="Serving backend: vllm or bentoml")
-    service_kind: str | None = Field(None, description="Service API kind: openai or bentoml_vision")
-    launch_profiles: list[str] = Field(default_factory=list, description="Mini-RiVault profiles to activate")
-    container_image: str | None = Field(None, description="Container image override for this service")
-    service_port: int | None = Field(None, ge=1, le=65535, description="External service port")
-    readiness_probe: str | None = Field(None, description="Readiness probe kind: models, chat, or http")
-    readiness_path: str | None = Field(None, description="HTTP readiness path for non-OpenAI services")
-    invoke_base_path: str | None = Field(None, description="Base path for invoking the service")
+    serving_backend: str | None = Field(
+        None, description="Serving backend: vllm or bentoml"
+    )
+    service_kind: str | None = Field(
+        None, description="Service API kind: openai or bentoml_vision"
+    )
+    launch_profiles: list[str] = Field(
+        default_factory=list, description="Mini-RiVault profiles to activate"
+    )
+    container_image: str | None = Field(
+        None, description="Container image override for this service"
+    )
+    service_port: int | None = Field(
+        None, ge=1, le=65535, description="External service port"
+    )
+    readiness_probe: str | None = Field(
+        None, description="Readiness probe kind: models, chat, or http"
+    )
+    readiness_path: str | None = Field(
+        None, description="HTTP readiness path for non-OpenAI services"
+    )
+    invoke_base_path: str | None = Field(
+        None, description="Base path for invoking the service"
+    )
 
-    tensor_parallel_size: int = Field(1, ge=1, le=8, description="Number of GPUs for tensor parallelism")
+    tensor_parallel_size: int = Field(
+        1, ge=1, le=8, description="Number of GPUs for tensor parallelism"
+    )
     max_model_len: int | None = Field(None, description="Maximum context length")
-    gpu_memory_utilization: float = Field(0.9, ge=0.1, le=1.0, description="GPU memory fraction")
+    gpu_memory_utilization: float = Field(
+        0.9, ge=0.1, le=1.0, description="GPU memory fraction"
+    )
     dtype: str = Field("auto", description="Data type: auto, float16, bfloat16")
     quantization: str | None = Field(None, description="Quantization: awq, gptq, None")
-    served_model_name: str | None = Field(None, description="Override model name in API")
-    min_gpu_memory_gb: float | None = Field(None, description="Minimum GPU memory required")
-    recommended_gpu_count: int = Field(1, ge=1, description="Recommended number of GPUs")
-    vision_adapter: str | None = Field(None, description="Vision adapter name, e.g. sam3 or hmae")
+    served_model_name: str | None = Field(
+        None, description="Override model name in API"
+    )
+    min_gpu_memory_gb: float | None = Field(
+        None, description="Minimum GPU memory required"
+    )
+    recommended_gpu_count: int = Field(
+        1, ge=1, description="Recommended number of GPUs"
+    )
+    vision_adapter: str | None = Field(
+        None, description="Vision adapter name, e.g. sam3 or hmae"
+    )
     vision_task: str | None = Field(None, description="Default vision task")
-    output_format: str | None = Field(None, description="Default output envelope/artifact format")
-    co_located: bool | None = Field(None, description="Whether this profile expects vLLM co-location")
+    output_format: str | None = Field(
+        None, description="Default output envelope/artifact format"
+    )
+    co_located: bool | None = Field(
+        None, description="Whether this profile expects vLLM co-location"
+    )
 
 
 class CapabilitiesRequest(BaseModel):
     """Model capability metadata."""
 
-    supports_tool_calling: bool = Field(False, description="Whether the model supports tool/function calling")
-    supports_vision: bool = Field(False, description="Whether the model supports vision/image input")
-    supports_structured_output: bool = Field(False, description="Whether the model supports structured (JSON) output")
+    supports_tool_calling: bool = Field(
+        False, description="Whether the model supports tool/function calling"
+    )
+    supports_vision: bool = Field(
+        False, description="Whether the model supports vision/image input"
+    )
+    supports_structured_output: bool = Field(
+        False, description="Whether the model supports structured (JSON) output"
+    )
     max_output_tokens: int | None = Field(None, description="Maximum output tokens")
-    max_position_embeddings: int | None = Field(None, description="Maximum context length (positions)")
-    model_family: str | None = Field(None, description="Model family: qwen, llama, mistral, etc.")
+    max_position_embeddings: int | None = Field(
+        None, description="Maximum context length (positions)"
+    )
+    model_family: str | None = Field(
+        None, description="Model family: qwen, llama, mistral, etc."
+    )
 
 
 class ModelCreateRequest(BaseModel):
     """Request to register a new model."""
 
-    name: str = Field(..., min_length=1, max_length=256, description="Model name (unique per scope)")
+    name: str = Field(
+        ..., min_length=1, max_length=256, description="Model name (unique per scope)"
+    )
     scope: str = Field(..., description="Scope: system, project, user")
     storage_ref: str = Field(..., description="Filesystem path to model weights")
     model_type: str = Field("llm", description="Type: llm, embedding, or vision")
 
-    owner_id: str | None = Field(None, description="Owner user ID (required for user scope)")
-    project_id: str | None = Field(None, description="Project ID (required for project scope)")
+    owner_id: str | None = Field(
+        None, description="Owner user ID (required for user scope)"
+    )
+    project_id: str | None = Field(
+        None, description="Project ID (required for project scope)"
+    )
 
     huggingface_id: str | None = Field(None, description="Source HuggingFace model ID")
-    description: str | None = Field(None, max_length=1000, description="Model description")
-    serving_profile: ServingProfileRequest | None = Field(None, description="Serving configuration")
-    capabilities: CapabilitiesRequest | None = Field(None, description="Model capabilities")
+    description: str | None = Field(
+        None, max_length=1000, description="Model description"
+    )
+    serving_profile: ServingProfileRequest | None = Field(
+        None, description="Serving configuration"
+    )
+    capabilities: CapabilitiesRequest | None = Field(
+        None, description="Model capabilities"
+    )
 
     class Config:
         json_schema_extra = {
@@ -163,13 +217,17 @@ class ModelStageRequest(BaseModel):
     """Request to download/stage a model (creates a job)."""
 
     huggingface_id: str = Field(..., description="HuggingFace model ID to download")
-    name: str = Field(..., min_length=1, max_length=256, description="Name for the model")
+    name: str = Field(
+        ..., min_length=1, max_length=256, description="Name for the model"
+    )
     scope: str = Field("user", description="Target scope: project or user")
     model_type: str = Field("llm", description="Type: llm, embedding, or vision")
 
     project_id: str | None = Field(None, description="Project ID (for project scope)")
     description: str | None = Field(None, description="Model description")
-    serving_profile: ServingProfileRequest | None = Field(None, description="Serving configuration")
+    serving_profile: ServingProfileRequest | None = Field(
+        None, description="Serving configuration"
+    )
 
     class Config:
         json_schema_extra = {
@@ -188,9 +246,13 @@ class ModelUpdateRequest(BaseModel):
     """Request to update model metadata."""
 
     description: str | None = Field(None, description="New description")
-    serving_profile: ServingProfileRequest | None = Field(None, description="New serving profile")
+    serving_profile: ServingProfileRequest | None = Field(
+        None, description="New serving profile"
+    )
     status: str | None = Field(None, description="New status: available, deprecated")
-    capabilities: CapabilitiesRequest | None = Field(None, description="Model capabilities")
+    capabilities: CapabilitiesRequest | None = Field(
+        None, description="Model capabilities"
+    )
 
 
 class ModelResponse(BaseModel):
@@ -258,7 +320,9 @@ class ModelDownloadRequest(BaseModel):
     """Request to download a system model to user space (U-818)."""
 
     target_scope: str = Field("user", description="Target scope: project or user")
-    project_id: str | None = Field(None, description="Target project (for project scope)")
+    project_id: str | None = Field(
+        None, description="Target project (for project scope)"
+    )
     custom_name: str | None = Field(None, description="Custom name for the copy")
 
     class Config:
@@ -290,9 +354,15 @@ class PolicyCreateRequest(BaseModel):
     """Request to create a model policy."""
 
     model_name: str = Field(..., description="Model name this policy applies to")
-    allowed_projects: list[str] = Field(default_factory=list, description="Allowed project IDs")
-    denied_projects: list[str] = Field(default_factory=list, description="Denied project IDs")
-    max_concurrent_endpoints: int | None = Field(None, description="Max concurrent endpoints")
+    allowed_projects: list[str] = Field(
+        default_factory=list, description="Allowed project IDs"
+    )
+    denied_projects: list[str] = Field(
+        default_factory=list, description="Denied project IDs"
+    )
+    max_concurrent_endpoints: int | None = Field(
+        None, description="Max concurrent endpoints"
+    )
     max_tokens_per_day: int | None = Field(None, description="Daily token quota")
     priority: int = Field(0, description="Scheduling priority")
     warm_pool_min: int = Field(0, description="Minimum warm endpoints")
@@ -394,7 +464,9 @@ def _strict_auth_mode() -> bool:
 
 def get_access_context(
     user_id: str = Query("", description="User ID (legacy, ignored in strict mode)"),
-    is_admin: bool = Query(False, description="Admin flag (legacy, ignored in strict mode)"),
+    is_admin: bool = Query(
+        False, description="Admin flag (legacy, ignored in strict mode)"
+    ),
     project_memberships: str | None = Query(
         None, description="Comma-separated project IDs (legacy)"
     ),
@@ -424,7 +496,9 @@ def get_access_context(
         admin = header_admin in ("true", "1")
         memberships: set[str] = set()
         if header_memberships:
-            memberships = {p.strip() for p in header_memberships.split(",") if p.strip()}
+            memberships = {
+                p.strip() for p in header_memberships.split(",") if p.strip()
+            }
         return AccessContext(
             user_id=header_user,
             is_admin=admin,
@@ -440,7 +514,9 @@ def get_access_context(
     # MVP / testing fallback — use query params
     memberships_set: set[str] = set()
     if project_memberships:
-        memberships_set = {p.strip() for p in project_memberships.split(",") if p.strip()}
+        memberships_set = {
+            p.strip() for p in project_memberships.split(",") if p.strip()
+        }
 
     return AccessContext(
         user_id=user_id,
@@ -590,7 +666,9 @@ def _rollback_staged_model(
     try:
         store.delete_model(model_id, ctx)
     except Exception:
-        logger.exception("Failed to roll back staged model %s after job submission error", model_id)
+        logger.exception(
+            "Failed to roll back staged model %s after job submission error", model_id
+        )
 
 
 # =============================================================================
@@ -628,6 +706,11 @@ async def list_models(
         limit=limit,
         offset=offset,
     )
+
+    # Apply deployment-scoped visibility (e.g. frontier-only on AI4S).
+    from .model_visibility import is_model_visible
+
+    models = [m for m in models if is_model_visible(getattr(m, "name", None))]
 
     return ModelListResponse(
         models=[ModelResponse.from_entry(m) for m in models],
@@ -689,6 +772,7 @@ async def create_model(
         project_id_for_quota = request.project_id or ""
         if project_id_for_quota:
             from .governance import check_quota as _check_model_quota
+
             _check_model_quota(project_id_for_quota, "models")
 
         model = store.create_model(
@@ -707,8 +791,11 @@ async def create_model(
 
         # Governance tracking
         from .governance import record_resource_created
+
         record_resource_created(
-            "models", model.model_id, ctx.user_id,
+            "models",
+            model.model_id,
+            ctx.user_id,
             project_id=request.project_id or "",
             tier=scope.value,
         )
@@ -745,7 +832,9 @@ async def create_model(
         ) from e
 
 
-@router.post("/stage", response_model=ModelStageResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/stage", response_model=ModelStageResponse, status_code=status.HTTP_202_ACCEPTED
+)
 async def stage_model(
     request: ModelStageRequest,
     caller_project_id: str | None = Query(
@@ -775,7 +864,10 @@ async def stage_model(
                 detail="Cannot stage system models via API. Contact admin.",
             )
 
-        if scope == ModelScope.PROJECT and request.project_id not in ctx.project_memberships:
+        if (
+            scope == ModelScope.PROJECT
+            and request.project_id not in ctx.project_memberships
+        ):
             if not ctx.is_admin:
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN,
@@ -905,6 +997,7 @@ async def delete_model(
 
         # Governance tracking
         from .governance import record_resource_deleted
+
         record_resource_deleted("models", model_id)
 
         logger.info("User %s deleted model %s", ctx.user_id, model_id)
@@ -1025,7 +1118,9 @@ class ModelPublishRequest(BaseModel):
     """Request to publish a user model to project scope."""
 
     target_project_id: str = Field(..., description="Target project ID to publish to")
-    new_name: str | None = Field(None, description="Override model name in target scope")
+    new_name: str | None = Field(
+        None, description="Override model name in target scope"
+    )
 
     class Config:
         json_schema_extra = {
@@ -1036,7 +1131,11 @@ class ModelPublishRequest(BaseModel):
         }
 
 
-@router.post("/{model_id}/publish", response_model=ModelResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/{model_id}/publish",
+    response_model=ModelResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def publish_model(
     model_id: str,
     request: ModelPublishRequest,
@@ -1190,18 +1289,30 @@ class SystemModelCreateRequest(BaseModel):
     storage_ref: str = Field(..., description="Filesystem path to model weights")
     model_type: str = Field("llm", description="Type: llm, embedding, or vision")
     huggingface_id: str | None = Field(None, description="Source HuggingFace model ID")
-    description: str | None = Field(None, max_length=1000, description="Model description")
-    serving_profile: ServingProfileRequest | None = Field(None, description="Serving configuration")
-    execution_authority_default: str = Field("compose", description="Default authority: slurm, k8s, compose")
+    description: str | None = Field(
+        None, max_length=1000, description="Model description"
+    )
+    serving_profile: ServingProfileRequest | None = Field(
+        None, description="Serving configuration"
+    )
+    execution_authority_default: str = Field(
+        "compose", description="Default authority: slurm, k8s, compose"
+    )
 
     # Policy settings
     warm_pool_min: int = Field(0, ge=0, description="Minimum warm endpoints")
     warm_pool_max: int = Field(1, ge=0, description="Maximum warm endpoints")
     warm_pool_ttl_seconds: int = Field(3600, ge=60, description="Warm endpoint TTL")
     enable_warm_pool: bool = Field(False, description="Enable warm pooling")
-    allowed_projects: list[str] = Field(default_factory=list, description="Allowed project IDs (empty = all)")
-    denied_projects: list[str] = Field(default_factory=list, description="Denied project IDs")
-    max_concurrent_endpoints: int | None = Field(None, description="Max concurrent endpoints")
+    allowed_projects: list[str] = Field(
+        default_factory=list, description="Allowed project IDs (empty = all)"
+    )
+    denied_projects: list[str] = Field(
+        default_factory=list, description="Denied project IDs"
+    )
+    max_concurrent_endpoints: int | None = Field(
+        None, description="Max concurrent endpoints"
+    )
     priority: int = Field(0, description="Scheduling priority")
 
     class Config:
@@ -1227,7 +1338,11 @@ class SystemModelCreateResponse(BaseModel):
     policy: PolicyResponse
 
 
-@router.post("/system", response_model=SystemModelCreateResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/system",
+    response_model=SystemModelCreateResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_system_model(
     request: SystemModelCreateRequest,
     ctx: AccessContext = Depends(get_access_context),
@@ -1275,7 +1390,10 @@ async def create_system_model(
 
         logger.info(
             "Admin %s created system model %s (%s) with policy %s",
-            ctx.user_id, model.model_id, model.name, policy.policy_id
+            ctx.user_id,
+            model.model_id,
+            model.name,
+            policy.policy_id,
         )
 
         return SystemModelCreateResponse(
@@ -1305,7 +1423,11 @@ async def create_system_model(
         ) from e
 
 
-@router.post("/{model_name}/download", response_model=ModelDownloadResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{model_name}/download",
+    response_model=ModelDownloadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def download_model_to_user_space(
     model_name: str,
     request: ModelDownloadRequest,
@@ -1374,7 +1496,9 @@ async def download_model_to_user_space(
             storage_ref=storage_ref,
             model_type=source_model.model_type,
             owner_id=ctx.user_id if target_scope == ModelScope.USER else None,
-            project_id=request.project_id if target_scope == ModelScope.PROJECT else None,
+            project_id=request.project_id
+            if target_scope == ModelScope.PROJECT
+            else None,
             huggingface_id=source_model.huggingface_id,
             description=source_model.description or f"Copy of system/{model_name}",
             serving_profile=source_model.serving_profile,
@@ -1437,10 +1561,18 @@ async def download_model_to_user_space(
 class ModelPolicyUpdateRequest(BaseModel):
     """Request to update a model's policy by model name (U-820)."""
 
-    allowed_projects: list[str] | None = Field(None, description="New allowed projects list")
-    denied_projects: list[str] | None = Field(None, description="New denied projects list")
-    max_concurrent_endpoints: int | None = Field(None, description="Max concurrent endpoints")
-    enable_warm_pool: bool | None = Field(None, description="Enable/disable warm pooling")
+    allowed_projects: list[str] | None = Field(
+        None, description="New allowed projects list"
+    )
+    denied_projects: list[str] | None = Field(
+        None, description="New denied projects list"
+    )
+    max_concurrent_endpoints: int | None = Field(
+        None, description="Max concurrent endpoints"
+    )
+    enable_warm_pool: bool | None = Field(
+        None, description="Enable/disable warm pooling"
+    )
     warm_pool_min: int | None = Field(None, ge=0, description="Minimum warm endpoints")
     warm_pool_max: int | None = Field(None, ge=0, description="Maximum warm endpoints")
 
@@ -1498,10 +1630,7 @@ async def update_model_policy(
             ctx=ctx,
         )
 
-        logger.info(
-            "Admin %s updated policy for model %s",
-            ctx.user_id, model_name
-        )
+        logger.info("Admin %s updated policy for model %s", ctx.user_id, model_name)
 
         return PolicyResponse.from_policy(policy)
 
@@ -1526,7 +1655,9 @@ policy_router = APIRouter(prefix="/umrs/models/policies", tags=["policies"])
 
 @policy_router.get("", response_model=PolicyListResponse)
 async def list_policies(
-    is_system_model: bool | None = Query(None, description="Filter by system model flag"),
+    is_system_model: bool | None = Query(
+        None, description="Filter by system model flag"
+    ),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     store: ModelStore = Depends(get_model_store),
@@ -1550,7 +1681,9 @@ async def list_policies(
     )
 
 
-@policy_router.post("", response_model=PolicyResponse, status_code=status.HTTP_201_CREATED)
+@policy_router.post(
+    "", response_model=PolicyResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_policy(
     request: PolicyCreateRequest,
     ctx: AccessContext = Depends(get_access_context),
@@ -1580,8 +1713,12 @@ async def create_policy(
             ctx=ctx,
         )
 
-        logger.info("Admin %s created policy %s for model %s",
-                    ctx.user_id, policy.policy_id, policy.model_name)
+        logger.info(
+            "Admin %s created policy %s for model %s",
+            ctx.user_id,
+            policy.policy_id,
+            policy.model_name,
+        )
 
         return PolicyResponse.from_policy(policy)
 

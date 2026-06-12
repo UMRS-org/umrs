@@ -52,7 +52,9 @@ class DurableModelCommandBackend:
         self._db_pool = db_pool
         conn = self._db_pool.getconn()
         try:
-            from umrs.model_registry import ensure_schema as ensure_model_registry_schema
+            from umrs.model_registry import (
+                ensure_schema as ensure_model_registry_schema,
+            )
 
             ensure_model_registry_schema(conn)
             conn.commit()
@@ -76,7 +78,9 @@ class DurableModelCommandBackend:
             payload = _parse_register_payload(payload_str)
             validated = _validate_register_request(client_id, payload)
             scope = validated["scope"]
-            model_type = ModelType(str(payload.get("model_type", "embedding")).strip().lower())
+            model_type = ModelType(
+                str(payload.get("model_type", "embedding")).strip().lower()
+            )
             serving_profile = None
             if isinstance(payload.get("serving_profile"), dict):
                 serving_profile = ServingProfile.from_dict(payload["serving_profile"])
@@ -87,15 +91,24 @@ class DurableModelCommandBackend:
                     scope=scope,
                     storage_ref=validated["normalized_path"],
                     model_type=model_type,
-                    owner_id=validated["access_ctx"].user_id if scope == ModelScope.USER else None,
-                    project_id=validated["project_id"] if scope == ModelScope.PROJECT else None,
+                    owner_id=validated["access_ctx"].user_id
+                    if scope == ModelScope.USER
+                    else None,
+                    project_id=validated["project_id"]
+                    if scope == ModelScope.PROJECT
+                    else None,
                     huggingface_id=payload.get("huggingface_id"),
                     description=payload.get("description"),
                     serving_profile=serving_profile,
                     ctx=validated["access_ctx"],
                 )
             )
-        except (DuplicateModelError, PathNotAllowedError, PermissionDeniedError, ValueError) as exc:
+        except (
+            DuplicateModelError,
+            PathNotAllowedError,
+            PermissionDeniedError,
+            ValueError,
+        ) as exc:
             return json.dumps({"status": "error", "message": str(exc)})
 
         logger.info(
@@ -199,7 +212,9 @@ def _normalize_project_list(projects: Any) -> set[str]:
         return {projects}
     if isinstance(projects, list):
         return {str(project_id) for project_id in projects}
-    raise ValueError("Project memberships must map usernames to a string or list of strings")
+    raise ValueError(
+        "Project memberships must map usernames to a string or list of strings"
+    )
 
 
 def _build_access_context(client_id: str, payload: dict[str, Any]) -> AccessContext:
@@ -232,7 +247,9 @@ def _catalog_identity(entry: dict[str, Any], scope: ModelScope) -> str | None:
     return None
 
 
-def _entry_scope_key(scope: ModelScope, owner_id: str | None, project_id: str | None) -> str | None:
+def _entry_scope_key(
+    scope: ModelScope, owner_id: str | None, project_id: str | None
+) -> str | None:
     if scope == ModelScope.USER:
         return owner_id
     if scope == ModelScope.PROJECT:
@@ -272,7 +289,9 @@ def _parse_list_payload(payload_str: str) -> dict[str, Any]:
         return {}
 
 
-def _validate_register_request(client_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+def _validate_register_request(
+    client_id: str, payload: dict[str, Any]
+) -> dict[str, Any]:
     name = payload.get("name", "").strip()
     path = payload.get("path", "").strip()
     project_id = payload.get("project_id")
@@ -342,7 +361,9 @@ def _resolve_target_path(
     if staging_dir:
         root_dir = os.path.abspath(os.path.expanduser(staging_dir))
     elif scope == ModelScope.SYSTEM:
-        root_dir = os.path.abspath(os.environ.get("UMRS_MODEL_STAGING_ROOT", "/shared/models/system"))
+        root_dir = os.path.abspath(
+            os.environ.get("UMRS_MODEL_STAGING_ROOT", "/shared/models/system")
+        )
     elif scope == ModelScope.PROJECT:
         root_dir = os.path.join("/shared/projects", project_id or "", "models")
     else:
@@ -372,17 +393,23 @@ def _is_visible(entry: dict[str, Any], access_ctx: AccessContext) -> bool:
     return False
 
 
-def _visible_models(models: list[dict[str, Any]], access_ctx: AccessContext) -> list[dict[str, Any]]:
+def _visible_models(
+    models: list[dict[str, Any]], access_ctx: AccessContext
+) -> list[dict[str, Any]]:
     return [model for model in models if _is_visible(model, access_ctx)]
 
 
-def _filter_models_by_scope(models: list[dict[str, Any]], scope_filter: str | None) -> list[dict[str, Any]]:
+def _filter_models_by_scope(
+    models: list[dict[str, Any]], scope_filter: str | None
+) -> list[dict[str, Any]]:
     if not scope_filter:
         return models
     return [model for model in models if model.get("scope") == scope_filter]
 
 
-def _handle_register(client_id: str, payload_str: str, backend: DurableModelCommandBackend | None = None) -> str:
+def _handle_register(
+    client_id: str, payload_str: str, backend: DurableModelCommandBackend | None = None
+) -> str:
     """Register a local model path in the catalog."""
     if backend is not None:
         return backend.register(client_id, payload_str)
@@ -393,30 +420,50 @@ def _handle_register(client_id: str, payload_str: str, backend: DurableModelComm
     except (PathNotAllowedError, PermissionDeniedError, ValueError) as exc:
         return json.dumps({"status": "error", "message": str(exc)})
 
-    entry = _build_catalog_entry(client_id=client_id, payload=payload, validated=validated)
+    entry = _build_catalog_entry(
+        client_id=client_id, payload=payload, validated=validated
+    )
     scope = validated["scope"]
     project_id = validated["project_id"]
 
     with _CATALOG_LOCK:
         catalog = _load_catalog()
-        if _find_duplicate(catalog, entry["name"], scope, entry.get("owner_id"), project_id):
-            scope_label = scope.value if scope != ModelScope.PROJECT else f"{scope.value}/{project_id}"
-            return json.dumps({
-                "status": "error",
-                "message": f"Model '{entry['name']}' already registered in scope '{scope_label}'",
-            })
+        if _find_duplicate(
+            catalog, entry["name"], scope, entry.get("owner_id"), project_id
+        ):
+            scope_label = (
+                scope.value
+                if scope != ModelScope.PROJECT
+                else f"{scope.value}/{project_id}"
+            )
+            return json.dumps(
+                {
+                    "status": "error",
+                    "message": f"Model '{entry['name']}' already registered in scope '{scope_label}'",
+                }
+            )
         catalog["models"].append(entry)
         _save_catalog(catalog)
 
-    logger.info("Registered model: %s at %s (scope=%s)", entry["name"], entry["storage_ref"], scope.value)
-    return json.dumps({
-        "status": "ok",
-        "message": f"Model '{entry['name']}' registered at {entry['storage_ref']}",
-        "model": entry,
-    }, default=str)
+    logger.info(
+        "Registered model: %s at %s (scope=%s)",
+        entry["name"],
+        entry["storage_ref"],
+        scope.value,
+    )
+    return json.dumps(
+        {
+            "status": "ok",
+            "message": f"Model '{entry['name']}' registered at {entry['storage_ref']}",
+            "model": entry,
+        },
+        default=str,
+    )
 
 
-def _handle_list(client_id: str, payload_str: str, backend: DurableModelCommandBackend | None = None) -> str:
+def _handle_list(
+    client_id: str, payload_str: str, backend: DurableModelCommandBackend | None = None
+) -> str:
     """List registered models, optionally filtered by scope."""
     if backend is not None:
         return backend.list_models(client_id, payload_str)
@@ -431,11 +478,14 @@ def _handle_list(client_id: str, payload_str: str, backend: DurableModelCommandB
     models = _visible_models(models, access_ctx)
     models = _filter_models_by_scope(models, payload.get("scope"))
 
-    return json.dumps({
-        "status": "ok",
-        "count": len(models),
-        "models": models,
-    }, default=str)
+    return json.dumps(
+        {
+            "status": "ok",
+            "count": len(models),
+            "models": models,
+        },
+        default=str,
+    )
 
 
 def _handle_download(
@@ -495,28 +545,34 @@ def _handle_download(
                 )
                 logger.info("Download complete: %s", target_path)
 
-            register_payload = json.dumps({
-                "name": target_name,
-                "path": os.path.abspath(target_path),
-                "model_type": "embedding",
-                "scope": scope.value,
-                "project_id": project_id,
-                "huggingface_id": repo_id,
-                "description": f"Downloaded from {repo_id}",
-                "admin_token": payload.get("admin_token"),
-            })
+            register_payload = json.dumps(
+                {
+                    "name": target_name,
+                    "path": os.path.abspath(target_path),
+                    "model_type": "embedding",
+                    "scope": scope.value,
+                    "project_id": project_id,
+                    "huggingface_id": repo_id,
+                    "description": f"Downloaded from {repo_id}",
+                    "admin_token": payload.get("admin_token"),
+                }
+            )
             result = _handle_register(client_id, register_payload, backend=backend)
             logger.info("Server-side download result: %s", result)
         except Exception:
             logger.exception("Server-side download failed for %s", repo_id)
 
-    t = threading.Thread(target=_bg_download, daemon=True, name=f"model-dl-{target_name}")
+    t = threading.Thread(
+        target=_bg_download, daemon=True, name=f"model-dl-{target_name}"
+    )
     t.start()
 
-    return json.dumps({
-        "status": "ok",
-        "message": f"Download accepted: {repo_id} → {target_path} (running in background)",
-    })
+    return json.dumps(
+        {
+            "status": "ok",
+            "message": f"Download accepted: {repo_id} → {target_path} (running in background)",
+        }
+    )
 
 
 def build_durable_model_backend_from_env() -> DurableModelCommandBackend | None:
@@ -561,7 +617,9 @@ def handle_model_command(
         elif cmd == TaskCmd.MODEL_DOWNLOAD:
             return _handle_download(client_id, payload_str, backend=backend)
         else:
-            return json.dumps({"status": "error", "message": f"Unknown model command: {cmd}"})
+            return json.dumps(
+                {"status": "error", "message": f"Unknown model command: {cmd}"}
+            )
     except Exception as e:
         logger.exception("Error handling model command %s", cmd)
         return json.dumps({"status": "error", "message": str(e)})

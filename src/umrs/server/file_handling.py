@@ -124,9 +124,7 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
         return False, None, f"Uploaded file is not a valid zip archive: {zip_path}"
 
     # Determine destination
-    workflows_root = os.path.join(
-        get_default_tmp_subdir(), "user_workflows", client_id
-    )
+    workflows_root = os.path.join(get_default_tmp_subdir(), "user_workflows", client_id)
     dest_dir = os.path.join(workflows_root, workflow_name)
 
     try:
@@ -139,9 +137,7 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
 
             # Look for workflow.json at root or one level deep
             candidates = [
-                n
-                for n in zf.namelist()
-                if os.path.basename(n) == "workflow.json"
+                n for n in zf.namelist() if os.path.basename(n) == "workflow.json"
             ]
             if not candidates:
                 return False, None, "Zip archive does not contain a workflow.json"
@@ -186,9 +182,7 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
             if os.path.isabs(source_path):
                 resolved_source = os.path.realpath(source_path)
             else:
-                resolved_source = os.path.realpath(
-                    os.path.join(dest_dir, source_path)
-                )
+                resolved_source = os.path.realpath(os.path.join(dest_dir, source_path))
 
             dest_root = os.path.realpath(dest_dir)
             if not resolved_source.startswith(dest_root):
@@ -219,15 +213,17 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
         except Exception as e:
             print(f"Warning: failed to clean up zip file '{zip_path}': {e}")
 
-    print(
-        f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}"
-    )
+    print(f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}")
     return True, dest_dir, None
 
 
 def persist_uploaded_user_config(
-    tmp_path, configure_file, user_config_map, expected_username=None,
-    *, allow_create=False,
+    tmp_path,
+    configure_file,
+    user_config_map,
+    expected_username=None,
+    *,
+    allow_create=False,
 ):
     """Persist an uploaded user config JSON.
 
@@ -254,7 +250,8 @@ def persist_uploaded_user_config(
         if safe_username != username:
             logger.warning(
                 "Rejecting unsafe username: %r (sanitized: %r)",
-                username, safe_username,
+                username,
+                safe_username,
             )
             print(
                 f"Warning: uploaded file '{tmp_path}' contains unsafe "
@@ -298,9 +295,7 @@ def persist_uploaded_user_config(
         try:
             os.makedirs(user_dir, exist_ok=True)
         except Exception as e:
-            print(
-                f"Warning: cannot ensure user files directory '{user_dir}': {e}"
-            )
+            print(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
             return False, username, None
         dest_path = os.path.join(user_dir, f"{username}.json")
 
@@ -321,9 +316,7 @@ def persist_uploaded_user_config(
             print(f"Warning: failed to clean up temp file '{tmp_path}': {e}")
         print(f"Stored updated user config for '{username}' at '{dest_path}'")
     except Exception as e:
-        print(
-            f"Warning: failed to persist uploaded config to '{dest_path}': {e}"
-        )
+        print(f"Warning: failed to persist uploaded config to '{dest_path}': {e}")
         return False, username, None
 
     # Ensure conf contains this user file path

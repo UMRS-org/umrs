@@ -39,6 +39,7 @@ class DAGValidationError(Exception):
 @dataclass
 class _StepNode:
     """Internal node representation for DAG scheduling."""
+
     name: str
     spec_index: int
     parents: set[str] = field(default_factory=set)
@@ -68,13 +69,12 @@ class DAGScheduler:
         # Create nodes
         for idx, spec in enumerate(self._specs):
             self._nodes[spec.name] = _StepNode(
-                name=spec.name, spec_index=idx,
+                name=spec.name,
+                spec_index=idx,
             )
 
         # Determine if any step has explicit depends_on
-        has_explicit_deps = any(
-            spec.depends_on is not None for spec in self._specs
-        )
+        has_explicit_deps = any(spec.depends_on is not None for spec in self._specs)
 
         if not has_explicit_deps:
             # Linear chain: each step depends on the previous one
@@ -111,9 +111,7 @@ class DAGScheduler:
         in_degree: dict[str, int] = {
             name: len(node.parents) for name, node in self._nodes.items()
         }
-        queue = deque(
-            name for name, deg in in_degree.items() if deg == 0
-        )
+        queue = deque(name for name, deg in in_degree.items() if deg == 0)
         visited_count = 0
 
         while queue:
@@ -125,12 +123,8 @@ class DAGScheduler:
                     queue.append(child)
 
         if visited_count != len(self._nodes):
-            cycle_members = [
-                name for name, deg in in_degree.items() if deg > 0
-            ]
-            raise DAGValidationError(
-                f"Cycle detected involving steps: {cycle_members}"
-            )
+            cycle_members = [name for name, deg in in_degree.items() if deg > 0]
+            raise DAGValidationError(f"Cycle detected involving steps: {cycle_members}")
 
     def execution_levels(self) -> list[list[int]]:
         """Return step indices grouped by execution level.
@@ -148,17 +142,13 @@ class DAGScheduler:
         in_degree: dict[str, int] = {
             name: len(node.parents) for name, node in self._nodes.items()
         }
-        queue = deque(
-            name for name, deg in in_degree.items() if deg == 0
-        )
+        queue = deque(name for name, deg in in_degree.items() if deg == 0)
         levels: list[list[int]] = []
 
         while queue:
             level_names = list(queue)
             queue.clear()
-            level_indices = [
-                self._nodes[name].spec_index for name in level_names
-            ]
+            level_indices = [self._nodes[name].spec_index for name in level_names]
             levels.append(sorted(level_indices))
 
             for name in level_names:
@@ -186,9 +176,7 @@ class DAGScheduler:
         This is used to decide whether the legacy linear executor
         can be used (avoiding thread pool overhead).
         """
-        return all(
-            len(level) == 1 for level in self.execution_levels()
-        )
+        return all(len(level) == 1 for level in self.execution_levels())
 
 
 def execute_dag(
@@ -233,6 +221,7 @@ def execute_dag(
     step_output_bucket: dict[str, str] = {}
 
     for level in levels:
+
         def _run_step(spec_idx: int) -> None:
             spec = step_specs[spec_idx]
             step = step_instances[spec_idx]
@@ -244,9 +233,7 @@ def execute_dag(
                 for parent_name in parents:
                     p_keys = step_output_keys.get(parent_name, input_keys)
                     merged_keys.extend(p_keys)
-                    merged_bucket = step_output_bucket.get(
-                        parent_name, input_bucket
-                    )
+                    merged_bucket = step_output_bucket.get(parent_name, input_bucket)
                 current_keys = merged_keys if merged_keys else list(input_keys)
                 current_bucket = merged_bucket
             else:
@@ -260,15 +247,16 @@ def execute_dag(
 
             # Collect parent results for fan-in
             parent_results = {
-                pname: results[pname]
-                for pname in parents
-                if pname in results
+                pname: results[pname] for pname in parents if pname in results
             }
 
             logger.info(
                 "  step %d [%s]: %d keys → bucket=%s (parents=%s)",
-                spec_idx + 1, spec.name, len(current_keys),
-                step_out_bucket, list(parents) if parents else "root",
+                spec_idx + 1,
+                spec.name,
+                len(current_keys),
+                step_out_bucket,
+                list(parents) if parents else "root",
             )
 
             ctx = StepContext(
@@ -309,11 +297,13 @@ def execute_dag(
                     last_exc = exc
                     if attempt < spec.max_retries:
                         import time
+
                         logger.warning(
-                            "Step '%s' attempt %d/%d failed: %s. "
-                            "Retrying in %.1fs...",
-                            spec.name, attempt + 1,
-                            spec.max_retries + 1, exc,
+                            "Step '%s' attempt %d/%d failed: %s. Retrying in %.1fs...",
+                            spec.name,
+                            attempt + 1,
+                            spec.max_retries + 1,
+                            exc,
                             spec.retry_delay,
                         )
                         time.sleep(spec.retry_delay)
@@ -342,9 +332,7 @@ def execute_dag(
             from concurrent.futures import ThreadPoolExecutor, as_completed
 
             with ThreadPoolExecutor(max_workers=len(level)) as pool:
-                futures = {
-                    pool.submit(_run_step, idx): idx for idx in level
-                }
+                futures = {pool.submit(_run_step, idx): idx for idx in level}
                 for future in as_completed(futures):
                     future.result()  # re-raises exceptions
 

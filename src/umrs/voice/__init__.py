@@ -150,16 +150,10 @@ class VoiceAdapterRegistry:
         return None
 
     def list_stt(self) -> List[STTAdapter]:
-        return [
-            a for a in self._adapters.values()
-            if isinstance(a, STTAdapter)
-        ]
+        return [a for a in self._adapters.values() if isinstance(a, STTAdapter)]
 
     def list_tts(self) -> List[TTSAdapter]:
-        return [
-            a for a in self._adapters.values()
-            if isinstance(a, TTSAdapter)
-        ]
+        return [a for a in self._adapters.values() if isinstance(a, TTSAdapter)]
 
     def list_all(self) -> List[VoiceAdapter]:
         return list(self._adapters.values())

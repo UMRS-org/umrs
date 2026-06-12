@@ -18,17 +18,25 @@ logger = logging.getLogger(__name__)
 
 def _require_presigned_urls() -> bool:
     return os.environ.get("VISION_REQUIRE_PRESIGNED_URLS", "").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
 def _include_full_masks_in_results() -> bool:
     return os.environ.get("SAM3_INCLUDE_MASKS_IN_RESULTS", "").lower() in {
-        "1", "true", "yes", "on",
+        "1",
+        "true",
+        "yes",
+        "on",
     }
 
 
-def _build_results_payload(result: dict[str, Any], prompt: str, source_image: str) -> dict[str, Any]:
+def _build_results_payload(
+    result: dict[str, Any], prompt: str, source_image: str
+) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "boxes": result["boxes"],
         "scores": result["scores"],
@@ -65,8 +73,9 @@ class SAM3Adapter(VisionModelAdapter):
         }
 
     def estimate_gpu_memory_mb(self, config: dict[str, Any]) -> int:
-        checkpoint = config.get("checkpoint",
-                                os.environ.get("SAM3_MODEL_PATH", "facebook/sam3"))
+        checkpoint = config.get(
+            "checkpoint", os.environ.get("SAM3_MODEL_PATH", "facebook/sam3")
+        )
         if "large" in checkpoint.lower():
             return 8000
         return 6000
@@ -75,15 +84,17 @@ class SAM3Adapter(VisionModelAdapter):
         return describe_output_artifacts("sam3", key, config)
 
     def cache_key(self, config: dict[str, Any]) -> str:
-        checkpoint = config.get("checkpoint",
-                                os.environ.get("SAM3_MODEL_PATH", "facebook/sam3"))
+        checkpoint = config.get(
+            "checkpoint", os.environ.get("SAM3_MODEL_PATH", "facebook/sam3")
+        )
         return f"sam3:{checkpoint}"
 
     def load(self, config: dict[str, Any]) -> Any:
         from umrs.inference.sam3_segmentation import load_sam3_model
 
-        checkpoint = config.get("checkpoint",
-                                os.environ.get("SAM3_MODEL_PATH", "facebook/sam3"))
+        checkpoint = config.get(
+            "checkpoint", os.environ.get("SAM3_MODEL_PATH", "facebook/sam3")
+        )
         model, processor, device = load_sam3_model(checkpoint)
         return {"model": model, "processor": processor, "device": device}
 
@@ -114,13 +125,22 @@ class SAM3Adapter(VisionModelAdapter):
         logger.debug(
             "SAM3 infer: bucket=%s key=%s prompt=%s device=%s "
             "output_bucket=%s presigned_output_urls=%s",
-            bucket, key, prompt, device, output_bucket,
+            bucket,
+            key,
+            prompt,
+            device,
+            output_bucket,
             list(presigned_output_urls.keys()) if presigned_output_urls else "(empty)",
         )
 
         result = segment_image_with_text(
-            model["model"], model["processor"], image, prompt,
-            device, threshold, mask_threshold,
+            model["model"],
+            model["processor"],
+            image,
+            prompt,
+            device,
+            threshold,
+            mask_threshold,
         )
 
         response: dict[str, Any] = {
@@ -161,11 +181,13 @@ class SAM3Adapter(VisionModelAdapter):
                 urllib.request.urlopen(req, timeout=120)  # noqa: S310
             else:
                 if _require_presigned_urls() or s3 is None:
-                    raise RuntimeError(
-                        f"Missing presigned PUT URL for {overlay_key}"
-                    )
-                s3.put_object(Bucket=dst_bucket, Key=overlay_key,
-                              Body=png_data, ContentType="image/png")
+                    raise RuntimeError(f"Missing presigned PUT URL for {overlay_key}")
+                s3.put_object(
+                    Bucket=dst_bucket,
+                    Key=overlay_key,
+                    Body=png_data,
+                    ContentType="image/png",
+                )
             response["overlay_s3_key"] = f"s3://{dst_bucket}/{overlay_key}"
 
         # Upload a compact result payload by default. Full-resolution masks make
@@ -188,13 +210,18 @@ class SAM3Adapter(VisionModelAdapter):
             urllib.request.urlopen(req, timeout=120)  # noqa: S310
         else:
             if _require_presigned_urls() or s3 is None:
-                raise RuntimeError(
-                    f"Missing presigned PUT URL for {pkl_key}"
-                )
-            s3.put_object(Bucket=dst_bucket, Key=pkl_key,
-                          Body=pkl_data, ContentType="application/octet-stream")
+                raise RuntimeError(f"Missing presigned PUT URL for {pkl_key}")
+            s3.put_object(
+                Bucket=dst_bucket,
+                Key=pkl_key,
+                Body=pkl_data,
+                ContentType="application/octet-stream",
+            )
         response["results_pkl_s3_key"] = f"s3://{dst_bucket}/{pkl_key}"
 
-        logger.info("SAM3 segmentation: found %d objects for prompt '%s'",
-                     result["num_objects"], prompt)
+        logger.info(
+            "SAM3 segmentation: found %d objects for prompt '%s'",
+            result["num_objects"],
+            prompt,
+        )
         return response

@@ -41,7 +41,9 @@ class TriggerMatcher:
     """Evaluates whether a webhook event matches a trigger's filter."""
 
     @staticmethod
-    def matches(trigger: WebhookTrigger, event_type: str, payload: Dict[str, Any]) -> bool:
+    def matches(
+        trigger: WebhookTrigger, event_type: str, payload: Dict[str, Any]
+    ) -> bool:
         """Check if an event matches a trigger's criteria."""
         if trigger.event_type and trigger.event_type != event_type:
             return False
@@ -93,7 +95,9 @@ class WebhookSchedulerBridge:
 
     def __init__(self) -> None:
         self._triggers: Dict[str, WebhookTrigger] = {}
-        self._on_trigger: Optional[Callable[[WebhookTrigger, Dict[str, Any]], None]] = None
+        self._on_trigger: Optional[Callable[[WebhookTrigger, Dict[str, Any]], None]] = (
+            None
+        )
 
     def register(self, trigger: WebhookTrigger) -> None:
         """Register a webhook trigger."""

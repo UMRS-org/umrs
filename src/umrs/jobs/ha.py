@@ -34,21 +34,25 @@ DEFAULT_DEAD_THRESHOLD_SECONDS = 90
 
 class HeartbeatError(Exception):
     """Raised when heartbeat operation fails."""
+
     pass
 
 
 class LockError(Exception):
     """Base exception for lock errors."""
+
     pass
 
 
 class LockAcquisitionError(LockError):
     """Raised when lock cannot be acquired."""
+
     pass
 
 
 class LockNotHeldError(LockError):
     """Raised when trying to release a lock we don't hold."""
+
     pass
 
 
@@ -132,7 +136,8 @@ class HeartbeatManager:
 
         with self.db_pool.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     INSERT INTO umrs_instances (
                         instance_id, hostname, pid, started_at,
                         last_heartbeat_at, status, capabilities
@@ -144,12 +149,14 @@ class HeartbeatManager:
                         last_heartbeat_at = NOW(),
                         status = 'active',
                         capabilities = EXCLUDED.capabilities
-                """, (
-                    self.instance_id,
-                    self.hostname,
-                    self.pid,
-                    json.dumps(self._capabilities) if self._capabilities else "{}",
-                ))
+                """,
+                    (
+                        self.instance_id,
+                        self.hostname,
+                        self.pid,
+                        json.dumps(self._capabilities) if self._capabilities else "{}",
+                    ),
+                )
             conn.commit()
 
         self._registered = True
@@ -196,11 +203,14 @@ class HeartbeatManager:
 
         with self.db_pool.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE umrs_instances
                     SET last_heartbeat_at = NOW()
                     WHERE instance_id = %s
-                """, (self.instance_id,))
+                """,
+                    (self.instance_id,),
+                )
 
                 if cur.rowcount == 0:
                     # Re-register if our row was deleted
@@ -225,14 +235,17 @@ class HeartbeatManager:
                         ORDER BY started_at DESC
                     """)
             else:
-                cur.execute("""
+                cur.execute(
+                    """
                         SELECT instance_id, hostname, pid, started_at,
                                last_heartbeat_at, status, capabilities, metadata
                         FROM umrs_instances
                         WHERE status = 'active'
                           AND last_heartbeat_at > NOW() - INTERVAL '%s seconds'
                         ORDER BY started_at DESC
-                    """, (self.dead_threshold,))
+                    """,
+                    (self.dead_threshold,),
+                )
 
             rows = cur.fetchall()
 
@@ -253,13 +266,16 @@ class HeartbeatManager:
     def find_dead_instances(self) -> list[InstanceInfo]:
         """Find instances that have missed heartbeats."""
         with self.db_pool.get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                     SELECT instance_id, hostname, pid, started_at,
                            last_heartbeat_at, status, capabilities, metadata
                     FROM umrs_instances
                     WHERE status = 'active'
                       AND last_heartbeat_at < NOW() - INTERVAL '%s seconds'
-                """, (self.dead_threshold,))
+                """,
+                (self.dead_threshold,),
+            )
 
             rows = cur.fetchall()
 
@@ -281,11 +297,14 @@ class HeartbeatManager:
         """Mark an instance as dead (for cleanup)."""
         with self.db_pool.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE umrs_instances
                     SET status = 'dead'
                     WHERE instance_id = %s
-                """, (instance_id,))
+                """,
+                    (instance_id,),
+                )
             conn.commit()
 
         logger.info(f"Marked instance {instance_id} as dead")
@@ -296,11 +315,14 @@ class HeartbeatManager:
 
         with self.db_pool.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE umrs_instances
                     SET status = 'draining'
                     WHERE instance_id = %s
-                """, (self.instance_id,))
+                """,
+                    (self.instance_id,),
+                )
             conn.commit()
 
         self._registered = False
@@ -380,7 +402,8 @@ class DistributedLockManager:
                 with self.db_pool.get_conn() as conn:
                     with conn.cursor() as cur:
                         # Try to insert new lock
-                        cur.execute("""
+                        cur.execute(
+                            """
                             INSERT INTO job_locks (
                                 lock_id, lock_type, resource_id,
                                 owner_instance_id, owner_hostname,
@@ -389,15 +412,17 @@ class DistributedLockManager:
                             VALUES (%s, %s, %s, %s, %s, NOW(), NOW() + INTERVAL '%s seconds', NOW(), %s)
                             ON CONFLICT (lock_type, resource_id) DO NOTHING
                             RETURNING lock_id
-                        """, (
-                            lock_id,
-                            lock_type,
-                            resource_id,
-                            self.instance_id,
-                            self.hostname,
-                            ttl_seconds,
-                            json.dumps(metadata or {}),
-                        ))
+                        """,
+                            (
+                                lock_id,
+                                lock_type,
+                                resource_id,
+                                self.instance_id,
+                                self.hostname,
+                                ttl_seconds,
+                                json.dumps(metadata or {}),
+                            ),
+                        )
 
                         result = cur.fetchone()
                         if result:
@@ -407,21 +432,27 @@ class DistributedLockManager:
                             return True
 
                         # Check if we already own it
-                        cur.execute("""
+                        cur.execute(
+                            """
                             SELECT owner_instance_id, expires_at
                             FROM job_locks
                             WHERE lock_id = %s
-                        """, (lock_id,))
+                        """,
+                            (lock_id,),
+                        )
                         existing = cur.fetchone()
 
                         if existing and existing[0] == self.instance_id:
                             # We already own it, refresh TTL
-                            cur.execute("""
+                            cur.execute(
+                                """
                                 UPDATE job_locks
                                 SET expires_at = NOW() + INTERVAL '%s seconds',
                                     heartbeat_at = NOW()
                                 WHERE lock_id = %s
-                            """, (ttl_seconds, lock_id))
+                            """,
+                                (ttl_seconds, lock_id),
+                            )
                             conn.commit()
                             logger.debug(f"Refreshed existing lock: {lock_id}")
                             return True
@@ -458,11 +489,14 @@ class DistributedLockManager:
 
         with self.db_pool.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     DELETE FROM job_locks
                     WHERE lock_id = %s AND owner_instance_id = %s
                     RETURNING lock_id
-                """, (lock_id, self.instance_id))
+                """,
+                    (lock_id, self.instance_id),
+                )
 
                 result = cur.fetchone()
             conn.commit()
@@ -474,7 +508,9 @@ class DistributedLockManager:
 
         return False
 
-    def refresh(self, lock_type: str, resource_id: str, ttl: float | None = None) -> bool:
+    def refresh(
+        self, lock_type: str, resource_id: str, ttl: float | None = None
+    ) -> bool:
         """
         Refresh lock TTL (extend expiration).
 
@@ -491,13 +527,16 @@ class DistributedLockManager:
 
         with self.db_pool.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     UPDATE job_locks
                     SET expires_at = NOW() + INTERVAL '%s seconds',
                         heartbeat_at = NOW()
                     WHERE lock_id = %s AND owner_instance_id = %s
                     RETURNING lock_id
-                """, (ttl_seconds, lock_id, self.instance_id))
+                """,
+                    (ttl_seconds, lock_id, self.instance_id),
+                )
 
                 result = cur.fetchone()
             conn.commit()
@@ -556,11 +595,14 @@ class DistributedLockManager:
         lock_id = self._generate_lock_id(lock_type, resource_id)
 
         with self.db_pool.get_conn() as conn, conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                     SELECT owner_instance_id
                     FROM job_locks
                     WHERE lock_id = %s AND expires_at > NOW()
-                """, (lock_id,))
+                """,
+                (lock_id,),
+            )
 
             result = cur.fetchone()
 
@@ -570,11 +612,14 @@ class DistributedLockManager:
         """Release all locks held by this instance."""
         with self.db_pool.get_conn() as conn:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    """
                     DELETE FROM job_locks
                     WHERE owner_instance_id = %s
                     RETURNING lock_id
-                """, (self.instance_id,))
+                """,
+                    (self.instance_id,),
+                )
 
                 released = cur.fetchall()
             conn.commit()
@@ -698,10 +743,13 @@ class ClusterCoordinator:
             # Release locks held by dead instance
             with self.db_pool.get_conn() as conn:
                 with conn.cursor() as cur:
-                    cur.execute("""
+                    cur.execute(
+                        """
                         DELETE FROM job_locks
                         WHERE owner_instance_id = %s
-                    """, (instance.instance_id,))
+                    """,
+                        (instance.instance_id,),
+                    )
                 conn.commit()
 
             # Mark instance as dead

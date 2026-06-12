@@ -31,6 +31,7 @@ class InvertImageStep(Step):
             # Invert
             img = Image.open(io.BytesIO(raw))
             from PIL import ImageOps
+
             inverted = ImageOps.invert(img.convert("RGB"))
 
             # Encode back to PNG

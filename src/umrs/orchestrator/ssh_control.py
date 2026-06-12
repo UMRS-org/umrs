@@ -151,11 +151,16 @@ class SSHControlManager:
         """Common SSH arguments for all commands."""
         args = [
             "ssh",
-            "-o", f"ControlPath={self._control_path}",
-            "-o", "BatchMode=yes",
-            "-o", f"ConnectTimeout={self._config.connect_timeout}",
-            "-o", f"ServerAliveInterval={self._config.server_alive_interval}",
-            "-o", f"ServerAliveCountMax={self._config.server_alive_count_max}",
+            "-o",
+            f"ControlPath={self._control_path}",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            f"ConnectTimeout={self._config.connect_timeout}",
+            "-o",
+            f"ServerAliveInterval={self._config.server_alive_interval}",
+            "-o",
+            f"ServerAliveCountMax={self._config.server_alive_count_max}",
         ]
         if self._config.ssh_port != 22:
             args.extend(["-p", str(self._config.ssh_port)])
@@ -176,8 +181,10 @@ class SSHControlManager:
         """Establish ControlMaster connection (caller holds lock)."""
         target = self._ssh_target()
         args = self._base_ssh_args() + [
-            "-o", "ControlMaster=auto",
-            "-o", "ControlPersist=yes",
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            "ControlPersist=yes",
             "-N",  # No remote command
         ]
 
@@ -229,7 +236,8 @@ class SSHControlManager:
         """Check if ControlMaster socket is alive (caller may hold lock)."""
         target = self._ssh_target()
         args = self._base_ssh_args() + [
-            "-O", "check",
+            "-O",
+            "check",
             target,
         ]
 
@@ -276,7 +284,7 @@ class SSHControlManager:
             return
 
         self._reconnect_attempts += 1
-        backoff = _RECONNECT_BACKOFF_BASE ** self._reconnect_attempts
+        backoff = _RECONNECT_BACKOFF_BASE**self._reconnect_attempts
         logger.info(
             "SSH reconnect attempt %d/%d (backoff %.1fs)",
             self._reconnect_attempts,
@@ -321,7 +329,8 @@ class SSHControlManager:
             )
             command = f"{env_prefix} {command}"
         args = self._base_ssh_args() + [
-            "-o", "ControlMaster=no",
+            "-o",
+            "ControlMaster=no",
             target,
             command,
         ]

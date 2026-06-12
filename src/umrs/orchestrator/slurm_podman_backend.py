@@ -177,13 +177,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
 
         site = self.site
         if site.runtime.repo_dir and site.name:
-            return (
-                Path(site.runtime.repo_dir)
-                / "deploy"
-                / site.name
-                / "logs"
-                / "slurm"
-            )
+            return Path(site.runtime.repo_dir) / "deploy" / site.name / "logs" / "slurm"
 
         return Path(get_resolved_umrs_subdir(get_default_tmp_subdir()))
 
@@ -226,7 +220,9 @@ class SlurmPodmanBackend(OrchestratorBackend):
         nodelist_hint = kwargs.pop("nodelist_hint", None)
         gpu_count = kwargs.pop("gpu_count", None)  # per-request GPU override
         node_count = kwargs.pop("node_count", None)  # multi-node PP
-        min_gpu_memory_gb = kwargs.pop("min_gpu_memory_gb", None)  # resource hint from model catalog
+        min_gpu_memory_gb = kwargs.pop(
+            "min_gpu_memory_gb", None
+        )  # resource hint from model catalog
 
         if partition_override:
             allowed = self._partition_candidates(site.scheduler.partition)
@@ -237,7 +233,8 @@ class SlurmPodmanBackend(OrchestratorBackend):
                 )
             selected_partition = partition_override
             logger.info(
-                "Using per-request partition override: %s", selected_partition,
+                "Using per-request partition override: %s",
+                selected_partition,
             )
         else:
             selected_partition = await self._select_submission_partition(
@@ -265,7 +262,11 @@ class SlurmPodmanBackend(OrchestratorBackend):
         # Per-request gpu_count overrides site.scheduler.gpus;
         # partition profile gpus may further override both.
         effective_gpus = gpu_count if gpu_count is not None else site.scheduler.gpus
-        pp = site.get_partition_profile(selected_partition) if selected_partition else None
+        pp = (
+            site.get_partition_profile(selected_partition)
+            if selected_partition
+            else None
+        )
         if pp is not None and gpu_count is None:
             # Partition profile is authoritative when no explicit request override
             effective_gpus = pp.gpus
@@ -298,9 +299,11 @@ class SlurmPodmanBackend(OrchestratorBackend):
         if model_path:
             # The RCCS wrapper needs a filesystem path for offline model loading,
             # while LiteLLM should still expose a stable user-facing model name.
-            served_model_name = env_overrides.get("VLLM_SERVED_MODEL_NAME") or env_overrides.get(
-                "MODEL_NAME"
-            ) or model_path
+            served_model_name = (
+                env_overrides.get("VLLM_SERVED_MODEL_NAME")
+                or env_overrides.get("MODEL_NAME")
+                or model_path
+            )
             env_overrides["VLLM_MODEL_PATH"] = model_path
             env_overrides["VLLM_SERVED_MODEL_NAME"] = served_model_name
             env_overrides["VLLM_MODEL"] = served_model_name
@@ -363,15 +366,22 @@ class SlurmPodmanBackend(OrchestratorBackend):
         else:
             # Job left the queue — check sacct
             sacct_state = await self._sacct_state(job_id)
-            status = self._map_slurm_state(sacct_state) if sacct_state else JobStatus.UNKNOWN
+            status = (
+                self._map_slurm_state(sacct_state) if sacct_state else JobStatus.UNKNOWN
+            )
 
         # If running, try to resolve the node from the Slurm output
-        if status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY) and not node:
+        if (
+            status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY)
+            and not node
+        ):
             node = await self._node_from_output(job_id)
 
         endpoint = None
         if node and status in (JobStatus.STARTING, JobStatus.RUNNING, JobStatus.READY):
-            service_port = self._job_service_ports.get(job_id, self.site.network.litellm_port)
+            service_port = self._job_service_ports.get(
+                job_id, self.site.network.litellm_port
+            )
             endpoint = EndpointInfo(
                 node=node,
                 litellm_port=service_port,
@@ -408,9 +418,7 @@ class SlurmPodmanBackend(OrchestratorBackend):
             await asyncio.sleep(poll)
             elapsed += poll
 
-        raise TimeoutError(
-            f"Job {job_id} did not become ready within {timeout}s"
-        )
+        raise TimeoutError(f"Job {job_id} did not become ready within {timeout}s")
 
     # ------------------------------------------------------------------
     # Cleanup
@@ -433,7 +441,9 @@ class SlurmPodmanBackend(OrchestratorBackend):
                     "failed to create graceful stop request for %s: %s", job_id, exc
                 )
             else:
-                graceful_timeout = int(os.environ.get("RIVAULT_GRACEFUL_STOP_TIMEOUT", "20"))
+                graceful_timeout = int(
+                    os.environ.get("RIVAULT_GRACEFUL_STOP_TIMEOUT", "20")
+                )
                 logger.info(
                     "requested graceful compute-node stop for %s via %s",
                     job_id,
@@ -472,10 +482,13 @@ class SlurmPodmanBackend(OrchestratorBackend):
         """List UMRS-related Slurm jobs."""
         proc = await asyncio.create_subprocess_exec(
             "squeue",
-            "-u", os.environ.get("USER", ""),
-            "-n", "umrs-rivault",
+            "-u",
+            os.environ.get("USER", ""),
+            "-n",
+            "umrs-rivault",
             "-h",
-            "-o", "%i",
+            "-o",
+            "%i",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -512,9 +525,12 @@ class SlurmPodmanBackend(OrchestratorBackend):
         # Check sinfo
         try:
             proc = await asyncio.create_subprocess_exec(
-                "sinfo", "-h",
-                "-p", self.site.scheduler.partition,
-                "-o", "%P %a %D",
+                "sinfo",
+                "-h",
+                "-p",
+                self.site.scheduler.partition,
+                "-o",
+                "%P %a %D",
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -570,7 +586,9 @@ class SlurmPodmanBackend(OrchestratorBackend):
                 else:
                     logger.debug(
                         "Excluding partition %s (%.1f GiB GPU < %.1f GiB required)",
-                        p, pp.gpu_memory_gb, min_gpu_memory_gb,
+                        p,
+                        pp.gpu_memory_gb,
+                        min_gpu_memory_gb,
                     )
             if filtered:
                 candidates = filtered
@@ -589,13 +607,20 @@ class SlurmPodmanBackend(OrchestratorBackend):
         # R-7 (Phase 2k): single batched sinfo call instead of N round trips.
         # Output format: "<partition> <state>" per line.
         rc, stdout, stderr = await _run_slurm_cli(
-            "sinfo", "-h", "-p", ",".join(candidates), "-o", "%P %t",
+            "sinfo",
+            "-h",
+            "-p",
+            ",".join(candidates),
+            "-o",
+            "%P %t",
         )
         if rc != 0:
             logger.warning(
                 "sinfo unavailable while selecting partition (rc=%s, stderr=%s); "
                 "using fallback %s",
-                rc, stderr.decode().strip(), fallback,
+                rc,
+                stderr.decode().strip(),
+                fallback,
             )
             return fallback
 
@@ -614,9 +639,13 @@ class SlurmPodmanBackend(OrchestratorBackend):
         for partition in candidates:
             states = states_by_partition.get(partition, [])
             if any(state.startswith("idle") for state in states):
-                logger.info("Selected idle Slurm partition %s from %s", partition, candidates)
+                logger.info(
+                    "Selected idle Slurm partition %s from %s", partition, candidates
+                )
                 return partition
-            if any(state.startswith("mix") or state.startswith("alloc") for state in states):
+            if any(
+                state.startswith("mix") or state.startswith("alloc") for state in states
+            ):
                 mixed_candidates.append(partition)
 
         if mixed_candidates:
@@ -627,13 +656,22 @@ class SlurmPodmanBackend(OrchestratorBackend):
             )
             return mixed_candidates[0]
 
-        logger.warning("Falling back to first configured Slurm partition %s from %s", fallback, candidates)
+        logger.warning(
+            "Falling back to first configured Slurm partition %s from %s",
+            fallback,
+            candidates,
+        )
         return fallback
 
     async def _squeue_info(self, job_id: str) -> tuple[str | None, str | None]:
         """Return (node, state) from squeue, or (None, None) if not found."""
         rc, stdout, _ = await _run_slurm_cli(
-            "squeue", "-j", job_id, "-h", "-o", "%N %T",
+            "squeue",
+            "-j",
+            job_id,
+            "-h",
+            "-o",
+            "%N %T",
         )
         if rc != 0:
             return None, None
@@ -648,7 +686,12 @@ class SlurmPodmanBackend(OrchestratorBackend):
     async def _sacct_state(self, job_id: str) -> str | None:
         """Return the first sacct State string, or None."""
         rc, stdout, _ = await _run_slurm_cli(
-            "sacct", "-j", job_id, "-n", "-o", "State",
+            "sacct",
+            "-j",
+            job_id,
+            "-n",
+            "-o",
+            "State",
         )
         if rc != 0:
             return None

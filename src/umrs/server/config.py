@@ -38,6 +38,7 @@ def get_rivault_remote_port():
     # Fall back to SiteConfig (loaded from site.yaml or env-only defaults)
     try:
         from umrs.orchestrator.site_config import get_site_config
+
         return get_site_config().network.litellm_port
     except Exception:
         return port

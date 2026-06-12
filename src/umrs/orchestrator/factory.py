@@ -28,24 +28,29 @@ def _lazy_register_builtins() -> None:
     """Lazily register built-in backends to avoid import issues."""
     if "slurm" not in _BACKEND_REGISTRY:
         from .slurm_backend import SlurmBackend
+
         register_backend("slurm", SlurmBackend)
 
     if "kubernetes" not in _BACKEND_REGISTRY:
         from .kubernetes_backend import KubernetesBackend
+
         register_backend("kubernetes", KubernetesBackend)
         register_backend("k8s", KubernetesBackend)
 
     if "docker-compose" not in _BACKEND_REGISTRY:
         from .compose_backend import DockerComposeBackend
+
         register_backend("docker-compose", DockerComposeBackend)
         register_backend("compose", DockerComposeBackend)
 
     if "slurm-podman" not in _BACKEND_REGISTRY:
         from .slurm_podman_backend import SlurmPodmanBackend
+
         register_backend("slurm-podman", SlurmPodmanBackend)
 
     if "slurm-remote" not in _BACKEND_REGISTRY:
         from .remote_slurm_backend import RemoteSlurmBackend
+
         register_backend("slurm-remote", RemoteSlurmBackend)
 
 
@@ -125,8 +130,7 @@ def get_orchestrator(
     if backend not in _BACKEND_REGISTRY:
         available = ", ".join(sorted(_BACKEND_REGISTRY.keys()))
         raise ValueError(
-            f"Unknown orchestrator backend: {backend}. "
-            f"Available: {available}"
+            f"Unknown orchestrator backend: {backend}. Available: {available}"
         )
 
     backend_class = _BACKEND_REGISTRY[backend]

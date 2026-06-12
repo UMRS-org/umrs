@@ -14,6 +14,7 @@ from typing import Any
 @dataclass
 class FieldDiff:
     """A single changed field."""
+
     field: str
     old: Any
     new: Any
@@ -22,6 +23,7 @@ class FieldDiff:
 @dataclass
 class StepDiff:
     """Diff for a single execution step."""
+
     step_name: str
     status: str  # "added", "removed", "changed", "unchanged"
     field_diffs: list[FieldDiff] = field(default_factory=list)
@@ -30,6 +32,7 @@ class StepDiff:
 @dataclass
 class ProvenanceDiff:
     """Structured diff between two provenance records."""
+
     job_id_a: str
     job_id_b: str
     job_level_diffs: list[FieldDiff] = field(default_factory=list)
@@ -66,7 +69,10 @@ class ProvenanceDiff:
 
 # Fields to compare at the job/provenance level
 _JOB_COMPARE_FIELDS = [
-    "job_type", "status", "execution_authority", "restart_policy",
+    "job_type",
+    "status",
+    "execution_authority",
+    "restart_policy",
     "total_attempts",
 ]
 
@@ -100,11 +106,14 @@ def compute_provenance_diff(
     diff.summary = _summary_counts(diff)
     return diff
 
+
 def _job_level_diffs(prov_a: dict[str, Any], prov_b: dict[str, Any]) -> list[FieldDiff]:
     diffs = _changed_fields(prov_a, prov_b, _JOB_COMPARE_FIELDS)
     model_a = prov_a.get("model") or {}
     model_b = prov_b.get("model") or {}
-    diffs.extend(_changed_fields(model_a, model_b, _MODEL_COMPARE_FIELDS, prefix="model."))
+    diffs.extend(
+        _changed_fields(model_a, model_b, _MODEL_COMPARE_FIELDS, prefix="model.")
+    )
     diffs.extend(_changed_fields(prov_a, prov_b, ["total_duration_seconds"]))
     return diffs
 
@@ -135,7 +144,10 @@ def _artifact_diffs(prov_a: dict[str, Any], prov_b: dict[str, Any]) -> list[Fiel
 
 
 def _artifact_map(provenance: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {artifact.get("uri", ""): artifact for artifact in provenance.get("artifacts", [])}
+    return {
+        artifact.get("uri", ""): artifact
+        for artifact in provenance.get("artifacts", [])
+    }
 
 
 def _artifact_diff_for_uri(
@@ -162,7 +174,10 @@ def _step_diffs(
         return []
     steps_a = {trace.get("step_name", ""): trace for trace in traces_a}
     steps_b = {trace.get("step_name", ""): trace for trace in traces_b}
-    return [_step_diff(step, steps_a, steps_b) for step in sorted(set(steps_a) | set(steps_b))]
+    return [
+        _step_diff(step, steps_a, steps_b)
+        for step in sorted(set(steps_a) | set(steps_b))
+    ]
 
 
 def _step_diff(
@@ -193,12 +208,16 @@ def _summary_counts(diff: ProvenanceDiff) -> dict[str, int]:
 
 
 _TRACE_COMPARE_FIELDS = [
-    "status", "step_type", "inputs_hash", "outputs_hash",
+    "status",
+    "step_type",
+    "inputs_hash",
+    "outputs_hash",
 ]
 
 
 def _compare_trace_fields(
-    ta: dict[str, Any], tb: dict[str, Any],
+    ta: dict[str, Any],
+    tb: dict[str, Any],
 ) -> list[FieldDiff]:
     """Compare two trace dicts and return field-level diffs."""
     diffs: list[FieldDiff] = []

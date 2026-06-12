@@ -55,7 +55,10 @@ class SAM3SegmentationStep(Step):
         for idx, key in enumerate(ctx.input_keys):
             logger.info(
                 "[%d/%d] SAM3 segmenting: %s (prompt=%r)",
-                idx + 1, len(ctx.input_keys), key, self.prompt,
+                idx + 1,
+                len(ctx.input_keys),
+                key,
+                self.prompt,
             )
 
             image_url = f"s3://{ctx.input_bucket}/{key}"
@@ -118,7 +121,8 @@ class SAM3SegmentationStep(Step):
 
             logger.info(
                 "  → %d objects detected, overlay=%s",
-                meta["num_objects"], meta["overlay_key"],
+                meta["num_objects"],
+                meta["overlay_key"],
             )
 
         return StepResult(
@@ -127,9 +131,7 @@ class SAM3SegmentationStep(Step):
             metadata=metadata_list,
             extra={
                 "total_images": len(ctx.input_keys),
-                "total_objects": sum(
-                    m.get("num_objects", 0) for m in metadata_list
-                ),
+                "total_objects": sum(m.get("num_objects", 0) for m in metadata_list),
             },
         )
 

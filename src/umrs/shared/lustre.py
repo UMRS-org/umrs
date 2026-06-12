@@ -24,14 +24,16 @@ from dataclasses import dataclass
 logger = logging.getLogger(__name__)
 
 # File extensions that benefit from multi-OST striping (large weight files).
-_WEIGHT_EXTENSIONS = frozenset({
-    ".safetensors",
-    ".bin",
-    ".pt",
-    ".pth",
-    ".gguf",
-    ".ggml",
-})
+_WEIGHT_EXTENSIONS = frozenset(
+    {
+        ".safetensors",
+        ".bin",
+        ".pt",
+        ".pth",
+        ".gguf",
+        ".ggml",
+    }
+)
 
 # Minimum file size (bytes) worth re-striping.  Files smaller than this
 # load fast enough on a single OST.
@@ -75,9 +77,13 @@ def check_striping(path: str) -> StripingInfo | None:
         stripe_size = 0
         for line in result.stdout.splitlines():
             stripped = line.strip()
-            if stripped.startswith("lmm_stripe_count:") or stripped.startswith("stripe_count:"):
+            if stripped.startswith("lmm_stripe_count:") or stripped.startswith(
+                "stripe_count:"
+            ):
                 stripe_count = int(stripped.split(":")[-1].strip())
-            elif stripped.startswith("lmm_stripe_size:") or stripped.startswith("stripe_size:"):
+            elif stripped.startswith("lmm_stripe_size:") or stripped.startswith(
+                "stripe_size:"
+            ):
                 stripe_size = int(stripped.split(":")[-1].strip())
 
         return StripingInfo(
@@ -135,7 +141,15 @@ def optimize_model_striping(
     if not dry_run:
         try:
             subprocess.run(
-                ["lfs", "setstripe", "-c", str(stripe_count), "-S", stripe_size, model_dir],
+                [
+                    "lfs",
+                    "setstripe",
+                    "-c",
+                    str(stripe_count),
+                    "-S",
+                    stripe_size,
+                    model_dir,
+                ],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -143,7 +157,9 @@ def optimize_model_striping(
             )
             logger.info(
                 "Set directory default stripe: %s (count=%d, size=%s)",
-                model_dir, stripe_count, stripe_size,
+                model_dir,
+                stripe_count,
+                stripe_size,
             )
         except subprocess.CalledProcessError as e:
             logger.warning("Failed to set directory stripe: %s", e.stderr.strip())
@@ -172,7 +188,9 @@ def optimize_model_striping(
                 continue
             if info.stripe_count >= stripe_count:
                 logger.debug(
-                    "Already well-striped (%d OSTs): %s", info.stripe_count, fpath,
+                    "Already well-striped (%d OSTs): %s",
+                    info.stripe_count,
+                    fpath,
                 )
                 continue
 
@@ -180,19 +198,28 @@ def optimize_model_striping(
             if dry_run:
                 logger.info(
                     "[DRY RUN] Would migrate %s (%.1f GiB, stripe %d→%d)",
-                    fpath, fsize / (1024**3), info.stripe_count, stripe_count,
+                    fpath,
+                    fsize / (1024**3),
+                    info.stripe_count,
+                    stripe_count,
                 )
             else:
                 logger.info(
                     "Migrating %s (%.1f GiB, stripe %d→%d) ...",
-                    fpath, fsize / (1024**3), info.stripe_count, stripe_count,
+                    fpath,
+                    fsize / (1024**3),
+                    info.stripe_count,
+                    stripe_count,
                 )
                 try:
                     subprocess.run(
                         [
-                            "lfs", "migrate",
-                            "-c", str(stripe_count),
-                            "-S", stripe_size,
+                            "lfs",
+                            "migrate",
+                            "-c",
+                            str(stripe_count),
+                            "-S",
+                            stripe_size,
                             fpath,
                         ],
                         capture_output=True,
@@ -202,7 +229,9 @@ def optimize_model_striping(
                     )
                 except subprocess.CalledProcessError as e:
                     logger.warning(
-                        "lfs migrate failed for %s: %s", fpath, e.stderr.strip(),
+                        "lfs migrate failed for %s: %s",
+                        fpath,
+                        e.stderr.strip(),
                     )
                     continue
 
@@ -211,7 +240,9 @@ def optimize_model_striping(
     if migrated:
         logger.info(
             "Lustre striping optimized: %d files in %s (stripe_count=%d)",
-            len(migrated), model_dir, stripe_count,
+            len(migrated),
+            model_dir,
+            stripe_count,
         )
     else:
         logger.debug("No files needed re-striping in %s", model_dir)

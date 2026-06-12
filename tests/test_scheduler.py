@@ -242,7 +242,10 @@ class TestJobScheduler:
     def test_tick_max_runs_limit(self, tmp_path):
         scheduler = JobScheduler(store_path=str(tmp_path / "sched.json"))
         sched = scheduler.add_interval(
-            name="limited", interval="every 1s", job_spec={}, max_runs=2,
+            name="limited",
+            interval="every 1s",
+            job_spec={},
+            max_runs=2,
         )
         sched.next_run_at = (datetime.now(timezone.utc) - timedelta(seconds=10)).isoformat()
 

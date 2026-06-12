@@ -157,7 +157,9 @@ class Scheduler:
         for job_id in job_ids:
             job = jobs_by_id.get(job_id)
             if job is None:
-                logger.warning(f"Skipping claimed job {job_id}: not found in batch fetch")
+                logger.warning(
+                    f"Skipping claimed job {job_id}: not found in batch fetch"
+                )
                 continue
             await self._schedule_job(job_id, job)
 
@@ -239,7 +241,9 @@ class Scheduler:
                     retry_delay=30,  # Retry in 30 seconds
                 )
                 self._stats["jobs_failed"] += 1
-                self._consecutive_failures = getattr(self, "_consecutive_failures", 0) + 1
+                self._consecutive_failures = (
+                    getattr(self, "_consecutive_failures", 0) + 1
+                )
                 if self._consecutive_failures >= 3:
                     METRICS.retry_burst(backend.backend_name)
                     METRICS.degradation_level("scheduler", 1)
@@ -319,7 +323,7 @@ class SimpleBackendAdapter:
                     project_id=project_id,
                     env_vars=job.spec.get("env_vars", {}),
                     **extra_kwargs,
-                )
+                ),
             )
 
             return job_info.job_id

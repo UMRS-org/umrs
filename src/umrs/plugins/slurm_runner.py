@@ -24,8 +24,7 @@ logger = logging.getLogger(__name__)
 SLURM_PARTITION = os.environ.get("SLURM_PARTITION", "gpu")
 SLURM_DEFAULT_TIME = os.environ.get("SLURM_TIME", "02:00:00")
 SINGULARITY_IMAGE_PATH = os.environ.get(
-    "PLUGIN_SINGULARITY_IMAGE",
-    "/opt/rivault/images/plugin-runner.sif"
+    "PLUGIN_SINGULARITY_IMAGE", "/opt/rivault/images/plugin-runner.sif"
 )
 
 
@@ -86,7 +85,9 @@ class SlurmPluginRunner(PluginRunner):
             logger.info(f"Submitted Slurm job {slurm_job_id} for plugin {plugin_id}")
 
             # Wait for completion
-            result = await self._wait_for_completion(plugin_id, slurm_job_id, job_dir, spec)
+            result = await self._wait_for_completion(
+                plugin_id, slurm_job_id, job_dir, spec
+            )
 
             return result
 
@@ -228,9 +229,11 @@ exit $EXIT_CODE
         """Get Slurm job status."""
         proc = await asyncio.create_subprocess_exec(
             "squeue",
-            "--job", job_id,
+            "--job",
+            job_id,
             "--noheader",
-            "--format", "%T",
+            "--format",
+            "%T",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
@@ -247,9 +250,11 @@ exit $EXIT_CODE
         """Get completed job status from sacct."""
         proc = await asyncio.create_subprocess_exec(
             "sacct",
-            "--job", job_id,
+            "--job",
+            job_id,
             "--noheader",
-            "--format", "State",
+            "--format",
+            "State",
             "--parsable2",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -301,9 +306,7 @@ exit $EXIT_CODE
 
         # Find output files
         output_files = [
-            str(f.relative_to(job_dir))
-            for f in job_dir.glob("output/*")
-            if f.is_file()
+            str(f.relative_to(job_dir)) for f in job_dir.glob("output/*") if f.is_file()
         ]
 
         return PluginResult(
@@ -324,7 +327,8 @@ exit $EXIT_CODE
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                "scancel", slurm_job_id,
+                "scancel",
+                slurm_job_id,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )

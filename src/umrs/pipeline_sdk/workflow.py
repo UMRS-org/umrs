@@ -69,16 +69,19 @@ _step_cache_lock = threading.Lock()
 # Data-model classes (formerly umrs.steps.models)
 # =========================================================================
 
+
 class ExecutionMode(Enum):
     """How workflow steps are executed."""
-    IN_PROCESS = "in_process"    # Direct call in server process (dev/default)
-    SUBPROCESS = "subprocess"    # Isolated subprocess per step
-    SLURM = "slurm"              # One Slurm job per step (HPC GPU)
-    K8S = "k8s"                  # One Kubernetes Job per step (cloud)
+
+    IN_PROCESS = "in_process"  # Direct call in server process (dev/default)
+    SUBPROCESS = "subprocess"  # Isolated subprocess per step
+    SLURM = "slurm"  # One Slurm job per step (HPC GPU)
+    K8S = "k8s"  # One Kubernetes Job per step (cloud)
 
 
 class SourceType(Enum):
     """Where the user's Python scripts live."""
+
     LOCAL_PATH = "local_path"
     S3 = "s3"
     GIT = "git"
@@ -88,6 +91,7 @@ class SourceType(Enum):
 @dataclass
 class SourceSpec:
     """Location of the user's Python scripts."""
+
     type: SourceType
     path: str
     ref: str | None = None  # git commit hash
@@ -120,6 +124,7 @@ class SourceSpec:
 @dataclass
 class ResourceSpec:
     """Compute resource limits for the whole workflow."""
+
     gpu_count: int = 0
     cpu_limit: str = "1"
     memory_limit: str = "1Gi"
@@ -170,6 +175,7 @@ KNOWN_MODEL_TYPES: frozenset = frozenset({"llm", "vision", "embedding"})
 @dataclass
 class StepSpec:
     """One processing step inside a workflow."""
+
     name: str
     entrypoint: str  # "module:ClassName"
     config: dict[str, Any] = field(default_factory=dict)
@@ -320,6 +326,7 @@ def _normalize_execution_parallel_steps(
 @dataclass
 class OutputSpec:
     """Describes the final output format of the workflow."""
+
     return_type: str = "file"  # "file" | "vector"
     embedding_vector_size: int = 0
 
@@ -380,14 +387,12 @@ class WorkflowDefinition:
                     for dep in step.depends_on:
                         if dep not in seen_names:
                             raise ValueError(
-                                f"Step '{step.name}' depends on unknown "
-                                f"step '{dep}'"
+                                f"Step '{step.name}' depends on unknown step '{dep}'"
                             )
                         if dep == step.name:
-                            raise ValueError(
-                                f"Step '{step.name}' depends on itself"
-                            )
+                            raise ValueError(f"Step '{step.name}' depends on itself")
             from umrs.pipeline_sdk.dag import DAGScheduler, DAGValidationError
+
             try:
                 DAGScheduler(self.steps).validate()
             except DAGValidationError as exc:
@@ -446,6 +451,7 @@ class WorkflowDefinition:
 # Script loader (formerly umrs.steps.loader)
 # =========================================================================
 
+
 class ScriptLoadError(Exception):
     """Raised when a user script cannot be loaded."""
 
@@ -460,16 +466,12 @@ def _resolve_source(
     if src.type == SourceType.LOCAL_PATH:
         p = Path(src.path)
         if not p.is_dir():
-            raise ScriptLoadError(
-                f"Source directory does not exist: {p}"
-            )
+            raise ScriptLoadError(f"Source directory does not exist: {p}")
         return p
 
     if src.type == SourceType.S3:
         if s3 is None:
-            raise ScriptLoadError(
-                "S3 client is required to download script source"
-            )
+            raise ScriptLoadError("S3 client is required to download script source")
         return _download_s3_source(s3, src.path)
 
     if src.type == SourceType.GIT:
@@ -478,9 +480,7 @@ def _resolve_source(
     if src.type == SourceType.UPLOADED:
         p = Path(src.path)
         if not p.is_dir():
-            raise ScriptLoadError(
-                f"Uploaded source directory does not exist: {p}"
-            )
+            raise ScriptLoadError(f"Uploaded source directory does not exist: {p}")
         return p
 
     raise ScriptLoadError(f"Unknown source type: {src.type}")
@@ -491,7 +491,7 @@ def _download_s3_source(s3: Any, s3_uri: str) -> Path:
     if not s3_uri.startswith("s3://"):
         raise ScriptLoadError(f"Invalid S3 URI: {s3_uri}")
 
-    without_scheme = s3_uri[len("s3://"):]
+    without_scheme = s3_uri[len("s3://") :]
     bucket, _, key = without_scheme.partition("/")
     if not key:
         raise ScriptLoadError(f"S3 URI missing key: {s3_uri}")
@@ -554,7 +554,8 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> type[Step]:
     if module_file.is_file():
         # Use importlib.util for thread-safe import without sys.path mutation
         loader_spec = importlib.util.spec_from_file_location(
-            module_name, str(module_file),
+            module_name,
+            str(module_file),
             submodule_search_locations=[str(script_dir)],
         )
         if loader_spec is None or loader_spec.loader is None:
@@ -590,9 +591,7 @@ def _import_step_class(spec: StepSpec, script_dir: Path) -> type[Step]:
         )
 
     if not (isinstance(cls, type) and issubclass(cls, Step)):
-        raise ScriptLoadError(
-            f"Step '{spec.name}': {class_name} does not inherit Step"
-        )
+        raise ScriptLoadError(f"Step '{spec.name}': {class_name} does not inherit Step")
 
     with _step_cache_lock:
         _step_class_cache[cache_key] = cls
@@ -629,8 +628,7 @@ def load_workflow(source_uri: str) -> WorkflowDefinition:
                 return WorkflowDefinition.from_file(candidate)
 
     raise FileNotFoundError(
-        f"Workflow not found: {source_uri} "
-        f"(checked CWD and {uploaded_root})"
+        f"Workflow not found: {source_uri} (checked CWD and {uploaded_root})"
     )
 
 
@@ -652,6 +650,7 @@ def load_steps(
 # =========================================================================
 # WorkflowPipeline — the unified Pipeline subclass
 # =========================================================================
+
 
 class WorkflowPipeline(Pipeline):
     """A Pipeline backed by a ``workflow.json`` file.
@@ -731,7 +730,9 @@ class WorkflowPipeline(Pipeline):
         ]
 
     def compute(
-        self, config: PipelineConfig, items: list[DataItem],
+        self,
+        config: PipelineConfig,
+        items: list[DataItem],
     ) -> list[TaskHandle]:
         """Chain steps: step N+1's input = step N's output.
 
@@ -767,15 +768,19 @@ class WorkflowPipeline(Pipeline):
             try:
                 step.teardown()
             except Exception:
-                logger.warning("teardown failed for step '%s'", step.name,
-                               exc_info=True)
+                logger.warning(
+                    "teardown failed for step '%s'", step.name, exc_info=True
+                )
 
         # Clean up staging artifacts
         self._cleanup_staging(self._s3, self._input_bucket, run_id)
 
         # Store results for collect() phase
         self._run_result = (
-            last_embeddings, last_checksums, last_metadata, current_keys
+            last_embeddings,
+            last_checksums,
+            last_metadata,
+            current_keys,
         )
 
         return [
@@ -793,7 +798,9 @@ class WorkflowPipeline(Pipeline):
         ]
 
     def collect(
-        self, config: PipelineConfig, handles: list[TaskHandle],
+        self,
+        config: PipelineConfig,
+        handles: list[TaskHandle],
     ) -> list[Result]:
         handle = handles[0]
         meta = handle.metadata
@@ -832,6 +839,7 @@ class WorkflowPipeline(Pipeline):
                 UserWorkflow,
                 UserWorkflowRunner,
             )
+
             uw = UserWorkflow.from_workflow_definition(self.workflow)
             runner = UserWorkflowRunner(uw, s3=s3)
             return runner.run(s3, s3_keys, path_to_bucket, output_bucket)
@@ -841,7 +849,9 @@ class WorkflowPipeline(Pipeline):
         run_id = uuid.uuid4().hex[:12]
         logger.info(
             "Workflow '%s' run=%s: %d steps, %d input keys",
-            self.workflow.name, run_id, len(self._step_instances),
+            self.workflow.name,
+            run_id,
+            len(self._step_instances),
             len(s3_keys),
         )
 
@@ -886,8 +896,9 @@ class WorkflowPipeline(Pipeline):
             try:
                 step.teardown()
             except Exception:
-                logger.warning("teardown failed for step '%s'", step.name,
-                               exc_info=True)
+                logger.warning(
+                    "teardown failed for step '%s'", step.name, exc_info=True
+                )
 
         self._cleanup_staging(s3, path_to_bucket, run_id)
 
@@ -934,7 +945,9 @@ class WorkflowPipeline(Pipeline):
 
     @staticmethod
     def _collect_checksums(
-        s3: Any, bucket: str, keys: list[str],
+        s3: Any,
+        bucket: str,
+        keys: list[str],
     ) -> list[str]:
         checksums = []
         for key in keys:
@@ -947,7 +960,9 @@ class WorkflowPipeline(Pipeline):
 
     @staticmethod
     def _collect_metadata(
-        s3: Any, bucket: str, keys: list[str],
+        s3: Any,
+        bucket: str,
+        keys: list[str],
     ) -> list[dict[str, Any]]:
         meta = []
         for key in keys:
@@ -960,7 +975,9 @@ class WorkflowPipeline(Pipeline):
 
     @staticmethod
     def _cleanup_staging(
-        s3: Any | None, bucket: str, run_id: str,
+        s3: Any | None,
+        bucket: str,
+        run_id: str,
     ) -> None:
         """Delete intermediate staging objects for this run."""
         if s3 is None or not bucket:
@@ -980,5 +997,4 @@ class WorkflowPipeline(Pipeline):
                     Delete={"Objects": batch, "Quiet": True},
                 )
         except Exception:
-            logger.debug("Staging cleanup failed for run=%s", run_id,
-                         exc_info=True)
+            logger.debug("Staging cleanup failed for run=%s", run_id, exc_info=True)

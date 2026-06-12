@@ -85,6 +85,7 @@ class KnowledgeSearchEngine:
         if db_url:
             try:
                 import psycopg2
+
                 self._psycopg2 = psycopg2
             except ImportError:
                 logger.warning("psycopg2 unavailable; search will use in-memory")
@@ -176,24 +177,28 @@ class KnowledgeSearchEngine:
                     cols = [desc[0] for desc in cur.description]
                     d = dict(zip(cols, row))
                     searched_ns.add(d.get("namespace", "default"))
-                    hits.append(KnowledgeSearchHit(
-                        memory_id=d["memory_id"],
-                        content=d["content"],
-                        namespace=d.get("namespace", "default"),
-                        project_id=d.get("project_id"),
-                        source=d.get("source", ""),
-                        score=float(d.get("importance", 0.5)),
-                        document_source_uri=d.get("document_source_uri"),
-                        document_source_type=d.get("document_source_type"),
-                        importance=float(d.get("importance", 0.5)),
-                        metadata=d.get("metadata") or {},
-                    ))
+                    hits.append(
+                        KnowledgeSearchHit(
+                            memory_id=d["memory_id"],
+                            content=d["content"],
+                            namespace=d.get("namespace", "default"),
+                            project_id=d.get("project_id"),
+                            source=d.get("source", ""),
+                            score=float(d.get("importance", 0.5)),
+                            document_source_uri=d.get("document_source_uri"),
+                            document_source_type=d.get("document_source_type"),
+                            importance=float(d.get("importance", 0.5)),
+                            metadata=d.get("metadata") or {},
+                        )
+                    )
 
                 return KnowledgeSearchResult(
                     query=query,
                     scope=scope,
                     project_id=project_id,
-                    namespaces_searched=sorted(searched_ns) if searched_ns else (namespaces or []),
+                    namespaces_searched=sorted(searched_ns)
+                    if searched_ns
+                    else (namespaces or []),
                     hits=hits,
                     total_hits=len(hits),
                 )
@@ -234,24 +239,28 @@ class KnowledgeSearchEngine:
         for item in candidates:
             ns = item.get("namespace", "default")
             searched_ns.add(ns)
-            hits.append(KnowledgeSearchHit(
-                memory_id=item.get("memory_id", ""),
-                content=item.get("content", ""),
-                namespace=ns,
-                project_id=item.get("project_id"),
-                source=item.get("source", ""),
-                score=float(item.get("importance", 0.5)),
-                document_source_uri=item.get("document_source_uri"),
-                document_source_type=item.get("document_source_type"),
-                importance=float(item.get("importance", 0.5)),
-                metadata=item.get("metadata") or {},
-            ))
+            hits.append(
+                KnowledgeSearchHit(
+                    memory_id=item.get("memory_id", ""),
+                    content=item.get("content", ""),
+                    namespace=ns,
+                    project_id=item.get("project_id"),
+                    source=item.get("source", ""),
+                    score=float(item.get("importance", 0.5)),
+                    document_source_uri=item.get("document_source_uri"),
+                    document_source_type=item.get("document_source_type"),
+                    importance=float(item.get("importance", 0.5)),
+                    metadata=item.get("metadata") or {},
+                )
+            )
 
         return KnowledgeSearchResult(
             query=query,
             scope=scope,
             project_id=project_id,
-            namespaces_searched=sorted(searched_ns) if searched_ns else (namespaces or []),
+            namespaces_searched=sorted(searched_ns)
+            if searched_ns
+            else (namespaces or []),
             hits=hits,
             total_hits=len(hits),
         )

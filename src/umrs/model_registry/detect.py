@@ -54,16 +54,29 @@ _TOOL_CALLING_RE = re.compile(
 
 # Model type → normalized family
 _FAMILY_MAP = {
-    "qwen2": "qwen", "qwen2_moe": "qwen", "qwen": "qwen", "qwen2_vl": "qwen",
-    "qwen3": "qwen", "qwen3_moe": "qwen",
+    "qwen2": "qwen",
+    "qwen2_moe": "qwen",
+    "qwen": "qwen",
+    "qwen2_vl": "qwen",
+    "qwen3": "qwen",
+    "qwen3_moe": "qwen",
     "llama": "llama",
-    "mistral": "mistral", "mixtral": "mistral",
-    "gemma": "gemma", "gemma2": "gemma",
-    "phi3": "phi", "phi": "phi",
-    "deepseek": "deepseek", "deepseek_v2": "deepseek", "deepseek_v3": "deepseek",
-    "internlm": "internlm", "internlm2": "internlm",
-    "chatglm": "glm", "glm": "glm", "glm4": "glm",
-    "starcoder2": "starcoder", "starcoder": "starcoder",
+    "mistral": "mistral",
+    "mixtral": "mistral",
+    "gemma": "gemma",
+    "gemma2": "gemma",
+    "phi3": "phi",
+    "phi": "phi",
+    "deepseek": "deepseek",
+    "deepseek_v2": "deepseek",
+    "deepseek_v3": "deepseek",
+    "internlm": "internlm",
+    "internlm2": "internlm",
+    "chatglm": "glm",
+    "glm": "glm",
+    "glm4": "glm",
+    "starcoder2": "starcoder",
+    "starcoder": "starcoder",
     "codellama": "codellama",
 }
 
@@ -84,9 +97,20 @@ def _normalize_family(model_type: str) -> str:
     if lower in _FAMILY_MAP:
         return _FAMILY_MAP[lower]
     # Prefix-based matching
-    for prefix in ("qwen", "llama", "mistral", "mixtral", "phi", "gemma",
-                    "deepseek", "internlm", "chatglm", "glm", "starcoder",
-                    "codellama"):
+    for prefix in (
+        "qwen",
+        "llama",
+        "mistral",
+        "mixtral",
+        "phi",
+        "gemma",
+        "deepseek",
+        "internlm",
+        "chatglm",
+        "glm",
+        "starcoder",
+        "codellama",
+    ):
         if lower.startswith(prefix):
             return _FAMILY_MAP.get(prefix, prefix)
     return lower
@@ -130,7 +154,9 @@ def detect_capabilities(model_path: str) -> ModelCapabilities | None:
         text_cfg = config.get("text_config")
         if isinstance(text_cfg, dict):
             max_pos = text_cfg.get("max_position_embeddings")
-    max_position_embeddings = max_pos if isinstance(max_pos, int) and max_pos > 0 else None
+    max_position_embeddings = (
+        max_pos if isinstance(max_pos, int) and max_pos > 0 else None
+    )
 
     # --- Tool calling ---
     supports_tool_calling = False
@@ -158,7 +184,10 @@ def detect_capabilities(model_path: str) -> ModelCapabilities | None:
 
     logger.info(
         "Detected capabilities for %s: family=%s tools=%s vision=%s ctx=%s",
-        model_path, model_family, supports_tool_calling, supports_vision,
+        model_path,
+        model_family,
+        supports_tool_calling,
+        supports_vision,
         max_position_embeddings,
     )
 

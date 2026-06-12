@@ -86,7 +86,8 @@ class MotionDetectStep(Step):
 
             logger.info(
                 "  → %d motion events (%d frames, %.1fs)",
-                len(events), frame_count,
+                len(events),
+                frame_count,
                 frame_count / max(fps_actual, 1),
             )
 
@@ -94,9 +95,7 @@ class MotionDetectStep(Step):
         summary = {
             "total_videos": len(all_summaries),
             "total_events": sum(s["motion_events"] for s in all_summaries),
-            "videos_with_motion": sum(
-                1 for s in all_summaries if s["motion_events"] > 0
-            ),
+            "videos_with_motion": sum(1 for s in all_summaries if s["motion_events"] > 0),
             "per_video": all_summaries,
         }
         summary_key = f"{self.output_prefix}summary.json"
@@ -116,9 +115,7 @@ class MotionDetectStep(Step):
 
     # ------------------------------------------------------------------
 
-    def _analyse_video(
-        self, video_bytes: bytes
-    ) -> tuple[list[dict], int, float]:
+    def _analyse_video(self, video_bytes: bytes) -> tuple[list[dict], int, float]:
         """Frame-difference analysis returning (events, frame_count, fps)."""
         # Write to tmpfile for OpenCV (it can't read from memory)
         with tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as tmp:
@@ -153,15 +150,9 @@ class MotionDetectStep(Step):
 
             if prev_gray is not None:
                 delta = cv2.absdiff(prev_gray, gray)
-                _, thresh = cv2.threshold(
-                    delta, self.diff_threshold, 255, cv2.THRESH_BINARY
-                )
-                contours, _ = cv2.findContours(
-                    thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-                )
-                has_motion = any(
-                    cv2.contourArea(c) >= self.area_threshold for c in contours
-                )
+                _, thresh = cv2.threshold(delta, self.diff_threshold, 255, cv2.THRESH_BINARY)
+                contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                has_motion = any(cv2.contourArea(c) >= self.area_threshold for c in contours)
                 if has_motion:
                     motion_frames.append(frame_idx)
 
@@ -174,9 +165,7 @@ class MotionDetectStep(Step):
         events = self._cluster_events(motion_frames, fps)
         return events, frame_count, fps
 
-    def _cluster_events(
-        self, motion_frames: List[int], fps: float
-    ) -> List[Dict[str, Any]]:
+    def _cluster_events(self, motion_frames: List[int], fps: float) -> List[Dict[str, Any]]:
         """Group consecutive motion frames into discrete events."""
         if not motion_frames:
             return []

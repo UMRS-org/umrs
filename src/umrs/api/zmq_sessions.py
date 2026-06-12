@@ -53,6 +53,7 @@ def get_session_curve_provider() -> Any:
 # JWT claims container for session registration
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class _JWTIdentity:
     """Parsed JWT identity with all claims needed for session grants."""
@@ -66,6 +67,7 @@ class _JWTIdentity:
 # ---------------------------------------------------------------------------
 # Shared auth dependency: extract full identity from JWT
 # ---------------------------------------------------------------------------
+
 
 def _extract_jwt_identity(authorization: str | None = Header(None)) -> _JWTIdentity:
     """Extract full identity (sub, email, projects, roles) from the JWT bearer token."""
@@ -135,8 +137,10 @@ def _require_user_id(identity: _JWTIdentity = Depends(_extract_jwt_identity)) ->
 # Request / response models
 # ---------------------------------------------------------------------------
 
+
 class SessionRegisterRequest(BaseModel):
     """Client sends its freshly generated CURVE public key."""
+
     client_public_key: str = Field(
         ...,
         min_length=40,
@@ -150,8 +154,12 @@ class SessionRegisterRequest(BaseModel):
         description="Requested session lifetime (60–86400 s)",
     )
     # Optional capability restrictions (empty = full access for role)
-    max_gpus: int = Field(default=0, ge=0, description="Session GPU cap (0=unrestricted)")
-    max_walltime_sec: int = Field(default=0, ge=0, description="Session walltime cap (0=unrestricted)")
+    max_gpus: int = Field(
+        default=0, ge=0, description="Session GPU cap (0=unrestricted)"
+    )
+    max_walltime_sec: int = Field(
+        default=0, ge=0, description="Session walltime cap (0=unrestricted)"
+    )
 
 
 class SessionRegisterResponse(BaseModel):
@@ -186,6 +194,7 @@ class ServerKeyResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
+
 
 @router.get(
     "/server-key",

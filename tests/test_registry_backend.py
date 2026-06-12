@@ -15,9 +15,7 @@ def test_get_backend_auto_detects_postgres_from_dsn(monkeypatch):
     with patch("umrs.orchestrator.registry_backend.PostgresBackend") as mock_backend:
         get_backend()
 
-    mock_backend.assert_called_once_with(
-        "postgres://umrs:umrs_rccs@localhost:5432/umrs_db"
-    )
+    mock_backend.assert_called_once_with("postgres://umrs:umrs_rccs@localhost:5432/umrs_db")
 
 
 def test_get_backend_explicit_memory_overrides_dsn(monkeypatch):
