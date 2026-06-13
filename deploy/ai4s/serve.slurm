@@ -110,6 +110,7 @@ derive_tool_parser() {
         *glm-4.5*|*glm4.5*|*glm45*)  echo "glm45" ;;
         *glm*)                       echo "glm47" ;;
         *kimi*)                      echo "kimi_k2" ;;
+        *gpt-oss*swallow*)           echo "" ;;          # no tool-call training; skip parser
         *gemma*4*)                   echo "gemma4" ;;
         *)                           echo "hermes" ;;
     esac
@@ -135,6 +136,8 @@ derive_reasoning_parser() {
         *glm*) echo "glm45" ;;
         *gemma*4*) echo "gemma4" ;;
         *kimi*) echo "kimi_k2" ;;
+        *gpt-oss*swallow*) echo "gpt_oss" ;;
+        *llm-jp*|*llm_jp*) echo "llmjp4" ;;
         *)     echo "" ;;
     esac
 }
@@ -368,9 +371,13 @@ VLLM_ARGS=(
     --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL}"
     --trust-remote-code
     --enable-auto-tool-choice
-    --tool-call-parser "${VLLM_TOOL_CALL_PARSER}"
     --api-key "${LITELLM_MASTER_KEY}"
 )
+# Tool-call parser (see derive_tool_parser): omitted when empty (model has no
+# tool-call training, e.g. GPT-OSS-Swallow). When not empty, add the parser flag.
+if [[ -n "${VLLM_TOOL_CALL_PARSER}" ]]; then
+    VLLM_ARGS+=( --tool-call-parser "${VLLM_TOOL_CALL_PARSER}" )
+fi
 # Reasoning parser (see derive_reasoning_parser): GLM-5/5.1 is a thinking model;
 # the glm45 reasoning parser splits the </think>-gated reasoning into the
 # response `reasoning` field and is part of the official GLM serving recipe.
