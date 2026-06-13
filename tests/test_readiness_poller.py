@@ -26,7 +26,7 @@ async def test_check_ready_detail_with_chat_probe_waits_for_inference(monkeypatc
 
     poller, client = _make_poller(monkeypatch, handler)
     try:
-        is_ready, models, error = await poller.check_ready_detail(
+        is_ready, is_degraded, models, error = await poller.check_ready_detail(
             "ready.test",
             8001,
             probe_model="qwen3-8b",
@@ -36,6 +36,7 @@ async def test_check_ready_detail_with_chat_probe_waits_for_inference(monkeypatc
         await client.aclose()
 
     assert not is_ready
+    assert is_degraded
     assert models == ["qwen3-8b"]
     assert "Chat probe HTTP 500" in error
 
@@ -64,7 +65,7 @@ async def test_check_ready_detail_with_chat_probe_succeeds_after_models(monkeypa
 
     poller, client = _make_poller(monkeypatch, handler)
     try:
-        is_ready, models, error = await poller.check_ready_detail(
+        is_ready, is_degraded, models, error = await poller.check_ready_detail(
             "ready.test",
             8001,
             probe_model="qwen3-8b",
@@ -74,6 +75,7 @@ async def test_check_ready_detail_with_chat_probe_succeeds_after_models(monkeypa
         await client.aclose()
 
     assert is_ready
+    assert not is_degraded
     assert models == ["qwen3-8b"]
     assert error == ""
 
@@ -90,16 +92,17 @@ async def test_check_ready_detail_with_http_probe_uses_custom_path(monkeypatch):
 
     poller, client = _make_poller(monkeypatch, handler)
     try:
-        is_ready, models, error = await poller.check_ready_detail(
+        is_ready, is_degraded, models, error = await poller.check_ready_detail(
             "ready.test",
-            3001,
+            8001,
             probe_kind="http",
-            probe_path="readyz",
+            probe_path=None,  # defaults to /readyz
         )
     finally:
         await client.aclose()
 
     assert is_ready
+    assert not is_degraded
     assert models == []
     assert error == ""
     assert seen_paths == ["/readyz"]

@@ -431,7 +431,7 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         # Check if endpoint is ready
         try:
             readiness_probe = str(endpoint.metadata.get("readiness_probe") or "chat")
-            is_ready, models, error = await self.readiness_poller.check_ready_detail(
+            is_ready, is_degraded, models, error = await self.readiness_poller.check_ready_detail(
                 endpoint.host,
                 endpoint.port,
                 probe_model=endpoint.model,
@@ -481,6 +481,24 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                         "endpoint_status": "ready",
                     },
                 )
+
+            if is_degraded:
+                logger.warning(
+                    "Endpoint %s degraded at check %s — reachable but unhealthy: %s",
+                    backend_ref,
+                    check_no,
+                    error or "no error detail",
+                )
+                progress_detail = _readiness_progress_detail(endpoint, error)
+                self.registry.update_metadata(
+                    backend_ref,
+                    {
+                        "detail": f"degraded: {progress_detail}" if progress_detail else "degraded",
+                        "readiness_error": _short_progress_text(error) if error else None,
+                    },
+                )
+                self.registry.mark_degraded(backend_ref)
+                return AttemptCheckResult.running("degraded: endpoint reachable but unhealthy")
 
             last_error = self._last_readiness_error.get(backend_ref)
             if check_no == 1 or check_no % 5 == 0 or error != last_error:
