@@ -45,23 +45,80 @@ def _parse_backend_ref(backend_ref: str) -> dict[str, str]:
 
 
 def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
-    """Resolve a model name from the native UMRS catalog when no path is supplied."""
+    """Resolve a model name from the UMRS catalog when no path is supplied.
+
+    Checks both the legacy JSON catalog (``model_catalog.json``) and the
+    durable Postgres-backed model store (``model_catalog_entries``).
+    Returns the first match found, preferring system-scope entries.
+    """
+    # ── 1. Legacy JSON catalog ───────────────────────────────────────────────
     try:
         from umrs.server.model_registry_handler import _load_catalog
     except Exception:
-        logger.debug("Native model catalog unavailable while resolving %s", model_name)
-        return None
+        pass
+    else:
+        models = _load_catalog().get("models", [])
+        matches = [entry for entry in models if entry.get("name") == model_name]
+        if matches:
+            scope_order = {"system": 0, "project": 1, "user": 2}
+            matches.sort(
+                key=lambda entry: scope_order.get(
+                    str(entry.get("scope", "system")), 99
+                )
+            )
+            return matches[0]
 
-    models = _load_catalog().get("models", [])
-    scope_order = {"system": 0, "project": 1, "user": 2}
-    matches = [entry for entry in models if entry.get("name") == model_name]
-    if not matches:
-        return None
+    # ── 2. Durable Postgres model store ──────────────────────────────────────
+    try:
+        import os as _os
 
-    matches.sort(
-        key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
-    )
-    return matches[0]
+        from umrs.model_registry.store import AccessContext, ModelStore, PathValidator
+
+        # Build a lightweight DB connection from the same env vars the durable
+        # runtime uses.  This is intentionally self-contained to avoid circular
+        # imports with umrs.api.models or umrs.shared.config.
+        dsn = _os.environ.get(
+            "UMRS_REGISTRY_POSTGRES_DSN",
+            _os.environ.get("POSTGRES_DSN", ""),
+        )
+        if not dsn:
+            logger.debug("No POSTGRES_DSN; cannot resolve %s from durable store", model_name)
+            return None
+
+        import psycopg2 as _psycopg2
+        conn = _psycopg2.connect(dsn)
+        try:
+            store = ModelStore(conn, path_validator=PathValidator())
+            entries = store.list_models(
+                AccessContext(user_id="", is_admin=True),
+                limit=500,
+            )
+            matches = [
+                entry.to_dict() for entry in entries if entry.name == model_name
+            ]
+            if matches:
+                scope_order = {"system": 0, "project": 1, "user": 2}
+                matches.sort(
+                    key=lambda e: scope_order.get(
+                        str(e.get("scope", "system")), 99
+                    )
+                )
+                logger.info(
+                    "Resolved model %s from durable store: %s",
+                    model_name,
+                    matches[0].get("storage_ref"),
+                )
+                return matches[0]
+        finally:
+            conn.close()
+    except Exception:
+        logger.debug(
+            "Durable model store unavailable while resolving %s",
+            model_name,
+            exc_info=True,
+        )
+
+    return None
 
 
 def _short_progress_text(value: str | None, *, limit: int = 96) -> str:
@@ -238,6 +295,20 @@ class EndpointProvisionBackend(OrchestratorBackend):
                     model_name,
                     model_path,
                     served_model_name,
+                )
+            else:
+                # Fallback: use model name as sentinel path when catalog
+                # resolution fails.  The slurm wrapper (serve.slurm) receives
+                # VLLM_MODEL alongside VLLM_MODEL_PATH and can resolve from
+                # the HF cache or site-wide model directory.  This prevents
+                # the ValueError: "model_path is required" gate in the remote
+                # backend when a model is registered in the durable Postgres
+                # store but not yet synced to the legacy JSON catalog.
+                model_path = model_name
+                logger.warning(
+                    "Could not resolve storage_ref for model %s from catalog; "
+                    "forwarding model name as path (slurm wrapper will resolve)",
+                    model_name,
                 )
 
         # Determine target host
