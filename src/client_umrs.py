@@ -3249,12 +3249,12 @@ def _http_model_delete(
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             if resp.status == 204:
-                return {"status": "ok", "message": f"Model '{display_label}' deleted"}
+                return {"status": "ok", "message": f"Model '{name}' deleted"}
             body = resp.read().decode("utf-8")
             try:
                 return _json.loads(body)
             except Exception:
-                return {"status": "ok", "message": f"Model '{display_label}' deleted"}
+                return {"status": "ok", "message": f"Model '{name}' deleted"}
     except urllib.error.HTTPError as e:
         try:
             err_body = e.read().decode("utf-8", errors="replace")

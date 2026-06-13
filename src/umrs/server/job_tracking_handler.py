@@ -167,7 +167,7 @@ class DurableJobCommandBackend:
         Returns ``None`` (no error) when:
         - The backend is not Slurm (compose / k8s dev deployments).
         - The UserStore is not available (graceful fallback).
-        - The user has a ``slurm_account`` configured.
+        - The user has a ``slurm_account`` configured (flat or per-site).
 
         Users without a ``slurm_account`` can still use shared system-tier
         endpoints and local inference — they just cannot submit HPC jobs.
@@ -185,7 +185,16 @@ class DurableJobCommandBackend:
             if not store.exists(client_id):
                 return None  # Unknown user — allow through for dev setups
             record = store.get(client_id)
-            if not record.slurm_account:
+
+            # Resolve per-site account first, then fall back to flat field.
+            site_name: str | None = None
+            try:
+                from umrs.orchestrator.site_config import load_site_config
+                site_name = load_site_config().name
+            except Exception:
+                pass
+            resolved_account = record.resolve_slurm_account(site_name)
+            if not resolved_account:
                 return (
                     f"User {client_id!r} has no slurm_account configured. "
                     f"Ask an admin to run: "

@@ -344,6 +344,17 @@ case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
         echo "[serve] GLM: forcing Triton MoE (VLLM_USE_FLASHINFER_MOE_FP16=0) to avoid FlashInfer-TRTLLM MoE NaN on tool prompts"
         SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_FP16=0 )
         ;;
+    *llm-jp*)
+        # llm-jp-4-32b-a3b: the MoE expert intermediate_size is 64, which is not
+        # a multiple of 128. The FlashInfer-TRTLLM BF16 MoE kernel on Blackwell
+        # (sm100) hard-fails engine init with
+        #   "Check failed: args->intermediate_size % 128 == 0 (64 vs. 0)"
+        # (flashinfer::Bf16MoeLauncher::check_moe via trtllm_bf16_moe). Dropping
+        # FLASHINFER_TRTLLM via VLLM_USE_FLASHINFER_MOE_FP16=0 falls back to the
+        # Triton MoE kernel, which has no such alignment constraint.
+        echo "[serve] llm-jp: forcing Triton MoE (VLLM_USE_FLASHINFER_MOE_FP16=0); expert intermediate_size=64 is not %128, FlashInfer-TRTLLM BF16 MoE rejects it on sm100"
+        SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_FP16=0 )
+        ;;
 esac
 
 # vLLM server arguments shared across single/multi-node paths.

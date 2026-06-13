@@ -427,6 +427,18 @@ class EndpointRegistry:
         """Mark endpoint as ready (passed readiness check)."""
         return self.update_status(job_id, EndpointStatus.READY)
 
+    def mark_degraded(self, job_id: str) -> RegisteredEndpoint | None:
+        """Mark endpoint as degraded (reachable but unhealthy).
+
+        Set when the readiness poller detects the endpoint responds to
+        HTTP probes but fails model- or chat-level checks — e.g. expected
+        model not in /v1/models, chat probe HTTP error but endpoint alive.
+        Degraded endpoints are still ``is_usable`` (they may serve partial
+        traffic), and the durable checker will re-poll on the next cycle
+        to attempt a recovery transition to READY.
+        """
+        return self.update_status(job_id, EndpointStatus.DEGRADED)
+
     def mark_failed(self, job_id: str, error: str) -> RegisteredEndpoint | None:
         """Mark endpoint as failed."""
         return self.update_status(job_id, EndpointStatus.FAILED, error)

@@ -34,7 +34,7 @@ class _ReadyPoller:
                 "probe_path": probe_path,
             }
         )
-        return True, [probe_model], ""
+        return True, False, [probe_model], ""
 
 
 def _new_registry():

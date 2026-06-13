@@ -465,7 +465,7 @@ async def _refresh_endpoint_readiness(
     readiness_path = endpoint.metadata.get("readiness_path")
 
     try:
-        is_ready, models, error = await get_readiness_poller().check_ready_detail(
+        is_ready, is_degraded, models, error = await get_readiness_poller().check_ready_detail(
             endpoint.host,
             endpoint.port,
             probe_model=endpoint.metadata.get("served_model_name") or endpoint.model,
@@ -488,6 +488,17 @@ async def _refresh_endpoint_readiness(
             },
         )
         return registry.mark_ready(endpoint.job_id) or endpoint
+
+    if is_degraded:
+        registry.update_metadata(
+            endpoint.job_id,
+            {
+                "detail": f"degraded: {_readiness_status_detail(endpoint, error)}",
+                "readiness_error": _short_readiness_error(error),
+                "readiness_models": models,
+            },
+        )
+        return registry.mark_degraded(endpoint.job_id) or endpoint
 
     registry.update_metadata(
         endpoint.job_id,
