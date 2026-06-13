@@ -262,12 +262,17 @@ class ReadinessPoller:
         probe_model: str | None = None,
         probe_kind: str = "models",
         probe_path: str | None = None,
-    ) -> tuple[bool, list[str], str]:
+    ) -> tuple[bool, bool, list[str], str]:
         """
         Single readiness check.
 
         Returns:
-            Tuple of (is_ready, models_list, error_message)
+            Tuple of (is_ready, is_degraded, models_list, error_message).
+
+            ``is_degraded`` is True when the endpoint responds (HTTP 200)
+            but fails model validation or chat probe checks — the endpoint
+            is reachable but unhealthy.  This is distinct from being
+            entirely unresponsive, which yields (False, False, [], error).
         """
         normalized_probe, url = _probe_url(host, port, probe_kind, probe_path)
         client = await self._get_client()
@@ -277,29 +282,36 @@ class ReadinessPoller:
             response = await client.get(url, headers=headers)
 
             if response.status_code != 200:
-                return False, [], f"HTTP {response.status_code}"
+                return False, False, [], f"HTTP {response.status_code}"
 
             if normalized_probe == "http":
-                return True, [], ""
+                return True, False, [], ""
 
             models = _models_from_response(response.json())
             validation_error = self._model_validation_error(models)
             if validation_error:
-                return False, models, validation_error
+                # Endpoint reachable but model mismatch or missing.
+                # This is DEGRADED — not dead, not ready.
+                return False, True, models, validation_error
 
             if normalized_probe == "chat":
-                return await self._check_chat_probe(
+                chat_ok, chat_models, chat_error = await self._check_chat_probe(
                     client, host, port, headers, probe_model, models
                 )
+                if not chat_ok:
+                    # Chat probe failed but endpoint responded to /v1/models.
+                    # Degraded: running but inference not fully available.
+                    return False, True, chat_models, chat_error
+                return True, False, chat_models, ""
 
-            return True, models, ""
+            return True, False, models, ""
 
         except httpx.ConnectError as e:
-            return False, [], f"Connection error: {e}"
+            return False, False, [], f"Connection error: {e}"
         except httpx.TimeoutException:
-            return False, [], "Request timeout"
+            return False, False, [], "Request timeout"
         except Exception as e:
-            return False, [], f"Error: {e}"
+            return False, False, [], f"Error: {e}"
 
     def _auth_headers(self) -> dict[str, str] | None:
         if self.config.auth_token:
@@ -429,7 +441,7 @@ class ReadinessPoller:
 
         poll.attempt += 1
         poll.result.attempts = poll.attempt
-        is_ready, models, error = await self._check_once(
+        is_ready, _is_degraded, models, error = await self._check_once(
             poll.target.host,
             poll.target.port,
             probe_model=poll.target.probe_model,
@@ -531,7 +543,7 @@ class ReadinessPoller:
         Returns:
             True if ready, False otherwise.
         """
-        is_ready, _, _ = await self._check_once(
+        is_ready, _, _, _ = await self._check_once(
             host,
             port,
             probe_model=probe_model,
@@ -548,8 +560,8 @@ class ReadinessPoller:
         probe_model: str | None = None,
         probe_kind: str = "models",
         probe_path: str | None = None,
-    ) -> tuple[bool, list[str], str]:
-        """Return a single readiness check with models and error detail."""
+    ) -> tuple[bool, bool, list[str], str]:
+        """Return a detailed readiness check: (is_ready, is_degraded, models_list, error)."""
         return await self._check_once(
             host,
             port,

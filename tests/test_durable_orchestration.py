@@ -925,7 +925,7 @@ class TestAdapters:
         mock_registry.mark_failed.return_value = endpoint
 
         mock_readiness = MagicMock()
-        mock_readiness.check_ready_detail = AsyncMock(return_value=(True, ["test-model"], None))
+        mock_readiness.check_ready_detail = AsyncMock(return_value=(True, False, ["test-model"], None))
 
         mock_orchestrator = MagicMock()
         mock_orchestrator.get_job_status = AsyncMock(
