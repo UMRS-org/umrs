@@ -255,11 +255,16 @@ def _create_app():
 
         Returns 200 with component statuses when the system can accept work.
         Returns 503 if critical subsystems are unavailable.
-        """
-        components: dict[str, str] = {}
-        healthy = True
 
-        # Check DB pool
+        Component classification:
+        - REQUIRED (503 if unavailable): database, job_store, durable_jobs
+        - DEGRADED (200 with warning): backend, registry
+        - INFORMATIONAL (always 200): model_store
+        """
+        components: dict[str, dict[str, str]] = {}
+        critical_failures: list[str] = []
+
+        # ── Postgres (REQUIRED) ──────────────────────────
         if hasattr(app.state, "umrs_db_pool") and app.state.umrs_db_pool is not None:
             try:
                 conn = app.state.umrs_db_pool.getconn()
@@ -269,36 +274,91 @@ def _create_app():
                     cur.close()
                 finally:
                     app.state.umrs_db_pool.putconn(conn)
-                components["database"] = "ok"
-            except Exception:
-                components["database"] = "unavailable"
-                healthy = False
+                components["postgres"] = {"status": "ok"}
+            except Exception as exc:
+                components["postgres"] = {"status": "unavailable", "error": str(exc)[:120]}
+                critical_failures.append("postgres")
         else:
-            components["database"] = "not_configured"
-            healthy = False
+            components["postgres"] = {"status": "not_configured"}
+            critical_failures.append("postgres")
 
-        # Check job store
+        # ── Job Store (REQUIRED) ─────────────────────────
         from umrs.api.jobs import get_optional_job_store
 
-        if get_optional_job_store() is not None:
-            components["job_store"] = "ok"
+        job_store = get_optional_job_store()
+        if job_store is not None:
+            try:
+                # Lightweight liveness: count pending jobs
+                pending = job_store.count_by_status("queued") if hasattr(job_store, "count_by_status") else None
+                components["job_store"] = {
+                    "status": "ok",
+                    "pending_jobs": str(pending) if pending is not None else "unknown",
+                }
+            except Exception as exc:
+                components["job_store"] = {"status": "error", "error": str(exc)[:120]}
+                critical_failures.append("job_store")
         else:
-            components["job_store"] = "unavailable"
-            healthy = False
+            components["job_store"] = {"status": "unavailable"}
+            critical_failures.append("job_store")
 
-        # Check model store
+        # ── Model Store (INFORMATIONAL) ──────────────────
         from umrs.api.models import get_optional_model_store
 
-        if get_optional_model_store() is not None:
-            components["model_store"] = "ok"
+        model_store = get_optional_model_store()
+        if model_store is not None:
+            components["model_store"] = {"status": "ok"}
         else:
-            components["model_store"] = "not_configured"
+            components["model_store"] = {"status": "not_configured"}
 
+        # ── Durable Orchestrator (REQUIRED) ──────────────
+        try:
+            from umrs.jobs.service import get_job_service
+
+            svc = get_job_service()
+            if svc is not None and svc._started:
+                components["durable_jobs"] = {"status": "ok"}
+            else:
+                components["durable_jobs"] = {"status": "not_started"}
+                critical_failures.append("durable_jobs")
+        except Exception as exc:
+            components["durable_jobs"] = {"status": "error", "error": str(exc)[:120]}
+            critical_failures.append("durable_jobs")
+
+        # ── Registry (DEGRADED if unavailable) ───────────
+        try:
+            from umrs.orchestrator.endpoint_registry import get_registry
+
+            reg = get_registry()
+            all_eps = reg.list_all()
+            total = len(all_eps)
+            ready_count = sum(1 for ep in all_eps if ep.status.value == "ready")
+            components["registry"] = {
+                "status": "ok",
+                "total_endpoints": str(total),
+                "ready_endpoints": str(ready_count),
+            }
+        except Exception as exc:
+            components["registry"] = {"status": "error", "error": str(exc)[:120]}
+
+        # ── Backend (DEGRADED if unavailable) ────────────
+        try:
+            from umrs.orchestrator.site_config import load_site_config
+
+            site = load_site_config()
+            backend_kind = site.scheduler.kind
+            components["backend"] = {"status": "ok", "type": backend_kind}
+        except Exception as exc:
+            components["backend"] = {"status": "unknown", "error": str(exc)[:120]}
+
+        # ── Assemble response ────────────────────────────
+        status = "degraded" if critical_failures else "ready"
         result = {
-            "status": "ready" if healthy else "degraded",
+            "ready": status == "ready",
+            "status": status,
             "components": components,
         }
-        if not healthy:
+        if critical_failures:
+            result["unavailable_required"] = critical_failures
             from fastapi.responses import JSONResponse
 
             return JSONResponse(content=result, status_code=503)
