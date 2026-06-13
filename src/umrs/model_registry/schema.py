@@ -92,6 +92,12 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_project_model
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_user_model
     ON model_catalog_entries(owner_id, name)
     WHERE scope = 'user';
+
+-- GIN index for JSONB capabilities queries (e.g. vision filtering).
+-- Without this index, every model list call that filters by capabilities
+-- (supports_vision, supports_tool_calling) performs a full table scan.
+CREATE INDEX IF NOT EXISTS idx_models_capabilities_gin
+    ON model_catalog_entries USING GIN (capabilities jsonb_path_ops);
 """
 
 # SQL for creating the model_policies table (U-805)
