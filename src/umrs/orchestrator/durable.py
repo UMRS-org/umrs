@@ -150,6 +150,9 @@ class DurableOrchestrationService:
             scheduler_interval=self._scheduler_interval,
             monitor_interval=self._monitor_interval,
         )
+        from umrs.jobs.service import set_job_service
+
+        set_job_service(self._job_service)
 
         # Get underlying orchestration components
         orch = self.orchestration_service
@@ -219,6 +222,9 @@ class DurableOrchestrationService:
 
         if self._job_service:
             await self._job_service.shutdown(timeout)
+            from umrs.jobs.service import set_job_service
+
+            set_job_service(None)
 
         if self._model_store_conn is not None:
             self.db_pool.putconn(self._model_store_conn)
