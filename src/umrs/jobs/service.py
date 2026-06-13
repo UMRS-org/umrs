@@ -41,6 +41,21 @@ from .store import JobStore
 
 logger = logging.getLogger(__name__)
 
+# Module-level singleton for health/probe access
+_job_service_instance: JobService | None = None
+
+
+def get_job_service() -> JobService | None:
+    """Return the current JobService singleton, or None if not started."""
+    return _job_service_instance
+
+
+def set_job_service(service: JobService | None) -> None:
+    """Set the module-level JobService singleton."""
+    global _job_service_instance
+    _job_service_instance = service
+
+
 
 @dataclass(frozen=True)
 class JobSubmission:
