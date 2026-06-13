@@ -25,6 +25,14 @@
 #     - Fits in 1n4gpu (4× B200 = 692.8 GiB) with INT4
 #     - vLLM/SGLang/KTransformers supported
 
+#   Kimi K2.7 Code (moonshotai/Kimi-K2.7-Code):
+#     - Coding-focused agentic MoE built on K2.6 (1T total, 32B activated)
+#     - INT4 quantization → ~714 GiB (same as K2.6)
+#     - 256K context, thinking-only mode, multimodal (MoonViT)
+#     - Fits in 1n4gpu (4× B200 = 692.8 GiB) with INT4, TP=4
+#     - Uses same kimi_k2 tool-call-parser + reasoning-parser as K2.6
+#     - vLLM 0.19.1+ required, --mm-encoder-tp-mode data recommended
+
 pool: ai4s-research
 defaults:
   tier: system            # system tier → shared, visible to all users
@@ -102,6 +110,26 @@ endpoints:
     partition: 4n4gpu-p    # unlimited walltime; node_count=1 → single-node allocation on this partition
     max_model_len: 245760  # 240K. Canary 10064 showed INT4 weights leave only 16.68 GiB/GPU KV at gpu_mem_util=0.9 → hard ceiling 254816 tokens for native 262144. Trimmed to 245760 for fragmentation margin. (orchestrator does not thread per-model gpu_memory_utilization, so raising util is not available via pool.)
     # 1T MoE (32B active, 384 experts), native INT4; TP=4 × PP=1 (single node)
+
+  # ── Kimi-K2.7-Code (coding-focused agentic variant of K2.6) ───────────────
+  # MoonshotAI K2.7 Code: K2.6 architecture, tuned for long-horizon SWE tasks.
+  # 1T MoE (32B active, 384 experts), thinking-only mode, 256K context.
+  # Uses same vLLM parser as K2.6 (kimi_k2 for tool + reasoning).
+  # INT4 ~714 GiB — same sizing as K2.6.
+  # Needs --mm-encoder-tp-mode data for vision encoder (small MoonViT).
+
+  - name: kimi-k2.7-code
+    model: Kimi-K2.7-Code    # registered UMRS name (HF: moonshotai/Kimi-K2.7-Code)
+    tier: system
+    gpu_count: 4
+    node_count: 1            # single-node TP=4 (same as K2.6 recipe)
+    partition: 4n4gpu-p      # unlimited walltime
+    max_model_len: 245760    # 240K (same INT4 KV headroom ceiling as K2.6)
+    env_vars:
+      VLLM_GPU_MEMORY_UTILIZATION: "0.90"
+      VLLM_MM_ENCODER_TP_MODE: "data"    # vision encoder data-parallel per recipe
+    # Tool-call-parser + reasoning-parser = kimi_k2 (auto-derived by serve.slurm *kimi* match)
+    # thinking-only mode (preserve_thinking forced on); reasoning parser enabled.
 
   # ── DiffusionGemma 26B-A4B-it (block-diffusion LLM) ──────────────────────
   # Google diffusion model on Gemma 4 MoE backbone.
