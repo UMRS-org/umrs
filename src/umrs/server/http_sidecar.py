@@ -222,11 +222,20 @@ def _create_app():
 
     @app.get("/health")
     async def health():
-        """Liveness probe — returns ok if the process is alive.
+        """Liveness + component summary probe.
+
+        Always returns 200 while the process is alive (liveness guarantee).
+        Includes component status for operational visibility — degraded
+        components are reported but do not change the HTTP status code.
 
         Also includes non-secret site capabilities for client discovery
         (scheduler kind, delegation mode, site name, ZMQ port).
         """
+        import time
+
+        _start_time = getattr(app.state, "start_time", None) or 0
+        uptime = time.time() - float(_start_time) if _start_time else 0
+
         caps: dict[str, str | int] = {}
         try:
             from umrs.orchestrator.site_config import load_site_config
@@ -240,14 +249,79 @@ def _create_app():
                 caps["slurm_proxy_path"] = site.scheduler.slurm_proxy_path
         except Exception:
             pass
-        # Expose ZMQ control port for client auto-discovery
         zmq_port = os.environ.get("UMRS_CONTROL_PORT")
         if zmq_port:
             try:
                 caps["zmq_control_port"] = int(zmq_port)
             except ValueError:
                 pass
-        return {"status": "ok"}
+
+        # ── Component summary (best-effort, always 200) ──
+        components: dict[str, dict] = {}
+
+        # Database
+        if hasattr(app.state, "umrs_db_pool") and app.state.umrs_db_pool is not None:
+            try:
+                conn = app.state.umrs_db_pool.getconn()
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT 1")
+                    cur.close()
+                finally:
+                    app.state.umrs_db_pool.putconn(conn)
+                components["database"] = {"status": "ok"}
+            except Exception:
+                components["database"] = {"status": "unavailable"}
+        else:
+            components["database"] = {"status": "not_configured"}
+
+        # Registry counts
+        try:
+            from umrs.orchestrator.endpoint_registry import get_registry
+
+            reg = get_registry()
+            all_eps = reg.list_all()
+            by_status: dict[str, int] = {}
+            for ep in all_eps:
+                by_status[ep.status.value] = by_status.get(ep.status.value, 0) + 1
+            components["registry"] = {"status": "ok", "total": len(all_eps), **by_status}
+        except Exception:
+            components["registry"] = {"status": "unavailable"}
+
+        # Model counts
+        try:
+            from umrs.api.models import get_optional_model_store
+
+            store = get_optional_model_store()
+            if store is not None:
+                models = store.list_models(
+                    type(store).__module__ + ".AccessContext"  # dummy — will use admin
+                ) if False else []  # skip heavy query, just confirm store is available
+                components["models"] = {"status": "ok"}
+            else:
+                components["models"] = {"status": "not_configured"}
+        except Exception:
+            components["models"] = {"status": "unavailable"}
+
+        # Durable jobs
+        try:
+            from umrs.jobs.service import get_job_service
+
+            svc = get_job_service()
+            if svc is not None and svc._started:
+                components["durable_jobs"] = {"status": "ok"}
+            else:
+                components["durable_jobs"] = {"status": "not_started"}
+        except Exception:
+            components["durable_jobs"] = {"status": "unavailable"}
+
+        result = {
+            "status": "ok",
+            "uptime_seconds": round(uptime, 1),
+            "site_capabilities": caps,
+            "components": components,
+        }
+        return result
 
     @app.get("/readiness")
     async def readiness():
