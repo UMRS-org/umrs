@@ -62,9 +62,7 @@ def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
         if matches:
             scope_order = {"system": 0, "project": 1, "user": 2}
             matches.sort(
-                key=lambda entry: scope_order.get(
-                    str(entry.get("scope", "system")), 99
-                )
+                key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
             )
             return matches[0]
 
@@ -84,15 +82,11 @@ def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
                 AccessContext(user_id="", is_admin=True),
                 limit=500,
             )
-            matches = [
-                entry.to_dict() for entry in entries if entry.name == model_name
-            ]
+            matches = [entry.to_dict() for entry in entries if entry.name == model_name]
             if matches:
                 scope_order = {"system": 0, "project": 1, "user": 2}
                 matches.sort(
-                    key=lambda e: scope_order.get(
-                        str(e.get("scope", "system")), 99
-                    )
+                    key=lambda e: scope_order.get(str(e.get("scope", "system")), 99)
                 )
                 logger.info(
                     "Resolved model %s from durable store (db=%s): storage_ref=%s",
@@ -266,6 +260,12 @@ class EndpointProvisionBackend(OrchestratorBackend):
         ttl_sec = spec.get("ttl_sec", 3600)
         idle_ttl_sec = spec.get("idle_ttl_sec")
         parallel_strategy = spec.get("parallel_strategy")  # tp_pp | tep
+        # Explicit compute placement requested via `endpoint up --partition` /
+        # `--spec`. The Slurm wrapper backend pops these from kwargs; without
+        # forwarding them here, provisioning falls back to auto-selected
+        # partitions and ignores the operator's explicit sizing.
+        partition_override = spec.get("partition_override")
+        nodelist_hint = spec.get("nodelist_hint")
         requested_env = spec.get("env_vars") or {}
         mount_env, mount_metadata = build_mount_environment(
             tier=str(spec.get("tier") or "user"),
@@ -361,7 +361,12 @@ class EndpointProvisionBackend(OrchestratorBackend):
             if slurm_account:
                 submit_kwargs["slurm_account"] = slurm_account
             self._apply_advanced_layout_kwargs(
-                submit_kwargs, node_count, parallel_strategy, requested_env
+                submit_kwargs,
+                node_count=node_count,
+                parallel_strategy=parallel_strategy,
+                partition_override=partition_override,
+                nodelist_hint=nodelist_hint,
+                requested_env=requested_env,
             )
             job_info = await self.orchestrator.submit_job(**submit_kwargs)
 
@@ -421,13 +426,27 @@ class EndpointProvisionBackend(OrchestratorBackend):
     @staticmethod
     def _apply_advanced_layout_kwargs(
         submit_kwargs: dict[str, Any],
+        *,
         node_count: int | None,
         parallel_strategy: str | None,
+        partition_override: str | None,
+        nodelist_hint: str | None,
         requested_env: dict[str, Any] | None,
     ) -> None:
-        """Inject multi-node layout flags into submit_kwargs."""
+        """Inject multi-node layout and explicit placement flags.
+
+        Forwards multi-node sizing (``node_count``/``parallel_strategy``) and
+        operator-requested placement (``partition_override``/``nodelist_hint``)
+        to the orchestrator. Without the placement flags, the Slurm wrapper
+        backend auto-selects a partition and ignores explicit ``--partition``
+        sizing requested at provision time.
+        """
         if node_count is not None:
             submit_kwargs["node_count"] = node_count
+        if partition_override:
+            submit_kwargs["partition_override"] = partition_override
+        if nodelist_hint:
+            submit_kwargs["nodelist_hint"] = nodelist_hint
         eff_strategy = parallel_strategy or (requested_env or {}).get(
             "VLLM_PARALLEL_STRATEGY", ""
         )
@@ -522,7 +541,12 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
         # Check if endpoint is ready
         try:
             readiness_probe = str(endpoint.metadata.get("readiness_probe") or "chat")
-            is_ready, is_degraded, models, error = await self.readiness_poller.check_ready_detail(
+            (
+                is_ready,
+                is_degraded,
+                models,
+                error,
+            ) = await self.readiness_poller.check_ready_detail(
                 endpoint.host,
                 endpoint.port,
                 probe_model=endpoint.model,
@@ -584,12 +608,18 @@ class EndpointProvisionStatusChecker(BackendStatusChecker):
                 self.registry.update_metadata(
                     backend_ref,
                     {
-                        "detail": f"degraded: {progress_detail}" if progress_detail else "degraded",
-                        "readiness_error": _short_progress_text(error) if error else None,
+                        "detail": f"degraded: {progress_detail}"
+                        if progress_detail
+                        else "degraded",
+                        "readiness_error": _short_progress_text(error)
+                        if error
+                        else None,
                     },
                 )
                 self.registry.mark_degraded(backend_ref)
-                return AttemptCheckResult.running("degraded: endpoint reachable but unhealthy")
+                return AttemptCheckResult.running(
+                    "degraded: endpoint reachable but unhealthy"
+                )
 
             last_error = self._last_readiness_error.get(backend_ref)
             if check_no == 1 or check_no % 5 == 0 or error != last_error:
