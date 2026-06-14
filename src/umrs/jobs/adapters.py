@@ -70,23 +70,14 @@ def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
 
     # ── 2. Durable Postgres model store ──────────────────────────────────────
     try:
-        import os as _os
-
         from umrs.model_registry.store import AccessContext, ModelStore, PathValidator
+        from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
 
-        # Build a lightweight DB connection from the same env vars the durable
-        # runtime uses.  This is intentionally self-contained to avoid circular
-        # imports with umrs.api.models or umrs.shared.config.
-        dsn = _os.environ.get(
-            "UMRS_REGISTRY_POSTGRES_DSN",
-            _os.environ.get("POSTGRES_DSN", ""),
-        )
-        if not dsn:
-            logger.debug("No POSTGRES_DSN; cannot resolve %s from durable store", model_name)
-            return None
-
-        import psycopg2 as _psycopg2
-        conn = _psycopg2.connect(dsn)
+        # Use the same DB pool builder as model registration (http_sidecar.py)
+        # and the durable job runtime.  This guarantees a single source of truth
+        # — both writes (register) and reads (resolve) hit the same database.
+        db_pool = build_durable_job_db_pool_from_env()
+        conn = db_pool.getconn()
         try:
             store = ModelStore(conn, path_validator=PathValidator())
             entries = store.list_models(
@@ -104,13 +95,15 @@ def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
                     )
                 )
                 logger.info(
-                    "Resolved model %s from durable store: %s",
+                    "Resolved model %s from durable store (db=%s): storage_ref=%s",
                     model_name,
+                    getattr(db_pool, "dsn", "unknown"),
                     matches[0].get("storage_ref"),
                 )
                 return matches[0]
         finally:
-            conn.close()
+            db_pool.putconn(conn)
+            db_pool.closeall()
     except Exception:
         logger.debug(
             "Durable model store unavailable while resolving %s",
@@ -300,14 +293,15 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 # Fallback: use model name as sentinel path when catalog
                 # resolution fails.  The slurm wrapper (serve.slurm) receives
                 # VLLM_MODEL alongside VLLM_MODEL_PATH and can resolve from
-                # the HF cache or site-wide model directory.  This prevents
-                # the ValueError: "model_path is required" gate in the remote
-                # backend when a model is registered in the durable Postgres
-                # store but not yet synced to the legacy JSON catalog.
+                # the HF cache or site-wide model directory.
                 model_path = model_name
-                logger.warning(
-                    "Could not resolve storage_ref for model %s from catalog; "
-                    "forwarding model name as path (slurm wrapper will resolve)",
+                logger.error(
+                    "Failed to resolve storage_ref for model '%s' from both "
+                    "JSON catalog and durable Postgres store.  Using model "
+                    "name as path.  The Slurm wrapper will receive "
+                    "VLLM_MODEL_PATH=%s — this must map to a real filesystem "
+                    "directory for vLLM to start.",
+                    model_name,
                     model_name,
                 )
 
