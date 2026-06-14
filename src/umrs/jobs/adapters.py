@@ -261,9 +261,11 @@ class EndpointProvisionBackend(OrchestratorBackend):
         project_id = job.project_id
         model_name = spec.get("model", "default")
         gpu_count = spec.get("gpu_count", 1)
+        node_count = spec.get("node_count")  # multi-node (e.g. GLM-5.1, DeepSeek-V4)
         max_model_len = spec.get("max_model_len", 4096)
         ttl_sec = spec.get("ttl_sec", 3600)
         idle_ttl_sec = spec.get("idle_ttl_sec")
+        parallel_strategy = spec.get("parallel_strategy")  # tp_pp | tep
         requested_env = spec.get("env_vars") or {}
         mount_env, mount_metadata = build_mount_environment(
             tier=str(spec.get("tier") or "user"),
@@ -358,6 +360,9 @@ class EndpointProvisionBackend(OrchestratorBackend):
             }
             if slurm_account:
                 submit_kwargs["slurm_account"] = slurm_account
+            self._apply_advanced_layout_kwargs(
+                submit_kwargs, node_count, parallel_strategy, requested_env
+            )
             job_info = await self.orchestrator.submit_job(**submit_kwargs)
 
             if not job_info or not job_info.job_id:
@@ -387,6 +392,8 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 endpoint_metadata["served_model_name"] = env_served_name
             endpoint_metadata.setdefault("job_status", job_info.status.value)
             endpoint_metadata.setdefault("detail", _backend_progress_detail(job_info))
+            if parallel_strategy:
+                endpoint_metadata["parallel_strategy"] = parallel_strategy
 
             self.registry.register(
                 project_id=project_id,
@@ -410,6 +417,25 @@ class EndpointProvisionBackend(OrchestratorBackend):
             # Release port on any error
             self.port_manager.release(port, target_host)
             raise
+
+    @staticmethod
+    def _apply_advanced_layout_kwargs(
+        submit_kwargs: dict[str, Any],
+        node_count: int | None,
+        parallel_strategy: str | None,
+        requested_env: dict[str, Any] | None,
+    ) -> None:
+        """Inject multi-node layout flags into submit_kwargs."""
+        if node_count is not None:
+            submit_kwargs["node_count"] = node_count
+        eff_strategy = parallel_strategy or (requested_env or {}).get(
+            "VLLM_PARALLEL_STRATEGY", ""
+        )
+        if eff_strategy:
+            submit_kwargs["env"]["VLLM_PARALLEL_STRATEGY"] = eff_strategy
+            is_tep = eff_strategy.lower() == "tep"
+            if is_tep and node_count and node_count > 1:
+                submit_kwargs["env"]["VLLM_EXPERT_PARALLEL"] = "1"
 
     def _determine_target_host(self) -> str:
         """Determine target host based on orchestrator type."""
