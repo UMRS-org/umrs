@@ -143,7 +143,7 @@ derive_reasoning_parser() {
         *gemma*4*) echo "gemma4" ;;
         *kimi*) echo "kimi_k2" ;;
         *gpt-oss*swallow*) echo "gpt_oss" ;;
-        *llm-jp*|*llm_jp*) echo "llmjp4" ;;
+        *llm-jp*|*llm_jp*) echo "qwen3" ;;  # Qwen3-MoE backbone; llmjp4 not in SIF vLLM
         *)     echo "" ;;
     esac
 }
