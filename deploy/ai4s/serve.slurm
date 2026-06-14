@@ -42,6 +42,11 @@ INNER_VLLM_PORT="${VLLM_PORT:-8000}"
 INNER_LITELLM_PORT="4000"
 
 MODEL_NAME="${VLLM_SERVED_MODEL_NAME:-${MODEL_NAME:-rivault-model}}"
+# SHORT_MODEL_NAME: the registered UMRS short name (e.g. "llm-jp-4-32b-a3b-thinking").
+# Set via orchestrator env var MODEL_NAME; distinct from VLLM_SERVED_MODEL_NAME
+# which is the HuggingFace ID.  vLLM serves all names so both the readiness
+# probe (short name) and API clients (HF ID) can reach the model.
+SHORT_MODEL_NAME="${MODEL_NAME:-}"
 HOST_MODEL_PATH="${VLLM_MODEL_PATH:?VLLM_MODEL_PATH is required}"
 LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}"
 
@@ -110,6 +115,7 @@ derive_tool_parser() {
         *glm-4.5*|*glm4.5*|*glm45*)  echo "glm45" ;;
         *glm*)                       echo "glm47" ;;
         *kimi*)                      echo "kimi_k2" ;;
+        *llm-jp*|*llm_jp*)              echo "hermes" ;;   # Qwen-MoE uses hermes parser
         *gpt-oss*swallow*)           echo "" ;;          # no tool-call training; skip parser
         *gemma*4*)                   echo "gemma4" ;;
         *)                           echo "hermes" ;;
@@ -364,6 +370,7 @@ esac
 VLLM_ARGS=(
     --model /models
     --served-model-name "${MODEL_NAME}"
+    ${SHORT_MODEL_NAME:+"--served-model-name" "${SHORT_MODEL_NAME}"}
     --host 0.0.0.0
     --port "${EXTERNAL_PORT}"
     -tp "${VLLM_TP}"
