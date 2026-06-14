@@ -41,12 +41,23 @@ EXTERNAL_PORT="${LITELLM_PORT:-${NGINX_LITELLM_DOCKER_PORT:-8001}}"
 INNER_VLLM_PORT="${VLLM_PORT:-8000}"
 INNER_LITELLM_PORT="4000"
 
-MODEL_NAME="${VLLM_SERVED_MODEL_NAME:-${MODEL_NAME:-rivault-model}}"
 # SHORT_MODEL_NAME: the registered UMRS short name (e.g. "llm-jp-4-32b-a3b-thinking").
 # Set via orchestrator env var MODEL_NAME; distinct from VLLM_SERVED_MODEL_NAME
 # which is the HuggingFace ID.  vLLM serves all names so both the readiness
 # probe (short name) and API clients (HF ID) can reach the model.
+#
+# Capture the short name from the injected MODEL_NAME env BEFORE overwriting
+# MODEL_NAME with the HuggingFace ID below. Doing it the other way round (the
+# previous bug) made SHORT_MODEL_NAME read the already-overwritten HF ID, so the
+# short name was lost: vLLM only served the HF ID and the readiness probe — which
+# queries the short name — 404'd, leaving the endpoint stuck in provisioning.
 SHORT_MODEL_NAME="${MODEL_NAME:-}"
+MODEL_NAME="${VLLM_SERVED_MODEL_NAME:-${MODEL_NAME:-rivault-model}}"
+# If the registered short name equals the HF ID (no distinct alias), clear the
+# duplicate so vLLM does not warn on duplicate --served-model-name keys.
+if [[ "${SHORT_MODEL_NAME}" == "${MODEL_NAME}" ]]; then
+    SHORT_MODEL_NAME=""
+fi
 HOST_MODEL_PATH="${VLLM_MODEL_PATH:?VLLM_MODEL_PATH is required}"
 LITELLM_MASTER_KEY="${LITELLM_MASTER_KEY:?LITELLM_MASTER_KEY is required}"
 
