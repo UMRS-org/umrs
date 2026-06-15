@@ -28,7 +28,6 @@ def _validate_data_port_range(port_range: DataPortRange) -> DataPortRange:
         )
     return port_range
 
-
 def _resolve_default_data_port_range() -> DataPortRange:
     port_range = (
         parse_data_port_range(os.environ.get("UMRS_DATA_PORT_RANGE"))
@@ -481,225 +480,182 @@ class MessageQueue:
 
 
     # ------------------------ Server methods ------------------------
+    # ------------------------------------------------------------------
+    # ZMQ control-loop command parsers
+    # Each parser takes (self, splited_msg, zmq_sender_id) and either:
+    #   - returns a (cmd, payload) tuple  → caller (server_event_loop) dispatches
+    #   - returns None                    → already handled (reply sent), loop continues
+    #   - raises _CmdError                → sends CMD_ERROR and continues
+    # ------------------------------------------------------------------
+
+    class _CmdError(Exception):
+        """Signals a malformed command; server_control_queue_loop sends CMD_ERROR."""
+
+    def _parse_handshake(self, splited_msg, zmq_sender_id):
+        with contextlib.suppress(RuntimeError):
+            self.send_string("READY!", zmq_sender_id)
+        return None
+
+    def _parse_create_data_queue(self, splited_msg, zmq_sender_id):
+        if len(splited_msg) < 2:
+            raise self._CmdError("CREATE_DATA_QUEUE missing client_id")
+        client_id = splited_msg[1]
+        token = self._control_auth_token()
+        try:
+            auth_ctx = create_auth_context_from_request(client_id, token=token)
+        except Exception as e:
+            logger.warning("Failed to create auth context for %s: %s", client_id, e)
+            auth_ctx = AuthContext(user_id=client_id, username=client_id, role=UserRole.USER)
+        self._auth_sessions[client_id] = auth_ctx
+        logger.info("Auth session created: user=%s role=%s", client_id, auth_ctx.role.value)
+        port, port_range = self._ensure_client_data_queue(client_id)
+        if port is None:
+            with contextlib.suppress(RuntimeError):
+                self.send_string(f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id)
+            return None
+        with contextlib.suppress(RuntimeError):
+            self.send_string(f"tcp://{self.server_ip}:{port}", zmq_sender_id)
+        return None
+
+    def _parse_status(self, splited_msg, zmq_sender_id):
+        client_id = splited_msg[1] if len(splited_msg) > 1 else None
+        status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
+        payload = self._get_status_payload(client_id, status_key)
+        with contextlib.suppress(RuntimeError):
+            self.send_string(payload, zmq_sender_id)
+        return None
+
+    def _parse_count_cmd(self, splited_msg, zmq_sender_id):
+        """Parser for FILE, PROCESS_OBJECTS, ENROLL_USER: field[2] is an integer count."""
+        cmd = splited_msg[0]
+        if len(splited_msg) < 3:
+            raise self._CmdError(f"{cmd} missing fields")
+        client_id = splited_msg[1]
+        try:
+            count = int(splited_msg[2])
+        except ValueError:
+            raise self._CmdError(f"{cmd} invalid count: {splited_msg[2]}")
+        if cmd == TaskCmd.PROCESS_OBJECTS:
+            return self._process_object_cmd(client_id, count, zmq_sender_id)
+        if cmd == TaskCmd.ENROLL_USER:
+            self._refresh_auth_session(client_id, cmd)
+        return self._process_file_cmd(client_id, count, zmq_sender_id,
+                                      result_cmd=cmd if cmd != TaskCmd.FILE else None)
+
+    def _parse_upload_workflow(self, splited_msg, zmq_sender_id):
+        if len(splited_msg) < 3:
+            raise self._CmdError("UPLOAD_WORKFLOW missing fields")
+        client_id, workflow_name = splited_msg[1], splited_msg[2]
+        return self._process_file_cmd(client_id, 1, zmq_sender_id,
+                                      result_cmd=TaskCmd.UPLOAD_WORKFLOW,
+                                      extra_payload=workflow_name)
+
+    def _parse_wait_output(self, splited_msg, zmq_sender_id):
+        client_id = splited_msg[1] if len(splited_msg) > 1 else None
+        args = splited_msg[2] if len(splited_msg) > 2 else None
+        if client_id is None or args is None:
+            raise self._CmdError("WAIT_OUTPUT missing client_id or args")
+        parts = args.split(";")
+        bucket_name = parts[0]
+        timeout = int(parts[1]) if len(parts) > 1 else None
+        return TaskCmd.WAIT_OUTPUT, (client_id, bucket_name, timeout, zmq_sender_id)
+
+    def _parse_simple_payload(self, splited_msg, zmq_sender_id):
+        """Parser for EXPORT_EMBEDDINGS: field[2] is a string payload."""
+        cmd = splited_msg[0]
+        client_id = splited_msg[1] if len(splited_msg) > 1 else None
+        extra = splited_msg[2] if len(splited_msg) > 2 else None
+        if client_id is None or extra is None:
+            raise self._CmdError(f"{cmd} missing client_id or payload")
+        return cmd, (client_id, extra, zmq_sender_id)
+
+    def _parse_maintenance(self, splited_msg, zmq_sender_id):
+        """Parser for RECOMPUTE, UPDATE, CHECK, RELOAD: ack then return (cmd, client_id)."""
+        cmd = splited_msg[0]
+        with contextlib.suppress(RuntimeError):
+            self.send_string("ACKNOWLEDGE", zmq_sender_id)
+        client_id = splited_msg[1] if len(splited_msg) > 1 else None
+        self._refresh_auth_session(client_id, cmd, token_field=3, splited_msg=splited_msg)
+        return cmd, client_id
+
+    def _parse_json_payload(self, splited_msg, zmq_sender_id):
+        """Parser for MODEL_*, JOB_*, LIST_WORKFLOWS, RUN_WORKFLOW: rest of message is JSON."""
+        cmd = splited_msg[0]
+        client_id = splited_msg[1] if len(splited_msg) > 1 else None
+        payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
+        return cmd, (client_id, payload_str, zmq_sender_id)
+
+    def _refresh_auth_session(self, client_id, cmd, token_field=None, splited_msg=None):
+        """Refresh _auth_sessions[client_id] from the admin token embedded in the message."""
+        token = None
+        if token_field is not None and splited_msg is not None:
+            token = splited_msg[token_field] if len(splited_msg) > token_field else None
+        else:
+            token = self._control_auth_token()
+        if client_id and token:
+            try:
+                auth_ctx = create_auth_context_from_request(client_id, token=token)
+                self._auth_sessions[client_id] = auth_ctx
+                logger.info("Auth session refreshed: user=%s role=%s cmd=%s",
+                            client_id, auth_ctx.role.value, cmd)
+            except Exception as e:
+                logger.warning("Failed to refresh auth context for %s %s: %s", cmd, client_id, e)
+
+    # Maps each TaskCmd string to the name of the parser method that handles it.
+    # Parser methods are defined above; strings are used so the dict can live
+    # alongside them in the class body without forward-reference issues.
+    _CONTROL_PARSERS: "dict[str, str]" = {
+        TaskCmd.HANDSHAKE:         "_parse_handshake",
+        TaskCmd.CREATE_DATA_QUEUE: "_parse_create_data_queue",
+        TaskCmd.STATUS:            "_parse_status",
+        TaskCmd.PROCESS_OBJECTS:   "_parse_count_cmd",
+        TaskCmd.FILE:              "_parse_count_cmd",
+        TaskCmd.ENROLL_USER:       "_parse_count_cmd",
+        TaskCmd.UPLOAD_WORKFLOW:   "_parse_upload_workflow",
+        TaskCmd.WAIT_OUTPUT:       "_parse_wait_output",
+        TaskCmd.EXPORT_EMBEDDINGS: "_parse_simple_payload",
+        TaskCmd.RECOMPUTE:         "_parse_maintenance",
+        TaskCmd.UPDATE:            "_parse_maintenance",
+        TaskCmd.CHECK:             "_parse_maintenance",
+        TaskCmd.RELOAD:            "_parse_maintenance",
+        TaskCmd.MODEL_REGISTER:    "_parse_json_payload",
+        TaskCmd.MODEL_LIST:        "_parse_json_payload",
+        TaskCmd.MODEL_DOWNLOAD:    "_parse_json_payload",
+        TaskCmd.LIST_WORKFLOWS:    "_parse_json_payload",
+        TaskCmd.RUN_WORKFLOW:      "_parse_json_payload",
+        TaskCmd.JOB_SUBMIT:        "_parse_json_payload",
+        TaskCmd.JOB_CANCEL:        "_parse_json_payload",
+        TaskCmd.JOB_LIST:          "_parse_json_payload",
+    }
+
     def server_control_queue_loop(self):
         if self.role != "server":
             raise PermissionError("Only server can call 'server_control_queue_loop'.")
 
         while True:
-            zmq_sender_id, msg = self.recv_string() # Blocking call
+            zmq_sender_id, msg = self.recv_string()
             logger.info("Received control request: %s", self._redact_control_message(msg))
-            # messgae structure should be "{command}:{username}:{other information (e.g file/object count)}"
             splited_msg = msg.split(":")
-
             cmd = splited_msg[0]
-            if cmd == TaskCmd.HANDSHAKE:  # handshake
-                try:
-                    self.send_string("READY!", zmq_sender_id)
-                except RuntimeError as e:
-                    logger.error("Error in client handshake: %s", e)
 
-            elif cmd == TaskCmd.CREATE_DATA_QUEUE:  # prepare PUB-SUB request
-                if len(splited_msg) < 2:
-                    logger.error(
-                        "CREATE_DATA_QUEUE missing client_id: %s",
-                        self._redact_control_message(msg),
-                    )
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    continue
-                client_id = splited_msg[1]
-
-                token = self._control_auth_token()
-                try:
-                    auth_ctx = create_auth_context_from_request(client_id, token=token)
-                except Exception as e:
-                    logger.warning("Failed to create auth context for %s: %s", client_id, e)
-                    auth_ctx = AuthContext(
-                        user_id=client_id, username=client_id, role=UserRole.USER,
-                    )
-                self._auth_sessions[client_id] = auth_ctx
-                logger.info(
-                    "Auth session created: user=%s role=%s",
-                    client_id, auth_ctx.role.value,
-                )
-
-                port, port_range = self._ensure_client_data_queue(client_id)
-                if port is None:
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string(f"NO_DATA_PORT_AVAILABLE:{port_range.label}", zmq_sender_id)
-                    continue
-
-                reply = f"tcp://{self.server_ip}:{port}"  # Replace with server IP in real usage
-                try:
-                    self.send_string(reply, zmq_sender_id)
-                except RuntimeError as e:
-                    logger.error("Error in sending back port to client: %s", e)
-
-            elif cmd == TaskCmd.PROCESS_OBJECTS:  # prepare PUB-SUB request
-                if len(splited_msg) < 3:
-                    logger.error(
-                        "PROCESS_OBJECTS missing fields: %s",
-                        self._redact_control_message(msg),
-                    )
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    continue
-                client_id = splited_msg[1]
-                try:
-                    nb_objects = int(splited_msg[2])
-                except ValueError:
-                    logger.error("PROCESS_OBJECTS invalid count: %s", splited_msg[2])
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    continue
-                return self._process_object_cmd(client_id, nb_objects, zmq_sender_id)
-
-            elif cmd == TaskCmd.FILE:  # prepare PUB-SUB request
-                if len(splited_msg) < 3:
-                    logger.error(
-                        "FILE missing fields: %s",
-                        self._redact_control_message(msg),
-                    )
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    continue
-                client_id = splited_msg[1]
-                try:
-                    nb_files = int(splited_msg[2])
-                except ValueError:
-                    logger.error("FILE invalid count: %s", splited_msg[2])
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    continue
-                # include client_id in the payload for server-side identity enforcement
-                return self._process_file_cmd(client_id, nb_files, zmq_sender_id)
-            elif cmd == TaskCmd.ENROLL_USER:
-                # Admin-only: same wire format as FILE but dispatched as ENROLL_USER
-                if len(splited_msg) < 3:
-                    logger.error(
-                        "ENROLL_USER missing fields: %s",
-                        self._redact_control_message(msg),
-                    )
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    continue
-                client_id = splited_msg[1]
-                try:
-                    nb_files = int(splited_msg[2])
-                except ValueError:
-                    logger.error("ENROLL_USER invalid count: %s", splited_msg[2])
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    continue
-                # Refresh auth session with admin token (same pattern as
-                # maintenance commands) so server_umrs._authorize() sees
-                # the ADMIN role instead of the default USER session.
-                token = self._control_auth_token()
-                if client_id and token:
-                    try:
-                        auth_ctx = create_auth_context_from_request(client_id, token=token)
-                        self._auth_sessions[client_id] = auth_ctx
-                        logger.info(
-                            "Auth session refreshed for ENROLL_USER: user=%s role=%s",
-                            client_id,
-                            auth_ctx.role.value,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to refresh auth context for ENROLL_USER %s: %s",
-                            client_id,
-                            e,
-                        )
-                return self._process_file_cmd(client_id, nb_files, zmq_sender_id,
-                                              result_cmd=TaskCmd.ENROLL_USER)
-            elif cmd == TaskCmd.UPLOAD_WORKFLOW:
-                if len(splited_msg) < 3:
-                    logger.error(
-                        "UPLOAD_WORKFLOW missing fields: %s",
-                        self._redact_control_message(msg),
-                    )
-                    with contextlib.suppress(RuntimeError):
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    continue
-                client_id = splited_msg[1]
-                workflow_name = splited_msg[2]
-                # Receive exactly 1 zip file via the data channel (same as FILE)
-                return self._process_file_cmd(client_id, 1, zmq_sender_id,
-                                              result_cmd=TaskCmd.UPLOAD_WORKFLOW,
-                                              extra_payload=workflow_name)
-            elif cmd ==  TaskCmd.STATUS:
-                client_id = splited_msg[1] if len(splited_msg) > 1 else None
-                status_key = splited_msg[2] if len(splited_msg) > 2 else "all"
-                payload = self._get_status_payload(client_id, status_key)
-                try:
-                    self.send_string(payload, zmq_sender_id)
-                except RuntimeError as e:
-                    logger.error("Error sending status payload: %s", e)
+            parser_name = self._CONTROL_PARSERS.get(cmd)
+            if parser_name is None:
+                logger.warning("Unknown ZMQ command: %s", cmd)
+                with contextlib.suppress(RuntimeError):
+                    self.send_string("UNKNOWN_CMD", zmq_sender_id)
                 continue
-            elif cmd == TaskCmd.WAIT_OUTPUT :
-                client_id = splited_msg[1] if len(splited_msg) > 1 else None
-                args = splited_msg[2] if len(splited_msg) > 2 else None
-                if client_id is None or args is None:
-                    try:
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError as e:
-                        logger.error("Error sending status payload: %s", e)
-                    continue
-                splited_args = args.split(";")
-                bucket_name = splited_args[0]
-                timeout = int(splited_args[1]) if len(splited_args) > 1 else None
-                return TaskCmd.WAIT_OUTPUT, (client_id, bucket_name, timeout, zmq_sender_id)
 
-            elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
-                client_id = splited_msg[1] if len(splited_msg) > 1 else None
-                export_args = splited_msg[2] if len(splited_msg) > 2 else None
-                if client_id is None or export_args is None:
-                    try:
-                        self.send_string("CMD_ERROR", zmq_sender_id)
-                    except RuntimeError as e:
-                        logger.error("Error sending export error: %s", e)
-                    continue
-                return TaskCmd.EXPORT_EMBEDDINGS, (client_id, export_args, zmq_sender_id)
+            try:
+                result = getattr(self, parser_name)(splited_msg, zmq_sender_id)
+            except self._CmdError as e:
+                logger.error("Malformed command %s: %s", cmd, e)
+                with contextlib.suppress(RuntimeError):
+                    self.send_string("CMD_ERROR", zmq_sender_id)
+                continue
 
-            elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
-                # Acknowledge and let the server main loop perform the operation
-                try:
-                    self.send_string("ACKNOWLEDGE", zmq_sender_id)
-                except RuntimeError as e:
-                    logger.error("Error acknowledging %s request: %s", cmd, e)
-                client_id = splited_msg[1] if len(splited_msg) > 1 else None
-                token = splited_msg[3] if len(splited_msg) > 3 else None
-                if client_id and token:
-                    try:
-                        auth_ctx = create_auth_context_from_request(client_id, token=token)
-                        self._auth_sessions[client_id] = auth_ctx
-                        logger.info(
-                            "Auth session refreshed for maintenance: user=%s role=%s cmd=%s",
-                            client_id,
-                            auth_ctx.role.value,
-                            cmd,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to refresh auth context for maintenance request %s: %s",
-                            client_id,
-                            e,
-                        )
-                return cmd, client_id
-
-            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
-                         TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW):
-                # Model/workflow registry commands: immediate request/reply with JSON payload
-                client_id = splited_msg[1] if len(splited_msg) > 1 else None
-                # The rest of the message (after "CMD:client_id:") is the JSON payload
-                payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
-                return cmd, (client_id, payload_str, zmq_sender_id)
-
-            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST):
-                # Job tracking commands: immediate request/reply with JSON payload
-                client_id = splited_msg[1] if len(splited_msg) > 1 else None
-                payload_str = ":".join(splited_msg[2:]) if len(splited_msg) > 2 else ""
-                return cmd, (client_id, payload_str, zmq_sender_id)
+            if result is not None:
+                return result
+            # result is None → command was handled inline, loop continues
 
     def wait_for_s3_events(self, nb_objects, debug=False, timeout_s=60):
         """Block until new messages arrive, then read all available messages.
@@ -1117,7 +1073,4 @@ class MessageQueue:
         payload = json.dumps(filters or {})
         raw = self.request_model_command(client_id, TaskCmd.JOB_LIST, payload)
         return json.loads(raw)
-
-
-
 
