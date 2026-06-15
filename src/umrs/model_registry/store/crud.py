@@ -26,6 +26,7 @@ from ..models import (
     generate_model_id,
     generate_policy_id,
 )
+from ..runtime_config import RuntimeConfig
 from .acl import AccessContext, ACLEnforcer
 from .errors import DuplicateModelError, ModelNotFoundError, PermissionDeniedError
 from .path_validator import PathValidator
@@ -67,6 +68,7 @@ class ModelStore:
         description: str | None = None,
         serving_profile: ServingProfile | None = None,
         capabilities: ModelCapabilities | None = None,
+        runtime_config: RuntimeConfig | None = None,
         status: ModelStatus = ModelStatus.AVAILABLE,
         model_ref: ModelRef | None = None,
         execution_authority_default: ExecutionAuthority = ExecutionAuthority.COMPOSE,
@@ -90,6 +92,7 @@ class ModelStore:
         model_id = generate_model_id()
         serving_profile = serving_profile or ServingProfile()
         capabilities = capabilities or ModelCapabilities()
+        runtime_config = runtime_config or RuntimeConfig()
 
         model = ModelEntry(
             model_id=model_id,
@@ -116,9 +119,9 @@ class ModelStore:
                         model_id, name, scope, owner_id, project_id,
                         storage_ref, model_type, huggingface_id, description,
                         serving_profile, status, model_ref_json, execution_authority_default,
-                        capabilities
+                        capabilities, runtime_config
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     RETURNING created_at, updated_at
                     """,
@@ -139,6 +142,7 @@ class ModelStore:
                         else None,
                         model.execution_authority_default.value,
                         json.dumps(model.capabilities.to_dict()),
+                        json.dumps(model.runtime_config.to_dict()),
                     ),
                 )
                 row = cur.fetchone()
@@ -175,7 +179,7 @@ class ModelStore:
                 SELECT model_id, name, scope, owner_id, project_id,
                        storage_ref, model_type, huggingface_id, description,
                        serving_profile, status, model_ref_json, execution_authority_default,
-                       created_at, updated_at, capabilities
+                       created_at, updated_at, capabilities, runtime_config
                 FROM model_catalog_entries
                 WHERE model_id = %s
                 """,
@@ -209,7 +213,7 @@ class ModelStore:
                     SELECT model_id, name, scope, owner_id, project_id,
                            storage_ref, model_type, huggingface_id, description,
                            serving_profile, status, model_ref_json, execution_authority_default,
-                           created_at, updated_at, capabilities
+                           created_at, updated_at, capabilities, runtime_config
                     FROM model_catalog_entries
                     WHERE name = %s AND scope = 'system'
                     """,
@@ -221,7 +225,7 @@ class ModelStore:
                     SELECT model_id, name, scope, owner_id, project_id,
                            storage_ref, model_type, huggingface_id, description,
                            serving_profile, status, model_ref_json, execution_authority_default,
-                           created_at, updated_at, capabilities
+                           created_at, updated_at, capabilities, runtime_config
                     FROM model_catalog_entries
                     WHERE name = %s AND scope = 'project' AND project_id = %s
                     """,
@@ -233,7 +237,7 @@ class ModelStore:
                     SELECT model_id, name, scope, owner_id, project_id,
                            storage_ref, model_type, huggingface_id, description,
                            serving_profile, status, model_ref_json, execution_authority_default,
-                           created_at, updated_at, capabilities
+                           created_at, updated_at, capabilities, runtime_config
                     FROM model_catalog_entries
                     WHERE name = %s AND scope = 'user' AND owner_id = %s
                     """,
@@ -302,7 +306,7 @@ class ModelStore:
             SELECT model_id, name, scope, owner_id, project_id,
                    storage_ref, model_type, huggingface_id, description,
                    serving_profile, status, model_ref_json, execution_authority_default,
-                   created_at, updated_at, capabilities
+                   created_at, updated_at, capabilities, runtime_config
             FROM model_catalog_entries
             WHERE {where_clause}
             ORDER BY scope, name

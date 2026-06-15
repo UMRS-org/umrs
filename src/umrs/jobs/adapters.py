@@ -17,17 +17,22 @@ import os
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from ..orchestrator.endpoint_mounts import build_mount_environment
 from .models import Job, JobAttempt, JobType
 from .monitor import AttemptCheckResult, BackendStatusChecker
 from .scheduler import OrchestratorBackend
 
 if TYPE_CHECKING:
+    from umrs.model_registry.models import ModelEntry
     from umrs.orchestrator.base import OrchestratorBackend as BaseOrchestrator
     from umrs.orchestrator.endpoint_registry import EndpointRegistry
+    from umrs.orchestrator.preflight import PreflightResult
     from umrs.orchestrator.readiness import ReadinessPoller
 
 logger = logging.getLogger(__name__)
+
+# Flag controlling whether preflight validation blocks sbatch submission.
+# Set to "warn" during initial rollout; switch to "hard" once stable.
+_PREFLIGHT_MODE = os.environ.get("UMRS_PREFLIGHT_MODE", "hard")
 
 
 def _parse_backend_ref(backend_ref: str) -> dict[str, str]:
@@ -44,36 +49,19 @@ def _parse_backend_ref(backend_ref: str) -> dict[str, str]:
     return parsed
 
 
-def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
-    """Resolve a model name from the UMRS catalog when no path is supplied.
+def _resolve_model_entry(model_name: str) -> "ModelEntry | None":
+    """Resolve a model from the authoritative Postgres registry.
 
-    Checks both the legacy JSON catalog (``model_catalog.json``) and the
-    durable Postgres-backed model store (``model_catalog_entries``).
-    Returns the first match found, preferring system-scope entries.
+    Returns a full ModelEntry with runtime_config populated, or None
+    if the model is not found.  The JSON catalog fallback is deprecated
+    and only used as a last resort with a loud warning.
     """
-    # ── 1. Legacy JSON catalog ───────────────────────────────────────────────
-    try:
-        from umrs.server.model_registry_handler import _load_catalog
-    except Exception:
-        pass
-    else:
-        models = _load_catalog().get("models", [])
-        matches = [entry for entry in models if entry.get("name") == model_name]
-        if matches:
-            scope_order = {"system": 0, "project": 1, "user": 2}
-            matches.sort(
-                key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
-            )
-            return matches[0]
+    from umrs.model_registry.models import ModelEntry
+    from umrs.model_registry.store import AccessContext, ModelStore, PathValidator
+    from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
 
-    # ── 2. Durable Postgres model store ──────────────────────────────────────
+    # ── Authoritative: Durable Postgres model store ──────────────────────────
     try:
-        from umrs.model_registry.store import AccessContext, ModelStore, PathValidator
-        from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
-
-        # Use the same DB pool builder as model registration (http_sidecar.py)
-        # and the durable job runtime.  This guarantees a single source of truth
-        # — both writes (register) and reads (resolve) hit the same database.
         db_pool = build_durable_job_db_pool_from_env()
         conn = db_pool.getconn()
         try:
@@ -82,30 +70,121 @@ def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
                 AccessContext(user_id="", is_admin=True),
                 limit=500,
             )
-            matches = [entry.to_dict() for entry in entries if entry.name == model_name]
+            matches = [e for e in entries if e.name == model_name]
             if matches:
                 scope_order = {"system": 0, "project": 1, "user": 2}
-                matches.sort(
-                    key=lambda e: scope_order.get(str(e.get("scope", "system")), 99)
-                )
+                matches.sort(key=lambda e: scope_order.get(e.scope.value, 99))
+                entry = matches[0]
                 logger.info(
-                    "Resolved model %s from durable store (db=%s): storage_ref=%s",
+                    "Resolved model %s from durable store: family=%s storage_ref=%s runtime_config=%s",
                     model_name,
-                    getattr(db_pool, "dsn", "unknown"),
-                    matches[0].get("storage_ref"),
+                    entry.runtime_config.model_family or "unknown",
+                    entry.storage_ref,
+                    "populated" if entry.runtime_config.model_family else "empty",
                 )
-                return matches[0]
+                return entry
         finally:
             db_pool.putconn(conn)
             db_pool.closeall()
     except Exception:
-        logger.debug(
-            "Durable model store unavailable while resolving %s",
+        logger.warning(
+            "Durable model store unavailable while resolving %s; trying JSON fallback",
             model_name,
             exc_info=True,
         )
 
+    # ── Deprecated: JSON catalog fallback ────────────────────────────────────
+    try:
+        from umrs.server.model_registry_handler import _load_catalog
+
+        models = _load_catalog().get("models", [])
+        matches = [entry for entry in models if entry.get("name") == model_name]
+        if matches:
+            logger.warning(
+                "Model %s resolved from DEPRECATED JSON catalog (not Postgres). "
+                "Register it in the durable store via 'umrs-server model register'.",
+                model_name,
+            )
+            scope_order = {"system": 0, "project": 1, "user": 2}
+            matches.sort(
+                key=lambda entry: scope_order.get(str(entry.get("scope", "system")), 99)
+            )
+            # Convert dict to ModelEntry for compatibility
+            return ModelEntry.from_dict(matches[0])
+    except Exception:
+        logger.debug("JSON catalog unavailable for %s", model_name, exc_info=True)
+
     return None
+
+
+def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
+    """Resolve a model name from the UMRS catalog (backward-compat wrapper).
+
+    Prefer _resolve_model_entry() for new code — it returns a full ModelEntry
+    with runtime_config.  This wrapper exists for callers that expect a dict.
+    """
+    entry = _resolve_model_entry(model_name)
+    if entry is None:
+        return None
+    return entry.to_dict()
+
+
+def _resolve_roster_defaults(model_name: str) -> dict[str, Any] | None:
+    """Load roster defaults from pool-ai4s.yaml (same as old path)."""
+    try:
+        from ..orchestrator.provision_roster import resolve_model_provision_defaults
+        return resolve_model_provision_defaults(model_name)
+    except Exception:
+        return None
+
+
+def build_deployment_profile(
+    roster_defaults: dict[str, Any] | None,
+    spec_overrides: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge roster defaults with spec overrides for DeploymentSpec profile."""
+    profile: dict[str, Any] = dict(roster_defaults or {})
+
+    # Apply spec overrides — explicit values win
+    for key, value in spec_overrides.items():
+        if value is not None:
+            profile[key] = value
+
+    # Handle env_vars merging
+    env_vars: dict[str, str] = {}
+    roster_env = profile.get("env_vars")
+    if isinstance(roster_env, dict):
+        env_vars.update({str(k): str(v) for k, v in roster_env.items()})
+    spec_env = spec_overrides.get("env_vars")
+    if isinstance(spec_env, dict):
+        env_vars.update({str(k): str(v) for k, v in spec_env.items()})
+    if env_vars:
+        profile["env_vars"] = env_vars
+
+    return profile
+
+
+def log_preflight_result(model_name: str, result: "PreflightResult") -> None:
+    """Log preflight validation results at appropriate level."""
+    if result.passed:
+        logger.info(
+            "Preflight passed for %s: %d checks OK (%.0fms)",
+            model_name,
+            len(result.checks),
+            result.total_duration_ms,
+        )
+    else:
+        failures = [c for c in result.checks if c.status == "fail"]
+        warnings = [c for c in result.checks if c.status == "warn"]
+        logger.warning(
+            "Preflight for %s: %d fail, %d warn, %d pass (%.0fms). Failures: %s",
+            model_name,
+            len(failures),
+            len(warnings),
+            len(result.checks) - len(failures) - len(warnings),
+            result.total_duration_ms,
+            [c.message for c in failures],
+        )
 
 
 def _short_progress_text(value: str | None, *, limit: int = 96) -> str:
@@ -242,148 +321,177 @@ class EndpointProvisionBackend(OrchestratorBackend):
         """
         Submit endpoint provisioning to the orchestrator.
 
-        Extracts parameters from job.spec and calls the underlying
-        orchestrator.submit_job().
+        Builds a DeploymentSpec from the authoritative registry (with
+        runtime_config), runs preflight validation, and generates explicit
+        env vars so serve.slurm no longer derives runtime configuration
+        from model-name pattern matching.
 
         Returns:
-            Backend reference (container ID, k8s job name, slurm job ID)
+            Backend reference (slurm job ID)
         """
+        # Lazy imports to avoid circular dependencies with orchestrator
+        from umrs.orchestrator.deployment_spec import DeploymentSpec
+        from umrs.orchestrator.endpoint_mounts import build_mount_environment
+        from umrs.orchestrator.preflight import PreflightResult, PreflightValidator
+        from umrs.orchestrator.site_config import load_site_config
+
         spec = job.spec
 
-        # Extract endpoint parameters from job spec
+        # ── Extract endpoint parameters ──────────────────────────────────────
+        model_name = spec.get("model", "default")
         model_path = spec.get("model_path")
         project_id = job.project_id
-        model_name = spec.get("model", "default")
         gpu_count = spec.get("gpu_count", 1)
-        node_count = spec.get("node_count")  # multi-node (e.g. GLM-5.1, DeepSeek-V4)
+        node_count = spec.get("node_count")
         max_model_len = spec.get("max_model_len", 4096)
         ttl_sec = spec.get("ttl_sec", 3600)
         idle_ttl_sec = spec.get("idle_ttl_sec")
-        parallel_strategy = spec.get("parallel_strategy")  # tp_pp | tep
-        # Explicit compute placement requested via `endpoint up --partition` /
-        # `--spec`. The Slurm wrapper backend pops these from kwargs; without
-        # forwarding them here, provisioning falls back to auto-selected
-        # partitions and ignores the operator's explicit sizing.
+        parallel_strategy = spec.get("parallel_strategy")
         partition_override = spec.get("partition_override")
         nodelist_hint = spec.get("nodelist_hint")
-        requested_env = spec.get("env_vars") or {}
+        requested_env = dict(spec.get("env_vars") or {})
+        tier = spec.get("tier") or "user"
         mount_env, mount_metadata = build_mount_environment(
-            tier=str(spec.get("tier") or "user"),
+            tier=str(tier),
             mounts=spec.get("mounts") if isinstance(spec.get("mounts"), dict) else None,
             egress_domains=spec.get("egress_domains")
             if isinstance(spec.get("egress_domains"), list)
             else None,
         )
 
-        if not model_path and model_name:
-            model_entry = _resolve_registered_model(model_name)
-            if model_entry:
-                model_path = model_entry.get("storage_ref")
-                served_model_name = model_entry.get("huggingface_id") or model_name
-                requested_env = dict(requested_env)
-                requested_env.setdefault(
-                    "VLLM_SERVED_MODEL_NAME",
-                    served_model_name,
-                )
-                logger.info(
-                    "Resolved endpoint model %s to %s (served as %s)",
-                    model_name,
-                    model_path,
-                    served_model_name,
+        # ── Resolve model from authoritative registry ────────────────────────
+        model_entry = _resolve_model_entry(model_name)
+        if model_entry is None:
+            raise RuntimeError(
+                f"Model '{model_name}' not found in registry. "
+                "Register it first: umrs-server model register {model_name} <path>"
+            )
+        if not model_path:
+            model_path = model_entry.storage_ref
+
+        # ── Build DeploymentSpec ─────────────────────────────────────────────
+        site = load_site_config()
+        roster_defaults = _resolve_roster_defaults(model_name)
+        profile = build_deployment_profile(
+            roster_defaults=roster_defaults,
+            spec_overrides={
+                "gpu_count": gpu_count,
+                "node_count": node_count,
+                "max_model_len": max_model_len,
+                "partition": partition_override,
+                "parallel_strategy": parallel_strategy,
+                "ttl_sec": ttl_sec,
+                "tier": tier,
+                "env_vars": requested_env,
+            },
+        )
+
+        deployment_spec = DeploymentSpec.from_registry(
+            entry=model_entry,
+            profile=profile,
+            site_config=site,
+        )
+
+        logger.info(
+            "DeploymentSpec generated: %s family=%s parser=%s reasoning=%s "
+            "tp=%s pp=%s ctx=%s partition=%s",
+            model_name,
+            deployment_spec.model_family,
+            deployment_spec.tool_call_parser,
+            deployment_spec.reasoning_parser,
+            deployment_spec.tp,
+            deployment_spec.pp,
+            deployment_spec.max_model_len,
+            deployment_spec.partition,
+        )
+
+        # ── Run preflight validation ─────────────────────────────────────────
+        preflight = PreflightValidator(spec=deployment_spec, site_config=site)
+        result = await preflight.run_all()
+
+        log_preflight_result(model_name, result)
+
+        if not result.passed:
+            if _PREFLIGHT_MODE == "hard":
+                failures = [c for c in result.checks if c.status == "fail"]
+                raise RuntimeError(
+                    f"Preflight validation failed for '{model_name}': "
+                    + "; ".join(c.message for c in failures)
                 )
             else:
-                # Fallback: use model name as sentinel path when catalog
-                # resolution fails.  The slurm wrapper (serve.slurm) receives
-                # VLLM_MODEL alongside VLLM_MODEL_PATH and can resolve from
-                # the HF cache or site-wide model directory.
-                model_path = model_name
-                logger.error(
-                    "Failed to resolve storage_ref for model '%s' from both "
-                    "JSON catalog and durable Postgres store.  Using model "
-                    "name as path.  The Slurm wrapper will receive "
-                    "VLLM_MODEL_PATH=%s — this must map to a real filesystem "
-                    "directory for vLLM to start.",
+                logger.warning(
+                    "Preflight validation failed for '%s' but UMRS_PREFLIGHT_MODE=%s "
+                    "— proceeding anyway. Failures: %s",
                     model_name,
-                    model_name,
+                    _PREFLIGHT_MODE,
+                    [c.message for c in result.checks if c.status == "fail"],
                 )
 
-        # Determine target host
-        target_host = self._determine_target_host()
+        # ── Generate sbatch env from DeploymentSpec ──────────────────────────
+        submit_env = deployment_spec.generate_sbatch_env()
 
-        # Allocate port using attempt ID for tracking
+        # Overlay deployment-time values that are not part of DeploymentSpec
+        submit_env["LITELLM_PORT"] = ""  # filled after port allocation
+        submit_env["PROJECT_ID"] = project_id
+        submit_env["MODEL_NAME"] = model_name
+        submit_env["VLLM_MODEL_PATH"] = model_path
+
+        # LiteLLM master key from orchestrator process env
+        litellm_master_key = os.environ.get("LITELLM_MASTER_KEY")
+        if litellm_master_key:
+            submit_env["LITELLM_MASTER_KEY"] = litellm_master_key
+
+        # Mount env vars (MCP, RAG, egress)
+        submit_env.update(mount_env)
+
+        # Merge any user-provided env overrides (they win over spec)
+        for k, v in requested_env.items():
+            if isinstance(v, (str, int, float)):
+                submit_env[str(k)] = str(v)
+
+        # ── Allocate port ────────────────────────────────────────────────────
+        target_host = self._determine_target_host()
         port = self.port_manager.allocate(attempt.attempt_id, target_host)
         if port is None:
             raise RuntimeError("Failed to allocate port for endpoint")
+        submit_env["LITELLM_PORT"] = str(port)
+
+        # ── Resolve Slurm account ────────────────────────────────────────────
+        slurm_account = self._resolve_slurm_account(job.user_id)
 
         try:
-            submit_env = {
-                key: str(value)
-                for key, value in requested_env.items()
-                if isinstance(value, (str, int, float))
-            }
-            submit_env.update(
-                {
-                    "LITELLM_PORT": str(port),
-                    "VLLM_MAX_MODEL_LEN": str(max_model_len),
-                    "PROJECT_ID": project_id,
-                    "MODEL_NAME": model_name,
-                }
-            )
-            # Single-node tensor parallelism defaults to the requested GPU
-            # count (TP == GPUs on the node). Honor any explicit override the
-            # request already carried in env_vars.
-            submit_env.setdefault("VLLM_TENSOR_PARALLEL_SIZE", str(gpu_count))
-            # Forward the LiteLLM master key from the orchestrator process
-            # environment so the mini-RiVault wrapper can authenticate the
-            # in-job LiteLLM proxy. Never overwrite an explicit request value.
-            litellm_master_key = os.environ.get("LITELLM_MASTER_KEY")
-            if litellm_master_key:
-                submit_env.setdefault("LITELLM_MASTER_KEY", litellm_master_key)
-            # When no registered model was found (model_path is None), forward
-            # the requested model name as VLLM_MODEL so the slurm wrapper can
-            # resolve it from the HF cache instead of falling back to the site
-            # config default.
-            if not model_path and model_name:
-                submit_env.setdefault("VLLM_MODEL", model_name)
-            submit_env.update(mount_env)
-
-            # Resolve per-user Slurm account from the user record so sbatch
-            # attributes the job to the submitting user's fairshare group.
-            slurm_account = self._resolve_slurm_account(job.user_id)
-
-            # Submit to underlying orchestrator
+            # ── Submit to orchestrator ───────────────────────────────────────
             submit_kwargs: dict[str, Any] = {
                 "model_path": model_path,
                 "env": submit_env,
-                "gpu_count": gpu_count,
+                "gpu_count": deployment_spec.gpus_per_node,
                 "requesting_user": job.user_id,
             }
             if slurm_account:
                 submit_kwargs["slurm_account"] = slurm_account
             self._apply_advanced_layout_kwargs(
                 submit_kwargs,
-                node_count=node_count,
-                parallel_strategy=parallel_strategy,
-                partition_override=partition_override,
+                node_count=deployment_spec.node_count,
+                parallel_strategy=deployment_spec.parallel_strategy,
+                partition_override=deployment_spec.partition,
                 nodelist_hint=nodelist_hint,
-                requested_env=requested_env,
+                requested_env=submit_env,
             )
             job_info = await self.orchestrator.submit_job(**submit_kwargs)
 
             if not job_info or not job_info.job_id:
-                # Release port on failure
                 self.port_manager.release(port, target_host)
                 raise RuntimeError("Backend failed to submit job")
 
-            # Get actual host from job info
             actual_host = job_info.endpoint.node if job_info.endpoint else target_host
 
-            # Register endpoint in registry (status=provisioning)
-            # Use attempt_id as endpoint ID for correlation
-            endpoint_metadata = {
+            # ── Register endpoint ────────────────────────────────────────────
+            endpoint_metadata: dict[str, Any] = {
                 "durable_job_id": job.job_id,
                 "attempt_id": attempt.attempt_id,
                 "attempt_no": attempt.attempt_no,
+                "deployment_spec": deployment_spec.to_dict(),
+                "preflight_passed": result.passed,
             }
             if idle_ttl_sec is not None:
                 with contextlib.suppress(TypeError, ValueError):
@@ -391,14 +499,13 @@ class EndpointProvisionBackend(OrchestratorBackend):
                     if parsed_idle_ttl > 0:
                         endpoint_metadata["idle_ttl_sec"] = parsed_idle_ttl
             endpoint_metadata.update(mount_metadata)
-            # Store the served model name so the gateway can discover by either name
-            env_served_name = submit_env.get("VLLM_SERVED_MODEL_NAME")
+            env_served_name = deployment_spec.huggingface_id
             if env_served_name and env_served_name != model_name:
                 endpoint_metadata["served_model_name"] = env_served_name
             endpoint_metadata.setdefault("job_status", job_info.status.value)
             endpoint_metadata.setdefault("detail", _backend_progress_detail(job_info))
-            if parallel_strategy:
-                endpoint_metadata["parallel_strategy"] = parallel_strategy
+            if deployment_spec.parallel_strategy != "tp_pp":
+                endpoint_metadata["parallel_strategy"] = deployment_spec.parallel_strategy
 
             self.registry.register(
                 project_id=project_id,
@@ -412,14 +519,17 @@ class EndpointProvisionBackend(OrchestratorBackend):
             )
 
             logger.info(
-                f"Submitted endpoint provision: job={job.job_id} "
-                f"attempt={attempt.attempt_id} backend_ref={job_info.job_id}"
+                "Submitted endpoint provision: job=%s attempt=%s backend_ref=%s "
+                "spec_version=%s",
+                job.job_id,
+                attempt.attempt_id,
+                job_info.job_id,
+                deployment_spec.spec_version,
             )
 
             return job_info.job_id
 
         except Exception:
-            # Release port on any error
             self.port_manager.release(port, target_host)
             raise
 

@@ -20,7 +20,10 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from umrs.model_registry.runtime_config import RuntimeConfig
+
+# Re-export capabilities from the dedicated module (Phase 5)
+from umrs.model_registry.capabilities import ModelCapabilities  # noqa: F811
 
 
 class ModelScope(Enum):
@@ -242,50 +245,8 @@ def generate_model_id() -> str:
     return f"mdl-{uuid.uuid4().hex[:12]}"
 
 
-@dataclass
-class ModelCapabilities:
-    """
-    Model capability metadata.
-
-    Describes what a model can do — tool calling, vision, structured output, etc.
-    Stored as JSONB in the database for extensibility.
-    """
-
-    supports_tool_calling: bool = False
-    supports_vision: bool = False
-    supports_structured_output: bool = False
-    max_output_tokens: int | None = None
-    max_position_embeddings: int | None = None
-    model_family: str | None = None  # e.g., "qwen", "llama", "mistral"
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert to dictionary for JSON storage."""
-        d: dict[str, Any] = {
-            "supports_tool_calling": self.supports_tool_calling,
-            "supports_vision": self.supports_vision,
-            "supports_structured_output": self.supports_structured_output,
-        }
-        if self.max_output_tokens is not None:
-            d["max_output_tokens"] = self.max_output_tokens
-        if self.max_position_embeddings is not None:
-            d["max_position_embeddings"] = self.max_position_embeddings
-        if self.model_family is not None:
-            d["model_family"] = self.model_family
-        return d
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> ModelCapabilities:
-        """Create from dictionary."""
-        if not data:
-            return cls()
-        return cls(
-            supports_tool_calling=data.get("supports_tool_calling", False),
-            supports_vision=data.get("supports_vision", False),
-            supports_structured_output=data.get("supports_structured_output", False),
-            max_output_tokens=data.get("max_output_tokens"),
-            max_position_embeddings=data.get("max_position_embeddings"),
-            model_family=data.get("model_family"),
-        )
+# ModelCapabilities is now defined in umrs.model_registry.capabilities (Phase 5).
+# Re-exported above for backward compatibility.
 
 
 @dataclass
@@ -430,6 +391,9 @@ class ModelEntry:
     # Model capabilities metadata
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
 
+    # Runtime configuration (schema v6 — authoritative, replaces serve.slurm derivations)
+    runtime_config: RuntimeConfig = field(default_factory=RuntimeConfig)
+
     # Execution authority default (U-807)
     execution_authority_default: ExecutionAuthority = ExecutionAuthority.COMPOSE
 
@@ -453,6 +417,8 @@ class ModelEntry:
             self.serving_profile = ServingProfile.from_dict(self.serving_profile)
         if isinstance(self.capabilities, dict):
             self.capabilities = ModelCapabilities.from_dict(self.capabilities)
+        if isinstance(self.runtime_config, dict):
+            self.runtime_config = RuntimeConfig.from_dict(self.runtime_config)
         if isinstance(self.execution_authority_default, str):
             self.execution_authority_default = ExecutionAuthority(
                 self.execution_authority_default
@@ -495,6 +461,7 @@ class ModelEntry:
             "description": self.description,
             "serving_profile": self.serving_profile.to_dict(),
             "capabilities": self.capabilities.to_dict(),
+            "runtime_config": self.runtime_config.to_dict(),
             "execution_authority_default": self.execution_authority_default.value,
             "status": self.status.value,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -518,6 +485,7 @@ class ModelEntry:
             description=data.get("description"),
             serving_profile=ServingProfile.from_dict(data.get("serving_profile", {})),
             capabilities=ModelCapabilities.from_dict(data.get("capabilities", {})),
+            runtime_config=RuntimeConfig.from_dict(data.get("runtime_config", {})),
             execution_authority_default=ExecutionAuthority(
                 data.get("execution_authority_default", "compose")
             ),
@@ -543,10 +511,11 @@ class ModelEntry:
         model_id, name, scope, owner_id, project_id, storage_ref,
         model_type, huggingface_id, description, serving_profile,
         status, model_ref_json, execution_authority_default,
-        created_at, updated_at, capabilities
+        created_at, updated_at, capabilities, runtime_config
         """
         model_ref_data = row[11]  # model_ref_json
         capabilities_data = row[15] if len(row) > 15 else None
+        runtime_config_data = row[16] if len(row) > 16 else None
         return cls(
             model_id=row[0],
             name=row[1],
@@ -564,6 +533,7 @@ class ModelEntry:
             created_at=row[13],
             updated_at=row[14],
             capabilities=ModelCapabilities.from_dict(capabilities_data or {}),
+            runtime_config=RuntimeConfig.from_dict(runtime_config_data or {}),
         )
 
 
