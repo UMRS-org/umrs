@@ -28,13 +28,12 @@ def _validate_data_port_range(port_range: DataPortRange) -> DataPortRange:
         )
     return port_range
 
-
 def _resolve_default_data_port_range() -> DataPortRange:
     port_range = (
         parse_data_port_range(os.environ.get("UMRS_DATA_PORT_RANGE"))
         or parse_data_port_range(os.environ.get("UMRS_DATA_PORT"))
         or parse_data_port_range(os.environ.get("UMRS_DATA_BASE_PORT"))
-        or DataPortRange.single(BASE_PORT + 1)
+        or DataPortRange(BASE_PORT + 1, BASE_PORT + 10)
     )
     return _validate_data_port_range(port_range)
 
