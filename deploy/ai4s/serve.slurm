@@ -416,13 +416,21 @@ VLLM_ARGS=(
     -pp "${VLLM_PP}"
     --gpu-memory-utilization "${VLLM_GPU_MEM_UTIL}"
     --trust-remote-code
-    --enable-auto-tool-choice
     --api-key "${LITELLM_MASTER_KEY}"
 )
 # Tool-call parser (see derive_tool_parser): omitted when empty (model has no
 # tool-call training, e.g. GPT-OSS-Swallow). When not empty, add the parser flag.
 if [[ -n "${VLLM_TOOL_CALL_PARSER}" ]]; then
     VLLM_ARGS+=( --tool-call-parser "${VLLM_TOOL_CALL_PARSER}" )
+fi
+# Auto-tool-choice: only enable when a tool-call parser is configured.
+# vLLM validates --enable-auto-tool-choice requires --tool-call-parser.
+# Models without tool-call training (e.g. GPT-OSS-Swallow) must skip this flag.
+_ENABLE_AUTO_TC="${VLLM_ENABLE_AUTO_TOOL_CHOICE:-on}"
+if [[ "${_ENABLE_AUTO_TC}" != "0" && "${_ENABLE_AUTO_TC}" != "false" && "${_ENABLE_AUTO_TC}" != "off" ]]; then
+    if [[ -n "${VLLM_TOOL_CALL_PARSER}" ]]; then
+        VLLM_ARGS+=( --enable-auto-tool-choice )
+    fi
 fi
 # Reasoning parser (see derive_reasoning_parser): GLM-5/5.1 is a thinking model;
 # the glm45 reasoning parser splits the </think>-gated reasoning into the
