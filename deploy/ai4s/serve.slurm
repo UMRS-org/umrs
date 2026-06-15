@@ -116,6 +116,21 @@ else
     SIF_IMAGE="${RIVAULT_SIF:-${RIVAULT_DIR%/}/mini-rivault-aarch64-v4.sif}"
 fi
 
+# ── Runtime fallback deprecation guard ──────────────────────────────────────
+# When the orchestrator sets explicit VLLM_* env vars via DeploymentSpec,
+# these derivation functions are dormant (VAR already set).
+# When they activate (VAR unset), emit a deprecation warning to stderr.
+#
+# To eliminate this path: populate runtime_config in the registry for
+# every model and redeploy via DeploymentSpec.
+_emit_runtime_fallback_warning() {
+    local var_name="$1"
+    local derived_value="$2"
+    echo "[DEPRECATED] serve.slurm derived ${var_name}=${derived_value}" >&2
+    echo "  Model=${MODEL_NAME:-unknown}" >&2
+    echo "  Populate runtime_config in registry to eliminate this fallback." >&2
+}
+
 # Derive the vLLM tool-call parser from the model name when not explicitly set.
 derive_tool_parser() {
     local name_lc
@@ -126,13 +141,16 @@ derive_tool_parser() {
         *glm-4.5*|*glm4.5*|*glm45*)  echo "glm45" ;;
         *glm*)                       echo "glm47" ;;
         *kimi*)                      echo "kimi_k2" ;;
-        *llm-jp*|*llm_jp*)              echo "hermes" ;;   # Qwen-MoE uses hermes parser
-        *gpt-oss*swallow*)           echo "" ;;          # no tool-call training; skip parser
+        *llm-jp*|*llm_jp*)              echo "hermes" ;;
+        *gpt-oss*swallow*)           echo "" ;;
         *gemma*4*)                   echo "gemma4" ;;
         *)                           echo "hermes" ;;
     esac
 }
-VLLM_TOOL_CALL_PARSER="${VLLM_TOOL_CALL_PARSER:-$(derive_tool_parser)}"
+if [[ -z "${VLLM_TOOL_CALL_PARSER:-}" ]]; then
+    VLLM_TOOL_CALL_PARSER="$(derive_tool_parser)"
+    _emit_runtime_fallback_warning "VLLM_TOOL_CALL_PARSER" "$VLLM_TOOL_CALL_PARSER"
+fi
 
 # Derive the vLLM reasoning parser from the model name when not explicitly set.
 # GLM-4.5/4.7/5.x emit <think>…</think> reasoning before any answer or tool call.
@@ -158,7 +176,12 @@ derive_reasoning_parser() {
         *)     echo "" ;;
     esac
 }
-VLLM_REASONING_PARSER="${VLLM_REASONING_PARSER:-$(derive_reasoning_parser)}"
+if [[ -z "${VLLM_REASONING_PARSER:-}" ]]; then
+    VLLM_REASONING_PARSER="$(derive_reasoning_parser)"
+    if [[ -n "${VLLM_REASONING_PARSER:-}" ]]; then
+        _emit_runtime_fallback_warning "VLLM_REASONING_PARSER" "$VLLM_REASONING_PARSER"
+    fi
+fi
 # Explicit disable: the orchestrator sets VLLM_REASONING_PARSER=none (sentinel)
 # when a caller provisions with reasoning="off". Because the line above uses
 # ${VAR:-default}, an empty string would re-trigger derivation, so we use a
@@ -186,7 +209,12 @@ derive_kv_cache_dtype() {
         *)           echo "" ;;
     esac
 }
-VLLM_KV_CACHE_DTYPE="${VLLM_KV_CACHE_DTYPE:-$(derive_kv_cache_dtype)}"
+if [[ -z "${VLLM_KV_CACHE_DTYPE:-}" ]]; then
+    VLLM_KV_CACHE_DTYPE="$(derive_kv_cache_dtype)"
+    if [[ -n "${VLLM_KV_CACHE_DTYPE:-}" ]]; then
+        _emit_runtime_fallback_warning "VLLM_KV_CACHE_DTYPE" "$VLLM_KV_CACHE_DTYPE"
+    fi
+fi
 
 mkdir -p "${JOB_INFO_DIR}" "${RIVAULT_CONTROL_DIR}"
 

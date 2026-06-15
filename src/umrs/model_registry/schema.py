@@ -397,6 +397,9 @@ def _create_tables(cur: psycopg2.extensions.cursor) -> None:
         -- Added in schema version 4
         capabilities JSONB DEFAULT '{}',
 
+        -- Added in schema version 6
+        runtime_config JSONB DEFAULT '{}',
+
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -416,6 +419,11 @@ def _create_tables(cur: psycopg2.extensions.cursor) -> None:
         "COMMENT ON COLUMN model_catalog_entries.execution_authority_default IS "
         "'Default execution authority for this model (U-807)'"
     )
+    cur.execute(
+        "COMMENT ON COLUMN model_catalog_entries.runtime_config IS "
+        "'Authoritative runtime configuration (parser, kv-cache, eager mode, etc.). "
+        "Replaces serve.slurm bash derivations.'"
+    )
 
     # Create indexes
     cur.execute(CREATE_INDEXES)
@@ -428,6 +436,9 @@ def _create_tables(cur: psycopg2.extensions.cursor) -> None:
 
     # Create model_artifacts table (U-806)
     cur.execute(CREATE_MODEL_ARTIFACTS_TABLE)
+
+    # Create model_certifications table (schema v7)
+    cur.execute(CREATE_MODEL_CERTIFICATIONS_TABLE)
 
 
 def _migrate_schema(
