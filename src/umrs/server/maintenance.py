@@ -85,12 +85,12 @@ def recompute_all_objects(
 
     if active_threads.is_worker_thread():
         active_threads.update_status_to_done()
-        users = {entry.s3_username for entry in buckets_cfg.values()}
+        users = {username} if username is not None else {entry.s3_username for entry in buckets_cfg.values()}
         active_threads.record_status_for_users_by_key(users, key)
         active_threads.remove_from_running_list()
 
     outcome = {"summary": summary, "data": recompute_dict}
-    filter_outcome(active_threads, outcome, buckets_cfg, key)
+    filter_outcome(active_threads, outcome, buckets_cfg, key, username=username)
     # execute callback to update task status to completed
     if update_status_callback:
         update_status_callback(TaskStatus.COMPLETED)
@@ -172,12 +172,12 @@ def update_objects(
 
     if active_threads.is_worker_thread():
         active_threads.update_status_to_done()
-        users = {entry.s3_username for entry in buckets_cfg.values()}
+        users = {username} if username is not None else {entry.s3_username for entry in buckets_cfg.values()}
         active_threads.record_status_for_users_by_key(users, key)
         active_threads.remove_from_running_list()
 
     outcome = {"summary": summary, "data": update_dict}
-    filter_outcome(active_threads, outcome, buckets_cfg, key)
+    filter_outcome(active_threads, outcome, buckets_cfg, key, username=username)
 
     # execute callback to update task status to completed
     if update_status_callback:
@@ -272,7 +272,7 @@ def check_objects(
         "data": check_dict,
         "requires_update": perform_update,
     }
-    filter_outcome(active_threads, outcome, buckets_cfg, key)
+    filter_outcome(active_threads, outcome, buckets_cfg, key, username=username)
 
     # execute callback to update task status to completed
     if update_status_callback:
@@ -283,10 +283,13 @@ def check_objects(
 # Outcome filtering (per-user scoping for STATUS replies)
 # ---------------------------------------------------------------------------
 
-def filter_outcome(active_threads, outcome, buckets_cfg, key):
-    """For each user in the configuration, store its relevant data
-    to be later visible via STATUS."""
-    users = {entry.s3_username for entry in buckets_cfg.values()}
+def filter_outcome(active_threads, outcome, buckets_cfg, key, username=None):
+    """Store outcome in the status store, scoped to the requesting user.
+
+    username=None (admin/bootstrap): store for every user in buckets_cfg.
+    username set (regular user): store only for that user.
+    """
+    users = {username} if username is not None else {entry.s3_username for entry in buckets_cfg.values()}
     for user in users:
         filtered_outcome = _filter_outcome_for_client(key, outcome, user, buckets_cfg)
         active_threads.record_status(user, key, filtered_outcome)
@@ -312,16 +315,15 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
     buckets_cfg.
     """
     try:
-        cmd_upper = cmd.upper()
-        if cmd_upper in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
+        if cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
             filtered = _filter_dict_by_user(full, client_id)
             summary = pretty_print_recompute(
-                filtered, update=(cmd_upper == TaskCmd.UPDATE), print_output=False
+                filtered, update=(cmd == TaskCmd.UPDATE), print_output=False
             )
             return {"summary": summary, "data": filtered}
 
-        if cmd_upper == TaskCmd.CHECK:
+        if cmd == TaskCmd.CHECK:
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
             filtered = _filter_dict_by_user(full, client_id)
             summary = pretty_print_check(filtered, print_output=False)
@@ -342,7 +344,7 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
                 "requires_update": requires_update,
             }
 
-        if cmd_upper == TaskCmd.RELOAD:
+        if cmd == TaskCmd.RELOAD:
             # Derive a per-user configuration view from the live buckets_cfg
             filtered_store = buckets_cfg.build_dict_for_user(client_id)
             summary = pretty_print_cfg(

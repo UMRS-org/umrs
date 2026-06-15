@@ -51,7 +51,7 @@ class UMRSTask:
             * Completed tasks remain as COMPLETED.
 
         Returns:
-        dict with key = (client_id, cmd, payload) and value = status (or task dict)
+        dict with reco = (client_id, cmd, payload) and value = status (or task dict)
         """
         if verbose:
             traceback.print_stack()

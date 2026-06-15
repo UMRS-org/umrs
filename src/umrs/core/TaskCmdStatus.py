@@ -26,17 +26,16 @@ class TaskCmd:
     RUN_WORKFLOW = "RUN_WORKFLOW"        # trigger execution of a registered workflow
     # Admin enrollment
     ENROLL_USER = "ENROLL_USER"          # admin-only: register a new user
+    # Meta-key: request all status entries
+    ALL = "all"
 
     @classmethod
     def all_cmd(cls):
-        # Collect all class attributes that are strings (ignore methods and magic attributes)
-        keys = [v for k, v in vars(cls).items() if not k.startswith("__") and isinstance(v, str)]
-        # Optionally add extra keys that are not class constants
-        keys.append("all")
-        return tuple(keys)
+        return tuple(v for k, v in vars(cls).items() if not k.startswith("__") and isinstance(v, str))
 
     @classmethod
     def status_cmd(cls):
+        """Lowercase CLI choices for the status command (argparse-facing)."""
         return (
             cls.PROCESS_OBJECTS.lower(),
             cls.WAIT_OUTPUT.lower(),
@@ -44,8 +43,9 @@ class TaskCmd:
             cls.UPDATE.lower(),
             cls.CHECK.lower(),
             cls.RELOAD.lower(),
-            "all"
+            cls.ALL,  # already "all"
         )
+
 
 class TaskStatus:
     SUBMITTED = "Submitted"

@@ -986,7 +986,7 @@ class MessageQueue:
 
     def _get_status_payload(self, client_id, status_key):
         store = self.status_store or {}
-        key = (status_key or "all").lower()
+        key = status_key or TaskCmd.ALL
 
         if not client_id:
             payload = {"status": "error", "message": "Missing client identifier"}
@@ -1003,7 +1003,7 @@ class MessageQueue:
                 pool_metrics = self.task_manager.active_threads.pool.metrics().to_dict()
 
         client_store = store.get(client_id, {})
-        if key in ("all", "*"):
+        if key in (TaskCmd.ALL, "*"):
             if not client_store:
                 payload = {"status": "error", "message": "No status entries", "client": client_id, "uncompleted_key_list": uncompleted_key_list}
             else:

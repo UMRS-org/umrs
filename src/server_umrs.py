@@ -241,11 +241,11 @@ def server_event_loop(
 def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_backend, configure_file, server_cfg):
     # do in this order
     if args.force_recompute:
-        recompute_all_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.RECOMPUTE.lower(), log_output=ENABLE_PRETTY_PRINT)
+        recompute_all_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.RECOMPUTE, log_output=ENABLE_PRETTY_PRINT)
     if args.force_update:
-        update_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.UPDATE.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
+        update_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.UPDATE, verbose=False, log_output=ENABLE_PRETTY_PRINT)
     if args.check_objects:
-        check_objects(task_manager.active_threads, None, buckets_cfg, TaskCmd.CHECK.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
+        check_objects(task_manager.active_threads, None, buckets_cfg, TaskCmd.CHECK, verbose=False, log_output=ENABLE_PRETTY_PRINT)
     if args.check_incomplete_command:
         incomplete_commands = task_manager.tasks_status.list_incomplete_tasks(mark_override=True)
         for command, info in incomplete_commands.items():
@@ -267,13 +267,13 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
                 s3_objects = json.loads(payload)
                 thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
                                                                              buckets_cfg, device, embedding_backend,
-                                                                             cmd.lower(),
+                                                                             cmd,
                                                                              update_status_callback=update_status_func)
                 task_manager.associate_thread_with_task(thread_ident, task_id)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK):
                 user_config_map = server_cfg.user_config_map
                 thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
-                                                            device, embedding_backend, configure_file, user_config_map, cmd.lower(),
+                                                            device, embedding_backend, configure_file, user_config_map, cmd,
                                                             update_status_callback=update_status_func)
                 if thread_ident is None:
                     update_status_func(TaskStatus.COMPLETED)
