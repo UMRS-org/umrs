@@ -39,6 +39,38 @@ _PREFLIGHT_MODE = os.environ.get("UMRS_PREFLIGHT_MODE", "hard")
 _CERTIFICATION_MODE = os.environ.get("UMRS_CERTIFICATION_MODE", "hard")
 
 
+def _validate_partition(partition: str, site: Any) -> None:
+    """Reject partition if not in site_config candidates or profiles.
+
+    When a caller provides an explicit partition_override that doesn't
+    match any partition known to this deployment's site_config, sbatch will
+    fail with "invalid partition specified". Catch it early with a clear
+    error so the job is rejected immediately (no retry loop).
+    """
+    if not partition:
+        raise RuntimeError(
+            "No partition specified — set partition in pool roster, "
+            "site_config scheduler.partition, or pass partition_override."
+        )
+
+    # 1. Check against scheduler.partition candidates (comma-separated)
+    raw = getattr(site.scheduler, "partition", "") or ""
+    candidates = [p.strip() for p in raw.split(",") if p.strip()]
+    if partition in candidates:
+        return  # OK
+
+    # 2. Check against partition_profiles keys
+    profiles = getattr(site, "partition_profiles", {}) or {}
+    if partition in profiles:
+        return  # OK
+
+    raise RuntimeError(
+        f"Partition '{partition}' is not valid for this deployment. "
+        f"Known partitions: {candidates + list(profiles.keys())}. "
+        "Use a pool roster (UMRS_PROVISION_ROSTER) or pass a valid partition_override."
+    )
+
+
 def _parse_backend_ref(backend_ref: str) -> dict[str, str]:
     parts = backend_ref.split("|")
     if len(parts) < 2:
@@ -524,6 +556,9 @@ class EndpointProvisionBackend(OrchestratorBackend):
             deployment_spec.max_model_len,
             deployment_spec.partition,
         )
+
+        # ── Validate partition against site_config ─────────────────────────
+        _validate_partition(deployment_spec.partition, site)
 
         # ── Run preflight validation ─────────────────────────────────────────
         preflight = PreflightValidator(spec=deployment_spec, site_config=site)
