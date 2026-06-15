@@ -602,9 +602,32 @@ class MessageQueue:
             except Exception as e:
                 logger.warning("Failed to refresh auth context for %s %s: %s", cmd, client_id, e)
 
-    # Map each TaskCmd to its parser method.
-    # Populated after class definition (methods not yet bound at class body time).
-    _CONTROL_PARSERS: "dict[str, str]" = {}  # cmd → method name
+    # Maps each TaskCmd string to the name of the parser method that handles it.
+    # Parser methods are defined above; strings are used so the dict can live
+    # alongside them in the class body without forward-reference issues.
+    _CONTROL_PARSERS: "dict[str, str]" = {
+        TaskCmd.HAND_CHECK:        "_parse_handshake",
+        TaskCmd.CREATE_DATA_QUEUE: "_parse_create_data_queue",
+        TaskCmd.STATUS:            "_parse_status",
+        TaskCmd.PROCESS_OBJECTS:   "_parse_count_cmd",
+        TaskCmd.FILE:              "_parse_count_cmd",
+        TaskCmd.ENROLL_USER:       "_parse_count_cmd",
+        TaskCmd.UPLOAD_WORKFLOW:   "_parse_upload_workflow",
+        TaskCmd.WAIT_OUTPUT:       "_parse_wait_output",
+        TaskCmd.EXPORT_EMBEDDINGS: "_parse_simple_payload",
+        TaskCmd.RECOMPUTE:         "_parse_maintenance",
+        TaskCmd.UPDATE:            "_parse_maintenance",
+        TaskCmd.CHECK:             "_parse_maintenance",
+        TaskCmd.RELOAD:            "_parse_maintenance",
+        TaskCmd.MODEL_REGISTER:    "_parse_json_payload",
+        TaskCmd.MODEL_LIST:        "_parse_json_payload",
+        TaskCmd.MODEL_DOWNLOAD:    "_parse_json_payload",
+        TaskCmd.LIST_WORKFLOWS:    "_parse_json_payload",
+        TaskCmd.RUN_WORKFLOW:      "_parse_json_payload",
+        TaskCmd.JOB_SUBMIT:        "_parse_json_payload",
+        TaskCmd.JOB_CANCEL:        "_parse_json_payload",
+        TaskCmd.JOB_LIST:          "_parse_json_payload",
+    }
 
     def server_control_queue_loop(self):
         if self.role != "server":
@@ -1051,34 +1074,4 @@ class MessageQueue:
         payload = json.dumps(filters or {})
         raw = self.request_model_command(client_id, TaskCmd.JOB_LIST, payload)
         return json.loads(raw)
-
-
-# Register parser methods on MessageQueue after class is fully defined.
-# Maps TaskCmd string → name of the parser method to call.
-MessageQueue._CONTROL_PARSERS = {
-    TaskCmd.HAND_CHECK:       "_parse_handshake",
-    TaskCmd.CREATE_DATA_QUEUE:"_parse_create_data_queue",
-    TaskCmd.STATUS:           "_parse_status",
-    TaskCmd.PROCESS_OBJECTS:  "_parse_count_cmd",
-    TaskCmd.FILE:             "_parse_count_cmd",
-    TaskCmd.ENROLL_USER:      "_parse_count_cmd",
-    TaskCmd.UPLOAD_WORKFLOW:  "_parse_upload_workflow",
-    TaskCmd.WAIT_OUTPUT:      "_parse_wait_output",
-    TaskCmd.EXPORT_EMBEDDINGS:"_parse_simple_payload",
-    TaskCmd.RECOMPUTE:        "_parse_maintenance",
-    TaskCmd.UPDATE:           "_parse_maintenance",
-    TaskCmd.CHECK:            "_parse_maintenance",
-    TaskCmd.RELOAD:           "_parse_maintenance",
-    TaskCmd.MODEL_REGISTER:   "_parse_json_payload",
-    TaskCmd.MODEL_LIST:       "_parse_json_payload",
-    TaskCmd.MODEL_DOWNLOAD:   "_parse_json_payload",
-    TaskCmd.LIST_WORKFLOWS:   "_parse_json_payload",
-    TaskCmd.RUN_WORKFLOW:     "_parse_json_payload",
-    TaskCmd.JOB_SUBMIT:       "_parse_json_payload",
-    TaskCmd.JOB_CANCEL:       "_parse_json_payload",
-    TaskCmd.JOB_LIST:         "_parse_json_payload",
-}
-
-
-
 
