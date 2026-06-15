@@ -860,13 +860,29 @@ def api_json(status="ok", output_format='json', **payload):
     return "\n".join(lines)
 
 
+_STATUS_KEY_MAP = {
+    "process_objects": TaskCmd.PROCESS_OBJECTS,
+    "wait_output": TaskCmd.WAIT_OUTPUT,
+    "recompute": TaskCmd.RECOMPUTE,
+    "update": TaskCmd.UPDATE,
+    "check": TaskCmd.CHECK,
+    "reload": TaskCmd.RELOAD,
+    "all": TaskCmd.ALL,
+}
+
+
 def _resolve_status_target(args):
-    target = getattr(args, "target", "all") or "all"
+    target = getattr(args, "target", None) or None
     if getattr(args, "status_all", False):
-        if target != "all":
+        if target is not None:
             raise ValueError("Use either '--all' or a specific status key, not both.")
-        return "all"
-    return target
+        return TaskCmd.ALL
+    if target is None:
+        return TaskCmd.ALL
+    cmd = _STATUS_KEY_MAP.get(target)
+    if cmd is None:
+        raise ValueError(f"Unknown status key '{target}'. Valid: {list(_STATUS_KEY_MAP)}")
+    return cmd
 
 def parse_metadata_kv(pairs_list):
     meta = {}

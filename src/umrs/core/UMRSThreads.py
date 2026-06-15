@@ -192,7 +192,8 @@ class UMRSThreads:
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
-            keys_per_bucket[path_to_bucket] = entry.num_objects
+            if client_id is None or entry.s3_username == client_id:
+                keys_per_bucket[path_to_bucket] = entry.num_objects
 
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident)
 
@@ -210,7 +211,8 @@ class UMRSThreads:
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
-            keys_per_bucket[path_to_bucket] = entry.num_objects
+            if client_id is None or entry.s3_username == client_id:
+                keys_per_bucket[path_to_bucket] = entry.num_objects
 
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident)
 
@@ -229,7 +231,8 @@ class UMRSThreads:
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
-            keys_per_bucket[path_to_bucket] = entry.num_objects
+            if client_id is None or entry.s3_username == client_id:
+                keys_per_bucket[path_to_bucket] = entry.num_objects
 
         self.update_thread_dict(buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident)
 

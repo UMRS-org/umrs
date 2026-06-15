@@ -45,7 +45,7 @@ def _dispatch_maintenance(
             ctx.embedding_backend,
             ctx.configure_file,
             ctx.user_config_map,
-            cmd.lower(),
+            cmd,
             update_status_callback=update_status,
         )
         # handle_maintenance_command has three possible return values depending
