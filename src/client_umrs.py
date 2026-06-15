@@ -1396,11 +1396,8 @@ def main():
         if args.verbose or args.conf is None:
             print(f"Using config: {configure_file}")
         user = load_client_cfg_file(configure_file)
-        print(f"before override: {user=}")
         if config_state.s3.valid and config_state.s3.path:
-            print(f"{config_state.s3.path=}")
             user = apply_s3_config_override(user, config_state.s3.path)
-        print(user)
         buckets_cfg = build_buckets_cfg(user)
         if args.verbose:
             print("Configuration loaded successfully.")
