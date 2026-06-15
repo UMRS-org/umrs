@@ -6,6 +6,7 @@ import secrets
 import string
 import warnings
 from io import BytesIO
+from typing import Optional
 
 import boto3
 import urllib3
@@ -17,6 +18,34 @@ from umrs.shared.utils import compute_md5, md5_of_file
 
 # Suppress only SSL warnings from urllib3
 warnings.simplefilter("ignore", urllib3.exceptions.InsecureRequestWarning)
+
+
+
+class S3Mode:
+    """Constants for S3 client operations."""
+    GET = "get_object"
+    PUT = "put_object"
+
+
+def create_presigned_url(
+    s3: boto3.client,
+    bucket_name: str,
+    object_key: str,
+    mode: str,
+    duration: int = 3600,
+) -> Optional[str]:
+    if mode not in (S3Mode.GET, S3Mode.PUT):
+        raise ValueError(f"Invalid mode '{mode}', must be S3Mode.GET or S3Mode.PUT.")
+    try:
+        return s3.generate_presigned_url(
+            ClientMethod=mode,
+            Params={"Bucket": bucket_name, "Key": object_key},
+            ExpiresIn=duration,
+        )
+    except ClientError as e:
+        print(f"[ERROR] Failed to generate pre-signed URL for {bucket_name}/{object_key}: {e}")
+        return None
+
 
 
 def get_s3_server_name(s3):

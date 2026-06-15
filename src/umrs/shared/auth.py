@@ -53,7 +53,7 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset({
     "FILE",
     "STATUS",
     "CREATE_DATA_QUEUE",
-    "HAND_CHECK",
+    "HANDSHAKE",
     "EXPORT_EMBEDDINGS",
     "MODEL_REGISTER",
     "MODEL_LIST",
