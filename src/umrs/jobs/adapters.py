@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 # Set to "warn" during initial rollout; switch to "hard" once stable.
 _PREFLIGHT_MODE = os.environ.get("UMRS_PREFLIGHT_MODE", "hard")
 
+# Flag controlling whether certification is enforced.
+# Set to "warn" during rollout; switch to "hard" once cert data is populated.
+_CERTIFICATION_MODE = os.environ.get("UMRS_CERTIFICATION_MODE", "hard")
+
 
 def _parse_backend_ref(backend_ref: str) -> dict[str, str]:
     parts = backend_ref.split("|")
@@ -127,6 +131,93 @@ def _resolve_registered_model(model_name: str) -> dict[str, Any] | None:
     if entry is None:
         return None
     return entry.to_dict()
+
+
+def _check_active_certification(
+    model_entry: "ModelEntry",
+    *,
+    launcher_fingerprint: str = "",
+) -> dict[str, Any] | None:
+    """Return the active certification for *model_entry*, or None.
+
+    Certification is enforced when _CERTIFICATION_MODE == "hard".
+    In "warn" mode, missing certifications are logged but do not block.
+
+    Returns a dict with keys: cert_id, model_name, launcher_fingerprint,
+    sif_version, certified_config, smoke_test_passed, certified_at.
+    """
+    from umrs.server.job_tracking_handler import build_durable_job_db_pool_from_env
+
+    # If no launcher fingerprint is provided, skip fingerprint-based matching
+    # but still check that at least one active certification exists.
+    try:
+        db_pool = build_durable_job_db_pool_from_env()
+        conn = db_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                if launcher_fingerprint:
+                    cur.execute(
+                        """
+                        SELECT cert_id, model_id, model_name, launcher_fingerprint,
+                               sif_version, sif_sha256, certified_config,
+                               smoke_test_result, certified_at, tester, notes,
+                               invalidated_at, invalidated_reason
+                        FROM model_certifications
+                        WHERE model_id = %s
+                          AND launcher_fingerprint = %s
+                          AND invalidated_at IS NULL
+                        ORDER BY certified_at DESC
+                        LIMIT 1
+                        """,
+                        (model_entry.model_id, launcher_fingerprint),
+                    )
+                else:
+                    # No fingerprint available — accept any active certification
+                    cur.execute(
+                        """
+                        SELECT cert_id, model_id, model_name, launcher_fingerprint,
+                               sif_version, sif_sha256, certified_config,
+                               smoke_test_result, certified_at, tester, notes,
+                               invalidated_at, invalidated_reason
+                        FROM model_certifications
+                        WHERE model_id = %s
+                          AND invalidated_at IS NULL
+                        ORDER BY certified_at DESC
+                        LIMIT 1
+                        """,
+                        (model_entry.model_id,),
+                    )
+                row = cur.fetchone()
+                if row is None:
+                    return None
+
+                smoke_result = row[7] or {}
+                return {
+                    "cert_id": row[0],
+                    "model_id": row[1],
+                    "model_name": row[2],
+                    "launcher_fingerprint": row[3],
+                    "sif_version": row[4],
+                    "sif_sha256": row[5],
+                    "certified_config": row[6] or {},
+                    "smoke_test_passed": (
+                        smoke_result.get("passed", False)
+                        if isinstance(smoke_result, dict)
+                        else False
+                    ),
+                    "certified_at": str(row[8]) if len(row) > 8 else "",
+                    "tester": row[9] if len(row) > 9 else "",
+                }
+        finally:
+            db_pool.putconn(conn)
+            db_pool.closeall()
+    except Exception:
+        logger.warning(
+            "Certification check unavailable for %s; treating as uncertified",
+            model_entry.name,
+            exc_info=True,
+        )
+        return None
 
 
 def _resolve_roster_defaults(model_name: str) -> dict[str, Any] | None:
@@ -369,6 +460,35 @@ class EndpointProvisionBackend(OrchestratorBackend):
         if not model_path:
             model_path = model_entry.storage_ref
 
+        # ── Check certification (enforced per _CERTIFICATION_MODE) ──────────
+        certification = _check_active_certification(
+            model_entry,
+            launcher_fingerprint=spec.get("launcher_fingerprint", ""),
+        )
+        if certification is None:
+            if _CERTIFICATION_MODE == "hard":
+                raise RuntimeError(
+                    f"Model '{model_name}' has no active certification. "
+                    "Certify it first: umrs-server model certify {model_name}"
+                )
+            else:
+                logger.warning(
+                    "Model '%s' has no active certification (mode=%s) — proceeding anyway. "
+                    "Certify via: umrs-server model certify %s",
+                    model_name,
+                    _CERTIFICATION_MODE,
+                    model_name,
+                )
+        else:
+            logger.info(
+                "Certification found for %s: cert_id=%s fingerprint=%s smoke=%s certified=%s",
+                model_name,
+                certification["cert_id"],
+                certification.get("launcher_fingerprint", "none"),
+                certification.get("smoke_test_passed", False),
+                certification.get("certified_at", "unknown"),
+            )
+
         # ── Build DeploymentSpec ─────────────────────────────────────────────
         site = load_site_config()
         roster_defaults = _resolve_roster_defaults(model_name)
@@ -492,6 +612,7 @@ class EndpointProvisionBackend(OrchestratorBackend):
                 "attempt_no": attempt.attempt_no,
                 "deployment_spec": deployment_spec.to_dict(),
                 "preflight_passed": result.passed,
+                "certification": certification,
             }
             if idle_ttl_sec is not None:
                 with contextlib.suppress(TypeError, ValueError):

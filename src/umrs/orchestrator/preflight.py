@@ -153,7 +153,7 @@ class PreflightValidator:
     # ── Individual Checks ────────────────────────────────────────────────────
 
     def _check_registry(self) -> PreflightCheck:
-        """Registry: model has complete metadata."""
+        """Registry: model has complete metadata with runtime config populated."""
         t0 = time.monotonic()
         issues: list[str] = []
 
@@ -166,6 +166,29 @@ class PreflightValidator:
         if not self.spec.registry_model_id:
             issues.append("not linked to a registry entry (registry_model_id is empty)")
 
+        # Runtime config completeness — only warn when values are missing,
+        # since serve.slurm will fall back to derivation. When all models have
+        # runtime_config populated, this should become a hard failure.
+        runtime_warnings: list[str] = []
+        if not self.spec.tool_call_parser or self.spec.tool_call_parser == "":
+            runtime_warnings.append(
+                "tool_call_parser not set in registry — serve.slurm will derive from model name"
+            )
+        if (
+            self.spec.reasoning_parser is not None
+            and self.spec.reasoning_parser == ""
+        ):
+            # Explicit empty = disabled; valid
+            pass
+        elif not self.spec.reasoning_parser or self.spec.reasoning_parser == "":
+            runtime_warnings.append(
+                "reasoning_parser not set in registry — serve.slurm will derive from model name"
+            )
+        if not self.spec.kv_cache_dtype:
+            runtime_warnings.append(
+                "kv_cache_dtype not set in registry — serve.slurm will derive from parser"
+            )
+
         ms = (time.monotonic() - t0) * 1000
 
         if issues:
@@ -173,14 +196,24 @@ class PreflightValidator:
                 name="registry",
                 status="fail",
                 message=f"Registry entry incomplete: {len(issues)} issue(s)",
-                detail="; ".join(issues),
+                detail="; ".join(issues + runtime_warnings),
+                duration_ms=ms,
+            )
+
+        if runtime_warnings:
+            return PreflightCheck(
+                name="registry",
+                status="warn",
+                message=f"Registry entry OK but runtime config incomplete: "
+                        f"{len(runtime_warnings)} field(s) will fall back to serve.slurm derivation",
+                detail="; ".join(runtime_warnings),
                 duration_ms=ms,
             )
 
         return PreflightCheck(
             name="registry",
             status="pass",
-            message=f"Model found ({self.spec.model_family} family)",
+            message=f"Model found ({self.spec.model_family} family) with complete runtime config",
             duration_ms=ms,
         )
 
@@ -303,7 +336,16 @@ class PreflightValidator:
         t0 = time.monotonic()
         if not self._stack:
             ms = (time.monotonic() - t0) * 1000
-            return PreflightCheck(name="parser", status="skip", message="No launcher stack", duration_ms=ms)
+            # LauncherStack not wired — cannot verify parser availability.
+            # Treat as a warning so operators know the check was skipped,
+            # but don't block deployments during rollout.
+            return PreflightCheck(
+                name="parser",
+                status="warn",
+                message="No LauncherStack available — cannot verify parser exists in SIF",
+                detail="Wire LauncherStack into PreflightValidator for full parser validation.",
+                duration_ms=ms,
+            )
 
         issues: list[str] = []
 
