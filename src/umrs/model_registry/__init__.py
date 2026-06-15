@@ -18,6 +18,7 @@ from .models import (
     ModelType,
     generate_model_id,
 )
+from .runtime_config import RuntimeConfig
 from .schema import ensure_schema
 from .store import (
     DuplicateModelError,
@@ -35,6 +36,8 @@ __all__ = [
     "ModelStatus",
     "ModelType",
     "generate_model_id",
+    # RuntimeConfig
+    "RuntimeConfig",
     # Schema
     "ensure_schema",
     # Store

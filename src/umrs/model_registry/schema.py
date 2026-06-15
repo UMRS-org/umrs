@@ -14,7 +14,7 @@ import psycopg2
 logger = logging.getLogger(__name__)
 
 # Schema version - increment when schema changes
-MODEL_REGISTRY_SCHEMA_VERSION = 5
+MODEL_REGISTRY_SCHEMA_VERSION = 7
 
 # SQL for creating the model_catalog_entries table (U-801)
 CREATE_MODEL_CATALOG_TABLE = """
@@ -253,6 +253,53 @@ COMMENT ON COLUMN model_artifacts.format IS 'File format (safetensors, bin, gguf
 COMMENT ON COLUMN model_artifacts.quantization IS 'Quantization type if applicable (fp16, int8, int4)';
 """
 
+# SQL for creating the model_certifications table (schema v7)
+CREATE_MODEL_CERTIFICATIONS_TABLE = """
+CREATE TABLE IF NOT EXISTS model_certifications (
+    cert_id VARCHAR(64) PRIMARY KEY,
+    model_id VARCHAR(64) NOT NULL REFERENCES model_catalog_entries(model_id) ON DELETE CASCADE,
+    model_name VARCHAR(256) NOT NULL,
+
+    -- Launcher stack binding
+    launcher_fingerprint VARCHAR(64) NOT NULL,
+    sif_version VARCHAR(32),
+    sif_sha256 VARCHAR(128),
+
+    -- Certified configuration (JSONB)
+    certified_config JSONB DEFAULT '{}',
+
+    -- Smoke test evidence (JSONB)
+    smoke_test_result JSONB DEFAULT '{}',
+
+    -- Metadata
+    certified_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    tester VARCHAR(128),
+    notes TEXT,
+
+    -- Invalidation
+    invalidated_at TIMESTAMPTZ,
+    invalidated_reason TEXT,
+
+    -- Index for active certifications per model
+    UNIQUE(model_id, launcher_fingerprint, invalidated_at)
+);
+
+-- Index for finding active certifications
+CREATE INDEX IF NOT EXISTS idx_certifications_active
+    ON model_certifications(model_id, launcher_fingerprint)
+    WHERE invalidated_at IS NULL;
+
+-- Index for model name lookups
+CREATE INDEX IF NOT EXISTS idx_certifications_model_name
+    ON model_certifications(model_name);
+
+COMMENT ON TABLE model_certifications IS 'Model certification results — tested on specific LauncherStack';
+COMMENT ON COLUMN model_certifications.launcher_fingerprint IS 'LauncherStack.fingerprint that this cert is valid for';
+COMMENT ON COLUMN model_certifications.certified_config IS 'Runtime config certified (parsers, kv-cache, eager, etc.)';
+COMMENT ON COLUMN model_certifications.smoke_test_result IS 'Smoke test evidence (output hash, duration, messages)';
+COMMENT ON COLUMN model_certifications.invalidated_at IS 'Set when superseded or SIF changes (NULL = active)';
+"""
+
 # Schema version tracking table
 CREATE_SCHEMA_VERSION_TABLE = """
 CREATE TABLE IF NOT EXISTS model_registry_schema_version (
@@ -473,6 +520,33 @@ def _migrate_schema(
         )
 
         logger.info("Migration to version 5 complete")
+
+    if from_version < 6:
+        # Version 6: Add runtime_config JSONB for authoritative runtime config.
+        # Moves serve.slurm bash derivations into the registry so
+        # DeploymentSpec can be generated without model-name pattern matching.
+        logger.info("Running migration to version 6")
+
+        cur.execute("""
+            ALTER TABLE model_catalog_entries
+            ADD COLUMN IF NOT EXISTS runtime_config JSONB DEFAULT '{}'
+        """)
+        cur.execute(
+            "COMMENT ON COLUMN model_catalog_entries.runtime_config IS "
+            "'Authoritative runtime configuration (parser, kv-cache, eager mode, etc.). "
+            "Replaces serve.slurm bash derivations.'"
+        )
+
+        logger.info("Migration to version 6 complete")
+
+    if from_version < 7:
+        # Version 7: Add model_certifications table for certification workflow.
+        # Binds CertificationResults to specific LauncherStack versions.
+        logger.info("Running migration to version 7")
+
+        cur.execute(CREATE_MODEL_CERTIFICATIONS_TABLE)
+
+        logger.info("Migration to version 7 complete")
 
 
 def drop_schema(conn: psycopg2.extensions.connection) -> None:

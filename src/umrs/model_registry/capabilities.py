@@ -1,0 +1,184 @@
+"""
+Model Capabilities — declarative flags replacing serve.slurm bash pattern matching.
+
+Each model declares what it can do and what it needs from the runtime.
+The capability flags are stored in ``model_catalog_entries.capabilities`` (JSONB)
+and drive DeploymentSpec generation and preflight validation.
+
+Capabilities replace these serve.slurm bash case statements:
+
+    *deepseek*v4*) echo "deepseek_v4" ;;         → family="deepseek_v4"
+    *glm*) echo "glm47" ;;                       → family="glm"
+    *kimi*) echo "kimi_k2" ;;                    → family="kimi_k2"
+
+    *glm*) VLLM_USE_FLASHINFER_MOE_FP16=0 ;;     → requires_triton_moe_fallback=true
+    *deepseek*v4*) --enforce-eager ;;            → requires_eager_mode=true
+    *glm*) --chat-template-content-format string → requires_chat_template_string=true
+
+New models declare capabilities.  No bash edits needed.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any
+
+
+# ── Family → parser mapping (serves as default when registry empty) ──────────
+
+FAMILY_TOOL_PARSER: dict[str, str] = {
+    "deepseek_v4": "deepseek_v4",
+    "deepseek_v3": "deepseek_v3",
+    "deepseek": "deepseek_v3",
+    "glm": "glm47",
+    "kimi_k2": "kimi_k2",
+    "kimi": "kimi_k2",
+    "llm_jp": "hermes",
+    "gpt_oss": "",       # No tool-call training
+    "gemma4": "gemma4",
+    "diffusion_gemma": "",  # No tool-call training
+    "qwen": "hermes",
+    "llama": "hermes",
+    "mistral": "hermes",
+}
+
+FAMILY_REASONING_PARSER: dict[str, str] = {
+    "glm": "glm45",
+    "kimi_k2": "kimi_k2",
+    "kimi": "kimi_k2",
+    "gpt_oss": "gpt_oss",
+    "gemma4": "gemma4",
+    "llm_jp": "",        # llmjp4 plugin not in SIF
+    "deepseek_v4": "",   # No response-gated reasoning
+    "deepseek_v3": "",
+    "deepseek": "",
+    "diffusion_gemma": "gemma4",
+    "qwen": "",
+    "llama": "",
+    "mistral": "",
+}
+
+FAMILY_KV_CACHE_DTYPE: dict[str, str | None] = {
+    "deepseek_v4": "fp8",   # FlashMLA fp8 attention
+    "deepseek_v3": None,
+    "deepseek": None,
+    "glm": None,            # bf16 default (NOT fp8 — GLM has its own DSA code path)
+    "kimi_k2": None,
+    "kimi": None,
+    "llm_jp": None,
+    "gpt_oss": None,
+    "gemma4": None,
+    "diffusion_gemma": None,
+}
+
+# Families that require eager mode (no CUDA graph capture)
+FAMILY_REQUIRES_EAGER: set[str] = {
+    "deepseek_v4",  # CUDA graph garbage on current build
+    "glm",          # NaN on tools path with CUDA graphs
+}
+
+# Families that must use Triton MoE fallback (FlashInfer-TRTLLM NaN)
+FAMILY_REQUIRES_TRITON_MOE: set[str] = {
+    "glm",      # NaN on GLM expert routing
+    "llm_jp",   # expert intermediate_size=64 not %128, FlashInfer rejects
+}
+
+# Families that require --chat-template-content-format string
+FAMILY_REQUIRES_CHAT_TEMPLATE_STRING: set[str] = {
+    "glm",  # Upstream vLLM GLM recipe
+}
+
+# Families that require --mm-encoder-tp-mode data
+FAMILY_REQUIRES_MM_ENCODER_TP_DATA: set[str] = {
+    "kimi_k2",  # MoonViT data-parallel for multi-node (currently single-node K2.7)
+}
+
+
+@dataclass
+class ModelCapabilities:
+    """
+    Declarative model capabilities.
+
+    Replace serve.slurm bash pattern matching with explicit flags.
+    Stored in model_catalog_entries.capabilities (JSONB).
+    """
+
+    # ── What the model CAN do ────────────────────────────────────────────────
+
+    supports_tool_calling: bool = False
+    supports_vision: bool = False
+    supports_reasoning: bool = False        # Has  think blocks
+    supports_structured_output: bool = False
+
+    # ── What the model NEEDS from the runtime ────────────────────────────────
+
+    requires_eager_mode: bool = False       # --enforce-eager
+    requires_triton_moe_fallback: bool = False  # VLLM_USE_FLASHINFER_MOE_FP16=0
+    requires_fp8_kv_cache: bool = False     # --kv-cache-dtype fp8
+    requires_chat_template_string: bool = False  # --chat-template-content-format string
+    requires_mm_encoder_tp_data: bool = False   # --mm-encoder-tp-mode data
+
+    # ── Identity ─────────────────────────────────────────────────────────────
+
+    model_family: str | None = None         # "glm", "deepseek_v4", "kimi_k2", etc.
+    max_output_tokens: int | None = None
+    max_position_embeddings: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {
+            "supports_tool_calling": self.supports_tool_calling,
+            "supports_vision": self.supports_vision,
+            "supports_reasoning": self.supports_reasoning,
+            "supports_structured_output": self.supports_structured_output,
+            "requires_eager_mode": self.requires_eager_mode,
+            "requires_triton_moe_fallback": self.requires_triton_moe_fallback,
+            "requires_fp8_kv_cache": self.requires_fp8_kv_cache,
+            "requires_chat_template_string": self.requires_chat_template_string,
+            "requires_mm_encoder_tp_data": self.requires_mm_encoder_tp_data,
+        }
+        if self.model_family is not None:
+            d["model_family"] = self.model_family
+        if self.max_output_tokens is not None:
+            d["max_output_tokens"] = self.max_output_tokens
+        if self.max_position_embeddings is not None:
+            d["max_position_embeddings"] = self.max_position_embeddings
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "ModelCapabilities":
+        if not data:
+            return cls()
+        return cls(
+            supports_tool_calling=data.get("supports_tool_calling", False),
+            supports_vision=data.get("supports_vision", False),
+            supports_reasoning=data.get("supports_reasoning", False),
+            supports_structured_output=data.get("supports_structured_output", False),
+            requires_eager_mode=data.get("requires_eager_mode", False),
+            requires_triton_moe_fallback=data.get("requires_triton_moe_fallback", False),
+            requires_fp8_kv_cache=data.get("requires_fp8_kv_cache", False),
+            requires_chat_template_string=data.get("requires_chat_template_string", False),
+            requires_mm_encoder_tp_data=data.get("requires_mm_encoder_tp_data", False),
+            model_family=data.get("model_family"),
+            max_output_tokens=data.get("max_output_tokens"),
+            max_position_embeddings=data.get("max_position_embeddings"),
+        )
+
+    @classmethod
+    def from_family(cls, family: str) -> "ModelCapabilities":
+        """Derive capabilities from model family tag.
+
+        This is the transition path: use family-based defaults until
+        every model has explicit capabilities in the registry.
+        """
+        return cls(
+            supports_tool_calling=family in FAMILY_TOOL_PARSER
+            and FAMILY_TOOL_PARSER[family] != "",
+            supports_reasoning=family in FAMILY_REASONING_PARSER
+            and FAMILY_REASONING_PARSER[family] != "",
+            requires_eager_mode=family in FAMILY_REQUIRES_EAGER,
+            requires_triton_moe_fallback=family in FAMILY_REQUIRES_TRITON_MOE,
+            requires_fp8_kv_cache=FAMILY_KV_CACHE_DTYPE.get(family) == "fp8",
+            requires_chat_template_string=family in FAMILY_REQUIRES_CHAT_TEMPLATE_STRING,
+            requires_mm_encoder_tp_data=family in FAMILY_REQUIRES_MM_ENCODER_TP_DATA,
+            model_family=family,
+        )
