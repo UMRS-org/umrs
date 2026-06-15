@@ -1133,7 +1133,7 @@ def main():
     configure_status_parser(status_p, include_username=True)
 
     # Embedding maintenance actions
-    subparsers.add_parser('recompute', help='Recompute embeddings for your own buckets (admin: all users)')
+    subparsers.add_parser('recompute', help='Recompute embeddings for your own buckets (admin only)')
     subparsers.add_parser('update', help='Update embeddings for missing/mismatched entries in your own buckets (admin: all users)')
     subparsers.add_parser('check', help='Check consistency between S3 objects and DB (admin-only: checks all users)')
     subparsers.add_parser('reload', help='Reload server configuration (users, buckets, models) without restart (admin-only); if -c points to a user JSON, it will be uploaded and persisted on the server before reloading')

@@ -245,7 +245,7 @@ def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_
     if args.force_update:
         update_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.UPDATE.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
     if args.check_objects:
-        check_objects(task_manager.active_threads, buckets_cfg, TaskCmd.CHECK.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
+        check_objects(task_manager.active_threads, None, buckets_cfg, TaskCmd.CHECK.lower(), verbose=False, log_output=ENABLE_PRETTY_PRINT)
     if args.check_incomplete_command:
         incomplete_commands = task_manager.tasks_status.list_incomplete_tasks(mark_override=True)
         for command, info in incomplete_commands.items():

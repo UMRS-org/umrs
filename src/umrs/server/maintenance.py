@@ -186,6 +186,7 @@ def update_objects(
 
 def check_objects(
     active_threads,
+    username,
     buckets_cfg,
     key,
     verbose=False,
@@ -205,6 +206,9 @@ def check_objects(
     perform_update = False
     check_dict = {}
     for path_to_bucket, entry in buckets_cfg.items():
+         # skip none matching username
+        if username is not None and username != entry.s3_username:
+            continue
         nb_not_found, nb_match, nb_mismatch, nb_error = 0, 0, 0, 0
         s3_objects, total_size, checksums = list_s3_bucket(
             entry.s3_connection, path_to_bucket
@@ -308,15 +312,16 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
     buckets_cfg.
     """
     try:
-        if cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
+        cmd_upper = cmd.upper()
+        if cmd_upper in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE):
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
             filtered = _filter_dict_by_user(full, client_id)
             summary = pretty_print_recompute(
-                filtered, update=(cmd == "update"), print_output=False
+                filtered, update=(cmd_upper == TaskCmd.UPDATE), print_output=False
             )
             return {"summary": summary, "data": filtered}
 
-        if cmd == TaskCmd.CHECK:
+        if cmd_upper == TaskCmd.CHECK:
             full = outcome.get("data", {}) if isinstance(outcome, dict) else {}
             filtered = _filter_dict_by_user(full, client_id)
             summary = pretty_print_check(filtered, print_output=False)
@@ -337,7 +342,7 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
                 "requires_update": requires_update,
             }
 
-        if cmd == TaskCmd.RELOAD:
+        if cmd_upper == TaskCmd.RELOAD:
             # Derive a per-user configuration view from the live buckets_cfg
             filtered_store = buckets_cfg.build_dict_for_user(client_id)
             summary = pretty_print_cfg(
@@ -472,6 +477,7 @@ def handle_maintenance_command(
         )
     elif cmd == TaskCmd.CHECK:
         return active_threads.launch_check_objects(
+            client_id,
             buckets_cfg,
             key,
             verbose=False,
