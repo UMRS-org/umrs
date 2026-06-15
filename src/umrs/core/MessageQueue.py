@@ -570,13 +570,11 @@ class MessageQueue:
         return cmd, (client_id, extra, zmq_sender_id)
 
     def _parse_maintenance(self, splited_msg, zmq_sender_id):
-        """Parser for RECOMPUTE, UPDATE, CHECK, RELOAD: ack then return (cmd, client_id)."""
+        """Parser for RECOMPUTE, UPDATE, CHECK, RELOAD: defer ACK until after auth."""
         cmd = splited_msg[0]
-        with contextlib.suppress(RuntimeError):
-            self.send_string("ACKNOWLEDGE", zmq_sender_id)
         client_id = splited_msg[1] if len(splited_msg) > 1 else None
         self._refresh_auth_session(client_id, cmd, token_field=3, splited_msg=splited_msg)
-        return cmd, client_id
+        return cmd, (client_id, None, zmq_sender_id)
 
     def _parse_json_payload(self, splited_msg, zmq_sender_id):
         """Parser for MODEL_*, JOB_*, LIST_WORKFLOWS, RUN_WORKFLOW: rest of message is JSON."""
