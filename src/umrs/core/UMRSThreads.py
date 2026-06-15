@@ -180,12 +180,12 @@ class UMRSThreads:
 
         return thread_ident
 
-    def launch_check_objects(self, buckets_cfg, key, verbose, log_output, update_status_callback=None) :
+    def launch_check_objects(self, client_id, buckets_cfg, key, verbose, log_output, update_status_callback=None) :
         from umrs.server.maintenance import check_objects
 
         thread_ident, future = self._submit_to_pool(
             check_objects,
-            (self, buckets_cfg, key, verbose, log_output, update_status_callback),
+            (self, client_id, buckets_cfg, key, verbose, log_output, update_status_callback),
             key,
             update_status_callback=update_status_callback,
         )
