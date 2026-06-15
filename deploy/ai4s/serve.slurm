@@ -171,7 +171,7 @@ derive_reasoning_parser() {
         *glm*) echo "glm45" ;;
         *gemma*4*) echo "gemma4" ;;
         *kimi*) echo "kimi_k2" ;;
-        *gpt-oss*swallow*) echo "gpt_oss" ;;
+        *gpt-oss*swallow*) echo "openai_gptoss" ;;
         *llm-jp*|*llm_jp*) echo "" ;;       # llmjp4 plugin not in SIF; disable for now
         *)     echo "" ;;
     esac
