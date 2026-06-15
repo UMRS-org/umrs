@@ -41,8 +41,6 @@ class UserRole(str, Enum):
 ADMIN_ONLY_COMMANDS: set[str] = frozenset({
     "RELOAD",       # Reload server configuration (global, reprovisioning all users)
     "RECOMPUTE",    # Recompute embeddings across configured buckets
-    "UPDATE",       # Update embeddings across configured buckets
-    "CHECK",        # Global consistency check across all users' buckets
     "ENROLL_USER",  # Admin-only: register a new user on the server
 })
 
@@ -64,6 +62,8 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset({
     "UPLOAD_WORKFLOW",
     "LIST_WORKFLOWS",
     "RUN_WORKFLOW",
+    "UPDATE",       # Update embeddings across configured buckets (only client files)
+    "CHECK",        # Global consistency check across all users' buckets (only client files)
 })
 
 

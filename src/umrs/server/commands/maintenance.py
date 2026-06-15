@@ -11,6 +11,7 @@ On ServerOverloadedError the task is immediately rejected.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 from typing import Any
 
@@ -31,7 +32,9 @@ def _dispatch_maintenance(
     task_id: int,
 ) -> None:
     """Shared logic for all four maintenance commands."""
-    client_id = payload  # maintenance payloads are just the client_id string
+    client_id, _, zmq_sender_id = payload
+    with contextlib.suppress(RuntimeError):
+        ctx.control_mq.send_string("ACKNOWLEDGE", zmq_sender_id)
     try:
         thread_ident = handle_maintenance_command(
             ctx.task_manager.active_threads,

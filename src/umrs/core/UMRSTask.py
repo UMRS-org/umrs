@@ -161,9 +161,8 @@ class UMRSTask:
         for row in rows:
             row = list(row)
             if row[3] is not None:  # payload column
-                row[3] = "\n".join(
-                    textwrap.wrap(str(row[3]), width=70)
-                )
+                lines = textwrap.wrap(str(row[3]), width=70)
+                row[3] = "\n".join(lines[:2]) + ("…" if len(lines) > 2 else "")
             wrapped_rows.append(row)
 
         if not rows:
@@ -192,7 +191,7 @@ class UMRSTask:
             str_payload = json.dumps(output_path_to_bucket)
 
         elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
-            client_id = full_payload
+            client_id, _, _zmq_sender_id = full_payload
             str_payload = json.dumps("")
 
         elif cmd == TaskCmd.FILE:
