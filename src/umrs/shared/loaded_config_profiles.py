@@ -398,6 +398,8 @@ def resolve_loaded_config(
     derived_s3_path = None
     if user.valid:
         derived_s3_path = user.details.get("s3_configuration_file")
+    
+    user_s3_path = user.details.get("s3_configuration_file")
 
     
     user_s3_path = user.details.get("s3_configuration_file")
