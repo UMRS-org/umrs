@@ -29,13 +29,8 @@ from umrs.core.thread_pool import PoolConfig, ServerOverloadedError, ThreadPoolM
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
-from umrs.server.file_handling import (
-    handle_upload_workflow as _handle_upload_workflow,
-)
-from umrs.server.file_handling import (
-    persist_uploaded_user_config as _persist_uploaded_user_config,
-)
-from umrs.server.job_tracking_handler import build_durable_job_backend_from_env, handle_job_command
+from umrs.server.commands import HandlerContext, build_registry
+from umrs.server.job_tracking_handler import build_durable_job_backend_from_env
 from umrs.server.json_config import load_server_cfg_file
 from umrs.server.maintenance import (
     check_duplicated_database,
@@ -45,12 +40,8 @@ from umrs.server.maintenance import (
     reload_configuration,
     update_objects,
 )
-from umrs.server.maintenance import (
-    handle_maintenance_command as _handle_maintenance_command,
-)
 from umrs.server.model_registry_handler import (
     build_durable_model_backend_from_env,
-    handle_model_command,
 )
 from umrs.server.provisioning import (
     ServerCfg,
@@ -59,7 +50,6 @@ from umrs.server.provisioning import (
     is_client_configured,
     reconcile_status_on_startup,
 )
-from umrs.server.workflow_registry_handler import handle_workflow_command, register_workflow
 from umrs.shared.config import (
     get_default_json_server_file,
     get_default_tmp_subdir,
@@ -156,30 +146,17 @@ def server_event_loop(
     assert status_store is not None
     assert status_store == task_manager.active_threads.get_status_store()
 
-    def _reject_overloaded(task_id, update_status_func, exc):
-        """Mark the task as rejected and log the overload."""
-        logger.warning("Rejecting task %s: %s", task_id, exc)
-        update_status_func(TaskStatus.ERROR)
-
-    def _authorize(cmd, client_id, zmq_sender_id=None):
-        """Check authorization for *cmd* by *client_id*.
-
-        Returns the ``AuthContext`` on success.
-        On failure, sends an ``UNAUTHORIZED`` reply (if *zmq_sender_id* is
-        provided) and returns ``None``.
-        """
-        auth_ctx = control_mq.get_auth_context(client_id)
-        if auth_ctx.can_execute_command(cmd, target_user=client_id):
-            return auth_ctx
-        # Denied
-        logger.warning(
-            "UNAUTHORIZED: user=%s role=%s cmd=%s",
-            client_id, auth_ctx.role.value, cmd,
-        )
-        if zmq_sender_id is not None:
-            with contextlib.suppress(RuntimeError):
-                control_mq.send_string(f"UNAUTHORIZED:{cmd}", zmq_sender_id)
-        return None
+    ctx = HandlerContext(
+        task_manager=task_manager,
+        control_mq=control_mq,
+        server_cfg=server_cfg,
+        device=device,
+        embedding_backend=embedding_backend,
+        configure_file=configure_file,
+        job_command_backend=job_command_backend,
+        model_command_backend=model_command_backend,
+    )
+    registry = build_registry()
 
     try:
         while True:
@@ -223,246 +200,12 @@ def server_event_loop(
             cmd, payload = result
 
             task_id = task_manager.tasks_status.create_task(cmd, payload)
-
-            # create a callback with task_id embedded
             update_status_func = make_update_status_callback(task_manager, task_id)
 
-            if cmd == TaskCmd.PROCESS_OBJECTS:
-                client_id, s3_objects = payload
-                if _authorize(cmd, client_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                else:
-                    try:
-                        thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
-                                                                                     buckets_cfg, device, embedding_backend,
-                                                                                     cmd.lower(),
-                                                                                     update_status_callback=update_status_func)
-                        task_manager.associate_thread_with_task(thread_ident, task_id)
-                    except ServerOverloadedError as exc:
-                        _reject_overloaded(task_id, update_status_func, exc)
+            registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
 
-            elif cmd == TaskCmd.FILE:
-                if payload:
-                    client_id, files = payload if isinstance(payload, tuple) else (None, payload)
-                    if _authorize(cmd, client_id) is None:
-                        update_status_func(TaskStatus.ERROR)
-                        continue
-                    for file in files:
-                        print(f"Received file: {file}")
-                        ok, uname, dest = _persist_uploaded_user_config(file, configure_file, user_config_map, expected_username=client_id)
-                        if ok:
-                            print(f"User config persisted for '{uname}' -> {dest}")
-                        else:
-                            print(f"Note: file '{file}' not recognized as valid user config or identity mismatch; left in place.")
-                else:
-                    print("Warning: FILE command received with no payload")
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd == TaskCmd.ENROLL_USER:
-                if not payload:
-                    print("Warning: ENROLL_USER command received with no payload")
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                client_id, files = payload if isinstance(payload, tuple) else (None, payload)
-                if _authorize(cmd, client_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                enrolled_any = False
-                for file in files:
-                    print(f"Enrolling user from file: {file}")
-                    ok, uname, dest = _persist_uploaded_user_config(
-                        file, configure_file, user_config_map,
-                        expected_username=None,  # admin uploads on behalf of another user
-                        allow_create=True,
-                    )
-                    if ok:
-                        print(f"User '{uname}' enrolled -> {dest}")
-                        enrolled_any = True
-                    else:
-                        print(f"Failed to enroll user from '{file}'")
-                if enrolled_any:
-                    # Auto-reload so new user is provisioned (MinIO + Postgres)
-                    outcome = reload_configuration(
-                        configure_file, buckets_cfg, user_config_map,
-                        log_output=ENABLE_PRETTY_PRINT,
-                    )
-                    filter_outcome(task_manager.active_threads, outcome, buckets_cfg, cmd.lower() if isinstance(cmd, str) else "enroll_user")
-                    if "error" in outcome:
-                        print(f"Warning: reload after enrollment encountered errors: {outcome['error']}")
-                update_status_func(TaskStatus.COMPLETED if enrolled_any else TaskStatus.ERROR)
-
-            elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
-                client_id = payload
-                if _authorize(cmd, client_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                try:
-                    thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
-                                                                device, embedding_backend, configure_file, user_config_map, cmd.lower(),
-                                                                update_status_callback=update_status_func)
-                    if thread_ident is None:
-                        update_status_func(TaskStatus.COMPLETED)
-                    elif thread_ident is False:
-                        update_status_func(TaskStatus.ERROR)
-                    else:
-                        task_manager.associate_thread_with_task(thread_ident, task_id)
-                except ServerOverloadedError as exc:
-                    _reject_overloaded(task_id, update_status_func, exc)
-
-            elif cmd == TaskCmd.UPLOAD_WORKFLOW:
-                client_id, files, workflow_name = payload
-                if _authorize(cmd, client_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                if not files:
-                    print("Warning: UPLOAD_WORKFLOW received with no files")
-                    update_status_func(TaskStatus.ERROR)
-                else:
-                    zip_path = files[0]
-                    ok, dest, err = _handle_upload_workflow(client_id, zip_path, workflow_name)
-                    if ok:
-                        print(f"Workflow '{workflow_name}' uploaded for user '{client_id}' at {dest}")
-                        # Auto-register in workflow catalog
-                        try:
-                            wf_json_path = os.path.join(dest, "workflow.json")
-                            with open(wf_json_path, encoding="utf-8") as fh:
-                                wf_data = json.load(fh)
-                            version = wf_data.get("version", "0.1")
-                            register_workflow(
-                                workflow_name=workflow_name,
-                                version=str(version),
-                                user_id=client_id,
-                                source_path=dest,
-                                workflow_json=wf_data,
-                                scope="user",
-                                description=wf_data.get("description", ""),
-                            )
-                        except Exception as e:
-                            print(f"Warning: auto-registration of workflow '{workflow_name}' failed: {e}")
-                        update_status_func(TaskStatus.COMPLETED)
-                    else:
-                        print(f"UPLOAD_WORKFLOW failed: {err}")
-                        update_status_func(TaskStatus.ERROR)
-
-            elif cmd == TaskCmd.LIST_WORKFLOWS:
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                response_json = handle_workflow_command(cmd, client_id, payload_str)
-                try:
-                    control_mq.send_string(response_json, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending workflow command response: {e}")
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd == TaskCmd.WAIT_OUTPUT : # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
-                client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-
-                path_to_bucket, entry = buckets_cfg.find_by_output_path(output_path_to_bucket)
-                if entry is None:
-                    msg = "NO_SUCH_BUCKET"
-                    control_mq.send_string(msg, zmq_sender_id)
-                    update_status_func(TaskStatus.NO_SUCH_BUCKET)
-                else:
-                    try:
-                        thread_ident = task_manager.active_threads.launch_wait_table_modification_on_db(path_to_bucket, buckets_cfg, client_id,
-                                                                          entry.data_base, entry.table_name,
-                                                                         timeout, control_mq, zmq_sender_id, cmd.lower(),
-                                                                         update_status_callback=update_status_func)
-                        task_manager.associate_thread_with_task(thread_ident, task_id)
-                    except ServerOverloadedError as exc:
-                        _reject_overloaded(task_id, update_status_func, exc)
-                        with contextlib.suppress(RuntimeError):
-                            control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
-            elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
-                client_id, export_args, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                try:
-                    thread_ident = task_manager.active_threads.launch_export_embeddings(client_id, export_args, buckets_cfg, control_mq, zmq_sender_id, cmd.lower(), update_status_callback=update_status_func)
-                    task_manager.associate_thread_with_task(thread_ident, task_id)
-                except ServerOverloadedError as exc:
-                    _reject_overloaded(task_id, update_status_func, exc)
-                    with contextlib.suppress(RuntimeError):
-                        control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
-
-            elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST):
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                response_json = handle_model_command(
-                    cmd,
-                    client_id,
-                    payload_str,
-                    backend=model_command_backend,
-                )
-                try:
-                    control_mq.send_string(response_json, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending model command response: {e}")
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd == TaskCmd.MODEL_DOWNLOAD:
-                # Server-side download: reply immediately, run download in background thread
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                ack = handle_model_command(
-                    cmd,
-                    client_id,
-                    payload_str,
-                    backend=model_command_backend,
-                )
-                try:
-                    control_mq.send_string(ack, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending model download ack: {e}")
-                # The handler spawns a background thread for the actual download;
-                # the ack already told the client it's accepted.
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.JOB_LIST):
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                response_json = handle_job_command(cmd, client_id, payload_str, backend=job_command_backend)
-                try:
-                    control_mq.send_string(response_json, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending job command response: {e}")
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd == TaskCmd.RUN_WORKFLOW:
-                client_id, payload_str, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                response_json = handle_workflow_command(
-                    cmd,
-                    client_id,
-                    payload_str,
-                    job_backend=job_command_backend,
-                )
-                try:
-                    control_mq.send_string(response_json, zmq_sender_id)
-                except RuntimeError as e:
-                    print(f"Error sending run-workflow response: {e}")
-                update_status_func(TaskStatus.COMPLETED)
-
-            else:
-                print(f"====> Error: unknown command '{cmd}' returned by server loop")
-                task_manager.tasks_status.update_status(task_id, TaskStatus.UNKNOWN)
-
-            finished_threads_ident_list =  task_manager.active_threads.clean_finished_threads()
-            print(f"{finished_threads_ident_list=}")
+            finished_threads_ident_list = task_manager.active_threads.clean_finished_threads()
+            logger.debug("finished_threads=%s", finished_threads_ident_list)
             task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
 
             # After any event and cleanup, update per-user task status summaries
@@ -473,6 +216,7 @@ def server_event_loop(
             except Exception as e:
                 # Non-fatal: do not disrupt server loop on status recording errors
                 print(f"Warning: failed to update task status: {e}")
+
     except KeyboardInterrupt:
         print("\nInterrupted by user. Waiting for running tasks to finish...")
         finished_threads_ident_list = task_manager.active_threads.waitall()
