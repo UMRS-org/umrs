@@ -42,6 +42,7 @@ from umrs.cli.completion import (
 from umrs.client.metadata import check_and_build_metadata
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.shared.auth import create_auth_context_from_request
+from umrs.shared.utils import utc_to_local
 from umrs.shared.buckets import BucketsCfg, ClientBucketEntry
 from umrs.shared.config import (
     default_s3cfg_path,
@@ -2801,9 +2802,9 @@ def format_status_text(response_payload, default_key):
             header = " - ".join(header_parts)
             time_parts = []
             if generated_at:
-                time_parts.append(f"generated {generated_at}")
+                time_parts.append(f"generated {utc_to_local(generated_at)}")
             if last_updated_at:
-                time_parts.append(f"last update {last_updated_at}")
+                time_parts.append(f"last update {utc_to_local(last_updated_at)}")
             if time_parts:
                 time_text = "; ".join(time_parts)
                 header = (

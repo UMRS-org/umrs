@@ -12,6 +12,7 @@ import diskcache
 sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
 
 
+import traceback
 import contextlib
 
 import umrs.server.config as _server_config
@@ -28,16 +29,8 @@ from umrs.core.thread_pool import PoolConfig, ServerOverloadedError, ThreadPoolM
 from umrs.inference.embedding_backend import LocalEmbeddingBackend
 from umrs.server.config import ENABLE_PRETTY_PRINT, get_default_db_subdir
 from umrs.server.durable_job_runtime import start_durable_job_runtime_from_env
-from umrs.server.file_handling import (
-    handle_upload_workflow as _handle_upload_workflow,
-)
-from umrs.server.file_handling import (
-    persist_uploaded_user_config as _persist_uploaded_user_config,
-)
-from umrs.server.job_tracking_handler import (
-    build_durable_job_backend_from_env,
-    handle_job_command,
-)
+from umrs.server.commands import HandlerContext, build_registry
+from umrs.server.job_tracking_handler import build_durable_job_backend_from_env
 from umrs.server.json_config import load_server_cfg_file
 from umrs.server.maintenance import (
     check_duplicated_database,
@@ -47,23 +40,16 @@ from umrs.server.maintenance import (
     reload_configuration,
     update_objects,
 )
-from umrs.server.maintenance import (
-    handle_maintenance_command as _handle_maintenance_command,
-)
 from umrs.server.model_registry_handler import (
     build_durable_model_backend_from_env,
-    handle_model_command,
 )
+from umrs.server.sql import create_umrs_server_db_user, create_server_db_pool
 from umrs.server.provisioning import (
     ServerCfg,
     configure_user,
     create_s3_sql_users,
     is_client_configured,
     reconcile_status_on_startup,
-)
-from umrs.server.workflow_registry_handler import (
-    handle_workflow_command,
-    register_workflow,
 )
 from umrs.shared.config import (
     get_default_json_server_file,
@@ -75,64 +61,6 @@ from umrs.shared.pretty_print import pretty_print_cfg
 
 _status_store_global = None
 logger = logging.getLogger(__name__)
-
-
-def _boot_environment_assertions() -> None:
-    """Emit warnings for missing/invalid environment variables at boot.
-
-    These are non-fatal because not all deployments use every feature,
-    but they surface misconfigurations early instead of failing at runtime.
-    """
-    warnings: list[str] = []
-
-    # LITELLM_MASTER_KEY: required for any endpoint-provision job that
-    # talks to LiteLLM.
-    litellm_key = os.environ.get("LITELLM_MASTER_KEY", "")
-    if not litellm_key:
-        warnings.append(
-            "LITELLM_MASTER_KEY is empty or unset; endpoint provision "
-            "jobs will fail at LiteLLM readiness check."
-        )
-
-    # UMRS_SITE_CONFIG: required for durable job runtime.
-    site_cfg = os.environ.get("UMRS_SITE_CONFIG", "")
-    if site_cfg and not os.path.isfile(site_cfg):
-        warnings.append(f"UMRS_SITE_CONFIG points to non-existent file: {site_cfg}")
-
-    # VLLM_MODEL_PATH: if set, the model directory must exist.
-    model_path = os.environ.get("VLLM_MODEL_PATH", "")
-    if model_path and not os.path.isdir(model_path):
-        warnings.append(
-            f"VLLM_MODEL_PATH points to non-existent directory: {model_path}"
-        )
-
-    # UMRS_DB_DSN: required for durable job system.
-    db_dsn = os.environ.get("UMRS_DB_DSN", "") or os.environ.get(
-        "UMRS_REGISTRY_POSTGRES_DSN", ""
-    )
-    if not db_dsn:
-        warnings.append(
-            "No database DSN configured (UMRS_DB_DSN or "
-            "UMRS_REGISTRY_POSTGRES_DSN); durable job system will be unavailable."
-        )
-
-    # Tunnel mode safety: ZMQ and HTTP sidecar must bind localhost.
-    tunnel_mode = os.environ.get("UMRS_TUNNEL_MODE", "false").lower() in (
-        "true",
-        "1",
-        "yes",
-    )
-    if tunnel_mode:
-        http_host = os.environ.get("UMRS_HTTP_HOST", "")
-        if http_host and http_host.strip() not in ("127.0.0.1", "localhost", "::1", ""):
-            warnings.append(
-                f"UMRS_TUNNEL_MODE=true but UMRS_HTTP_HOST={http_host}; "
-                "sidecar will be forced to 127.0.0.1 (security invariant)."
-            )
-
-    for w in warnings:
-        logger.warning("[BOOT] %s", w)
-        print(f"WARNING: {w}")
 
 
 def configure_server_logging():
@@ -147,14 +75,11 @@ def configure_server_logging():
 
 # --------------------------- Boot and hot-reload ----------------------------
 
-
 def perform_initial_config(configure_file, status_store):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
 
-    admin_s3_configuration_file, users, server_cfg = load_server_cfg_file(
-        configure_file
-    )
+    admin_s3_configuration_file, users, server_cfg = load_server_cfg_file(configure_file)
     check_duplicated_database(users)
     print("Configuration loaded successfully.")
 
@@ -166,20 +91,14 @@ def perform_initial_config(configure_file, status_store):
 
     # Create the tmp_dir if it does not exist
     os.makedirs(tmp_dir, exist_ok=True)
-    control_mq = MessageQueue(
-        role="server",
-        queue_type="control",
-        timeout_ms=1000,
-        tmp_dir=tmp_dir,
-        status_store=status_store,
-    )
+    control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir, status_store=status_store)
     # Align MessageQueue debug with server pretty-print setting (off by default)
     try:
         control_mq.set_debug(ENABLE_PRETTY_PRINT)
     except Exception as e:
         # Debug flag is optional; log but do not raise
         print(f"Warning: failed to set debug mode on control queue: {e}")
-    print("Subscribed to zeroMQ message queue")
+    print ("Subscribed to zeroMQ message queue")
 
     for user in users:
         create_s3_sql_users(user, admin_s3_configuration_file)
@@ -194,28 +113,23 @@ def perform_initial_config(configure_file, status_store):
     print(f"-->  Models will be run on device: {device}")
 
     embedding_backend = LocalEmbeddingBackend()
-    print(
-        "\n######################\nServer configuration done!\n######################\n"
-    )
+    print("\n######################\nServer configuration done!\n######################\n")
 
     return control_mq, server_cfg, device, embedding_backend
 
 
+
 #########################        Main server loop        #########################
 ##################################################################################
-
 
 def make_update_status_callback(task_manager, task_id):
     """
     Return a callback function that updates the task status for the given task_id.
     The returned function accepts a `status` argument when called.
     """
-
     def callback(status):
         task_manager.tasks_status.update_status(task_id, status)
-
     return callback
-
 
 def server_event_loop(
     task_manager,
@@ -233,108 +147,33 @@ def server_event_loop(
     assert status_store is not None
     assert status_store == task_manager.active_threads.get_status_store()
 
-    def _reject_overloaded(task_id, update_status_func, exc):
-        """Mark the task as rejected and log the overload."""
-        logger.warning("Rejecting task %s: %s", task_id, exc)
-        update_status_func(TaskStatus.ERROR)
-
-    def _authorize(cmd, client_id, zmq_sender_id=None):
-        """Check authorization for *cmd* by *client_id*.
-
-        Returns the ``AuthContext`` on success.
-        On failure, sends an ``UNAUTHORIZED`` reply (if *zmq_sender_id* is
-        provided) and returns ``None``.
-        """
-        auth_ctx = control_mq.get_auth_context(client_id)
-        if auth_ctx.can_execute_command(cmd, target_user=client_id):
-            return auth_ctx
-        # Denied
-        logger.warning(
-            "UNAUTHORIZED: user=%s role=%s cmd=%s",
-            client_id,
-            auth_ctx.role.value,
-            cmd,
-        )
-        if zmq_sender_id is not None:
-            with contextlib.suppress(RuntimeError):
-                control_mq.send_string(f"UNAUTHORIZED:{cmd}", zmq_sender_id)
-        return None
-
-    # ------------------------------------------------------------------
-    # Helper for the common request/reply pattern shared by several
-    # commands: unpack (client_id, payload_str, zmq_sender_id), authorize,
-    # call a handler, send JSON response back, mark completed.
-    # ------------------------------------------------------------------
-    def _handle_request_reply(
-        cmd, payload, update_status_func, handler, **handler_kwargs
-    ):
-        """Dispatch a request/reply ZMQ command.
-
-        *handler* is called as ``handler(cmd, client_id, payload_str, **handler_kwargs)``
-        and must return a JSON string to send back to the client.
-        """
-        client_id, payload_str, zmq_sender_id = payload
-        if _authorize(cmd, client_id, zmq_sender_id) is None:
-            update_status_func(TaskStatus.ERROR)
-            return
-        response_json = handler(cmd, client_id, payload_str, **handler_kwargs)
-        try:
-            control_mq.send_string(response_json, zmq_sender_id)
-        except RuntimeError as e:
-            print(f"Error sending {cmd} response: {e}")
-        update_status_func(TaskStatus.COMPLETED)
-
-    from umrs.server.maintenance import handle_purge_buckets
-
-    # Map request/reply commands to their handler + extra kwargs.
-    _REQUEST_REPLY_HANDLERS = {
-        TaskCmd.MODEL_REGISTER: (
-            handle_model_command,
-            {"backend": model_command_backend},
-        ),
-        TaskCmd.MODEL_LIST: (handle_model_command, {"backend": model_command_backend}),
-        TaskCmd.MODEL_DOWNLOAD: (
-            handle_model_command,
-            {"backend": model_command_backend},
-        ),
-        TaskCmd.JOB_SUBMIT: (handle_job_command, {"backend": job_command_backend}),
-        TaskCmd.JOB_CANCEL: (handle_job_command, {"backend": job_command_backend}),
-        TaskCmd.JOB_LIST: (handle_job_command, {"backend": job_command_backend}),
-        TaskCmd.LIST_WORKFLOWS: (handle_workflow_command, {}),
-        TaskCmd.RUN_WORKFLOW: (
-            handle_workflow_command,
-            {"job_backend": job_command_backend},
-        ),
-        TaskCmd.PURGE_BUCKETS: (
-            handle_purge_buckets,
-            {"configure_file": configure_file},
-        ),
-    }
+    ctx = HandlerContext(
+        task_manager=task_manager,
+        control_mq=control_mq,
+        server_cfg=server_cfg,
+        device=device,
+        embedding_backend=embedding_backend,
+        configure_file=configure_file,
+        job_command_backend=job_command_backend,
+        model_command_backend=model_command_backend,
+    )
+    registry = build_registry()
 
     try:
         while True:
-            print(
-                "####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######",
-                flush=True,
-            )
+            print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######", flush=True)
             task_manager.tasks_status.pretty_print_tasks(limit=20)
 
             # Honor SIGHUP-triggered hot reload from the offline admin CLI.
             if consume_reload_request():
                 try:
                     outcome = reload_configuration(
-                        configure_file,
-                        buckets_cfg,
-                        user_config_map,
+                        configure_file, buckets_cfg, user_config_map,
                         log_output=ENABLE_PRETTY_PRINT,
                     )
-                    filter_outcome(
-                        task_manager.active_threads, outcome, buckets_cfg, "reload"
-                    )
+                    filter_outcome(task_manager.active_threads, outcome, buckets_cfg, "reload")
                     if "error" in outcome:
-                        print(
-                            f"Warning: SIGHUP reload reported errors: {outcome['error']}"
-                        )
+                        print(f"Warning: SIGHUP reload reported errors: {outcome['error']}")
                     else:
                         print("SIGHUP reload complete.")
                 except Exception as exc:  # noqa: BLE001 - best-effort reload
@@ -345,10 +184,8 @@ def server_event_loop(
                 metrics = task_manager.active_threads.pool.metrics()
                 logger.debug(
                     "Pool: active=%d pending=%d (max %d/%d)",
-                    metrics.active_count,
-                    metrics.pending_count,
-                    metrics.max_workers,
-                    metrics.max_pending,
+                    metrics.active_count, metrics.pending_count,
+                    metrics.max_workers, metrics.max_pending,
                 )
             except Exception:
                 pass
@@ -357,275 +194,34 @@ def server_event_loop(
                 result = control_mq.server_control_queue_loop()
             except Exception as e:
                 print(f"ERROR in control queue loop: {e}", flush=True)
+                traceback.print_exc()
                 continue
             if not result:
                 continue
             cmd, payload = result
 
             task_id = task_manager.tasks_status.create_task(cmd, payload)
-
-            # create a callback with task_id embedded
             update_status_func = make_update_status_callback(task_manager, task_id)
 
-            if cmd == TaskCmd.PROCESS_OBJECTS:
-                client_id, s3_objects = payload
-                if _authorize(cmd, client_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                else:
-                    try:
-                        thread_ident = task_manager.active_threads.launch_s3_threads(
-                            s3_objects,
-                            buckets_cfg,
-                            device,
-                            embedding_backend,
-                            cmd.lower(),
-                            update_status_callback=update_status_func,
-                        )
-                        task_manager.associate_thread_with_task(thread_ident, task_id)
-                    except ServerOverloadedError as exc:
-                        _reject_overloaded(task_id, update_status_func, exc)
+            registry.dispatch(cmd, payload, update_status_func, ctx, task_id)
 
-            elif cmd == TaskCmd.FILE:
-                if payload:
-                    client_id, files = (
-                        payload if isinstance(payload, tuple) else (None, payload)
-                    )
-                    if _authorize(cmd, client_id) is None:
-                        update_status_func(TaskStatus.ERROR)
-                        continue
-                    for file in files:
-                        print(f"Received file: {file}")
-                        ok, uname, dest = _persist_uploaded_user_config(
-                            file,
-                            configure_file,
-                            user_config_map,
-                            expected_username=client_id,
-                        )
-                        if ok:
-                            print(f"User config persisted for '{uname}' -> {dest}")
-                        else:
-                            print(
-                                f"Note: file '{file}' not recognized as valid user config or identity mismatch; left in place."
-                            )
-                else:
-                    print("Warning: FILE command received with no payload")
-                update_status_func(TaskStatus.COMPLETED)
-
-            elif cmd == TaskCmd.ENROLL_USER:
-                if not payload:
-                    print("Warning: ENROLL_USER command received with no payload")
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                client_id, files = (
-                    payload if isinstance(payload, tuple) else (None, payload)
-                )
-                if _authorize(cmd, client_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                enrolled_any = False
-                for file in files:
-                    print(f"Enrolling user from file: {file}")
-                    ok, uname, dest = _persist_uploaded_user_config(
-                        file,
-                        configure_file,
-                        user_config_map,
-                        expected_username=None,  # admin uploads on behalf of another user
-                        allow_create=True,
-                    )
-                    if ok:
-                        print(f"User '{uname}' enrolled -> {dest}")
-                        enrolled_any = True
-                    else:
-                        print(f"Failed to enroll user from '{file}'")
-                if enrolled_any:
-                    # Auto-reload so new user is provisioned (MinIO + Postgres)
-                    outcome = reload_configuration(
-                        configure_file,
-                        buckets_cfg,
-                        user_config_map,
-                        log_output=ENABLE_PRETTY_PRINT,
-                    )
-                    filter_outcome(
-                        task_manager.active_threads,
-                        outcome,
-                        buckets_cfg,
-                        cmd.lower() if isinstance(cmd, str) else "enroll_user",
-                    )
-                    if "error" in outcome:
-                        print(
-                            f"Warning: reload after enrollment encountered errors: {outcome['error']}"
-                        )
-                update_status_func(
-                    TaskStatus.COMPLETED if enrolled_any else TaskStatus.ERROR
-                )
-
-            elif cmd in (
-                TaskCmd.RECOMPUTE,
-                TaskCmd.UPDATE,
-                TaskCmd.CHECK,
-                TaskCmd.RELOAD,
-            ):
-                client_id, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                # Authorization succeeded — acknowledge back to the client
-                with contextlib.suppress(RuntimeError):
-                    control_mq.send_string("ACKNOWLEDGE", zmq_sender_id)
-                try:
-                    thread_ident = _handle_maintenance_command(
-                        task_manager.active_threads,
-                        cmd,
-                        client_id,
-                        buckets_cfg,
-                        device,
-                        embedding_backend,
-                        configure_file,
-                        user_config_map,
-                        cmd.lower(),
-                        update_status_callback=update_status_func,
-                    )
-                    if thread_ident is None:
-                        update_status_func(TaskStatus.COMPLETED)
-                    elif thread_ident is False:
-                        update_status_func(TaskStatus.ERROR)
-                    else:
-                        task_manager.associate_thread_with_task(thread_ident, task_id)
-                except ServerOverloadedError as exc:
-                    _reject_overloaded(task_id, update_status_func, exc)
-
-            elif cmd == TaskCmd.UPLOAD_WORKFLOW:
-                client_id, files, workflow_name = payload
-                if _authorize(cmd, client_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                if not files:
-                    print("Warning: UPLOAD_WORKFLOW received with no files")
-                    update_status_func(TaskStatus.ERROR)
-                else:
-                    zip_path = files[0]
-                    ok, dest, err = _handle_upload_workflow(
-                        client_id, zip_path, workflow_name
-                    )
-                    if ok:
-                        print(
-                            f"Workflow '{workflow_name}' uploaded for user '{client_id}' at {dest}"
-                        )
-                        # Auto-register in workflow catalog
-                        try:
-                            wf_json_path = os.path.join(dest, "workflow.json")
-                            with open(wf_json_path, encoding="utf-8") as fh:
-                                wf_data = json.load(fh)
-                            version = wf_data.get("version", "0.1")
-                            register_workflow(
-                                workflow_name=workflow_name,
-                                version=str(version),
-                                user_id=client_id,
-                                source_path=dest,
-                                workflow_json=wf_data,
-                                scope="user",
-                                description=wf_data.get("description", ""),
-                            )
-                        except Exception as e:
-                            print(
-                                f"Warning: auto-registration of workflow '{workflow_name}' failed: {e}"
-                            )
-                        update_status_func(TaskStatus.COMPLETED)
-                    else:
-                        print(f"UPLOAD_WORKFLOW failed: {err}")
-                        update_status_func(TaskStatus.ERROR)
-
-            elif (
-                cmd == TaskCmd.WAIT_OUTPUT
-            ):  # "WAIT_BUCKET", (client_id, bucket_name, timeout, zmq_sender_id)
-                client_id, output_path_to_bucket, timeout, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-
-                path_to_bucket, entry = buckets_cfg.find_by_output_path(
-                    output_path_to_bucket
-                )
-                if entry is None:
-                    msg = "NO_SUCH_BUCKET"
-                    control_mq.send_string(msg, zmq_sender_id)
-                    update_status_func(TaskStatus.NO_SUCH_BUCKET)
-                else:
-                    try:
-                        thread_ident = task_manager.active_threads.launch_wait_table_modification_on_db(
-                            path_to_bucket,
-                            buckets_cfg,
-                            client_id,
-                            entry.data_base,
-                            entry.table_name,
-                            timeout,
-                            control_mq,
-                            zmq_sender_id,
-                            cmd.lower(),
-                            update_status_callback=update_status_func,
-                        )
-                        task_manager.associate_thread_with_task(thread_ident, task_id)
-                    except ServerOverloadedError as exc:
-                        _reject_overloaded(task_id, update_status_func, exc)
-                        with contextlib.suppress(RuntimeError):
-                            control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
-            elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
-                client_id, export_args, zmq_sender_id = payload
-                if _authorize(cmd, client_id, zmq_sender_id) is None:
-                    update_status_func(TaskStatus.ERROR)
-                    continue
-                try:
-                    thread_ident = task_manager.active_threads.launch_export_embeddings(
-                        client_id,
-                        export_args,
-                        buckets_cfg,
-                        control_mq,
-                        zmq_sender_id,
-                        cmd.lower(),
-                        update_status_callback=update_status_func,
-                    )
-                    task_manager.associate_thread_with_task(thread_ident, task_id)
-                except ServerOverloadedError as exc:
-                    _reject_overloaded(task_id, update_status_func, exc)
-                    with contextlib.suppress(RuntimeError):
-                        control_mq.send_string("SERVER_OVERLOADED", zmq_sender_id)
-
-            elif cmd in _REQUEST_REPLY_HANDLERS:
-                handler, handler_kwargs = _REQUEST_REPLY_HANDLERS[cmd]
-                _handle_request_reply(
-                    cmd, payload, update_status_func, handler, **handler_kwargs
-                )
-                # _handle_request_reply(cmd, payload, update_status_func,
-                #                       *_REQUEST_REPLY_HANDLERS[cmd])
-
-            else:
-                print(f"====> Error: unknown command '{cmd}' returned by server loop")
-                task_manager.tasks_status.update_status(task_id, TaskStatus.UNKNOWN)
-
-            finished_threads_ident_list = (
-                task_manager.active_threads.clean_finished_threads()
-            )
-            print(f"{finished_threads_ident_list=}")
-            task_manager.update_status_by_threads_ident_list(
-                finished_threads_ident_list, TaskStatus.COMPLETED
-            )
+            finished_threads_ident_list = task_manager.active_threads.clean_finished_threads()
+            logger.debug("finished_threads=%s", finished_threads_ident_list)
+            task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
 
             # After any event and cleanup, update per-user task status summaries
             try:
                 users = {entry.s3_username for entry in buckets_cfg.values()}
                 users = {u for u in users if u}
-                task_manager.active_threads.record_status_for_users_by_key(
-                    users, TaskCmd.PROCESS_OBJECTS
-                )
+                task_manager.active_threads.record_status_for_users_by_key(users, TaskCmd.PROCESS_OBJECTS)
             except Exception as e:
                 # Non-fatal: do not disrupt server loop on status recording errors
                 print(f"Warning: failed to update task status: {e}")
+
     except KeyboardInterrupt:
         print("\nInterrupted by user. Waiting for running tasks to finish...")
         finished_threads_ident_list = task_manager.active_threads.waitall()
-        task_manager.update_status_by_threads_ident_list(
-            finished_threads_ident_list, TaskStatus.COMPLETED
-        )
+        task_manager.update_status_by_threads_ident_list(finished_threads_ident_list, TaskStatus.COMPLETED)
         task_manager.active_threads.close()
         task_manager.tasks_status.close()
         print("All tasks finished. Exiting now.")
@@ -634,7 +230,6 @@ def server_event_loop(
     except Exception as e:
         print(f"\nFATAL: Unhandled exception in server event loop: {e}", flush=True)
         import traceback
-
         traceback.print_exc()
         try:
             task_manager.active_threads.close()
@@ -644,50 +239,16 @@ def server_event_loop(
             print(f"Warning: error during shutdown cleanup: {e}")
         sys.exit(1)
 
-
-def handle_maintenance_flags(
-    task_manager,
-    args,
-    buckets_cfg,
-    device,
-    embedding_backend,
-    configure_file,
-    server_cfg,
-):
+def handle_maintenance_flags(task_manager, args, buckets_cfg, device, embedding_backend, configure_file, server_cfg):
     # do in this order
     if args.force_recompute:
-        recompute_all_objects(
-            task_manager.active_threads,
-            None,
-            buckets_cfg,
-            device,
-            embedding_backend,
-            TaskCmd.RECOMPUTE.lower(),
-            log_output=ENABLE_PRETTY_PRINT,
-        )
+        recompute_all_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.RECOMPUTE, log_output=ENABLE_PRETTY_PRINT)
     if args.force_update:
-        update_objects(
-            task_manager.active_threads,
-            None,
-            buckets_cfg,
-            device,
-            embedding_backend,
-            TaskCmd.UPDATE.lower(),
-            verbose=False,
-            log_output=ENABLE_PRETTY_PRINT,
-        )
+        update_objects(task_manager.active_threads, None, buckets_cfg, device, embedding_backend, TaskCmd.UPDATE, verbose=False, log_output=ENABLE_PRETTY_PRINT)
     if args.check_objects:
-        check_objects(
-            task_manager.active_threads,
-            buckets_cfg,
-            TaskCmd.CHECK.lower(),
-            verbose=False,
-            log_output=ENABLE_PRETTY_PRINT,
-        )
+        check_objects(task_manager.active_threads, None, buckets_cfg, TaskCmd.CHECK, verbose=False, log_output=ENABLE_PRETTY_PRINT)
     if args.check_incomplete_command:
-        incomplete_commands = task_manager.tasks_status.list_incomplete_tasks(
-            mark_override=True
-        )
+        incomplete_commands = task_manager.tasks_status.list_incomplete_tasks(mark_override=True)
         for command, info in incomplete_commands.items():
             client_id, cmd, payload = command
             task_id = int(info["id"])
@@ -705,29 +266,16 @@ def handle_maintenance_flags(
 
             if cmd == TaskCmd.PROCESS_OBJECTS:
                 s3_objects = json.loads(payload)
-                thread_ident = task_manager.active_threads.launch_s3_threads(
-                    s3_objects,
-                    buckets_cfg,
-                    device,
-                    embedding_backend,
-                    cmd.lower(),
-                    update_status_callback=update_status_func,
-                )
+                thread_ident = task_manager.active_threads.launch_s3_threads(s3_objects,
+                                                                             buckets_cfg, device, embedding_backend,
+                                                                             cmd,
+                                                                             update_status_callback=update_status_func)
                 task_manager.associate_thread_with_task(thread_ident, task_id)
             elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK):
                 user_config_map = server_cfg.user_config_map
-                thread_ident = _handle_maintenance_command(
-                    task_manager.active_threads,
-                    cmd,
-                    client_id,
-                    buckets_cfg,
-                    device,
-                    embedding_backend,
-                    configure_file,
-                    user_config_map,
-                    cmd.lower(),
-                    update_status_callback=update_status_func,
-                )
+                thread_ident = _handle_maintenance_command(task_manager.active_threads, cmd, client_id, buckets_cfg,
+                                                            device, embedding_backend, configure_file, user_config_map, cmd,
+                                                            update_status_callback=update_status_func)
                 if thread_ident is None:
                     update_status_func(TaskStatus.COMPLETED)
                 else:
@@ -738,29 +286,21 @@ def handle_maintenance_flags(
                 files = json.loads(payload)
                 for file in files:
                     if not os.path.exists(file):
-                        print(
-                            f"Trying to recover file: {file}, but it no longer exists. Skipping."
-                        )
+                        print(f"Trying to recover file: {file}, but it no longer exists. Skipping.")
                         continue
                     print(f"Recovering file: {file}")
 
                     ok, uname, dest = _persist_uploaded_user_config(
-                        file,
-                        configure_file,
-                        user_config_map,
-                        expected_username=client_id,
+                        file, configure_file, user_config_map, expected_username=client_id
                     )
                     if ok:
                         print(f"User config persisted for '{uname}' -> {dest}")
                     else:
-                        print(
-                            f"Note: file '{file}' was not recognized as a valid user config or there was an identity mismatch; left in place."
-                        )
+                        print(f"Note: file '{file}' was not recognized as a valid user config or there was an identity mismatch; left in place.")
 
                 update_status_func(TaskStatus.COMPLETED)
             else:
                 print("\tNothing to do for command of type {cmd}")
-
 
 def check_umrs_config_directory():
     umrs_config_dir = os.getenv(get_umrs_cfg_env_var_name())
@@ -776,79 +316,35 @@ def check_umrs_config_directory():
             return default_dir
         else:
             return None
-
-
 # ---------------------------------- CLI ------------------------------------
-
 
 def main():
     # Offline admin CLI: route `umrs-server admin ...` before any daemon
     # bootstrap so it works without a configured UMRS_CONFIG directory.
     if len(sys.argv) > 1 and sys.argv[1] == "admin":
         from umrs.cli.admin import main as admin_main
-
         return admin_main(sys.argv[2:])
 
     configure_server_logging()
-    _boot_environment_assertions()
 
     # check if we have a correct configuration directory
     umrs_cfg_dir = check_umrs_config_directory()
     if umrs_cfg_dir:
         default_json_server_path = f"{umrs_cfg_dir}/{get_default_json_server_file()}"
     else:
-        sys.exit(
-            f"No valid UMRS configuration directory. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}. Check it exists."
-        )
+        sys.exit(f"No valid UMRS configuration directory. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}. Check it exists.")
 
-    parser = argparse.ArgumentParser(
-        description="UMRS server",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    parser.add_argument(
-        "-c",
-        "--conf",
-        required=(default_json_server_path is None),
-        default=default_json_server_path,
-        help=f"Config file path. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}.",
-    )
-    parser.add_argument(
-        "--force-recompute",
-        action="store_true",
-        help="Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.",
-    )
-    parser.add_argument(
-        "--force-update",
-        action="store_true",
-        help="Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.",
-    )
-    parser.add_argument(
-        "--check-objects",
-        action="store_true",
-        help="Check all the buckets to see if the corresponding objects are stored in the database",
-    )
-    parser.add_argument(
-        "--pretty-print",
-        action="store_true",
-        help="Enable server-side pretty-printed tables and summaries (default: off)",
-    )
-    parser.add_argument(
-        "--check-incomplete-command",
-        action="store_true",
-        help="Force checking for incomplete commands after a crash (default: off)",
-    )
-    parser.add_argument(
-        "--pool-max-workers",
-        type=int,
-        default=None,
-        help="Max worker threads in the pool (default: UMRS_POOL_MAX_WORKERS or 16)",
-    )
-    parser.add_argument(
-        "--pool-max-pending",
-        type=int,
-        default=None,
-        help="Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)",
-    )
+    parser = argparse.ArgumentParser(description="UMRS server", formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument('-c', '--conf', required=(default_json_server_path is None), default=default_json_server_path, help=f"Config file path. The default directory is {get_default_umrs_cfg_dir()} or the value of the environment variable {get_umrs_cfg_env_var_name()}.")
+    parser.add_argument('--force-recompute', action='store_true', help='Recompute all embeddings by scanning all S3 directories. Existing entries will be fully overwritten.')
+    parser.add_argument('--force-update', action='store_true', help='Recompute embeddings only for missing or mismatched entries. Only those entries will be updated in the database.')
+    parser.add_argument('--check-objects', action='store_true', help='Check all the buckets to see if the corresponding objects are stored in the database')
+    parser.add_argument('--pretty-print', action='store_true', help='Enable server-side pretty-printed tables and summaries (default: off)')
+    parser.add_argument('--check-incomplete-command', action='store_true', help='Force checking for incomplete commands after a crash (default: off)')
+    parser.add_argument('--pool-max-workers', type=int, default=None,
+                        help='Max worker threads in the pool (default: UMRS_POOL_MAX_WORKERS or 16)')
+    parser.add_argument('--pool-max-pending', type=int, default=None,
+                        help='Max pending tasks before rejecting requests (default: UMRS_POOL_MAX_PENDING or 64)')
     args = parser.parse_args()
     configure_file = args.conf
 
@@ -857,14 +353,10 @@ def main():
     _server_config.ENABLE_PRETTY_PRINT = args.pretty_print
 
     print(f"Starting UMRS server with configuration file: {configure_file}")
-    status_store = diskcache.Cache(
-        f"{get_default_tmp_subdir()}/status_store", size_limit=500 * 1024 * 1024
-    )
+    status_store = diskcache.Cache(f"{get_default_tmp_subdir()}/status_store", size_limit = 500*1024*1024)
 
     print("Initialized status store")
-    thread_dict = diskcache.Cache(
-        f"{get_default_tmp_subdir()}/thread_dict", size_limit=500 * 1024 * 1024
-    )
+    thread_dict = diskcache.Cache(f"{get_default_tmp_subdir()}/thread_dict", size_limit = 500*1024*1024)
 
     print("Initialized thread dictionary")
 
@@ -874,20 +366,14 @@ def main():
         pool_kwargs["max_workers"] = args.pool_max_workers
     if args.pool_max_pending is not None:
         pool_kwargs["max_pending"] = args.pool_max_pending
-    pool = (
-        ThreadPoolManager(PoolConfig(**pool_kwargs))
-        if pool_kwargs
-        else ThreadPoolManager()
-    )
+    thread_pool = ThreadPoolManager(PoolConfig(**pool_kwargs)) if pool_kwargs else ThreadPoolManager()
 
-    task_manager = TaskManager(
-        status_store, thread_dict, f"{get_default_db_subdir()}/tasks.db", pool=pool
-    )
+    create_umrs_server_db_user()
+    task_db_pool = create_server_db_pool()
+    task_manager = TaskManager(status_store, thread_dict, task_db_pool, thread_pool=thread_pool, reset=False)
 
     print("Performing initial configuration...")
-    control_mq, server_cfg, device, embedding_backend = perform_initial_config(
-        configure_file, status_store
-    )
+    control_mq, server_cfg, device, embedding_backend = perform_initial_config(configure_file, status_store)
 
     print("Initial configuration done.")
     reconcile_status_on_startup(task_manager.active_threads, server_cfg.buckets_cfg)
@@ -919,35 +405,18 @@ def main():
         _sidecar_thread = start_http_sidecar()
         if _sidecar_thread is not None:
             print(f"HTTP sidecar started (thread={_sidecar_thread.name}).")
-            # Provide server state to the ops reload endpoint so that
-            # POST /umrs/ops/reload can trigger hot-reload over HTTP.
-            from umrs.api.ops import set_reload_context
-
-            set_reload_context(
-                configure_file, server_cfg.buckets_cfg, server_cfg.user_config_map
-            )
         else:
             print("HTTP sidecar disabled by configuration.")
     except Exception as _sc_exc:
         print(f"Warning: HTTP sidecar failed to start: {_sc_exc}")
 
-    handle_maintenance_flags(
-        task_manager,
-        args,
-        server_cfg.buckets_cfg,
-        device,
-        embedding_backend,
-        configure_file,
-        server_cfg,
-    )
+    handle_maintenance_flags(task_manager, args, server_cfg.buckets_cfg, device, embedding_backend, configure_file, server_cfg)
 
     print("Entering main server event loop.")
     cfg_summary = pretty_print_cfg(server_cfg, print_output=ENABLE_PRETTY_PRINT)
 
     print(f"Server configuration summary:\n{cfg_summary}")
-    task_manager.active_threads.record_status(
-        "system", "config", {"summary": cfg_summary}
-    )
+    task_manager.active_threads.record_status("system", "config", {"summary": cfg_summary})
 
     print("Server is ready to process tasks.")
     # Install SIGHUP handler and write a PID file so the offline admin CLI
