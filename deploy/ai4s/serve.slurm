@@ -361,6 +361,23 @@ if [[ -d "${FLASHINFER_CUBIN_HOST}" ]]; then
     SING_COMMON+=( --bind "${FLASHINFER_CUBIN_HOST}:${FLASHINFER_CUBIN_TARGET}" )
 fi
 
+# GPT-OSS / Harmony tiktoken vocab (offline). The gpt-oss serving path imports
+# openai_harmony, whose compiled tiktoken-rs backend downloads the HarmonyGptOss
+# vocab from HuggingFace at first load. That fails on AI4S compute nodes (no
+# egress + the HF token lacks openai/gpt-oss LFS access), so the model 500s.
+# Fix: pre-seed the tiktoken-rs cache on a host with internet (the file is keyed
+# by a URL hash, e.g. fb374d419588a4632f3f557e76b4b70aebbca790) and bind it in
+# with TIKTOKEN_RS_CACHE_DIR pointing at it. openai_harmony then resolves the
+# vocab from cache with no network. Harmless for non-harmony models (they never
+# import openai_harmony, so the var is unused).
+TIKTOKEN_RS_CACHE_HOST="${TIKTOKEN_RS_CACHE_DIR_HOST:-/work/hps0/home/ea0022/images/tiktoken_cache_harmony}"
+if [[ -d "${TIKTOKEN_RS_CACHE_HOST}" ]]; then
+    SING_COMMON+=(
+        --bind "${TIKTOKEN_RS_CACHE_HOST}:${TIKTOKEN_RS_CACHE_HOST}:ro"
+        --env TIKTOKEN_RS_CACHE_DIR="${TIKTOKEN_RS_CACHE_HOST}"
+    )
+fi
+
 # GLM-5.1 tool-calling garbage fix (wall of "!" / token id 0, finish_reason=
 # length) on the GB200 (sm100) build of this vLLM nightly.
 #
@@ -402,6 +419,14 @@ case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
         # Triton MoE kernel, which has no such alignment constraint.
         echo "[serve] llm-jp: forcing Triton MoE (VLLM_USE_FLASHINFER_MOE_FP16=0); expert intermediate_size=64 is not %128, FlashInfer-TRTLLM BF16 MoE rejects it on sm100"
         SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_FP16=0 )
+        ;;
+    *gpt-oss*|*gptoss*)
+        # GPT-OSS-Swallow (BF16, 120B): single GB200 GPU has 184 GiB but BF16
+        # weights alone consume ~240 GiB, so the model requires tensor-parallel
+        # (TP=2) across 2 GPUs. Force TP=2 regardless of the model registry or
+        # environment defaults, which currently default to 1.
+        echo "[serve] GPT-OSS: BF16 requires TP>=2 (120B > 184 GiB single-GPU) — forcing VLLM_TP=2"
+        VLLM_TP=2
         ;;
 esac
 
