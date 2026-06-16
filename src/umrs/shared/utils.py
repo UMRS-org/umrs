@@ -1,4 +1,24 @@
 import hashlib
+from datetime import datetime, timezone
+
+
+def utc_to_local(iso_str: str) -> str:
+    """Convert a timezone-aware ISO-8601 string to local-time for display.
+
+    Works whether the string carries an explicit offset (e.g. '+02:00' from
+    psycopg2) or a trailing 'Z' (UTC shorthand from other sources).
+    """
+    if not iso_str or iso_str == "-":
+        return iso_str
+    try:
+        # fromisoformat parses the offset correctly; only fall back to UTC
+        # assumption when the string has no tzinfo at all (bare naive datetime).
+        dt = datetime.fromisoformat(iso_str.rstrip("Z"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return iso_str
 
 
 ################################## json ##################################

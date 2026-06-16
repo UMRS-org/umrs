@@ -1,219 +1,271 @@
 import json
-import os
-import sqlite3
 import textwrap
-import threading
 import time
 import traceback
-from datetime import datetime
 
+import psycopg2
 from tabulate import tabulate
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
+from umrs.shared.utils import utc_to_local
 
 
 class UMRSTask:
-    def __init__(self, db_path: str = "tasks.db", max_attempts=3):
-        self.db_path = db_path
-        # Ensure parent directory exists
-        dir_path = os.path.dirname(self.db_path)
-        if dir_path and not os.path.exists(dir_path):
-            os.makedirs(dir_path, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.conn_lock = threading.Lock()  # To ensure thread-safe commits
-        self._init_db()
-        self.mark_running_tasks_aborted()  # They were running it crashes
+    def __init__(self, db_pool, max_attempts=3, reset=False):
+        self.db_pool = db_pool
         self.max_attempts = max_attempts
+        self._init_db()
+        if reset:
+            self._reset_table()
+        self.mark_running_tasks_aborted()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_conn(self):
+        return self.db_pool.getconn()
+
+    def _put_conn(self, conn):
+        self.db_pool.putconn(conn)
 
     def _init_db(self):
-        with self.conn:
-            self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                client_id TEXT,
-                cmd TEXT,
-                payload TEXT,
-                status TEXT,
-                submitted_at TEXT,
-                updated_at TEXT
-            )
-            """)
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    # The table uses UTC internally thanks to TIMESTAMPTZ 
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS tasks (
+                            id          SERIAL PRIMARY KEY,
+                            client_id   TEXT,
+                            cmd         TEXT,
+                            payload     TEXT,
+                            status      TEXT,
+                            submitted_at TIMESTAMPTZ DEFAULT now(),
+                            updated_at   TIMESTAMPTZ DEFAULT now()
+                        )
+                    """)
+                    # Partial unique index: enforces at the DB level that no two
+                    # active (Submitted or Running) tasks can share the same
+                    # (client_id, cmd, payload) triple. Completed/Aborted/etc.
+                    # tasks are excluded from the index so historical rows are
+                    # not affected. This index is what makes the ON CONFLICT in
+                    # add_task() atomic and race-free.
+                    cur.execute("""
+                        CREATE UNIQUE INDEX IF NOT EXISTS tasks_active_dedup
+                        ON tasks (client_id, cmd, payload)
+                        WHERE status IN ('Submitted', 'Running')
+                    """)
+        finally:
+            self._put_conn(conn)
+
+    def _reset_table(self):
+        """Truncate the tasks table and restart the ID sequence.
+
+        Only safe to call at startup before any tasks are submitted.
+        Raises RuntimeError if active tasks (Submitted/Running) are found —
+        resetting under live traffic would orphan in-flight tasks.
+        """
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE status IN (%s, %s)",
+                        (TaskStatus.SUBMITTED, TaskStatus.RUNNING),
+                    )
+                    active_count = cur.fetchone()[0]
+                    if active_count > 0:
+                        raise RuntimeError(
+                            f"Cannot reset tasks table: {active_count} active task(s) found. "
+                            "Stop all clients before resetting."
+                        )
+                    # TRUNCATE is faster than DELETE and resets the SERIAL sequence
+                    # RESTART IDENTITY resets id back to 1
+                    # CASCADE handles any future foreign keys referencing tasks
+                    cur.execute("TRUNCATE TABLE tasks RESTART IDENTITY CASCADE")
+            print("==> tasks table reset: all rows deleted, ID sequence restarted.")
+        finally:
+            self._put_conn(conn)
+
+
+    # ------------------------------------------------------------------
+    # Task lifecycle
+    # ------------------------------------------------------------------
 
     def list_incomplete_tasks(self, mark_override=False, verbose=False):
-        """
-        List unique tasks that are not completed, deduplicated by (client_id, cmd, payload).
+        """List unique tasks not yet completed, deduplicated by (client_id, cmd, payload).
 
-        Rules:
-        - Tasks are ordered by submitted_at descending (newest first).
-        - For each unique task, only the latest status is considered.
-        - If mark_override=True:
-            * Earlier incomplete tasks that were later not completed are marked as OVERRIDDEN.
-            * Completed tasks remain as COMPLETED.
-
-        Returns:
-        dict with reco = (client_id, cmd, payload) and value = status (or task dict)
+        If mark_override=True, earlier incomplete tasks superseded by a newer
+        completed one are marked OVERRIDDEN.
         """
         if verbose:
             traceback.print_stack()
-        with self.conn_lock:
-            cursor = self.conn.cursor()
-            cursor.execute(
-                "SELECT id, client_id, cmd, payload, status, submitted_at FROM tasks ORDER BY submitted_at DESC"
-            )
-            rows = cursor.fetchall()
 
-        seen_tasks = {}  # key = (client_id, cmd, payload), value = dict(id, status, submitted_at)
+        conn = self._get_conn()
+        try:
+            with conn:
+                # Race condition: without locking, two threads could both read the
+                # same rows, both decide to mark a task OVERRIDDEN, and issue
+                # concurrent UPDATEs — leading to double-writes or missed updates.
+                #
+                # Fix: when mark_override=True, add FOR UPDATE to the SELECT.
+                # PostgreSQL locks each fetched row for the duration of the
+                # transaction, blocking any other thread that tries to SELECT FOR
+                # UPDATE or UPDATE the same rows until this transaction commits.
+                # Read-only callers (mark_override=False) skip the lock to avoid
+                # unnecessary contention.
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id, client_id, cmd, payload, status, submitted_at "
+                        "FROM tasks ORDER BY submitted_at DESC "
+                        + ("FOR UPDATE" if mark_override else "")
+                    )
+                    rows = cur.fetchall()
 
-        for row in rows:
-            task_id, client_id, cmd, payload, status, submitted_at = row
-            key = (client_id, cmd, payload)
+                seen_tasks = {}
+                for task_id, client_id, cmd, payload, status, submitted_at in rows:
+                    key = (client_id, cmd, payload)
+                    if key not in seen_tasks:
+                        seen_tasks[key] = {"id": task_id, "status": status, "submitted_at": submitted_at}
+                    elif mark_override:
+                        current_status = seen_tasks[key]["status"]
+                        if current_status == TaskStatus.COMPLETED and status != TaskStatus.COMPLETED:
+                            with conn.cursor() as cur:
+                                cur.execute(
+                                    "UPDATE tasks SET status = %s, updated_at = now() WHERE id = %s",
+                                    (TaskStatus.OVERRIDDEN, task_id),
+                                )
+        finally:
+            self._put_conn(conn)
 
-            # If task is not yet seen, store it
-            if key not in seen_tasks:
-                seen_tasks[key] = {
-                    "id": task_id,
-                    "status": status,
-                    "submitted_at": submitted_at,
-                }
-            else:
-                # Task already seen
-                if mark_override:
-                    # Only consider overriding earlier incomplete tasks
-                    current_status = seen_tasks[key]["status"]
-                    if (
-                        current_status == TaskStatus.COMPLETED
-                        and status != TaskStatus.COMPLETED
-                    ):
-                        # Mark older incomplete task as OVERRIDDEN
-                        with self.conn_lock, self.conn:
-                            self.conn.execute(
-                                "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                                (
-                                    TaskStatus.OVERRIDDEN,
-                                    datetime.utcnow().isoformat(),
-                                    task_id,
-                                ),
-                            )
-
-        # Return dict of unique tasks not completed
-        result = {
+        return {
             key: {"id": info["id"], "status": info["status"]}
             for key, info in seen_tasks.items()
             if info["status"] != TaskStatus.COMPLETED
         }
-        return result
 
     def mark_running_tasks_aborted(self):
-        """Set all tasks to 'Aborted' except those already in terminal states (COMPLETED, OVERRIDDEN, NO_SUCH_BUCKET); used for restart/recovery."""
-        with self.conn_lock:
-            now = datetime.utcnow().isoformat()
-            with self.conn:
-                self.conn.execute(
-                    """
-                    UPDATE tasks
-                    SET status = ?, updated_at = ?
-                    WHERE status IS NULL OR status NOT IN (?,?,?)
-                    """,
-                    (
-                        TaskStatus.ABORTED,
-                        now,
-                        TaskStatus.COMPLETED,
-                        TaskStatus.OVERRIDDEN,
-                        TaskStatus.NO_SUCH_BUCKET,
-                    ),
-                )
+        """Set non-terminal tasks to Aborted on server restart/recovery."""
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE tasks SET status = %s, updated_at = now()
+                        WHERE status IS NULL OR status NOT IN (%s, %s, %s)
+                        """,
+                        (TaskStatus.ABORTED, TaskStatus.COMPLETED,
+                         TaskStatus.OVERRIDDEN, TaskStatus.NO_SUCH_BUCKET),
+                    )
+        finally:
+            self._put_conn(conn)
 
-    def pretty_print_tasks(
-        self,
-        status_filter=None,
-        client_id_filter=None,
-        print_output=True,
-        verbose=False,
-        limit=None,
-    ):
+    def add_task(self, client_id: str, cmd: str, payload: str, status: str) -> int:
+        """Insert a task and return its integer ID.
+
+        Deduplicates: if an identical (client_id, cmd, payload) task already
+        exists with status Submitted or Running, returns the existing ID.
         """
-        Pretty-print tasks from the database.
-        Can filter by status or client_id.
-        If limit is set, only the most recent N tasks are shown.
-        """
+        for attempt in range(1, self.max_attempts + 1):
+            conn = self._get_conn()
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        # Race condition: a naive SELECT-then-INSERT pattern is a
+                        # TOCTOU (time-of-check / time-of-use) bug. Two threads
+                        # submitting the same (client_id, cmd, payload) concurrently
+                        # could both see "no active task" and both INSERT, creating
+                        # duplicate rows.
+                        #
+                        # Fix: one atomic statement using the partial unique index
+                        # tasks_active_dedup (defined in _init_db). PostgreSQL
+                        # evaluates the INSERT and the uniqueness check atomically
+                        # under a row-level lock:
+                        #   - if no active task exists → INSERT succeeds, RETURNING
+                        #     gives us the new id immediately.
+                        #   - if an active task already exists → ON CONFLICT DO
+                        #     NOTHING silently skips the INSERT and returns no row,
+                        #     so we fall through to SELECT to fetch the existing id.
+                        # No window exists between the two operations where another
+                        # thread can sneak in a duplicate.
+                        cur.execute(
+                            "INSERT INTO tasks (client_id, cmd, payload, status) "
+                            "VALUES (%s, %s, %s, %s) "
+                            "ON CONFLICT DO NOTHING "
+                            "RETURNING id",
+                            (client_id, cmd, payload, status),
+                        )
+                        row = cur.fetchone()
+                        if row is not None:
+                            return row[0]
+
+                        # Conflict path: another thread already holds an active task
+                        # for this (client_id, cmd, payload) — reuse it.
+                        cur.execute(
+                            "SELECT id FROM tasks "
+                            "WHERE client_id = %s AND cmd = %s AND payload = %s "
+                            "AND status IN (%s, %s)",
+                            (client_id, cmd, payload,
+                             TaskStatus.SUBMITTED, TaskStatus.RUNNING),
+                        )
+                        row = cur.fetchone()
+                        if row is not None:
+                            print(f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})")
+                            return row[0]
+                        # Should not happen: conflict fired but no active task found.
+                        # The task likely transitioned to a terminal state between
+                        # the INSERT conflict and the SELECT — retry the whole block.
+                        raise psycopg2.OperationalError("dedup conflict but no active task found")
+            except psycopg2.Error as e:
+                if attempt < self.max_attempts:
+                    time.sleep(0.5)
+                else:
+                    print(f"PostgreSQL error in add_task: {type(e).__name__}: {e}")
+                    traceback.print_exc()
+                    raise
+            finally:
+                self._put_conn(conn)
+
+    def update_status(self, task_id: int, new_status: str, verbose=False):
+        """Update the status of a single task."""
+        if task_id is None:
+            return
         if verbose:
             traceback.print_stack()
 
-        # Count total tasks first (for display)
-        total_count = 0
-        with self.conn_lock:
-            if limit:
-                count_query = "SELECT COUNT(*) FROM tasks WHERE 1=1"
-                count_params = []
-                if status_filter:
-                    count_query += " AND status = ?"
-                    count_params.append(status_filter)
-                if client_id_filter:
-                    count_query += " AND client_id = ?"
-                    count_params.append(client_id_filter)
-                try:
-                    row = self.conn.execute(count_query, count_params).fetchone()
-                    total_count = (row[0] or 0) if row else 0
-                except Exception:
-                    total_count = 0
+        for attempt in range(1, self.max_attempts + 1):
+            conn = self._get_conn()
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE tasks SET status = %s, updated_at = now() WHERE id = %s",
+                            (new_status, task_id),
+                        )
+                break
+            except psycopg2.Error as e:
+                if attempt < self.max_attempts:
+                    time.sleep(0.5)
+                else:
+                    print(f"Critical PostgreSQL error while updating task {task_id}: {type(e).__name__}: {e}")
+                    traceback.print_exc()
+                    raise
+            finally:
+                self._put_conn(conn)
 
-            query = "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at FROM tasks WHERE 1=1"
-            params = []
+        self.pretty_print_tasks(limit=20)
 
-            if status_filter:
-                query += " AND status = ?"
-                params.append(status_filter)
-            if client_id_filter:
-                query += " AND client_id = ?"
-                params.append(client_id_filter)
-
-            query += " ORDER BY id DESC"
-            if limit:
-                query += " LIMIT ?"
-                params.append(limit)
-
-            cur = self.conn.execute(query, params)
-            rows = cur.fetchall()
-
-        # Reverse to show oldest-first within the limited set
-        rows = list(reversed(rows))
-
-        wrapped_rows = []
-        for row in rows:
-            row = list(row)
-            if row[3] is not None:  # payload column
-                lines = textwrap.wrap(str(row[3]), width=70)
-                row[3] = "\n".join(lines[:2]) + ("…" if len(lines) > 2 else "")
-            wrapped_rows.append(row)
-
-        if not rows:
-            message = "No tasks found"
-        else:
-            headers = [
-                "ID",
-                "Client ID",
-                "Command",
-                "Payload",
-                "Status",
-                "Submitted At",
-                "Updated At",
-            ]
-            table = tabulate(wrapped_rows, headers, tablefmt="fancy_grid")
-            if limit and total_count > limit:
-                message = (
-                    f"Tasks in DB (showing {limit} of {total_count} most recent):\n"
-                    + table
-                )
-            else:
-                message = "Tasks in DB:\n" + table
-
-        if print_output:
-            print(message)
-        return message
+    # ------------------------------------------------------------------
+    # Task creation (cmd dispatch)
+    # ------------------------------------------------------------------
 
     def create_task(self, cmd, full_payload, verbose=False):
         if verbose:
             traceback.print_stack()
+
         if cmd == TaskCmd.PROCESS_OBJECTS:
             client_id, s3_objects = full_payload
             str_payload = json.dumps(s3_objects)
@@ -223,29 +275,20 @@ class UMRSTask:
             str_payload = json.dumps(output_path_to_bucket)
 
         elif cmd in (TaskCmd.RECOMPUTE, TaskCmd.UPDATE, TaskCmd.CHECK, TaskCmd.RELOAD):
-            if isinstance(full_payload, tuple):
-                client_id = full_payload[0]
-            else:
-                client_id = full_payload
+            client_id, _, _zmq_sender_id = full_payload
             str_payload = json.dumps("")
 
         elif cmd == TaskCmd.FILE:
-            client_id, files = (
-                full_payload if isinstance(full_payload, tuple) else ("", full_payload)
-            )
+            client_id, files = full_payload if isinstance(full_payload, tuple) else ("", full_payload)
             str_payload = json.dumps(files)
 
         elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
             client_id, export_args, _ = full_payload
             str_payload = json.dumps(export_args)
 
-        elif cmd in (
-            TaskCmd.MODEL_REGISTER,
-            TaskCmd.MODEL_LIST,
-            TaskCmd.MODEL_DOWNLOAD,
-            TaskCmd.LIST_WORKFLOWS,
-            TaskCmd.RUN_WORKFLOW,
-        ) or cmd in (TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL, TaskCmd.PURGE_BUCKETS):
+        elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
+                     TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW,
+                     TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
             client_id, payload_str, _zmq_sender_id = full_payload
             str_payload = payload_str
 
@@ -253,93 +296,19 @@ class UMRSTask:
             client_id, files, workflow_name = full_payload
             str_payload = json.dumps({"files": files, "workflow_name": workflow_name})
 
-        elif cmd in (
-            TaskCmd.HAND_CHECK,
-            TaskCmd.CREATE_DATA_QUEUE,
-            TaskCmd.STATUS,
-            TaskCmd.JOB_LIST,
-        ):
+        elif cmd in (TaskCmd.HANDSHAKE, TaskCmd.CREATE_DATA_QUEUE,
+                     TaskCmd.STATUS, TaskCmd.JOB_LIST):
             print(f"We do not create task_id for {cmd=}")
             return None
 
         else:
             raise ValueError(f"Unknown TaskCmd: {cmd}")
 
-        # Returns the task ID as int
         return self.add_task(client_id, cmd, str_payload, TaskStatus.SUBMITTED)
 
-    def add_task(self, client_id: str, cmd: str, payload: str, status: str) -> int:
-        """Insert a task in the DB and return its integer ID.
-
-        Deduplicates: if an identical (client_id, cmd, payload) task already
-        exists with an active status (Submitted or Running), returns the
-        existing task_id instead of creating a duplicate row.
-        """
-        for attempt in range(1, self.max_attempts + 1):
-            try:
-                with self.conn_lock:
-                    active_statuses = (TaskStatus.SUBMITTED, TaskStatus.RUNNING)
-                    cur = self.conn.execute(
-                        "SELECT id FROM tasks WHERE client_id = ? AND cmd = ? AND payload = ? AND status IN (?, ?)",
-                        (client_id, cmd, payload, *active_statuses),
-                    )
-                    row = cur.fetchone()
-                    if row is not None:
-                        print(
-                            f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})"
-                        )
-                        return row[0]
-
-                    now = datetime.utcnow().isoformat()
-                    with self.conn:
-                        cur = self.conn.execute(
-                            "INSERT INTO tasks (client_id, cmd, payload, status, submitted_at, updated_at) "
-                            "VALUES (?, ?, ?, ?, ?, ?)",
-                            (client_id, cmd, payload, status, now, now),
-                        )
-                # Success -> leave the loop
-                break
-            except sqlite3.Error as e:
-                if attempt < self.max_attempts:
-                    time.sleep(0.5)
-                else:
-                    print(f"SQLite error in add_task: {type(e).__name__}: {e}")
-                    traceback.print_exc()
-                    raise
-
-        return cur.lastrowid
-
-    def update_status(self, task_id: int, new_status: str, verbose=False):
-        """Update the status of a single task, retry once on SQLite error."""
-        if task_id is None:
-            return
-        if verbose:
-            traceback.print_stack()
-
-        for attempt in range(1, self.max_attempts + 1):
-            try:
-                with self.conn_lock:
-                    now = datetime.utcnow().isoformat()
-                    with self.conn:
-                        self.conn.execute(
-                            "UPDATE tasks SET status = ?, updated_at = ? WHERE id = ?",
-                            (new_status, now, task_id),
-                        )
-                # Success -> leave the loop
-                break
-            except sqlite3.Error as e:
-                if attempt < self.max_attempts:
-                    # first failures sleep and retry
-                    time.sleep(0.5)
-                else:
-                    # last failure Print and raise error properly
-                    print(f"Critical SQLite error while updating {task_id}:")
-                    print(f"  {type(e).__name__}: {e}")
-                    traceback.print_exc()
-                    raise
-
-        # Print tasks
-        self.pretty_print_tasks(limit=20)
+    # ------------------------------------------------------------------
+    # Query / display
+    # ------------------------------------------------------------------
 
     def get_tasks(
         self,
@@ -347,42 +316,114 @@ class UMRSTask:
         client_id: str | None = None,
         verbose: bool = False,
     ) -> list[dict]:
-
-        query = """
-        SELECT id, client_id, cmd, payload, status, submitted_at, updated_at
-        FROM tasks
-        WHERE 1=1
-        """
         if verbose:
             traceback.print_stack()
+
+        query = ("SELECT id, client_id, cmd, payload, status, submitted_at, updated_at "
+                 "FROM tasks WHERE 1=1")
         params = []
-
         if status:
-            query += " AND status = ?"
+            query += " AND status = %s"
             params.append(status)
-
         if client_id:
-            query += " AND client_id = ?"
+            query += " AND client_id = %s"
             params.append(client_id)
 
-        with self.conn_lock:
-            cur = self.conn.execute(query, params)
-            rows = cur.fetchall()
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+        finally:
+            self._put_conn(conn)
 
         return [
             {
-                "id": r[0],
-                "client_id": r[1],
-                "cmd": r[2],
-                "payload": r[3],
+                "id": r[0], "client_id": r[1], "cmd": r[2], "payload": r[3],
                 "status": r[4],
-                "submitted_at": r[5],
-                "updated_at": r[6],
+                "submitted_at": str(r[5]) if r[5] else "-",
+                "updated_at": str(r[6]) if r[6] else "-",
             }
             for r in rows
         ]
 
+    def all_uncompleted_task(self, client_id, status_key):
+        tasks = self.get_tasks(client_id=client_id)
+        return [
+            t for t in tasks
+            if t["status"] not in (TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN)
+            and (status_key in (TaskCmd.ALL, "*") or t["cmd"] == status_key)
+        ]
+
+    def pretty_print_tasks(self, status_filter=None, client_id_filter=None,
+                           print_output=True, verbose=False, limit=None):
+        if verbose:
+            traceback.print_stack()
+
+        query = ("SELECT id, client_id, cmd, payload, status, submitted_at, updated_at "
+                 "FROM tasks WHERE 1=1")
+        params = []
+        if status_filter:
+            query += " AND status = %s"
+            params.append(status_filter)
+        if client_id_filter:
+            query += " AND client_id = %s"
+            params.append(client_id_filter)
+        query += " ORDER BY id DESC"
+        if limit:
+            query += " LIMIT %s"
+            params.append(limit)
+
+        conn = self._get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    if limit:
+                        count_q = "SELECT COUNT(*) FROM tasks WHERE 1=1"
+                        count_p = []
+                        if status_filter:
+                            count_q += " AND status = %s"
+                            count_p.append(status_filter)
+                        if client_id_filter:
+                            count_q += " AND client_id = %s"
+                            count_p.append(client_id_filter)
+                        cur.execute(count_q, count_p)
+                        total_count = cur.fetchone()[0]
+                    else:
+                        total_count = 0
+
+                    cur.execute(query, params)
+                    rows = cur.fetchall()
+        finally:
+            self._put_conn(conn)
+
+        rows = list(reversed(rows))
+        wrapped_rows = []
+        for row in rows:
+            row = list(row)
+            if row[3] is not None:
+                lines = textwrap.wrap(str(row[3]), width=70)
+                row[3] = "\n".join(lines[:2]) + ("…" if len(lines) > 2 else "")
+            row[5] = utc_to_local(str(row[5]) if row[5] else "-")
+            row[6] = utc_to_local(str(row[6]) if row[6] else "-")
+            wrapped_rows.append(row)
+
+        if not rows:
+            message = "No tasks found"
+        else:
+            headers = ["ID", "Client ID", "Command", "Payload", "Status", "Submitted At", "Updated At"]
+            table = tabulate(wrapped_rows, headers, tablefmt="fancy_grid")
+            if limit and total_count > limit:
+                message = f"Tasks in DB (showing {limit} of {total_count} most recent):\n" + table
+            else:
+                message = "Tasks in DB:\n" + table
+
+        if print_output:
+            print(message)
+        return message
+
     def close(self, verbose=False):
         if verbose:
             traceback.print_stack()
-        self.conn.close()
+        self.db_pool.closeall()

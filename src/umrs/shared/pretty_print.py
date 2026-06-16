@@ -3,6 +3,8 @@ import sys
 import pandas as pd
 from tabulate import tabulate
 
+from umrs.shared.utils import utc_to_local
+
 
 def _thread_sort_key(thread_status, key):
     thread_id = thread_status[key].get("thread_id")
@@ -18,7 +20,7 @@ def _render_thread_id(thread_id):
 
 
 def _render_last_update(info):
-    return info.get("updated_at", "-")
+    return utc_to_local(info.get("updated_at", "-"))
 
 
 def _build_thread_status_row(work, thread_id, status, updated_at, running_only):
