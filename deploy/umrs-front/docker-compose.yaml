@@ -172,10 +172,9 @@ services:
       # models (routes DeepSeek-V4-Pro/GLM-5.1/Kimi-K2.6 to 4n4gpu-p with the
       # right node/GPU/context/TTL instead of falling back to 1 node / 1 GPU).
       UMRS_PROVISION_ROSTER: /etc/umrs/pool-ai4s.yaml
-      # Model-window visibility: AI4S surfaces ONLY the large frontier models;
-      # smaller models live on RCCS. Listing-only filter; provisioning a model
-      # by name is unaffected.
-      UMRS_MODEL_ALLOWLIST: ${UMRS_AI4S_MODEL_ALLOWLIST:-GLM-5.1,Kimi-K2.6,DeepSeek-V4-Pro,DeepSeek-V4-Pro-128K,DeepSeek-V4-Pro-TEP,llm-jp-4-32b-a3b-thinking,GPT-OSS-Swallow-120B-RL-v0.1-MXFP4,diffusiongemma-26B-A4B-it}
+      # Model visibility is unrestricted — all models in the catalog are
+      # discoverable via /v1/models. Operators can reinstate a curated list
+      # by setting UMRS_AI4S_MODEL_ALLOWLIST in .env.
       UMRS_CONFIG: /etc/umrs
       UMRS_CONTROL_PORT: ${UMRS_AI4S_ZMQ_PORT:-50100}
       UMRS_DATA_PORT_RANGE: ${UMRS_AI4S_DATA_PORT_RANGE:-50101-50108}
