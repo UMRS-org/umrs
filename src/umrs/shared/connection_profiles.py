@@ -213,6 +213,7 @@ class ConnectionProfile:
     health_check_timeout_ms: int = 5000
     minio_url: str | None = None
     rag_url: str | None = None
+    gateway_url: str | None = None
     ssh_host: str | None = None
     local_forwards: list[dict[str, Any]] = field(default_factory=list)
     command_hint: str | None = None
@@ -246,6 +247,7 @@ class ResolvedConnection:
     health_check_timeout_ms: int
     minio_url: str
     rag_url: str
+    gateway_url: str | None = None
     ssh_host: str | None = None
     local_forwards: list[dict[str, Any]] = field(default_factory=list)
     command_hint: str | None = None
@@ -339,6 +341,7 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         health_check_timeout_ms=int(zmq_cfg.get("health_check_timeout_ms", 5000)),
         minio_url=services.get("minio_url"),
         rag_url=services.get("rag_url"),
+        gateway_url=content.get("gateway_url"),
         ssh_host=ssh_cfg.get("host"),
         local_forwards=list(ssh_cfg.get("local_forwards") or []),
         command_hint=ssh_cfg.get("command_hint"),
@@ -541,6 +544,7 @@ def resolve_connection(
         health_check_timeout_ms=health_check_timeout_ms,
         minio_url=minio_url,
         rag_url=rag_url,
+        gateway_url=profile.gateway_url if profile else None,
         ssh_host=profile.ssh_host if profile else None,
         local_forwards=list(profile.local_forwards) if profile else [],
         command_hint=profile.command_hint if profile else None,

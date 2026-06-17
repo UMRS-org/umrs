@@ -21,11 +21,9 @@ UMRS_S3CFG_ENV_VAR_NAME = "UMRS_S3CFG"
 DEFAULT_JSON_SERVER_FILE = "conf_umrs.json"
 DEFAULT_DOCKER_S3CFG = "/app/docker/s3cfg"
 DEFAULT_CURRENT_CONNECTION_PROFILE_FILE = "current_connection_profile"
-DEFAULT_CURRENT_CONNECTION_PROFILE_FILE = None
 DEFAULT_CURRENT_SERVER_CONFIG_FILE = "current_server_config"
 DEFAULT_CURRENT_USER_CONFIG_FILE = "current_user_config"
 DEFAULT_CURRENT_S3_CONFIG_FILE = "current_s3_config"
-DEFAULT_CURRENT_S3_CONFIG_FILE = None
 
 
 def get_default_umrs_cfg_dir():
