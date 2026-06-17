@@ -620,6 +620,10 @@ class MessageQueue:
     # Parser methods are defined above; strings are used so the dict can live
     # alongside them in the class body without forward-reference issues.
     _CONTROL_PARSERS: "dict[str, str]" = {
+        # HANDSHAKE and HAND_CHECK are equivalent readiness pings (both reply
+        # "READY!"). HANDSHAKE comes from the in-repo client; HAND_CHECK from the
+        # r4 SDK transport. Both aliases are kept so either client can probe the
+        # server regardless of which package version is deployed.
         TaskCmd.HANDSHAKE:         "_parse_handshake",
         TaskCmd.HAND_CHECK:        "_parse_handshake",
         TaskCmd.CREATE_DATA_QUEUE: "_parse_create_data_queue",
