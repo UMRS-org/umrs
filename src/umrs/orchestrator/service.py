@@ -548,6 +548,7 @@ class OrchestrationService:
             endpoint_metadata.update(mount_metadata)
             endpoint_metadata.setdefault("allocated_host", target_host)
             endpoint_metadata.setdefault("allocated_port", port)
+            endpoint_metadata.setdefault("max_model_len", request.max_model_len)
             if request.requesting_user:
                 endpoint_metadata.setdefault("requesting_user", request.requesting_user)
             actual_host = job_info.endpoint.node if job_info.endpoint else target_host
