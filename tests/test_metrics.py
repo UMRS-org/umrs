@@ -201,3 +201,33 @@ class TestReconcilerTimerTiming:
             while time.monotonic() - start < 0.001:
                 pass
         # If we get here without error, the timer completed successfully
+
+
+# ---------------------------------------------------------------------------
+# LLM usage metering — verify per-user token tracking works.
+# ---------------------------------------------------------------------------
+
+
+class TestLLMUsageMetering:
+    """Tests for LLM usage recording metrics.
+
+    These verify the metrics layer of the per-user usage tracking
+    pipeline.  The full DB-backed pipeline is exercised by
+    ``test_llm_usage.py``.
+    """
+
+    def test_llm_tokens_records_prompt_and_completion(self):
+        METRICS.llm_tokens("qwen3-8b", prompt=100, completion=50)
+
+    def test_llm_tokens_zero_prompt_skips_prompt_label(self):
+        METRICS.llm_tokens("qwen3-8b", prompt=0, completion=10)
+
+    def test_llm_tokens_zero_completion_only_records_prompt(self):
+        METRICS.llm_tokens("qwen3-8b", prompt=5, completion=0)
+
+    def test_llm_request_records_streaming_and_nonstreaming(self):
+        METRICS.llm_request("qwen3-8b", streaming=True)
+        METRICS.llm_request("qwen3-8b", streaming=False)
+
+    def test_llm_request_duration_records_latency(self):
+        METRICS.llm_request_duration("qwen3-8b", 0.42)
