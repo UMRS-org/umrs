@@ -5,7 +5,8 @@ from umrs.shared.config import get_resolved_umrs_subdir
 ENABLE_PRETTY_PRINT = False  # disabled by default; enable with CLI flag
 VISION_STACK = os.environ.get("VISION_STACK", "umrs")
 RIVAULT_REMOTE_PORT = int(os.environ.get("RIVAULT_REMOTE_PORT", -1))
-
+_UMRS_SERVER_DB_USER = "umrs_server_db_user"
+_UMRS_SERVER_DB_NAME = "umrs"
 
 def get_default_db_subdir():
     return get_resolved_umrs_subdir("tasks_database")
@@ -44,6 +45,16 @@ def get_rivault_remote_port():
         return port
 
 
+
+
+def get_umrs_server_db_user() -> str:
+    return _UMRS_SERVER_DB_USER
+
+
+def get_umrs_server_db_name() -> str:
+    return os.environ.get("DB_UMRS_NAME", _UMRS_SERVER_DB_NAME)
+
+
 __all__ = [
     "ENABLE_PRETTY_PRINT",
     "VISION_STACK",
@@ -52,4 +63,6 @@ __all__ = [
     "get_rivault_slurm_script",
     "get_jens_rivault_slurm_script",
     "get_rivault_remote_port",
+    "get_umrs_server_db_user",
+    "get_umrs_server_db_name",
 ]
