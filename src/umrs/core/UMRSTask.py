@@ -37,7 +37,7 @@ class UMRSTask:
         try:
             with conn:
                 with conn.cursor() as cur:
-                    # The table uses UTC internally thanks to TIMESTAMPTZ 
+                    # The table uses UTC internally thanks to TIMESTAMPTZ
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS tasks (
                             id          SERIAL PRIMARY KEY,
