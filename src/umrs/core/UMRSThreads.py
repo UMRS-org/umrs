@@ -1,4 +1,4 @@
-# A class to manage server threads
+# Manages server background tasks submitted to a ThreadPoolExecutor
 
 import logging
 import sys
@@ -22,43 +22,34 @@ class ThreadStatus:
 
 class UMRSThreads:
     """
-    UMRSThreads: A class for managing asynchronous threads executed in server threads.
+    Manages background tasks submitted by the server command handlers.
 
-    This class handles the lifecycle of threads submitted to server threads, including:
+    All tasks are submitted to a bounded ThreadPoolExecutor via _submit_to_pool();
+    thread_list holds the resulting Future objects (no raw threading.Thread).
 
-    1. Launching threads:
-    - Supports processing S3 objects or other work asynchronously in separate threads.
-    - Launching thread for waiting an udate of a table in the database
-    - Tracks each thread and associates it with the work being done.
+    Responsibilities:
+    1. Task submission: _submit_to_pool() submits a callable to the pool, attaches
+       a thread_ident to the Future for identity tracking, and appends it to thread_list.
 
-    2. Thread bookkeeping:
-    - Maintains a thread-safe dictionary of active thread statuses (running/done) using a lock.
-    - Assigns a unique thread ID for each thread.
-    - Allows filtering of thread status per user/client.
+    2. Lifecycle tracking: thread_dict (disk-backed Cache) stores per-task metadata
+       (command, status, user, timestamps). Entries survive the task lifetime for
+       client STATUS queries.
 
-    3. Status tracking and persistence:
-    - Uses a disk-backed cache (via `diskcache.Cache`) to store thread and thread status.
-    - Supports recording summaries and JSON-safe representations for external systems (e.g., ZeroMQ).
+    3. Status store: status_store (disk-backed Cache) is written here and read by
+       the ZeroMQ layer to answer STATUS commands without hitting the pool.
 
-    4. Cleanup and synchronization:
-    - Waits for all threads to finish or periodically cleans up finished threads.
-    - Ensures that resources (thread cache, status store) can be safely closed and cleared.
+    4. Cleanup: clean_finished_threads() is called each iteration of the server
+       event loop; it removes done Futures from thread_list and logs any exceptions.
 
-    5. Utilities:
-    - Pretty-prints running thread statuses.
-    - Converts internal thread status data into JSON-safe formats.
-    - Provides helper methods for per-user views and status recording.
+    5. Per-user views: filter_thread_status_for_user() scopes status data to a
+       single client_id for multi-tenant isolation.
 
-    Key components:
-    - `thread_list`: list of currently running `threading.Thread` objects.
-    - `thread_dict`: disk-backed cache storing per-thread info, work, and status.
-    - `status_store`: disk-backed cache storing per-user thread summaries, shared with other processes (e.g., ZeroMQ).
-    - `lock`: a `threading.Lock` ensuring thread-safe updates to shared resources.
-
-    Dependencies:
-    - `diskcache.Cache` for persistent shared state.
-    - `threading` and `time` for thread execution and synchronization.
-    - Database query helpers (`query_db_model`) and pretty-print helpers (`pretty_print_thread_status`).
+    Key attributes:
+    - thread_list  : list[Future] — active (not yet done) submitted tasks.
+    - thread_dict  : diskcache.Cache — per-task metadata keyed by thread_ident.
+    - status_store : diskcache.Cache — per-user summaries shared with ZeroMQ.
+    - lock         : threading.Lock — guards thread_list and thread_dict updates.
+    - pool         : ThreadPoolManager — bounded executor (max_workers configurable).
     """
 
     def __init__(self, status_store, thread_dict, pool=None):
@@ -125,6 +116,7 @@ class UMRSThreads:
             return target(*a, **kw)
 
         future = self.pool.submit(_wrapper, *args)
+
 
         # Wait for the worker to start so we know its ident.
         if not ident_ready.wait(timeout=60):
@@ -257,20 +249,21 @@ class UMRSThreads:
         return thread_ident
 
     def launch_check_objects(
-        self, buckets_cfg, key, verbose, log_output, update_status_callback=None
+        self, client_id, buckets_cfg, key, verbose, log_output, update_status_callback=None
     ):
         from umrs.server.maintenance import check_objects
 
         thread_ident, future = self._submit_to_pool(
             check_objects,
-            (self, buckets_cfg, key, verbose, log_output, update_status_callback),
+            (self, client_id, buckets_cfg, key, verbose, log_output, update_status_callback),
             key,
             update_status_callback=update_status_callback,
         )
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
-            keys_per_bucket[path_to_bucket] = entry.num_objects
+            if client_id is None or entry.s3_username == client_id:
+                keys_per_bucket[path_to_bucket] = entry.num_objects
 
         self.update_thread_dict(
             buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident
@@ -310,7 +303,8 @@ class UMRSThreads:
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
-            keys_per_bucket[path_to_bucket] = entry.num_objects
+            if client_id is None or entry.s3_username == client_id:
+                keys_per_bucket[path_to_bucket] = entry.num_objects
 
         self.update_thread_dict(
             buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident
@@ -348,7 +342,8 @@ class UMRSThreads:
 
         keys_per_bucket = {}
         for path_to_bucket, entry in buckets_cfg.items():
-            keys_per_bucket[path_to_bucket] = entry.num_objects
+            if client_id is None or entry.s3_username == client_id:
+                keys_per_bucket[path_to_bucket] = entry.num_objects
 
         self.update_thread_dict(
             buckets_cfg, keys_per_bucket, key, thread_ident=thread_ident
@@ -433,26 +428,14 @@ class UMRSThreads:
             running = []
             finished_idents = []
             for item in self.thread_list:
-                if hasattr(item, "done"):  # concurrent.futures.Future
-                    if item.done():
-                        # Propagate exceptions so they are logged
-                        exc = item.exception()
-                        if exc is not None:
-                            logger.error("Pool task raised: %s", exc)
-                        finished_idents.append(id(item))
-                    else:
-                        running.append(item)
-                else:  # legacy threading.Thread
-                    print(f"{item.ident=}")
-                    if not item.is_alive():
-                        finished_idents.append(item.ident)
-                        item.join()
-                    else:
-                        running.append(item)
-            print(f"==> Running threads: {len(running)}")
-            pretty_print_thread_status(
-                self.thread_dict, running_only=True, print_output=ENABLE_PRETTY_PRINT
-            )
+                if item.done():
+                    exc = item.exception()
+                    if exc is not None:
+                        logger.error("Pool task raised: %s", exc)
+                    finished_idents.append(id(item))
+                else:
+                    running.append(item)
+            pretty_print_thread_status(self.thread_dict, running_only=True, print_output=ENABLE_PRETTY_PRINT)
             self.thread_list = running
             return finished_idents
 
@@ -462,15 +445,11 @@ class UMRSThreads:
             items = list(self.thread_list)
             self.thread_list.clear()
         for item in items:
-            if hasattr(item, "result"):  # concurrent.futures.Future
-                try:
-                    item.result()  # blocks until done
-                except Exception as e:
-                    logger.error("Pool task raised during waitall: %s", e)
-                finished_idents.append(id(item))
-            else:  # legacy threading.Thread
-                finished_idents.append(item.ident)
-                item.join()
+            try:
+                item.result()  # blocks until done
+            except Exception as e:
+                logger.error("Pool task raised during waitall: %s", e)
+            finished_idents.append(id(item))
         return finished_idents
 
     def filter_thread_status_for_user(self, client_id, key):

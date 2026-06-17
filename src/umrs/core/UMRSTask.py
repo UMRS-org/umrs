@@ -51,7 +51,7 @@ class UMRSTask:
             * Completed tasks remain as COMPLETED.
 
         Returns:
-        dict with key = (client_id, cmd, payload) and value = status (or task dict)
+        dict with reco = (client_id, cmd, payload) and value = status (or task dict)
         """
         if verbose:
             traceback.print_stack()
@@ -182,7 +182,8 @@ class UMRSTask:
         for row in rows:
             row = list(row)
             if row[3] is not None:  # payload column
-                row[3] = "\n".join(textwrap.wrap(str(row[3]), width=70))
+                lines = textwrap.wrap(str(row[3]), width=70)
+                row[3] = "\n".join(lines[:2]) + ("…" if len(lines) > 2 else "")
             wrapped_rows.append(row)
 
         if not rows:
