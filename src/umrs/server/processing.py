@@ -141,6 +141,7 @@ def process_s3_objects(
         active_threads.record_status_for_users_by_key(users, key)
         active_threads.remove_from_running_list()
 
+    
     # --- Service lifecycle: auto-release backend jobs when idle ---
     service_lifecycle = os.environ.get("UMRS_SERVICE_LIFECYCLE", "auto_release")
     if service_lifecycle == "auto_release":
