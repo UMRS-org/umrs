@@ -57,6 +57,9 @@ USER_ALLOWED_COMMANDS: set[str] = frozenset(
         "FILE",
         "STATUS",
         "CREATE_DATA_QUEUE",
+        # HANDSHAKE (in-repo client) and HAND_CHECK (r4 SDK transport) are
+        # equivalent readiness pings; both must be authorized for users since
+        # unknown commands are denied by default. Keep both wire spellings.
         "HANDSHAKE",
         "HAND_CHECK",
         "EXPORT_EMBEDDINGS",
