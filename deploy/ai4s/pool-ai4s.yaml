@@ -18,6 +18,13 @@
 #     - Needs 2n4gpu (8× B200) with FP8 quantization
 #     - vLLM v0.19.0+, SGLang v0.5.10+ required
 #
+#   GLM-5.2 (zai-org/GLM-5.2):
+#     - 753B stored params (MoE, glm_moe_dsa architecture)
+#     - BF16 weights → ~1.5 TB; FP8 → ~753 GiB
+#     - 1M native context (solid, per upstream)
+#     - Needs 4n4gpu (16× B200) for native 1M context
+#     - vLLM v0.23.0+, SGLang v0.5.13.post1+ required
+#
 #   Kimi K2.6 (moonshotai/Kimi-K2.6):
 #     - 1T total params, 32B activated (MoE, 384 experts, 8 active)
 #     - Native INT4 quantization → ~500 GiB
@@ -101,6 +108,22 @@ endpoints:
     max_model_len: 202752  # native context (full token size)
     # NEXT-CANARY: GB200 recipe = 2 nodes TP=8, PP=1 (FP8 ~893 GiB fits 8 GPUs). Same memory-revalidation caveat as DeepSeek
     #   before reducing node_count to 2. Also wire reasoning-parser glm45 (tool-parser glm47 already derived).
+
+  - name: glm-5.2
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4          # 4n4gpu for native 1M context (BF16 ~1.5TB; FP8 ~753GiB fits 4 nodes)
+    partition: 4n4gpu-p    # unlimited walltime
+    max_model_len: 1048576 # native 1M context (per upstream README: "solid 1M-token context")
+    env_vars:
+      # GLM-5.2's glm_moe_dsa DSA indexer (self_attn.indexer.k_norm) needs
+      # vLLM >= 0.23.0; the default v4 SIF ships 0.22.1rc1 and crashes with
+      # "weights were not initialized from checkpoint". Pin this model to the
+      # v6 overlay image (vLLM 0.23.1rc1 + Ray 2.48.0). serve.slurm reads
+      # RIVAULT_SIF from the job shell (--export=ALL). v4/v5 stay default for
+      # all other models. See ai4s-endpoint-restore-glm52-2026-06-17 memory.
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
 
   - name: kimi-k2.6
     model: Kimi-K2.6

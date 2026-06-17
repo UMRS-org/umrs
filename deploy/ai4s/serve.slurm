@@ -22,7 +22,7 @@ set -euo pipefail
 # When Slurm allocates more than one node (SLURM_NNODES > 1, e.g. the 4n4gpu-p
 # partition) it bootstraps a Ray cluster across the nodes and launches vLLM with
 # -tp <gpus_per_node> -pp <node_count> using the Ray distributed executor, so
-# models that exceed one node's aggregate GPU memory (DeepSeek-V4-Pro / GLM-5.1)
+# models that exceed one node's aggregate GPU memory (DeepSeek-V4-Pro / GLM-5.1 / GLM-5.2)
 # can be served at full context. The SIF must include Ray (see
 # deploy/singularity/mini-rivault-aarch64-ray.def).
 # ─────────────────────────────────────────────────────────────────────────────
@@ -489,6 +489,26 @@ case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
         # Multimodal: up to 4 images per prompt (recipe default).
         VLLM_ARGS+=( --limit-mm-per-prompt '{"image": 4}' )
         ;;
+esac
+# GLM-5.2 (IndexShare / glm_moe_dsa): GLM-5.2 introduces IndexShare, which
+# reuses one DeepSeek-style sparse-attention indexer across every four sparse
+# layers (arxiv 2603.12201). The "skip" layers reuse a neighbour layer's top-k
+# indices and carry NO indexer weights in the BF16 checkpoint (k_norm exists
+# only on the group-owner layers: the first_k_dense_replace dense layers plus
+# every index_topk_freq-th sparse layer). vLLM still builds an indexer module on
+# every layer, so under BF16 the post-load strict weight check raises
+#   ValueError: Following weights were not initialized from checkpoint:
+#   {'model.layers.N.self_attn.indexer.k_norm.{weight,bias}'}
+# and engine-core init fails. The official vLLM recipe
+# (recipes.vllm.ai/zai-org/GLM-5.2, Troubleshooting) fixes this by disabling the
+# strict weight-track check via --model-loader-extra-config; it is safe because
+# skip layers never run their indexer (those weights are never read). FP8
+# checkpoints disable the check automatically, so this is BF16-only. GLM-5.1 has
+# no IndexShare skip layers and is unaffected — scope strictly to 5.2. Requires
+# vLLM >= 0.23.0 for the glm_moe_dsa architecture (the v6 SIF; the v4 SIF's
+# 0.22.x predates glm_moe_dsa support entirely).
+case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
+    *glm*5.2*) VLLM_ARGS+=( --model-loader-extra-config '{"enable_weights_track": false}' ) ;;
 esac
 # Pin context length only when explicitly requested; otherwise omit the flag so
 # vLLM serves the model's native maximum context ("full token size").

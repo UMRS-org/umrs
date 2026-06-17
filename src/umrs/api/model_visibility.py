@@ -2,7 +2,7 @@
 
 Some deployments expose only a curated subset of the shared model registry.
 For example, the AI4S frontier cluster should surface only large frontier models
-(GLM-5.1, Kimi-K2.6, DeepSeek-V4-Pro family), while smaller models live on the
+(GLM-5.1, GLM-5.2, Kimi-K2.6, DeepSeek-V4-Pro family), while smaller models live on the
 RCCS cluster. Because both clusters can share the same model registry, this
 curation is driven by environment so no code or registry change is needed:
 
