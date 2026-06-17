@@ -3,6 +3,7 @@ from typing import Any
 from umrs.inference.embeddings import compute_and_store_embedding
 
 
+
 class LocalEmbeddingBackend:
     """Embedding backend that computes embeddings in-process.
 

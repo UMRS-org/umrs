@@ -258,7 +258,7 @@ def reconcile_status_on_startup(active_threads, buckets_cfg):
                     "table_name": entry.table_name,
                     "modality_name": entry.modality_name,
                     "bucket": path_to_bucket,
-                    "work_type": TaskCmd.PROCESS_OBJECTS.lower(),
+                    "work_type": TaskCmd.PROCESS_OBJECTS,
                     "nb_objects": entry.num_objects,
                 }
             )
@@ -280,7 +280,7 @@ def reconcile_status_on_startup(active_threads, buckets_cfg):
         json_safe = active_threads._json_safe_thread_status(synthetic_thread_status)
         active_threads.record_status(
             username,
-            TaskCmd.PROCESS_OBJECTS.lower(),
+            TaskCmd.PROCESS_OBJECTS,
             {"summary": summary, "data": json_safe, "last_updated_at": snapshot_time},
         )
         active_threads.record_status(

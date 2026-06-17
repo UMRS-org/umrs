@@ -27,9 +27,7 @@ class DataPortRange:
         if self.start < 1 or self.end < 1:
             raise ValueError("Data ports must be positive integers")
         if self.end < self.start:
-            raise ValueError(
-                "Data port range end must be greater than or equal to start"
-            )
+            raise ValueError("Data port range end must be greater than or equal to start")
 
     @classmethod
     def single(cls, port: int) -> DataPortRange:
@@ -58,7 +56,7 @@ def parse_data_port_range(
     *,
     default: DataPortRange | None = None,
 ) -> DataPortRange | None:
-    if _empty_data_port_range_value(raw):
+    if raw is None or raw == "":
         return default
 
     if isinstance(raw, DataPortRange):
@@ -68,37 +66,22 @@ def parse_data_port_range(
         return DataPortRange.single(raw)
 
     if isinstance(raw, str):
-        return _parse_data_port_range_string(raw, default)
+        value = raw.strip()
+        if not value:
+            return default
+        if "-" not in value:
+            return DataPortRange.single(int(value))
+        start_raw, end_raw = value.split("-", 1)
+        return DataPortRange(start=int(start_raw.strip()), end=int(end_raw.strip()))
 
     if isinstance(raw, dict):
-        return _parse_data_port_range_mapping(raw)
+        if "start" not in raw:
+            raise ValueError("data_port_range requires a start value")
+        start = int(raw["start"])
+        end = int(raw.get("end", start))
+        return DataPortRange(start=start, end=end)
 
     raise ValueError(f"Unsupported data port range value: {raw!r}")
-
-
-def _empty_data_port_range_value(raw: Any) -> bool:
-    return raw is None or raw == ""
-
-
-def _parse_data_port_range_string(
-    raw: str,
-    default: DataPortRange | None,
-) -> DataPortRange | None:
-    value = raw.strip()
-    if not value:
-        return default
-    if "-" not in value:
-        return DataPortRange.single(int(value))
-    start_raw, end_raw = value.split("-", 1)
-    return DataPortRange(start=int(start_raw.strip()), end=int(end_raw.strip()))
-
-
-def _parse_data_port_range_mapping(raw: dict[str, Any]) -> DataPortRange:
-    if "start" not in raw:
-        raise ValueError("data_port_range requires a start value")
-    start = int(raw["start"])
-    end = int(raw.get("end", start))
-    return DataPortRange(start=start, end=end)
 
 
 def _env_flag(name: str, default: bool | None = None) -> bool | None:
@@ -157,11 +140,10 @@ def _coerce_rag_url(profile: ConnectionProfile) -> str:
 profile_schema: dict[str, Any] = {
     "$schema": "http://json-schema.org/draft-07/schema#",
     "type": "object",
-    "required": ["name", "mode"],
+    "required": ["name", "mode", "zmq"],
     "properties": {
         "name": {"type": "string", "minLength": 1},
-        "mode": {"type": "string", "enum": ["ssh_tunnel", "direct", "gateway"]},
-        "gateway_url": {"type": "string", "minLength": 1},
+        "mode": {"type": "string", "enum": ["ssh_tunnel", "direct"]},
         "zmq": {
             "type": "object",
             "required": ["host"],
@@ -180,10 +162,7 @@ profile_schema: dict[str, Any] = {
                 },
                 "tunnel_mode": {"type": "boolean"},
                 "health_check_timeout_ms": {"type": "integer", "minimum": 1000},
-                "auth_type": {
-                    "type": "string",
-                    "enum": ["none", "curve_static", "session"],
-                },
+                "auth_type": {"type": "string", "minLength": 1},
             },
             "additionalProperties": False,
         },
@@ -195,6 +174,8 @@ profile_schema: dict[str, Any] = {
             },
             "additionalProperties": False,
         },
+        "gateway_url": {"type": "string", "minLength": 1},
+        "username": {"type": "string", "minLength": 1},
         "ssh": {
             "type": "object",
             "properties": {
@@ -206,17 +187,9 @@ profile_schema: dict[str, Any] = {
                         "type": "object",
                         "required": ["local_port", "remote_host", "remote_port"],
                         "properties": {
-                            "local_port": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 65535,
-                            },
+                            "local_port": {"type": "integer", "minimum": 1, "maximum": 65535},
                             "remote_host": {"type": "string", "minLength": 1},
-                            "remote_port": {
-                                "type": "integer",
-                                "minimum": 1,
-                                "maximum": 65535,
-                            },
+                            "remote_port": {"type": "integer", "minimum": 1, "maximum": 65535},
                         },
                         "additionalProperties": False,
                     },
@@ -224,7 +197,6 @@ profile_schema: dict[str, Any] = {
             },
             "additionalProperties": False,
         },
-        "username": {"type": "string", "minLength": 1},
     },
     "additionalProperties": False,
 }
@@ -236,9 +208,7 @@ class ConnectionProfile:
     mode: str
     server_host: str
     control_port: int = 5555
-    data_port_range: DataPortRange = field(
-        default_factory=lambda: DataPortRange.single(DEFAULT_DATA_PORT)
-    )
+    data_port_range: DataPortRange = field(default_factory=lambda: DataPortRange.single(DEFAULT_DATA_PORT))
     tunnel_mode: bool = False
     health_check_timeout_ms: int = 5000
     minio_url: str | None = None
@@ -247,9 +217,6 @@ class ConnectionProfile:
     local_forwards: list[dict[str, Any]] = field(default_factory=list)
     command_hint: str | None = None
     path: str | None = None
-    gateway_url: str | None = None
-    zmq_auth_type: str | None = None
-    username: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -284,8 +251,6 @@ class ResolvedConnection:
     command_hint: str | None = None
     allocated_data_port: int | None = None
     sources: dict[str, str] = field(default_factory=dict)
-    gateway_url: str | None = None
-    zmq_auth_type: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -303,16 +268,29 @@ class ResolvedConnection:
 
 
 def get_connections_dir() -> Path:
-    return (
-        Path(get_resolved_umrs_cfg_dir()).expanduser()
-        / get_connections_default_cfg_subdir()
-    )
+    return Path(get_resolved_umrs_cfg_dir()).expanduser() / get_connections_default_cfg_subdir()
 
 
-def get_current_profile_path() -> Path:
-    return (
-        Path(get_resolved_umrs_cfg_dir()).expanduser()
-        / get_current_connection_profile_file()
+
+def get_current_profile_path() -> Path | None:
+    """Return the path to the current connection profile file.
+
+    Returns:
+        Path  — if get_current_connection_profile_file() returns a string.
+        None  — if get_current_connection_profile_file() returns None
+                (no profile selected yet).
+    Raises:
+        TypeError — if get_current_connection_profile_file() returns an
+                    unexpected type (neither str nor None).
+    """
+    profile_file = get_current_connection_profile_file()
+    if profile_file is None:
+        return Path() # not ans is_file!
+    if isinstance(profile_file, str):
+        return Path(get_resolved_umrs_cfg_dir()).expanduser() / profile_file
+    raise TypeError(
+        f"get_current_connection_profile_file() returned unexpected type "
+        f"{type(profile_file).__name__!r}: {profile_file!r}"
     )
 
 
@@ -327,9 +305,7 @@ def _load_profile_content(path: Path) -> dict[str, Any]:
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"Connection profile not found: {path}") from exc
     except json.decoder.JSONDecodeError as exc:
-        raise ValueError(
-            f"Failed to parse connection profile {path}: {exc.msg} (char {exc.pos})"
-        ) from exc
+        raise ValueError(f"Failed to parse connection profile {path}: {exc.msg} (char {exc.pos})") from exc
 
     try:
         validate(instance=content, schema=profile_schema)
@@ -340,12 +316,8 @@ def _load_profile_content(path: Path) -> dict[str, Any]:
 
 
 def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProfile:
+    zmq_cfg = content["zmq"]
     mode = content["mode"]
-    zmq_cfg = content.get("zmq") or {}
-
-    # Gateway-only mode: ZMQ config is optional.
-    server_host = zmq_cfg.get("host", "127.0.0.1")
-
     tunnel_mode = zmq_cfg.get("tunnel_mode")
     if tunnel_mode is None:
         tunnel_mode = mode == "ssh_tunnel"
@@ -354,16 +326,13 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
     ssh_cfg = content.get("ssh") or {}
     data_port_range = parse_data_port_range(
         zmq_cfg.get("data_port_range"),
-        default=parse_data_port_range(
-            zmq_cfg.get("data_base_port"),
-            default=DataPortRange.single(DEFAULT_DATA_PORT),
-        ),
+        default=parse_data_port_range(zmq_cfg.get("data_base_port"), default=DataPortRange.single(DEFAULT_DATA_PORT)),
     )
 
     profile = ConnectionProfile(
         name=content["name"],
         mode=mode,
-        server_host=server_host,
+        server_host=zmq_cfg["host"],
         control_port=int(zmq_cfg.get("control_port", 5555)),
         data_port_range=data_port_range or DataPortRange.single(DEFAULT_DATA_PORT),
         tunnel_mode=bool(tunnel_mode),
@@ -374,20 +343,11 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         local_forwards=list(ssh_cfg.get("local_forwards") or []),
         command_hint=ssh_cfg.get("command_hint"),
         path=str(path),
-        gateway_url=content.get("gateway_url"),
-        zmq_auth_type=zmq_cfg.get("auth_type"),
-        username=content.get("username"),
     )
-    return _with_default_service_urls(profile)
-
-
-def _with_default_service_urls(profile: ConnectionProfile) -> ConnectionProfile:
-    profile.minio_url = profile.minio_url or _default_service_url(
-        profile.server_host, 9000, profile.tunnel_mode
-    )
-    profile.rag_url = profile.rag_url or _default_service_url(
-        profile.server_host, 8081, profile.tunnel_mode
-    )
+    if not profile.minio_url:
+        profile.minio_url = _default_service_url(profile.server_host, 9000, profile.tunnel_mode)
+    if not profile.rag_url:
+        profile.rag_url = _default_service_url(profile.server_host, 8081, profile.tunnel_mode)
     return profile
 
 
@@ -397,17 +357,13 @@ def load_connection_profile(name: str) -> ConnectionProfile:
     return _profile_from_content(content, path)
 
 
-def load_connection_profile_file(
-    path_like: str | os.PathLike[str],
-) -> ConnectionProfile:
+def load_connection_profile_file(path_like: str | os.PathLike[str]) -> ConnectionProfile:
     path = Path(path_like).expanduser()
     content = _load_profile_content(path)
     return _profile_from_content(content, path)
 
 
-def import_connection_profile(
-    path_like: str | os.PathLike[str], overwrite: bool = False
-) -> ConnectionProfile:
+def import_connection_profile(path_like: str | os.PathLike[str], overwrite: bool = False) -> ConnectionProfile:
     source_path = Path(path_like).expanduser()
     content = _load_profile_content(source_path)
     profile = _profile_from_content(content, source_path)
@@ -427,9 +383,7 @@ def import_connection_profile(
     return _profile_from_content(content, destination_path)
 
 
-def discover_connection_profiles() -> tuple[
-    list[ConnectionProfile], list[dict[str, str]]
-]:
+def discover_connection_profiles() -> tuple[list[ConnectionProfile], list[dict[str, str]]]:
     profiles: list[ConnectionProfile] = []
     errors: list[dict[str, str]] = []
     directory = get_connections_dir()
@@ -461,20 +415,13 @@ def set_current_profile_name(name: str) -> Path:
     return path
 
 
-def resolve_profile_name(
-    explicit_name: str | None = None,
-) -> tuple[str | None, str | None]:
+def resolve_profile_name(explicit_name: str | None = None) -> tuple[str | None, str | None]:
     if explicit_name:
         return explicit_name, "flag:--profile"
 
     env_name = os.environ.get(UMRS_PROFILE_ENV_VAR_NAME)
     if env_name:
         return env_name, f"env:{UMRS_PROFILE_ENV_VAR_NAME}"
-
-    # Fall back to R4_PROFILE so a unified profile name works across tools
-    r4_profile = os.environ.get("R4_PROFILE")
-    if r4_profile:
-        return r4_profile, "env:R4_PROFILE"
 
     current_name = get_current_profile_name()
     if current_name:
@@ -489,204 +436,82 @@ def resolve_connection(
     explicit_control_port: int | None = None,
 ) -> ResolvedConnection:
     profile_name, profile_source = resolve_profile_name(explicit_profile_name)
-    profile: ConnectionProfile | None = None
-    if profile_name:
-        try:
-            profile = load_connection_profile(profile_name)
-        except FileNotFoundError:
-            # Profile not in ~/.config/umrs/connections/ — try r4 config
-            profile = _try_load_r4_profile(profile_name)
-            if profile is not None:
-                profile_source = f"r4:{profile_name}"
+    profile = load_connection_profile(profile_name) if profile_name else None
+
     sources: dict[str, str] = {}
 
-    parts = _connection_parts(
-        profile, profile_name, explicit_server_ip, explicit_control_port, sources
-    )
-    return _resolved_connection(profile, profile_source, parts)
+    if explicit_server_ip:
+        server_host = explicit_server_ip
+        sources["server_host"] = "flag:--server-ip"
+    elif os.environ.get("UMRS_SERVER_HOST"):
+        server_host = os.environ["UMRS_SERVER_HOST"]
+        sources["server_host"] = "env:UMRS_SERVER_HOST"
+    elif profile:
+        server_host = profile.server_host
+        sources["server_host"] = f"profile:{profile.name}"
+    else:
+        server_host = "127.0.0.1"
+        sources["server_host"] = "default"
 
+    if explicit_control_port is not None:
+        control_port = explicit_control_port
+        sources["control_port"] = "flag:--control-port"
+    elif _env_int("UMRS_CONTROL_PORT") is not None:
+        control_port = _env_int("UMRS_CONTROL_PORT")
+        sources["control_port"] = "env:UMRS_CONTROL_PORT"
+    elif profile:
+        control_port = profile.control_port
+        sources["control_port"] = f"profile:{profile.name}"
+    else:
+        control_port = 5555
+        sources["control_port"] = "default"
 
-def _connection_parts(
-    profile: ConnectionProfile | None,
-    profile_name: str | None,
-    explicit_server_ip: str | None,
-    explicit_control_port: int | None,
-    sources: dict[str, str],
-) -> dict[str, Any]:
-    profile_source_label = f"profile:{profile.name}" if profile else ""
-    server_host = _connection_value(
-        sources,
-        "server_host",
-        [
-            (explicit_server_ip, "flag:--server-ip"),
-            (os.environ.get("UMRS_SERVER_HOST"), "env:UMRS_SERVER_HOST"),
-            (_profile_attr(profile, "server_host"), profile_source_label),
-        ],
-        "127.0.0.1",
-        "default",
-    )
-    control_port = _connection_value(
-        sources,
-        "control_port",
-        [
-            (explicit_control_port, "flag:--control-port"),
-            (_env_int("UMRS_CONTROL_PORT"), "env:UMRS_CONTROL_PORT"),
-            (_profile_attr(profile, "control_port"), profile_source_label),
-        ],
-        5555,
-        "default",
-    )
-    data_port_range = _resolve_data_port_range(profile, sources)
-    tunnel_mode = _connection_value(
-        sources,
-        "tunnel_mode",
-        [
-            (_env_flag("UMRS_TUNNEL_MODE", None), "env:UMRS_TUNNEL_MODE"),
-            (_profile_attr(profile, "tunnel_mode"), profile_source_label),
-        ],
-        False,
-        "default",
-    )
-    health_check_timeout_ms = _connection_value(
-        sources,
-        "health_check_timeout_ms",
-        [
-            (
-                _env_int("UMRS_HEALTH_CHECK_TIMEOUT_MS"),
-                "env:UMRS_HEALTH_CHECK_TIMEOUT_MS",
-            ),
-            (_profile_attr(profile, "health_check_timeout_ms"), profile_source_label),
-        ],
-        5000,
-        "default",
-    )
-    base_profile = _base_connection_profile(
-        profile,
-        profile_name,
-        server_host,
-        control_port,
-        data_port_range,
-        tunnel_mode,
-        health_check_timeout_ms,
-    )
-
-    minio_url = _coerce_minio_url(base_profile)
-    rag_url = _coerce_rag_url(base_profile)
-    sources["minio_url"] = "env/profile/default"
-    sources["rag_url"] = "env/profile/default"
-    return {
-        "server_host": server_host,
-        "control_port": control_port,
-        "data_port_range": data_port_range,
-        "tunnel_mode": tunnel_mode,
-        "health_check_timeout_ms": health_check_timeout_ms,
-        "minio_url": minio_url,
-        "rag_url": rag_url,
-        "sources": sources,
-    }
-
-
-def _resolved_connection(
-    profile: ConnectionProfile | None,
-    profile_source: str | None,
-    parts: dict[str, Any],
-) -> ResolvedConnection:
-    return ResolvedConnection(
-        profile_name=_profile_attr(profile, "name"),
-        profile_path=_profile_attr(profile, "path"),
-        profile_source=profile_source,
-        mode=_connection_mode(profile, parts["tunnel_mode"]),
-        server_host=parts["server_host"],
-        control_port=parts["control_port"],
-        data_port_range=parts["data_port_range"],
-        tunnel_mode=parts["tunnel_mode"],
-        health_check_timeout_ms=parts["health_check_timeout_ms"],
-        minio_url=parts["minio_url"],
-        rag_url=parts["rag_url"],
-        ssh_host=_profile_attr(profile, "ssh_host"),
-        local_forwards=list(profile.local_forwards) if profile else [],
-        command_hint=_profile_attr(profile, "command_hint"),
-        sources=parts["sources"],
-        gateway_url=_profile_attr(profile, "gateway_url"),
-        zmq_auth_type=_profile_attr(profile, "zmq_auth_type"),
-    )
-
-
-def _profile_attr(profile: ConnectionProfile | None, attr: str) -> Any:
-    return getattr(profile, attr) if profile else None
-
-
-def _connection_mode(profile: ConnectionProfile | None, tunnel_mode: bool) -> str:
-    if tunnel_mode:
-        return "ssh_tunnel"
-    return profile.mode if profile else "direct"
-
-
-def _connection_value(
-    sources: dict[str, str],
-    key: str,
-    choices: list[tuple[Any, str]],
-    default: Any,
-    default_source: str,
-) -> Any:
-    for value, source in choices:
-        if value is not None and value != "":
-            sources[key] = source
-            return value
-    sources[key] = default_source
-    return default
-
-
-def _resolve_data_port_range(
-    profile: ConnectionProfile | None,
-    sources: dict[str, str],
-) -> DataPortRange:
     env_data_port = _env_int("UMRS_DATA_PORT")
     env_data_port_range = _env_port_range("UMRS_DATA_PORT_RANGE")
-    env_data_base_port = _env_int("UMRS_DATA_BASE_PORT")
     if env_data_port is not None:
-        return _data_port_source(
-            DataPortRange.single(env_data_port), "env:UMRS_DATA_PORT", sources
-        )
-    if env_data_port_range is not None:
-        return _data_port_source(
-            env_data_port_range, "env:UMRS_DATA_PORT_RANGE", sources
-        )
-    if env_data_base_port is not None:
-        return _data_port_source(
-            DataPortRange.single(env_data_base_port), "env:UMRS_DATA_BASE_PORT", sources
-        )
-    if profile:
-        return _data_port_source(
-            profile.data_port_range, f"profile:{profile.name}", sources
-        )
-    return _data_port_source(
-        DataPortRange.single(DEFAULT_DATA_PORT), "default", sources
-    )
+        data_port_range = DataPortRange.single(env_data_port)
+        sources["data_base_port"] = "env:UMRS_DATA_PORT"
+        sources["data_port_range"] = "env:UMRS_DATA_PORT"
+    elif env_data_port_range is not None:
+        data_port_range = env_data_port_range
+        sources["data_base_port"] = "env:UMRS_DATA_PORT_RANGE"
+        sources["data_port_range"] = "env:UMRS_DATA_PORT_RANGE"
+    elif _env_int("UMRS_DATA_BASE_PORT") is not None:
+        data_port_range = DataPortRange.single(_env_int("UMRS_DATA_BASE_PORT"))
+        sources["data_base_port"] = "env:UMRS_DATA_BASE_PORT"
+        sources["data_port_range"] = "env:UMRS_DATA_BASE_PORT"
+    elif profile:
+        data_port_range = profile.data_port_range
+        sources["data_base_port"] = f"profile:{profile.name}"
+        sources["data_port_range"] = f"profile:{profile.name}"
+    else:
+        data_port_range = DataPortRange.single(DEFAULT_DATA_PORT)
+        sources["data_base_port"] = "default"
+        sources["data_port_range"] = "default"
 
+    tunnel_override = _env_flag("UMRS_TUNNEL_MODE", None)
+    if tunnel_override is not None:
+        tunnel_mode = tunnel_override
+        sources["tunnel_mode"] = "env:UMRS_TUNNEL_MODE"
+    elif profile:
+        tunnel_mode = profile.tunnel_mode
+        sources["tunnel_mode"] = f"profile:{profile.name}"
+    else:
+        tunnel_mode = False
+        sources["tunnel_mode"] = "default"
 
-def _data_port_source(
-    data_port_range: DataPortRange,
-    source: str,
-    sources: dict[str, str],
-) -> DataPortRange:
-    sources["data_base_port"] = source
-    sources["data_port_range"] = source
-    return data_port_range
+    health_timeout = _env_int("UMRS_HEALTH_CHECK_TIMEOUT_MS")
+    if health_timeout is not None:
+        health_check_timeout_ms = health_timeout
+        sources["health_check_timeout_ms"] = "env:UMRS_HEALTH_CHECK_TIMEOUT_MS"
+    elif profile:
+        health_check_timeout_ms = profile.health_check_timeout_ms
+        sources["health_check_timeout_ms"] = f"profile:{profile.name}"
+    else:
+        health_check_timeout_ms = 5000
+        sources["health_check_timeout_ms"] = "default"
 
-
-def _base_connection_profile(
-    profile: ConnectionProfile | None,
-    profile_name: str | None,
-    server_host: str,
-    control_port: int,
-    data_port_range: DataPortRange,
-    tunnel_mode: bool,
-    health_check_timeout_ms: int,
-) -> ConnectionProfile:
-    if profile:
-        return profile
-    return ConnectionProfile(
+    base_profile = profile or ConnectionProfile(
         name=profile_name or "implicit-default",
         mode="ssh_tunnel" if tunnel_mode else "direct",
         server_host=server_host,
@@ -696,88 +521,30 @@ def _base_connection_profile(
         health_check_timeout_ms=health_check_timeout_ms,
     )
 
+    minio_url = _coerce_minio_url(base_profile)
+    rag_url = _coerce_rag_url(base_profile)
+    sources["minio_url"] = "env/profile/default"
+    sources["rag_url"] = "env/profile/default"
 
-# ---------------------------------------------------------------------------
-# r4 config read-through (stdlib only — no r4 package import)
-# ---------------------------------------------------------------------------
+    mode = "ssh_tunnel" if tunnel_mode else (profile.mode if profile else "direct")
 
-
-def _resolve_r4_config_dir() -> Path:
-    """Return the r4 config directory (same logic as r4.config)."""
-    xdg = os.environ.get("XDG_CONFIG_HOME")
-    return Path(xdg, "r4") if xdg else Path.home() / ".config" / "r4"
-
-
-def _try_load_r4_profile(name: str) -> ConnectionProfile | None:
-    """Attempt to build a ConnectionProfile from r4's config files.
-
-    Reads ``~/.config/r4/sources.json`` for the named source, extracting
-    gateway_url, ZMQ host/port, and auth_type.  Uses only stdlib (no r4
-    package import) to respect the import boundary.
-
-    Returns None if r4 config doesn't exist or the profile isn't found.
-    """
-    r4_dir = _resolve_r4_config_dir()
-
-    # Try sources.json first (has ZMQ details)
-    sources_path = r4_dir / "sources.json"
-    if sources_path.is_file():
-        try:
-            data = json.loads(sources_path.read_text(encoding="utf-8"))
-            for src in data.get("sources", []):
-                if src.get("name") != name or src.get("kind") != "platform":
-                    continue
-                url = src.get("url", "")
-                host = src.get("zmq_host") or _r4_extract_host(url)
-                port = src.get("zmq_control_port") or 5555
-                tunnel = src.get("zmq_tunnel_mode") or False
-                auth_type = src.get("zmq_auth_type")
-                return ConnectionProfile(
-                    name=name,
-                    mode="ssh_tunnel" if tunnel else "direct",
-                    server_host=host,
-                    control_port=int(port),
-                    data_port_range=DataPortRange(int(port) + 1, int(port) + 8),
-                    tunnel_mode=bool(tunnel),
-                    health_check_timeout_ms=5000,
-                    gateway_url=url or None,
-                    zmq_auth_type=auth_type,
-                )
-        except (json.JSONDecodeError, OSError, KeyError):
-            pass
-
-    # Fallback: config.json profiles (simpler, may lack ZMQ details)
-    config_path = r4_dir / "config.json"
-    if config_path.is_file():
-        try:
-            data = json.loads(config_path.read_text(encoding="utf-8"))
-            profiles = data.get("profiles", {})
-            if name in profiles:
-                p = profiles[name]
-                url = p.get("gateway_url", "")
-                host = p.get("umrs_server_host") or _r4_extract_host(url)
-                port = p.get("umrs_control_port") or 5555
-                return ConnectionProfile(
-                    name=name,
-                    mode="direct",
-                    server_host=host,
-                    control_port=int(port),
-                    data_port_range=DataPortRange(int(port) + 1, int(port) + 8),
-                    tunnel_mode=False,
-                    health_check_timeout_ms=5000,
-                    gateway_url=url or None,
-                )
-        except (json.JSONDecodeError, OSError, KeyError):
-            pass
-
-    return None
-
-
-def _r4_extract_host(url: str) -> str:
-    """Extract hostname from a URL (stdlib only)."""
-    from urllib.parse import urlparse
-
-    return urlparse(url).hostname or "127.0.0.1"
+    return ResolvedConnection(
+        profile_name=profile.name if profile else None,
+        profile_path=profile.path if profile else None,
+        profile_source=profile_source,
+        mode=mode,
+        server_host=server_host,
+        control_port=control_port,
+        data_port_range=data_port_range,
+        tunnel_mode=tunnel_mode,
+        health_check_timeout_ms=health_check_timeout_ms,
+        minio_url=minio_url,
+        rag_url=rag_url,
+        ssh_host=profile.ssh_host if profile else None,
+        local_forwards=list(profile.local_forwards) if profile else [],
+        command_hint=profile.command_hint if profile else None,
+        sources=sources,
+    )
 
 
 __all__ = [
