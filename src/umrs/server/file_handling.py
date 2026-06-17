@@ -22,7 +22,7 @@ def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
         with open(conf_path, encoding="utf-8") as f:
             conf = json.load(f)
     except Exception as e:
-        print(f"Warning: failed to read conf '{conf_path}': {e}")
+        logger.info(f"Warning: failed to read conf '{conf_path}': {e}")
         return False
 
     users = conf.get("users", [])
@@ -57,7 +57,7 @@ def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
         new_users.append(canonical_user_path)
 
     if removed:
-        print(
+        logger.info(
             f"Updated server conf: removed {len(removed)} stale user config(s) "
             f"for '{username}': {removed}"
         )
@@ -70,12 +70,12 @@ def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
     try:
         with open(conf_path, "w", encoding="utf-8") as f:
             json.dump(conf, f, indent=2)
-        print(
+        logger.info(
             f"Updated server conf: ensured unique config for "
             f"'{username}' -> {canonical_user_path}"
         )
     except Exception as e:
-        print(f"Warning: failed to update conf '{conf_path}': {e}")
+        logger.info(f"Warning: failed to update conf '{conf_path}': {e}")
         return False
 
     # Best-effort cleanup: remove pruned files under user_cfg_path only
@@ -90,9 +90,9 @@ def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
                 and os.path.isfile(stale)
             ):
                 os.remove(stale)
-                print(f"Deleted stale user config file: {stale}")
+                logger.info(f"Deleted stale user config file: {stale}")
         except Exception as e:
-            print(f"Warning: failed to delete stale user config '{stale}': {e}")
+            logger.info(f"Warning: failed to delete stale user config '{stale}': {e}")
     return True
 
 
@@ -211,9 +211,9 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
         try:
             os.remove(zip_path)
         except Exception as e:
-            print(f"Warning: failed to clean up zip file '{zip_path}': {e}")
+            logger.info(f"Warning: failed to clean up zip file '{zip_path}': {e}")
 
-    print(f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}")
+    logger.info(f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}")
     return True, dest_dir, None
 
 
@@ -239,7 +239,7 @@ def persist_uploaded_user_config(
         data = load_client_cfg_file(tmp_path)
         username = data.get("username")
         if not username:
-            print(
+            logger.info(
                 f"Warning: uploaded file '{tmp_path}' missing 'username' field; "
                 f"ignoring"
             )
@@ -253,7 +253,7 @@ def persist_uploaded_user_config(
                 username,
                 safe_username,
             )
-            print(
+            logger.info(
                 f"Warning: uploaded file '{tmp_path}' contains unsafe "
                 f"username '{username}'; rejecting"
             )
@@ -263,7 +263,7 @@ def persist_uploaded_user_config(
         if expected_username:
             id_result = validate_config_identity(data, expected_username)
             if not id_result.valid:
-                print(
+                logger.info(
                     f"Warning: uploaded config identity validation failed: "
                     f"{'; '.join(id_result.errors)}; ignoring file"
                 )
@@ -272,10 +272,10 @@ def persist_uploaded_user_config(
                 logger.warning("Config identity warning: %s", w)
     except SystemExit:
         # load_client_cfg_file may sys.exit() on validation error
-        print(f"Warning: uploaded file '{tmp_path}' failed validation; ignoring")
+        logger.info(f"Warning: uploaded file '{tmp_path}' failed validation; ignoring")
         return False, None, None
     except Exception as e:
-        print(f"Warning: cannot parse uploaded config '{tmp_path}': {e}")
+        logger.info(f"Warning: cannot parse uploaded config '{tmp_path}': {e}")
         return False, None, None
 
     # look up existing users configuration path
@@ -283,7 +283,7 @@ def persist_uploaded_user_config(
 
     if not dest_path:
         if not allow_create:
-            print(
+            logger.info(
                 f"Rejected: user '{username}' is not enrolled on this server. "
                 f"An admin must run 'admin user add' first."
             )
@@ -295,7 +295,7 @@ def persist_uploaded_user_config(
         try:
             os.makedirs(user_dir, exist_ok=True)
         except Exception as e:
-            print(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
+            logger.info(f"Warning: cannot ensure user files directory '{user_dir}': {e}")
             return False, username, None
         dest_path = os.path.join(user_dir, f"{username}.json")
 
@@ -313,10 +313,10 @@ def persist_uploaded_user_config(
         try:
             os.remove(tmp_path)
         except Exception as e:
-            print(f"Warning: failed to clean up temp file '{tmp_path}': {e}")
-        print(f"Stored updated user config for '{username}' at '{dest_path}'")
+            logger.info(f"Warning: failed to clean up temp file '{tmp_path}': {e}")
+        logger.info(f"Stored updated user config for '{username}' at '{dest_path}'")
     except Exception as e:
-        print(f"Warning: failed to persist uploaded config to '{dest_path}': {e}")
+        logger.info(f"Warning: failed to persist uploaded config to '{dest_path}': {e}")
         return False, username, None
 
     # Ensure conf contains this user file path

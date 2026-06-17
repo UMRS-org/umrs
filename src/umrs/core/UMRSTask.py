@@ -1,4 +1,5 @@
 import json
+import logging
 import textwrap
 import time
 import traceback
@@ -8,6 +9,8 @@ from tabulate import tabulate
 
 from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
 from umrs.shared.utils import utc_to_local
+
+logger = logging.getLogger(__name__)
 
 
 class UMRSTask:
@@ -85,7 +88,7 @@ class UMRSTask:
                     # RESTART IDENTITY resets id back to 1
                     # CASCADE handles any future foreign keys referencing tasks
                     cur.execute("TRUNCATE TABLE tasks RESTART IDENTITY CASCADE")
-            print("==> tasks table reset: all rows deleted, ID sequence restarted.")
+            logger.info("==> tasks table reset: all rows deleted, ID sequence restarted.")
         finally:
             self._put_conn(conn)
 
@@ -213,7 +216,7 @@ class UMRSTask:
                         )
                         row = cur.fetchone()
                         if row is not None:
-                            print(f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})")
+                            logger.info(f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})")
                             return row[0]
                         # Should not happen: conflict fired but no active task found.
                         # The task likely transitioned to a terminal state between
@@ -223,7 +226,7 @@ class UMRSTask:
                 if attempt < self.max_attempts:
                     time.sleep(0.5)
                 else:
-                    print(f"PostgreSQL error in add_task: {type(e).__name__}: {e}")
+                    logger.info(f"PostgreSQL error in add_task: {type(e).__name__}: {e}")
                     traceback.print_exc()
                     raise
             finally:
@@ -250,7 +253,7 @@ class UMRSTask:
                 if attempt < self.max_attempts:
                     time.sleep(0.5)
                 else:
-                    print(f"Critical PostgreSQL error while updating task {task_id}: {type(e).__name__}: {e}")
+                    logger.info(f"Critical PostgreSQL error while updating task {task_id}: {type(e).__name__}: {e}")
                     traceback.print_exc()
                     raise
             finally:
@@ -298,7 +301,7 @@ class UMRSTask:
 
         elif cmd in (TaskCmd.HANDSHAKE, TaskCmd.CREATE_DATA_QUEUE,
                      TaskCmd.STATUS, TaskCmd.JOB_LIST):
-            print(f"We do not create task_id for {cmd=}")
+            logger.info(f"We do not create task_id for {cmd=}")
             return None
 
         else:
@@ -420,7 +423,7 @@ class UMRSTask:
                 message = "Tasks in DB:\n" + table
 
         if print_output:
-            print(message)
+            logger.info(message)
         return message
 
     def close(self, verbose=False):

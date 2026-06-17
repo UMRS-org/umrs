@@ -34,10 +34,10 @@ def _handle_completion_command(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     action = getattr(args, "completion_action", None)
     if action == "install":
-        print(install_completion("umrs-server", shell=args.shell))
+        logger.info(install_completion("umrs-server", shell=args.shell))
         return 0
     if action == "uninstall":
-        print(uninstall_completion("umrs-server", shell=args.shell))
+        logger.info(uninstall_completion("umrs-server", shell=args.shell))
         return 0
     if action in ("bash", "zsh"):
         print_completion_script("umrs-server", "_UMRS_SERVER_COMPLETE", action)
@@ -113,7 +113,7 @@ def main():
     # Reject unknown subcommands before loading heavy ML imports.
     first = sys.argv[1]
     if not first.startswith("-"):
-        print(
+        logger.info(
             f"umrs-server: unknown command '{first}'\nRun 'umrs-server -h' for usage.",
             file=sys.stderr,
         )
@@ -127,7 +127,7 @@ def main():
 
 def _print_toplevel_help():
     """Print a lightweight help message without importing heavy deps."""
-    print(
+    logger.info(
         "usage: umrs-server [-h] {admin,...} ...\n"
         "\n"
         "UMRS server and admin CLI.\n"
