@@ -52,7 +52,19 @@ def _caller_user_id(request: Request) -> str:
 
 
 def _is_admin(request: Request) -> bool:
-    """Check if caller has admin role (set by auth sidecar)."""
+    """Check if caller has admin role (set by auth sidecar).
+
+    The auth sidecar emits ``X-Verified-Is-Admin: true|false`` after
+    JWT validation (see gateway/sidecar/main.py).  We honour that
+    signal and fall back to ``X-User-Role`` for older sidecar
+    revisions or direct-UMRS clients.
+    """
+    verified_admin = request.headers.get(
+        "x-verified-is-admin", ""
+    ).strip().lower()
+    if verified_admin == "true":
+        return True
+
     role = request.headers.get("x-user-role", "").strip().lower()
     return role in ("admin", "operator")
 
