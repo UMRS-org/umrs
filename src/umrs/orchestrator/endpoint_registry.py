@@ -162,6 +162,9 @@ class RegisteredEndpoint:
         served = self.metadata.get("served_model_name")
         if served:
             d["served_model_name"] = served
+        max_model_len = self.metadata.get("max_model_len")
+        if isinstance(max_model_len, int) and max_model_len > 0:
+            d["max_model_len"] = max_model_len
         for key in (
             "model_type",
             "serving_backend",

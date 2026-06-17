@@ -549,6 +549,7 @@ class EndpointResponse(BaseModel):
     output_format: str | None = None
     detail: str | None = None
     job_status: str | None = None
+    max_model_len: int | None = None
 
     class Config:
         json_schema_extra = {
