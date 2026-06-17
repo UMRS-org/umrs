@@ -164,7 +164,7 @@ class UMRSThreads:
                 self.thread_dict, thread_ident
             )  # wait for the thread status to be updated
         except RuntimeError as exc:
-            print(
+            logger.info(
                 f"WARNING: Thread {thread_ident} did not register in time for '{key}': {exc}"
             )
         return thread_ident
@@ -359,7 +359,7 @@ class UMRSThreads:
             selected_fields = ["s3_username", "table_name", "modality_name", "db_name"]
             result = buckets_cfg.get(path_to_bucket, fields=selected_fields)
             if result is None:
-                print(f"WARNING: No bucket config for '{path_to_bucket}', skipping")
+                logger.info(f"WARNING: No bucket config for '{path_to_bucket}', skipping")
                 continue
             user, table_name, modality_name, db_name = result
             s3_keys = keys_per_bucket[path_to_bucket]
@@ -417,7 +417,7 @@ class UMRSThreads:
                 new_key = f"{thread_ident}-{entry['thread_id']}"  # done thread keys are prepended with their ID
                 self.thread_dict[new_key] = entry  # reassign back to cache
             else:
-                print(
+                logger.info(
                     f"Error: cannot find '{thread_ident}' entry for {self.thread_dict=}"
                 )
 
@@ -557,7 +557,7 @@ class UMRSThreads:
         try:
             self.pool.shutdown(wait=True)
         except Exception as e:
-            print(f"Warning: pool shutdown error: {e}")
+            logger.info(f"Warning: pool shutdown error: {e}")
         try:
             # if using diskcache.Cache
             self.thread_dict.close()  # closes the cache
@@ -565,6 +565,6 @@ class UMRSThreads:
             # optionally clear on disk
             self.thread_dict.clear()
             self.status_store.clear()
-            print("thread_dict and status store dictionnary deleted")
+            logger.info("thread_dict and status store dictionnary deleted")
         except Exception as e:
-            print(f"Cannot close thread_dict/status_store dictionary properly: {e}")
+            logger.info(f"Cannot close thread_dict/status_store dictionary properly: {e}")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import threading
 from dataclasses import dataclass, field
@@ -11,6 +12,8 @@ from pathlib import Path
 from urllib.parse import quote
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 from umrs.core.TaskCmdStatus import TaskCmd
 from umrs.inference.loading import load_model
@@ -80,7 +83,7 @@ def _tar_model_cache(model_name: str, tmp_root: str) -> str | None:
             tar.add(cache_entry.path, arcname=arcname)
         return tar_path
     except Exception as e:
-        print(f"Warning: failed to create weights tar for '{model_name}': {e}")
+        logger.info(f"Warning: failed to create weights tar for '{model_name}': {e}")
         return None
 
 
@@ -97,7 +100,7 @@ def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
         if head_resp.status_code == 200:
             return
     except Exception as e:
-        print(f"Warning: failed to check weights endpoint for '{model_name}': {e}")
+        logger.info(f"Warning: failed to check weights endpoint for '{model_name}': {e}")
         return
 
     tar_path = _tar_model_cache(model_name, tmp_root)
@@ -110,7 +113,7 @@ def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
             resp = requests.put(weights_url, files=files, timeout=600)
             resp.raise_for_status()
     except Exception as e:
-        print(f"Warning: failed to upload weights for '{model_name}': {e}")
+        logger.info(f"Warning: failed to upload weights for '{model_name}': {e}")
         return
 
 
@@ -161,7 +164,7 @@ def _resolve_s3cfg_path(user_cfg):
         server_dir = os.path.dirname(os.path.expanduser(config_file_path))
         legacy_fallback = os.path.join(server_dir, f"s3cfg_{username}")
         if os.path.isfile(legacy_fallback):
-            print(
+            logger.info(
                 f"Note: using server-local s3cfg '{legacy_fallback}' "
                 f"(client path '{raw_path}' not found on this server)"
             )
@@ -180,7 +183,7 @@ def _resolve_s3cfg_path(user_cfg):
         os.makedirs(os.path.dirname(shared), exist_ok=True)
     except OSError:
         pass
-    print(
+    logger.info(
         f"Note: client s3cfg path '{raw_path}' not present on this server; "
         f"using durable shared s3cfg '{shared}'"
     )
@@ -190,7 +193,7 @@ def _resolve_s3cfg_path(user_cfg):
 def create_s3_sql_users(user_cfg, admin_s3_configuration_file):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
-    print(
+    logger.info(
         f"######################\nCreating {fullname} ({username})\n######################"
     )
 
@@ -288,7 +291,7 @@ def reconcile_status_on_startup(active_threads, buckets_cfg):
             TaskCmd.PROCESS_OBJECTS,
             {"summary": summary, "data": json_safe, "last_updated_at": snapshot_time},
         )
-    print("Status store reconciled with pgvector counts.")
+    logger.info("Status store reconciled with pgvector counts.")
 
 
 def _configure_modality_bucket(
@@ -304,7 +307,7 @@ def _configure_modality_bucket(
     raw_modality_name = modality.get("modality_name") or modality.get("modality")
     raw_task = modality.get("task")
     modality_name, task = resolve_modality_task(raw_modality_name, raw_task)
-    print(f"\t\tModality: {modality_name} (task: {task})")
+    logger.info(f"\t\tModality: {modality_name} (task: {task})")
 
     bucket_alias = modality["s3"]["bucket_alias"]
     need_output_bucket = modality["s3"].get("need_output_bucket", False)
@@ -320,7 +323,7 @@ def _configure_modality_bucket(
             os.path.dirname(user_cfg["config_file_path"]),
         )
     except Exception as e:
-        print(
+        logger.info(
             f"Warning: failed to upload weights to RiVault for model '{model_cfg.get('model_name', '?')}': {e}"
         )
 
@@ -371,7 +374,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
     server_cfg.user_config_map[username] = user_cfg["config_file_path"]
     buckets_cfg = server_cfg.buckets_cfg
 
-    print(
+    logger.info(
         f"######################\nConfiguring {fullname} ({username})\n######################"
     )
 
@@ -380,7 +383,7 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
 
     for xp in user_cfg["experiences"]:
         xp_name = xp["xp_name"]
-        print(f"\t==> Experience: {xp_name}")
+        logger.info(f"\t==> Experience: {xp_name}")
         sql_username = xp["sql_username"]
         data_base, _db_name = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
@@ -398,14 +401,14 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
                     )
                 )
                 buckets_cfg.store(path_to_bucket, bucket_entry)
-                print(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
+                logger.info(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
             except Exception as e:
                 import traceback
 
                 mod_name = modality.get("modality_name") or modality.get(
                     "modality", "?"
                 )
-                print(
+                logger.info(
                     f"\t\t\tWARNING: Failed to configure modality '{mod_name}' "
                     f"in experience '{xp_name}': {e}"
                 )
@@ -431,7 +434,7 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
     )
 
     username = user_cfg["username"]
-    print(f"######################\nDeprovisioning {username}\n######################")
+    logger.info(f"######################\nDeprovisioning {username}\n######################")
 
     # Collect all bucket names and SQL usernames.
     bucket_names = []
@@ -456,14 +459,14 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
         try:
             drop_db(db_name)
         except Exception as e:
-            print(f"  Warning: failed to drop database '{db_name}': {e}")
+            logger.info(f"  Warning: failed to drop database '{db_name}': {e}")
 
     # Drop PostgreSQL roles.
     for sql_user in sql_usernames:
         try:
             drop_db_user(sql_user)
         except Exception as e:
-            print(f"  Warning: failed to drop DB user '{sql_user}': {e}")
+            logger.info(f"  Warning: failed to drop DB user '{sql_user}': {e}")
 
     # Remove S3 buckets via MinIO CLI.
     admin_cfg_path = os.path.expanduser(admin_s3_configuration_file)
@@ -478,15 +481,15 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
             try:
                 minio_remove_bucket(bucket, alias)
             except Exception as e:
-                print(f"  Warning: failed to remove bucket '{bucket}': {e}")
+                logger.info(f"  Warning: failed to remove bucket '{bucket}': {e}")
 
         # Remove MinIO IAM user.
         try:
             minio_delete_user(username, alias)
         except Exception as e:
-            print(f"  Warning: failed to remove MinIO user '{username}': {e}")
+            logger.info(f"  Warning: failed to remove MinIO user '{username}': {e}")
     else:
-        print(
+        logger.info(
             f"  Warning: admin S3 config not found at '{admin_cfg_path}', skipping S3/MinIO cleanup."
         )
 
@@ -498,9 +501,9 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
     )
     if os.path.isfile(user_s3_cfg):
         os.remove(user_s3_cfg)
-        print(f"==> Removed S3 config file: {user_s3_cfg}")
+        logger.info(f"==> Removed S3 config file: {user_s3_cfg}")
 
-    print(f"==> Deprovisioning of '{username}' complete.")
+    logger.info(f"==> Deprovisioning of '{username}' complete.")
 
 
 __all__ = [

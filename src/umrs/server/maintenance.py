@@ -32,7 +32,7 @@ def recompute_all_objects(
     update_status_callback=None,
 ):
     if log_output:
-        print(
+        logger.info(
             "\n######################\n"
             "Recomputing all objects in all buckets\n"
             "######################\n"
@@ -81,7 +81,7 @@ def recompute_all_objects(
 
     summary = pretty_print_recompute(recompute_dict, print_output=False)
     if log_output:
-        print(summary)
+        logger.info(summary)
 
     if active_threads.is_worker_thread():
         active_threads.update_status_to_done()
@@ -108,7 +108,7 @@ def update_objects(
     update_status_callback=None,
 ):
     if log_output:
-        print(
+        logger.info(
             "\n######################\n"
             "Updating missing/mismatched objects in all buckets\n"
             "######################\n"
@@ -135,7 +135,7 @@ def update_objects(
             for i, s3_object in enumerate(s3_objects):
                 s = status[i]["status"]
                 if verbose:
-                    print(f"{s3_object}: {s}")
+                    logger.info(f"{s3_object}: {s}")
                 if s != "match":
                     to_update_objects.append(s3_object)
 
@@ -168,7 +168,7 @@ def update_objects(
 
     summary = pretty_print_recompute(update_dict, update=True, print_output=False)
     if log_output:
-        print(summary)
+        logger.info(summary)
 
     if active_threads.is_worker_thread():
         active_threads.update_status_to_done()
@@ -194,7 +194,7 @@ def check_objects(
     update_status_callback=None,
 ):
     if log_output:
-        print(
+        logger.info(
             "\n######################\n"
             "Checking all objects in all buckets\n"
             "######################\n"
@@ -219,7 +219,7 @@ def check_objects(
         for i, s3_object in enumerate(s3_objects):
             s = status[i]["status"]
             if verbose:
-                print(f"{s3_object}: {s}")
+                logger.info(f"{s3_object}: {s}")
             if s == "match":
                 nb_match += 1
             elif s == "mismatch":
@@ -227,7 +227,7 @@ def check_objects(
             elif s == "not_found":
                 nb_not_found += 1
             else:
-                print(f"Error: {status[i]['message']}")
+                logger.info(f"Error: {status[i]['message']}")
                 nb_error += 1
 
         if len(s3_objects) != nb_match:
@@ -252,7 +252,7 @@ def check_objects(
 
     summary = pretty_print_check(check_dict, print_output=False)
     if log_output:
-        print(summary)
+        logger.info(summary)
     if perform_update:
         note = (
             "\n⚠️ Warning: The database is not fully consistent with the "
@@ -265,7 +265,7 @@ def check_objects(
             "objects stored in S3."
         )
     if log_output:
-        print(note)
+        logger.info(note)
     summary_with_note = summary + note
     outcome = {
         "summary": summary_with_note,
@@ -353,7 +353,7 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
             return {"summary": summary}
     except Exception as e:
         # If filtering fails for any reason, fall back to original outcome
-        print(
+        logger.info(
             f"Warning: failed to filter outcome for client '{client_id}': {e}"
         )
     return outcome
@@ -392,7 +392,7 @@ def reload_configuration(
     from umrs.server.provisioning import create_s3_sql_users
 
     if log_output:
-        print(
+        logger.info(
             "\n######################\n"
             "Reloading configuration...\n"
             "######################\n"
@@ -406,7 +406,7 @@ def reload_configuration(
                 if conn:
                     conn.close()
             except Exception as e:
-                print(
+                logger.info(
                     f"Warning: failed to close S3 connection during reload: {e}"
                 )
 
@@ -422,13 +422,13 @@ def reload_configuration(
         user_config_map.update(new_server_cfg.user_config_map)
         summary = pretty_print_cfg(new_server_cfg, print_output=False)
         if log_output:
-            print(summary)
-            print("\n✅ Reload complete.")
+            logger.info(summary)
+            logger.info("\n✅ Reload complete.")
         return {"summary": summary}
     except Exception as e:
         error_msg = f"\n❌ Reload failed: {e}"
         if log_output:
-            print(error_msg)
+            logger.info(error_msg)
         return {"summary": error_msg, "error": str(e)}
 
 
@@ -498,5 +498,5 @@ def handle_maintenance_command(
             return False  # Signal error to caller
         return None
     else:
-        print(f"====> Error: unknown command '{cmd}' returned by maintenance handler")
+        logger.info(f"====> Error: unknown command '{cmd}' returned by maintenance handler")
         return None

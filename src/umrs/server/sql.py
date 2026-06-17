@@ -1,12 +1,15 @@
 #!/usr/bin/python3
 import contextlib
 import json
+import logging
 import os
 import sys
 import time
 from datetime import datetime
 
 import psycopg2
+
+logger = logging.getLogger(__name__)
 from psycopg2 import pool as pg_pool
 from psycopg2 import sql
 
@@ -34,7 +37,7 @@ class DataBase:
         try:
             self.db_pool.putconn(conn, close=close)
         except Exception as e:
-            print(f"Error returning connection to pool: {e}")
+            logger.warning("Error returning connection to pool: %s", e)
 
     def get_conn(self):
         """
@@ -71,7 +74,7 @@ class DataBase:
             bool: True if column exists, False otherwise.
         """
         if table_name not in self.tables:
-            print(f"Table '{table_name}' not found in the database '{self.db_name}'.")
+            logger.info("Table '%s' not found in the database '%s'.", table_name, self.db_name)
             return False
         return column_name in self.tables[table_name]
 
@@ -85,7 +88,7 @@ class DataBase:
         if self.has_column(table_name, column_name):
             return self.tables[table_name][column_name]
         else:
-            print(f"Column '{column_name}' not found in table '{table_name}'.")
+            logger.info("Column '%s' not found in table '%s'.", column_name, table_name)
             return None
 
     def table_exists(self, conn, table_name: str) -> bool:
@@ -321,7 +324,7 @@ def wait_table_modification_on_db(active_threads, user, key, data_base, table_na
 
     with active_threads.lock:
         pretty_print_thread_status(active_threads.thread_dict, running_only=False, print_output=ENABLE_PRETTY_PRINT)
-    print("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
+    logger.info("####### Waiting for new objects in the S3 bucket (Press CTRL+C to exit)... #######")
 
 def db_user_exists(conn, username):
     with conn.cursor() as cur:
@@ -346,7 +349,7 @@ def create_db_user(username):
     DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
     cur = conn.cursor()
     if db_user_exists(conn, username):
-        print(f"==> User '{username}' exist in DB")
+        logger.info(f"==> User '{username}' exist in DB")
         # Ensure password matches the configured one
         cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(sql.Identifier(username)), (DB_USER_PASSWORD,))
         conn.commit()
@@ -358,14 +361,14 @@ def create_db_user(username):
         sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
         (DB_USER_PASSWORD,)
     )
-    print(f"==> User '{username}' created in DB")
+    logger.info(f"==> User '{username}' created in DB")
     cur.close()
     conn.close()
 
 
 def create_db(sql_username, xp_name):
     db_name = create_db_name(sql_username, xp_name)
-    print(f"\t\t-->  Configuring database '{db_name}'...")
+    logger.info(f"\t\t-->  Configuring database '{db_name}'...")
     # Database credentials
     DB_HOST = os.environ.get("DB_HOST", "localhost")
     DB_PORT = os.environ.get("DB_PORT", "5432")
@@ -384,7 +387,7 @@ def create_db(sql_username, xp_name):
     exists = cur.fetchone()
 
     if exists:
-        print(f"\t\t-->  Database '{db_name}' already exists.")
+        logger.info(f"\t\t-->  Database '{db_name}' already exists.")
     else:
         # Create the database if it does not exist.
         # In concurrent startup/reload flows another process can create it
@@ -393,10 +396,10 @@ def create_db(sql_username, xp_name):
             cur.execute(sql.SQL("CREATE DATABASE {} OWNER {};").format(
                 sql.Identifier(DB_NAME), sql.Identifier(DB_USER)
             ))
-            print(f"\t\t-->  Database '{db_name}' created successfully.")
+            logger.info(f"\t\t-->  Database '{db_name}' created successfully.")
         except (psycopg2.errors.DuplicateDatabase, psycopg2.errors.UniqueViolation):
             # Treat as success: DB was created by another concurrent path.
-            print(f"\t\t-->  Database '{db_name}' already exists (race detected).")
+            logger.info(f"\t\t-->  Database '{db_name}' already exists (race detected).")
 
     # Always ensure pgvector extension exists in target DB.
     conn_new = psycopg2.connect(dbname=DB_NAME, user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
@@ -404,9 +407,9 @@ def create_db(sql_username, xp_name):
     cur_new = conn_new.cursor()
     try:
         cur_new.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        print(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
+        logger.info(f"\t\t-->  pgvector extension enabled in '{db_name}'.")
     except Exception as e:
-        print(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
+        logger.info(f"\t\t-->  Error enabling pgvector extension in '{db_name}': {e}")
     finally:
         cur_new.close()
         conn_new.close()
@@ -438,16 +441,16 @@ def _ensure_umrs_db(superuser_conn, db_name: str) -> None:
     with superuser_conn.cursor() as cur:
         cur.execute("SELECT 1 FROM pg_database WHERE datname = %s;", (db_name,))
         if cur.fetchone():
-            print(f"==> Database '{db_name}' already exists.")
+            logger.info(f"==> Database '{db_name}' already exists.")
             return
     try:
         with superuser_conn.cursor() as cur:
             cur.execute(
                 sql.SQL("CREATE DATABASE {};").format(sql.Identifier(db_name))
             )
-        print(f"==> Database '{db_name}' created.")
+        logger.info(f"==> Database '{db_name}' created.")
     except psycopg2.errors.DuplicateDatabase:
-        print(f"==> Database '{db_name}' already exists (race detected).")
+        logger.info(f"==> Database '{db_name}' already exists (race detected).")
 
 
 def create_umrs_server_db_user():
@@ -481,7 +484,7 @@ def create_umrs_server_db_user():
         _ensure_umrs_db(conn, DB_NAME)
 
         if db_user_exists(conn, DB_USER):
-            print(f"==> DB user '{DB_USER}' already exists — updating password.")
+            logger.info(f"==> DB user '{DB_USER}' already exists — updating password.")
             with conn.cursor() as cur:
                 cur.execute(
                     sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(
@@ -497,7 +500,7 @@ def create_umrs_server_db_user():
                     ),
                     (DB_UMRS_SERVER_PASSWORD,),
                 )
-            print(f"==> DB user '{DB_USER}' created.")
+            logger.info(f"==> DB user '{DB_USER}' created.")
 
         # Grant permission to create tables in the umrs database
         with psycopg2.connect(
@@ -514,7 +517,7 @@ def create_umrs_server_db_user():
                         sql.Identifier(DB_USER)
                     )
                 )
-            print(f"==> GRANT CREATE ON SCHEMA public → '{DB_USER}' in '{DB_NAME}'.")
+            logger.info(f"==> GRANT CREATE ON SCHEMA public → '{DB_USER}' in '{DB_NAME}'.")
     finally:
         conn.close()
 
@@ -577,7 +580,7 @@ def get_table_columns_and_types(conn, table_name, schema='public'):
             column_info = dict(rows)
 
     except Exception as e:
-        print(f"Error fetching column info: {e}")
+        logger.info(f"Error fetching column info: {e}")
 
     return column_info
 
@@ -789,7 +792,7 @@ def enable_table_notifications(conn, table_name: str):
         except psycopg2.errors.InternalError_ as exc:
             conn.rollback()
             if "tuple concurrently updated" in str(exc) and attempt < max_retries:
-                print(f"\t\t\t--> Concurrent DDL detected on '{table_name}', retrying ({attempt}/{max_retries})...")
+                logger.info(f"\t\t\t--> Concurrent DDL detected on '{table_name}', retrying ({attempt}/{max_retries})...")
                 time.sleep(0.5 * attempt)
             else:
                 raise
@@ -826,7 +829,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         elif model.return_type in ("embedding", "raw"):
             pass  # no extra column needed
         else:
-            print(f"WARNING: Unknown return type '{model.return_type}' — no extra columns added")
+            logger.info(f"WARNING: Unknown return type '{model.return_type}' — no extra columns added")
 
     for column in sql_cfg["meta_data"]:
         table_columns.append(column)
@@ -861,11 +864,11 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         try:
             cur.execute(create_query)
             conn.commit()
-            print(f"\t\t\t--> Table '{table_name}' created successfully.")
+            logger.info(f"\t\t\t--> Table '{table_name}' created successfully.")
         except (psycopg2.errors.UniqueViolation, psycopg2.errors.DuplicateTable):
             # Sequence or table already exists (leftover from partial creation or race)
             conn.rollback()
-            print(f"\t\t\t--> Table '{table_name}' already exists (concurrent creation).")
+            logger.info(f"\t\t\t--> Table '{table_name}' already exists (concurrent creation).")
             table_exists = True
         # Create helpful indexes (IF NOT EXISTS is idempotent; safe after race too)
         try:
@@ -883,7 +886,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
             conn.commit()
         except Exception as e:
             conn.rollback()
-            print(f"\t\t\t--> Warning: failed creating indexes on '{table_name}': {e}")
+            logger.info(f"\t\t\t--> Warning: failed creating indexes on '{table_name}': {e}")
 
     # enable notification for table that generate something so the server can listen to such notifications
     if model.return_type is not None:
@@ -892,7 +895,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
         elif model.return_type in ("embedding", "raw"):
             pass  # no notifications needed
         else:
-            print(f"WARNING: Unknown return type '{model.return_type}' — skipping notifications")
+            logger.info(f"WARNING: Unknown return type '{model.return_type}' — skipping notifications")
 
 
 
@@ -919,7 +922,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
             if expected_size is not None and table_vector_size != expected_size:
                 sys.exit(f"Error: SQL configuration mismatch!\nExpected vector size {expected_size} per model, found {table_vector_size} in database for table '{table_name}'.")
             msg_size = expected_size if expected_size is not None else table_vector_size
-            print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embedding vector size: {msg_size}")
+            logger.info(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embedding vector size: {msg_size}")
             # Ensure HNSW index exists (handles upgrades of existing deployments)
             hnsw_idx_name = f"idx_{table_name}_embedding_hnsw"
             cur.execute(
@@ -935,12 +938,12 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
                         sql.Identifier(table_name),
                     ))
                     conn.commit()
-                    print(f"\t\t\t--> Created HNSW index '{hnsw_idx_name}' on '{table_name}'.")
+                    logger.info(f"\t\t\t--> Created HNSW index '{hnsw_idx_name}' on '{table_name}'.")
                 except Exception as e:
                     conn.rollback()
-                    print(f"\t\t\t--> Warning: failed creating HNSW index on '{table_name}': {e}")
+                    logger.info(f"\t\t\t--> Warning: failed creating HNSW index on '{table_name}': {e}")
         else:
-            print(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embeddings not stored.")
+            logger.info(f"\t\t\t--> Table '{table_name}' already exists with {len(existing_columns)} columns. Embeddings not stored.")
 
 
 
@@ -1093,11 +1096,11 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
         conn.commit()
 
         if not silent :
-            print(f"\t--> Stored/Updated embedding in '{table_name}' for '{s3_object}'")
+            logger.info(f"\t--> Stored/Updated embedding in '{table_name}' for '{s3_object}'")
             if metadata:
-                print("\t--> metadata have been added/updated'")
+                logger.info("\t--> metadata have been added/updated'")
             if saved_s3_object:
-                  print(f"\t--> Output saved in {saved_s3_object}'")
+                  logger.info(f"\t--> Output saved in {saved_s3_object}'")
 
 
 
@@ -1106,15 +1109,15 @@ def store_one_embedding_in_db(data_base, embedding, table_name, bucket_name, s3_
             if conn:
                 conn.rollback()
         except Exception as rollback_exc:
-            print(f"\t--> Error during rollback: {rollback_exc}")
-        print(f"\t--> Error storing embedding for query: {e}")
+            logger.info(f"\t--> Error during rollback: {rollback_exc}")
+        logger.info(f"\t--> Error storing embedding for query: {e}")
 
     finally:
         if cur is not None:
             try:
                 cur.close()
             except Exception as close_err:
-                print(f"Warning: Failed to close cursor: {close_err}")
+                logger.info(f"Warning: Failed to close cursor: {close_err}")
         data_base.put_conn(conn)
 
 def store_embeddings_in_db(data_base, embeddings, table_name, bucket_name, s3_keys, saved_s3_objects, modality_name, checksums, model_name, metadata_list=None):
@@ -1221,7 +1224,7 @@ def check_status_db(bucket_name, s3_key, checksum, data_base, table_name):
             try:
                 cur.close()
             except Exception as close_err:
-                print(f"Warning: failed to close cursor: {close_err}")
+                logger.info(f"Warning: failed to close cursor: {close_err}")
         data_base.put_conn(conn)
 
 def check_S3_object_status_in_db(path_to_bucket, s3_objects, checksums, buckets_cfg: BucketsCfg):

@@ -523,13 +523,13 @@ if __name__ == "__main__":  # pragma: no cover
     if "--zmq-pool" in sys.argv:
         idx = sys.argv.index("--zmq-pool")
         if idx + 1 >= len(sys.argv):
-            print("--zmq-pool requires a bind address", file=sys.stderr)
+            logger.info("--zmq-pool requires a bind address", file=sys.stderr)
             sys.exit(1)
         sys.exit(zmq_pool_main(sys.argv[idx + 1]))
     if "--zmq-dealer" in sys.argv:
         idx = sys.argv.index("--zmq-dealer")
         if idx + 1 >= len(sys.argv):
-            print("--zmq-dealer requires a connect address", file=sys.stderr)
+            logger.info("--zmq-dealer requires a connect address", file=sys.stderr)
             sys.exit(1)
         sys.exit(zmq_dealer_main(sys.argv[idx + 1]))
     sys.exit(main())

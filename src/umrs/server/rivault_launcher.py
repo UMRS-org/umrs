@@ -1,4 +1,5 @@
 import io
+import logging
 import os
 import re
 import shlex
@@ -9,6 +10,8 @@ import time
 from contextlib import redirect_stderr, redirect_stdout
 
 import requests
+
+logger = logging.getLogger(__name__)
 
 from umrs.inference.loading import EmbeddingModel, load_model
 from umrs.orchestrator.endpoint_registry import (
@@ -223,14 +226,14 @@ def release_backend_job(model_type_key):
                 proc_tunnel.terminate()
                 proc_tunnel.wait(timeout=10)
             except Exception as e:
-                print(
+                logger.info(
                     f"[lifecycle] Warning: failed to terminate SSH tunnel process for '{model_type_key}': {e}"
                 )
         if thread_tunnel is not None:
             try:
                 thread_tunnel.join(timeout=5)
             except Exception as e:
-                print(
+                logger.info(
                     f"[lifecycle] Warning: failed to join SSH tunnel thread for '{model_type_key}': {e}"
                 )
 
@@ -248,13 +251,13 @@ def release_backend_job(model_type_key):
                     stderr=subprocess.DEVNULL,
                     timeout=10,
                 )
-            print(f"[lifecycle] Cancelled Slurm job {job_id} for '{model_type_key}'")
+            logger.info(f"[lifecycle] Cancelled Slurm job {job_id} for '{model_type_key}'")
         except FileNotFoundError:
-            print(
+            logger.info(
                 f"[lifecycle] scancel not found — Slurm job {job_id} not cancelled (non-Slurm env?)"
             )
         except Exception as e:
-            print(
+            logger.info(
                 f"[lifecycle] Warning: failed to cancel Slurm job {job_id} for '{model_type_key}': {e}"
             )
 
@@ -268,7 +271,7 @@ def release_all_backend_jobs():
     keys = _list_cached_keys()
     if not keys:
         return
-    print(f"[lifecycle] Releasing {len(keys)} backend job(s)...")
+    logger.info(f"[lifecycle] Releasing {len(keys)} backend job(s)...")
     for key in keys:
         release_backend_job(key)
 
@@ -406,7 +409,7 @@ def get_rivault_startup_timeout_sec(default=600):
     try:
         return max(int(raw_timeout), 1)
     except ValueError:
-        print(
+        logger.info(
             "Invalid RIVAULT_STARTUP_TIMEOUT_SEC="
             f"{raw_timeout!r}; falling back to {default}s"
         )
@@ -535,11 +538,11 @@ def get_slurm_node(
     else:
         # Launch script
         sbatch_cmd = ["sbatch"] + sbatch_extra_args + [slurm_script]
-        print(f"{sbatch_cmd}")
+        logger.info(f"{sbatch_cmd}")
 
         proc = subprocess.Popen(sbatch_cmd, stdout=subprocess.PIPE)
 
-        print("Waiting for job to start...")
+        logger.info("Waiting for job to start...")
         # Read job SLURM ID
         output, _ = proc.communicate()
         job_id = None
@@ -554,7 +557,7 @@ def get_slurm_node(
             match = re.search(r"Submitted batch job (\d+)", text)
             if match:
                 job_id = int(match.group(1))
-                print("Job submitted with ID:", job_id)
+                logger.info("Job submitted with ID:", job_id)
                 _cache_job(
                     model_type_key, job_id, metadata=job_metadata
                 )  # persist immediately
@@ -576,7 +579,7 @@ def get_slurm_node(
     if error_file:
         error_file = error_file.replace("%j", str(job_id))
 
-    print(f"Job {job_id} is running. Output will be in {output_file} and {error_file}")
+    logger.info(f"Job {job_id} is running. Output will be in {output_file} and {error_file}")
 
     return output_file, error_file, job_id
 
@@ -666,7 +669,7 @@ def get_remote_slurm_node(
     else:
         sbatch_args = _remote_sbatch_args(site, sbatch_env)
         command = shlex.join(sbatch_args)
-        print(f"[remote-slurm] {command}")
+        logger.info(f"[remote-slurm] {command}")
         result = _run_remote_slurm_command(site, command, timeout=60)
         if result.returncode != 0:
             raise RuntimeError(
@@ -679,7 +682,7 @@ def get_remote_slurm_node(
                 f"Could not parse remote job ID from sbatch output: {result.stdout!r}"
             )
         job_id = int(match.group(1))
-        print("Remote job submitted with ID:", job_id)
+        logger.info("Remote job submitted with ID:", job_id)
         _cache_job(model_type_key, job_id, metadata=job_metadata)
         startup_timeout = get_rivault_startup_timeout_sec()
         if not wait_for_running(job_id, timeout=startup_timeout):
@@ -690,7 +693,7 @@ def get_remote_slurm_node(
 
     output_file = _remote_slurm_output_ref(f"{job_info_dir}/slurm-{job_id}.out")
     error_file = _remote_slurm_output_ref(f"{job_info_dir}/slurm-{job_id}.err")
-    print(
+    logger.info(
         f"Remote job {job_id} is running. Output will be in {output_file} and {error_file}"
     )
     return output_file, error_file, job_id
@@ -717,7 +720,7 @@ def extract_node_address(slurm_output_file, timeout=300):
     Returns:
         str or None: Fully qualified node name, e.g. 'bora007.plafrim.cluster'.
     """
-    print(f"Checking {slurm_output_file}...")
+    logger.info(f"Checking {slurm_output_file}...")
     site = _get_site_config_if_available()
     remote_path = _remote_path_from_ref(slurm_output_file)
     start = time.time()
@@ -736,7 +739,7 @@ def extract_node_address(slurm_output_file, timeout=300):
         if file_is_ready:
             break
         if i % 100 == 0:
-            print(f"{slurm_output_file=} not found, waiting...")
+            logger.info(f"{slurm_output_file=} not found, waiting...")
         i += 1
         if time.time() - start > timeout:
             raise TimeoutError(
@@ -744,7 +747,7 @@ def extract_node_address(slurm_output_file, timeout=300):
             )
         time.sleep(0.5)
 
-    print(f"{slurm_output_file} ready")
+    logger.info(f"{slurm_output_file} ready")
     while True:
         if remote_path:
             content = _read_remote_file(site, remote_path)
@@ -834,7 +837,7 @@ def ssh_tunnel_forward_to_remote(
     thread.start()
 
     wait_for_local_port(local_port)
-    print(f"port {local_port} ready...")
+    logger.info(f"port {local_port} ready...")
     return local_port, thread, ssh_proc
 
 
@@ -867,7 +870,7 @@ def wait_for_model(
     start = time.time()
     model_url = openai_url[len("openai://") :] + "/models"
 
-    print(f"Checking model on {model_url=}...")
+    logger.info(f"Checking model on {model_url=}...")
     while True:
         try:
             headers = {}
@@ -909,7 +912,7 @@ def warmup_embedding_model(
     while True:
         try:
             client.embeddings.create(model=model_name, input=["warmup"])
-            print(f"Warmup embedding succeeded after {time.time() - start:.1f}s")
+            logger.info(f"Warmup embedding succeeded after {time.time() - start:.1f}s")
             return
         except (OpenAIError, Exception) as e:
             last_err = e
@@ -969,10 +972,10 @@ def _check_bentoml_health(service_url: str, ready_timeout: int = 300):
 def _build_bentoml_model(model_cfg, local_port):
     """Build an EmbeddingModel backed by a BentoML vision service."""
     service_url = f"http://localhost:{local_port}"
-    print(f"Configuring BentoML vision service at: {service_url}...")
+    logger.info(f"Configuring BentoML vision service at: {service_url}...")
 
     _check_bentoml_health(service_url)
-    print(f"BentoML vision service is healthy at {service_url}")
+    logger.info(f"BentoML vision service is healthy at {service_url}")
 
     vision_model_type = model_cfg.get("vision_model_type", "")
     if not vision_model_type:
@@ -1028,7 +1031,7 @@ def _build_openai_model(model_cfg, local_port, nginx_port, master_key):
     warmup_embedding_model(
         model_cfg["model_type"], model_cfg["model_name"], api_key=master_key
     )
-    print(f"Configuring: {model_cfg['model_type']}...")
+    logger.info(f"Configuring: {model_cfg['model_type']}...")
     model_cfg["api_key"] = master_key
     return load_model(model_cfg, "")
 
@@ -1044,22 +1047,22 @@ def _check_cache_or_reuse_job(model_type_key, model_cfg):
     default_profiles = _get_active_rivault_profiles()
 
     if job_id is not None:
-        print(
+        logger.info(
             f"Found job_id {job_id} in cache for model type {model_type_key}. Checking if it's running..."
         )
         if wait_for_running(job_id):
             if model_type_key in model_cache:
                 model, _, _ = model_cache[model_type_key]
-                print(
+                logger.info(
                     "===> Found a running job and a loaded model in cache. Reusing it."
                 )
                 return model, job_id
-            print(
+            logger.info(
                 "===> Found a running job in cache but no in memory model. "
                 "This can happen if the server has restarted. Will try to load it again."
             )
         else:
-            print(
+            logger.info(
                 "===> Found a job_id in cache but the job is not running. "
                 "Cleaning up cache and launching a new job."
             )
@@ -1089,7 +1092,7 @@ def _check_cache_or_reuse_job(model_type_key, model_cfg):
             ):
                 continue
 
-            print(
+            logger.info(
                 f"===> Reusing running RiVault job {cached_job_id} from "
                 f"'{endpoint.model}' for '{model_type_key}' "
                 "(vision-capable stack)."
@@ -1108,7 +1111,7 @@ def launch_rivault_model(model_cfg):
 
         get_site_config().inject_env(overwrite=False)
     except Exception as e:
-        print(f"Warning: failed to inject site config: {e}")
+        logger.info(f"Warning: failed to inject site config: {e}")
 
     # Include vision_model_config task/prompt in cache key so model closures
     # keep the correct effective_config for HMAE modes and SAM3 prompts.
@@ -1120,7 +1123,7 @@ def launch_rivault_model(model_cfg):
     )
     job_profiles = _resolve_profiles_for_model(model_cfg)
     job_metadata = _job_capabilities_for_profiles(job_profiles)
-    print(f"[rivault] resolved profiles for {model_cfg['model_type']}: {job_profiles}")
+    logger.info(f"[rivault] resolved profiles for {model_cfg['model_type']}: {job_profiles}")
 
     # --- 0. Check cache / reuse running job ---
     cached_model, job_id = _check_cache_or_reuse_job(model_type_key, model_cfg)
@@ -1133,7 +1136,7 @@ def launch_rivault_model(model_cfg):
 
     if _is_bentoml_model_type(model_cfg["model_type"]) and vision_stack == "jens":
         rivault_slurm_script = get_jens_rivault_slurm_script()
-        print(
+        logger.info(
             f"[VISION_STACK=jens] Using Jens's standalone stack: {rivault_slurm_script}"
         )
     else:
@@ -1149,7 +1152,7 @@ def launch_rivault_model(model_cfg):
         sbatch_env=sbatch_env,
         job_metadata=job_metadata,
     )
-    print(f"{output_file=} {job_id=}")
+    logger.info(f"{output_file=} {job_id=}")
 
     # --- 2. Extract compute node address and create SSH tunnel ---
     server_address = extract_node_address(output_file) if output_file else "localhost"

@@ -28,10 +28,10 @@ def process_s3_objects(
     nb_objects = len(s3_objects)
     keys_per_bucket = defaultdict(list)
     users = []
-    print(f"\t-->Detected {nb_objects} new file(s):")
+    logger.info(f"\t-->Detected {nb_objects} new file(s):")
 
     for s3_object in s3_objects:
-        print(f"\t\t-->{s3_object}")
+        logger.info(f"\t\t-->{s3_object}")
         path_to_bucket, s3_key = s3_object.replace("s3://", "").split("/", 1)
         if s3_key not in keys_per_bucket[path_to_bucket]:
             keys_per_bucket[path_to_bucket].append(s3_key)
@@ -54,7 +54,7 @@ def process_s3_objects(
         ]
         result = buckets_cfg.get(path_to_bucket, filter=selected_fields)
         if result is None:
-            print(
+            logger.info(
                 f"WARNING: No bucket config for '{path_to_bucket}', skipping processing"
             )
             exit_status = TaskStatus.ERROR
@@ -86,7 +86,7 @@ def process_s3_objects(
             except Exception as e:
                 import traceback
 
-                print(f"Error creating the RiVault model: {e}")
+                logger.info(f"Error creating the RiVault model: {e}")
                 traceback.print_exc()
                 exit_status = TaskStatus.ERROR
                 continue
@@ -104,7 +104,7 @@ def process_s3_objects(
                 if exit_status != TaskStatus.ERROR:
                     if update_status_callback:
                         update_status_callback(TaskStatus.RUNNING)
-                    print(f"\t--> Processing in {table_name}")
+                    logger.info(f"\t--> Processing in {table_name}")
                     try:
                         embedding_backend.compute_and_store(
                             path_to_bucket,
@@ -122,14 +122,14 @@ def process_s3_objects(
                     except Exception as e:
                         import traceback
 
-                        print(
+                        logger.info(
                             f"Error computing/storing embeddings for bucket "
                             f"'{path_to_bucket}': {e}"
                         )
                         traceback.print_exc()
                         exit_status = TaskStatus.ERROR
             else:
-                print(
+                logger.info(
                     f"Error: We do not compute embeddings for this bucket "
                     f'"{path_to_bucket}" (modality = "{modality_name}")\n'
                     f"\tUser is probably not configured"
@@ -160,7 +160,7 @@ def process_s3_objects(
     if update_status_callback:
         update_status_callback(exit_status)
 
-    print(f"\t--> Processing {nb_objects} file(s) done with status: {exit_status}!")
+    logger.info(f"\t--> Processing {nb_objects} file(s) done with status: {exit_status}!")
     from umrs.server.config import ENABLE_PRETTY_PRINT
 
     with active_threads.lock:
@@ -169,7 +169,7 @@ def process_s3_objects(
             running_only=False,
             print_output=ENABLE_PRETTY_PRINT,
         )
-    print(
+    logger.info(
         "####### Waiting for new objects in the S3 bucket "
         "(Press CTRL+C to exit)... #######"
     )
