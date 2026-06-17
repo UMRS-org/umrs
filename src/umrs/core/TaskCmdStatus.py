@@ -7,6 +7,12 @@ class TaskCmd:
     CHECK = "CHECK"
     RELOAD = "RELOAD"
     FILE = "FILE"
+    # HANDSHAKE and HAND_CHECK are redundant readiness pings that both expect a
+    # "READY!" reply and map to _parse_handshake in MessageQueue._CONTROL_PARSERS.
+    # HANDSHAKE is sent by the in-repo client (MessageQueue.is_server_ready);
+    # HAND_CHECK is sent by the r4 SDK transport (r4/src/r4/umrs_transport._ping).
+    # Keep BOTH: r4 and umrs are separate packages on the ZMQ wire and may deploy
+    # at different times, so neither alias can be dropped without lockstep release.
     HANDSHAKE = "HANDSHAKE"
     HAND_CHECK = "HAND_CHECK"
     CREATE_DATA_QUEUE = "CREATE_DATA_QUEUE"
