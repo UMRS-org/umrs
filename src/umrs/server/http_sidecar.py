@@ -323,6 +323,26 @@ def _create_app():
         }
         return result
 
+    @app.get("/metrics")
+    async def metrics():
+        """Prometheus metrics endpoint.
+
+        Exposes the UMRS ``METRICS`` registry (umrs.metrics.METRICS)
+        so Prometheus can scrape per-job, per-transport, and
+        per-LLM-request telemetry.
+
+        The endpoint is intentionally unauthenticated: it is bound to
+        the sidecar's resolved host (127.0.0.1 in tunnel mode) and
+        exposes only operational counters — no user data, no secrets.
+        """
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from fastapi.responses import Response
+
+        return Response(
+            content=generate_latest(),
+            media_type=CONTENT_TYPE_LATEST,
+        )
+
     @app.get("/readiness")
     async def readiness():
         """Readiness probe — checks subsystem availability.
