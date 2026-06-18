@@ -344,7 +344,7 @@ def _resolve_selector(
     candidates: list[ConfigFileCandidate],
     pointer_path: Path,
 ) -> ConfigLayer:
-    
+
     if user_path:
         layer = _VALIDATORS[kind](Path(user_path).expanduser())
         layer.source = _FLAG_SOURCES[kind]
@@ -404,10 +404,10 @@ def resolve_loaded_config(
     derived_s3_path = None
     if user.valid:
         derived_s3_path = user.details.get("s3_configuration_file")
-    
+
     user_s3_path = user.details.get("s3_configuration_file")
 
-    
+
     user_s3_path = user.details.get("s3_configuration_file")
 
     s3 = _resolve_selector(
