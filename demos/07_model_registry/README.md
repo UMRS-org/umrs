@@ -60,7 +60,7 @@ umrs-client model list --scope user
 umrs-client model list --scope system
 ```
 
-## Manual Equivalent To `run_demo.sh`
+## Manual Equivalent To `README.md (step-by-step commands)`
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -160,5 +160,5 @@ If no machine has internet access:
 ## Run Demo
 
 ```bash
-./run_demo.sh
+./README.md (step-by-step commands)
 ```

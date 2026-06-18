@@ -39,7 +39,7 @@ sequenceDiagram
 
 | File | Role |
 |------|------|
-| `12_hmae_direct/run_demo.sh` | Demo orchestrator (bash) |
+| `12_hmae_direct/README.md (step-by-step commands)` | Demo orchestrator (bash) |
 | `demos/lib/common.sh` | Shared helpers: preflight, upload, download |
 | `internal_genAI/bento/service.py` | BentoML service: model registry + inference dispatch |
 | `internal_genAI/bento/hmaeinfer/infer.py` | HMAE inference: load, preprocess, reconstruct/mae/features |
@@ -59,10 +59,10 @@ sequenceDiagram
 
 ### 1. Experience Generation (Three Modalities)
 
-**File**: `12_hmae_direct/run_demo.sh` → `generate_experience()`
+**File**: `12_hmae_direct/README.md (step-by-step commands)` → `generate_experience()`
 
 ```python
-# run_demo.sh lines 53-86 — inline Python generates the experience JSON
+# README.md (step-by-step commands) lines 53-86 — inline Python generates the experience JSON
 modes = [
     ("mae",         "jens-hmae-mae",         "mae_reconstruction"),
     ("reconstruct", "jens-hmae-reconstruct",  "reconstruction"),
@@ -104,10 +104,10 @@ Each mode maps to a separate MinIO bucket and inference task:
 
 ### 2. Image Source Auto-Detection
 
-**File**: `12_hmae_direct/run_demo.sh` lines 14-21
+**File**: `12_hmae_direct/README.md (step-by-step commands)` lines 14-21
 
 ```bash
-# run_demo.sh lines 14-21 — prefer Spring-8 concrete images if present
+# README.md (step-by-step commands) lines 14-21 — prefer Spring-8 concrete images if present
 if find "${SCRIPT_DIR}/../internal_genAI/bento/hmaeinfer/spring8concrete" \
         -maxdepth 1 -type f -name "*.png" 2>/dev/null | grep -q .; then
     IMAGE_DIR="${SCRIPT_DIR}/../internal_genAI/bento/hmaeinfer/spring8concrete"
@@ -122,10 +122,10 @@ Spring-8 concrete micro-CT slices are the scientifically appropriate input for H
 
 ### 3. Per-Mode Upload Loop
 
-**File**: `12_hmae_direct/run_demo.sh` lines 114-128
+**File**: `12_hmae_direct/README.md (step-by-step commands)` lines 114-128
 
 ```bash
-# run_demo.sh lines 114-128 — iterate over selected modes
+# README.md (step-by-step commands) lines 114-128 — iterate over selected modes
 while IFS= read -r mode; do
     alias="$(mode_alias "${mode}")"     # e.g. "jens-hmae-mae"
     task="$(mode_task "${mode}")"       # e.g. "mae_reconstruction"
@@ -140,7 +140,7 @@ done < <(selected_modes)
 
 Mode resolution helpers:
 ```bash
-# run_demo.sh lines 23-38
+# README.md (step-by-step commands) lines 23-38
 mode_task() {
     case "$1" in
         mae) echo "mae_reconstruction" ;;

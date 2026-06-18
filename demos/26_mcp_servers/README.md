@@ -26,5 +26,5 @@ not a separate compute-node MCP launcher.
 ## Run
 
 ```bash
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```

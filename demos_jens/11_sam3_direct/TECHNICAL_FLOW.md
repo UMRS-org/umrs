@@ -37,7 +37,7 @@ sequenceDiagram
 
 | File | Role |
 |------|------|
-| `11_sam3_direct/run_demo.sh` | Demo orchestrator (bash) |
+| `11_sam3_direct/README.md (step-by-step commands)` | Demo orchestrator (bash) |
 | `demos/lib/common.sh` | Shared helpers: preflight, upload, download |
 | `internal_genAI/bento/service.py` | BentoML service: model registry + inference dispatch |
 | `internal_genAI/bento/sam3infer/bpe.gz` | SAM3 text tokenizer (BPE) |
@@ -54,10 +54,10 @@ sequenceDiagram
 
 ### 1. Experience Generation
 
-**File**: `11_sam3_direct/run_demo.sh` → `generate_experience()`
+**File**: `11_sam3_direct/README.md (step-by-step commands)` → `generate_experience()`
 
 ```python
-# run_demo.sh lines 20-53 — inline Python generates the experience JSON
+# README.md (step-by-step commands) lines 20-53 — inline Python generates the experience JSON
 payload = {
     "xp_name": "Jens SAM3 Direct",
     "sql_username": "jens_sam3_direct",
@@ -92,16 +92,16 @@ The `model_type` URI `rivault://bentoml://http://localhost:{LOCAL_PORT}/vision/i
 The experience is registered with the server via:
 
 ```bash
-# run_demo.sh line 89 — calls umrs-client config add-experience
+# README.md (step-by-step commands) line 89 — calls umrs-client config add-experience
 umrs-client config add-experience results/<RUN_ID>/experience.json --update
 ```
 
 ### 2. Image Staging & Upload
 
-**File**: `11_sam3_direct/run_demo.sh` → `stage_images()`
+**File**: `11_sam3_direct/README.md (step-by-step commands)` → `stage_images()`
 
 ```bash
-# run_demo.sh lines 55-67 — find images and symlink into staging dir
+# README.md (step-by-step commands) lines 55-67 — find images and symlink into staging dir
 find "${IMAGE_DIR}" -maxdepth 1 -type f \
     \( -name "*.png" -o -name "*.jpg" -o -name "*.jpeg" -o -name "*.tif" -o -name "*.tiff" \) \
     | sort | head -n "${MAX_IMAGES}"
@@ -109,7 +109,7 @@ find "${IMAGE_DIR}" -maxdepth 1 -type f \
 
 Upload to S3:
 ```bash
-# run_demo.sh line 93
+# README.md (step-by-step commands) line 93
 umrs-client upload_dir "${UPLOAD_DIR}" "jens-sam3-direct/${RUN_ID}"
 ```
 
@@ -295,10 +295,10 @@ if token != getenv("AUTH_TOKEN"):
 
 ### 8. Result Download
 
-**File**: `11_sam3_direct/run_demo.sh` lines 96-101
+**File**: `11_sam3_direct/README.md (step-by-step commands)` lines 96-101
 
 ```bash
-# run_demo.sh lines 96-101 — download results
+# README.md (step-by-step commands) lines 96-101 — download results
 download_results_bounded "jens-sam3-direct/${RUN_ID}" "${RESULTS_DIR}/artifacts" --force-overwrite
 ```
 
