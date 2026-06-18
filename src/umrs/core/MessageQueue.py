@@ -206,6 +206,10 @@ class MessageQueue:
         self.debug = False  # disable noisy send/recv logs by default
         self._auth_sessions: dict[str, AuthContext] = {}  # client_id -> AuthContext
         self._last_control_auth: dict[str, str] = {}
+        # Started ZAP authenticators for CURVE/session sockets (server role).
+        # Retained so close() can stop their background threads. Empty unless
+        # UMRS_ZMQ_AUTH_TYPE is curve/session.
+        self._zmq_authenticators: list = []
 
         # Initialize the selected queue type
         if self.type == "control":
@@ -223,10 +227,48 @@ class MessageQueue:
     # ------------------------ Initializers ------------------------
 
 
+    def _apply_socket_security(self, socket, *, server: bool) -> None:
+        """Apply ZMQ CURVE/session security to *socket* before bind/connect.
+
+        No-op when ``UMRS_ZMQ_AUTH_TYPE`` is unset or ``none`` (the default),
+        which preserves the existing plaintext transport behavior exactly.
+
+        In ``curve``/``session`` modes the socket is configured for ZMTP CURVE.
+        Server sockets additionally start a ZAP authenticator; in ``session``
+        mode that authenticator is backed by the process-wide
+        :class:`SessionCredentialsProvider` shared with the HTTP session API.
+        """
+        from umrs.core.zmq_security import ZMQSecurityConfig
+
+        cfg = ZMQSecurityConfig.from_env()
+        if cfg.auth_type == "none":
+            return
+
+        if server and cfg.is_session_mode:
+            from dataclasses import replace as _dc_replace
+
+            from umrs.core.session_curve_provider import get_shared_session_provider
+
+            provider = get_shared_session_provider()
+            if provider is None:
+                raise RuntimeError(
+                    "UMRS_ZMQ_AUTH_TYPE=session but no SessionCredentialsProvider "
+                    "is registered; server startup must call "
+                    "set_shared_session_provider() before binding ZMQ sockets"
+                )
+            if cfg.credentials_provider is not provider:
+                cfg = _dc_replace(cfg, credentials_provider=provider)
+
+        authenticator = cfg.apply_to_socket(socket, server=server, context=self.context)
+        if authenticator is not None:
+            self._zmq_authenticators.append(authenticator)
+
+
     def _initialize_data_queue(self):
         if self.role == 'server':
             # Server uses PULL socket to receive pushed data
             self.socket = self.context.socket(zmq.PULL)
+            self._apply_socket_security(self.socket, server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
             self.socket.bind(f"tcp://{bind_host}:{self.port}")  # Data channel bind
             self.socket.setsockopt(zmq.RCVHWM, self.max_msg)  # e.g. max queued messages
@@ -235,6 +277,7 @@ class MessageQueue:
             # Client uses PUSH socket to send data
             self.socket = self.context.socket(zmq.PUSH)
             self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self._apply_socket_security(self.socket, server=False)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.socket.setsockopt(zmq.SNDHWM, self.max_msg)  # e.g. max queued messages
             self.set_timeouts(self.timeout, self.timeout)
@@ -243,12 +286,14 @@ class MessageQueue:
     def _initialize_control_queue(self):
         if self.role == 'server':
             self.socket = self.context.socket(zmq.ROUTER)
+            self._apply_socket_security(self.socket, server=True)
             bind_host = "127.0.0.1" if self.tunnel_mode else "*"
             self.socket.bind(f"tcp://{bind_host}:{self.port}")
             self.set_timeouts(-1, self.timeout)
         else:  # client
             self.socket = self.context.socket(zmq.DEALER)
             self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+            self._apply_socket_security(self.socket, server=False)
             self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
             self.set_timeouts(self.timeout, self.timeout)
 
@@ -477,6 +522,14 @@ class MessageQueue:
             self.socket.close()
         except Exception as e:
             logger.warning("Failed to close main socket: %s", e)
+
+        # Stop any started ZAP authenticators (CURVE/session server sockets)
+        for authenticator in self._zmq_authenticators:
+            try:
+                authenticator.stop()
+            except Exception as e:
+                logger.warning("Failed to stop ZMQ authenticator: %s", e)
+        self._zmq_authenticators = []
 
 
     # ------------------------ Server methods ------------------------
@@ -804,6 +857,7 @@ class MessageQueue:
         # Create a new DEALER socket and connect
         self.socket = self.context.socket(zmq.DEALER)
         self.socket.setsockopt(zmq.LINGER, 0)  # Don't block on close/term
+        self._apply_socket_security(self.socket, server=False)
         self.socket.connect(f"tcp://{self.server_ip}:{self.port}")
 
     def is_server_ready(self, timeout_ms=5000):
