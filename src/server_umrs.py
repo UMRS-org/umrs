@@ -435,6 +435,20 @@ def main():
     else:
         print("Model commands using durable PostgreSQL backend.")
 
+    # Wire server state into the HTTP reload endpoint so that
+    # ``POST /gw/ops/reload`` can re-read the config and re-provision
+    # users.  Without this call the endpoint returns 503.
+    try:
+        from umrs.api.ops import set_reload_context
+
+        set_reload_context(
+            configure_file,
+            server_cfg.buckets_cfg,
+            getattr(server_cfg, "user_config_map", None),
+        )
+    except Exception as _ctx_exc:
+        print(f"Warning: could not set reload context: {_ctx_exc}")
+
     # Start HTTP sidecar so the Platform Gateway can proxy REST requests
     # back to this UMRS instance (port 8082 by default). The sidecar runs
     # in a daemon thread and respects UMRS_HTTP_SIDECAR_ENABLED env var.
