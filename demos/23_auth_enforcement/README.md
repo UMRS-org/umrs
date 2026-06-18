@@ -13,16 +13,16 @@ Demonstrates UMRS role-based access control and admin token management.
 
 ```bash
 # Local-only (token management only, no server daemon needed):
-DEMO_LOCAL_ONLY=1 bash run_demo.sh
+DEMO_LOCAL_ONLY=1 # Follow the step-by-step commands in README.md
 
 # Full test (requires running UMRS server):
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 
 # Remote admin CLI over SSH (optional):
 UMRS_ADMIN_SSH_HOST=rccs-cloud \
 UMRS_ADMIN_REMOTE_CWD=/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/umrs \
 UMRS_ADMIN_REMOTE_ACTIVATE=/lvs0/rccs-dmp/masaru.nagaso/ai4s-platform/.venv/bin/activate \
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 ## Prerequisites

@@ -43,10 +43,10 @@ shape, but may not prove the exact original model name.
 
 ```bash
 # Clean up the default demo_user
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 
 # Clean up a different user
-DEMO_USERNAME=other_user bash run_demo.sh
+DEMO_USERNAME=other_user # Follow the step-by-step commands in README.md
 ```
 
 ## Prerequisites

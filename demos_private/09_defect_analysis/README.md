@@ -19,13 +19,13 @@ structure clustering.
   - `hmae_features.py`
   - `anomaly_detection.py`
   - `structure_discovery.py`
-- `run_demo.sh` provides a practical shell demo that reuses the configured
+- `README.md (step-by-step commands)` provides a practical shell demo that reuses the configured
   SAM3 experience to exercise upload, server-side processing, and result
   download.
 
 ## Important Current-State Note
 
-The checked-in `run_demo.sh` does **not** automatically execute the full
+The checked-in `README.md (step-by-step commands)` does **not** automatically execute the full
 private multi-step workflow. In normal user mode it reuses the already
 provisioned SAM3 bucket flow (`demo-sam3` by default) so the data path can still
 be exercised even when the private `demo-defect` bucket has not been
@@ -45,15 +45,15 @@ DEFECT_BUCKET=demo-sam3 \
   MAX_IMAGES=1 \
   RESULT_DOWNLOAD_TIMEOUT=1800 \
   SAM3_REQUIRE_RESULTS=1 \
-  bash run_demo.sh
+  # Follow the step-by-step commands in README.md
 ```
 
 Useful overrides:
 
 ```bash
-MAX_IMAGES=4 bash run_demo.sh
-IMAGE_DIR=/path/to/real/images bash run_demo.sh
-DEFECT_BUCKET=demo-defect bash run_demo.sh  # only after operator provisioning
+MAX_IMAGES=4 # Follow the step-by-step commands in README.md
+IMAGE_DIR=/path/to/real/images # Follow the step-by-step commands in README.md
+DEFECT_BUCKET=demo-defect # Follow the step-by-step commands in README.md  # only after operator provisioning
 ```
 
 ## Running Manually

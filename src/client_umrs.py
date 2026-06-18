@@ -1833,11 +1833,29 @@ def _handle_experience_recover(args):
 
 
 def _handle_experience_command(args):
+    if args.experience_action == "add":
+        return _handle_config_add_experience(args)
     if args.experience_action == "remove":
         return _handle_config_remove_experience(args)
     if args.experience_action == "recover":
         return _handle_experience_recover(args)
     raise ValueError(f"Unknown experience action: {args.experience_action}")
+
+
+def _configure_experience_add_parser(parser):
+    parser.add_argument(
+        "fragment",
+        help="Path to a JSON file containing one experience object or an array of experiences",
+    )
+    parser.add_argument(
+        "--update",
+        action="store_true",
+        default=False,
+        help="Replace existing experience(s) with matching xp_name instead of skipping",
+    )
+    parser.add_argument(
+        "-c", "--conf", default=None, help="User config JSON path to edit"
+    )
 
 
 def _configure_experience_recover_parser(parser):
@@ -6422,11 +6440,16 @@ def main():
     )
 
     experience_p = subparsers.add_parser(
-        "experience", help="Experience config commands (recover, remove)"
+        "experience", help="Experience config commands (add, remove, recover)"
     )
     experience_sub = experience_p.add_subparsers(
         dest="experience_action", required=True
     )
+    ea_p = experience_sub.add_parser(
+        "add",
+        help="Merge experience fragment(s) from a JSON file into the current user config",
+    )
+    _configure_experience_add_parser(ea_p)
     er_p = experience_sub.add_parser(
         "recover",
         help="Recover experience JSON from MinIO/S3 and optional Postgres status",

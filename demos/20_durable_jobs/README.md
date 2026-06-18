@@ -13,7 +13,7 @@ poll status, test duplicate detection, and cancel a running durable endpoint job
 
 ```bash
 cd demos/20_durable_jobs
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 ## What This Demo Does
