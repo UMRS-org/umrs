@@ -75,6 +75,38 @@ def configure_server_logging():
 
 # --------------------------- Boot and hot-reload ----------------------------
 
+def _init_session_curve_provider():
+    """Create and register the shared session CURVE provider when enabled.
+
+    No-op unless ``UMRS_ZMQ_AUTH_TYPE=session``. When session mode is active
+    this installs a single process-wide :class:`SessionCredentialsProvider`
+    (started, so its TTL sweep thread runs) that is shared by the ZMQ ZAP
+    authenticators and the HTTP ``/umrs/zmq/session`` API. Idempotent.
+    """
+    try:
+        from umrs.core.zmq_security import ZMQSecurityConfig
+
+        if not ZMQSecurityConfig.from_env().is_session_mode:
+            return
+
+        from umrs.core.session_curve_provider import (
+            SessionCredentialsProvider,
+            get_shared_session_provider,
+            set_shared_session_provider,
+        )
+
+        if get_shared_session_provider() is not None:
+            return
+
+        provider = SessionCredentialsProvider()
+        provider.start()
+        set_shared_session_provider(provider)
+        logger.info("Session CURVE provider initialized (UMRS_ZMQ_AUTH_TYPE=session)")
+    except Exception:
+        logger.exception("Failed to initialize session CURVE provider")
+        raise
+
+
 def perform_initial_config(configure_file, status_store):
     if not os.path.exists(configure_file):
         sys.exit(f"Configuration file '{configure_file}' not found.")
@@ -91,6 +123,13 @@ def perform_initial_config(configure_file, status_store):
 
     # Create the tmp_dir if it does not exist
     os.makedirs(tmp_dir, exist_ok=True)
+
+    # Session-CURVE: when UMRS_ZMQ_AUTH_TYPE=session, create the process-wide
+    # SessionCredentialsProvider BEFORE binding ZMQ sockets so both the ZAP
+    # authenticator (control/data sockets) and the HTTP session API share one
+    # in-memory registry. No-op in any other auth mode.
+    _init_session_curve_provider()
+
     control_mq = MessageQueue(role='server', queue_type='control', timeout_ms=1000, tmp_dir = tmp_dir, status_store=status_store)
     # Align MessageQueue debug with server pretty-print setting (off by default)
     try:

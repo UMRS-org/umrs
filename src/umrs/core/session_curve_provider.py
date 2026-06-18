@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -439,3 +439,29 @@ class SessionCredentialsProvider:
                 self.cleanup_expired()
             except Exception:
                 logger.exception("Error in CURVE session sweep")
+
+
+# ---------------------------------------------------------------------------
+# Process-wide shared provider singleton
+# ---------------------------------------------------------------------------
+# In session mode the same :class:`SessionCredentialsProvider` instance must be
+# shared by (a) the HTTP session API (``umrs.api.zmq_sessions``) that registers
+# client public keys and (b) every server-side ZMQ socket's ZAP authenticator
+# that validates handshakes against that registry. This neutral core module is
+# the single source of truth so neither ``core`` nor ``api`` has to import the
+# other across the architecture boundary.
+
+_shared_session_provider: "SessionCredentialsProvider | None" = None
+
+
+def set_shared_session_provider(
+    provider: "SessionCredentialsProvider | None",
+) -> None:
+    """Install (or clear) the process-wide session CURVE provider singleton."""
+    global _shared_session_provider
+    _shared_session_provider = provider
+
+
+def get_shared_session_provider() -> "SessionCredentialsProvider | None":
+    """Return the process-wide session CURVE provider, or ``None`` if unset."""
+    return _shared_session_provider

@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
@@ -29,24 +29,29 @@ router = APIRouter(prefix="/umrs/zmq", tags=["zmq-session"])
 # ---------------------------------------------------------------------------
 # Module-level singleton — set by MessageQueue or http_sidecar at startup
 # ---------------------------------------------------------------------------
-_session_provider: Any | None = None
+# The provider itself lives in the neutral core module so that both this HTTP
+# API and the core ZMQ sockets can share one instance without a core→api import.
 
 
 def set_session_curve_provider(provider: Any) -> None:
     """Inject the :class:`SessionCredentialsProvider` singleton."""
-    global _session_provider
-    _session_provider = provider
+    from umrs.core.session_curve_provider import set_shared_session_provider
+
+    set_shared_session_provider(provider)
     logger.info("ZMQ session CURVE provider set for HTTP API")
 
 
 def get_session_curve_provider() -> Any:
     """FastAPI dependency — returns the provider or raises 503."""
-    if _session_provider is None:
+    from umrs.core.session_curve_provider import get_shared_session_provider
+
+    provider = get_shared_session_provider()
+    if provider is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="ZMQ session CURVE provider not available (UMRS_ZMQ_AUTH_TYPE != session)",
         )
-    return _session_provider
+    return provider
 
 
 # ---------------------------------------------------------------------------
