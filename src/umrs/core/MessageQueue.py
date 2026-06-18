@@ -621,7 +621,6 @@ class MessageQueue:
     # alongside them in the class body without forward-reference issues.
     _CONTROL_PARSERS: "dict[str, str]" = {
         TaskCmd.HANDSHAKE:         "_parse_handshake",
-        TaskCmd.HAND_CHECK:        "_parse_handshake",
         TaskCmd.CREATE_DATA_QUEUE: "_parse_create_data_queue",
         TaskCmd.STATUS:            "_parse_status",
         TaskCmd.PROCESS_OBJECTS:   "_parse_count_cmd",
