@@ -21,13 +21,16 @@ dependencies = [
 
 [project.optional-dependencies]
 # Lightweight client: gateway-mediated operations only (HTTP via httpx/urllib).
-# Includes boto3 for S3/MinIO connectivity checks and bucket access. No
-# pyzmq/pillow. Install with: pip install umrs[client]
+# Includes boto3 for S3/MinIO connectivity checks and bucket access, plus
+# psycopg2-binary for the `list-recovery-status` Postgres inspection helper
+# (see umrs/src/client_umrs.py:_list_recovery_postgres_status).
+# No pyzmq/pillow. Install with: pip install umrs[client]
 client = [
     "httpx",
     "pyyaml",
     "rich>=13.0",
     "boto3",
+    "psycopg2-binary",
 ]
 # Full client: adds direct ZMQ transport (pyzmq) and S3 bucket upload/download
 # (boto3/pillow), plus the CURVE session bootstrap transport (requests).

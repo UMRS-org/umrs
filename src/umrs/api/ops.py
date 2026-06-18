@@ -745,18 +745,23 @@ def ops_reload(
         )
 
     # Persist uploaded user config before reload so the server sees it.
+    # The reload below re-reads the server's conf_umrs.json, which references
+    # per-user config files on disk. If we don't persist the uploaded config,
+    # locally-added experiences are invisible to the server.
     if body.user_config and x_user_id:
+        import logging
+
         try:
-            from umrs.server.maintenance import persist_uploaded_user_config
+            from umrs.server.file_handling import persist_uploaded_user_config
 
             persist_uploaded_user_config(
                 body.user_config,
                 x_user_id,
                 _reload_configure_file,
+                _reload_user_config_map,
+                expected_username=x_user_id,
             )
         except Exception as exc:
-            import logging
-
             logging.getLogger(__name__).warning(
                 "Failed to persist user config for %s: %s",
                 x_user_id,

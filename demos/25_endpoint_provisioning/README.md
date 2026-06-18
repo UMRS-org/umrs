@@ -36,5 +36,5 @@ the full demo suite does not allocate a new endpoint unless explicitly asked.
 ## Run
 
 ```bash
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```

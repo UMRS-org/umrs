@@ -30,7 +30,7 @@ Run from the repository root unless noted.
      MAX_IMAGES=1 \
      RESULT_DOWNLOAD_TIMEOUT=2400 \
      HMAE_REQUIRE_RESULTS=1 \
-     bash run_demo.sh
+     # Follow the step-by-step commands in README.md
    ```
 
 3. Point out these validated output lines:
@@ -50,6 +50,6 @@ Run from the repository root unless noted.
 
 ## Useful Overrides
 
-- Use more slices: `MAX_IMAGES=3 bash run_demo.sh`
-- Use another Spring-8 slice directory: `IMAGE_DIR=/path/to/slices bash run_demo.sh`
-- Require completed outputs: `HMAE_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=2400 bash run_demo.sh`
+- Use more slices: `MAX_IMAGES=3 # Follow the step-by-step commands in README.md`
+- Use another Spring-8 slice directory: `IMAGE_DIR=/path/to/slices # Follow the step-by-step commands in README.md`
+- Require completed outputs: `HMAE_REQUIRE_RESULTS=1 RESULT_DOWNLOAD_TIMEOUT=2400 # Follow the step-by-step commands in README.md`

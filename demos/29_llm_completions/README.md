@@ -17,5 +17,5 @@ chat completions, text completions, embeddings, and model listing.
 ## Run
 
 ```bash
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```

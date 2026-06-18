@@ -177,5 +177,5 @@ umrs-client status all
 ## Run Demo
 
 ```bash
-./run_demo.sh
+./README.md (step-by-step commands)
 ```

@@ -17,5 +17,5 @@ download (with presigned URLs), and deletion of files stored in MinIO/S3.
 ## Run
 
 ```bash
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```

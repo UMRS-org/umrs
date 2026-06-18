@@ -17,7 +17,7 @@ These files describe the intended full HMAE pipeline.
 
 ## Important Current-State Note
 
-The shipped `run_demo.sh` is simpler than the full workflow description above.
+The shipped `README.md (step-by-step commands)` is simpler than the full workflow description above.
 It uploads Spring-8 concrete PNG slices to the configured `demo_user` HMAE
 buckets (`demo-hmae`, `demo-hmae-mae`, and `demo-hmae-features`) and downloads
 the server-side HMAE outputs for each task. It does **not** re-register the
@@ -100,7 +100,7 @@ image, and also writes `features/all_embeddings.npy` for the full batch.
 
 There are two different ways to use this demo, and they are easy to conflate:
 
-1. `run_demo.sh` is the simple operational path. It uploads images to the
+1. `README.md (step-by-step commands)` is the simple operational path. It uploads images to the
 	configured HMAE buckets and downloads whatever the server-side HMAE
 	experience produces.
 2. `workflow/` is the explicit custom-workflow reference.
@@ -114,7 +114,7 @@ If you want to iterate on the workflow itself:
 3. Upload input data to the bucket wired to that workflow and inspect the JSON,
 	PNG, `.pt`, and `.npy` outputs written by each stage.
 
-In practice, use `run_demo.sh` when validating the deployed site behavior, and
+In practice, use `README.md (step-by-step commands)` when validating the deployed site behavior, and
 use `workflow/` when developing or debugging the
 pipeline logic itself.
 
@@ -179,7 +179,7 @@ umrs-client download_results demo-hmae ./results/workflow --force-overwrite
 ### When to use `workflow run`
 
 Use `umrs-client workflow run ...` when you want to execute the registered
-workflow definition explicitly. Use `run_demo.sh` when you want to exercise the
+workflow definition explicitly. Use `README.md (step-by-step commands)` when you want to exercise the
 site's existing HMAE experience wiring without re-registering a custom
 workflow package.
 
@@ -187,15 +187,15 @@ workflow package.
 
 ```bash
 cd demos_private/10_hmae_full_pipeline
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 Useful overrides:
 
 ```bash
-MAX_IMAGES=5 bash run_demo.sh
-IMAGE_DIR=../../tmp/hmae/spring8concrete bash run_demo.sh
-HMAE_BUCKET=demo-hmae bash run_demo.sh
+MAX_IMAGES=5 # Follow the step-by-step commands in README.md
+IMAGE_DIR=../../tmp/hmae/spring8concrete # Follow the step-by-step commands in README.md
+HMAE_BUCKET=demo-hmae # Follow the step-by-step commands in README.md
 ```
 
 ## Running Manually
