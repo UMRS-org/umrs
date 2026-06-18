@@ -14,7 +14,7 @@ for jobs, server status, models, workflows, and connection health.
 
 ```bash
 cd demos/22_monitor
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 ## What This Demo Does

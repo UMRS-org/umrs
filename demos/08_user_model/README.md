@@ -7,7 +7,7 @@ and executes them automatically.
 ## Quick start
 
 ```bash
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 This runs the unit test suite and an integration smoke test using a mock S3.
@@ -26,7 +26,7 @@ fi
 # 1. Run the step test suite.
 PYTHONPATH="$REPO_ROOT/src" "$PYTHON" -m pytest tests/test_user_steps.py -v --tb=short
 
-# 2. Run the same integration smoke test as run_demo.sh.
+# 2. Run the same integration smoke test as README.md (step-by-step commands).
 PYTHONPATH="$REPO_ROOT/src" SCRIPT_DIR="$REPO_ROOT/demos/08_user_model" "$PYTHON" - <<'PY'
 import json
 import os

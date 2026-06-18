@@ -257,7 +257,7 @@ Add workload-specific experiences with:
 
 ```bash
 # Import an experience fragment (adds/replaces by xp_name)
-umrs-client config import path/to/experience.json
+umrs-client experience add path/to/experience.json --update
 
 # Then push to the server and provision resources
 umrs-client reload

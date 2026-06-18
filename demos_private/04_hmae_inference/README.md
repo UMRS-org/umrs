@@ -9,7 +9,7 @@ this demo assumes a private or site-specific HMAE setup.
 
 ## What the current script does
 
-`run_demo.sh` performs a small, practical flow:
+`README.md (step-by-step commands)` performs a small, practical flow:
 
 1. Runs the standard pre-flight checks.
 2. Optionally registers a local HMAE model directory if `HMAE_LOCAL_MODEL_DIR`
@@ -21,19 +21,19 @@ this demo assumes a private or site-specific HMAE setup.
 
 ```bash
 cd demos_private/04_hmae_inference
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 To use a custom image directory:
 
 ```bash
-bash run_demo.sh /path/to/volume_slices
+# Follow the step-by-step commands in README.md /path/to/volume_slices
 ```
 
 To register a local checkpoint directory before running:
 
 ```bash
-HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir bash run_demo.sh
+HMAE_LOCAL_MODEL_DIR=/path/to/hmae_checkpoint_dir # Follow the step-by-step commands in README.md
 ```
 
 ## Running Manually

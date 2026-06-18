@@ -23,10 +23,10 @@ Step/`workflow.json` pattern.
 
 ```bash
 # From demos/ directory
-bash 09_multistep_vision_pipeline/run_demo.sh
+bash 09_multistep_vision_pipeline/README.md (step-by-step commands)
 
 # With your own images
-bash 09_multistep_vision_pipeline/run_demo.sh /path/to/images
+bash 09_multistep_vision_pipeline/README.md (step-by-step commands) /path/to/images
 ```
 
 ## What the Script Does

@@ -73,7 +73,7 @@ umrs-client status update
 umrs-client status check
 ```
 
-## Manual Equivalent To `run_demo.sh`
+## Manual Equivalent To `README.md (step-by-step commands)`
 
 ```bash
 REPO_ROOT="$(git rev-parse --show-toplevel)"
@@ -137,5 +137,5 @@ First time, don't know what's configured?
 ## Run Demo
 
 ```bash
-./run_demo.sh
+./README.md (step-by-step commands)
 ```

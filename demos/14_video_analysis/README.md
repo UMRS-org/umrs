@@ -20,13 +20,13 @@ timestamps plus duration for each event.
 
 ```bash
 # Generate synthetic test videos + analyse them
-bash 14_video_analysis/run_demo.sh
+bash 14_video_analysis/README.md (step-by-step commands)
 
 # Use your own videos
-bash 14_video_analysis/run_demo.sh /path/to/videos
+bash 14_video_analysis/README.md (step-by-step commands) /path/to/videos
 
 # Custom bucket
-VIDEO_BUCKET=my-project bash 14_video_analysis/run_demo.sh
+VIDEO_BUCKET=my-project bash 14_video_analysis/README.md (step-by-step commands)
 ```
 
 ## Synthetic Test Videos
