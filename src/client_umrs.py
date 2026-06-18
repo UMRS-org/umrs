@@ -2440,7 +2440,7 @@ def _ensure_user_config_after_login(username: str, args) -> int:
     set_current_user_config(str(cfg_path))
     print(f"\n  {_green('✓')} User config created → {_bold(str(cfg_path))}")
     print(
-        f"  Add experiences via: {_cyan('umrs-client config import <experience.json>')}"
+        f"  Add experiences via: {_cyan('umrs-client experience add <experience.json>')}"
     )
     print(f"  Then reload:        {_cyan('umrs-client reload')}")
     return 0
@@ -3038,7 +3038,7 @@ def action_list_buckets(bucket_cfg, username, output_format, *, remote_info=None
                     f"  {_dim('  Remove extra buckets:')}  umrs-client purge_remote_buckets"
                 )
                 lines.append(
-                    f"  {_dim('  Add experience back:')}   umrs-client experience import <experience.json>"
+                    f"  {_dim('  Add experience back:')}   umrs-client experience add <experience.json> --update"
                 )
                 lines.append(
                     f"  {_dim('  Edit user config:')}      umrs-client config edit --user"
