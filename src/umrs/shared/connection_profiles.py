@@ -218,6 +218,10 @@ class ConnectionProfile:
     local_forwards: list[dict[str, Any]] = field(default_factory=list)
     command_hint: str | None = None
     path: str | None = None
+    # ZMQ CURVE authentication type.  ``None`` (unset) is treated as
+    # ``"none"`` by downstream consumers.  ``"session"`` triggers
+    # auto-bootstrapping of ephemeral CURVE credentials via the gateway.
+    zmq_auth_type: str | None = None
 
     @property
     def data_base_port(self) -> int:
@@ -253,6 +257,10 @@ class ResolvedConnection:
     command_hint: str | None = None
     allocated_data_port: int | None = None
     sources: dict[str, str] = field(default_factory=dict)
+    # ZMQ CURVE auth type (``"none"`` | ``"curve"`` | ``"session"``).
+    # ``"session"`` triggers auto-bootstrapping of ephemeral CURVE
+    # credentials via the gateway on the client side.
+    zmq_auth_type: str = "none"
 
     @property
     def data_base_port(self) -> int:
@@ -346,6 +354,7 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
         local_forwards=list(ssh_cfg.get("local_forwards") or []),
         command_hint=ssh_cfg.get("command_hint"),
         path=str(path),
+        zmq_auth_type=(zmq_cfg.get("auth_type") or "none").lower(),
     )
     if not profile.minio_url:
         profile.minio_url = _default_service_url(profile.server_host, 9000, profile.tunnel_mode)
@@ -531,6 +540,15 @@ def resolve_connection(
 
     mode = "ssh_tunnel" if tunnel_mode else (profile.mode if profile else "direct")
 
+    # ZMQ CURVE auth type: env var UMRS_ZMQ_AUTH_TYPE overrides profile.
+    env_auth_type = os.environ.get("UMRS_ZMQ_AUTH_TYPE", "").strip().lower()
+    if env_auth_type:
+        zmq_auth_type = env_auth_type
+    elif profile and profile.zmq_auth_type:
+        zmq_auth_type = profile.zmq_auth_type
+    else:
+        zmq_auth_type = "none"
+
     return ResolvedConnection(
         profile_name=profile.name if profile else None,
         profile_path=profile.path if profile else None,
@@ -548,6 +566,7 @@ def resolve_connection(
         local_forwards=list(profile.local_forwards) if profile else [],
         command_hint=profile.command_hint if profile else None,
         sources=sources,
+        zmq_auth_type=zmq_auth_type,
     )
 
 

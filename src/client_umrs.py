@@ -351,10 +351,6 @@ def _handle_info(args):
     lines.append(_kv("zmq_auth_type", zmq_auth))
     lines.append(_kv("tunnel_mode", str(tunnel).lower()))
     lines.append(_kv("data_port_range", connection.data_port_range_label))
-    if gateway_url:
-        lines.append(_kv("gateway_url", _bold(gateway_url)))
-    else:
-        lines.append(_kv("gateway_url", _dim("(not set)")))
 
     # Which actions use which transport?
     gateway_actions = {"reload", "list_buckets", "model list"} if gateway_url else set()
