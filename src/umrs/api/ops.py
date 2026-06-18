@@ -750,23 +750,42 @@ def ops_reload(
     # locally-added experiences are invisible to the server.
     if body.user_config and x_user_id:
         import logging
+        import tempfile
+        import json as _json
 
+        log = logging.getLogger(__name__)
+        tmp_fd = None
         try:
+            # persist_uploaded_user_config expects a file path, so write the
+            # uploaded user_config dict to a temp file first.
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix="umrs_user_config_",
+                suffix=".json",
+            )
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+                _json.dump(body.user_config, f, indent=2, ensure_ascii=False)
+            tmp_fd = None  # fd closed by context manager
+
             from umrs.server.file_handling import persist_uploaded_user_config
 
             persist_uploaded_user_config(
-                body.user_config,
-                x_user_id,
+                tmp_path,
                 _reload_configure_file,
                 _reload_user_config_map,
                 expected_username=x_user_id,
             )
         except Exception as exc:
-            logging.getLogger(__name__).warning(
+            log.warning(
                 "Failed to persist user config for %s: %s",
                 x_user_id,
                 exc,
             )
+            # Clean up temp file on failure (best-effort).
+            if tmp_fd is not None:
+                try:
+                    os.close(tmp_fd)
+                except OSError:
+                    pass
 
     from umrs.server.maintenance import reload_configuration
 
