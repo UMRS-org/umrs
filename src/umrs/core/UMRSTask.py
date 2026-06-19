@@ -44,20 +44,20 @@ class UMRSTask:
                             client_id   TEXT,
                             cmd         TEXT,
                             payload     TEXT,
+                            payload_hash TEXT GENERATED ALWAYS AS (md5(coalesce(payload, ''))) STORED,
                             status      TEXT,
                             submitted_at TIMESTAMPTZ DEFAULT now(),
                             updated_at   TIMESTAMPTZ DEFAULT now()
                         )
                     """)
-                    # Partial unique index: enforces at the DB level that no two
-                    # active (Submitted or Running) tasks can share the same
-                    # (client_id, cmd, payload) triple. Completed/Aborted/etc.
-                    # tasks are excluded from the index so historical rows are
-                    # not affected. This index is what makes the ON CONFLICT in
-                    # add_task() atomic and race-free.
+                    # Partial unique index on payload_hash (md5 of payload) rather
+                    # than payload itself: PostgreSQL limits index row size to 8191
+                    # bytes, which large payloads (e.g. spacy text chunks) exceed.
+                    # payload_hash is a generated column so the index is still
+                    # race-free and atomic via ON CONFLICT in add_task().
                     cur.execute("""
                         CREATE UNIQUE INDEX IF NOT EXISTS tasks_active_dedup
-                        ON tasks (client_id, cmd, payload)
+                        ON tasks (client_id, cmd, payload_hash)
                         WHERE status IN ('Submitted', 'Running')
                     """)
         finally:
@@ -197,7 +197,7 @@ class UMRSTask:
                         cur.execute(
                             "INSERT INTO tasks (client_id, cmd, payload, status) "
                             "VALUES (%s, %s, %s, %s) "
-                            "ON CONFLICT DO NOTHING "
+                            "ON CONFLICT (client_id, cmd, payload_hash) WHERE status IN ('Submitted', 'Running') DO NOTHING "
                             "RETURNING id",
                             (client_id, cmd, payload, status),
                         )
@@ -209,7 +209,7 @@ class UMRSTask:
                         # for this (client_id, cmd, payload) — reuse it.
                         cur.execute(
                             "SELECT id FROM tasks "
-                            "WHERE client_id = %s AND cmd = %s AND payload = %s "
+                            "WHERE client_id = %s AND cmd = %s AND payload_hash = md5(%s) "
                             "AND status IN (%s, %s)",
                             (client_id, cmd, payload,
                              TaskStatus.SUBMITTED, TaskStatus.RUNNING),
