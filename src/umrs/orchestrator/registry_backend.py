@@ -185,14 +185,14 @@ class PostgresBackend(RegistryBackend):
             port INTEGER NOT NULL,
             status VARCHAR(50) NOT NULL,
             backend VARCHAR(50) NOT NULL,
+            variant VARCHAR(255),
             created_at TIMESTAMP NOT NULL,
             ready_at TIMESTAMP,
             last_used_at TIMESTAMP,
             expires_at TIMESTAMP,
             error_message TEXT,
             consecutive_failures INTEGER DEFAULT 0,
-            metadata JSONB DEFAULT '{}',
-            UNIQUE(project_id, model)
+            metadata JSONB DEFAULT '{}'
         );
         CREATE INDEX idx_registry_project ON endpoint_registry(project_id);
         CREATE INDEX idx_registry_status ON endpoint_registry(status);
@@ -213,7 +213,51 @@ class PostgresBackend(RegistryBackend):
             )
 
         self._conn = None
+        self._ensure_database()
         self._init_schema()
+        self._migrate_schema()
+
+    def _ensure_database(self) -> None:
+        """Create the target database if it does not exist.
+
+        Parses the DSN to extract the database name, then connects to the
+        default ``postgres`` database to issue ``CREATE DATABASE`` if needed.
+        This fixes the deployment issue where the DSN points to a database
+        that was never created (e.g. ``umrs_rccs``).
+        """
+        try:
+            import psycopg2
+        except ImportError:
+            raise ImportError(
+                "psycopg2 required for PostgreSQL backend: pip install psycopg2-binary"
+            ) from None
+
+        # Parse DSN: postgres://user:pass@host:port/dbname
+        from urllib.parse import urlparse
+
+        parsed = urlparse(self._dsn)
+        db_name = parsed.path.lstrip("/")
+        if not db_name:
+            return  # No database in DSN, nothing to create
+
+        # Build a DSN to the default 'postgres' database
+        admin_dsn = self._dsn.rsplit("/", 1)[0] + "/postgres"
+
+        try:
+            conn = psycopg2.connect(admin_dsn)
+            conn.autocommit = True
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM pg_database WHERE datname = %s", (db_name,)
+                )
+                if cur.fetchone() is None:
+                    # Database doesn't exist, create it
+                    cur.execute(f'CREATE DATABASE "{db_name}"')
+                    logger.info(f"Auto-created database: {db_name}")
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to ensure database exists: {e}")
+            raise
 
     def _get_connection(self):
         """Get or create database connection."""
@@ -242,14 +286,14 @@ class PostgresBackend(RegistryBackend):
                     port INTEGER NOT NULL,
                     status VARCHAR(50) NOT NULL,
                     backend VARCHAR(50) NOT NULL,
+                    variant VARCHAR(255),
                     created_at TIMESTAMP NOT NULL,
                     ready_at TIMESTAMP,
                     last_used_at TIMESTAMP,
                     expires_at TIMESTAMP,
                     error_message TEXT,
                     consecutive_failures INTEGER DEFAULT 0,
-                    metadata JSONB DEFAULT '{}',
-                    UNIQUE(project_id, model)
+                    metadata JSONB DEFAULT '{}'
                 )
             """)
             cur.execute("""
@@ -261,6 +305,38 @@ class PostgresBackend(RegistryBackend):
                 ON endpoint_registry(status)
             """)
         logger.info("PostgreSQL registry schema initialized")
+
+    def _migrate_schema(self) -> None:
+        """Apply incremental schema migrations for existing tables.
+
+        Handles upgrades from older schema versions:
+        - Adds ``variant`` column if missing
+        - Removes legacy ``UNIQUE(project_id, model)`` constraint if present
+        """
+        conn = self._get_connection()
+        with conn.cursor() as cur:
+            # Check if variant column exists
+            cur.execute("""
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name = 'endpoint_registry'
+                AND column_name = 'variant'
+            """)
+            if cur.fetchone() is None:
+                cur.execute(
+                    "ALTER TABLE endpoint_registry ADD COLUMN variant VARCHAR(255)"
+                )
+                logger.info("Added 'variant' column to endpoint_registry")
+
+            # Check for and remove legacy unique constraint
+            cur.execute("""
+                SELECT conname FROM pg_constraint
+                WHERE conrelid = 'endpoint_registry'::regclass
+                AND contype = 'u'
+            """)
+            for row in cur.fetchall():
+                constraint_name = row[0]
+                cur.execute(f"ALTER TABLE endpoint_registry DROP CONSTRAINT {constraint_name}")
+                logger.info(f"Removed legacy constraint: {constraint_name}")
 
     def _row_to_endpoint(self, row) -> RegisteredEndpoint:
         """Convert database row to RegisteredEndpoint."""
@@ -274,13 +350,14 @@ class PostgresBackend(RegistryBackend):
             port=row[4],
             status=EndpointStatus(row[5]),
             backend=row[6],
-            created_at=row[7],
-            ready_at=row[8],
-            last_used_at=row[9],
-            expires_at=row[10],
-            error_message=row[11],
-            consecutive_failures=row[12] or 0,
-            metadata=row[13] or {},
+            variant=row[7],
+            created_at=row[8],
+            ready_at=row[9],
+            last_used_at=row[10],
+            expires_at=row[11],
+            error_message=row[12],
+            consecutive_failures=row[13] or 0,
+            metadata=row[14] or {},
         )
 
     def save(self, endpoint: RegisteredEndpoint) -> None:
@@ -291,9 +368,11 @@ class PostgresBackend(RegistryBackend):
                 """
                 INSERT INTO endpoint_registry (
                     job_id, project_id, model, host, port, status, backend,
-                    created_at, ready_at, last_used_at, expires_at,
+                    variant, created_at, ready_at, last_used_at, expires_at,
                     error_message, consecutive_failures, metadata
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
                 ON CONFLICT (job_id) DO UPDATE SET
                     project_id = EXCLUDED.project_id,
                     model = EXCLUDED.model,
@@ -301,6 +380,7 @@ class PostgresBackend(RegistryBackend):
                     port = EXCLUDED.port,
                     status = EXCLUDED.status,
                     backend = EXCLUDED.backend,
+                    variant = EXCLUDED.variant,
                     ready_at = EXCLUDED.ready_at,
                     last_used_at = EXCLUDED.last_used_at,
                     expires_at = EXCLUDED.expires_at,
@@ -316,6 +396,7 @@ class PostgresBackend(RegistryBackend):
                     endpoint.port,
                     endpoint.status.value,
                     endpoint.backend,
+                    endpoint.variant,
                     endpoint.created_at,
                     endpoint.ready_at,
                     endpoint.last_used_at,
@@ -334,7 +415,7 @@ class PostgresBackend(RegistryBackend):
             cur.execute(
                 """
                 SELECT job_id, project_id, model, host, port, status, backend,
-                       created_at, ready_at, last_used_at, expires_at,
+                       variant, created_at, ready_at, last_used_at, expires_at,
                        error_message, consecutive_failures, metadata
                 FROM endpoint_registry
                 WHERE project_id = %s AND model = %s
@@ -351,7 +432,7 @@ class PostgresBackend(RegistryBackend):
             cur.execute(
                 """
                 SELECT job_id, project_id, model, host, port, status, backend,
-                       created_at, ready_at, last_used_at, expires_at,
+                       variant, created_at, ready_at, last_used_at, expires_at,
                        error_message, consecutive_failures, metadata
                 FROM endpoint_registry
                 WHERE job_id = %s
@@ -383,7 +464,7 @@ class PostgresBackend(RegistryBackend):
         conn = self._get_connection()
         query = """
             SELECT job_id, project_id, model, host, port, status, backend,
-                   created_at, ready_at, last_used_at, expires_at,
+                   variant, created_at, ready_at, last_used_at, expires_at,
                    error_message, consecutive_failures, metadata
             FROM endpoint_registry WHERE 1=1
         """
