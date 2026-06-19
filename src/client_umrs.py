@@ -5294,9 +5294,8 @@ def _action_s3_transfer(ctx):
                 check=(modality not in ("volume", "movie", "volume_movie")),
             )
             if s3_key and notify_server:
-                s3_uri = f"s3://{full_bucket_name}/{s3_key}"
                 ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri]
+                    username, TaskCmd.PROCESS_OBJECTS, 1
                 )
             return s3_key, 1
         elif category == "text_file":
@@ -5304,9 +5303,8 @@ def _action_s3_transfer(ctx):
                 s3, full_bucket_name, subdir, file_path, data_mq, metadata_args
             )
             if s3_key and notify_server:
-                s3_uri = f"s3://{full_bucket_name}/{s3_key}"
                 ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri]
+                    username, TaskCmd.PROCESS_OBJECTS, 1
                 )
             return s3_key, 1
         elif category == "text":
@@ -5328,12 +5326,10 @@ def _action_s3_transfer(ctx):
                             s3_key_list.append(s3_key)
                             nb_objects += 1
                     if notify_server and nb_objects > 0:
-                        s3_uris = [f"s3://{full_bucket_name}/{k}" for k in s3_key_list]
                         ctx.control_mq.notify_server(
                             username,
                             TaskCmd.PROCESS_OBJECTS,
                             nb_objects,
-                            s3_keys=s3_uris,
                         )
                     return s3_key_list, nb_objects
             except UnicodeDecodeError as e:
@@ -5358,12 +5354,30 @@ def _action_s3_transfer(ctx):
         s3_key_list = []
         file_list = []
         nb_objects = 0
-        for file_path in glob(os.path.join(path, "*")):
-            if os.path.isfile(file_path):
+        # Recursively walk *path* so deeply nested data (e.g. the
+        # opossum ``opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4``
+        # hierarchy) is uploaded. Each file's relative directory becomes
+        # part of the S3 key prefix, preserving the camera/Schedule date
+        # hierarchy expected by the workflow step.
+        norm_path = os.path.abspath(path)
+        for root, _dirs, files in os.walk(norm_path):
+            for fname in files:
+                file_path = os.path.join(root, fname)
+                if not os.path.isfile(file_path):
+                    continue
+
+                rel_dir = os.path.relpath(root, norm_path)
+                if rel_dir in (".", ""):
+                    file_subdir = subdir
+                elif subdir:
+                    file_subdir = f"{subdir}/{rel_dir}"
+                else:
+                    file_subdir = rel_dir
+
                 s3_key, nb_sent = process_file(
                     s3,
                     full_bucket_name,
-                    subdir,
+                    file_subdir,
                     file_path,
                     modality,
                     data_mq,
@@ -5382,9 +5396,8 @@ def _action_s3_transfer(ctx):
                     nb_objects += nb_sent
 
         if nb_objects > 0:
-            s3_uris = [f"s3://{full_bucket_name}/{k}" for k in s3_key_list]
             ctx.control_mq.notify_server(
-                username, TaskCmd.PROCESS_OBJECTS, nb_objects, s3_keys=s3_uris
+                username, TaskCmd.PROCESS_OBJECTS, nb_objects
             )
         return s3_key_list, file_list
 
