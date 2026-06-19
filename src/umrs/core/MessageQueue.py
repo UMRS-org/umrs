@@ -895,7 +895,7 @@ class MessageQueue:
         else:
             raise RuntimeError(f"Unexpected reply from server: {reply}")
 
-    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None):
+    def notify_server(self, client_id, notification_type, nb_objects, verbose=False, admin_token=None, s3_keys=None):
         if self.role != "client":
             raise PermissionError("Only client can call 'notify_server'")
 

@@ -353,6 +353,7 @@ def _profile_from_content(content: dict[str, Any], path: Path) -> ConnectionProf
 
 def load_connection_profile(name: str) -> ConnectionProfile:
     path = get_profile_path(name)
+    print(f"{path=}")
     content = _load_profile_content(path)
     return _profile_from_content(content, path)
 

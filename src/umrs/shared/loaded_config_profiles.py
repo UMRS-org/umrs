@@ -184,7 +184,7 @@ def _validate_server(path: Path) -> ConfigLayer:
         return layer
     try:
         _, users, _ = load_server_cfg_file(str(path))
-    except SystemExit as exc:
+    except (SystemExit, ValueError, Exception) as exc:
         layer.error = str(exc)
         return layer
     layer.valid = True
@@ -204,7 +204,7 @@ def _validate_user(path: Path) -> ConfigLayer:
         return layer
     try:
         user_cfg = load_client_cfg_file(str(path))
-    except SystemExit as exc:
+    except (SystemExit, ValueError) as exc:
         layer.error = str(exc)
         return layer
     layer.valid = True

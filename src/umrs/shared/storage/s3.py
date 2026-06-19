@@ -172,6 +172,7 @@ def connect_to_s3(config_file, *, endpoint_url_override: str | None = None):
     # Extract values with defaults
     s3_host = config.get("default", "host_base")
     use_https = config.getboolean("default", "use_https", fallback=False)
+    print(f"{use_https=}")
     verify_ssl = config.getboolean("default", "check_ssl_certificate", fallback=True)
     access_key = config.get("default", "access_key")
     secret_key = config.get("default", "secret_key")
