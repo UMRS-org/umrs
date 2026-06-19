@@ -224,7 +224,7 @@ Instead of the manual steps above, you can run everything in one go:
 SAM3_PROMPT=cat \
   MAX_IMAGES=1 \
   RESULT_DOWNLOAD_TIMEOUT=1500 \
-  bash run_demo.sh
+  # Follow the step-by-step commands in README.md
 ```
 
 ---

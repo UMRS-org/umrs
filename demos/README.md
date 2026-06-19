@@ -1,7 +1,7 @@
 # UMRS Demos
 
 Step-by-step demos ordered from basic usage to advanced features.
-Each demo has a `run_demo.sh` that can be executed standalone.
+Each demo has a `README.md (step-by-step commands)` that can be executed standalone.
 
 These demos work with **any deployment** (Docker Compose, rccs-cloud, hpbd-atom,
 or any other setup) as long as the UMRS server is reachable from your client

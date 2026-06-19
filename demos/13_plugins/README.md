@@ -20,7 +20,7 @@ in cloud).
 ## Quick Start
 
 ```bash
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 Or run directly:

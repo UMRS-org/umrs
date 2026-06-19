@@ -24,5 +24,5 @@ updating, and deleting pipelines, plus RAG profile composition
 ## Run
 
 ```bash
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```

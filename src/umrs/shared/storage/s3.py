@@ -216,6 +216,34 @@ def make_path_to_bucket_string(xp_name, bucket_alias, username, output=False):
     return path.lower().replace(" ", "-").replace("_", "-")
 
 
+def _format_bucket_error(path_to_bucket, code, message):
+    """Build a human-readable, actionable error for S3 bucket access failures."""
+    base = f"S3 Error: cannot access bucket '{path_to_bucket}' (HTTP {code})."
+    hint = ""
+    if code in (403, "403"):
+        hint = (
+            "\n  The S3 credentials in your s3cfg are not authorized for this bucket.\n"
+            "  Common causes:\n"
+            "    • The bucket does not exist under this user/xp_name/modality.\n"
+            "    • The s3cfg access key belongs to a different user.\n"
+            "    • The MinIO policy for this user does not cover the requested bucket.\n"
+            "  Remediation:\n"
+            "    1. Verify the bucket name matches the user configuration.\n"
+            "    2. Regenerate or re-issue the s3cfg with `umrs-client s3cfg` (admin) or ask the administrator to re-provision the user's S3 access.\n"
+            "    3. If the bucket is legitimately missing, create it via `umrs-client create_bucket` or the provisioning flow."
+        )
+    elif code in (404, "404"):
+        hint = "\n  The bucket does not exist on the S3 service."
+    elif code in (401, "401"):
+        hint = (
+            "\n  Authentication failed: the access key in the s3cfg is invalid or expired.\n"
+            "  Regenerate the s3cfg with `umrs-client s3cfg` (admin) or contact the administrator."
+        )
+    else:
+        hint = f"\n  Underlying S3 error: {message}"
+    return f"{base}{hint}"
+
+
 def check_bucket_path(s3, path_to_bucket, indent=True, exit_on_error=True):
     if indent:
         print(f"\t\t\t--> Checking bucket '{path_to_bucket}'... ", end="")
@@ -226,14 +254,17 @@ def check_bucket_path(s3, path_to_bucket, indent=True, exit_on_error=True):
         s3.head_bucket(Bucket=path_to_bucket)
 
     except ClientError as e:
-        if e.response["Error"]["Code"] == "404":
+        code = e.response["Error"]["Code"]
+        if code == "404":
             print("Not Found")
             return False  # Not found
+        message = e.response["Error"].get("Message", str(e))
+        formatted = _format_bucket_error(path_to_bucket, code, message)
+        if exit_on_error:
+            raise RuntimeError(formatted) from e
         else:
-            if exit_on_error:
-                raise RuntimeError(f"S3 Error: {e}") from e
-            else:
-                return False
+            print(formatted)
+            return False
     except Exception as e:
         raise RuntimeError(f"S3 Connection Failed: {e}") from e
 
