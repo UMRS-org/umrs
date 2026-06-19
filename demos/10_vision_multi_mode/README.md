@@ -25,13 +25,13 @@ vision service; the thumbnail branch runs on CPU and finishes quickly.
 ## Quick Start
 
 ```bash
-bash 10_vision_multi_mode/run_demo.sh
+bash 10_vision_multi_mode/README.md (step-by-step commands)
 
 # Custom image directory
-bash 10_vision_multi_mode/run_demo.sh /path/to/images
+bash 10_vision_multi_mode/README.md (step-by-step commands) /path/to/images
 
 # Custom bucket
-MULTI_BUCKET=my-analysis bash 10_vision_multi_mode/run_demo.sh
+MULTI_BUCKET=my-analysis bash 10_vision_multi_mode/README.md (step-by-step commands)
 ```
 
 ## Steps

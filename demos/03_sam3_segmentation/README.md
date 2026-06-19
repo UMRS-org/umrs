@@ -32,7 +32,7 @@ All vision inference runs inside Mini-Rivault for security isolation:
 
 ```bash
 cd demos/03_sam3_segmentation
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 ## What This Demo Does

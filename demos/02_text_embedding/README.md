@@ -13,7 +13,7 @@ verify results in pgvector, and export.
 
 ```bash
 cd demos/02_text_embedding
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 ## What This Demo Does
@@ -83,7 +83,7 @@ only works when the deployment exposes a writable, allowed staging root.
 If your site uses a different bucket alias, override it with:
 
 ```bash
-TEXT_BUCKET=my-text-bucket bash run_demo.sh
+TEXT_BUCKET=my-text-bucket # Follow the step-by-step commands in README.md
 ```
 
 ## Expected Output

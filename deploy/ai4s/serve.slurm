@@ -116,6 +116,27 @@ else
     SIF_IMAGE="${RIVAULT_SIF:-${RIVAULT_DIR%/}/mini-rivault-aarch64-v4.sif}"
 fi
 
+# GLM-5.2 (IndexShare / glm_moe_dsa) requires vLLM >= 0.23.0 for the glm_moe_dsa
+# architecture. The default v4 SIF ships 0.22.1rc1 which predates this support
+# and falls back to DEEPSEEK_V32_INDEXER — producing garbled output. The v6 SIF
+# (0.23.1rc1 + Ray 2.48.0) has full glm_moe_dsa support. Override the SIF default
+# here so the orchestrator does not need to forward RIVAULT_SIF via env_vars
+# (which r4 up --pool-file drops; only the server roster forwards env_vars).
+# Explicit RIVAULT_SIF env always wins — this only changes the fallback default.
+case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
+    *glm*5.2*)
+        if [[ -z "${RIVAULT_SIF:-}" && "${SIF_IMAGE}" != *v6* ]]; then
+            _V6_SIF="${RIVAULT_DIR%/}/mini-rivault-aarch64-v6.sif"
+            if [[ -f "${_V6_SIF}" ]]; then
+                SIF_IMAGE="${_V6_SIF}"
+                echo "[serve] GLM-5.2: defaulting to v6 SIF (vLLM 0.23+) for glm_moe_dsa support"
+            else
+                echo "[serve] WARNING: GLM-5.2 needs v6 SIF (vLLM 0.23+) but ${_V6_SIF} not found — garbled output likely" >&2
+            fi
+        fi
+        ;;
+esac
+
 # ── Runtime fallback deprecation guard ──────────────────────────────────────
 # When the orchestrator sets explicit VLLM_* env vars via DeploymentSpec,
 # these derivation functions are dormant (VAR already set).

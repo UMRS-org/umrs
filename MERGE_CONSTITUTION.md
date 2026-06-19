@@ -126,6 +126,61 @@ authenticators are safe — but they **must** be tracked
 (`self._zmq_authenticators`) and `stop()`-ped in `close()`. A merge that drops
 that bookkeeping leaks ZAP threads.
 
+### 2.8 HTTP reload context must be wired in at startup
+
+The HTTP reload endpoint (`POST /gw/ops/reload`) in `src/umrs/api/ops.py`
+depends on module-level state populated by `set_reload_context()`. The endpoint
+guards on this state:
+
+```python
+if _reload_configure_file is None or _reload_buckets_cfg is None:
+    raise HTTPException(
+        status_code=HTTP_503_SERVICE_UNAVAILABLE,
+        detail="Reload context not initialised — server may still be starting",
+    )
+```
+
+If `set_reload_context()` is **never called** during server startup, the
+endpoint always returns `503`. This is a *silent* regression: the server starts
+fine, ZMQ works, but `umrs-client reload` fails with:
+
+```
+✗ reload rejected: HTTP 503: Service Unavailable
+```
+
+Without a successful reload, the server cannot provision the S3 config
+(`s3cfg_<user>`) needed by `upload_dir` / `upload_file`. Every demo that
+uploads data then fails with "Server connection timeout".
+
+**Wiring requirement:** `server_umrs.py` must call `set_reload_context()`
+after `perform_initial_config()` (which sets up `server_cfg.buckets_cfg` and
+`server_cfg.user_config_map`) and **before** starting the HTTP sidecar:
+
+```python
+from umrs.api.ops import set_reload_context
+
+set_reload_context(
+    configure_file,
+    server_cfg.buckets_cfg,
+    getattr(server_cfg, "user_config_map", None),
+)
+```
+
+> **Why this rule exists — the reload-503 break (2026-06-18):**
+> `set_reload_context()` was defined in `src/umrs/api/ops.py` but **never
+> called** from `src/server_umrs.py`. The function existed, the endpoint
+> existed, but the module-level `_reload_configure_file` and
+> `_reload_buckets_cfg` remained `None`. Result: every `umrs-client reload`
+> returned HTTP 503 with body `"Reload context not initialised — server may
+> still be starting"`. Without reload, no `s3cfg` was generated, and all
+> `upload_dir` / `upload_file` calls failed. The server appeared healthy
+> (ping succeeded, ZMQ worked) — masking the regression.
+>
+> **Fix:** Added `set_reload_context()` call in `server_umrs.py` after
+> `perform_initial_config()` and before `start_http_sidecar()`. Deployed via
+> `./bootstrap.sh --profile umrs-front --ask-become-pass`. Verified:
+> `umrs-client reload` now returns `✓ reload accepted`.
+
 ---
 
 ## 3. Conflict-Prone Files (verify after every merge)
@@ -137,9 +192,10 @@ In addition to the table in [SYNC_CHECKLIST.md](SYNC_CHECKLIST.md):
 | `src/umrs/shared/config.py` | Constant shadowing (§2.1), resolution → `None` (§2.2) |
 | `src/umrs/shared/connection_profiles.py` | Profile resolution chain (§2.2) |
 | `src/umrs/core/MessageQueue.py` | CURVE socket application (§2.3), authenticator tracking (§2.7) |
-| `src/server_umrs.py` | Provider init at startup (§2.3) |
+| `src/server_umrs.py` | Provider init at startup (§2.3), reload context wiring (§2.8) |
 | `src/umrs/core/session_curve_provider.py` | Shared singleton (§2.4) |
 | `src/umrs/api/zmq_sessions.py` | Delegation to core singleton (§2.4) |
+| `src/umrs/api/ops.py` | Reload endpoint 503 if `set_reload_context()` not called (§2.8) |
 
 ---
 
@@ -196,7 +252,23 @@ cd umrs && PYTHONPATH=src ../.venv/bin/python -m pytest \
 # (d) §2.5 — import boundaries (repo-root validator)
 .venv/bin/python tools/import_boundary_validator.py
 
-# (e) full local CI gate (REQUIRED before any commit touching *.py)
+# (e) §2.8 — HTTP reload context is wired in at startup
+cd umrs && ../.venv/bin/python -c "
+import ast, sys
+src = open('src/server_umrs.py').read()
+tree = ast.parse(src)
+found = any(
+    isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    and node.func.id == 'set_reload_context'
+    for node in ast.walk(tree)
+)
+if not found:
+    print('FAIL: set_reload_context() not called in server_umrs.py (§2.8)')
+    sys.exit(1)
+print('OK: set_reload_context() is wired in (§2.8)')
+"; cd ..
+
+# (f) full local CI gate (REQUIRED before any commit touching *.py)
 bash scripts/ci-lint-local.sh
 ```
 
@@ -243,6 +315,35 @@ PR to `main`:** "fix(zmq): initialize SessionCredentialsProvider at startup and
 apply CURVE to MessageQueue sockets (gated on `UMRS_ZMQ_AUTH_TYPE=session`)".
 The change is fully gated (§2.6), so it is safe for every `main` consumer that
 has not enabled session auth.
+
+### Current upstream candidate: HTTP reload context wiring (2026-06-18)
+
+The `set_reload_context()` call in `src/server_umrs.py` is an upstream
+candidate. Verified state:
+
+| File | vs `ejeannot/main` | Upstream-able |
+|------|--------------------|---------------|
+| `src/server_umrs.py` | SAME blob | yes — clean |
+| `src/umrs/api/ops.py` | SAME blob | yes — clean |
+
+The bug exists on `main` too: `set_reload_context()` is defined in
+`src/umrs/api/ops.py` but never called from `src/server_umrs.py`. Result: every
+`umrs-client reload` returns HTTP 503 with body
+`"Reload context not initialised — server may still be starting"`. Without
+reload, no `s3cfg` is generated, and all `upload_dir` / `upload_file` calls
+fail. The server appears healthy (ping succeeded, ZMQ worked) — masking the
+regression.
+
+**Fix:** Added `set_reload_context()` call in `src/server_umrs.py` after
+`perform_initial_config()` and before `start_http_sidecar()`. Deployed via
+`./bootstrap.sh --profile umrs-front --ask-become-pass`. Verified:
+`umrs-client reload` now returns `✓ reload accepted`.
+
+**Recommended PR to `main`:** "fix(ops): wire set_reload_context() at startup
+so POST /gw/ops/reload does not return 503". The change is safe for every
+`main` consumer: the endpoint is additive (only exists if the HTTP sidecar is
+enabled), and the guard already returns 503 gracefully if the context is not
+set.
 
 ---
 

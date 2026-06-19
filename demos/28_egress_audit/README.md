@@ -21,5 +21,5 @@ tools inherit proxy settings so outbound traffic remains auditable.
 ## Run
 
 ```bash
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```

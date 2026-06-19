@@ -12,10 +12,10 @@ Demonstrates the UMRS bounded thread pool and its backpressure mechanism.
 
 ```bash
 # Basic pool inspection:
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 
 # With a test task submission:
-DEMO_SUBMIT_TASK=1 bash run_demo.sh
+DEMO_SUBMIT_TASK=1 # Follow the step-by-step commands in README.md
 ```
 
 ## Prerequisites

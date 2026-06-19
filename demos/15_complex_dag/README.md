@@ -33,7 +33,7 @@ fan-in capabilities.
 
 ```bash
 cd demos/15_complex_dag
-bash run_demo.sh
+# Follow the step-by-step commands in README.md
 ```
 
 ## What This Demo Does
