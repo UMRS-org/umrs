@@ -551,6 +551,14 @@ def run_workflow_record(
     """
     record.update(status="running", started_at=time.time())
 
+    # Add the workflow source directory to sys.path so that step
+    # modules (e.g. ``opossum_step.py``) can be imported by
+    # ``_load_step_class``.
+    if source_path and os.path.isdir(source_path):
+        abs_source = os.path.abspath(source_path)
+        if abs_source not in sys.path:
+            sys.path.insert(0, abs_source)
+
     steps_spec: list[dict[str, Any]] = list(workflow_json.get("steps", []))
     if not steps_spec:
         record.update(

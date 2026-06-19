@@ -7,6 +7,7 @@
         "path": "."
     },
     "requirements": ["opencv-python-headless", "numpy"],
+    "auto_trigger": true,
     "resources": {
         "gpu_count": 1,
         "cpu_limit": "8",
