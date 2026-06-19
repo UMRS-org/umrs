@@ -123,9 +123,17 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
     if not zipfile.is_zipfile(zip_path):
         return False, None, f"Uploaded file is not a valid zip archive: {zip_path}"
 
-    # Determine destination
-    workflows_root = os.path.join(get_default_tmp_subdir(), "user_workflows", client_id)
-    dest_dir = os.path.join(workflows_root, workflow_name)
+    # Determine destination — use an ABSOLUTE path so that the
+    # stored ``source_path`` resolves correctly regardless of the
+    # working directory of the process that later reads it (e.g.
+    # the durable-job backend running in a different cwd than the
+    # UMRS server).
+    workflows_root = os.path.join(
+        get_default_tmp_subdir(), "user_workflows", client_id
+    )
+    dest_dir = os.path.abspath(
+        os.path.join(workflows_root, workflow_name)
+    )
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:

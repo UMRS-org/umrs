@@ -362,6 +362,7 @@ class WorkflowDefinition:
     resources: ResourceSpec = field(default_factory=ResourceSpec)
     output: OutputSpec = field(default_factory=OutputSpec)
     execution_mode: ExecutionMode = ExecutionMode.IN_PROCESS
+    auto_trigger: bool = False
 
     def validate(self) -> None:
         """Run all validation checks; raise ``ValueError`` on failure."""
@@ -412,6 +413,8 @@ class WorkflowDefinition:
         }
         if self.execution_mode != ExecutionMode.IN_PROCESS:
             d["execution_mode"] = self.execution_mode.value
+        if self.auto_trigger:
+            d["auto_trigger"] = True
         return d
 
     @classmethod
@@ -432,6 +435,7 @@ class WorkflowDefinition:
             steps=[StepSpec.from_dict(s) for s in steps_data],
             output=OutputSpec.from_dict(data.get("output", {})),
             execution_mode=ExecutionMode(mode_str),
+            auto_trigger=data.get("auto_trigger", False),
         )
 
     @classmethod
