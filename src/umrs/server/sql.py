@@ -334,7 +334,7 @@ def db_user_exists(conn, username):
         return exists
 
 
-def create_db_user(username):
+def create_db_user(username, password=None):
     # Database credentials
     DB_HOST = os.environ.get("DB_HOST", "localhost")
     DB_PORT = os.environ.get("DB_PORT", "5432")
@@ -346,12 +346,13 @@ def create_db_user(username):
     conn = psycopg2.connect(dbname="postgres", user=DB_SUPERUSER, password=DB_SUPERUSER_PASSWORD, host=DB_HOST, port=DB_PORT)
     conn.autocommit = True  # Enable auto-commit mode
 
-    DB_USER_PASSWORD = os.environ.get("DB_USER_PASSWORD", "ejeannot")
+    if password is None:
+        password = os.environ.get("DB_USER_PASSWORD", "ejeannot")
     cur = conn.cursor()
     if db_user_exists(conn, username):
         logger.info(f"==> User '{username}' exist in DB")
         # Ensure password matches the configured one
-        cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(sql.Identifier(username)), (DB_USER_PASSWORD,))
+        cur.execute(sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(sql.Identifier(username)), (password,))
         conn.commit()
         cur.close()
         conn.close()
@@ -359,7 +360,7 @@ def create_db_user(username):
 
     cur.execute(
         sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(sql.Identifier(username)),
-        (DB_USER_PASSWORD,)
+        (password,)
     )
     logger.info(f"==> User '{username}' created in DB")
     cur.close()
@@ -454,7 +455,7 @@ def _ensure_umrs_db(superuser_conn, db_name: str) -> None:
 
 
 def create_umrs_server_db_user():
-    """Create the umrs_server_db_user PostgreSQL role (idempotent).
+    """Create the umrs_server_db_user PostgreSQL role and grant rights (idempotent).
 
     Reads credentials from env vars:
       DB_HOST, DB_PORT
@@ -471,6 +472,10 @@ def create_umrs_server_db_user():
     DB_NAME = get_umrs_server_db_name()
     DB_USER = get_umrs_server_db_user()
 
+    # create_db_user opens its own superuser conn, creates/updates the role, then closes it.
+    create_db_user(DB_USER, password=DB_UMRS_SERVER_PASSWORD)
+
+    # Separate superuser conn needed for _ensure_umrs_db and GRANTs.
     conn = psycopg2.connect(
         dbname="postgres",
         user=DB_SUPERUSER,
@@ -482,25 +487,6 @@ def create_umrs_server_db_user():
     try:
         # Create the umrs database before any GRANT (connection to it would fail otherwise)
         _ensure_umrs_db(conn, DB_NAME)
-
-        if db_user_exists(conn, DB_USER):
-            logger.info(f"==> DB user '{DB_USER}' already exists — updating password.")
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("ALTER USER {} WITH PASSWORD %s;").format(
-                        sql.Identifier(DB_USER)
-                    ),
-                    (DB_UMRS_SERVER_PASSWORD,),
-                )
-        else:
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("CREATE USER {} WITH PASSWORD %s;").format(
-                        sql.Identifier(DB_USER)
-                    ),
-                    (DB_UMRS_SERVER_PASSWORD,),
-                )
-            logger.info(f"==> DB user '{DB_USER}' created.")
 
         # Grant permission to create tables in the umrs database
         with psycopg2.connect(
@@ -801,7 +787,7 @@ def configure_table(data_base, sql_cfg,  modality_name, model):
     conn = data_base.get_conn()
 
     table_name = sql_cfg['table_name'].lower()
-    (f"\t\t\t--> Configuring table '{table_name}'...")
+    logger.info(f"\t\t\t--> Configuring table '{table_name}'...")
     table_columns = []
     column = {"name": "id", "type": "SERIAL PRIMARY KEY"}
     table_columns.append(column)
