@@ -9,7 +9,7 @@
     "requirements": ["opencv-python-headless", "numpy"],
     "auto_trigger": true,
     "resources": {
-        "gpu_count": 1,
+        "gpu_count": 0,
         "cpu_limit": "8",
         "memory_limit": "16Gi",
         "timeout_seconds": 7200
@@ -21,8 +21,7 @@
             "config": {
                 "distance_threshold": 0.05,
                 "time_threshold": 15
-            },
-            "requires": []
+            }
         }
     ],
     "output": {
