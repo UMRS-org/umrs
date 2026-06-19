@@ -471,6 +471,32 @@ async def create_job(
         ) from e
 
 
+def _parse_status_filter(status_filter: str | None) -> JobStatus | None:
+    """Parse and validate a job status filter value."""
+    if not status_filter:
+        return None
+    try:
+        return JobStatus(status_filter)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid status: {status_filter}",
+        ) from None
+
+
+def _parse_job_type_filter(job_type: str | None) -> JobType | None:
+    """Parse and validate a job type filter value."""
+    if not job_type:
+        return None
+    try:
+        return JobType(job_type)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid job_type: {job_type}",
+        ) from None
+
+
 @router.get(
     "",
     response_model=JobListResponse,
@@ -492,30 +518,23 @@ async def list_jobs(
     List jobs (U-732).
 
     Non-admin callers are restricted to their own project's jobs.
+
+    project_id defaults to the caller's project when not explicitly given,
+    so that callers who accidentally pass an admin flag (or are behind a
+    misconfigured proxy) never see jobs from unrelated projects.
     """
-    # Non-admin callers can only see their own project's jobs
+    # Always default project_id to caller's project (defence-in-depth).
+    # Gateway sends "caller_project_id" as a query param, not "project_id",
+    # so an admin caller would otherwise see ALL jobs across ALL projects.
+    if project_id is None:
+        project_id = caller.project_id
+
+    # Non-admin callers cannot override project_id
     if not caller.is_admin:
         project_id = caller.project_id
-    # Parse filters
-    parsed_status = None
-    if status_filter:
-        try:
-            parsed_status = JobStatus(status_filter)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid status: {status_filter}",
-            ) from None
 
-    parsed_type = None
-    if job_type:
-        try:
-            parsed_type = JobType(job_type)
-        except ValueError:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid job_type: {job_type}",
-            ) from None
+    parsed_status = _parse_status_filter(status_filter)
+    parsed_type = _parse_job_type_filter(job_type)
 
     # Query jobs
     jobs = store.list_jobs(
