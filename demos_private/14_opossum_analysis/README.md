@@ -99,11 +99,39 @@ umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
 # Common failure: "Bucket alias 'demo-opossum' not found" — repeat
 #                 steps 2-3 to register and reload the experience.
 
-# 8. Download results
+# 8. Run the workflow on the uploaded videos
+umrs-client run-workflow opossum-analysis --bucket demo-opossum
+# Expected: "✓ Workflow 'opossum-analysis' execution queued as durable job
+#           job-XXXXX (1 steps)"
+# The workflow runs server-side: it downloads the videos, runs the
+# frame-difference motion detection pipeline, and uploads per-pair TSVs
+# and an aggregated motion_events.tsv back to the bucket.
+
+# 9. Check job status (optional)
+umrs-client job status <job-id-from-step-8>
+# Wait until status is "succeeded" or "failed".
+
+# 10. Download results
 umrs-client download_results demo-opossum results/ --force-overwrite
 # Expected: per-camera TSVs, motion_events.tsv, analysis_summary.json
 #           written under results/
 ```
+
+## Auto-Trigger
+
+The workflow definition includes `"auto_trigger": true`. This tells the
+server to automatically trigger the workflow when data is uploaded to the
+bucket, eliminating the need for step 8 (`run-workflow`).
+
+When `auto_trigger` is `true`:
+1. Upload data: `umrs-client upload_dir <data-dir> demo-opossum`
+2. The server detects the upload and automatically queues the workflow
+3. Download results: `umrs-client download_results demo-opossum results/`
+
+When `auto_trigger` is `false` (or omitted):
+1. Upload data: `umrs-client upload_dir <data-dir> demo-opossum`
+2. Manually trigger: `umrs-client run-workflow opossum-analysis --bucket demo-opossum`
+3. Download results: `umrs-client download_results demo-opossum results/`
 
 ## Dependencies
 
@@ -121,6 +149,7 @@ umrs-client download_results demo-opossum results/ --force-overwrite
 | Distance threshold | 0.05 (ratio of frame width) |
 | Time threshold | 15 seconds |
 | Result dir | `results/` |
+| Auto-trigger | `true` — workflow starts automatically when data is uploaded |
 
 ## Output
 
