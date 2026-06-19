@@ -61,18 +61,48 @@ Multi-camera layout: `opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4`
 ```bash
 # 1. Verify server connectivity
 umrs-client ping
+# Expected: "✓ Server ready | profile=rccs-cloud | data0.ai.r-ccs.riken.jp:50090"
 
-# 2. Bundle opossum engine into workflow
+# 2. Register the experience into your user config
+#    Merges the "Opossum Analysis" experience (bucket alias "demo-opossum")
+#    into ~/.config/umrs/users/<username>.json
+umrs-client experience add experience.json --update
+# Expected: "✓ Added experience(s): Opossum Analysis"
+# Common failure: "Fragment not found" — run from the demo directory.
+
+# 3. Reload so the server provisions the MinIO bucket
+umrs-client reload
+# Expected: "✓ reload accepted"
+# Common failure: "HTTP 503: Service Unavailable" — server reload endpoint
+# not initialised; restart the server or check `umrs-server` logs.
+
+# 4. Verify the demo-opossum bucket alias is now configured
+umrs-client list_buckets
+# Expected: a row for "Opossum Analysis" with alias "demo-opossum"
+#           Remote = synced, Objects = 0
+# Common failure: "Bucket alias 'demo-opossum' not found" — repeat
+#                 steps 2-3; the experience must be reloaded on the server.
+
+# 5. Bundle opossum engine into workflow
 cp -r ../../tmp/opossum-video-analysis/src/opossum workflow/opossum
 
-# 3. Upload workflow (includes bundled engine)
+# 6. Upload workflow (includes bundled engine)
 umrs-client upload-workflow workflow/ --name opossum-analysis
+# Expected: workflow upload success message
 
-# 4. Upload videos (preserves camera/Schedule date hierarchy)
+# 7. Upload videos (preserves camera/Schedule date hierarchy)
 umrs-client upload_dir ../../tmp/opossum-video-analysis/data demo-opossum
+# Expected: 47 files uploaded; final JSON with
+#           bucket=mnagaso.opossum-analysis.demo-opossum, modality=movie
+# Common failure: "Cannot process directory" — fixed in client_umrs.py
+#                 (upload_dir now recurses into subdirectories).
+# Common failure: "Bucket alias 'demo-opossum' not found" — repeat
+#                 steps 2-3 to register and reload the experience.
 
-# 5. Download results
+# 8. Download results
 umrs-client download_results demo-opossum results/ --force-overwrite
+# Expected: per-camera TSVs, motion_events.tsv, analysis_summary.json
+#           written under results/
 ```
 
 ## Dependencies
