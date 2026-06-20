@@ -163,19 +163,41 @@ results/
     last_target.txt
 ```
 
-## External Dependency
+## Custom Container Images
 
-The opossum engine (`tmp/opossum-video-analysis/src/opossum/`) is bundled into the
-workflow directory when `README.md (step-by-step commands)` runs (step 3). It is NOT checked into version
-control.
+Each workflow can include a `Dockerfile` alongside `workflow.json`. When
+`umrs-client upload-workflow` detects a `Dockerfile`, it:
 
-## Public Analogue
+1. Extracts the workflow zip as before.
+2. Runs `podman build -t <workflow-name>:latest` in the extracted directory.
+3. Injects `routing_hints.image` into `workflow.json` for all steps that
+   do not already declare an image override.
 
-The public replacement for a generic video-analysis workflow is:
+This lets each workflow carry its own dependencies (CUDA-enabled OpenCV,
+PyTorch, custom libraries) without polluting the host environment.
 
-- [../../demos/14_video_analysis/README.md](../../demos/14_video_analysis/README.md)
+### Pre-built Image Reference
 
-## Related Docs
+If you maintain a private registry, reference a pre-built image directly
+in the step definition. This bypasses the server-side build entirely:
+
+```json
+{
+    "name": "opossum_analyze",
+    "entrypoint": "opossum_step:OpossumAnalyzeStep",
+    "routing_hints": {
+        "image": "registry.example.com/mnagaso/opossum-cuda:latest",
+        "gpu": true
+    }
+}
+```
+
+### Mixed Mode
+
+Both mechanisms can coexist in the same workflow. Steps with
+`routing_hints.image` use that image; steps without it fall back to the
+`Dockerfile`-built image. Steps without any image hint run in-process
+(the default `InProcessExecutor`).
 
 - [../../demos/12_pipeline_sdk/README.md](../../demos/12_pipeline_sdk/README.md)
 - [workflow/workflow.json](workflow/workflow.json)
