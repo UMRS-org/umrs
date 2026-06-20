@@ -2043,6 +2043,10 @@ def build_step_executor(
     chosen = (name or os.environ.get("UMRS_STEP_EXECUTOR") or "inproc").lower()
     if chosen == "inproc":
         return InProcessExecutor()
+    if chosen == "slurm":
+        from .slurm_step_executor import SlurmStepExecutor
+
+        return SlurmStepExecutor()
     if chosen == "subprocess":
         return SubprocessExecutor(timeout_seconds=_executor_timeout())
     if chosen == "podman":
