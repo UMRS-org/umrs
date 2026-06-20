@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import subprocess
 
 from umrs.shared.auth import sanitize_username, validate_config_identity
 from umrs.shared.config import (
@@ -12,6 +13,96 @@ from umrs.shared.config import (
 from umrs.shared.json_config import load_client_cfg_file
 
 logger = logging.getLogger(__name__)
+
+
+def _build_workflow_image(dest_dir: str, workflow_name: str) -> str | None:
+    """Build a container image from a Dockerfile in the workflow directory.
+
+    If a ``Dockerfile`` is found in *dest_dir*, this function runs
+    ``podman build`` to create an image tagged
+    ``<workflow_name>:latest``.  The image tag is then injected into
+    ``workflow.json`` as ``routing_hints.image`` on every step that
+    does not already declare an image override.
+
+    Returns the image tag on success, or ``None`` if no Dockerfile was
+    found or the build failed (failures are logged but non-fatal so
+    the workflow can still run with the in-process executor).
+    """
+    dockerfile_path = os.path.join(dest_dir, "Dockerfile")
+    if not os.path.isfile(dockerfile_path):
+        return None
+
+    image_tag = f"{workflow_name}:latest"
+    cmd = [
+        "podman", "build",
+        "-t", image_tag,
+        "-f", dockerfile_path,
+        dest_dir,
+    ]
+    try:
+        logger.info("Building workflow image %s from %s", image_tag, dest_dir)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        if result.returncode != 0:
+            logger.warning(
+                "podman build failed for %s (rc=%d): %s",
+                image_tag,
+                result.returncode,
+                result.stderr[-500:] if result.stderr else "",
+            )
+            return None
+        logger.info("Workflow image %s built successfully", image_tag)
+        return image_tag
+    except FileNotFoundError:
+        logger.warning("podman not found — skipping image build for %s", workflow_name)
+        return None
+    except subprocess.TimeoutExpired:
+        logger.warning("podman build timed out for %s (600s)", image_tag)
+        return None
+    except Exception as exc:
+        logger.warning("Unexpected error building %s: %s", image_tag, exc)
+        return None
+
+
+def _inject_image_into_workflow(
+    dest_dir: str, image_tag: str
+) -> None:
+    """Inject *image_tag* into ``routing_hints.image`` for all steps.
+
+    Steps that already declare ``routing_hints.image`` are left
+    untouched — this allows a mixed workflow where some steps have
+    pre-built images and others use the workflow-level Dockerfile.
+    """
+    wf_path = os.path.join(dest_dir, "workflow.json")
+    if not os.path.isfile(wf_path):
+        return
+    try:
+        with open(wf_path, encoding="utf-8") as fh:
+            wf_data = json.load(fh)
+    except (json.JSONDecodeError, OSError) as exc:
+        logger.warning("Cannot read workflow.json for image injection: %s", exc)
+        return
+
+    modified = False
+    for step in wf_data.get("steps", []):
+        hints = step.get("routing_hints")
+        if hints is None:
+            step["routing_hints"] = {"image": image_tag}
+            modified = True
+        elif "image" not in hints:
+            hints["image"] = image_tag
+            modified = True
+
+    if modified:
+        with open(wf_path, "w", encoding="utf-8") as fh:
+            json.dump(wf_data, fh, indent=2, ensure_ascii=False)
+        logger.info(
+            "Injected routing_hints.image=%s into workflow.json", image_tag
+        )
 
 
 def ensure_user_file_in_conf(conf_path, username, canonical_user_path):
@@ -222,6 +313,18 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
             logger.info(f"Warning: failed to clean up zip file '{zip_path}': {e}")
 
     logger.info(f"Workflow '{workflow_name}' for user '{client_id}' extracted to {dest_dir}")
+
+    # ---- Dockerfile-in-workflow: build image if Dockerfile present ----
+    # If a Dockerfile exists in the extracted directory, build a
+    # container image and inject routing_hints.image into workflow.json.
+    # Steps that already declare routing_hints.image are left untouched,
+    # supporting a mixed model (some steps pre-built, some from Dockerfile).
+    dockerfile_path = os.path.join(dest_dir, "Dockerfile")
+    if os.path.isfile(dockerfile_path):
+        image_tag = _build_workflow_image(dest_dir, workflow_name)
+        if image_tag is not None:
+            _inject_image_into_workflow(dest_dir, image_tag)
+
     return True, dest_dir, None
 
 

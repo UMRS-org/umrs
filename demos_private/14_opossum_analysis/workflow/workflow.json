@@ -21,6 +21,10 @@
             "config": {
                 "distance_threshold": 0.05,
                 "time_threshold": 15
+            },
+            "routing_hints": {
+                "image": "opossum-analysis:latest",
+                "gpu": true
             }
         }
     ],
