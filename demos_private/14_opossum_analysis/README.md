@@ -110,8 +110,6 @@ umrs-client run-workflow opossum-analysis --bucket demo-opossum
 # 9. Check job status (optional)
 umrs-client job status <job-id-from-step-8>
 # Wait until status is "succeeded" or "failed".
-
-# 10. Download results
 umrs-client download_results demo-opossum results/ --force-overwrite
 # Expected: per-camera TSVs, motion_events.tsv, analysis_summary.json
 #           written under results/
