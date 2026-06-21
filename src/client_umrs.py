@@ -4470,6 +4470,34 @@ def _action_upload_workflow(ctx):
     return exit_code
 
 
+def _resolve_workflow_bucket(ctx, bucket_arg):
+    """Resolve a bucket alias to the full MinIO bucket name.
+
+    The workflow runner expects the actual S3 bucket name
+    (e.g. ``mnagaso2.opossum-analysis.demo-opossum``), not the
+    short alias (e.g. ``demo-opossum``).  This helper performs the
+    alias → full-name lookup against the client's bucket config.
+
+    If *bucket_arg* is already a full bucket name (contains dots
+    matching ``<user>.<xp>.<alias>``) the value is returned unchanged.
+    If *bucket_arg* is ``None`` the workflow runs without a bucket.
+    """
+    if bucket_arg is None:
+        return None
+
+    buckets_cfg = getattr(ctx, "buckets_cfg", None)
+    if buckets_cfg is None:
+        return bucket_arg
+
+    entry = buckets_cfg.get(bucket_arg)
+    if entry is not None:
+        path_to_bucket = getattr(entry, "path_to_bucket", None)
+        if path_to_bucket:
+            return path_to_bucket
+
+    return bucket_arg
+
+
 def _action_run_workflow(ctx):
     args = ctx.args
     client_id = _resolve_control_client_id(ctx.user)
@@ -4481,8 +4509,11 @@ def _action_run_workflow(ctx):
             if args.params
             else {}
         )
+        resolved_bucket = _resolve_workflow_bucket(ctx, args.bucket)
         parsed = api.run_workflow(
-            workflow_name=args.workflow_name, params=params, bucket=args.bucket
+            workflow_name=args.workflow_name,
+            params=params,
+            bucket=resolved_bucket,
         )
         if args.output == "json":
             print(_json.dumps(parsed, ensure_ascii=False))
@@ -6665,6 +6696,9 @@ def main():
     status_needs_config = args.action == "status" and not getattr(
         args, "username", None
     )
+    workflow_bucket_needs_config = (
+        args.action == "run-workflow" and bool(getattr(args, "bucket", None))
+    )
     requires_config = (
         args.action
         in {
@@ -6678,6 +6712,7 @@ def main():
             "reload",
             "export_embeddings",
         }
+        or workflow_bucket_needs_config
         or status_needs_config
     )
 
@@ -6726,6 +6761,7 @@ def main():
             user = load_client_cfg_file(configure_file)
             if config_state.s3.valid and config_state.s3.path:
                 user = apply_s3_config_override(user, config_state.s3.path)
+            buckets_cfg = build_buckets_cfg(user)
         except (Exception, SystemExit):
             pass
 

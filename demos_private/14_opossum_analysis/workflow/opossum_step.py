@@ -253,7 +253,11 @@ class OpossumAnalyzeStep(Step):
         use_cuda = _have_cuda()
         ctx.metadata["use_cuda"] = use_cuda
 
-        cameras = self._group_by_camera(ctx.input_keys)
+        input_keys = ctx.input_keys
+        if not input_keys:
+            input_keys = self._discover_input_keys(ctx)
+
+        cameras = self._group_by_camera(input_keys)
 
         output_keys: list[str] = []
         all_events: list[dict[str, Any]] = []
@@ -281,6 +285,22 @@ class OpossumAnalyzeStep(Step):
         pass
 
     # ── Per-camera helpers ───────────────────────────────────────────────
+
+    @staticmethod
+    def _discover_input_keys(ctx: StepContext) -> list[str]:
+        """List input bucket for video keys when input_keys is empty.
+
+        Entry-point steps (no ``depends_on``) receive an empty
+        ``ctx.input_keys`` from the workflow runner.  This method
+        lists the input bucket and returns all ``.mp4`` keys so the
+        step can discover its own inputs.
+        """
+        resp = ctx.s3.list_objects_v2(Bucket=ctx.input_bucket)
+        return [
+            obj["Key"]
+            for obj in resp.get("Contents", [])
+            if obj["Key"].lower().endswith(".mp4")
+        ]
 
     def _download_camera(
         self, camera_name: str, video_keys: list[str], tmp: Path, ctx: StepContext
