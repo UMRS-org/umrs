@@ -43,7 +43,7 @@ WORKDIR /app
 
 # Runtime system deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    openssh-client curl ca-certificates postgresql-client \
+    openssh-client curl ca-certificates postgresql-client podman \
     && rm -rf /var/lib/apt/lists/*
 
 # Install MinIO Client (mc)
