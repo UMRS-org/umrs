@@ -144,6 +144,51 @@ class _InMemoryS3Client:
 # ----------------------------------------------------------------------
 
 
+def _purge_workflow_modules(source_path: str) -> None:
+    """Drop cached Python modules loaded from *source_path*.
+
+    Uploaded workflows can be re-uploaded with the same module names
+    (for example ``opossum_step``).  Without clearing ``sys.modules``,
+    the long-lived UMRS server process keeps executing stale code until
+    restart.  Remove any module whose ``__file__`` or ``__path__`` lives
+    under the uploaded workflow tree so the next import sees fresh code.
+    """
+    source_root = os.path.realpath(source_path)
+    stale_names: list[str] = []
+
+    for name, module in list(sys.modules.items()):
+        module_file = getattr(module, "__file__", None)
+        if isinstance(module_file, str) and os.path.realpath(module_file).startswith(
+            source_root
+        ):
+            stale_names.append(name)
+            continue
+
+        module_path = getattr(module, "__path__", None)
+        if module_path is None:
+            continue
+        try:
+            if any(
+                os.path.realpath(str(path_entry)).startswith(source_root)
+                for path_entry in module_path
+            ):
+                stale_names.append(name)
+        except TypeError:
+            continue
+
+    for name in stale_names:
+        sys.modules.pop(name, None)
+
+    if stale_names:
+        logger.info(
+            "Purged %d cached workflow module(s) from %s",
+            len(stale_names),
+            source_root,
+        )
+
+    importlib.invalidate_caches()
+
+
 def _load_step_class(entrypoint: str) -> type[Step]:
     if not _ENTRYPOINT_RE.match(entrypoint):
         raise ValueError(f"Invalid step entrypoint: {entrypoint!r}")
@@ -559,6 +604,7 @@ def run_workflow_record(
         abs_source = os.path.abspath(source_path)
         if abs_source not in sys.path:
             sys.path.insert(0, abs_source)
+        _purge_workflow_modules(abs_source)
 
     steps_spec: list[dict[str, Any]] = list(workflow_json.get("steps", []))
     if not steps_spec:
