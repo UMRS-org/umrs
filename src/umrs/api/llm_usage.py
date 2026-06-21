@@ -44,6 +44,14 @@ class UsageRecord:
     cached_read_tokens: int = 0
     cached_write_tokens: int = 0
 
+    # Thinking-model token breakdown (GLM-5.2, DeepSeek-V4-Pro, etc.)
+    # ``completion_tokens`` INCLUDES ``reasoning_tokens``; the visible
+    # response tokens are ``completion_tokens - reasoning_tokens``.
+    reasoning_tokens: int = 0
+    audio_tokens: int = 0
+    accepted_prediction_tokens: int = 0
+    rejected_prediction_tokens: int = 0
+
     # Request meta
     request_id: str = ""
     is_streaming: bool = False
@@ -58,19 +66,45 @@ class UsageRecord:
 
 
 def _parse_usage_dict(usage: dict) -> dict:
-    """Normalise an OpenAI / Anthropic / vLLM ``usage`` object."""
+    """Normalise an OpenAI / Anthropic / vLLM ``usage`` object.
+
+    Extracts the standard token counts plus the thinking-model
+    breakdown (``reasoning_tokens``, ``audio_tokens``) and speculative
+    decoding stats (``accepted/rejected_prediction_tokens``).
+
+    For thinking models such as GLM-5.2, ``completion_tokens`` INCLUDES
+    ``reasoning_tokens`` — so the visible response token count is
+    ``completion_tokens - reasoning_tokens``.  We record both totals
+    so billing can apply the correct rate per token class.
+    """
+    # OpenAI-style sub-dicts may be present but ``null`` (e.g. vLLM),
+    # so coerce to ``{}`` before indexing.
+    completion_details = usage.get("completion_tokens_details") or {}
+    prompt_details = usage.get("prompt_tokens_details") or {}
+
     return {
         "prompt_tokens": int(usage.get("prompt_tokens") or 0),
         "completion_tokens": int(usage.get("completion_tokens") or 0),
         "total_tokens": int(usage.get("total_tokens") or 0),
         # Anthropic-style cache (zero when absent).
-        # ``prompt_tokens_details`` may be present but ``null`` (e.g. vLLM),
-        # so coerce to ``{}`` before indexing.
         "cached_read_tokens": int(
-            (usage.get("prompt_tokens_details") or {}).get("cached_tokens", 0)
+            prompt_details.get("cached_tokens", 0)
             or usage.get("cache_read_input_tokens", 0)
         ),
         "cached_write_tokens": int(usage.get("cache_creation_input_tokens", 0)),
+        # Thinking-model breakdown (GLM-5.2, DeepSeek-V4-Pro, etc.)
+        "reasoning_tokens": int(completion_details.get("reasoning_tokens", 0)),
+        "audio_tokens": int(
+            completion_details.get("audio_tokens", 0)
+            or prompt_details.get("audio_tokens", 0)
+        ),
+        # Speculative decoding stats (vLLM ``spec_token_acceptance_rate``)
+        "accepted_prediction_tokens": int(
+            usage.get("accepted_prediction_tokens", 0)
+        ),
+        "rejected_prediction_tokens": int(
+            usage.get("rejected_prediction_tokens", 0)
+        ),
     }
 
 
@@ -131,11 +165,15 @@ INSERT INTO llm_usage_log (
     model, served_model, endpoint_job_id, endpoint_tier,
     prompt_tokens, completion_tokens, total_tokens,
     cached_read_tokens, cached_write_tokens,
+    reasoning_tokens, audio_tokens,
+    accepted_prediction_tokens, rejected_prediction_tokens,
     is_streaming, duration_ms, status_code, extra
 ) VALUES (
     %s, %s, %s,
     %s, %s, %s, %s,
     %s, %s, %s,
+    %s, %s,
+    %s, %s,
     %s, %s,
     %s, %s, %s, %s::jsonb
 )
@@ -178,6 +216,10 @@ def _do_record_sync(pool, record: UsageRecord) -> None:  # noqa: ANN001
                     record.total_tokens,
                     record.cached_read_tokens,
                     record.cached_write_tokens,
+                    record.reasoning_tokens,
+                    record.audio_tokens,
+                    record.accepted_prediction_tokens,
+                    record.rejected_prediction_tokens,
                     record.is_streaming,
                     record.duration_ms,
                     record.status_code,
@@ -218,12 +260,24 @@ def record_usage(pool, record: UsageRecord) -> None:  # noqa: ANN001
 
 
 def fill_usage(record: UsageRecord, usage: dict) -> None:
-    """Copy parsed usage values into *record*."""
+    """Copy parsed usage values into *record*.
+
+    ``usage`` is the dict returned by ``_parse_usage_dict``; it always
+    contains every key we care about (defaults to 0 when absent).
+    """
     record.prompt_tokens = usage.get("prompt_tokens", 0)
     record.completion_tokens = usage.get("completion_tokens", 0)
     record.total_tokens = usage.get("total_tokens", 0)
     record.cached_read_tokens = usage.get("cached_read_tokens", 0)
     record.cached_write_tokens = usage.get("cached_write_tokens", 0)
+    record.reasoning_tokens = usage.get("reasoning_tokens", 0)
+    record.audio_tokens = usage.get("audio_tokens", 0)
+    record.accepted_prediction_tokens = usage.get(
+        "accepted_prediction_tokens", 0
+    )
+    record.rejected_prediction_tokens = usage.get(
+        "rejected_prediction_tokens", 0
+    )
 
 
 class ProxyTimer:
