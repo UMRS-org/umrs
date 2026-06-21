@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from .models import Job, JobAttempt
@@ -29,13 +30,19 @@ class WorkflowRunBackend(OrchestratorBackend):
 
         from umrs.server.workflow_registry_handler import _launch_workflow_from_catalog
 
+        source_path = job.spec.get("source_path")
+        if not isinstance(source_path, str) or not source_path.strip():
+            source_path = None
+        elif not os.path.isdir(source_path):
+            source_path = None
+
         _launch_workflow_from_catalog(
             workflow_name=workflow_name,
             client_id=job.user_id,
             params=job.spec.get("params", {}),
             execution_id=execution_id,
             durable_job_id=job.job_id,
-            source_path=job.spec.get("source_path"),
+            source_path=source_path,
         )
         return f"workflow_run|execution_id={execution_id}"
 

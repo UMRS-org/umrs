@@ -8,6 +8,7 @@ import subprocess
 from umrs.shared.auth import sanitize_username, validate_config_identity
 from umrs.shared.config import (
     get_default_tmp_subdir,
+    get_resolved_umrs_subdir,
     get_users_default_cfg_subdir,
 )
 from umrs.shared.json_config import load_client_cfg_file
@@ -35,6 +36,7 @@ def _build_workflow_image(dest_dir: str, workflow_name: str) -> str | None:
     image_tag = f"{workflow_name}:latest"
     cmd = [
         "podman", "build",
+        "--userns=host",
         "-t", image_tag,
         "-f", dockerfile_path,
         dest_dir,
@@ -219,12 +221,10 @@ def handle_upload_workflow(client_id, zip_path, workflow_name):
     # working directory of the process that later reads it (e.g.
     # the durable-job backend running in a different cwd than the
     # UMRS server).
-    workflows_root = os.path.join(
+    workflows_root = get_resolved_umrs_subdir(
         get_default_tmp_subdir(), "user_workflows", client_id
     )
-    dest_dir = os.path.abspath(
-        os.path.join(workflows_root, workflow_name)
-    )
+    dest_dir = os.path.realpath(os.path.join(workflows_root, workflow_name))
 
     try:
         with zipfile.ZipFile(zip_path, "r") as zf:

@@ -17,7 +17,7 @@
     "steps": [
         {
             "name": "opossum_analyze",
-            "entrypoint": "opossum_step:OpossumAnalyzeStep",
+            "entrypoint": "opossum_step_live:OpossumAnalyzeStep",
             "config": {
                 "distance_threshold": 0.05,
                 "time_threshold": 15
