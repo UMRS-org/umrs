@@ -14,6 +14,7 @@ from umrs.skills import SkillValidationError
 router = APIRouter(prefix="/umrs/skills", tags=["skills"])
 
 _registry: SkillRegistry | None = SkillRegistry()
+_skill_store = None  # type: ignore
 
 
 def set_skill_registry(registry: SkillRegistry | None) -> None:
@@ -22,7 +23,83 @@ def set_skill_registry(registry: SkillRegistry | None) -> None:
     _registry = registry
 
 
+def set_skill_store(conn: Any) -> None:
+    """Wire a Postgres-backed SkillStore into the REST layer.
+
+    Call once at server startup when a database connection is available.
+    Passing *None* clears the store and falls back to the in-memory registry.
+    """
+    global _skill_store
+    if conn is None:
+        _skill_store = None
+        return
+    from umrs.skills.store import SkillStore
+
+    _skill_store = _SkillStoreAdapter(SkillStore(conn))
+
+
+class _SkillStoreAdapter(SkillRegistry):
+    """Adapts :class:`~umrs.skills.store.SkillStore` to the
+    :class:`~umrs.skills.SkillRegistry` interface so the REST layer can
+    use either backend interchangeably.
+    """
+
+    def __init__(self, store) -> None:  # type: ignore[no-untyped-def]
+        self._store = store
+
+    def validate_manifest(self, manifest: SkillManifest) -> list[str]:  # type: ignore[override]
+        # Delegate to base implementation
+        return super().validate_manifest(manifest)
+
+    def register(
+        self,
+        manifest: SkillManifest,
+        skill_md: str,
+        scope: SkillScope = SkillScope.USER,
+        owner_id: str = "",
+        project_id: str | None = None,
+    ) -> RegisteredSkill:
+        return self._store.register_skill(
+            name=manifest.name,
+            version=manifest.version,
+            scope=scope,
+            owner_id=owner_id,
+            project_id=project_id,
+            skill_md=skill_md,
+            manifest=manifest.to_dict(),
+            enabled=True,
+        )
+
+    def get(self, skill_id: str) -> RegisteredSkill | None:  # type: ignore[override]
+        try:
+            return self._store.get_skill(skill_id)
+        except Exception:
+            return None
+
+    def list_skills(
+        self,
+        scope: SkillScope | None = None,
+        owner_id: str | None = None,
+        tag: str | None = None,
+    ) -> list[RegisteredSkill]:
+        skills = self._store.list_skills(
+            scope=scope,
+            owner_id=owner_id,
+        )
+        if tag:
+            skills = [s for s in skills if tag in s.manifest.tags]
+        return skills
+
+    def unregister(self, skill_id: str) -> bool:  # type: ignore[override]
+        return self._store.unregister_skill(skill_id)
+
+    def search(self, query: str, limit: int = 20) -> list[RegisteredSkill]:  # type: ignore[override]
+        return self._store.search(query, limit=limit)
+
+
 def _get_registry() -> SkillRegistry:
+    if _skill_store is not None:
+        return _skill_store
     if _registry is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
