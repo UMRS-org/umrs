@@ -33,6 +33,13 @@ def test_derive_reasoning_effort_gpt_oss_single_level():
     assert default == "medium"
 
 
+def test_derive_reasoning_effort_gemma4_only():
+    levels, default = derive_reasoning_effort("Gemma-4-27B")
+    assert levels == ["none", "low", "medium", "high"]
+    assert default == "medium"
+    assert derive_reasoning_effort("Gemma-2-27B") is None
+
+
 def test_derive_reasoning_effort_unknown_returns_none():
     assert derive_reasoning_effort("Some-Random-Model") is None
 
@@ -52,3 +59,10 @@ def test_resolve_capabilities_fills_from_pattern():
     assert resolved.reasoning_effort_levels == ["low", "medium", "high"]
     assert resolved.reasoning_effort_default == "medium"
     assert resolved.supports_reasoning is True
+
+
+def test_resolve_capabilities_does_not_mark_plain_gemma_reasoning():
+    resolved = resolve_capabilities("gemma-2-27b", ModelCapabilities())
+    assert resolved.reasoning_effort_levels is None
+    assert resolved.reasoning_effort_default is None
+    assert resolved.supports_reasoning is False
