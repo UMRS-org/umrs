@@ -18,6 +18,7 @@ from .job import JobCancelHandler, JobListHandler, JobSubmitHandler
 from .maintenance import CheckHandler, RecomputeHandler, ReloadHandler, UpdateHandler
 from .model import ModelDownloadHandler, ModelListHandler, ModelRegisterHandler
 from .process_objects import ProcessObjectsHandler
+from .purge_buckets import PurgeBucketsHandler
 from .registry import CommandRegistry
 from .upload_workflow import UploadWorkflowHandler
 from .wait_output import WaitOutputHandler
@@ -33,35 +34,38 @@ def build_registry() -> CommandRegistry:
     r = CommandRegistry()
 
     # --- Ingestion --------------------------------------------------------
-    r.register(TaskCmd.PROCESS_OBJECTS,   ProcessObjectsHandler())
+    r.register(TaskCmd.PROCESS_OBJECTS, ProcessObjectsHandler())
 
     # --- Maintenance (admin-only: RECOMPUTE, UPDATE, CHECK, RELOAD) -------
-    r.register(TaskCmd.RECOMPUTE,         RecomputeHandler())
-    r.register(TaskCmd.UPDATE,            UpdateHandler())
-    r.register(TaskCmd.CHECK,             CheckHandler())
-    r.register(TaskCmd.RELOAD,            ReloadHandler())
+    r.register(TaskCmd.RECOMPUTE, RecomputeHandler())
+    r.register(TaskCmd.UPDATE, UpdateHandler())
+    r.register(TaskCmd.CHECK, CheckHandler())
+    r.register(TaskCmd.RELOAD, ReloadHandler())
 
     # --- File management --------------------------------------------------
-    r.register(TaskCmd.FILE,              FileHandler())
+    r.register(TaskCmd.FILE, FileHandler())
     r.register(TaskCmd.EXPORT_EMBEDDINGS, ExportEmbeddingsHandler())
-    r.register(TaskCmd.WAIT_OUTPUT,       WaitOutputHandler())
+    r.register(TaskCmd.WAIT_OUTPUT, WaitOutputHandler())
 
     # --- User management (admin-only) -------------------------------------
-    r.register(TaskCmd.ENROLL_USER,       EnrollUserHandler())
+    r.register(TaskCmd.ENROLL_USER, EnrollUserHandler())
 
     # --- Model registry ---------------------------------------------------
-    r.register(TaskCmd.MODEL_REGISTER,    ModelRegisterHandler())
-    r.register(TaskCmd.MODEL_LIST,        ModelListHandler())
-    r.register(TaskCmd.MODEL_DOWNLOAD,    ModelDownloadHandler())
+    r.register(TaskCmd.MODEL_REGISTER, ModelRegisterHandler())
+    r.register(TaskCmd.MODEL_LIST, ModelListHandler())
+    r.register(TaskCmd.MODEL_DOWNLOAD, ModelDownloadHandler())
 
     # --- Job tracking -----------------------------------------------------
-    r.register(TaskCmd.JOB_SUBMIT,        JobSubmitHandler())
-    r.register(TaskCmd.JOB_CANCEL,        JobCancelHandler())
-    r.register(TaskCmd.JOB_LIST,          JobListHandler())
+    r.register(TaskCmd.JOB_SUBMIT, JobSubmitHandler())
+    r.register(TaskCmd.JOB_CANCEL, JobCancelHandler())
+    r.register(TaskCmd.JOB_LIST, JobListHandler())
+
+    # --- Bucket management ------------------------------------------------
+    r.register(TaskCmd.PURGE_BUCKETS, PurgeBucketsHandler())
 
     # --- Workflows --------------------------------------------------------
-    r.register(TaskCmd.UPLOAD_WORKFLOW,   UploadWorkflowHandler())
-    r.register(TaskCmd.LIST_WORKFLOWS,    ListWorkflowsHandler())
-    r.register(TaskCmd.RUN_WORKFLOW,      RunWorkflowHandler())
+    r.register(TaskCmd.UPLOAD_WORKFLOW, UploadWorkflowHandler())
+    r.register(TaskCmd.LIST_WORKFLOWS, ListWorkflowsHandler())
+    r.register(TaskCmd.RUN_WORKFLOW, RunWorkflowHandler())
 
     return r

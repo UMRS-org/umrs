@@ -4470,6 +4470,34 @@ def _action_upload_workflow(ctx):
     return exit_code
 
 
+def _resolve_workflow_bucket(ctx, bucket_arg):
+    """Resolve a bucket alias to the full MinIO bucket name.
+
+    The workflow runner expects the actual S3 bucket name
+    (e.g. ``mnagaso2.opossum-analysis.demo-opossum``), not the
+    short alias (e.g. ``demo-opossum``).  This helper performs the
+    alias → full-name lookup against the client's bucket config.
+
+    If *bucket_arg* is already a full bucket name (contains dots
+    matching ``<user>.<xp>.<alias>``) the value is returned unchanged.
+    If *bucket_arg* is ``None`` the workflow runs without a bucket.
+    """
+    if bucket_arg is None:
+        return None
+
+    buckets_cfg = getattr(ctx, "buckets_cfg", None)
+    if buckets_cfg is None:
+        return bucket_arg
+
+    entry = buckets_cfg.get(bucket_arg)
+    if entry is not None:
+        path_to_bucket = getattr(entry, "path_to_bucket", None)
+        if path_to_bucket:
+            return path_to_bucket
+
+    return bucket_arg
+
+
 def _action_run_workflow(ctx):
     args = ctx.args
     client_id = _resolve_control_client_id(ctx.user)
@@ -4481,8 +4509,11 @@ def _action_run_workflow(ctx):
             if args.params
             else {}
         )
+        resolved_bucket = _resolve_workflow_bucket(ctx, args.bucket)
         parsed = api.run_workflow(
-            workflow_name=args.workflow_name, params=params, bucket=args.bucket
+            workflow_name=args.workflow_name,
+            params=params,
+            bucket=resolved_bucket,
         )
         if args.output == "json":
             print(_json.dumps(parsed, ensure_ascii=False))
@@ -5294,9 +5325,8 @@ def _action_s3_transfer(ctx):
                 check=(modality not in ("volume", "movie", "volume_movie")),
             )
             if s3_key and notify_server:
-                s3_uri = f"s3://{full_bucket_name}/{s3_key}"
                 ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri]
+                    username, TaskCmd.PROCESS_OBJECTS, 1
                 )
             return s3_key, 1
         elif category == "text_file":
@@ -5304,9 +5334,8 @@ def _action_s3_transfer(ctx):
                 s3, full_bucket_name, subdir, file_path, data_mq, metadata_args
             )
             if s3_key and notify_server:
-                s3_uri = f"s3://{full_bucket_name}/{s3_key}"
                 ctx.control_mq.notify_server(
-                    username, TaskCmd.PROCESS_OBJECTS, 1, s3_keys=[s3_uri]
+                    username, TaskCmd.PROCESS_OBJECTS, 1
                 )
             return s3_key, 1
         elif category == "text":
@@ -5328,12 +5357,10 @@ def _action_s3_transfer(ctx):
                             s3_key_list.append(s3_key)
                             nb_objects += 1
                     if notify_server and nb_objects > 0:
-                        s3_uris = [f"s3://{full_bucket_name}/{k}" for k in s3_key_list]
                         ctx.control_mq.notify_server(
                             username,
                             TaskCmd.PROCESS_OBJECTS,
                             nb_objects,
-                            s3_keys=s3_uris,
                         )
                     return s3_key_list, nb_objects
             except UnicodeDecodeError as e:
@@ -5358,12 +5385,30 @@ def _action_s3_transfer(ctx):
         s3_key_list = []
         file_list = []
         nb_objects = 0
-        for file_path in glob(os.path.join(path, "*")):
-            if os.path.isfile(file_path):
+        # Recursively walk *path* so deeply nested data (e.g. the
+        # opossum ``opossum_NNN_X/opossumX/Schedule/YYYYMMDD/HH/*.mp4``
+        # hierarchy) is uploaded. Each file's relative directory becomes
+        # part of the S3 key prefix, preserving the camera/Schedule date
+        # hierarchy expected by the workflow step.
+        norm_path = os.path.abspath(path)
+        for root, _dirs, files in os.walk(norm_path):
+            for fname in files:
+                file_path = os.path.join(root, fname)
+                if not os.path.isfile(file_path):
+                    continue
+
+                rel_dir = os.path.relpath(root, norm_path)
+                if rel_dir in (".", ""):
+                    file_subdir = subdir
+                elif subdir:
+                    file_subdir = f"{subdir}/{rel_dir}"
+                else:
+                    file_subdir = rel_dir
+
                 s3_key, nb_sent = process_file(
                     s3,
                     full_bucket_name,
-                    subdir,
+                    file_subdir,
                     file_path,
                     modality,
                     data_mq,
@@ -5382,9 +5427,8 @@ def _action_s3_transfer(ctx):
                     nb_objects += nb_sent
 
         if nb_objects > 0:
-            s3_uris = [f"s3://{full_bucket_name}/{k}" for k in s3_key_list]
             ctx.control_mq.notify_server(
-                username, TaskCmd.PROCESS_OBJECTS, nb_objects, s3_keys=s3_uris
+                username, TaskCmd.PROCESS_OBJECTS, nb_objects
             )
         return s3_key_list, file_list
 
@@ -6652,6 +6696,9 @@ def main():
     status_needs_config = args.action == "status" and not getattr(
         args, "username", None
     )
+    workflow_bucket_needs_config = (
+        args.action == "run-workflow" and bool(getattr(args, "bucket", None))
+    )
     requires_config = (
         args.action
         in {
@@ -6665,6 +6712,7 @@ def main():
             "reload",
             "export_embeddings",
         }
+        or workflow_bucket_needs_config
         or status_needs_config
     )
 
@@ -6713,6 +6761,7 @@ def main():
             user = load_client_cfg_file(configure_file)
             if config_state.s3.valid and config_state.s3.path:
                 user = apply_s3_config_override(user, config_state.s3.path)
+            buckets_cfg = build_buckets_cfg(user)
         except (Exception, SystemExit):
             pass
 

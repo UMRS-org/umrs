@@ -53,8 +53,9 @@ class SkillValidationError(Exception):
 class SkillRegistry:
     """Registry for skill bundles.
 
-    In production, backed by Postgres. This in-memory implementation
-    provides the API contract.
+    In production, backed by Postgres (``SkillStore``).  This in-memory
+    implementation provides the API contract and is used for tests and
+    ephemeral deployments.
     """
 
     def __init__(self) -> None:
@@ -148,3 +149,11 @@ class SkillRegistry:
                 scored.append((score, skill))
         scored.sort(key=lambda x: x[0], reverse=True)
         return [s for _, s in scored[:limit]]
+
+
+__all__ = [
+    "RegisteredSkill",
+    "SkillRegistry",
+    "SkillScope",
+    "SkillValidationError",
+]

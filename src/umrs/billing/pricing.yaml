@@ -1,0 +1,37 @@
+# LLM Billing Rates
+#
+# All rates are USD per MILLION tokens (Anthropic-style convention).
+# Override via RIVAULT_BILLING_RATES env var (JSON) or per-model here.
+#
+# Token-class overlaps (handled in cost_model.compute_cost):
+#   prompt_tokens     INCLUDES cached_read_tokens
+#   completion_tokens INCLUDES reasoning_tokens
+#
+# To avoid double-counting:
+#   non_cached_prompt   = prompt_tokens - cached_read_tokens
+#   visible_completion  = completion_tokens - reasoning_tokens
+
+defaults:
+  prompt: 1.00        # Non-cached input tokens
+  completion: 3.00    # Visible output tokens (excludes reasoning)
+  cached_read: 0.10   # Cache hits — 10% of prompt rate
+  cached_write: 1.25  # Cache writes — 1.25x prompt rate
+  reasoning: 3.00     # Thinking-model reasoning tokens
+  audio: 2.00         # Audio tokens (multimodal)
+
+# Per-model overrides (subset of fields is OK; others fall back to defaults)
+models:
+  glm-5.2:
+    prompt: 0.50
+    completion: 1.50
+    reasoning: 1.50
+    cached_read: 0.05
+  deepseek-v4-pro:
+    prompt: 0.27
+    completion: 1.10
+    reasoning: 1.10
+    cached_read: 0.03
+  qwen3-8b:
+    prompt: 0.20
+    completion: 0.60
+    cached_read: 0.02
