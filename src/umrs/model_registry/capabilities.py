@@ -104,7 +104,10 @@ MODEL_REASONING_EFFORT: list[tuple[str, list[str], str]] = [
     ("gpt-oss-swallow", ["medium"], "medium"),
     ("llm-jp-4", ["low", "medium", "high"], "medium"),
     ("deepseek-v4", ["none", "high", "max"], "high"),
-    ("gemma", ["none", "low", "medium", "high"], "medium"),
+    ("gemma-4", ["none", "low", "medium", "high"], "medium"),
+    ("gemma_4", ["none", "low", "medium", "high"], "medium"),
+    ("gemma 4", ["none", "low", "medium", "high"], "medium"),
+    ("gemma4", ["none", "low", "medium", "high"], "medium"),
 ]
 
 
