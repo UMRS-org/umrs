@@ -88,10 +88,11 @@ class UMRSTask:
                     # RESTART IDENTITY resets id back to 1
                     # CASCADE handles any future foreign keys referencing tasks
                     cur.execute("TRUNCATE TABLE tasks RESTART IDENTITY CASCADE")
-            logger.info("==> tasks table reset: all rows deleted, ID sequence restarted.")
+            logger.info(
+                "==> tasks table reset: all rows deleted, ID sequence restarted."
+            )
         finally:
             self._put_conn(conn)
-
 
     # ------------------------------------------------------------------
     # Task lifecycle
@@ -131,10 +132,17 @@ class UMRSTask:
                 for task_id, client_id, cmd, payload, status, submitted_at in rows:
                     key = (client_id, cmd, payload)
                     if key not in seen_tasks:
-                        seen_tasks[key] = {"id": task_id, "status": status, "submitted_at": submitted_at}
+                        seen_tasks[key] = {
+                            "id": task_id,
+                            "status": status,
+                            "submitted_at": submitted_at,
+                        }
                     elif mark_override:
                         current_status = seen_tasks[key]["status"]
-                        if current_status == TaskStatus.COMPLETED and status != TaskStatus.COMPLETED:
+                        if (
+                            current_status == TaskStatus.COMPLETED
+                            and status != TaskStatus.COMPLETED
+                        ):
                             with conn.cursor() as cur:
                                 cur.execute(
                                     "UPDATE tasks SET status = %s, updated_at = now() WHERE id = %s",
@@ -160,8 +168,12 @@ class UMRSTask:
                         UPDATE tasks SET status = %s, updated_at = now()
                         WHERE status IS NULL OR status NOT IN (%s, %s, %s)
                         """,
-                        (TaskStatus.ABORTED, TaskStatus.COMPLETED,
-                         TaskStatus.OVERRIDDEN, TaskStatus.NO_SUCH_BUCKET),
+                        (
+                            TaskStatus.ABORTED,
+                            TaskStatus.COMPLETED,
+                            TaskStatus.OVERRIDDEN,
+                            TaskStatus.NO_SUCH_BUCKET,
+                        ),
                     )
         finally:
             self._put_conn(conn)
@@ -211,22 +223,33 @@ class UMRSTask:
                             "SELECT id FROM tasks "
                             "WHERE client_id = %s AND cmd = %s AND payload = %s "
                             "AND status IN (%s, %s)",
-                            (client_id, cmd, payload,
-                             TaskStatus.SUBMITTED, TaskStatus.RUNNING),
+                            (
+                                client_id,
+                                cmd,
+                                payload,
+                                TaskStatus.SUBMITTED,
+                                TaskStatus.RUNNING,
+                            ),
                         )
                         row = cur.fetchone()
                         if row is not None:
-                            logger.info(f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})")
+                            logger.info(
+                                f"Task dedup: reusing existing task {row[0]} for ({client_id}, {cmd})"
+                            )
                             return row[0]
                         # Should not happen: conflict fired but no active task found.
                         # The task likely transitioned to a terminal state between
                         # the INSERT conflict and the SELECT — retry the whole block.
-                        raise psycopg2.OperationalError("dedup conflict but no active task found")
+                        raise psycopg2.OperationalError(
+                            "dedup conflict but no active task found"
+                        )
             except psycopg2.Error as e:
                 if attempt < self.max_attempts:
                     time.sleep(0.5)
                 else:
-                    logger.info(f"PostgreSQL error in add_task: {type(e).__name__}: {e}")
+                    logger.info(
+                        f"PostgreSQL error in add_task: {type(e).__name__}: {e}"
+                    )
                     traceback.print_exc()
                     raise
             finally:
@@ -253,7 +276,9 @@ class UMRSTask:
                 if attempt < self.max_attempts:
                     time.sleep(0.5)
                 else:
-                    logger.info(f"Critical PostgreSQL error while updating task {task_id}: {type(e).__name__}: {e}")
+                    logger.info(
+                        f"Critical PostgreSQL error while updating task {task_id}: {type(e).__name__}: {e}"
+                    )
                     traceback.print_exc()
                     raise
             finally:
@@ -282,16 +307,25 @@ class UMRSTask:
             str_payload = json.dumps("")
 
         elif cmd == TaskCmd.FILE:
-            client_id, files = full_payload if isinstance(full_payload, tuple) else ("", full_payload)
+            client_id, files = (
+                full_payload if isinstance(full_payload, tuple) else ("", full_payload)
+            )
             str_payload = json.dumps(files)
 
         elif cmd == TaskCmd.EXPORT_EMBEDDINGS:
             client_id, export_args, _ = full_payload
             str_payload = json.dumps(export_args)
 
-        elif cmd in (TaskCmd.MODEL_REGISTER, TaskCmd.MODEL_LIST, TaskCmd.MODEL_DOWNLOAD,
-                     TaskCmd.LIST_WORKFLOWS, TaskCmd.RUN_WORKFLOW,
-                     TaskCmd.JOB_SUBMIT, TaskCmd.JOB_CANCEL):
+        elif cmd in (
+            TaskCmd.MODEL_REGISTER,
+            TaskCmd.MODEL_LIST,
+            TaskCmd.MODEL_DOWNLOAD,
+            TaskCmd.LIST_WORKFLOWS,
+            TaskCmd.RUN_WORKFLOW,
+            TaskCmd.JOB_SUBMIT,
+            TaskCmd.JOB_CANCEL,
+            TaskCmd.PURGE_BUCKETS,
+        ):
             client_id, payload_str, _zmq_sender_id = full_payload
             str_payload = payload_str
 
@@ -299,8 +333,12 @@ class UMRSTask:
             client_id, files, workflow_name = full_payload
             str_payload = json.dumps({"files": files, "workflow_name": workflow_name})
 
-        elif cmd in (TaskCmd.HANDSHAKE, TaskCmd.CREATE_DATA_QUEUE,
-                     TaskCmd.STATUS, TaskCmd.JOB_LIST):
+        elif cmd in (
+            TaskCmd.HANDSHAKE,
+            TaskCmd.CREATE_DATA_QUEUE,
+            TaskCmd.STATUS,
+            TaskCmd.JOB_LIST,
+        ):
             logger.info(f"We do not create task_id for {cmd=}")
             return None
 
@@ -322,8 +360,10 @@ class UMRSTask:
         if verbose:
             traceback.print_stack()
 
-        query = ("SELECT id, client_id, cmd, payload, status, submitted_at, updated_at "
-                 "FROM tasks WHERE 1=1")
+        query = (
+            "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at "
+            "FROM tasks WHERE 1=1"
+        )
         params = []
         if status:
             query += " AND status = %s"
@@ -343,7 +383,10 @@ class UMRSTask:
 
         return [
             {
-                "id": r[0], "client_id": r[1], "cmd": r[2], "payload": r[3],
+                "id": r[0],
+                "client_id": r[1],
+                "cmd": r[2],
+                "payload": r[3],
                 "status": r[4],
                 "submitted_at": str(r[5]) if r[5] else "-",
                 "updated_at": str(r[6]) if r[6] else "-",
@@ -354,18 +397,27 @@ class UMRSTask:
     def all_uncompleted_task(self, client_id, status_key):
         tasks = self.get_tasks(client_id=client_id)
         return [
-            t for t in tasks
+            t
+            for t in tasks
             if t["status"] not in (TaskStatus.COMPLETED, TaskStatus.OVERRIDDEN)
             and (status_key in (TaskCmd.ALL, "*") or t["cmd"] == status_key)
         ]
 
-    def pretty_print_tasks(self, status_filter=None, client_id_filter=None,
-                           print_output=True, verbose=False, limit=None):
+    def pretty_print_tasks(
+        self,
+        status_filter=None,
+        client_id_filter=None,
+        print_output=True,
+        verbose=False,
+        limit=None,
+    ):
         if verbose:
             traceback.print_stack()
 
-        query = ("SELECT id, client_id, cmd, payload, status, submitted_at, updated_at "
-                 "FROM tasks WHERE 1=1")
+        query = (
+            "SELECT id, client_id, cmd, payload, status, submitted_at, updated_at "
+            "FROM tasks WHERE 1=1"
+        )
         params = []
         if status_filter:
             query += " AND status = %s"
@@ -415,10 +467,21 @@ class UMRSTask:
         if not rows:
             message = "No tasks found"
         else:
-            headers = ["ID", "Client ID", "Command", "Payload", "Status", "Submitted At", "Updated At"]
+            headers = [
+                "ID",
+                "Client ID",
+                "Command",
+                "Payload",
+                "Status",
+                "Submitted At",
+                "Updated At",
+            ]
             table = tabulate(wrapped_rows, headers, tablefmt="fancy_grid")
             if limit and total_count > limit:
-                message = f"Tasks in DB (showing {limit} of {total_count} most recent):\n" + table
+                message = (
+                    f"Tasks in DB (showing {limit} of {total_count} most recent):\n"
+                    + table
+                )
             else:
                 message = "Tasks in DB:\n" + table
 

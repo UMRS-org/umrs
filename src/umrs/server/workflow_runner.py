@@ -24,6 +24,7 @@ import importlib
 import logging
 import os
 import re
+import sys
 import threading
 import time
 from collections.abc import Iterable
@@ -141,6 +142,51 @@ class _InMemoryS3Client:
 # ----------------------------------------------------------------------
 # Step loading
 # ----------------------------------------------------------------------
+
+
+def _purge_workflow_modules(source_path: str) -> None:
+    """Drop cached Python modules loaded from *source_path*.
+
+    Uploaded workflows can be re-uploaded with the same module names
+    (for example ``opossum_step``).  Without clearing ``sys.modules``,
+    the long-lived UMRS server process keeps executing stale code until
+    restart.  Remove any module whose ``__file__`` or ``__path__`` lives
+    under the uploaded workflow tree so the next import sees fresh code.
+    """
+    source_root = os.path.realpath(source_path)
+    stale_names: list[str] = []
+
+    for name, module in list(sys.modules.items()):
+        module_file = getattr(module, "__file__", None)
+        if isinstance(module_file, str) and os.path.realpath(module_file).startswith(
+            source_root
+        ):
+            stale_names.append(name)
+            continue
+
+        module_path = getattr(module, "__path__", None)
+        if module_path is None:
+            continue
+        try:
+            if any(
+                os.path.realpath(str(path_entry)).startswith(source_root)
+                for path_entry in module_path
+            ):
+                stale_names.append(name)
+        except TypeError:
+            continue
+
+    for name in stale_names:
+        sys.modules.pop(name, None)
+
+    if stale_names:
+        logger.info(
+            "Purged %d cached workflow module(s) from %s",
+            len(stale_names),
+            source_root,
+        )
+
+    importlib.invalidate_caches()
 
 
 def _load_step_class(entrypoint: str) -> type[Step]:
@@ -439,7 +485,7 @@ def _execute_step(
         s3=s3_client,
         input_bucket=bucket,
         input_keys=upstream_keys,
-        output_bucket=bucket,
+        output_bucket=bucket + "-output",
         config=config,
         metadata=metadata,
         run_id=record.execution_id,
@@ -551,6 +597,15 @@ def run_workflow_record(
     """
     record.update(status="running", started_at=time.time())
 
+    # Add the workflow source directory to sys.path so that step
+    # modules (e.g. ``opossum_step.py``) can be imported by
+    # ``_load_step_class``.
+    if source_path and os.path.isdir(source_path):
+        abs_source = os.path.abspath(source_path)
+        if abs_source not in sys.path:
+            sys.path.insert(0, abs_source)
+        _purge_workflow_modules(abs_source)
+
     steps_spec: list[dict[str, Any]] = list(workflow_json.get("steps", []))
     if not steps_spec:
         record.update(
@@ -576,8 +631,59 @@ def run_workflow_record(
         return
 
     state_lock = threading.Lock()
-    s3_client = _InMemoryS3Client(record, state_lock=state_lock)
-    bucket = "wf-runner"
+
+    # Check if a real bucket is specified in the workflow params.
+    # If so, use a real boto3 S3 client so the step can download input
+    # from S3 and upload results to the output bucket.
+    # If not, fall back to the in-memory shim (used by tests).
+    bucket = record.params.get("bucket", "wf-runner")
+
+    if bucket != "wf-runner":
+        try:
+            import boto3
+            import configparser
+
+            # Try to find the S3 config file
+            s3cfg_path = os.path.expanduser("~/.config/umrs/s3cfg")
+            if not os.path.isfile(s3cfg_path):
+                # Try alternative paths
+                for alt in ["/etc/umrs/s3cfg", os.path.expanduser("~/.config/umrs/s3cfg_mnagaso")]:
+                    if os.path.isfile(alt):
+                        s3cfg_path = alt
+                        break
+
+            if os.path.isfile(s3cfg_path):
+                config = configparser.ConfigParser(inline_comment_prefixes=("#", ";"))
+                config.read(s3cfg_path)
+
+                s3_host = config.get("default", "host_base", fallback="localhost")
+                use_https = config.getboolean("default", "use_https", fallback=False)
+                access_key = config.get("default", "access_key", fallback="")
+                secret_key = config.get("default", "secret_key", fallback="")
+                verify_ssl = config.getboolean("default", "check_ssl_certificate", fallback=True)
+
+                protocol = "https" if use_https else "http"
+                endpoint_url = f"{protocol}://{s3_host}"
+
+                s3_client = boto3.client(
+                    "s3",
+                    endpoint_url=endpoint_url,
+                    aws_access_key_id=access_key,
+                    aws_secret_access_key=secret_key,
+                    verify=verify_ssl,
+                )
+                logger.info("Using real S3 client (endpoint=%s, bucket=%s)", endpoint_url, bucket)
+            else:
+                logger.warning("S3 config not found. Falling back to in-memory S3.")
+                s3_client = _InMemoryS3Client(record, state_lock=state_lock)
+                bucket = "wf-runner"
+        except Exception as e:
+            logger.warning("Failed to create real S3 client: %s. Falling back to in-memory.", e)
+            s3_client = _InMemoryS3Client(record, state_lock=state_lock)
+            bucket = "wf-runner"
+    else:
+        s3_client = _InMemoryS3Client(record, state_lock=state_lock)
+
     parent_results: dict[str, StepResult] = {}
     routing_log: dict[str, dict[str, Any]] = {}
     # Per-execution map: step_name -> endpoint_id of the endpoint the
