@@ -611,11 +611,23 @@ _stop_port_listener "${UMRS_AI4S_ZMQ_PORT}" "AI4S ZMQ"
 [[ "${UMRS_AI4S_ZMQ_PORT}" == "5557" ]] || _stop_port_listener "5557" "legacy AI4S ZMQ"
 
 # ─── Build and start UMRS server containers ──────────────────────────────────
-# Remove legacy containers that conflict with compose-managed names
+# Force-remove existing UMRS server containers before recreate.
+#
+# `podman compose up -d` recreates these containers anyway (config/env may have
+# changed), but its built-in recreate intermittently fails with
+#   "the container name \"umrs-server-ai4s\" is already in use by <id>"
+# when a prior container is crash-looping under `restart: unless-stopped`
+# (e.g. a transient postgres "connection refused" at boot) or was created by a
+# compose run with a different project hash. In those cases the old container
+# carries a com.docker.compose.project label, so a label-gated cleanup skips it
+# and the recreate collides on the name.
+#
+# Removing them unconditionally up front makes the subsequent `up -d`
+# deterministic. The names are owned exclusively by this compose stack, so a
+# force removal here is always safe.
 for _ctr in umrs-server umrs-server-rccs umrs-server-ai4s; do
-    if podman inspect "$_ctr" >/dev/null 2>&1 && \
-       [[ -z "$(podman inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$_ctr" 2>/dev/null)" ]]; then
-        echo "  Removing legacy container $_ctr..."
+    if podman inspect "$_ctr" >/dev/null 2>&1; then
+        echo "  Removing existing container $_ctr (will be recreated)..."
         podman stop "$_ctr" 2>/dev/null || true
         podman rm -f "$_ctr" 2>/dev/null || true
     fi
