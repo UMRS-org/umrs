@@ -1,0 +1,61 @@
+# Pool roster: AI4S — V2 speed-optimized endpoints only (2026-06-22)
+# Usage: R4_GATEWAY_URL=http://localhost:8002 r4 admin pool up pool-ai4s-v2.yaml
+#
+# Only the 3 new V2 entries — does NOT touch existing running endpoints.
+# Provision one at a time to avoid partition contention on 4n4gpu-p.
+
+pool: ai4s-research-v2
+defaults:
+  tier: system
+  ttl_sec: 0              # never expires
+  timeout: 86400
+
+endpoints:
+  # ── DeepSeek-V4-Pro V2 (optimized baseline) ─────────────────────────────────
+  #   max_num_seqs=16: explicit concurrency cap (was unset).
+  #   max_num_batched_tokens=32768: faster prefill (was 16384).
+
+  - name: deepseek-v4-pro-v2
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # ── GLM-5.2 V2 (optimized baseline) ─────────────────────────────────────────
+  #   max_num_seqs=16: explicit concurrency cap (was unset).
+  #   max_num_batched_tokens=32768: faster prefill (was 16384).
+  #   Keeps eager mode (conservative — CUDA graphs not yet validated).
+
+  - name: glm-5.2-v2
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  # ── GLM-5.2 V2 CUDA-graphs canary ──────────────────────────────────────────
+  #   CANARY: Re-enable CUDA graphs (30-50% decode speedup).
+  #   VLLM_ENFORCE_EAGER=0. Validate tool-call prompts before promoting.
+
+  - name: glm-5.2-v2-graphs
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_ENFORCE_EAGER: "0"
