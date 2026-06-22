@@ -7,15 +7,13 @@ from umrs.model_registry.capabilities import (
 )
 
 
-def test_derive_reasoning_effort_kimi_k27_thinking_only():
-    levels, default = derive_reasoning_effort("Kimi-K2.7-Code")
-    assert levels == ["high", "max"]
-    assert default == "high"
+def test_derive_reasoning_effort_kimi_k27_no_effort_control():
+    assert derive_reasoning_effort("Kimi-K2.7-Code") is None
 
 
 def test_derive_reasoning_effort_kimi_k26():
     levels, default = derive_reasoning_effort("Kimi-K2.6")
-    assert levels == ["none", "high", "max"]
+    assert levels == ["none", "high"]
     assert default == "high"
 
 
