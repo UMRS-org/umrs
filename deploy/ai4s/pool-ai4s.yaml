@@ -60,6 +60,24 @@ endpoints:
     #   Halves GPU count + removes pipeline bubbles, BUT halves aggregate memory → 1M KV must be re-validated
     #   before reducing node_count to 2 (current serve.slurm would give TP=4 PP=2; recipe TP=8 PP=1+EP needs serve.slurm rework).
 
+  # ── DeepSeek-V4-Pro V2 (optimized baseline, 2026-06-22) ───────────────────
+  # Same 4n4gpu layout as baseline, with explicit throughput tuning.
+  #   max_num_seqs=16: explicit concurrency cap (was unset → vLLM default 256,
+  #     effectively limited by 1M KV memory).
+  #   max_num_batched_tokens=32768: faster prefill (was auto-derived 16384).
+  # Keeps eager mode (CUDA graphs still unsafe for DeepSeek-V4 on this build).
+
+  - name: deepseek-v4-pro-v2
+    model: DeepSeek-V4-Pro
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      VLLM_MAX_NUM_SEQS: "16"                # explicit concurrency cap
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"   # faster prefill (was 16384)
+
   # ── DeepSeek-V4-Pro speedup canaries (2026-06-08) ──────────────────────────
   # See: deepseek-v4-eager-graphs-garbage-2026-06-08 for background on
   # eager-mode requirement (CUDA graphs produce garbled output on this build).
@@ -124,6 +142,45 @@ endpoints:
       # RIVAULT_SIF from the job shell (--export=ALL). v4/v5 stay default for
       # all other models. See ai4s-endpoint-restore-glm52-2026-06-17 memory.
       RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+
+  # ── GLM-5.2 V2 (optimized baseline, 2026-06-22) ───────────────────────────
+  # Same 4n4gpu layout, with explicit throughput tuning.
+  #   max_num_seqs=16: explicit concurrency cap (was unset → vLLM default 256).
+  #   max_num_batched_tokens=32768: faster prefill (was auto-derived 16384).
+  #   Keeps eager mode (conservative — CUDA graphs not yet validated clean for
+  #     GLM-5.2 on this vLLM build; see v2-graphs canary below).
+
+  - name: glm-5.2-v2
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "16"                # explicit concurrency cap
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"   # faster prefill (was 16384)
+
+  # ── GLM-5.2 V2 CUDA-graphs canary (2026-06-22) ────────────────────────────
+  # CANARY: Re-enable CUDA graphs for GLM-5.2. The tools "!!!!" garbage was
+  # fixed by VLLM_USE_FLASHINFER_MOE_FP16=0 (Triton MoE kernel), so CUDA graphs
+  # may now be safe. If this serves correctly, decode throughput improves
+  # 30-50%. Validate with tool-call prompts before promoting to v2 baseline.
+  # Set VLLM_ENFORCE_EAGER=0 to re-enable CUDA graphs.
+
+  - name: glm-5.2-v2-graphs
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_ENFORCE_EAGER: "0"              # CANARY: re-enable CUDA graphs
 
   - name: kimi-k2.6
     model: Kimi-K2.6
