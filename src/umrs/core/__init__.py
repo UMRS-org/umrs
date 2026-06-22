@@ -7,8 +7,23 @@ preserve compatibility during the tree reconstruction.
 
 from __future__ import annotations
 
-# Lazy imports via __getattr__ keep lightweight client commands (e.g. `umrs-client
-# info`) from pulling server-only deps (psycopg2, tabulate, diskcache) at startup.
+from typing import TYPE_CHECKING
+
+# Lazy imports via __getattr__ keep umrs[client] free of server deps (psycopg2,
+# pyzmq, tabulate, diskcache) when only lightweight symbols like TaskCmd are needed.
+# TYPE_CHECKING imports preserve Pylance go-to-definition without eager loads.
+
+if TYPE_CHECKING:
+    from umrs.core.MessageQueue import (
+        BASE_PORT,
+        DATA_BASE_PORT,
+        DEFAULT_NB_MSG,
+        MessageQueue,
+    )
+    from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
+    from umrs.core.TaskManager import TaskManager
+    from umrs.core.UMRSThreads import ThreadStatus, UMRSThreads
+    from umrs.core.UMRSTask import UMRSTask
 
 __all__ = [
     "BASE_PORT",
