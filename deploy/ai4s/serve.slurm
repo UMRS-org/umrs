@@ -668,11 +668,17 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
     # Unset the SIF-baked VLLM_PORT=8000 before launching Ray so the vLLM
     # RayWorkerProc actors Ray later spawns do not inherit it and double-bind
     # ZMQ on :8000 ("Address already in use").
+    # Also export VLLM_USE_FLASHINFER_MOE_FP16 explicitly: SING_COMMON passes it
+    # via --env, but Ray runtime env isolation can strip container-level vars.
+    # Exporting in the parent shell ensures RayWorkerProc actors see it.
     "${CONTAINER_CMD}" "${SING_COMMON[@]}" \
-        "${SIF_IMAGE}" /bin/sh -c 'unset VLLM_PORT; exec /opt/venv/bin/ray start --head \
-            --node-ip-address="$1" --port="$2" \
-            --num-gpus="$3" --temp-dir="$4" \
-            --include-dashboard=false --block' _ \
+        "${SIF_IMAGE}" /bin/sh -c '
+            export VLLM_USE_FLASHINFER_MOE_FP16="${VLLM_USE_FLASHINFER_MOE_FP16:-}"
+            unset VLLM_PORT
+            exec /opt/venv/bin/ray start --head \
+                --node-ip-address="$1" --port="$2" \
+                --num-gpus="$3" --temp-dir="$4" \
+                --include-dashboard=false --block' _ \
             "${HEAD_IP}" "${RAY_PORT}" "${VLLM_GPUS_PER_NODE}" "${RUNTIME_CACHE}/ray" &
     RAY_HEAD_PID=$!
 
@@ -689,14 +695,17 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
     for ((i=1; i<${#RAY_NODES[@]}; i++)); do
         wnode="${RAY_NODES[$i]}"
         echo "[serve] starting ray worker on ${wnode}"
-        # Same VLLM_PORT unset as the head: worker-node Ray actors must not
-        # inherit the baked :8000 or they fail with ZMQError "Address already
-        # in use" during vLLM engine init.
+        # Same VLLM_PORT unset + VLLM_USE_FLASHINFER_MOE_FP16 export as the
+        # head: worker-node Ray actors must not inherit the baked :8000, and
+        # must see the MoE backend override to avoid NaN logits on GLM.
         srun --nodes=1 --ntasks=1 --nodelist="${wnode}" \
             "${CONTAINER_CMD}" "${SING_COMMON[@]}" \
-                "${SIF_IMAGE}" /bin/sh -c 'unset VLLM_PORT; exec /opt/venv/bin/ray start \
-                    --address="$1" --num-gpus="$2" \
-                    --temp-dir="$3" --block' _ \
+                "${SIF_IMAGE}" /bin/sh -c '
+                    export VLLM_USE_FLASHINFER_MOE_FP16="${VLLM_USE_FLASHINFER_MOE_FP16:-}"
+                    unset VLLM_PORT
+                    exec /opt/venv/bin/ray start \
+                        --address="$1" --num-gpus="$2" \
+                        --temp-dir="$3" --block' _ \
                     "${RAY_ADDRESS}" "${VLLM_GPUS_PER_NODE}" "${RUNTIME_CACHE}/ray" &
         WORKER_PIDS+=($!)
     done
@@ -720,11 +729,20 @@ if [[ "${NODE_COUNT}" -gt 1 ]]; then
     # torch.distributed TCPStore), which double-bind the same port and fail with
     # EADDRINUSE. Unset VLLM_PORT inside the container so vLLM allocates dynamic
     # free ports per subsystem. Pin VLLM_HOST_IP to the head for rendezvous.
+    #
+    # Also explicitly export VLLM_USE_FLASHINFER_MOE_FP16 in the vLLM launch
+    # shell.  SING_COMMON passes it via --env, but RayWorkerProc actors spawned
+    # by the Ray cluster may not inherit container-level env vars reliably
+    # (Ray runtime env isolation).  Exporting in the parent shell ensures every
+    # vLLM worker sees it — belt-and-suspenders with the --env flag.
     write_job_info running
     "${CONTAINER_CMD}" "${SING_COMMON[@]}" \
         --env RAY_ADDRESS="${RAY_ADDRESS}" \
         --env VLLM_HOST_IP="${HEAD_IP}" \
-        "${SIF_IMAGE}" /bin/sh -c 'unset VLLM_PORT; exec /opt/venv/bin/python -m vllm.entrypoints.openai.api_server "$@"' _ \
+        "${SIF_IMAGE}" /bin/sh -c '
+            export VLLM_USE_FLASHINFER_MOE_FP16="${VLLM_USE_FLASHINFER_MOE_FP16:-}"
+            unset VLLM_PORT
+            exec /opt/venv/bin/python -m vllm.entrypoints.openai.api_server "$@"' _ \
             "${VLLM_ARGS[@]}" &
     CONTAINER_PID=$!
 else
