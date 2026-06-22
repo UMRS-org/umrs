@@ -443,6 +443,8 @@ class DeploymentSpec:
             env_overrides.update(
                 {str(k): str(v) for k, v in overrides["env_vars"].items()}
             )
+        if sp.quantization and "VLLM_QUANTIZATION" not in env_overrides:
+            env_overrides["VLLM_QUANTIZATION"] = sp.quantization
         ttl_sec = profile.get("ttl_sec") or overrides.get("ttl_sec") or 0
         tier = profile.get("tier") or overrides.get("tier") or "user"
 
