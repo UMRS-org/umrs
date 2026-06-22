@@ -157,12 +157,21 @@ class CapabilitiesRequest(BaseModel):
     supports_structured_output: bool = Field(
         False, description="Whether the model supports structured (JSON) output"
     )
+    supports_reasoning: bool = Field(
+        False, description="Whether the model supports thinking/reasoning output"
+    )
     max_output_tokens: int | None = Field(None, description="Maximum output tokens")
     max_position_embeddings: int | None = Field(
         None, description="Maximum context length (positions)"
     )
     model_family: str | None = Field(
         None, description="Model family: qwen, llama, mistral, etc."
+    )
+    reasoning_effort_levels: list[str] | None = Field(
+        None, description="Allowed reasoning_effort values for this model"
+    )
+    reasoning_effort_default: str | None = Field(
+        None, description="Default reasoning_effort for this model"
     )
 
 
@@ -565,9 +574,12 @@ def capabilities_from_request(
         supports_tool_calling=req.supports_tool_calling,
         supports_vision=req.supports_vision,
         supports_structured_output=req.supports_structured_output,
+        supports_reasoning=req.supports_reasoning,
         max_output_tokens=req.max_output_tokens,
         max_position_embeddings=req.max_position_embeddings,
         model_family=req.model_family,
+        reasoning_effort_levels=req.reasoning_effort_levels,
+        reasoning_effort_default=req.reasoning_effort_default,
     )
 
 
@@ -1078,7 +1090,7 @@ async def detect_model_capabilities(
             message="No storage path configured",
         )
 
-    caps = detect_capabilities(model.storage_ref)
+    caps = detect_capabilities(model.storage_ref, model_name=model.name)
     if caps is None:
         return ModelDetectResponse(
             model_id=model.model_id,

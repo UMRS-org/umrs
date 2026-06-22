@@ -13,6 +13,8 @@ from typing import Any
 
 import psycopg2
 
+from umrs.model_registry.capabilities import resolve_capabilities
+
 from ..models import (
     ExecutionAuthority,
     ModelCapabilities,
@@ -91,7 +93,7 @@ class ModelStore:
 
         model_id = generate_model_id()
         serving_profile = serving_profile or ServingProfile()
-        capabilities = capabilities or ModelCapabilities()
+        capabilities = resolve_capabilities(name, capabilities or ModelCapabilities())
         runtime_config = runtime_config or RuntimeConfig()
 
         model = ModelEntry(
@@ -898,7 +900,7 @@ class ModelStore:
         policy_id = generate_policy_id()
 
         profile = serving_profile or ServingProfile()
-        caps = capabilities or ModelCapabilities()
+        caps = resolve_capabilities(name, capabilities or ModelCapabilities())
 
         try:
             with self.conn.cursor() as cur:
