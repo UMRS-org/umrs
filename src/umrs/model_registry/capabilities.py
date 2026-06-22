@@ -95,9 +95,11 @@ FAMILY_REQUIRES_MM_ENCODER_TP_DATA: set[str] = {
 
 # Per-model reasoning effort (catalog name patterns, most specific first).
 # Used at registration to populate reasoning_effort_* on each catalog entry.
+#
+# Kimi K2.6: binary thinking (Kimi API thinking.type enabled|disabled; vLLM
+# reasoning_effort none|high). K2.7 Code: thinking always on — no entry here.
 MODEL_REASONING_EFFORT: list[tuple[str, list[str], str]] = [
-    ("kimi-k2.7", ["high", "max"], "high"),
-    ("kimi", ["none", "high", "max"], "high"),
+    ("kimi", ["none", "high"], "high"),
     ("glm-5.2", ["none", "high", "max"], "max"),
     ("glm-5.1", ["none", "low", "medium", "high"], "medium"),
     ("glm", ["none", "low", "medium", "high"], "medium"),
@@ -115,6 +117,9 @@ def derive_reasoning_effort(model_name: str) -> tuple[list[str], str] | None:
     """Match catalog model name against MODEL_REASONING_EFFORT (first win)."""
     name_lc = (model_name or "").lower()
     if not name_lc:
+        return None
+    # K2.7 Code: thinking always on; no user-facing effort control.
+    if "kimi-k2.7" in name_lc or "kimi_k2.7" in name_lc:
         return None
     for pattern, levels, default in MODEL_REASONING_EFFORT:
         if pattern in name_lc:
