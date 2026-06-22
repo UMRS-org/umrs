@@ -7,13 +7,8 @@ preserve compatibility during the tree reconstruction.
 
 from __future__ import annotations
 
-# Import order matters for Pylance static analysis: lightweight modules first,
-# MessageQueue last to avoid circular-import noise breaking Go-to-Definition.
-from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
-from umrs.core.UMRSTask import UMRSTask
-from umrs.core.TaskManager import TaskManager
-from umrs.core.UMRSThreads import ThreadStatus, UMRSThreads
-from umrs.core.MessageQueue import BASE_PORT, DATA_BASE_PORT, DEFAULT_NB_MSG, MessageQueue
+# Lazy imports via __getattr__ keep lightweight client commands (e.g. `umrs-client
+# info`) from pulling server-only deps (psycopg2, tabulate, diskcache) at startup.
 
 __all__ = [
     "BASE_PORT",
@@ -29,40 +24,36 @@ __all__ = [
 ]
 
 
+# Maps each exported symbol to the submodule that defines it. Submodules are
+# imported on first access only. Resolved values are cached into this module's
+# globals so that names colliding with submodule names (e.g. ``MessageQueue``,
+# ``TaskManager``, ``UMRSTask``, ``UMRSThreads``) resolve to the class/value
+# rather than the submodule object, matching the previous eager-import behavior.
+_SYMBOL_SOURCES = {
+    "BASE_PORT": "umrs.core.MessageQueue",
+    "DATA_BASE_PORT": "umrs.core.MessageQueue",
+    "DEFAULT_NB_MSG": "umrs.core.MessageQueue",
+    "MessageQueue": "umrs.core.MessageQueue",
+    "TaskCmd": "umrs.core.TaskCmdStatus",
+    "TaskStatus": "umrs.core.TaskCmdStatus",
+    "TaskManager": "umrs.core.TaskManager",
+    "UMRSTask": "umrs.core.UMRSTask",
+    "ThreadStatus": "umrs.core.UMRSThreads",
+    "UMRSThreads": "umrs.core.UMRSThreads",
+}
+
+
 def __getattr__(name: str):
-    if name in {"BASE_PORT", "DATA_BASE_PORT", "DEFAULT_NB_MSG", "MessageQueue"}:
-        from umrs.core.MessageQueue import (
-            BASE_PORT,
-            DATA_BASE_PORT,
-            DEFAULT_NB_MSG,
-            MessageQueue,
-        )
+    module_path = _SYMBOL_SOURCES.get(name)
+    if module_path is None:
+        raise AttributeError(f"module 'umrs.core' has no attribute {name!r}")
 
-        return {
-            "BASE_PORT": BASE_PORT,
-            "DATA_BASE_PORT": DATA_BASE_PORT,
-            "DEFAULT_NB_MSG": DEFAULT_NB_MSG,
-            "MessageQueue": MessageQueue,
-        }[name]
+    import importlib
 
-    if name in {"TaskCmd", "TaskStatus"}:
-        from umrs.core.TaskCmdStatus import TaskCmd, TaskStatus
+    value = getattr(importlib.import_module(module_path), name)
+    globals()[name] = value
+    return value
 
-        return {"TaskCmd": TaskCmd, "TaskStatus": TaskStatus}[name]
 
-    if name == "TaskManager":
-        from umrs.core.TaskManager import TaskManager
-
-        return TaskManager
-
-    if name == "UMRSTask":
-        from umrs.core.UMRSTask import UMRSTask
-
-        return UMRSTask
-
-    if name in {"ThreadStatus", "UMRSThreads"}:
-        from umrs.core.UMRSThreads import ThreadStatus, UMRSThreads
-
-        return {"ThreadStatus": ThreadStatus, "UMRSThreads": UMRSThreads}[name]
-
-    raise AttributeError(f"module 'umrs.core' has no attribute {name!r}")
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
