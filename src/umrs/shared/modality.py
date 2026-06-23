@@ -14,6 +14,9 @@ VALID_MODALITIES = [
     "volume",
     "movie",
     "volume_movie",
+    "audio",
+    "notebook",
+    "code",
 ]
 
 # ── Processing tasks ───────────────────────────────────────────────────────
@@ -68,6 +71,127 @@ _MODALITY_UPLOAD_CATEGORY: dict[str, str] = {
     "volume": "image",
     "movie": "image",
     "volume_movie": "image",
+    "audio": "audio",
+    "notebook": "text_file",
+    "code": "text_file",
+}
+
+# ── File extension → modality mapping ─────────────────────────────────────
+# Used by ``detect_modality()`` to auto-detect the modality of a file.
+_EXTENSION_MODALITY: dict[str, str] = {
+    # Text
+    ".txt": "text_file",
+    ".md": "text_file",
+    ".markdown": "text_file",
+    ".rst": "text_file",
+    ".pdf": "text_file",
+    ".html": "text_file",
+    ".htm": "text_file",
+    ".json": "text_file",
+    ".yaml": "text_file",
+    ".yml": "text_file",
+    ".csv": "text_file",
+    ".tsv": "text_file",
+    # Image
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".png": "image",
+    ".gif": "image",
+    ".bmp": "image",
+    ".tiff": "image",
+    ".tif": "image",
+    ".webp": "image",
+    # Video
+    ".mp4": "movie",
+    ".avi": "movie",
+    ".mov": "movie",
+    ".mkv": "movie",
+    ".webm": "movie",
+    ".flv": "movie",
+    # Audio
+    ".wav": "audio",
+    ".mp3": "audio",
+    ".flac": "audio",
+    ".ogg": "audio",
+    ".m4a": "audio",
+    ".aac": "audio",
+    # Notebook
+    ".ipynb": "notebook",
+    # Code
+    ".py": "code",
+    ".js": "code",
+    ".ts": "code",
+    ".jsx": "code",
+    ".tsx": "code",
+    ".rs": "code",
+    ".go": "code",
+    ".java": "code",
+    ".c": "code",
+    ".cpp": "code",
+    ".h": "code",
+    ".hpp": "code",
+    ".sh": "code",
+    ".bash": "code",
+    ".r": "code",
+    ".R": "code",
+    ".m": "code",
+    ".jl": "code",
+    ".rb": "code",
+    ".sql": "code",
+    ".scala": "code",
+    ".swift": "code",
+    ".kt": "code",
+    ".kts": "code",
+    ".dart": "code",
+    ".lua": "code",
+    ".pl": "code",
+    ".pm": "code",
+    ".t": "code",
+    ".ps1": "code",
+    ".bat": "code",
+    ".cmd": "code",
+    ".com": "code",
+    ".fish": "code",
+    ".zsh": "code",
+    ".php": "code",
+    ".phtml": "code",
+    ".php3": "code",
+    ".php4": "code",
+    ".php5": "code",
+    ".php7": "code",
+    ".phps": "code",
+    ".pht": "code",
+    ".thtml": "code",
+    ".pyp": "code",
+    ".pyc": "code",
+    ".pyo": "code",
+    ".pyd": "code",
+    ".pyw": "code",
+    ".pyx": "code",
+    ".pxi": "code",
+    ".pxd": "code",
+    ".pyz": "code",
+    ".pywz": "code",
+    ".egg": "code",
+    ".whl": "code",
+    ".zip": "code",
+    ".tar": "code",
+    ".gz": "code",
+    ".bz2": "code",
+    ".7z": "code",
+    ".rar": "code",
+    ".iso": "code",
+    ".dmg": "code",
+    ".pkg": "code",
+    ".deb": "code",
+    ".rpm": "code",
+    ".msi": "code",
+    ".apk": "code",
+    ".jar": "code",
+    ".war": "code",
+    ".ear": "code",
+    ".class": "code",
+    ".py": "code",
 }
 
 
@@ -131,3 +255,38 @@ def is_valid_modality(modality_name: str) -> bool:
 def check_or_quit(modality_name: str) -> None:
     if not is_valid_modality(modality_name):
         sys.exit(f"Trying to use unsupported modality {modality_name}\nExiting")
+
+
+# ── Automatic modality detection ──────────────────────────────────────────
+
+
+def detect_modality(file_path: str) -> str:
+    """Auto-detect the modality of a file from its extension.
+
+    Falls back to ``"text_file"`` for unknown extensions so that
+    new file types are treated as text by default.
+
+    Examples:
+        >>> detect_modality("paper.pdf")
+        'text_file'
+        >>> detect_modality("image.png")
+        'image'
+        >>> detect_modality("recording.wav")
+        'audio'
+        >>> detect_modality("analysis.ipynb")
+        'notebook'
+        >>> detect_modality("script.py")
+        'code'
+    """
+    import os
+
+    ext = os.path.splitext(file_path)[1].lower()
+    return _EXTENSION_MODALITY.get(ext, "text_file")
+
+
+def is_supported_file(file_path: str) -> bool:
+    """Return True if the file extension is recognized by ``detect_modality``."""
+    import os
+
+    ext = os.path.splitext(file_path)[1].lower()
+    return ext in _EXTENSION_MODALITY
