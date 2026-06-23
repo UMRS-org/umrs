@@ -89,9 +89,54 @@ def _run_squeue() -> list[dict[str, str]]:
     return jobs
 
 
+def _parse_squeue_output(text: str) -> list[dict[str, str]]:
+    """Parse squeue output (same format as ``squeue --format='%i\t%j\t%N\t%T'``).
+
+    Each dict has keys: ``job_id``, ``name``, ``node``, ``state``.
+    """
+    jobs: list[dict[str, str]] = []
+    for line in text.strip().splitlines():
+        parts = line.split("\t")
+        if len(parts) < 4:
+            continue
+        job_id, name, node, state = parts[0], parts[1], parts[2], parts[3]
+        base_id = job_id.split("_")[0]
+        jobs.append(
+            {
+                "job_id": base_id,
+                "full_job_id": job_id,
+                "name": name,
+                "node": node,
+                "state": state,
+            }
+        )
+    return jobs
+
+
 def _filter_rivault_jobs(jobs: list[dict[str, str]]) -> list[dict[str, str]]:
     """Filter to jobs whose name matches the mini-rivault pattern."""
     return [j for j in jobs if _MINI_RIVAULT_RE.search(j["name"])]
+
+
+def _load_job_info_json(path: str) -> dict[str, dict[str, str]]:
+    """Load pre-collected job info from a JSON file.
+
+    Expected format::
+
+        {
+          "22016": {
+            "host": "ar13n19",
+            "port": "11434",
+            "model": "GLM-5.2",
+            "project_id": "rivault",
+            "status": "ready"
+          }
+        }
+    """
+    import json
+
+    with open(path) as fh:
+        return json.load(fh)
 
 
 # ── Job info file parsing ──────────────────────────────────────────
@@ -153,12 +198,16 @@ def _parse_job_info(info_path: Path) -> dict[str, str]:
 async def _reconcile(
     project_id: str | None = None,
     dry_run: bool = False,
+    squeue_file: str | None = None,
+    job_info_json: str | None = None,
 ) -> int:
     """Reconcile orphaned endpoints.
 
     Args:
         project_id: If provided, only register endpoints for this project.
         dry_run: If True, only report what would be done.
+        squeue_file: Path to pre-collected squeue output (tab-separated).
+        job_info_json: Path to JSON mapping job_id → {host, port, model, project_id, status}.
 
     Returns:
         Number of endpoints re-registered.
@@ -180,10 +229,20 @@ async def _reconcile(
     registry = EndpointRegistry(backend=backend)
 
     # Scan Slurm for running mini-rivault jobs
-    all_jobs = _run_squeue()
+    if squeue_file:
+        logger.info("Reading squeue output from %s", squeue_file)
+        all_jobs = _parse_squeue_output(Path(squeue_file).read_text())
+    else:
+        all_jobs = _run_squeue()
     rivault_jobs = _filter_rivault_jobs(all_jobs)
 
     logger.info("Found %d mini-rivault job(s) in squeue", len(rivault_jobs))
+
+    # Load pre-collected job info map if provided
+    job_info_map: dict[str, dict[str, str]] = {}
+    if job_info_json:
+        job_info_map = _load_job_info_json(job_info_json)
+        logger.info("Loaded %d job info entries from %s", len(job_info_map), job_info_json)
 
     reRegistered = 0
     for job in rivault_jobs:
@@ -196,33 +255,37 @@ async def _reconcile(
             logger.info("  → already registered (status=%s), skipping", existing.status.value)
             continue
 
-        # Find and parse the job info file
-        info_path = _find_job_info_file(job_id)
-        if info_path is None:
-            logger.warning("  → no job info file found for job %s, skipping", job_id)
-            continue
-
-        info = _parse_job_info(info_path)
-        if not info:
-            logger.warning("  → empty or invalid job info file: %s", info_path)
-            continue
+        # Collect endpoint information — prefer job_info_map, then job info files
+        info: dict[str, str] = {}
+        if job_id in job_info_map:
+            info = job_info_map[job_id]
+            logger.info("  → using info from --job-info-json")
+        else:
+            info_path = _find_job_info_file(job_id)
+            if info_path is None:
+                logger.warning("  → no job info file found for job %s, skipping", job_id)
+                continue
+            info = _parse_job_info(info_path)
+            if not info:
+                logger.warning("  → empty or invalid job info file: %s", info_path)
+                continue
 
         # Extract endpoint information
-        host = info.get("RIVAULT_NODE", job.get("node", "unknown"))
-        port_str = info.get("RIVAULT_LITELLM_PORT", "11434")
+        host = info.get("host") or info.get("RIVAULT_NODE", job.get("node", "unknown"))
+        port_str = info.get("port") or info.get("RIVAULT_LITELLM_PORT", "11434")
         try:
             port = int(port_str)
         except ValueError:
             logger.warning("  → invalid port '%s' in %s, skipping", port_str, info_path)
             continue
 
-        model = info.get("RIVAULT_MODEL_PATH", "")
+        model = info.get("model") or info.get("RIVAULT_MODEL_PATH", "")
         if not model:
-            logger.warning("  → no model path in %s, skipping", info_path)
+            logger.warning("  → no model name for job %s, skipping", job_id)
             continue
 
         # Determine status from job info
-        raw_status = info.get("RIVAULT_STATUS", "unknown").lower()
+        raw_status = (info.get("status") or info.get("RIVAULT_STATUS", "unknown")).lower()
         if raw_status in ("ready", "running"):
             status = EndpointStatus.READY
         elif raw_status in ("starting", "provisioning"):
@@ -236,7 +299,7 @@ async def _reconcile(
             status = EndpointStatus.PROVISIONING
 
         # Determine project ID
-        proj = project_id or info.get("RIVAULT_PROJECT_ID", "default")
+        proj = project_id or info.get("project_id") or info.get("RIVAULT_PROJECT_ID", "default")
 
         if dry_run:
             logger.info(
@@ -259,8 +322,8 @@ async def _reconcile(
                     backend="slurm",
                     metadata={
                         "served_model_name": os.environ.get("VLLM_MODEL_NAME", model),
-                        "tier": info.get("RIVAULT_TIER", "user"),
-                        "owner_id": info.get("RIVAULT_OWNER_ID", ""),
+                        "tier": info.get("tier") or info.get("RIVAULT_TIER", "user"),
+                        "owner_id": info.get("owner_id") or info.get("RIVAULT_OWNER_ID", ""),
                     },
                 )
                 # Update status to match what we found
@@ -305,6 +368,25 @@ def main() -> int:
         action="store_true",
         help="Enable verbose logging.",
     )
+    parser.add_argument(
+        "--squeue-file",
+        type=str,
+        default=None,
+        help=(
+            "Path to pre-collected squeue output (tab-separated, same format as "
+            "'squeue --format=\"%%i\\t%%j\\t%%N\\t%%T\"'). "
+            "Use when squeue is not available locally."
+        ),
+    )
+    parser.add_argument(
+        "--job-info-json",
+        type=str,
+        default=None,
+        help=(
+            "Path to JSON file mapping job_id to {host, port, model, project_id, status}. "
+            "Use when job info files are not accessible locally."
+        ),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -315,6 +397,8 @@ def main() -> int:
     count = asyncio.run(_reconcile(
         project_id=args.project,
         dry_run=args.dry_run,
+        squeue_file=args.squeue_file,
+        job_info_json=args.job_info_json,
     ))
     return 0 if count >= 0 else 1
 
