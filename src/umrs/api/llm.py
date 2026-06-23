@@ -188,6 +188,16 @@ def _discover_endpoint(
                 break
 
     if not endpoint:
+        # Pool YAML entry names are stored in variant (e.g. glm-5.2-v2).
+        all_eps = registry.list_all(
+            project_id=project_id,
+            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+        )
+        variant_matches = [ep for ep in all_eps if ep.variant == model]
+        if variant_matches:
+            endpoint = min(variant_matches, key=lambda ep: ep.active_requests)
+
+    if not endpoint:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"No active endpoint for model '{model}'. "
