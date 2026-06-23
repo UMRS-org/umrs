@@ -9,6 +9,11 @@ This script scans ``squeue`` for running mini-rivault jobs, reads the job
 info file written by the sbatch script, and re-registers the endpoint in
 the UMRS :class:`~umrs.orchestrator.endpoint_registry.EndpointRegistry`.
 
+When running on a node without direct Slurm access (e.g. umrs-front), the
+script uses the UMRS SSH ControlMaster to run ``squeue`` and read job info
+files on the remote login node.  When running on a Slurm login node, it
+uses local ``squeue`` directly.
+
 Usage (inside the UMRS container)::
 
     python3 /app/umrs-src/scripts/reconcile_orphan_endpoints.py
@@ -43,12 +48,55 @@ logger = logging.getLogger("reconcile_orphans")
 #: Regex to identify mini-rivault jobs from squeue output
 _MINI_RIVAULT_RE = re.compile(r"mini.rivault|rivault", re.IGNORECASE)
 
+#: Global SSH manager cached after first successful connection.
+_ssh_manager: Any | None = None
 
-def _run_squeue() -> list[dict[str, str]]:
-    """Return running Slurm jobs for the current user.
 
-    Each dict has keys: ``job_id``, ``name``, ``node``, ``state``.
+async def _get_ssh_manager() -> Any | None:
+    """Get or create an SSHControlManager from site config (slurm-remote).
+
+    Returns None if the scheduler kind is not slurm-remote or SSH is not
+    configured.
     """
+    global _ssh_manager
+    if _ssh_manager is not None:
+        return _ssh_manager
+
+    try:
+        from umrs.orchestrator.ssh_control import SSHControlConfig, SSHControlManager
+        from umrs.orchestrator.site_config import load_site_config
+    except ImportError as exc:
+        logger.debug("Cannot import SSH modules: %s", exc)
+        return None
+
+    try:
+        site = load_site_config()
+    except Exception as exc:
+        logger.debug("Cannot load site config: %s", exc)
+        return None
+
+    if getattr(site.scheduler, "kind", "") != "slurm-remote":
+        logger.debug("Scheduler kind is not slurm-remote, SSH not needed")
+        return None
+
+    extra = getattr(site, "extra", {}) or {}
+    if not extra.get("ssh_target"):
+        logger.debug("No ssh_target in site config")
+        return None
+
+    try:
+        ssh_config = SSHControlConfig.from_site_config(extra)
+        _ssh_manager = SSHControlManager(ssh_config)
+        await _ssh_manager.ensure_connected()
+        logger.info("SSH ControlMaster established to %s", ssh_config.ssh_target)
+        return _ssh_manager
+    except Exception as exc:
+        logger.warning("Failed to establish SSH connection: %s", exc)
+        return None
+
+
+def _run_squeue_local() -> list[dict[str, str]]:
+    """Run squeue locally. Returns empty list if squeue not available."""
     try:
         result = subprocess.run(
             [
@@ -63,7 +111,7 @@ def _run_squeue() -> list[dict[str, str]]:
             check=True,
         )
     except FileNotFoundError:
-        logger.error("squeue not found — this script must run on a Slurm login/compute node")
+        logger.debug("squeue not found locally")
         return []
     except subprocess.CalledProcessError as exc:
         logger.error("squeue failed: %s", exc.stderr or exc)
@@ -75,7 +123,6 @@ def _run_squeue() -> list[dict[str, str]]:
         if len(parts) < 4:
             continue
         job_id, name, node, state = parts[0], parts[1], parts[2], parts[3]
-        # Strip array/task suffix for display: "12345_2" → "12345"
         base_id = job_id.split("_")[0]
         jobs.append(
             {
@@ -90,7 +137,7 @@ def _run_squeue() -> list[dict[str, str]]:
 
 
 def _parse_squeue_output(text: str) -> list[dict[str, str]]:
-    """Parse squeue output (same format as ``squeue --format='%i\t%j\t%N\t%T'``).
+    """Parse squeue output (same format as ``squeue --format='%i\\t%j\\t%N\\t%T'``).
 
     Each dict has keys: ``job_id``, ``name``, ``node``, ``state``.
     """
@@ -111,6 +158,38 @@ def _parse_squeue_output(text: str) -> list[dict[str, str]]:
             }
         )
     return jobs
+
+
+async def _run_squeue_remote(ssh: Any) -> list[dict[str, str]]:
+    """Run squeue via SSH ControlMaster. Returns empty list on failure."""
+    try:
+        result = await ssh.run_remote(
+            "squeue --me --noheader --format='%i\t%j\t%N\t%T'",
+            timeout=60,
+        )
+    except Exception as exc:
+        logger.error("Remote squeue failed: %s", exc)
+        return []
+
+    if not result.ok:
+        logger.error("Remote squeue returned rc=%d: %s", result.returncode, result.stderr)
+        return []
+    return _parse_squeue_output(result.stdout)
+
+
+async def _run_squeue(ssh: Any | None = None) -> list[dict[str, str]]:
+    """Return running Slurm jobs, trying local first then remote SSH."""
+    # Try local first
+    local_result = _run_squeue_local()
+    if local_result:
+        return local_result
+
+    # Fall back to SSH
+    if ssh is not None:
+        return await _run_squeue_remote(ssh)
+
+    logger.error("squeue not available locally and no SSH connection")
+    return []
 
 
 def _filter_rivault_jobs(jobs: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -174,8 +253,48 @@ def _find_job_info_file(job_id: str) -> Path | None:
     return None
 
 
+async def _read_job_info_remote(ssh: Any, job_id: str) -> dict[str, str] | None:
+    """Read job info file from remote login node via SSH.
+
+    Uses the same path as :class:`~umrs.orchestrator.remote_slurm_backend.RemoteSlurmBackend`:
+    ``{slurm_job_info_dir}/rivault-job-{job_id}.info`` where
+    ``slurm_job_info_dir`` comes from site config's ``extra`` section.
+    """
+    try:
+        from umrs.orchestrator.site_config import load_site_config
+
+        site = load_site_config()
+        info_dir = site.extra.get("slurm_job_info_dir", "/tmp") if site.extra else "/tmp"
+    except Exception:
+        info_dir = "/tmp"
+
+    info_path = f"{info_dir}/rivault-job-{job_id}.info"
+    try:
+        content = await ssh.read_remote_file(info_path)
+        if not content or not content.strip():
+            logger.debug("  → empty or missing remote job info: %s", info_path)
+            return None
+
+        info: dict[str, str] = {}
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                info[key.strip()] = value.strip()
+        if info:
+            logger.info("  → read job info from remote: %s", info_path)
+            return info
+    except Exception as exc:
+        logger.debug("  → remote read failed for %s: %s", info_path, exc)
+
+    logger.warning("  → could not read job info file remotely for job %s", job_id)
+    return None
+
+
 def _parse_job_info(info_path: Path) -> dict[str, str]:
-    """Parse a job info file into a dict of key=value pairs."""
+    """Parse a local job info file into a dict of key=value pairs."""
     info: dict[str, str] = {}
     try:
         text = info_path.read_text()
@@ -228,12 +347,17 @@ async def _reconcile(
     # Get or create the registry
     registry = EndpointRegistry(backend=backend)
 
+    # Set up SSH if needed (for remote squeue + remote job info reads)
+    ssh: Any = None
+    if not squeue_file:
+        ssh = await _get_ssh_manager()
+
     # Scan Slurm for running mini-rivault jobs
     if squeue_file:
         logger.info("Reading squeue output from %s", squeue_file)
         all_jobs = _parse_squeue_output(Path(squeue_file).read_text())
     else:
-        all_jobs = _run_squeue()
+        all_jobs = await _run_squeue(ssh)
     rivault_jobs = _filter_rivault_jobs(all_jobs)
 
     logger.info("Found %d mini-rivault job(s) in squeue", len(rivault_jobs))
@@ -255,19 +379,22 @@ async def _reconcile(
             logger.info("  → already registered (status=%s), skipping", existing.status.value)
             continue
 
-        # Collect endpoint information — prefer job_info_map, then job info files
+        # Collect endpoint information — prefer job_info_map, then local files, then remote
         info: dict[str, str] = {}
         if job_id in job_info_map:
             info = job_info_map[job_id]
             logger.info("  → using info from --job-info-json")
         else:
             info_path = _find_job_info_file(job_id)
-            if info_path is None:
-                logger.warning("  → no job info file found for job %s, skipping", job_id)
-                continue
-            info = _parse_job_info(info_path)
+            if info_path is not None:
+                info = _parse_job_info(info_path)
+            elif ssh is not None:
+                remote_info = await _read_job_info_remote(ssh, job_id)
+                if remote_info:
+                    info = remote_info
+
             if not info:
-                logger.warning("  → empty or invalid job info file: %s", info_path)
+                logger.warning("  → no job info file found for job %s, skipping", job_id)
                 continue
 
         # Extract endpoint information
@@ -276,7 +403,7 @@ async def _reconcile(
         try:
             port = int(port_str)
         except ValueError:
-            logger.warning("  → invalid port '%s' in %s, skipping", port_str, info_path)
+            logger.warning("  → invalid port '%s' for job %s, skipping", port_str, job_id)
             continue
 
         model = info.get("model") or info.get("RIVAULT_MODEL_PATH", "")
