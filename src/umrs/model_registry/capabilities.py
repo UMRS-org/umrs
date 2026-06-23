@@ -93,6 +93,58 @@ FAMILY_REQUIRES_MM_ENCODER_TP_DATA: set[str] = {
     "kimi_k2",  # MoonViT data-parallel for multi-node (currently single-node K2.7)
 }
 
+# Per-model reasoning effort (catalog name patterns, most specific first).
+# Used at registration to populate reasoning_effort_* on each catalog entry.
+#
+# Kimi K2.6: binary thinking (Kimi API thinking.type enabled|disabled; vLLM
+# reasoning_effort none|high). K2.7 Code: thinking always on — no entry here.
+MODEL_REASONING_EFFORT: list[tuple[str, list[str], str]] = [
+    ("kimi", ["none", "high"], "high"),
+    ("glm-5.2", ["none", "high", "max"], "max"),
+    ("glm-5.1", ["none", "low", "medium", "high"], "medium"),
+    ("glm", ["none", "low", "medium", "high"], "medium"),
+    ("gpt-oss-swallow", ["medium"], "medium"),
+    ("llm-jp-4", ["low", "medium", "high"], "medium"),
+    ("deepseek-v4", ["none", "high", "max"], "high"),
+    ("gemma-4", ["none", "low", "medium", "high"], "medium"),
+    ("gemma_4", ["none", "low", "medium", "high"], "medium"),
+    ("gemma 4", ["none", "low", "medium", "high"], "medium"),
+    ("gemma4", ["none", "low", "medium", "high"], "medium"),
+]
+
+
+def derive_reasoning_effort(model_name: str) -> tuple[list[str], str] | None:
+    """Match catalog model name against MODEL_REASONING_EFFORT (first win)."""
+    name_lc = (model_name or "").lower()
+    if not name_lc:
+        return None
+    # K2.7 Code: thinking always on; no user-facing effort control.
+    if "kimi-k2.7" in name_lc or "kimi_k2.7" in name_lc:
+        return None
+    for pattern, levels, default in MODEL_REASONING_EFFORT:
+        if pattern in name_lc:
+            return (list(levels), default)
+    return None
+
+
+def resolve_capabilities(
+    model_name: str,
+    caps: "ModelCapabilities | None" = None,
+) -> "ModelCapabilities":
+    """Merge explicit capabilities with derived reasoning-effort defaults."""
+    caps = caps or ModelCapabilities()
+    if caps.reasoning_effort_levels is None or caps.reasoning_effort_default is None:
+        derived = derive_reasoning_effort(model_name)
+        if derived is not None:
+            levels, default = derived
+            if caps.reasoning_effort_levels is None:
+                caps.reasoning_effort_levels = levels
+            if caps.reasoning_effort_default is None:
+                caps.reasoning_effort_default = default
+            if not caps.supports_reasoning and levels:
+                caps.supports_reasoning = True
+    return caps
+
 
 @dataclass
 class ModelCapabilities:
@@ -124,6 +176,10 @@ class ModelCapabilities:
     max_output_tokens: int | None = None
     max_position_embeddings: int | None = None
 
+    # Per-model thinking effort (picker + API wire tokens)
+    reasoning_effort_levels: list[str] | None = None
+    reasoning_effort_default: str | None = None
+
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
             "supports_tool_calling": self.supports_tool_calling,
@@ -142,6 +198,10 @@ class ModelCapabilities:
             d["max_output_tokens"] = self.max_output_tokens
         if self.max_position_embeddings is not None:
             d["max_position_embeddings"] = self.max_position_embeddings
+        if self.reasoning_effort_levels is not None:
+            d["reasoning_effort_levels"] = self.reasoning_effort_levels
+        if self.reasoning_effort_default is not None:
+            d["reasoning_effort_default"] = self.reasoning_effort_default
         return d
 
     @classmethod
@@ -161,6 +221,8 @@ class ModelCapabilities:
             model_family=data.get("model_family"),
             max_output_tokens=data.get("max_output_tokens"),
             max_position_embeddings=data.get("max_position_embeddings"),
+            reasoning_effort_levels=data.get("reasoning_effort_levels"),
+            reasoning_effort_default=data.get("reasoning_effort_default"),
         )
 
     @classmethod
