@@ -1,0 +1,75 @@
+# Pool roster: GLM-5.2 throughput canaries (subset of pool-ai4s.yaml)
+# Usage: r4 up --pool-file pool-glm52-canary.yaml
+#
+# Four GLM-5.2 variants exercising different parallel strategies /
+# quantization / CUDA-graph combinations. All run on the ai4s-front
+# gateway (R4_GATEWAY_URL=http://localhost:8002).
+#
+# Topology summary:
+#   glm-5.2-graphs     — 4n TP=4 × PP=4, BF16, decode-only CUDA graphs
+#   glm-5.2-tep-bf16   — 4n TEP (TP=16 PP=1 EP), BF16 ~1.5 TB needs 16 GPUs
+#   glm-5.2-tep        — 2n TEP + FP8 + FlashInfer + graphs (~753 GiB)
+#   glm-5.2-tep-4n     — 4n TEP + FP8 + FlashInfer + graphs (KV headroom)
+
+pool: glm52-canary
+defaults:
+  tier: system            # system tier → shared, visible to all users
+  ttl_sec: 0              # 0 = never expires; 4n4gpu-p has unlimited walltime
+  timeout: 86400          # HTTP request timeout (seconds) for `pool up`
+
+endpoints:
+  - name: glm-5.2-graphs
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
+
+  - name: glm-5.2-tep-bf16
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4          # BF16 ~1.5 TB does not fit 2n4gpu (8× B200); TEP on full 16-GPU world
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    parallel_strategy: tep
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  - name: glm-5.2-tep
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 2          # GB200 recipe: FP8 ~753 GiB fits 8× B200; native 1M KV must validate
+    partition: 2n4gpu
+    max_model_len: 1048576
+    parallel_strategy: tep
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_QUANTIZATION: fp8
+      VLLM_FORCE_FLASHINFER_MOE: "1"
+      VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  - name: glm-5.2-tep-4n
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4          # FP8 + 1M with maximum KV headroom (same GPU count as prod, no PP bubbles)
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    parallel_strategy: tep
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_QUANTIZATION: fp8
+      VLLM_FORCE_FLASHINFER_MOE: "1"
+      VLLM_CUDAGRAPH_MODE: FULL_DECODE_ONLY
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
