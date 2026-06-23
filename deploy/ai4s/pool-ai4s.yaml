@@ -166,7 +166,11 @@ endpoints:
   # CANARY: Re-enable CUDA graphs for GLM-5.2. The tools "!!!!" garbage was
   # fixed by VLLM_USE_FLASHINFER_MOE_FP16=0 (Triton MoE kernel), so CUDA graphs
   # may now be safe. If this serves correctly, decode throughput improves
-  # 30-50%. Validate with tool-call prompts before promoting to v2 baseline.
+  # 30-50%.
+  #
+  # RESULT (2026-06-23): FAILED. CUDA graphs still produce NaN/"!!!" on
+  # tool-call prompts even with Triton MoE. Eager mode required for GLM-5.2.
+  # Keep commented-out until a vLLM SIF build confirms NaN-free graph capture.
   # Set VLLM_ENFORCE_EAGER=0 to re-enable CUDA graphs.
 
   - name: glm-5.2-v2-graphs

@@ -3288,7 +3288,7 @@ def _http_model_register(
     *,
     name: str,
     path: str,
-    model_type: str = "embedding",
+    model_type: str = "llm",
     scope: str = "user",
     project_id: str | None = None,
     description: str | None = None,
