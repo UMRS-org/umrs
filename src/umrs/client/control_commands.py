@@ -82,7 +82,7 @@ def configure_model_register_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--type",
         choices=MODEL_TYPE_CHOICES,
-        default="embedding",
+        default="llm",
         dest="model_type",
         help="Model type",
     )
