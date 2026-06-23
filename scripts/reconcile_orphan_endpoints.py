@@ -45,8 +45,19 @@ logger = logging.getLogger("reconcile_orphans")
 
 # ── Slurm interaction ──────────────────────────────────────────────
 
-#: Regex to identify mini-rivault jobs from squeue output
-_MINI_RIVAULT_RE = re.compile(r"mini.rivault|rivault", re.IGNORECASE)
+#: Delimiter used in ``squeue --format``.  A pipe survives SSH/shell quoting
+#: cleanly (unlike a literal tab, which gets collapsed to the letter ``t`` when
+#: the command is re-quoted by the SSH ControlMaster) and never appears in
+#: Slurm job ids, names, node lists, or states.
+_SQUEUE_DELIM = "|"
+_SQUEUE_FORMAT = f"%i{_SQUEUE_DELIM}%j{_SQUEUE_DELIM}%N{_SQUEUE_DELIM}%T"
+
+#: Regex to identify mini-rivault jobs from the squeue job name.  The sbatch
+#: script names serve jobs ``serve.slurm`` (see orchestrator/slurm_script.py),
+#: so match that in addition to the legacy ``mini-rivault``/``rivault`` names.
+#: Non-rivault jobs that slip through are filtered out downstream because no
+#: ``rivault-job-<id>.info`` file exists for them.
+_MINI_RIVAULT_RE = re.compile(r"mini.rivault|rivault|serve", re.IGNORECASE)
 
 #: Global SSH manager cached after first successful connection.
 _ssh_manager: Any | None = None
@@ -103,7 +114,7 @@ def _run_squeue_local() -> list[dict[str, str]]:
                 "squeue",
                 "--me",
                 "--noheader",
-                "--format=%i\t%j\t%N\t%T",
+                f"--format={_SQUEUE_FORMAT}",
             ],
             capture_output=True,
             text=True,
@@ -117,36 +128,24 @@ def _run_squeue_local() -> list[dict[str, str]]:
         logger.error("squeue failed: %s", exc.stderr or exc)
         return []
 
-    jobs: list[dict[str, str]] = []
-    for line in result.stdout.strip().splitlines():
-        parts = line.split("\t")
-        if len(parts) < 4:
-            continue
-        job_id, name, node, state = parts[0], parts[1], parts[2], parts[3]
-        base_id = job_id.split("_")[0]
-        jobs.append(
-            {
-                "job_id": base_id,
-                "full_job_id": job_id,
-                "name": name,
-                "node": node,
-                "state": state,
-            }
-        )
-    return jobs
+    return _parse_squeue_output(result.stdout)
 
 
 def _parse_squeue_output(text: str) -> list[dict[str, str]]:
-    """Parse squeue output (same format as ``squeue --format='%i\\t%j\\t%N\\t%T'``).
+    """Parse squeue output (``squeue --format='%i|%j|%N|%T'``).
 
     Each dict has keys: ``job_id``, ``name``, ``node``, ``state``.
     """
     jobs: list[dict[str, str]] = []
     for line in text.strip().splitlines():
-        parts = line.split("\t")
+        parts = line.split(_SQUEUE_DELIM)
         if len(parts) < 4:
             continue
         job_id, name, node, state = parts[0], parts[1], parts[2], parts[3]
+        # NodeList (%N) may contain commas/brackets for multi-node jobs; the
+        # authoritative serving host comes from the job info file, so keep only
+        # the first node as a fallback hint.
+        node = node.split(",")[0]
         base_id = job_id.split("_")[0]
         jobs.append(
             {
@@ -164,7 +163,7 @@ async def _run_squeue_remote(ssh: Any) -> list[dict[str, str]]:
     """Run squeue via SSH ControlMaster. Returns empty list on failure."""
     try:
         result = await ssh.run_remote(
-            "squeue --me --noheader --format='%i\t%j\t%N\t%T'",
+            f"squeue --me --noheader --format='{_SQUEUE_FORMAT}'",
             timeout=60,
         )
     except Exception as exc:
@@ -360,7 +359,11 @@ async def _reconcile(
         all_jobs = await _run_squeue(ssh)
     rivault_jobs = _filter_rivault_jobs(all_jobs)
 
-    logger.info("Found %d mini-rivault job(s) in squeue", len(rivault_jobs))
+    logger.info(
+        "Found %d Slurm job(s), %d candidate mini-rivault job(s) in squeue",
+        len(all_jobs),
+        len(rivault_jobs),
+    )
 
     # Load pre-collected job info map if provided
     job_info_map: dict[str, dict[str, str]] = {}
@@ -500,8 +503,8 @@ def main() -> int:
         type=str,
         default=None,
         help=(
-            "Path to pre-collected squeue output (tab-separated, same format as "
-            "'squeue --format=\"%%i\\t%%j\\t%%N\\t%%T\"'). "
+            "Path to pre-collected squeue output (pipe-separated, same format as "
+            "'squeue --format=\"%%i|%%j|%%N|%%T\"'). "
             "Use when squeue is not available locally."
         ),
     )
