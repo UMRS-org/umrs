@@ -37,3 +37,4 @@ endpoints:
       VLLM_TOKENIZER: "zai-org/GLM-5.2"
       VLLM_GPU_MEM_UTIL: "0.90"
       VLLM_MAX_NUM_SEQS: "4"
+      RCCS_SKIP_CDI: "1"
