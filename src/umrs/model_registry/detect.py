@@ -116,7 +116,10 @@ def _normalize_family(model_type: str) -> str:
     return lower
 
 
-def detect_capabilities(model_path: str) -> ModelCapabilities | None:
+def detect_capabilities(
+    model_path: str,
+    model_name: str | None = None,
+) -> ModelCapabilities | None:
     """
     Detect model capabilities from files in model_path.
 
@@ -191,7 +194,7 @@ def detect_capabilities(model_path: str) -> ModelCapabilities | None:
         max_position_embeddings,
     )
 
-    return ModelCapabilities(
+    caps = ModelCapabilities(
         supports_tool_calling=supports_tool_calling,
         supports_vision=supports_vision,
         supports_structured_output=supports_structured_output,
@@ -199,3 +202,8 @@ def detect_capabilities(model_path: str) -> ModelCapabilities | None:
         max_position_embeddings=max_position_embeddings,
         model_family=model_family,
     )
+    if model_name:
+        from umrs.model_registry.capabilities import resolve_capabilities
+
+        return resolve_capabilities(model_name, caps)
+    return caps
