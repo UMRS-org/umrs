@@ -427,8 +427,15 @@ fi
 # and is NOT implicated in this bug.
 case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
     *glm*)
-        echo "[serve] GLM: forcing Triton MoE (VLLM_USE_FLASHINFER_MOE_FP16=0) to avoid FlashInfer-TRTLLM MoE NaN on tool prompts"
-        SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_FP16=0 )
+        if [[ "${VLLM_FORCE_FLASHINFER_MOE:-0}" == "1" ]]; then
+            # Canary override: FP8/FP4 FlashInfer MoE on Blackwell (upstream GB200 recipe).
+            # Only enable on FP8-weight canaries; BF16 FlashInfer-TRTLLM MoE NaNs on tool prompts.
+            echo "[serve] GLM: FlashInfer MoE enabled (VLLM_FORCE_FLASHINFER_MOE=1, MXFP4/MXFP8)"
+            SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1 )
+        else
+            echo "[serve] GLM: forcing Triton MoE (VLLM_USE_FLASHINFER_MOE_FP16=0) to avoid FlashInfer-TRTLLM MoE NaN on tool prompts"
+            SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_FP16=0 )
+        fi
         ;;
     *llm-jp*)
         # llm-jp-4-32b-a3b: the MoE expert intermediate_size is 64, which is not
@@ -576,6 +583,12 @@ if [[ -n "${VLLM_MAX_NUM_BATCHED_TOKENS}" ]]; then
     VLLM_ARGS+=( --max-num-batched-tokens "${VLLM_MAX_NUM_BATCHED_TOKENS}" )
 fi
 
+# Weight quantization (e.g. fp8). Opt-in via VLLM_QUANTIZATION from pool/registry.
+VLLM_QUANTIZATION="${VLLM_QUANTIZATION:-}"
+if [[ -n "${VLLM_QUANTIZATION}" ]]; then
+    VLLM_ARGS+=( --quantization "${VLLM_QUANTIZATION}" )
+fi
+
 # CUDA graph capture: ON by default for fast decode, but auto-disabled above
 # 262144 context. Two reasons converge at the very-large-context (DeepSeek-V4 1M)
 # tier:
@@ -595,8 +608,17 @@ fi
 # VLLM_ENFORCE_EAGER=1 to force eager for any model, or VLLM_ENFORCE_EAGER=0 to
 # opt a model back into graph capture. The full max-model-len window is unchanged
 # either way.
+# CUDA graph mode: opt-in decode-only graphs for throughput canaries.
+# VLLM_CUDAGRAPH_MODE=FULL_DECODE_ONLY skips --enforce-eager unless
+# VLLM_ENFORCE_EAGER=1 is explicitly set (wins over cudagraph).
+VLLM_CUDAGRAPH_MODE="${VLLM_CUDAGRAPH_MODE:-}"
 VLLM_ENFORCE_EAGER="${VLLM_ENFORCE_EAGER:-}"
-if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
+if [[ -n "${VLLM_CUDAGRAPH_MODE}" && "${VLLM_ENFORCE_EAGER}" != "1" ]]; then
+    echo "[serve] CUDA graphs: cudagraph_mode=${VLLM_CUDAGRAPH_MODE}"
+    VLLM_ARGS+=( --compilation-config "{\"cudagraph_mode\":\"${VLLM_CUDAGRAPH_MODE}\"}" )
+elif [[ "${VLLM_ENFORCE_EAGER}" == "1" ]]; then
+    VLLM_ARGS+=( --enforce-eager )
+elif [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
     case "${VLLM_MAX_MODEL_LEN}" in
         ''|*[!0-9]*) : ;;  # non-numeric (native/full/empty): leave graphs on
         *) if [[ "${VLLM_MAX_MODEL_LEN}" -gt 262144 ]]; then
@@ -609,8 +631,8 @@ if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
     # for the CUDA-graph capture path on this nightly vLLM + MoE build, since the
     # tools/agent prompt shape exercises code paths plain chat never reaches. All
     # tool-calling verification was performed with eager mode on. Set
-    # VLLM_ENFORCE_EAGER=0 to re-enable CUDA graphs once a SIF build is confirmed
-    # NaN-free on the tools path (would improve decode throughput).
+    # VLLM_ENFORCE_EAGER=0 or VLLM_CUDAGRAPH_MODE=FULL_DECODE_ONLY to re-enable
+    # CUDA graphs once a SIF build is confirmed NaN-free on the tools path.
     #
     # DeepSeek-V4: CUDA-graph capture produces NaN/garbage logits for DeepSeek-V4
     # on this nightly vLLM build regardless of context length (observed as
@@ -623,9 +645,9 @@ if [[ -z "${VLLM_ENFORCE_EAGER}" ]]; then
             *deepseek*v4*|*deepseek-v4*) VLLM_ENFORCE_EAGER=1 ;;
         esac
     fi
-fi
-if [[ "${VLLM_ENFORCE_EAGER}" == "1" ]]; then
-    VLLM_ARGS+=( --enforce-eager )
+    if [[ "${VLLM_ENFORCE_EAGER}" == "1" ]]; then
+        VLLM_ARGS+=( --enforce-eager )
+    fi
 fi
 
 # Apply a model-specific KV-cache dtype when required (e.g. DeepSeek-V4 fp8).
