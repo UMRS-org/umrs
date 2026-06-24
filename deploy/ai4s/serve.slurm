@@ -425,6 +425,21 @@ fi
 # tool_calls now succeed with no "!" output. The attention backend is left at its
 # default (FLASHINFER_MLA_SPARSE, naturally selected at 16 heads/rank under tp4)
 # and is NOT implicated in this bug.
+# GLM MoE backend selection: force Triton MoE kernel.
+#
+# vLLM 0.23.1rc1 auto-selects FlashInfer TRTLLM Unquantized MoE for GLM, but
+# that backend produces NaN logits for GLM expert routing on tool-bearing
+# prompts (observed as the "!!!" wall). The numerically robust Triton MoE
+# kernel avoids this.
+#
+# NOTE: The old env var VLLM_USE_FLASHINFER_MOE_FP16=0 is silently IGNORED by
+# vLLM 0.23.1rc1 (it logs "Unknown vLLM environment variable detected"). The
+# correct API is the --moe-backend CLI flag, available since vLLM 0.23.x.
+#
+# IMPORTANT: VLLM_ARGS is initialized AFTER this block, so we must NOT append
+# to VLLM_ARGS here (it would be overwritten). Instead, we set a variable
+# (VLLM_MOE_BACKEND) and apply it after VLLM_ARGS=(...) is initialized.
+VLLM_MOE_BACKEND=""
 case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
     *glm*)
         if [[ "${VLLM_FORCE_FLASHINFER_MOE:-0}" == "1" ]]; then
@@ -433,8 +448,8 @@ case "$(printf '%s' "${MODEL_NAME}" | tr '[:upper:]' '[:lower:]')" in
             echo "[serve] GLM: FlashInfer MoE enabled (VLLM_FORCE_FLASHINFER_MOE=1, MXFP4/MXFP8)"
             SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_MXFP4_MXFP8=1 )
         else
-            echo "[serve] GLM: forcing Triton MoE (VLLM_USE_FLASHINFER_MOE_FP16=0) to avoid FlashInfer-TRTLLM MoE NaN on tool prompts"
-            SING_COMMON+=( --env VLLM_USE_FLASHINFER_MOE_FP16=0 )
+            echo "[serve] GLM: forcing Triton MoE (--moe-backend triton) to avoid FlashInfer-TRTLLM MoE NaN on tool prompts"
+            VLLM_MOE_BACKEND="triton"
         fi
         ;;
     *llm-jp*)
@@ -475,6 +490,11 @@ VLLM_ARGS=(
 # tool-call training, e.g. GPT-OSS-Swallow). When not empty, add the parser flag.
 if [[ -n "${VLLM_TOOL_CALL_PARSER}" ]]; then
     VLLM_ARGS+=( --tool-call-parser "${VLLM_TOOL_CALL_PARSER}" )
+fi
+# Apply MoE backend selection (set in the GLM case block above).
+# This must come AFTER VLLM_ARGS=(...) initialization to avoid being overwritten.
+if [[ -n "${VLLM_MOE_BACKEND}" ]]; then
+    VLLM_ARGS+=( --moe-backend "${VLLM_MOE_BACKEND}" )
 fi
 # Auto-tool-choice: only enable when a tool-call parser is configured.
 # vLLM validates --enable-auto-tool-choice requires --tool-call-parser.
@@ -559,6 +579,14 @@ fi
 # skip prefill over the cached prefix -> much lower time-to-first-token. This is
 # also vLLM V1's default; keep it explicit so the behaviour is pinned across SIF
 # upgrades. Set VLLM_ENABLE_PREFIX_CACHING=0 to disable.
+#
+# GLM-5.x (glm_moe_dsa): prefix caching is now SAFE because the root cause of
+# the "!!!" wall (FlashInfer TRTLLM Unquantized MoE producing NaN logits for GLM
+# expert routing) is fixed by forcing --moe-backend triton above. Previously,
+# prefix caching was disabled for GLM to prevent cross-session NaN KV cache
+# contamination, but now that the Triton MoE kernel is used instead of
+# FlashInfer TRTLLM, the NaN logits no longer occur and prefix caching can be
+# enabled for GLM as well.
 if [[ "${VLLM_ENABLE_PREFIX_CACHING:-1}" == "1" ]]; then
     VLLM_ARGS+=( --enable-prefix-caching )
 fi
