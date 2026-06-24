@@ -1,0 +1,61 @@
+# Pool roster: GLM-5.2-FP8 — standard + PD disaggregated variants
+# Usage: R4_GATEWAY_URL=http://localhost:8002 r4 pool up pool-glm52-fp8.yaml
+#
+# glm-5.2-fp8        — Standard FP8, TP=4 PP=2, 2 nodes (current production)
+# glm-5.2-fp8-pd     — Prefill/Decode disaggregated FP8, 4 nodes (2P+2D, NIXL)
+#
+# Both: FP8 weights (~753 GiB), eager mode, Triton MoE, prefix caching ON.
+# PD variant uses serve-pd.slurm; standard uses serve.slurm.
+# Based on: recipes.vllm.ai/zai-org/GLM-5.2 (standard + pd_cluster)
+
+pool: glm52-fp8
+defaults:
+  tier: system
+  ttl_sec: 0
+  timeout: 86400
+
+endpoints:
+  - name: glm-5.2-fp8
+    model: GLM-5.2-FP8
+    tier: system
+    gpu_count: 4           # 4 GPUs per node
+    node_count: 2          # 2 nodes × 4 GPU = 8× B200 (TP=4, PP=2)
+    partition: 2n4gpu      # 2-node partition (NVLink within, IB between)
+    max_model_len: 1048576 # 1M context (FP8 KV cache fits)
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_KV_CACHE_DTYPE: fp8           # FP8 KV cache (halves KV memory)
+      VLLM_MAX_NUM_SEQS: "32"            # more concurrency with FP8 KV
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"  # faster prefill
+
+  # ── GLM-5.2-FP8 Prefill/Decode Disaggregated (2026-06-24) ────────────────
+  # PD topology: 4 nodes total, 2 prefill + 2 decode (TP=8 each pool, PP=1).
+  # NIXL KV transfer via InfiniBand side channel (nixl_packages bind-mounted).
+  # Decode worker exposes HTTP (EXTERNAL_PORT); prefill is internal.
+  # Requires serve-pd.slurm (not serve.slurm).
+  #
+  # Prerequisites:
+  #   - /work/hps0/home/ea0022/images/nixl_packages/ installed (cp312, nixl 1.3.0)
+  #   - 4 nodes (4n4gpu-p), not 2n4gpu
+  #
+  # Benefits over standard:
+  #   - Prefill (compute-heavy) + Decode (memory-heavy) on dedicated nodes
+  #   - No pipeline bubbles (TP=8 PP=1 per pool)
+  #   - Better throughput under high concurrency
+
+  - name: glm-5.2-fp8-pd
+    model: GLM-5.2-FP8
+    tier: system
+    gpu_count: 4           # 4 GPUs per node
+    node_count: 4          # 4 nodes: 2 prefill + 2 decode
+    partition: 4n4gpu-p    # unlimited walltime
+    max_model_len: 1048576 # 1M context
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_KV_CACHE_DTYPE: fp8
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      NIXL_PACKAGES_HOST: /work/hps0/home/ea0022/images/nixl_packages
+      # serve-pd.slurm selected by orchestrator via SLURM_WRAPPER_SCRIPT env var.
+      # remote_slurm_backend._get_wrapper_script() checks this key first.
+      SLURM_WRAPPER_SCRIPT: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-pd.slurm

@@ -214,8 +214,16 @@ class RemoteSlurmBackend(SlurmBackend):
             return await self._get_ssh()
         return mgr
 
-    def _get_wrapper_script(self) -> str | None:
-        """Get the remote wrapper script path from site config extra."""
+    def _get_wrapper_script(self, env: dict | None = None) -> str | None:
+        """Get the remote wrapper script path.
+
+        Checks (in order):
+        1. env["SLURM_WRAPPER_SCRIPT"] — per-job override from pool env_vars
+        2. site.extra["slurm_wrapper_script"] — site-wide default
+        """
+        # Per-job override via env_vars (e.g. from pool YAML).
+        if env and env.get("SLURM_WRAPPER_SCRIPT"):
+            return str(env["SLURM_WRAPPER_SCRIPT"])
         extra = getattr(self.config, "extra", {}) or {}
         if not extra.get("slurm_wrapper_script"):
             try:
@@ -268,7 +276,9 @@ class RemoteSlurmBackend(SlurmBackend):
         # Determine which SSH connection to use for submission
         requesting_user = kwargs.pop("requesting_user", None)
 
-        wrapper_script = self._get_wrapper_script()
+    # Peek at the env dict before popping — needed for SLURM_WRAPPER_SCRIPT check.
+    _peek_env = kwargs.get("env") or {}
+    wrapper_script = self._get_wrapper_script(env=_peek_env)
         if wrapper_script:
             return await self._submit_wrapper_job(
                 model, wrapper_script, requesting_user=requesting_user, **kwargs
