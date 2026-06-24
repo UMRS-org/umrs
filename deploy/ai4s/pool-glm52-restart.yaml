@@ -1,0 +1,31 @@
+pool: glm52-restart
+defaults:
+  tier: system
+  ttl_sec: 0
+  timeout: 86400
+
+endpoints:
+  - name: glm-5.2-v2
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
+  - name: glm-5.2-v2-graphs
+    model: GLM-5.2
+    tier: system
+    gpu_count: 4
+    node_count: 4
+    partition: 4n4gpu-p
+    max_model_len: 1048576
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_MAX_NUM_SEQS: "16"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+      VLLM_ENFORCE_EAGER: "0"
