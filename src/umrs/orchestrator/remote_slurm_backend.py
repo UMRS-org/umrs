@@ -276,9 +276,9 @@ class RemoteSlurmBackend(SlurmBackend):
         # Determine which SSH connection to use for submission
         requesting_user = kwargs.pop("requesting_user", None)
 
-    # Peek at the env dict before popping — needed for SLURM_WRAPPER_SCRIPT check.
-    _peek_env = kwargs.get("env") or {}
-    wrapper_script = self._get_wrapper_script(env=_peek_env)
+        # Peek at the env dict before popping — needed for SLURM_WRAPPER_SCRIPT check.
+        _peek_env = kwargs.get("env") or {}
+        wrapper_script = self._get_wrapper_script(env=_peek_env)
         if wrapper_script:
             return await self._submit_wrapper_job(
                 model, wrapper_script, requesting_user=requesting_user, **kwargs
