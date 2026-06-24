@@ -171,6 +171,31 @@ class PartitionProfile:
 
 
 @dataclass
+class StepExecutorConfig:
+    """Workflow step execution backend.
+
+    When ``kind="slurm"`` the server submits each workflow step as a
+    Slurm job to a GPU compute node (``SlurmStepExecutor``).  This is
+    the correct mode for RCCS / AI4S deployments where UMRS runs on a
+    login node and steps must execute on compute nodes with GPUs.
+
+    When ``kind="inproc"`` (default) steps run in the UMRS server
+    process — suitable for development or steps that do not need a
+    GPU.
+    """
+
+    kind: str = "inproc"  # inproc | slurm | podman | subprocess
+    partition: str = ""  # Slurm partition (e.g. "1n1gpu")
+    gpus: int = 1  # Number of GPUs to request
+    cpus: int = 8  # CPUs per task
+    memory: str = "32G"  # Memory per node
+    time_limit: str = "01:00:00"  # Time limit
+    account: str = ""  # Slurm account (optional)
+    image: str = ""  # Default container image for steps
+    gpu: bool = True  # Whether to attach GPU by default
+
+
+@dataclass
 class DatabaseConfig:
     """PostgreSQL connection settings."""
 
@@ -197,6 +222,7 @@ class SiteConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     vllm: VllmConfig = field(default_factory=VllmConfig)
+    step_executor: StepExecutorConfig = field(default_factory=StepExecutorConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     partition_profiles: dict[str, PartitionProfile] = field(default_factory=dict)
     extra: dict[str, Any] = field(default_factory=dict)
@@ -248,6 +274,7 @@ class SiteConfig:
             _storage_env(self.storage),
             _network_env(self.network),
             _vllm_env(self.vllm),
+            _step_executor_env(self.step_executor),
             _database_env(self.database),
         ):
             env.update(layer)
@@ -332,6 +359,27 @@ def _network_env(network: NetworkConfig) -> dict[str, str]:
         env["EGRESS_GUARD_PROXY_URL"] = network.egress_proxy_url
     if network.egress_no_proxy:
         env["RIVAULT_NO_PROXY"] = network.egress_no_proxy
+    return env
+
+
+def _step_executor_env(cfg: StepExecutorConfig) -> dict[str, str]:
+    """Export step-executor config as env vars consumed by
+    :func:`build_step_executor` and :class:`SlurmStepExecutor`.
+    """
+    env: dict[str, str] = {"UMRS_STEP_EXECUTOR": cfg.kind}
+    if cfg.image:
+        env["UMRS_STEP_IMAGE"] = cfg.image
+    if cfg.gpu:
+        env["UMRS_STEP_GPU"] = "1"
+    if cfg.kind == "slurm":
+        if cfg.partition:
+            env["UMRS_SLURM_PARTITION"] = cfg.partition
+        env["UMRS_SLURM_GPUS"] = str(cfg.gpus)
+        env["UMRS_SLURM_CPUS"] = str(cfg.cpus)
+        env["UMRS_SLURM_MEM"] = cfg.memory
+        env["UMRS_SLURM_TIME"] = cfg.time_limit
+        if cfg.account:
+            env["UMRS_SLURM_ACCOUNT"] = cfg.account
     return env
 
 
@@ -467,6 +515,7 @@ def _parse_raw(raw: dict[str, Any]) -> SiteConfig:
         storage=_dict_to_dataclass(StorageConfig, raw.get("storage", {})),
         network=_dict_to_dataclass(NetworkConfig, raw.get("network", {})),
         vllm=_dict_to_dataclass(VllmConfig, raw.get("vllm", {})),
+        step_executor=_dict_to_dataclass(StepExecutorConfig, raw.get("step_executor", {})),
         database=_dict_to_dataclass(DatabaseConfig, raw.get("database", {})),
         partition_profiles=profiles,
         extra=raw.get("extra", {}),

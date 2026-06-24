@@ -74,6 +74,22 @@ vllm:
   max_num_seqs: 4
   tensor_parallel_size: 1
 
+# Workflow step execution backend.
+# When kind="slurm" each workflow step is submitted as a Slurm job
+# to a GPU compute node (SlurmStepExecutor). This is the correct
+# mode for RCCS / AI4S deployments where UMRS runs on a login node
+# and steps must execute on compute nodes with GPUs.
+step_executor:
+  kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
+  partition: ng-dgx-m0,ng-dgx-m1,ng-dgx-m2,ng-dgx-m3  # GB10 Blackwell partitions
+  gpus: 0                                     # ng-dgx-m* partitions reject --gpus
+  cpus: 8                                     # 8 CPUs per step
+  memory: ""                                  # omit --mem; ng-dgx-m* partitions reject explicit memory requests
+  time_limit: "01:00:00"                      # 1 hour per step
+  account: cloud-users                        # Slurm account
+  image: ""                                   # No default image; use routing_hints.image
+  gpu: true                                   # Attach GPU by default
+
 database:
   host: localhost
   port: 5432
