@@ -1839,7 +1839,59 @@ def _handle_experience_command(args):
         return _handle_config_remove_experience(args)
     if args.experience_action == "recover":
         return _handle_experience_recover(args)
+    if args.experience_action == "list":
+        return _handle_experience_list(args)
     raise ValueError(f"Unknown experience action: {args.experience_action}")
+
+
+def _configure_experience_list_parser(parser):
+    parser.add_argument(
+        "-c", "--conf", default=None, help="User config JSON path to read"
+    )
+
+
+def _handle_experience_list(args):
+    """List experiences in the current user config JSON."""
+    import json as _json_mod
+
+    target = _resolve_target_user_config_path(args)
+
+    with open(target, encoding="utf-8") as f:
+        user_cfg = _json_mod.load(f)
+
+    experiences = user_cfg.get("experiences", [])
+
+    if args.output == "json":
+        print(
+            api_json(
+                message="Experiences listed",
+                experiences=experiences,
+                count=len(experiences),
+                target=str(target),
+                output_format=args.output,
+            )
+        )
+        return 0
+
+    if not experiences:
+        print(f"  {_dim('No experiences found in user config.')}")
+        print(f"  Config: {target}")
+        return 0
+
+    print(f"  {_green('✓')} {len(experiences)} experience(s) in {target}")
+    for xp in experiences:
+        name = xp.get("xp_name", "<unnamed>")
+        sql_user = xp.get("sql_username", "-")
+        modalities = xp.get("modalities", []) or []
+        mod_names = []
+        for m in modalities:
+            mname = m.get("modality_name") or m.get("modality") or "<unnamed>"
+            mod_names.append(mname)
+        mods_str = ", ".join(mod_names) if mod_names else _dim("(none)")
+        print(f"    {_bold(name)}")
+        print(f"      sql_username: {sql_user}")
+        print(f"      modalities ({len(modalities)}): {mods_str}")
+    return 0
 
 
 def _configure_experience_add_parser(parser):
@@ -6503,6 +6555,10 @@ def main():
         "remove", help="Remove experience(s) by xp_name from the current user config"
     )
     _configure_experience_remove_parser(erm_p)
+    el_p = experience_sub.add_parser(
+        "list", help="List experiences in the current user config"
+    )
+    _configure_experience_list_parser(el_p)
 
     if emit_completion_if_requested(parser, "umrs-client", "_UMRS_CLIENT_COMPLETE"):
         return 0
