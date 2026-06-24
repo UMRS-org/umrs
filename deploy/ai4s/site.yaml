@@ -82,6 +82,22 @@ vllm:
   max_num_seqs: 16                            # B200 has much more memory headroom
   tensor_parallel_size: 1                     # 1 GPU default; set 4 for multi-GPU
 
+# Workflow step execution backend.
+# When kind="slurm" each workflow step is submitted as a Slurm job
+# to a GPU compute node (SlurmStepExecutor). This is the correct
+# mode for RCCS / AI4S deployments where UMRS runs on a login node
+# and steps must execute on compute nodes with GPUs.
+step_executor:
+  kind: slurm                                 # Submit steps as Slurm jobs to GPU compute nodes
+  partition: 1n1gpu                           # GB200 NVL4 partition (1 node, 1 GPU)
+  gpus: 1                                     # 1 B200 GPU per step
+  cpus: 32                                    # 32 CPUs per step (GB200 has 144 cores)
+  memory: "1400G"                             # Near-full node RAM
+  time_limit: "01:00:00"                      # 1 hour per step
+  account: ea                                 # Slurm account (sacctmgr assoc = "ea")
+  image: ""                                   # No default image; use routing_hints.image
+  gpu: true                                   # Attach GPU by default
+
 database:
   host: localhost                             # Shared with umrs-front postgres
   port: 5432
