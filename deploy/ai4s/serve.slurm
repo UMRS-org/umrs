@@ -565,6 +565,18 @@ case "$(printf '%s' "${VLLM_MAX_MODEL_LEN}" | tr '[:upper:]' '[:lower:]')" in
     *) VLLM_ARGS+=( --max-model-len "${VLLM_MAX_MODEL_LEN}" ) ;;
 esac
 
+# Multimodal encoder TP mode (e.g. Kimi-K2.7-Code MoonViT).
+# The vLLM recipe for Kimi-K2.7-Code (recipes.vllm.ai/moonshotai/Kimi-K2.7-Code)
+# requires --mm-encoder-tp-mode data to run the small MoonViT vision encoder
+# data-parallel instead of tensor-parallel. Without this flag, the encoder
+# defaults to tensor-parallel mode, which can cause model initialization failures
+# or 400 errors from the API. The pool config sets VLLM_MM_ENCODER_TP_MODE=data
+# for Kimi-K2.7-Code; this block forwards it to vLLM as --mm-encoder-tp-mode.
+VLLM_MM_ENCODER_TP_MODE="${VLLM_MM_ENCODER_TP_MODE:-}"
+if [[ -n "${VLLM_MM_ENCODER_TP_MODE}" ]]; then
+    VLLM_ARGS+=( --mm-encoder-tp-mode "${VLLM_MM_ENCODER_TP_MODE}" )
+fi
+
 # Concurrency cap. More concurrent sequences raise aggregate throughput under
 # load at the cost of KV-cache pressure. The orchestrator forwards
 # VLLM_MAX_NUM_SEQS (site.yaml vllm.max_num_seqs); when unset, leave vLLM's own
