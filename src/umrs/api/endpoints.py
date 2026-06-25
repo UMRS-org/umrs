@@ -18,7 +18,8 @@ import logging
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, Field, model_validator
 
 from ..orchestrator.endpoint_registry import (
@@ -936,6 +937,31 @@ def get_project_id_optional(
     )
 
 
+def _get_project_id_for_internal_scraper(
+    authorization: str | None = Header(None),
+    x_user_id: str | None = Header(None),
+    x_verified_project_id: str | None = Header(None),
+    x_project_id: str | None = Header(None),
+) -> str | None:
+    """Return project_id if the caller provides one, otherwise None.
+
+    Used by internal observability scrapers that reach UMRS on the internal
+    network without JWTs.  Unlike ``get_project_id_optional`` this never
+    raises in strict mode; it simply treats an unauthenticated caller as a
+    cross-project internal scraper.
+    """
+    try:
+        return _resolve_authenticated_project_id(
+            authorization,
+            x_user_id,
+            x_verified_project_id,
+            x_project_id,
+            optional=True,
+        )
+    except HTTPException:
+        return None
+
+
 def _get_requesting_user(
     authorization: str | None = Header(None),
     x_user_id: str | None = Header(None),
@@ -1590,6 +1616,64 @@ async def mark_endpoint_used(
         )
 
     return EndpointResponse(**endpoint.to_dict())
+
+
+@router.get(
+    "/{job_id}/metrics",
+    summary="Proxy endpoint /metrics for Prometheus scraping",
+    description="""
+    Return the /metrics exposition output of a ready endpoint.
+    Prometheus uses this route as the scrape path for dynamic endpoint targets.
+    """,
+)
+async def proxy_endpoint_metrics(
+    job_id: str,
+    project_id: str | None = Depends(_get_project_id_for_internal_scraper),
+    registry: EndpointRegistry = Depends(get_registry),
+) -> Response:
+    """Proxy /metrics from the backing endpoint.
+
+    The endpoint registry already tracks host/port.  Prometheus cannot reach
+    the loopback-bound dynamic ports from its bridge network, so UMRS acts as
+    an internal proxy and returns the raw exposition text.
+    """
+    endpoint = registry.get_by_job_id(job_id)
+    if not endpoint:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Endpoint not found: {job_id}",
+        )
+    _forbid_if_project_mismatch(endpoint, project_id)
+
+    if endpoint.status not in {EndpointStatus.READY, EndpointStatus.DEGRADED}:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Endpoint {job_id} is {endpoint.status.value}",
+        )
+
+    target_url = f"http://{endpoint.host}:{endpoint.port}/metrics"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            upstream = await client.get(target_url)
+    except Exception as exc:  # noqa: BLE001 - best-effort proxy
+        logger.warning(
+            "Failed to fetch endpoint metrics from %s: %s", target_url, exc
+        )
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="Failed to fetch endpoint metrics",
+        ) from exc
+
+    if upstream.status_code != status.HTTP_200_OK:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Endpoint metrics returned {upstream.status_code}",
+        )
+
+    return Response(
+        content=upstream.content,
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @router.delete(
