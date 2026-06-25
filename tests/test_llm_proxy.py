@@ -412,6 +412,114 @@ def test_list_models_synthesizes_entry_when_endpoint_listing_fails():
     assert [m["id"] for m in response.json()["data"]] == ["Qwen/Qwen3-8B"]
 
 
+def test_list_models_variant_disambiguation():
+    """Two endpoints serving the same model but with different variants
+    should appear as separate entries in the model list."""
+    registry = EndpointRegistry()
+    # Endpoint 1: GLM-5.2-FP8 with variant "pd"
+    registry.register(
+        project_id="test-project",
+        model="glm-5.2-fp8",
+        job_id="job-pd",
+        host="compute-01",
+        port=11434,
+        backend="slurm",
+        variant="pd",
+        metadata={"served_model_name": "GLM-5.2-FP8"},
+    )
+    registry.mark_ready("job-pd")
+    # Endpoint 2: GLM-5.2-FP8 without variant (non-pd)
+    registry.register(
+        project_id="test-project",
+        model="glm-5.2-fp8",
+        job_id="job-nopd",
+        host="compute-02",
+        port=11434,
+        backend="slurm",
+        metadata={"served_model_name": "GLM-5.2-FP8"},
+    )
+    registry.mark_ready("job-nopd")
+    client = _create_client(registry)
+
+    # Both endpoints report the same served model name from LiteLLM
+    by_host = {
+        "compute-01": {"object": "list", "data": [{"id": "GLM-5.2-FP8", "object": "model"}]},
+        "compute-02": {"object": "list", "data": [{"id": "GLM-5.2-FP8", "object": "model"}]},
+    }
+
+    async def fake_get(self, url, **kwargs):
+        host = next(h for h in by_host if h in str(url))
+        return _mock_models_get(str(url), by_host[host])
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "get", fake_get):
+        response = client.get(
+            "/umrs/llm/v1/models",
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    ids = sorted(m["id"] for m in response.json()["data"])
+    # The variant endpoint gets "-pd" suffix, the non-variant stays as-is
+    assert ids == ["GLM-5.2-FP8", "GLM-5.2-FP8-pd"]
+
+
+def test_discovery_by_variant_suffixed_name():
+    """A chat request with a variant-suffixed model name (e.g. GLM-5.2-FP8-pd)
+    should be routed to the correct endpoint and the model name rewritten
+    to the upstream served name."""
+    registry = EndpointRegistry()
+    # Endpoint with variant "pd"
+    registry.register(
+        project_id="test-project",
+        model="glm-5.2-fp8",
+        job_id="job-pd",
+        host="compute-01",
+        port=11434,
+        backend="slurm",
+        variant="pd",
+        metadata={"served_model_name": "GLM-5.2-FP8"},
+    )
+    registry.mark_ready("job-pd")
+    # Endpoint without variant
+    registry.register(
+        project_id="test-project",
+        model="glm-5.2-fp8",
+        job_id="job-nopd",
+        host="compute-02",
+        port=11434,
+        backend="slurm",
+        metadata={"served_model_name": "GLM-5.2-FP8"},
+    )
+    registry.mark_ready("job-nopd")
+    client = _create_client(registry)
+
+    captured_body = {}
+
+    async def fake_request(self, method, url, **kwargs):
+        # Capture the body to verify model rewriting
+        content = kwargs.get("content", b"")
+        if isinstance(content, bytes):
+            captured_body["content"] = json.loads(content)
+        # Verify we're routing to the "pd" endpoint (compute-01)
+        assert "compute-01" in str(url), f"Expected compute-01, got {url}"
+        return _mock_litellm_response({"id": "chat-x", "choices": []})
+
+    import httpx
+
+    with patch.object(httpx.AsyncClient, "request", fake_request):
+        response = client.post(
+            "/umrs/llm/v1/chat/completions",
+            json={"model": "GLM-5.2-FP8-pd", "messages": [{"role": "user", "content": "Hi"}]},
+            headers={"x-user-id": "user-1", "x-project-id": "test-project"},
+        )
+
+    assert response.status_code == 200
+    # The model name should be rewritten to the upstream served name
+    assert captured_body["content"]["model"] == "GLM-5.2-FP8"
+
+
 def test_completions_endpoint():
     """Legacy completions endpoint should work."""
     registry = _make_registry_with_endpoint()
