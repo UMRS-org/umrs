@@ -99,6 +99,12 @@ def _recognized_model_names(endpoint: RegisteredEndpoint) -> set[str]:
     served = endpoint.metadata.get("served_model_name")
     if served:
         names.add(str(served))
+    # Include variant-suffixed names so the model rewriter can
+    # rewrite disambiguated ids (e.g. ``GLM-5.2-FP8-pd``) back to
+    # the upstream served model name.
+    if endpoint.variant:
+        for base in list(names):
+            names.add(f"{base}-{endpoint.variant}")
     return names
 
 
@@ -172,6 +178,26 @@ def _discover_endpoint(
         endpoint = registry.select_endpoint(
             project_id, model, strategy="least_connections"
         )
+
+    if not endpoint:
+        # Fallback: match variant-suffixed model names from the picker.
+        # The model picker constructs ids like ``GLM-5.2-FP8-pd`` by
+        # suffixing the served model name with the endpoint's variant.
+        # We reverse this: find an endpoint whose variant-suffixed name
+        # matches the requested model.
+        all_eps = registry.list_all(
+            project_id=project_id,
+            status_filter=[EndpointStatus.READY, EndpointStatus.DEGRADED],
+        )
+        for ep in all_eps:
+            served = ep.metadata.get("served_model_name") or _resolve_served_model_name(
+                ep.model
+            )
+            if ep.variant:
+                variant_id = f"{served}-{ep.variant}"
+                if variant_id == model:
+                    endpoint = ep
+                    break
 
     if not endpoint:
         # Last resort: scan by served_model_name (R-15 fallback)
@@ -646,12 +672,24 @@ async def list_models(
 
     results = await asyncio.gather(*(_fetch_endpoint_models(ep) for ep in endpoints))
 
+    # Deduplicate by model id.  When an endpoint has a variant (e.g.
+    # ``pd``, ``128k``), the variant is appended to the model id so
+    # each deployment variant appears as a separate entry in the
+    # model picker.  Without this, the picker shows only one entry
+    # for all variants (e.g. only one ``GLM-5.2-FP8`` for both ``-pd``
+    # and non-``-pd`` deployments).
     merged: dict[str, dict] = {}
-    for entries in results:
+    for ep, entries in zip(endpoints, results):
         for entry in entries:
             model_id = entry.get("id")
-            if model_id and model_id not in merged:
-                merged[model_id] = entry
+            if not model_id:
+                continue
+            if ep.variant:
+                variant_id = f"{model_id}-{ep.variant}"
+                entry = {**entry, "id": variant_id}
+                merged.setdefault(variant_id, entry)
+            else:
+                merged.setdefault(model_id, entry)
 
     # Apply deployment-scoped visibility (e.g. frontier-only on AI4S).
     from .model_visibility import is_model_visible
