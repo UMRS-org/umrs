@@ -378,49 +378,24 @@ def _filter_outcome_for_client(cmd, outcome, client_id, buckets_cfg):
 
 
 def check_duplicated_database(users):
-    """Quarantine experiences whose database name collides with another's.
+    """Abort if two users share the same database name."""
+    import sys
 
-    Each experience resolves to a Postgres database named
-    ``create_db_name(sql_username, xp_name, username)``. Since the platform
-    ``username`` is part of the name, two *different* users can safely reuse the
-    same ``(xp_name, sql_username)`` pair — they get isolated databases. The only
-    way two experiences now collide is when a *single* user lists the same
-    ``(xp_name, sql_username)`` twice (a genuine config error).
-
-    Historically any duplicate aborted startup via ``sys.exit`` — a single bad
-    entry crash-looped the whole server and took the front offline for every
-    user. Instead, keep the first claimant of each database name and skip
-    (quarantine) any later colliding experience, logging a loud warning so the
-    conflict is visible. The server stays up for everyone else.
-
-    The ``users`` list is mutated in place: colliding experiences are dropped
-    from the affected users' ``experiences`` lists so downstream provisioning
-    never double-provisions a database.
-    """
-    database_owner: dict[str, str] = {}
+    databases_name_dict = {}
     for user in users:
         username = user["username"]
-        kept_experiences = []
         for xp in user["experiences"]:
             sql_username = xp["sql_username"]
             xp_name = xp["xp_name"]
-            db_name = create_db_name(sql_username, xp_name, username)
-            prior_owner = database_owner.get(db_name)
-            if prior_owner is not None:
-                logger.warning(
-                    "Skipping experience '%s' for user '%s': database name '%s' "
-                    "is already claimed by user '%s'. Experiences must map to "
-                    "distinct databases — change xp_name or sql_username. "
-                    "Booting without this experience.",
-                    xp_name,
-                    username,
-                    db_name,
-                    prior_owner,
+            db_name = create_db_name(sql_username, xp_name)
+            if db_name in databases_name_dict:
+                sys.exit(
+                    f"\t❌ Error: duplicated database '{db_name}' for users "
+                    f"'{username}' and '{databases_name_dict[db_name]}'\n"
+                    f"\tChange xp_name or sql_username in json file.\n"
+                    f"\tExiting..."
                 )
-                continue
-            database_owner[db_name] = username
-            kept_experiences.append(xp)
-        user["experiences"] = kept_experiences
+            databases_name_dict[db_name] = username
 
 
 def _close_buckets_connections(buckets_cfg):

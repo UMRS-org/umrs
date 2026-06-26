@@ -389,7 +389,7 @@ def configure_user(
         xp_name = xp["xp_name"]
         logger.info(f"\t==> Experience: {xp_name}")
         sql_username = xp["sql_username"]
-        data_base, _db_name = create_db(sql_username, xp_name, username)
+        data_base, _db_name = create_db(sql_username, xp_name)
         for modality in xp["modalities"]:
             try:
                 bucket_alias, path_to_bucket, num_objects, bucket_entry = (
@@ -462,7 +462,7 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
         xp_name = xp["xp_name"]
         sql_username = xp["sql_username"]
         sql_usernames.add(sql_username)
-        db_name = create_db_name(sql_username, xp_name, username)
+        db_name = create_db_name(sql_username, xp_name)
 
         for modality in xp.get("modalities", []):
             bucket_alias = modality["s3"]["bucket_alias"]
