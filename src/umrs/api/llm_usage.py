@@ -246,8 +246,8 @@ def record_usage(pool, record: UsageRecord) -> None:  # noqa: ANN001
     """Schedule a fire-and-forget task to persist *record*.
 
     The INSERT runs on the default executor (thread pool) so the async
-    event loop is not blocked.  If the event loop is not running
-    (e.g. in tests), the call is silently skipped.
+    event loop is not blocked.  When no event loop is running (e.g. sync
+    ``DATA_INGESTION`` workers), the INSERT runs inline on the caller thread.
     """
     if pool is None:
         return
@@ -255,8 +255,7 @@ def record_usage(pool, record: UsageRecord) -> None:  # noqa: ANN001
         loop = asyncio.get_running_loop()
         loop.run_in_executor(None, _do_record_sync, pool, record)
     except RuntimeError:
-        # No running event loop — skip silently
-        pass
+        _do_record_sync(pool, record)
 
 
 def fill_usage(record: UsageRecord, usage: dict) -> None:
