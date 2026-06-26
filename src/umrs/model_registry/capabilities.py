@@ -38,6 +38,7 @@ FAMILY_TOOL_PARSER: dict[str, str] = {
     "gemma4": "gemma4",
     "diffusion_gemma": "",  # No tool-call training
     "qwen": "hermes",
+    "ornith": "qwen3_xml",
     "llama": "hermes",
     "mistral": "hermes",
 }
@@ -54,6 +55,7 @@ FAMILY_REASONING_PARSER: dict[str, str] = {
     "deepseek": "",
     "diffusion_gemma": "gemma4",
     "qwen": "",
+    "ornith": "qwen3",
     "llama": "",
     "mistral": "",
 }
@@ -63,12 +65,13 @@ FAMILY_KV_CACHE_DTYPE: dict[str, str | None] = {
     "deepseek_v3": None,
     "deepseek": None,
     "glm": None,            # bf16 default (NOT fp8 — GLM has its own DSA code path)
-    "kimi_k2": None,
-    "kimi": None,
+    "kimi_k2": "fp8",       # CANARY: INT4 weights + fp8 KV free headroom on GB200
+    "kimi": "fp8",          # CANARY: keep in sync with kimi_k2
     "llm_jp": None,
     "gpt_oss": None,
     "gemma4": None,
     "diffusion_gemma": None,
+    "ornith": None,
 }
 
 # Families that require eager mode (no CUDA graph capture)
