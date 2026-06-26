@@ -147,6 +147,13 @@ def pretty_print_cfg(cfg_dict, print_output=True):
     return message
 
 
+def _model_name_for_bucket(entry) -> str:
+    """Return a display name for the model attached to a bucket entry."""
+    if entry.model is None:
+        return "(unknown)"
+    return getattr(entry.model, "model_name", "(unknown)")
+
+
 def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
     """Return a configuration summary filtered to a single user's buckets."""
     df = pd.DataFrame(
@@ -184,7 +191,7 @@ def pretty_print_cfg_for_user(cfg_dict, username, print_output=False):
             entry.modality_name,
             entry.db_name,
             entry.table_name,
-            entry.model.model_name,
+            _model_name_for_bucket(entry),
             entry.store_embeddings_flag,
             metadata_str,
         ]
