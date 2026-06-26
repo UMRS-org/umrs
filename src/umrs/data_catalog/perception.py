@@ -54,18 +54,22 @@ class PerceptionResult:
 
 
 def perception_enabled() -> bool:
-    """True when opt-in perception is enabled via environment flag."""
-    return os.getenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", "false").lower() == "true"
+    """True when text/LLM perception is enabled (default on).
+
+    Set ``UMRS_DATA_CATALOG_ENABLE_PERCEPTION=false`` to skip all generative
+    perception (text summaries and image captions).
+    """
+    return os.getenv("UMRS_DATA_CATALOG_ENABLE_PERCEPTION", "true").lower() == "true"
 
 
 def image_perception_enabled() -> bool:
-    """True when image captioning is enabled (defaults on if perception is on).
+    """True when image captioning is enabled (default off).
 
-    Image captioning is the most expensive perception path, so it can be
-    disabled independently to control GPU cost without losing text summaries
-    or catalog discoverability.
+    Image captioning is the most expensive perception path. Text LLM summaries
+    stay on when ``perception_enabled()``; enable image captioning explicitly
+    via ``UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION=true``.
     """
-    return os.getenv("UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION", "true").lower() == "true"
+    return os.getenv("UMRS_DATA_CATALOG_ENABLE_IMAGE_PERCEPTION", "false").lower() == "true"
 
 
 def run_perception(
