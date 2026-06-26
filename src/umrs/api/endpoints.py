@@ -787,6 +787,14 @@ class ProvisionRequest(BaseModel):
             "splitting). Forwarded to serve.slurm via VLLM_REASONING_PARSER."
         ),
     )
+    env_vars: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Extra environment variables to pass to the Slurm job / mini-RiVault "
+            "container. These are merged with the ServingProfile-derived defaults, "
+            "with request env_vars taking precedence via setdefault semantics."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_multi_model(self) -> "ProvisionRequest":
@@ -2019,6 +2027,10 @@ async def provision_endpoint(
         )
 
     env_vars: dict[str, str] = {}
+    # Merge request-supplied env_vars first so they take precedence
+    # over ServingProfile/roster defaults.
+    for _k, _v in (request.env_vars or {}).items():
+        env_vars[str(_k)] = str(_v)
     model_type = _resolve_model_type(request.model, model_entry)
     serving_backend = _resolve_serving_backend(
         request.model,
