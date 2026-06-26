@@ -53,7 +53,13 @@ VALID_STATUSES = {"planned", "queued", "running", "completed", "failed", "cancel
 # - model_download → MODEL_DOWNLOAD ZMQ command
 # - embedding_batch → PROCESS_OBJECTS (upload) + recompute/update maintenance
 # - pipeline_run → deferred until steps framework is fully wired
-VALID_JOB_TYPES = {"endpoint_provision", "index_build", "cleanup", "workflow_run"}
+VALID_JOB_TYPES = {
+    "endpoint_provision",
+    "index_build",
+    "cleanup",
+    "workflow_run",
+    "data_ingestion",
+}
 JOB_SUBMIT = "JOB_SUBMIT"
 JOB_CANCEL = "JOB_CANCEL"
 JOB_LIST = "JOB_LIST"
@@ -121,10 +127,19 @@ def _validate_cleanup_spec(spec: dict[str, Any]) -> None:
     _require_string(spec, "job_id", "cleanup spec.job_id")
 
 
+def _validate_data_ingestion_spec(spec: dict[str, Any]) -> None:
+    _require_string(spec, "bucket", "data_ingestion spec.bucket")
+    _require_string(spec, "s3_key", "data_ingestion spec.s3_key")
+    _require_string(spec, "project_id", "data_ingestion spec.project_id")
+    if "object_etag" in spec and not isinstance(spec["object_etag"], str):
+        raise ValueError("data_ingestion spec.object_etag must be a string")
+
+
 _JOB_SPEC_VALIDATORS = {
     JobType.INDEX_BUILD: _validate_index_build_spec,
     JobType.WORKFLOW_RUN: _validate_workflow_run_spec,
     JobType.CLEANUP: _validate_cleanup_spec,
+    JobType.DATA_INGESTION: _validate_data_ingestion_spec,
 }
 
 

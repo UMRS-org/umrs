@@ -25,6 +25,7 @@ class JobType(Enum):
     ENDPOINT_PROVISION = "endpoint_provision"  # Provision Mini-RiVault
     MODEL_DOWNLOAD = "model_download"  # Download model weights to approved path
     CLEANUP = "cleanup"  # Delete resources
+    DATA_INGESTION = "data_ingestion"  # Catalog + text extract after upload
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE excluded from selective merge
 
 
@@ -87,6 +88,10 @@ DEFAULT_BACKOFFS: dict[JobType, dict[str, Any]] = {
     JobType.CLEANUP: {
         "delays": [],
         "max_attempts": 1,  # No retry for cleanup
+    },
+    JobType.DATA_INGESTION: {
+        "delays": [10, 30, 60],
+        "max_attempts": 4,
     },
     # Note: CONTEXT_RETENTION and CONVERSATION_SUMMARIZE backoffs excluded
 }
