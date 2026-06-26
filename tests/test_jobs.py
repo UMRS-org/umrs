@@ -16,6 +16,7 @@ import pytest
 # Import the modules we're testing
 from umrs.jobs.models import (
     AttemptStatus,
+    DEFAULT_BACKOFFS,
     Job,
     JobAttempt,
     JobStatus,
@@ -119,6 +120,13 @@ class TestJobModels:
         assert job.get_backoff_delay(2) == 10
         assert job.get_backoff_delay(3) == 20
         assert job.get_backoff_delay(4) == 20  # Uses last delay
+
+    def test_data_ingestion_job_type_and_backoff(self):
+        """DATA_INGESTION is a first-class durable job type."""
+        assert JobType.DATA_INGESTION.value == "data_ingestion"
+        backoff = DEFAULT_BACKOFFS[JobType.DATA_INGESTION]
+        assert backoff["max_attempts"] == 4
+        assert backoff["delays"] == [10, 30, 60]
 
     def test_job_to_dict_and_back(self):
         """Test Job serialization round-trip."""
