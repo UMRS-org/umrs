@@ -715,6 +715,95 @@ def set_reload_context(
     _reload_user_config_map = user_config_map
 
 
+def _persist_user_config_for_reload(
+    user_config: dict | None, x_user_id: str | None
+) -> list[str]:
+    """Persist uploaded user config to disk before reload.
+
+    Returns a list of human-readable error messages; empty on success.
+    """
+    persist_errors: list[str] = []
+    if not user_config or not x_user_id:
+        return persist_errors
+
+    import json as _json
+    import logging
+    import tempfile
+    import traceback
+
+    from umrs.server.file_handling import persist_uploaded_user_config
+
+    log = logging.getLogger(__name__)
+    tmp_fd = None
+    tmp_path: str | None = None
+    try:
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            prefix="umrs_user_config_",
+            suffix=".json",
+        )
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            _json.dump(user_config, f, indent=2, ensure_ascii=False)
+        tmp_fd = None
+
+        ok, _stored_user, _stored_path = persist_uploaded_user_config(
+            tmp_path,
+            _reload_configure_file,
+            _reload_user_config_map,
+            expected_username=x_user_id,
+        )
+        if not ok:
+            persist_errors.append(
+                f"Failed to persist uploaded config for '{x_user_id}'."
+            )
+    except Exception as exc:
+        err_detail = f"{exc}\n{traceback.format_exc()}"
+        log.warning("Failed to persist user config for %s: %s", x_user_id, err_detail)
+        persist_errors.append(
+            f"Failed to persist uploaded config for '{x_user_id}': {exc}"
+        )
+    finally:
+        if tmp_fd is not None:
+            try:
+                os.close(tmp_fd)
+            except OSError:
+                pass
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    return persist_errors
+
+
+def _build_reload_response(
+    outcome: dict[str, Any],
+    x_user_id: str | None,
+    persist_errors: list[str],
+) -> dict[str, Any]:
+    """Build the reload endpoint response from the reload outcome."""
+    if persist_errors or "error" in outcome:
+        summary = outcome.get("summary", "")
+        error_text = "\n".join(persist_errors + [outcome.get("error", "")]).strip()
+        return {
+            "status": "error",
+            "summary": summary,
+            "error": error_text or "Reload failed",
+        }
+
+    summary = outcome.get("summary", "Reload complete")
+    if x_user_id and _reload_buckets_cfg is not None:
+        from umrs.shared.pretty_print import pretty_print_cfg_for_user
+
+        summary = pretty_print_cfg_for_user(
+            _reload_buckets_cfg,
+            x_user_id,
+            print_output=False,
+        )
+
+    return {"status": "ok", "summary": summary}
+
+
 @router.post(
     "/reload",
     response_model=OpsReloadResponse,
@@ -744,80 +833,29 @@ def ops_reload(
             detail="Reload context not initialised — server may still be starting",
         )
 
-    # Persist uploaded user config before reload so the server sees it.
-    # The reload below re-reads the server's conf_umrs.json, which references
-    # per-user config files on disk. If we don't persist the uploaded config,
-    # locally-added experiences are invisible to the server.
-    if body.user_config and x_user_id:
-        import logging
-        import tempfile
-        import json as _json
+    try:
+        persist_errors = _persist_user_config_for_reload(body.user_config, x_user_id)
 
-        log = logging.getLogger(__name__)
-        tmp_fd = None
-        try:
-            # persist_uploaded_user_config expects a file path, so write the
-            # uploaded user_config dict to a temp file first.
-            tmp_fd, tmp_path = tempfile.mkstemp(
-                prefix="umrs_user_config_",
-                suffix=".json",
-            )
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
-                _json.dump(body.user_config, f, indent=2, ensure_ascii=False)
-            tmp_fd = None  # fd closed by context manager
+        from umrs.server.maintenance import reload_configuration
 
-            from umrs.server.file_handling import persist_uploaded_user_config
-
-            persist_uploaded_user_config(
-                tmp_path,
-                _reload_configure_file,
-                _reload_user_config_map,
-                expected_username=x_user_id,
-            )
-        except Exception as exc:
-            log.warning(
-                "Failed to persist user config for %s: %s",
-                x_user_id,
-                exc,
-            )
-            # Clean up temp file on failure (best-effort).
-            if tmp_fd is not None:
-                try:
-                    os.close(tmp_fd)
-                except OSError:
-                    pass
-
-    from umrs.server.maintenance import reload_configuration
-
-    outcome = reload_configuration(
-        _reload_configure_file,
-        _reload_buckets_cfg,
-        _reload_user_config_map,
-        log_output=True,
-    )
-
-    if "error" in outcome:
-        return {
-            "status": "error",
-            "summary": outcome.get("summary", ""),
-            "error": outcome["error"],
-        }
-
-    summary = outcome.get("summary", "Reload complete")
-    # Filter summary to the requesting user when identity is known.
-    if x_user_id and _reload_buckets_cfg is not None:
-        from umrs.shared.pretty_print import pretty_print_cfg_for_user
-
-        summary = pretty_print_cfg_for_user(
+        outcome = reload_configuration(
+            _reload_configure_file,
             _reload_buckets_cfg,
-            x_user_id,
-            print_output=False,
+            _reload_user_config_map,
+            log_output=True,
         )
 
-    return {
-        "status": "ok",
-        "summary": summary,
-    }
+        return _build_reload_response(outcome, x_user_id, persist_errors)
+    except Exception as exc:
+        import traceback
+
+        detail = f"{exc}\n\n{traceback.format_exc()}"
+        logging.getLogger(__name__).exception("Unhandled exception in ops_reload")
+        return {
+            "status": "error",
+            "summary": "Unhandled exception during reload",
+            "error": detail,
+        }
 
 
 # ---------------------------------------------------------------------------

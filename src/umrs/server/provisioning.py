@@ -100,7 +100,9 @@ def _upload_weights_to_rivault(model_name: str, tmp_root: str) -> None:
         if head_resp.status_code == 200:
             return
     except Exception as e:
-        logger.info(f"Warning: failed to check weights endpoint for '{model_name}': {e}")
+        logger.info(
+            f"Warning: failed to check weights endpoint for '{model_name}': {e}"
+        )
         return
 
     tar_path = _tar_model_cache(model_name, tmp_root)
@@ -367,7 +369,9 @@ def _configure_modality_bucket(
     return bucket_alias, path_to_bucket, num_objects, bucket_entry
 
 
-def configure_user(user_cfg, server_cfg: ServerCfg):
+def configure_user(
+    user_cfg, server_cfg: ServerCfg, modality_errors: list | None = None
+):
     fullname = user_cfg["fullname"]
     username = user_cfg["username"]
 
@@ -401,18 +405,31 @@ def configure_user(user_cfg, server_cfg: ServerCfg):
                     )
                 )
                 buckets_cfg.store(path_to_bucket, bucket_entry)
-                logger.info(f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)")
+                logger.info(
+                    f"\t\t\t==>Bucket alias: {bucket_alias} ({num_objects} objects)"
+                )
             except Exception as e:
                 import traceback
 
                 mod_name = modality.get("modality_name") or modality.get(
                     "modality", "?"
                 )
-                logger.info(
-                    f"\t\t\tWARNING: Failed to configure modality '{mod_name}' "
+                err_msg = (
+                    f"Failed to configure modality '{mod_name}' "
                     f"in experience '{xp_name}': {e}"
                 )
+                logger.info(f"\t\t\tWARNING: {err_msg}")
                 traceback.print_exc()
+                if modality_errors is not None:
+                    modality_errors.append(
+                        {
+                            "username": username,
+                            "xp_name": xp_name,
+                            "modality": mod_name,
+                            "error": str(e),
+                            "traceback": traceback.format_exc(),
+                        }
+                    )
 
 
 def deprovision_user(user_cfg, admin_s3_configuration_file):
@@ -434,7 +451,9 @@ def deprovision_user(user_cfg, admin_s3_configuration_file):
     )
 
     username = user_cfg["username"]
-    logger.info(f"######################\nDeprovisioning {username}\n######################")
+    logger.info(
+        f"######################\nDeprovisioning {username}\n######################"
+    )
 
     # Collect all bucket names and SQL usernames.
     bucket_names = []
