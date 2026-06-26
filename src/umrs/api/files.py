@@ -287,6 +287,7 @@ async def upload_file(
     purpose: str | None = Form("uploads"),
     project_id: str = Depends(get_project_id),
     config: S3Config = Depends(get_s3_config),
+    x_user_id: str | None = Header(None),
 ) -> UploadResponse:
     """Store an uploaded file under the caller's project namespace."""
     if not file.filename:
@@ -301,7 +302,7 @@ async def upload_file(
 
     try:
         s3_client = config.get_client()
-        s3_client.put_object(
+        put_response = s3_client.put_object(
             Bucket=bucket,
             Key=object_key,
             Body=content,
@@ -317,6 +318,20 @@ async def upload_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to upload file",
         ) from e
+
+    object_etag = (put_response.get("ETag") or "").strip('"')
+    owner = _header_str(x_user_id) or project_id
+    from umrs.data_catalog.triggers import trigger_post_upload_ingestion
+
+    trigger_post_upload_ingestion(
+        s3_client,
+        bucket,
+        s3_key=object_key,
+        object_etag=object_etag,
+        project_id=project_id,
+        owner=owner,
+        filename=file.filename,
+    )
 
     return UploadResponse(
         key=object_key,
