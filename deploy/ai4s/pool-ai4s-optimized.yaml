@@ -43,6 +43,19 @@
 #     - vLLM recipe: TP=8, max_model_len 262K, prefix caching,
 #       tool-call-parser qwen3_xml, reasoning-parser qwen3, trust-remote-code
 #     - Fits 8×80GB; on GB200 B200 use 2 nodes (8× B200) for KV headroom
+#
+#   GLM-5.2-NVFP4 (nvidia/GLM-5.2-NVFP4):
+#     - 753B total params, 40B activated (MoE, glm_moe_dsa architecture)
+#     - NVIDIA Model Optimizer NVFP4 quantization (~376 GiB weights)
+#     - Only MoE expert linear ops quantized; shared expert unquantized
+#     - 1M native context (solid, per upstream)
+#     - vLLM 0.23.0+ required (--quantization modelopt_fp4)
+#     - Same RIVAULT_SIF v6 overlay image as GLM-5.2 / GLM-5.2-FP8
+#     - Same tool-call-parser glm47 + reasoning-parser glm45 as BF16 baseline
+#     - Fits 2n4gpu (8× B200 = 1385.6 GiB) for native 1M context with
+#       large KV headroom; could potentially fit 1n4gpu (TP=4) at reduced
+#       context but TP=8 (2 nodes) preferred for NVFP4's larger expert
+#       activation footprint vs FP8
 
 pool: ai4s-research-optimized
 defaults:
@@ -148,6 +161,26 @@ endpoints:
       NIXL_PACKAGES_HOST: /work/hps0/home/ea0022/images/nixl_packages
       SLURM_WRAPPER_SCRIPT: /work/hps0/home/ea0022/ai4s-platform/umrs/deploy/ai4s/serve-pd.slurm
 
+  # ── GLM-5.2 NVFP4 2-node recipe ──────────────────────────────────────────
+  # NVIDIA's NVFP4 quantization of GLM-5.2 (HF: nvidia/GLM-5.2-NVFP4).
+  # Weights+activations of MoE expert linear ops quantized to NVFP4 (4-bit);
+  # shared expert left in higher precision.
+  # NVFP4 ~376 GiB weights → fits 8× B200 (1385.6 GiB) with huge KV headroom.
+  # Requires vLLM with modelopt_fp4 quantization support (v0.23+).
+  - name: glm-5.2-nvfp4
+    model: GLM-5.2-NVFP4
+    tier: system
+    gpu_count: 4
+    node_count: 2          # 2 nodes × 4 GPU = 8× B200 (TP=4, PP=2)
+    partition: 2n4gpu      # NVLink within tray, IB between
+    max_model_len: 1048576 # 1M context (NVFP4 weights + FP8 KV fit easily)
+    env_vars:
+      RIVAULT_SIF: /work/hps0/home/ea0022/images/mini-rivault-aarch64-v6.sif
+      VLLM_QUANTIZATION: modelopt_fp4    # NVFP4 quantization via Model Optimizer
+      VLLM_KV_CACHE_DTYPE: fp8           # FP8 KV cache (halves KV memory)
+      VLLM_MAX_NUM_SEQS: "32"
+      VLLM_MAX_NUM_BATCHED_TOKENS: "32768"
+
   # ── Kimi-K2.6 2-node (native 262K) ────────────────────────────────────────
   # TP=8 doubles aggregate memory → native 262K context with KV headroom.
   - name: kimi-k2.6-2n
@@ -179,13 +212,16 @@ endpoints:
 
   # ── Kimi-K2.7-Code FP8 KV (single-node canary) ────────────────────────────
   # Halves KV memory on the 1n4gpu recipe; validate output quality before promotion.
+  # NOTE: max_model_len=245760 (240K) — INT4 weights leave only 16.68 GiB KV
+  # per GPU at gpu_mem_util=0.90. The hard ceiling is 254816 tokens; 245760
+  # gives a safe fragmentation margin.
   - name: kimi-k2.7-code-fp8
     model: Kimi-K2.7-Code
     tier: system
     gpu_count: 4
     node_count: 1
     partition: 4n4gpu-p
-    max_model_len: 262144
+    max_model_len: 245760
     env_vars:
       VLLM_GPU_MEMORY_UTILIZATION: "0.90"
       VLLM_MM_ENCODER_TP_MODE: "data"
