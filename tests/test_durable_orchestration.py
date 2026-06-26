@@ -977,6 +977,7 @@ class TestAdapters:
         backend = factory(JobType.ENDPOINT_PROVISION)
         assert backend is not None
         assert factory(JobType.INDEX_BUILD) is not None
+        assert factory(JobType.DATA_INGESTION) is not None
         assert factory(JobType.CLEANUP) is not None
 
         checker = create_status_checker(
@@ -986,6 +987,7 @@ class TestAdapters:
         )
         assert JobType.ENDPOINT_PROVISION in checker._checkers
         assert JobType.INDEX_BUILD in checker._checkers
+        assert JobType.DATA_INGESTION in checker._checkers
         assert JobType.CLEANUP in checker._checkers
 
 
