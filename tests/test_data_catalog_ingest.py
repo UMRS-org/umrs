@@ -36,7 +36,7 @@ def test_ingest_object_reads_only_configured_sample():
         json.loads(client.objects[meta_object_key(s3_key)].decode("utf-8"))
     )
     assert meta.state.value == "ready"
-    assert meta.tags == ["catalog_sample_truncated"]
+    assert meta.tags == ["perception_skipped", "catalog_sample_truncated"]
 
     extracted_keys = [
         key for key in client.objects if key.startswith(EXTRACTED_TEXT_PREFIX)
